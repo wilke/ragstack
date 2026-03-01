@@ -1,3 +1,44 @@
+Metadata-Version: 2.4
+Name: ragstack
+Version: 0.1.0
+Summary: Production-grade full-stack RAG system
+License: MIT
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.111
+Requires-Dist: uvicorn[standard]>=0.29
+Requires-Dist: pydantic>=2.7
+Requires-Dist: pydantic-settings>=2.3
+Requires-Dist: httpx>=0.27
+Provides-Extra: vector
+Requires-Dist: qdrant-client>=1.9; extra == "vector"
+Provides-Extra: text
+Requires-Dist: elasticsearch>=8.13; extra == "text"
+Provides-Extra: graph
+Requires-Dist: neo4j>=5.20; extra == "graph"
+Requires-Dist: networkx>=3.3; extra == "graph"
+Requires-Dist: spacy>=3.7; extra == "graph"
+Provides-Extra: embeddings
+Requires-Dist: openai>=1.30; extra == "embeddings"
+Requires-Dist: sentence-transformers>=3.0; extra == "embeddings"
+Provides-Extra: queue
+Requires-Dist: celery[redis]>=5.4; extra == "queue"
+Requires-Dist: redis>=5.0; extra == "queue"
+Provides-Extra: observability
+Requires-Dist: structlog>=24.2; extra == "observability"
+Requires-Dist: prometheus-fastapi-instrumentator>=7.0; extra == "observability"
+Requires-Dist: opentelemetry-sdk>=1.25; extra == "observability"
+Requires-Dist: opentelemetry-instrumentation-fastapi>=0.46b0; extra == "observability"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Provides-Extra: all
+Requires-Dist: ragstack[embeddings,graph,observability,queue,text,vector]; extra == "all"
+
 # RAGStack
 
 A **production-grade, full-stack Retrieval-Augmented Generation (RAG)** platform.
