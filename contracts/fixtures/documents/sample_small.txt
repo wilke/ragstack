@@ -1,0 +1,25 @@
+Vector databases are specialized data stores designed to efficiently index, store, and
+retrieve high-dimensional vector embeddings. Unlike traditional relational databases
+that operate on structured rows and columns, vector databases organize data around
+dense numerical representations produced by machine learning models. These embeddings
+capture semantic meaning, enabling similarity-based search rather than exact keyword
+matching.
+
+At the core of a vector database is an approximate nearest neighbor (ANN) index. ANN
+algorithms such as HNSW (Hierarchical Navigable Small World) and IVF (Inverted File
+Index) trade a small amount of recall accuracy for dramatic improvements in query
+latency. By constructing a graph or partition structure over the embedding space, these
+indexes allow sub-linear search times even across billions of vectors.
+
+Retrieval-Augmented Generation (RAG) pipelines rely heavily on vector databases. When a
+user submits a natural language query, the system encodes the query into an embedding,
+searches the vector store for the most relevant document chunks, and passes those chunks
+to a large language model as context for answer generation. Combining sparse retrieval
+methods like BM25 with dense vector search in a hybrid approach often yields the best
+results.
+
+Knowledge graphs complement vector databases by capturing structured relationships
+between entities. In a graph-augmented retrieval system, entity triples (subject,
+predicate, object) provide additional context that pure vector similarity may miss.
+Merging graph traversal results with vector search hits produces a richer, more
+accurate set of evidence for downstream generation.

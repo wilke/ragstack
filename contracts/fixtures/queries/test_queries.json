@@ -1,0 +1,14 @@
+[
+  {
+    "query": "What is a vector database?",
+    "expected_top_k": 5
+  },
+  {
+    "query": "How does BM25 work?",
+    "expected_top_k": 5
+  },
+  {
+    "query": "knowledge graph entities",
+    "expected_top_k": 3
+  }
+]

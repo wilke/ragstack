@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retrieve_response.json",
+  "title": "RetrieveResponse",
+  "description": "Response containing retrieved source chunks.",
+  "type": "object",
+  "required": ["sources"],
+  "properties": {
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "source.json"
+      }
+    }
+  },
+  "additionalProperties": false
+}

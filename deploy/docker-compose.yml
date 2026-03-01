@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: ../go
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file: ../.env
+    depends_on:
+      - qdrant
+      - elasticsearch
+      - neo4j
+      - postgres
+      - redis
+    restart: unless-stopped
