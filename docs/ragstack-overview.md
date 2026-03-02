@@ -109,95 +109,90 @@ Not every deployment needs the full pipeline. Each level addresses specific fail
 
 ## Level 1 → 2: Adding Hybrid Search
 
-### The problem
 Vector search is semantic — great for "how does photosynthesis work?" but misses exact keyword matches like **"error code E-4021"** or **"BRCA1 mutation"**.
 
-### The solution
-Run BM25 (keyword) search **in parallel** with vector search, then fuse results using **Reciprocal Rank Fusion (RRF)**.
+**Fix:** Run BM25 (keyword) search in parallel with vector search, fuse with RRF.
 
 ```
 Query ──┬── Vector search (semantic) ──┐
-        │                              ├── RRF merge ──→ Results
+        │                              ├── RRF merge → Results
         └── BM25 search (keyword) ────┘
 ```
 
-### The benefit
-| Metric | Level 1 (vector only) | Level 2 (hybrid) |
-|--------|----------------------|------------------|
+**Measured impact:**
+
+| Metric | Vector only | + Hybrid search |
+|--------|------------|-----------------|
 | Keyword query recall | ~40% | ~90% |
 | Overall nDCG@5 | ~0.55 | ~0.65 |
 
-**Cost:** One BM25 index (Postgres tsvector or Elasticsearch). Minimal latency impact — searches run in parallel.
+**Added cost:** One BM25 index (Postgres tsvector or Elasticsearch). Searches run in parallel — minimal latency impact.
 
 ---
 
 ## Level 2 → 3: Adding Reranking + Rewriting
 
-### The problem
-Initial retrieval returns 40 candidates — many are partially relevant. The **ranking order** matters for generation quality, but vector similarity is a rough signal.
+Initial retrieval returns 40 candidates — many partially relevant. Vector similarity is a rough ranking signal.
 
-### The solution
-A **cross-encoder** model reads each (query, document) pair together and produces a precise relevance score. It rescores 40 candidates down to the top 5.
+**Fix:** A **cross-encoder** reads each (query, document) pair and produces a precise relevance score. Rescores 40 candidates → top 5.
 
-**Query rewriting** generates alternative phrasings to cast a wider retrieval net:
-- **Multi-query:** LLM paraphrases the question 3 ways
-- **HyDE:** LLM writes a hypothetical answer, then searches for passages similar to it
-- **Step-back:** LLM generalizes the question for broader context
+**Query rewriting** casts a wider retrieval net:
+- **Multi-query** — LLM paraphrases the question 3 ways
+- **HyDE** — LLM writes a hypothetical answer, embeds that instead
+- **Step-back** — LLM generalizes the query for broader context
 
-### The benefit
-| Metric | Level 2 | Level 3 |
-|--------|---------|---------|
+**Measured impact:**
+
+| Metric | Hybrid only | + Reranking |
+|--------|------------|-------------|
 | nDCG@5 | ~0.65 | ~0.78 |
 | Answer quality (human eval) | 3.2/5 | 4.1/5 |
 
-**Cost:** Cross-encoder sidecar (~1.2GB memory, CPU is sufficient). ~250ms added latency.
+**Added cost:** Cross-encoder sidecar (~1.2GB, CPU sufficient). ~250ms latency.
 
 ---
 
 ## Level 3 → 4: Adding Knowledge Graphs
 
-### The problem
-Some questions require connecting information across documents:
-> *"Who funded the company that acquired the startup working on CRISPR delivery?"*
+Some questions require connecting facts across documents:
+> *"Who funded the company that acquired the CRISPR startup?"*
 
-No single passage contains the full answer. Vector and keyword search both fail.
+No single passage has the full answer. Vector and keyword search both fail.
 
-### The solution
-Extract **(subject, predicate, object)** triples from documents during ingestion. Store in Neo4j. At query time, expand the query with related entities from the graph.
+**Fix:** Extract (subject, predicate, object) triples during ingestion. At query time, expand with related entities from the graph.
 
 ```
-Docs → LLM extracts triples → Neo4j graph
-                                    ↓
-Query → entity recognition → graph neighborhood → synthetic chunks → RRF
+Docs → LLM extracts triples → Neo4j
+Query → entity recognition → graph neighborhood → RRF
 ```
 
-### The benefit
-| Metric | Level 3 | Level 4 |
-|--------|---------|---------|
+**Measured impact:**
+
+| Metric | Without graph | + Knowledge graph |
+|--------|--------------|-------------------|
 | Multi-hop query success | ~25% | ~65% |
 | Entity-rich query recall | ~60% | ~85% |
 
-**Cost:** Neo4j instance + LLM extraction during ingestion (~500ms/chunk, async).
+**Added cost:** Neo4j + LLM extraction during ingestion (~500ms/chunk, async).
 
 ---
 
 ## Level 4 → 5: Production Hardening
 
-### The problem
-The pipeline works, but you need confidence it will **keep working** as data changes, models update, and users scale.
+The pipeline works — but will it **keep working** as data changes and users scale?
 
-### The solution
+**Fix:** Operational guardrails.
 
 | Concern | Mechanism |
 |---------|-----------|
-| **Regression detection** | Nightly eval against gold set; CI fails if nDCG drops |
-| **Hallucination guard** | Confidence threshold — refuse to generate when retrieval quality is low |
-| **Data isolation** | Row-Level Security + collection-per-tenant in Qdrant |
-| **Audit trail** | Every query, every admin action logged with tenant context |
-| **Graceful degradation** | If reranker/graph/vector store fails, pipeline falls back instead of erroring |
-| **Freshness conflicts** | Advisory when sources span multiple years |
+| Regressions | Nightly eval against gold set; CI fails if nDCG drops |
+| Hallucination | Confidence threshold — refuse to answer when retrieval is poor |
+| Data leaks | Row-Level Security + collection-per-tenant |
+| Audit | Every query and admin action logged |
+| Outages | Graceful degradation — components fall back, not fail |
+| Stale data | Advisory when sources span multiple years |
 
-**Cost:** Operational maturity — CI pipelines, monitoring, on-call. No additional latency.
+**Added cost:** Operational maturity (CI, monitoring, on-call). No latency impact.
 
 ---
 
@@ -355,12 +350,12 @@ Total:      ~2000ms
 
 | Term | What it is |
 |------|-----------|
-| **BM25** | A classical keyword-matching algorithm (Best Match 25). Ranks documents by how often query terms appear, adjusted for document length. Think of it as "smart Ctrl-F" — it finds exact word matches that semantic search misses. |
-| **Dense retrieval** | Searching by meaning, not keywords. Documents and queries are converted to numerical vectors (embeddings); similar meanings land near each other in vector space. Finds "automobile" when you search "car". |
-| **Sparse retrieval** | Searching by exact term overlap (BM25, TF-IDF). Each document is represented as a sparse vector of word frequencies. Fast, interpretable, and good at exact matches. |
-| **Hybrid search** | Running dense (vector) and sparse (BM25) retrieval in parallel, then combining the results. Captures both semantic similarity and keyword precision. |
-| **RRF** | **Reciprocal Rank Fusion** — a method to merge ranked lists from different retrieval methods. Each result gets a score of `1/(k + rank)`. Simple, parameter-light, and consistently outperforms individual rankers. |
-| **Embedding** | A fixed-length vector of floating-point numbers that represents the meaning of a piece of text. Similar texts produce vectors that are close together (by cosine similarity). |
+| **BM25** | Best Match 25 — a keyword-matching algorithm. Ranks by term frequency adjusted for document length. "Smart Ctrl-F" that catches exact matches semantic search misses. |
+| **Dense retrieval** | Searching by meaning. Text is converted to vectors (embeddings); similar meanings are nearby in vector space. Finds "automobile" when you search "car". |
+| **Sparse retrieval** | Searching by exact term overlap (BM25, TF-IDF). Sparse vectors of word frequencies. Fast and good at exact matches. |
+| **Hybrid search** | Running dense + sparse retrieval in parallel, then combining results. Gets both semantic similarity and keyword precision. |
+| **RRF** | **Reciprocal Rank Fusion** — merges ranked lists from different methods. Score = `1/(k + rank)`. Simple, effective, consistently outperforms individual rankers. |
+| **Embedding** | A numerical vector representing text meaning. Similar texts produce nearby vectors (measured by cosine similarity). |
 
 ---
 
@@ -393,12 +388,96 @@ Total:      ~2000ms
 
 | Term | What it is |
 |------|-----------|
-| **HNSW** | **Hierarchical Navigable Small World** — the graph-based index structure used by Qdrant (and pgvector) for approximate nearest-neighbor search. Logarithmic search time, tunable via `m` and `ef_construct` parameters. |
-| **RLS** | **Row-Level Security** — a Postgres feature that restricts which rows a query can see based on the current session context. RagStack uses it to enforce tenant isolation: each query only sees its own tenant's data, even if a bug in application code omits a WHERE clause. |
-| **Tenant isolation** | Keeping each customer's data completely separate. Qdrant uses collection-per-tenant (hard isolation); Postgres uses RLS (policy-enforced isolation). |
-| **Knowledge graph** | A network of (subject → predicate → object) triples extracted from documents. Stored in Neo4j. Enables multi-hop reasoning: "Who funded X?" → "X was acquired by Y" → "Y was funded by Z". |
-| **Apptainer** | A container runtime for HPC environments (formerly Singularity). Rootless, no daemon, GPU passthrough via `--nv`. Runs the same images as Docker, packaged as `.sif` files. |
-| **Conformance tests** | HTTP black-box tests that verify *both* Go and Python implementations return the same responses for the same inputs. They validate against shared JSON schemas — no code imports, just HTTP calls. |
+| **SLO / SLI / SLA** | **SLI** = raw metric (P99 latency). **SLO** = target (P99 < 2s). **SLA** = contractual commitment with consequences if SLOs are missed. |
+| **HNSW** | Graph-based index for approximate nearest-neighbor search. Used by Qdrant and pgvector. Logarithmic search time. |
+| **RLS** | **Row-Level Security** — Postgres restricts visible rows per session. Enforces tenant isolation at the database level. |
+| **Knowledge graph** | (subject → predicate → object) triples stored in Neo4j. Enables multi-hop reasoning across documents. |
+| **Apptainer** | HPC container runtime (formerly Singularity). Rootless, no daemon, GPU via `--nv`. Same images as Docker. |
+| **Conformance tests** | HTTP black-box tests verifying Go and Python return identical responses against shared JSON schemas. |
+
+---
+
+## RAG — Strengths & Weaknesses
+
+<div class="columns">
+<div class="col">
+
+**Strengths**
+
+| | |
+|-|-|
+| Instant updates | Add/remove docs — no retraining |
+| Source citations | Every answer traces back to a passage |
+| Model-agnostic | Swap the LLM without losing knowledge |
+| Tenant isolation | Per-customer data stays separate |
+| Scales with data | 10M docs = indexing, not retraining |
+
+</div>
+<div class="col">
+
+**Weaknesses**
+
+| | |
+|-|-|
+| Retrieval bottleneck | Wrong passages → wrong answer |
+| Latency overhead | Embed + search + rerank adds ~1s |
+| Context limits | Can't synthesize across hundreds of docs |
+| Chunking is an art | Split size affects quality dramatically |
+| Infrastructure | Vector DB, BM25, reranker, cache… |
+
+</div>
+</div>
+
+---
+
+## Fine-Tuning — Strengths & Weaknesses
+
+<div class="columns">
+<div class="col">
+
+**Strengths**
+
+| | |
+|-|-|
+| Domain reasoning | Model *thinks* in your domain's language |
+| Lower latency | No retrieval step — prompt → generate |
+| Style & tone | Writes like your org (legal, medical, brand) |
+| Simpler runtime | No vector DB, no search infrastructure |
+
+</div>
+<div class="col">
+
+**Weaknesses**
+
+| | |
+|-|-|
+| Expensive | Full retrain: $100K+. LoRA: hours of GPU |
+| Stale instantly | Knowledge frozen at training time |
+| No citations | "Just knows" — can't point to sources |
+| Hallucination | More confident, including when wrong |
+| No isolation | Training data leaks into all outputs |
+| Hard to debug | Can't trace answer to a training example |
+
+</div>
+</div>
+
+---
+
+## RAG vs Fine-Tuning: When to Use Which
+
+They solve **different problems** — and the best systems combine both.
+
+| | **RAG** | **Fine-tuning** |
+|-|---------|----------------|
+| **Teaches** | *What* the facts are | *How* to reason about a domain |
+| **Updates** | Instantly (add/remove docs) | Requires retraining |
+| **Auditable** | Yes — cite exact sources | No — knowledge in weights |
+| **Tenant-safe** | Yes — per-customer data | No — shared model weights |
+| **Best for** | Facts, references, Q&A | Style, reasoning, format |
+
+**Combined example:** A medical Q&A system fine-tunes for clinical reasoning and writing style, but uses RAG for specific drug interactions and guidelines that change frequently.
+
+> **RagStack is firmly in the knowledge camp** — multi-tenant, updatable, citable. Fine-tuning would be an optional upstream enhancement, not a replacement.
 
 ---
 
