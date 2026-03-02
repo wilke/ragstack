@@ -350,12 +350,12 @@ Total:      ~2000ms
 
 | Term | What it is |
 |------|-----------|
-| **BM25** | A classical keyword-matching algorithm (Best Match 25). Ranks documents by how often query terms appear, adjusted for document length. Think of it as "smart Ctrl-F" — it finds exact word matches that semantic search misses. |
-| **Dense retrieval** | Searching by meaning, not keywords. Documents and queries are converted to numerical vectors (embeddings); similar meanings land near each other in vector space. Finds "automobile" when you search "car". |
-| **Sparse retrieval** | Searching by exact term overlap (BM25, TF-IDF). Each document is represented as a sparse vector of word frequencies. Fast, interpretable, and good at exact matches. |
-| **Hybrid search** | Running dense (vector) and sparse (BM25) retrieval in parallel, then combining the results. Captures both semantic similarity and keyword precision. |
-| **RRF** | **Reciprocal Rank Fusion** — a method to merge ranked lists from different retrieval methods. Each result gets a score of `1/(k + rank)`. Simple, parameter-light, and consistently outperforms individual rankers. |
-| **Embedding** | A fixed-length vector of floating-point numbers that represents the meaning of a piece of text. Similar texts produce vectors that are close together (by cosine similarity). |
+| **BM25** | Best Match 25 — a keyword-matching algorithm. Ranks by term frequency adjusted for document length. "Smart Ctrl-F" that catches exact matches semantic search misses. |
+| **Dense retrieval** | Searching by meaning. Text is converted to vectors (embeddings); similar meanings are nearby in vector space. Finds "automobile" when you search "car". |
+| **Sparse retrieval** | Searching by exact term overlap (BM25, TF-IDF). Sparse vectors of word frequencies. Fast and good at exact matches. |
+| **Hybrid search** | Running dense + sparse retrieval in parallel, then combining results. Gets both semantic similarity and keyword precision. |
+| **RRF** | **Reciprocal Rank Fusion** — merges ranked lists from different methods. Score = `1/(k + rank)`. Simple, effective, consistently outperforms individual rankers. |
+| **Embedding** | A numerical vector representing text meaning. Similar texts produce nearby vectors (measured by cosine similarity). |
 
 ---
 
@@ -388,12 +388,12 @@ Total:      ~2000ms
 
 | Term | What it is |
 |------|-----------|
-| **HNSW** | **Hierarchical Navigable Small World** — the graph-based index structure used by Qdrant (and pgvector) for approximate nearest-neighbor search. Logarithmic search time, tunable via `m` and `ef_construct` parameters. |
-| **RLS** | **Row-Level Security** — a Postgres feature that restricts which rows a query can see based on the current session context. RagStack uses it to enforce tenant isolation: each query only sees its own tenant's data, even if a bug in application code omits a WHERE clause. |
-| **Tenant isolation** | Keeping each customer's data completely separate. Qdrant uses collection-per-tenant (hard isolation); Postgres uses RLS (policy-enforced isolation). |
-| **Knowledge graph** | A network of (subject → predicate → object) triples extracted from documents. Stored in Neo4j. Enables multi-hop reasoning: "Who funded X?" → "X was acquired by Y" → "Y was funded by Z". |
-| **Apptainer** | A container runtime for HPC environments (formerly Singularity). Rootless, no daemon, GPU passthrough via `--nv`. Runs the same images as Docker, packaged as `.sif` files. |
-| **Conformance tests** | HTTP black-box tests that verify *both* Go and Python implementations return the same responses for the same inputs. They validate against shared JSON schemas — no code imports, just HTTP calls. |
+| **SLO / SLI / SLA** | **SLI** = raw metric (P99 latency). **SLO** = target (P99 < 2s). **SLA** = contractual commitment with consequences if SLOs are missed. |
+| **HNSW** | Graph-based index for approximate nearest-neighbor search. Used by Qdrant and pgvector. Logarithmic search time. |
+| **RLS** | **Row-Level Security** — Postgres restricts visible rows per session. Enforces tenant isolation at the database level. |
+| **Knowledge graph** | (subject → predicate → object) triples stored in Neo4j. Enables multi-hop reasoning across documents. |
+| **Apptainer** | HPC container runtime (formerly Singularity). Rootless, no daemon, GPU via `--nv`. Same images as Docker. |
+| **Conformance tests** | HTTP black-box tests verifying Go and Python return identical responses against shared JSON schemas. |
 
 ---
 
