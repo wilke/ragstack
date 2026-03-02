@@ -351,6 +351,57 @@ Total:      ~2000ms
 
 ---
 
+## Glossary — Retrieval Concepts
+
+| Term | What it is |
+|------|-----------|
+| **BM25** | A classical keyword-matching algorithm (Best Match 25). Ranks documents by how often query terms appear, adjusted for document length. Think of it as "smart Ctrl-F" — it finds exact word matches that semantic search misses. |
+| **Dense retrieval** | Searching by meaning, not keywords. Documents and queries are converted to numerical vectors (embeddings); similar meanings land near each other in vector space. Finds "automobile" when you search "car". |
+| **Sparse retrieval** | Searching by exact term overlap (BM25, TF-IDF). Each document is represented as a sparse vector of word frequencies. Fast, interpretable, and good at exact matches. |
+| **Hybrid search** | Running dense (vector) and sparse (BM25) retrieval in parallel, then combining the results. Captures both semantic similarity and keyword precision. |
+| **RRF** | **Reciprocal Rank Fusion** — a method to merge ranked lists from different retrieval methods. Each result gets a score of `1/(k + rank)`. Simple, parameter-light, and consistently outperforms individual rankers. |
+| **Embedding** | A fixed-length vector of floating-point numbers that represents the meaning of a piece of text. Similar texts produce vectors that are close together (by cosine similarity). |
+
+---
+
+## Glossary — Models & Reranking
+
+| Term | What it is |
+|------|-----------|
+| **Cross-encoder** | A neural model that reads a (query, document) pair together and outputs a relevance score. Much more accurate than vector similarity, but much slower — that's why it's used to *rerank* a small candidate set (e.g., 40 → 5), not to search the full corpus. |
+| **Bi-encoder** | The model used to create embeddings. It encodes query and document *independently*, making it fast enough for corpus-wide search, but less precise than a cross-encoder. |
+| **Reranking** | A second-pass scoring step. Initial retrieval (fast, approximate) produces candidates; the reranker (slow, precise) reorders them. Dramatically improves top-K quality. |
+| **vLLM** | An open-source inference engine for serving large language models. Exposes an OpenAI-compatible API. Supports continuous batching, paged attention, and tensor parallelism for high throughput. |
+| **TTFT** | **Time to First Token** — how long until the LLM starts producing output. A key latency metric for streaming responses. |
+| **Sidecar** | A small, independently deployable service that runs alongside the main application. RagStack uses Python sidecars for ML tasks (embedding, reranking, FAISS) so the Go core stays lean. |
+
+---
+
+## Glossary — Query Rewriting Strategies
+
+| Strategy | How it works | When it helps |
+|----------|-------------|---------------|
+| **Passthrough** | No rewriting — use the query as-is. | Clear, specific queries. Zero latency cost. |
+| **Multi-query** | LLM generates 3-5 paraphrases of the query. All variants are searched and results merged. | Ambiguous queries where different phrasings retrieve different relevant docs. |
+| **HyDE** | **Hypothetical Document Embedding** — LLM writes a hypothetical answer, then embeds *that* answer as the search query instead of the original question. | Queries phrased as questions when the corpus contains declarative statements. The hypothetical answer is closer in vector space to real answers than the question is. |
+| **Step-back** | LLM generalizes the query to a broader concept, then searches for both the original and the generalized version. | Overly specific queries that miss relevant context. "What is the half-life of caffeine?" → also searches "caffeine metabolism pharmacokinetics". |
+| **Entity expansion** | Extract entities from the query, look up related entities in the knowledge graph, add them to the search. | Domain-specific queries where synonyms or related concepts exist in the KG. "BRCA1" → also finds "DNA repair", "breast cancer", "TP53". |
+
+---
+
+## Glossary — Architecture & Infrastructure
+
+| Term | What it is |
+|------|-----------|
+| **HNSW** | **Hierarchical Navigable Small World** — the graph-based index structure used by Qdrant (and pgvector) for approximate nearest-neighbor search. Logarithmic search time, tunable via `m` and `ef_construct` parameters. |
+| **RLS** | **Row-Level Security** — a Postgres feature that restricts which rows a query can see based on the current session context. RagStack uses it to enforce tenant isolation: each query only sees its own tenant's data, even if a bug in application code omits a WHERE clause. |
+| **Tenant isolation** | Keeping each customer's data completely separate. Qdrant uses collection-per-tenant (hard isolation); Postgres uses RLS (policy-enforced isolation). |
+| **Knowledge graph** | A network of (subject → predicate → object) triples extracted from documents. Stored in Neo4j. Enables multi-hop reasoning: "Who funded X?" → "X was acquired by Y" → "Y was funded by Z". |
+| **Apptainer** | A container runtime for HPC environments (formerly Singularity). Rootless, no daemon, GPU passthrough via `--nv`. Runs the same images as Docker, packaged as `.sif` files. |
+| **Conformance tests** | HTTP black-box tests that verify *both* Go and Python implementations return the same responses for the same inputs. They validate against shared JSON schemas — no code imports, just HTTP calls. |
+
+---
+
 ## Summary
 
 **RAG** grounds LLM answers in your actual documents — no fine-tuning, instant updates, auditable sources.
