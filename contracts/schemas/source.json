@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source.json",
+  "title": "Source",
+  "description": "A retrieved source chunk with relevance score.",
+  "type": "object",
+  "required": ["doc_id", "chunk_id", "content", "score"],
+  "properties": {
+    "doc_id": {
+      "type": "string"
+    },
+    "chunk_id": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "score": {
+      "type": "number"
+    },
+    "metadata": {
+      "type": "object",
+      "default": {}
+    }
+  },
+  "additionalProperties": false
+}

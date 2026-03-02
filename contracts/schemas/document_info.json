@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "document_info.json",
+  "title": "DocumentInfo",
+  "description": "Metadata about an indexed document.",
+  "type": "object",
+  "required": ["doc_id", "source"],
+  "properties": {
+    "doc_id": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "default": {}
+    }
+  },
+  "additionalProperties": false
+}

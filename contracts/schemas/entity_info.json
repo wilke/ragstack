@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "entity_info.json",
+  "title": "EntityInfo",
+  "description": "Information about an entity in the knowledge graph.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "triple_count": {
+      "type": "integer",
+      "default": 0
+    }
+  },
+  "additionalProperties": false
+}

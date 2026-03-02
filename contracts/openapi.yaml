@@ -1,0 +1,319 @@
+openapi: "3.1.0"
+info:
+  title: RAGStack API
+  description: Production-grade Retrieval-Augmented Generation platform.
+  version: "0.1.0"
+
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      tags: [Health]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /v1/query:
+    post:
+      operationId: query
+      summary: Full RAG pipeline (rewrite, retrieve, rerank, generate)
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QueryRequest"
+      responses:
+        "200":
+          description: Query response with answer and sources
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResponse"
+        "422":
+          description: Validation error
+
+  /v1/retrieve:
+    post:
+      operationId: retrieve
+      summary: Retrieve relevant chunks without generating an answer
+      tags: [Query]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetrieveRequest"
+      responses:
+        "200":
+          description: Retrieved sources
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetrieveResponse"
+        "422":
+          description: Validation error
+
+  /v1/ingest:
+    post:
+      operationId: ingest
+      summary: Ingest a document
+      tags: [Documents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestRequest"
+      responses:
+        "200":
+          description: Ingestion accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "422":
+          description: Validation error
+
+  /v1/ingest/{job_id}:
+    get:
+      operationId: ingestStatus
+      summary: Poll ingestion job status
+      tags: [Documents]
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ingestion job status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+
+  /v1/documents:
+    get:
+      operationId: listDocuments
+      summary: List all indexed documents
+      tags: [Documents]
+      responses:
+        "200":
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentInfo"
+
+  /v1/documents/{doc_id}:
+    delete:
+      operationId: deleteDocument
+      summary: Delete a document and all its chunks
+      tags: [Documents]
+      parameters:
+        - name: doc_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Document deleted
+
+  /v1/graph/entities:
+    get:
+      operationId: listEntities
+      summary: List entities in the knowledge graph
+      tags: [Graph]
+      responses:
+        "200":
+          description: List of entities
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EntityInfo"
+
+  /v1/graph/neighbors/{entity}:
+    get:
+      operationId: getNeighbors
+      summary: Get entity neighborhood triples
+      tags: [Graph]
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: depth
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+      responses:
+        "200":
+          description: Triples in entity neighborhood
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TripleResponse"
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        top_k:
+          type: integer
+          default: 5
+        rewrite_strategies:
+          type: array
+          items:
+            type: string
+          default: ["passthrough"]
+        filters:
+          type: object
+          default: {}
+        use_graph:
+          type: boolean
+          default: true
+        stream:
+          type: boolean
+          default: false
+
+    QueryResponse:
+      type: object
+      required: [answer, sources, rewritten_queries]
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+        rewritten_queries:
+          type: array
+          items:
+            type: string
+
+    RetrieveRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        top_k:
+          type: integer
+          default: 5
+        filters:
+          type: object
+          default: {}
+        use_graph:
+          type: boolean
+          default: true
+
+    RetrieveResponse:
+      type: object
+      required: [sources]
+      properties:
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/Source"
+
+    IngestRequest:
+      type: object
+      required: [source]
+      properties:
+        source:
+          type: string
+        metadata:
+          type: object
+          default: {}
+
+    IngestResponse:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+        chunk_ids:
+          type: array
+          items:
+            type: string
+          default: []
+
+    DocumentInfo:
+      type: object
+      required: [doc_id, source]
+      properties:
+        doc_id:
+          type: string
+        source:
+          type: string
+        metadata:
+          type: object
+          default: {}
+
+    EntityInfo:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        triple_count:
+          type: integer
+          default: 0
+
+    TripleResponse:
+      type: object
+      required: [subject, predicate, object]
+      properties:
+        subject:
+          type: string
+        predicate:
+          type: string
+        object:
+          type: string
+
+    Source:
+      type: object
+      required: [doc_id, chunk_id, content, score]
+      properties:
+        doc_id:
+          type: string
+        chunk_id:
+          type: string
+        content:
+          type: string
+        score:
+          type: number
+        metadata:
+          type: object
+          default: {}

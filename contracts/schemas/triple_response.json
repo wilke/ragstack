@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "triple_response.json",
+  "title": "TripleResponse",
+  "description": "A subject-predicate-object triple from the knowledge graph.",
+  "type": "object",
+  "required": ["subject", "predicate", "object"],
+  "properties": {
+    "subject": {
+      "type": "string"
+    },
+    "predicate": {
+      "type": "string"
+    },
+    "object": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

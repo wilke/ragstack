@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "query_response.json",
+  "title": "QueryResponse",
+  "description": "Query response containing the generated answer, source chunks, and rewritten queries.",
+  "type": "object",
+  "required": ["answer", "sources", "rewritten_queries"],
+  "properties": {
+    "answer": {
+      "type": "string"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "source.json"
+      }
+    },
+    "rewritten_queries": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

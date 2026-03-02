@@ -30,6 +30,15 @@ htmlcov/
 .coverage
 coverage.xml
 
+# Go
+go/bin/
+go/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
 # Docker
 *.tar
 

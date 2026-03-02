@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retrieve_request.json",
+  "title": "RetrieveRequest",
+  "description": "Request to retrieve relevant chunks without generating an answer.",
+  "type": "object",
+  "required": ["query"],
+  "properties": {
+    "query": {
+      "type": "string"
+    },
+    "top_k": {
+      "type": "integer",
+      "default": 5
+    },
+    "filters": {
+      "type": "object",
+      "default": {}
+    },
+    "use_graph": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "additionalProperties": false
+}
