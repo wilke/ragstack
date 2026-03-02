@@ -397,6 +397,90 @@ Total:      ~2000ms
 
 ---
 
+## RAG — Strengths & Weaknesses
+
+<div class="columns">
+<div class="col">
+
+**Strengths**
+
+| | |
+|-|-|
+| Instant updates | Add/remove docs — no retraining |
+| Source citations | Every answer traces back to a passage |
+| Model-agnostic | Swap the LLM without losing knowledge |
+| Tenant isolation | Per-customer data stays separate |
+| Scales with data | 10M docs = indexing, not retraining |
+
+</div>
+<div class="col">
+
+**Weaknesses**
+
+| | |
+|-|-|
+| Retrieval bottleneck | Wrong passages → wrong answer |
+| Latency overhead | Embed + search + rerank adds ~1s |
+| Context limits | Can't synthesize across hundreds of docs |
+| Chunking is an art | Split size affects quality dramatically |
+| Infrastructure | Vector DB, BM25, reranker, cache… |
+
+</div>
+</div>
+
+---
+
+## Fine-Tuning — Strengths & Weaknesses
+
+<div class="columns">
+<div class="col">
+
+**Strengths**
+
+| | |
+|-|-|
+| Domain reasoning | Model *thinks* in your domain's language |
+| Lower latency | No retrieval step — prompt → generate |
+| Style & tone | Writes like your org (legal, medical, brand) |
+| Simpler runtime | No vector DB, no search infrastructure |
+
+</div>
+<div class="col">
+
+**Weaknesses**
+
+| | |
+|-|-|
+| Expensive | Full retrain: $100K+. LoRA: hours of GPU |
+| Stale instantly | Knowledge frozen at training time |
+| No citations | "Just knows" — can't point to sources |
+| Hallucination | More confident, including when wrong |
+| No isolation | Training data leaks into all outputs |
+| Hard to debug | Can't trace answer to a training example |
+
+</div>
+</div>
+
+---
+
+## RAG vs Fine-Tuning: When to Use Which
+
+They solve **different problems** — and the best systems combine both.
+
+| | **RAG** | **Fine-tuning** |
+|-|---------|----------------|
+| **Teaches** | *What* the facts are | *How* to reason about a domain |
+| **Updates** | Instantly (add/remove docs) | Requires retraining |
+| **Auditable** | Yes — cite exact sources | No — knowledge in weights |
+| **Tenant-safe** | Yes — per-customer data | No — shared model weights |
+| **Best for** | Facts, references, Q&A | Style, reasoning, format |
+
+**Combined example:** A medical Q&A system fine-tunes for clinical reasoning and writing style, but uses RAG for specific drug interactions and guidelines that change frequently.
+
+> **RagStack is firmly in the knowledge camp** — multi-tenant, updatable, citable. Fine-tuning would be an optional upstream enhancement, not a replacement.
+
+---
+
 ## Summary
 
 **RAG** grounds LLM answers in your actual documents — no fine-tuning, instant updates, auditable sources.
