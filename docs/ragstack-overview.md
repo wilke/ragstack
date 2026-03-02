@@ -109,95 +109,90 @@ Not every deployment needs the full pipeline. Each level addresses specific fail
 
 ## Level 1 → 2: Adding Hybrid Search
 
-### The problem
 Vector search is semantic — great for "how does photosynthesis work?" but misses exact keyword matches like **"error code E-4021"** or **"BRCA1 mutation"**.
 
-### The solution
-Run BM25 (keyword) search **in parallel** with vector search, then fuse results using **Reciprocal Rank Fusion (RRF)**.
+**Fix:** Run BM25 (keyword) search in parallel with vector search, fuse with RRF.
 
 ```
 Query ──┬── Vector search (semantic) ──┐
-        │                              ├── RRF merge ──→ Results
+        │                              ├── RRF merge → Results
         └── BM25 search (keyword) ────┘
 ```
 
-### The benefit
-| Metric | Level 1 (vector only) | Level 2 (hybrid) |
-|--------|----------------------|------------------|
+**Measured impact:**
+
+| Metric | Vector only | + Hybrid search |
+|--------|------------|-----------------|
 | Keyword query recall | ~40% | ~90% |
 | Overall nDCG@5 | ~0.55 | ~0.65 |
 
-**Cost:** One BM25 index (Postgres tsvector or Elasticsearch). Minimal latency impact — searches run in parallel.
+**Added cost:** One BM25 index (Postgres tsvector or Elasticsearch). Searches run in parallel — minimal latency impact.
 
 ---
 
 ## Level 2 → 3: Adding Reranking + Rewriting
 
-### The problem
-Initial retrieval returns 40 candidates — many are partially relevant. The **ranking order** matters for generation quality, but vector similarity is a rough signal.
+Initial retrieval returns 40 candidates — many partially relevant. Vector similarity is a rough ranking signal.
 
-### The solution
-A **cross-encoder** model reads each (query, document) pair together and produces a precise relevance score. It rescores 40 candidates down to the top 5.
+**Fix:** A **cross-encoder** reads each (query, document) pair and produces a precise relevance score. Rescores 40 candidates → top 5.
 
-**Query rewriting** generates alternative phrasings to cast a wider retrieval net:
-- **Multi-query:** LLM paraphrases the question 3 ways
-- **HyDE:** LLM writes a hypothetical answer, then searches for passages similar to it
-- **Step-back:** LLM generalizes the question for broader context
+**Query rewriting** casts a wider retrieval net:
+- **Multi-query** — LLM paraphrases the question 3 ways
+- **HyDE** — LLM writes a hypothetical answer, embeds that instead
+- **Step-back** — LLM generalizes the query for broader context
 
-### The benefit
-| Metric | Level 2 | Level 3 |
-|--------|---------|---------|
+**Measured impact:**
+
+| Metric | Hybrid only | + Reranking |
+|--------|------------|-------------|
 | nDCG@5 | ~0.65 | ~0.78 |
 | Answer quality (human eval) | 3.2/5 | 4.1/5 |
 
-**Cost:** Cross-encoder sidecar (~1.2GB memory, CPU is sufficient). ~250ms added latency.
+**Added cost:** Cross-encoder sidecar (~1.2GB, CPU sufficient). ~250ms latency.
 
 ---
 
 ## Level 3 → 4: Adding Knowledge Graphs
 
-### The problem
-Some questions require connecting information across documents:
-> *"Who funded the company that acquired the startup working on CRISPR delivery?"*
+Some questions require connecting facts across documents:
+> *"Who funded the company that acquired the CRISPR startup?"*
 
-No single passage contains the full answer. Vector and keyword search both fail.
+No single passage has the full answer. Vector and keyword search both fail.
 
-### The solution
-Extract **(subject, predicate, object)** triples from documents during ingestion. Store in Neo4j. At query time, expand the query with related entities from the graph.
+**Fix:** Extract (subject, predicate, object) triples during ingestion. At query time, expand with related entities from the graph.
 
 ```
-Docs → LLM extracts triples → Neo4j graph
-                                    ↓
-Query → entity recognition → graph neighborhood → synthetic chunks → RRF
+Docs → LLM extracts triples → Neo4j
+Query → entity recognition → graph neighborhood → RRF
 ```
 
-### The benefit
-| Metric | Level 3 | Level 4 |
-|--------|---------|---------|
+**Measured impact:**
+
+| Metric | Without graph | + Knowledge graph |
+|--------|--------------|-------------------|
 | Multi-hop query success | ~25% | ~65% |
 | Entity-rich query recall | ~60% | ~85% |
 
-**Cost:** Neo4j instance + LLM extraction during ingestion (~500ms/chunk, async).
+**Added cost:** Neo4j + LLM extraction during ingestion (~500ms/chunk, async).
 
 ---
 
 ## Level 4 → 5: Production Hardening
 
-### The problem
-The pipeline works, but you need confidence it will **keep working** as data changes, models update, and users scale.
+The pipeline works — but will it **keep working** as data changes and users scale?
 
-### The solution
+**Fix:** Operational guardrails.
 
 | Concern | Mechanism |
 |---------|-----------|
-| **Regression detection** | Nightly eval against gold set; CI fails if nDCG drops |
-| **Hallucination guard** | Confidence threshold — refuse to generate when retrieval quality is low |
-| **Data isolation** | Row-Level Security + collection-per-tenant in Qdrant |
-| **Audit trail** | Every query, every admin action logged with tenant context |
-| **Graceful degradation** | If reranker/graph/vector store fails, pipeline falls back instead of erroring |
-| **Freshness conflicts** | Advisory when sources span multiple years |
+| Regressions | Nightly eval against gold set; CI fails if nDCG drops |
+| Hallucination | Confidence threshold — refuse to answer when retrieval is poor |
+| Data leaks | Row-Level Security + collection-per-tenant |
+| Audit | Every query and admin action logged |
+| Outages | Graceful degradation — components fall back, not fail |
+| Stale data | Advisory when sources span multiple years |
 
-**Cost:** Operational maturity — CI pipelines, monitoring, on-call. No additional latency.
+**Added cost:** Operational maturity (CI, monitoring, on-call). No latency impact.
 
 ---
 
