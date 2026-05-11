@@ -42,6 +42,11 @@ go/vendor/
 # Docker
 *.tar
 
+# Apptainer
+apptainer/data/
+apptainer/images/
+*.sif
+
 # OS
 .DS_Store
 Thumbs.db

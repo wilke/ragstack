@@ -2,6 +2,7 @@
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
        infra-up infra-down up-python up-go down \
+       infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        test-all
 
 help: ## Show this help
@@ -79,6 +80,19 @@ down: ## Stop all services
 	               -f deploy/docker-compose.sidecars.yml \
 	               -f deploy/docker-compose.yml \
 	               -f deploy/docker-compose.python.yml down 2>/dev/null; true
+
+# ---------------------------------------------------------------------------
+# Apptainer (Docker-free infra stack)
+# ---------------------------------------------------------------------------
+
+infra-pull-apptainer: ## Pre-pull infra images as Apptainer SIFs
+	./apptainer/pull.sh
+
+infra-up-apptainer: ## Start infra stack via Apptainer
+	./apptainer/up.sh
+
+infra-down-apptainer: ## Stop the Apptainer infra stack
+	./apptainer/down.sh
 
 # ---------------------------------------------------------------------------
 # All
