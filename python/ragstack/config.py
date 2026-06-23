@@ -11,10 +11,22 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     llm_model: str = "gpt-4o-mini"
 
-    # Qdrant (vector store)
+    # Vector store
+    vector_backend: str = "qdrant"          # qdrant | memory
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"
+
+    # Embedding backend (used at both ingest and query time)
+    embedding_api: str = "sidecar"          # sidecar | openai
+    embedding_sidecar_url: str = "http://localhost:50053"
+    # embedding_model_dim is the vector dimension; defaults to BGE-base.
+    # When embedding_api == "openai", set embedding_model to the OpenAI/vLLM model name.
+    embedding_model_dim: int = 768
+
+    # Chunker defaults
+    chunk_size: int = 512
+    chunk_overlap: int = 64
 
     # Elasticsearch (text index)
     elasticsearch_url: str = "http://localhost:9200"
