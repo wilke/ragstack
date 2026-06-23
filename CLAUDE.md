@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation map
+
+Read in this order when picking up the repo cold:
+
+| Doc | When to read |
+|---|---|
+| [STATUS.md](STATUS.md) | **First.** Current capabilities, active TODOs by horizon, tagged checkpoints, onboarding steps. |
+| [MEMORY.md](MEMORY.md) | **Before coding.** Project conventions, hardware constraints, and the list of debugged failures (apptainer rootless quirks, Neo4j 5 password rule, qdrant-client API rename, etc.). |
+| [SPEC.md](SPEC.md) | Architectural north star — data models, milestones, planned endpoints. Authoritative for design *intent*. |
+| [scratchpad.md](scratchpad.md) | Per-session change log — most recent entry has the latest decisions and rationale. |
+
+When in doubt about *intended* design vs. current code, SPEC wins for intent and code wins for current reality.
+
 ## Repository shape
 
 RAGStack is a **polyglot monorepo** with two parallel implementations of the same RAG API plus a shared contract and conformance suite. The peer top-level dirs are:
@@ -30,9 +43,12 @@ make test-go                     # go test ./... -v
 make lint-go                     # golangci-lint run ./...
 make run-go                      # build + run binary
 
-make infra-up / make infra-down  # bring up/down the shared infra stack
+make infra-up / make infra-down  # bring up/down the shared infra stack (Docker)
 make up-python / make up-go      # infra + sidecars + chosen API, all in Docker
 make down                        # stop everything (combines all compose files)
+
+make infra-{pull,up,down}-apptainer       # Docker-free infra via Apptainer (preferred on no-Docker hosts)
+make sidecars-{pull,up,down}-apptainer    # Embedding sidecar via Apptainer
 
 make test-conformance-python     # RAGSTACK_BASE_URL=http://localhost:8000 RAGSTACK_IMPL=python pytest conformance/
 make test-conformance-go         # RAGSTACK_BASE_URL=http://localhost:8080 RAGSTACK_IMPL=go pytest conformance/
@@ -51,9 +67,22 @@ To run a single test: `cd python && pytest tests/path/to/test_x.py::test_name -v
 
 **Sidecars** are independent FastAPI apps; the API talks to them over HTTP at `EMBEDDING_SIDECAR_URL`, `CROSSENCODER_SIDECAR_URL`, `FAISS_SIDECAR_URL` (see `.env.example`).
 
+## Python utilities (post-v0.2.0)
+
+- `python/ragstack/stores/qdrant.py` — `QdrantVectorStore` implementing the `VectorStore` protocol. Use `query_points()` (the `search()` method was removed in qdrant-client ≥ 1.10).
+- `python/ragstack/embedders.py` — `SidecarEmbedder` (for the `:50053` BGE service) and `OpenAIEmbedder` (for any `/v1/embeddings` endpoint including vLLM). Pick via `make_embedder(api="sidecar"|"openai", ...)`.
+- `python/scripts/ingest_chunks.py` and `search.py` — CLI tools that exercise the above end-to-end against a JSON file of pre-extracted chunks (see `example_chunks.json` for the doc-level-metadata shape). Both expose `--embedding-api {sidecar,openai}` and `--embedding-model` so vLLM is one flag away.
+
+These aren't wired into the API yet — `api/main.py` still uses `InMemoryVectorStore`. Wiring is the top near-term TODO in [STATUS.md](STATUS.md).
+
+## Apptainer deployment
+
+The `apptainer/` scripts are the **preferred** path on hosts without Docker (and on the dev host `coconut`). Each container's writable directories are bind-mounted to host paths under `apptainer/data/<service>/<purpose>/` — every writable path is enumerated explicitly so state persists across restarts and is observable from the host. **Do not use `--writable-tmpfs` or opaque overlays** when adding a new service; enumerate the writable paths instead. See [MEMORY.md](MEMORY.md) for the catalog of apptainer rootless quirks (no `--cwd` flag, `--env` shell-sourcing breaks dotted keys, image FS read-only by default, etc.).
+
 ## Working notes
 
 - Worktrees and subagents: place git worktrees and subagent isolation directories under `~/Development/worktrees/` (not next to this repo, not in `/tmp`).
 - Port convention: Python = 8000, Go = 8080. Don't swap them — the conformance Make targets and `.env.example` (`PORT=8080`) hardcode this split.
 - Both implementations must conform to the same JSON schemas; if a field name differs between them, the schema/OpenAPI is authoritative and the diverging side is the bug.
-- `SPEC.md` is the architectural north star (data models, milestones, planned endpoints). When in doubt about *intended* design vs. current code, SPEC wins for design intent and code wins for current reality.
+- **Before adding a gotcha workaround**, check [MEMORY.md](MEMORY.md) — it may already be documented. After spending >15 min debugging a non-obvious failure, add an entry there.
+- **Pushing**: this repo's `origin` is HTTPS (set via `gh auth setup-git`) — `git push` works without an SSH key in the agent. If you switch hosts and SSH is needed, run `ssh-add ~/.ssh/<key>` first.
