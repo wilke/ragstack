@@ -41,3 +41,71 @@ Restructured repo for Go + Python parallel development:
 - Run conformance tests against both implementations
 - Update plan-c5.md project structure to reflect monorepo
 - Begin Phase 2 (Qdrant + embedding integration)
+
+---
+
+## Session 2026-06-03 — CLAUDE.md, Apptainer infra, Qdrant adapter
+
+### Completed Work
+
+#### 1. CLAUDE.md + Apptainer infra stack (tag `v0.1.0`, commit `71ac896`)
+- `CLAUDE.md` — polyglot monorepo overview, contracts/conformance flow, port split, worktree convention
+- `apptainer/{pull,up,down}.sh` — Docker-free infra stack mirroring `deploy/docker-compose.infra.yml`
+- All five services bind explicit host dirs under `apptainer/data/<svc>/` for **every** writable path
+  (data, logs, configs, sockets, snapshots) — no `--writable-tmpfs`
+- ES + Neo4j config dirs seeded from image on first run (they write `elasticsearch.yml` /
+  `neo4j.conf` at startup)
+- Verified persistence: wrote markers in each service, down→up cycle, read them back identically
+- `make infra-{pull,up,down}-apptainer` targets
+
+#### 2. Qdrant adapter + ingest/search CLI (uncommitted on `main`, planned `v0.2.0`)
+- `python/ragstack/stores/qdrant.py` — `QdrantVectorStore` implements VectorStore protocol;
+  UUID5-hashed point IDs so re-ingest overwrites; original chunk ID preserved in payload
+- `python/scripts/ingest_chunks.py` — flatten doc-level metadata onto every chunk, batch
+  embed → upsert. Auto-detects vector dim from first embed result, sizes collection
+- `python/scripts/search.py` — embed query → `query_points` → text or `--json` output, `--filter k=v` repeatable
+- `python/scripts/example_chunks.json` — 2 docs, 5 chunks, demonstrates doc-level metadata pattern
+
+#### 3. Embedder abstraction with vLLM support
+- `python/ragstack/embedders.py` — `SidecarEmbedder` (`POST /embed`) + `OpenAIEmbedder`
+  (`POST /v1/embeddings`) + `make_embedder()` factory
+- Scripts gain `--embedding-api {sidecar,openai}`, `--embedding-model`, pick up `OPENAI_API_KEY` env
+- vLLM (`vllm serve <model> --runner pooling`) is just another `--embedding-api openai` endpoint
+
+#### 4. Apptainer embedding sidecar wrapper
+- `apptainer/sidecars-{pull,up,down}.sh` — one shared `python.sif` + per-sidecar host-bound `deps/` and `cache/`
+- `pip install --target` into `apptainer/data/embedding/deps/` on first `up.sh` (5.1 GB: torch + cuda libs + sentence-transformers)
+- HF cache bound at `apptainer/data/embedding/cache/` so BGE download persists
+- Run via `python -m uvicorn` (PYTHONPATH=/deps), not the console script (relocated-install shebang issues)
+- `make sidecars-{pull,up,down}-apptainer` targets
+
+#### 5. End-to-end validation
+- Conda env `ragstack` (Python 3.12.13), `pip install -e ".[vector]"`
+- Ingested example_chunks.json: 5 chunks, BGE 768-d, collection `ragstack_demo`
+- Search "what is HNSW" → top hit is the Qdrant chunk (score 0.53); filter `tags=deployment` works; "reranking pipeline" → the RRF chunk (0.63)
+
+### Key Decisions
+- **Persistence model**: explicit per-path host bind mounts > `--writable-tmpfs` overlay.
+  More verbose but state is observable on host and easy to back up
+- **Vector ID strategy**: UUID5(chunk_id) — Qdrant requires UUID/int, this is deterministic
+- **Embedder protocol**: same async signature for sidecar and OpenAI flavors, switched by CLI flag.
+  Default stays `sidecar` so existing callers don't break
+- **Apptainer rootless tradeoffs**: no `--cwd` flag (wrapped qdrant CMD in `sh -c 'cd /qdrant && exec'`),
+  `--env` shell-sources (ES dotted keys go via `-E key=value` CLI args instead), no PID-1 tini
+  (skip it, accept the warning)
+- **NEO4J_PASSWORD**: default changed to `ragstack` in apptainer `up.sh`. Neo4j 5 rejects literal `neo4j`.
+  `.env.example` still says `neo4j` — also broken for the docker-compose path but out of scope
+
+### Files Modified
+- New: `CLAUDE.md`, `apptainer/{pull,up,down,sidecars-pull,sidecars-up,sidecars-down}.sh`,
+  `python/ragstack/embedders.py`, `python/ragstack/stores/qdrant.py`,
+  `python/scripts/{ingest_chunks.py,search.py,example_chunks.json}`
+- Modified: `Makefile` (6 new apptainer targets), `python/ragstack/stores/__init__.py`
+  (export QdrantVectorStore behind try/import), `.gitignore` (apptainer artifacts, `*.rdb`)
+
+### Potential Next Steps
+- Wire `QdrantVectorStore` into `IngestionPipeline` and `api/main.py` factory
+- Cross-encoder reranker apptainer sidecar (parallel to embedding)
+- Elasticsearch BM25 store adapter + `TextIndex` impl
+- Add a `--embedding-api` autodetect (HEAD probe?) so users don't have to remember the flag
+- Bring vLLM up properly (SFR-Embedding-Mistral on H200) and benchmark vs BGE for the workload
