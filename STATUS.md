@@ -28,15 +28,16 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Embedding sidecar**: BAAI/bge-base-en-v1.5 (768-d, CPU) on `:50053`.
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
+- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `answer` from `/v1/query` is still a placeholder (LLM not yet wired). Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
 
 ## Active TODOs
 
 ### Near-term — pick up here in the next session
 
-- [ ] Wire `QdrantVectorStore` into `python/ragstack/pipeline/ingestion.py` (factory + config wiring)
-- [ ] Wire it into `python/ragstack/api/main.py` so the REST `/v1/ingest` and `/v1/query` endpoints actually use Qdrant
-- [ ] Add a conformance test that proves the Qdrant-backed flow returns valid responses against `contracts/schemas/query_response.json`
-- [ ] Replace the in-memory `InMemoryVectorStore` default once the API factory is in place
+- [x] ~~Wire `QdrantVectorStore` into `IngestionPipeline` + `api/main.py`~~ — done in `9114fd1`. `python/ragstack/api/deps.py` provides the lifespan + factory; routers depend on `get_pipeline`/`get_vector_store`/`get_embedder`. Qdrant is the default backend.
+- [ ] Add conformance tests that exercise the live Qdrant-backed flow against the JSON schemas (`/v1/ingest`, `/v1/retrieve`, `/v1/query`, `DELETE /v1/documents/{id}`). The schemas pass for our shapes (manually verified), but no automated coverage yet.
+- [ ] Wire an LLM into `/v1/query` so `answer` stops being a placeholder. Easiest path is another OpenAI-compatible URL (vLLM serving Llama 3.x), reusing the embedder-style abstraction.
+- [ ] Implement `GET /v1/documents` — needs a metadata store (Postgres) since the vector store only knows about chunks. Currently stub returns `[]`.
 
 ### Medium-term
 
