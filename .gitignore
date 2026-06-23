@@ -47,6 +47,9 @@ apptainer/data/
 apptainer/images/
 *.sif
 
+# Stray runtime artifacts (e.g. redis dumps when run from repo root)
+*.rdb
+
 # OS
 .DS_Store
 Thumbs.db

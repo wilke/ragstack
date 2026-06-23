@@ -1,0 +1,59 @@
+[
+  {
+    "doc_id": "rag_overview",
+    "source": "docs/ragstack-overview.md",
+    "metadata": {
+      "title": "RAGStack Overview",
+      "author": "Andreas Wilke",
+      "tags": "architecture"
+    },
+    "chunks": [
+      {
+        "text": "Retrieval-Augmented Generation combines a vector database with a large language model. The vector database stores embeddings of source passages; at query time, the user's question is embedded and the most similar passages are retrieved as context for the LLM, which then generates an answer grounded in those passages.",
+        "chunk_index": 0,
+        "page": 1,
+        "start_char": 0,
+        "end_char": 326
+      },
+      {
+        "text": "Qdrant is a production-grade vector database written in Rust. It supports HNSW-based approximate nearest neighbor search, payload filtering, and a REST and gRPC API. RAGStack uses Qdrant as its primary dense retrieval engine.",
+        "chunk_index": 1,
+        "page": 1,
+        "start_char": 326,
+        "end_char": 553
+      },
+      {
+        "text": "Hybrid retrieval combines dense vector search with sparse BM25 keyword search. RAGStack fuses the two ranked lists with Reciprocal Rank Fusion, then optionally reranks the top candidates with a cross-encoder model before passing them to the LLM.",
+        "chunk_index": 2,
+        "page": 2,
+        "start_char": 0,
+        "end_char": 245
+      }
+    ]
+  },
+  {
+    "doc_id": "deploy_apptainer",
+    "source": "apptainer/up.sh",
+    "metadata": {
+      "title": "Apptainer Deployment",
+      "author": "RAGStack Team",
+      "tags": "deployment"
+    },
+    "chunks": [
+      {
+        "text": "Apptainer, formerly known as Singularity, is the HPC-friendly container runtime. Unlike Docker, it runs rootless by default, has no long-lived daemon, and integrates with shared filesystems on cluster nodes. RAGStack's apptainer scripts start Qdrant, Elasticsearch, Neo4j, Postgres, and Redis as instances on the host network.",
+        "chunk_index": 0,
+        "page": 1,
+        "start_char": 0,
+        "end_char": 328
+      },
+      {
+        "text": "Every container's writable directories are bind-mounted to host paths under apptainer/data/, so service state persists across down/up cycles. Elasticsearch and Neo4j config directories are seeded from the image on first run because both services write configuration files at startup.",
+        "chunk_index": 1,
+        "page": 1,
+        "start_char": 328,
+        "end_char": 614
+      }
+    ]
+  }
+]

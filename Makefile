@@ -3,6 +3,7 @@
        test-conformance-python test-conformance-go test-conformance \
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
+       sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
        test-all
 
 help: ## Show this help
@@ -93,6 +94,15 @@ infra-up-apptainer: ## Start infra stack via Apptainer
 
 infra-down-apptainer: ## Stop the Apptainer infra stack
 	./apptainer/down.sh
+
+sidecars-pull-apptainer: ## Pre-pull base SIF used by sidecars
+	./apptainer/sidecars-pull.sh
+
+sidecars-up-apptainer: ## Start ML sidecars via Apptainer
+	./apptainer/sidecars-up.sh
+
+sidecars-down-apptainer: ## Stop the Apptainer sidecars
+	./apptainer/sidecars-down.sh
 
 # ---------------------------------------------------------------------------
 # All
