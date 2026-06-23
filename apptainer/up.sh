@@ -14,8 +14,10 @@
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA="$HERE/data"
-IMG="$HERE/images"
+# RAG_DATA / RAG_IMAGES let the prod /rag/ layout point these elsewhere.
+# Default to in-repo so dev workflows are unchanged.
+DATA="${RAG_DATA:-$HERE/data}"
+IMG="${RAG_IMAGES:-$HERE/images}"
 
 # Load repo-root .env if present.
 if [[ -f "$HERE/../.env" ]]; then

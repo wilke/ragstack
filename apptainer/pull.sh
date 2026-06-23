@@ -4,7 +4,7 @@
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMG="$HERE/images"
+IMG="${RAG_IMAGES:-$HERE/images}"
 mkdir -p "$IMG"
 
 declare -A IMAGES=(

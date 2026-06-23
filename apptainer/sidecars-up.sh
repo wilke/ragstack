@@ -12,8 +12,8 @@
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DATA="$HERE/data"
-IMG="$HERE/images"
+DATA="${RAG_DATA:-$HERE/data}"
+IMG="${RAG_IMAGES:-$HERE/images}"
 SIDECARS_SRC="$(cd "$HERE/.." && pwd)/sidecars"
 
 mkdir -p "$DATA"/embedding/{deps,cache}
