@@ -5,6 +5,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 **Last updated:** 2026-06-03
 **Current tag:** [`v0.2.0`](https://github.com/wilke/ragstack/releases/tag/v0.2.0) at `4d28ac5`
 **Branch:** `main` (synced with `origin`)
+**Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
 
@@ -58,6 +59,48 @@ Persistent status across sessions and machines. Read this first to pick up where
 |---|---|---|---|
 | [`v0.1.0`](https://github.com/wilke/ragstack/releases/tag/v0.1.0) | `71ac896` | 2026-05-11 | CLAUDE.md + Apptainer Docker-free infra stack with persistent host binds |
 | [`v0.2.0`](https://github.com/wilke/ragstack/releases/tag/v0.2.0) | `4d28ac5` | 2026-06-03 | Qdrant adapter + ingest/search CLIs + embedder abstraction (sidecar/openai) + embedding sidecar wrapper |
+
+## Production layout (`/rag/`)
+
+This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work still happens in a regular checkout (e.g. `~/Development/ragstack`); `/rag/` is the operating environment.
+
+```
+/rag/
+├── repos/ragstack/      # git checkout — code is single-source-of-truth here
+├── apptainer/images/    # SIFs (qdrant.sif, elasticsearch.sif, neo4j.sif, postgres.sif, redis.sif, python.sif)
+├── data/                # all service persistence (qdrant/, elasticsearch/, neo4j/, postgres/, redis/, embedding/)
+├── documents/           # input corpus (PDFs, derived chunks JSON)
+├── config/rag.env       # env file: RAG_DATA, RAG_IMAGES, RAG_REPO, RAG_ENV, NEO4J_PASSWORD
+├── envs/ragstack/       # shared conda env (path-based, multi-user) — Python 3.12 + ragstack[vector]
+├── backups/             # DB snapshots (manual today; cron-driven later)
+└── bin/
+    ├── rag              # operator wrapper — sources rag.env, forwards to make
+    └── activate         # sourceable — sets env vars + activates conda env
+```
+
+**The apptainer scripts in `repos/ragstack/apptainer/` honour `RAG_DATA` and `RAG_IMAGES` from the environment**, defaulting to in-repo paths when unset. The wrapper at `/rag/bin/rag` exports them by sourcing `config/rag.env`, so `apptainer instance` paths land under `/rag/`.
+
+### Daily use
+
+```bash
+# admin/maintainer shell: activate everything in one shot
+. /rag/bin/activate
+# now: python, pip, ragstack package, env vars, conda env all set
+cd $RAG_REPO/python
+python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpus
+
+# operator: start/stop services from any cwd
+/rag/bin/rag infra-up-apptainer
+/rag/bin/rag sidecars-up-apptainer
+/rag/bin/rag infra-down-apptainer && /rag/bin/rag sidecars-down-apptainer
+```
+
+### Source-of-truth rules
+
+- **Code**: `/rag/repos/ragstack/` is a normal git checkout; pull from `origin` to update. Hot-fix locally + push if needed.
+- **Service data**: `/rag/data/<service>/` — owned by apptainer instances, do not edit while services are running.
+- **Documents to ingest**: drop them in `/rag/documents/` so they aren't tied to a user's `$HOME`.
+- **Secrets / config overrides**: `/rag/config/` — never commit anything from here into the repo.
 
 ## How to pick up (new session, possibly new machine)
 

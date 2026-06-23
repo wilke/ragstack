@@ -46,6 +46,12 @@ These bit us once. Don't repeat them.
 - **First request blocks ~90s** while sentence-transformers downloads BGE (~440 MB) and loads the model. Subsequent requests are fast. Bind the HF cache to a host dir (`apptainer/data/embedding/cache/`) so the download persists.
 - **Dependency footprint**: torch + CUDA libs + sentence-transformers = ~5 GB on disk, even on CPU-only hosts. The deps live in `apptainer/data/embedding/deps/` and are installed once by `sidecars-up.sh`.
 
+## Conda / shared envs
+
+- **`conda activate` requires `conda.sh` sourced in the current shell.** Having `miniconda3/bin` on `PATH` makes `conda` runnable but `conda activate` is a *shell function* — it only exists after `source <miniconda>/etc/profile.d/conda.sh`. Non-interactive subshells (e.g. `bash -c '...'`, scripts, hooks) inherit `PATH` but not the function, so they hit `CommandNotFoundError`. Always source the conda hook before activating, even when `command -v conda` succeeds. `/rag/bin/activate` does this unconditionally.
+- **Path-based envs (`conda create --prefix <path>`) are the right shape for shared/multi-user envs.** Activate by the same path (`conda activate /rag/envs/ragstack`); they don't appear in `conda env list` by name.
+- **Editable installs (`pip install -e`) bind to a specific path.** If you move the source tree, re-run `pip install -e .[…]` from the new path. The console scripts still work but `python -c "import ragstack"` loads from wherever the editable-install pointer goes.
+
 ## Git / GitHub
 
 - Tag releases on `main` as `v<major>.<minor>.<patch>`. Push commits and tags separately:

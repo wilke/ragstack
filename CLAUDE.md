@@ -79,6 +79,8 @@ These aren't wired into the API yet — `api/main.py` still uses `InMemoryVector
 
 The `apptainer/` scripts are the **preferred** path on hosts without Docker (and on the dev host `coconut`). Each container's writable directories are bind-mounted to host paths under `apptainer/data/<service>/<purpose>/` — every writable path is enumerated explicitly so state persists across restarts and is observable from the host. **Do not use `--writable-tmpfs` or opaque overlays** when adding a new service; enumerate the writable paths instead. See [MEMORY.md](MEMORY.md) for the catalog of apptainer rootless quirks (no `--cwd` flag, `--env` shell-sourcing breaks dotted keys, image FS read-only by default, etc.).
 
+The scripts honour `RAG_DATA` and `RAG_IMAGES` env vars (defaulting to `$HERE/data` and `$HERE/images` in-repo). The deployed `/rag/` layout sets those to `/rag/data` and `/rag/apptainer/images` via `/rag/config/rag.env` — so a checkout under `/rag/repos/ragstack/` and a checkout under `~/Development/ragstack/` can coexist without stepping on each other's state. See [STATUS.md § Production layout](STATUS.md#production-layout-rag) for the full layout.
+
 ## Working notes
 
 - Worktrees and subagents: place git worktrees and subagent isolation directories under `~/Development/worktrees/` (not next to this repo, not in `/tmp`).
