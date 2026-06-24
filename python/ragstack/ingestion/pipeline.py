@@ -71,6 +71,19 @@ class IngestionPipeline:
             )
         all_chunks = kept
 
+        # Replace, don't accumulate. Deterministic IDs make a byte-identical
+        # re-ingest overwrite its points in place, but an *edited* document
+        # produces shifted chunk boundaries — and therefore new chunk IDs — so
+        # the previous chunks would linger as orphans and pollute retrieval.
+        # Delete each document's prior chunks first. Done here, after a
+        # successful embed (a transient embed failure raises before this point),
+        # so old data is never destroyed before its replacement exists.
+        for doc in documents:
+            await self.vector_store.delete(doc.id)
+            await self.text_index.delete(doc.id)
+            if self.graph_store is not None:
+                await self.graph_store.delete_by_doc(doc.id)
+
         # Index
         await self.vector_store.upsert(all_chunks)
         await self.text_index.index(all_chunks)
