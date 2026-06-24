@@ -44,8 +44,9 @@ class Settings(BaseSettings):
     max_document_bytes: int = 50_000_000
 
     # Ingestion job tracking. "memory" is process-local (lost on restart);
-    # "sqlite" is durable. Postgres lands in M2 for the 500k path.
-    job_store_backend: str = "memory"       # memory | sqlite
+    # "sqlite" is durable single-process; "postgres" is the multi-process
+    # checkpoint of record for the 500k path (uses postgres_dsn).
+    job_store_backend: str = "memory"       # memory | sqlite | postgres
     job_store_path: str = "ragstack_jobs.db"
 
     # Elasticsearch (text index)

@@ -339,8 +339,179 @@ class SqliteJobStore:
         return await asyncio.to_thread(self._item_counts_sync, job_id)
 
 
-def make_job_store(backend: str, path: str) -> JobStore:
-    """Build the configured job store (``memory`` | ``sqlite``)."""
+def _normalize_dsn(dsn: str) -> str:
+    """Strip SQLAlchemy-style ``+driver`` suffixes asyncpg doesn't understand."""
+    for marker in ("+asyncpg", "+psycopg2", "+psycopg"):
+        dsn = dsn.replace(marker, "")
+    return dsn
+
+
+class PostgresJobStore:
+    """Durable, multi-process job store backed by Postgres via asyncpg.
+
+    The single checkpoint of record for the 500k path: unlike sqlite's single
+    writer, Postgres lets multiple workers update item state concurrently. The
+    connection pool and schema are created lazily on first use (asyncpg needs an
+    event loop), so construction stays synchronous like the other stores.
+    """
+
+    def __init__(self, dsn: str, min_size: int = 1, max_size: int = 5) -> None:
+        self._dsn = _normalize_dsn(dsn)
+        self._min = min_size
+        self._max = max_size
+        self._pool = None
+        self._lock = asyncio.Lock()
+
+    async def _pool_(self):
+        if self._pool is None:
+            async with self._lock:
+                if self._pool is None:
+                    try:
+                        import asyncpg
+                    except ImportError as e:  # pragma: no cover
+                        raise RuntimeError(
+                            "postgres job store requires asyncpg "
+                            "(pip install ragstack[postgres])"
+                        ) from e
+                    pool = await asyncpg.create_pool(
+                        self._dsn, min_size=self._min, max_size=self._max
+                    )
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "CREATE TABLE IF NOT EXISTS jobs ("
+                            "  job_id TEXT PRIMARY KEY,"
+                            "  status TEXT NOT NULL,"
+                            "  source TEXT NOT NULL DEFAULT '',"
+                            "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
+                            "  error TEXT NOT NULL DEFAULT ''"
+                            ")"
+                        )
+                        await conn.execute(
+                            "CREATE TABLE IF NOT EXISTS job_items ("
+                            "  job_id TEXT NOT NULL,"
+                            "  item_id TEXT NOT NULL,"
+                            "  source TEXT NOT NULL DEFAULT '',"
+                            "  status TEXT NOT NULL DEFAULT 'pending',"
+                            "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
+                            "  error TEXT NOT NULL DEFAULT '',"
+                            "  PRIMARY KEY (job_id, item_id)"
+                            ")"
+                        )
+                    self._pool = pool
+        return self._pool
+
+    async def create(self, source: str) -> IngestJob:
+        job = IngestJob(job_id=str(uuid.uuid4()), status=ACCEPTED, source=source)
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO jobs (job_id, status, source, chunk_ids, error) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                job.job_id, job.status, job.source, json.dumps(job.chunk_ids), job.error,
+            )
+        return job
+
+    async def get(self, job_id: str) -> IngestJob | None:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT job_id, status, source, chunk_ids, error FROM jobs WHERE job_id = $1",
+                job_id,
+            )
+        if row is None:
+            return None
+        return IngestJob(
+            job_id=row["job_id"],
+            status=row["status"],
+            source=row["source"],
+            chunk_ids=json.loads(row["chunk_ids"]),
+            error=row["error"],
+        )
+
+    async def update(self, job_id: str, **fields: object) -> None:
+        allowed = {"status", "source", "chunk_ids", "error"}
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        if "chunk_ids" in sets:
+            sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
+        cols = list(sets)
+        assignments = ", ".join(f"{c} = ${i + 1}" for i, c in enumerate(cols))
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"UPDATE jobs SET {assignments} WHERE job_id = ${len(cols) + 1}",
+                *sets.values(), job_id,
+            )
+
+    async def fail_interrupted(self) -> int:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE jobs SET status = $1, error = $2 WHERE status NOT IN ($3, $4)",
+                FAILED, INTERRUPTED, COMPLETED, FAILED,
+            )
+        return int(res.split()[-1])  # asyncpg returns e.g. "UPDATE 3"
+
+    async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
+        if not items:
+            return
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            await conn.executemany(
+                "INSERT INTO job_items (job_id, item_id, source) VALUES ($1, $2, $3) "
+                "ON CONFLICT (job_id, item_id) DO NOTHING",
+                [(job_id, item_id, source) for item_id, source in items],
+            )
+
+    async def mark_item(
+        self,
+        job_id: str,
+        item_id: str,
+        status: str,
+        chunk_ids: list[str] | None = None,
+        error: str = "",
+    ) -> None:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO job_items (job_id, item_id, status, chunk_ids, error) "
+                "VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (job_id, item_id) DO UPDATE SET "
+                "  status = excluded.status, chunk_ids = excluded.chunk_ids, error = excluded.error",
+                job_id, item_id, status, json.dumps(chunk_ids or []), error,
+            )
+
+    async def completed_item_ids(self, job_id: str) -> set[str]:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT item_id FROM job_items WHERE job_id = $1 AND status = $2",
+                job_id, COMPLETED,
+            )
+        return {r["item_id"] for r in rows}
+
+    async def item_counts(self, job_id: str) -> dict[str, int]:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT status, COUNT(*) AS n FROM job_items WHERE job_id = $1 GROUP BY status",
+                job_id,
+            )
+        counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+        for r in rows:
+            counts[r["status"]] = r["n"]
+        return counts
+
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+
+
+def make_job_store(backend: str, path: str, dsn: str = "") -> JobStore:
+    """Build the configured job store (``memory`` | ``sqlite`` | ``postgres``)."""
     if backend == "sqlite":
         return SqliteJobStore(path)
+    if backend == "postgres":
+        return PostgresJobStore(dsn)
     return InMemoryJobStore()

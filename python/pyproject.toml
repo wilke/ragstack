@@ -25,6 +25,9 @@ vector = [
 pdf = [
     "pymupdf>=1.24",
 ]
+postgres = [
+    "asyncpg>=0.29",
+]
 text = [
     "elasticsearch>=8.13",
 ]
@@ -56,7 +59,7 @@ dev = [
     "httpx>=0.27",
 ]
 all = [
-    "ragstack[vector,pdf,text,graph,embeddings,queue,observability]",
+    "ragstack[vector,pdf,postgres,text,graph,embeddings,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]
