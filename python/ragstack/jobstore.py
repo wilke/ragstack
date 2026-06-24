@@ -12,6 +12,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from contextlib import closing
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -82,7 +83,7 @@ class SqliteJobStore:
 
     def __init__(self, path: str) -> None:
         self._path = path
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS jobs ("
                 "  job_id TEXT PRIMARY KEY,"
@@ -94,6 +95,10 @@ class SqliteJobStore:
             )
 
     def _connect(self) -> sqlite3.Connection:
+        # Callers must wrap this in ``closing(...)``: sqlite3's connection
+        # context manager (``with conn:``) commits the transaction but does
+        # *not* close the connection, so ``with conn:`` alone leaks a handle
+        # per operation. The idiom is ``with closing(self._connect()) as conn, conn:``.
         conn = sqlite3.connect(self._path)
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
@@ -111,7 +116,7 @@ class SqliteJobStore:
 
     def _create_sync(self, source: str) -> IngestJob:
         job = IngestJob(job_id=str(uuid.uuid4()), status=ACCEPTED, source=source)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO jobs (job_id, status, source, chunk_ids, error)"
                 " VALUES (?, ?, ?, ?, ?)",
@@ -120,7 +125,7 @@ class SqliteJobStore:
         return job
 
     def _get_sync(self, job_id: str) -> IngestJob | None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             cur = conn.execute(
                 "SELECT job_id, status, source, chunk_ids, error FROM jobs WHERE job_id = ?",
                 (job_id,),
@@ -136,7 +141,7 @@ class SqliteJobStore:
         if "chunk_ids" in sets:
             sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
         assignments = ", ".join(f"{k} = ?" for k in sets)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute(
                 f"UPDATE jobs SET {assignments} WHERE job_id = ?",
                 (*sets.values(), job_id),

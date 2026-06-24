@@ -67,6 +67,39 @@ async def test_sqlite_store_persists_across_instances(tmp_path):
     assert fetched.chunk_ids == ["x"]
 
 
+@pytest.mark.asyncio
+async def test_sqlite_store_closes_every_connection(tmp_path, monkeypatch):
+    """Regression: ``with conn:`` commits but never closes — every op must close
+    its connection or the durable backend leaks file handles under load."""
+    import sqlite3 as _sqlite3
+
+    open_count = {"n": 0}
+
+    class _Tracking(_sqlite3.Connection):
+        # Connection.close is read-only on instances, so track via a subclass
+        # passed as the connect ``factory``.
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            open_count["n"] += 1
+
+        def close(self):
+            open_count["n"] -= 1
+            super().close()
+
+    real_connect = _sqlite3.connect
+    monkeypatch.setattr(
+        _sqlite3, "connect", lambda *a, **k: real_connect(*a, factory=_Tracking, **k)
+    )
+
+    store = SqliteJobStore(str(tmp_path / "jobs.db"))  # __init__ opens one
+    job = await store.create(source="s")
+    await store.update(job.job_id, status=COMPLETED, chunk_ids=["a"])
+    await store.get(job.job_id)
+    await store.get("missing")
+
+    assert open_count["n"] == 0, f"{open_count['n']} sqlite connection(s) left open"
+
+
 def test_make_job_store_selects_backend(tmp_path):
     assert isinstance(make_job_store("memory", ""), InMemoryJobStore)
     assert isinstance(make_job_store("sqlite", str(tmp_path / "j.db")), SqliteJobStore)
