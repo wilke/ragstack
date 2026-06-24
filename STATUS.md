@@ -32,7 +32,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 
 ## M1 ingest hardening (branch `feat/m1-deterministic-ids` — in review)
 
-Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from the multi-team plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md). 7 commits, 69 unit tests + a live integration pass against real Qdrant + the BGE sidecar. What landed:
+Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from the multi-team plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md). 7 feature commits + 4 post-review fixes, 74 tests (71 pass, 3 skip — the skips are PDF tests needing the `pdf` extra) + a live integration pass against real Qdrant + the BGE sidecar. What landed:
 
 1. **Deterministic IDs** (`9bd3376`) — `loaders.py` doc IDs and `chunkers.py` chunk IDs are now `uuid5`-derived (was random `uuid4` at *both* layers), so re-ingesting a document overwrites in place instead of **silently duplicating the corpus** in Qdrant.
 2. **PDF + loader registry + LFI confinement** (`16de832`) — `PdfLoader` (PyMuPDF, lazy `pdf` extra), `LoaderRegistry` dispatch by extension, and `INGEST_ROOT` confinement closing the arbitrary-file-read where `request.source` flowed into `open()`.
@@ -44,7 +44,14 @@ Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from
 
 **Live smoke test (coconut, prod-like config):** auth 401/200, async ingest→poll→completed, real BGE upsert (0→1 points), retrieval score 0.728, **re-ingest kept point count at 1 (idempotency proven)**, and `/etc/passwd` ingest rejected by `INGEST_ROOT`.
 
-Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO.
+**Post-review hardening** (after the PR review + Copilot pass):
+
+8. **SqliteJobStore connection leak** (`aa862c8`) — every op used `with conn:` (a transaction manager that commits but never closes), leaking a connection/fd per call on the durable path; now wrapped in `closing(...)`.
+9. **Replace-on-reingest** (`3dbf9af`) — deterministic IDs only made a *byte-identical* re-ingest idempotent; an *edited* document chunks at shifted offsets (new chunk IDs) and the old chunks lingered as orphans. `pipeline.ingest` now deletes each doc's prior chunks (vector + text + graph) before upserting, after a successful embed so a transient failure can't destroy good data first.
+10. **Reap interrupted jobs** (`3c0a96e`) — ingest runs as in-process background tasks, so a restart left durable jobs stuck `running` forever. `JobStore.fail_interrupted()` runs at startup and marks every non-terminal job `failed`/`interrupted`.
+11. **Defensive dim check** (`d2ed334`, Copilot note) — `_existing_vector_size` walks the Qdrant config via `getattr` so an unexpected shape skips the optional check instead of raising `AttributeError` and hard-failing startup.
+
+Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO. **Residual on #9:** a crash *between* the deletes and the upsert leaves that one document empty until the next re-ingest — atomic replace needs Qdrant delete+upsert in one batch or the M2 job-resumability work; tracked for M2.
 
 ## Active TODOs
 
@@ -153,7 +160,7 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 ## Known issues / friction
 
 - **Collection naming changed** (branch `feat/m1-deterministic-ids`): the API now scopes Qdrant collections to `(model, dim)` (e.g. `ragstack_baai_bge_base_en_v1_5_768_<hash>`), so data in the old literal `ragstack` collection is invisible to the API. Re-ingest, or pin `QDRANT_COLLECTION`. The CLI tools (`scripts/`) still use the literal `--collection` name.
-- **Shared conda env (`/rag/envs/ragstack`) lacks dev tooling**: `pytest`, `pytest-asyncio`, `ruff`, and `pymupdf` were `pip install`ed ad hoc to run tests on this branch. The `pdf`/`dev` extras in `pyproject.toml` are the durable record; a clean `pip install -e ".[all,dev]"` would provision them.
+- **Shared conda env (`ragstack`) — test runner present, rest partial**: `pytest`, `pytest-asyncio`, and `pytest-cov` are now installed so `make test-python` runs (74 tests: 71 pass, 3 skip). Deliberately *not* run as `pip install -e ".[all,dev]"` — that would re-resolve pinned runtime deps (qdrant-client/fastapi) in an env that also backs the deployed stack. Still missing: `ruff`/`mypy` (lint/type-check not runnable here) and `pymupdf` (the `pdf` extra — its 3 loader tests skip). The `pdf`/`dev` extras in `pyproject.toml` remain the durable record; a dedicated dev venv is the clean long-term home for these.
 - `.env.example` still has `NEO4J_PASSWORD=neo4j` — invalid for Neo4j 5. The apptainer `up.sh` defaults to `ragstack` instead. Docker-compose users will hit this until `.env.example` is fixed.
 - `vm.max_map_count` requires sudo on each new host. Not automatable in user-space.
 - Embedding sidecar deps include CUDA libraries even on CPU-only hosts (sentence-transformers pulls torch + cuda). ~5 GB on disk; first-run install is slow.
