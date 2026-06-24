@@ -22,6 +22,9 @@ dependencies = [
 vector = [
     "qdrant-client>=1.9",
 ]
+pdf = [
+    "pymupdf>=1.24",
+]
 text = [
     "elasticsearch>=8.13",
 ]
@@ -53,7 +56,7 @@ dev = [
     "httpx>=0.27",
 ]
 all = [
-    "ragstack[vector,text,graph,embeddings,queue,observability]",
+    "ragstack[vector,pdf,text,graph,embeddings,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]

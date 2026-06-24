@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     chunk_size: int = 512
     chunk_overlap: int = 64
 
+    # Ingestion safety. When ingest_root is set, ingest sources must resolve
+    # within it (defeats path-traversal / arbitrary-file-read). max_document_bytes
+    # caps input size as a DoS guard; 0 disables the cap.
+    ingest_root: str = ""
+    max_document_bytes: int = 50_000_000
+
     # Elasticsearch (text index)
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "ragstack"

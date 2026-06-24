@@ -16,7 +16,7 @@ from fastapi import FastAPI, Request
 from ragstack.config import settings
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
-from ragstack.ingestion.loaders import TextFileLoader
+from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 
@@ -71,7 +71,10 @@ async def lifespan(app: FastAPI):
             log.warning("qdrant ensure_collection failed: %s", e)
 
     pipeline = IngestionPipeline(
-        loader=TextFileLoader(),
+        loader=default_loader_registry(
+            ingest_root=settings.ingest_root or None,
+            max_bytes=settings.max_document_bytes,
+        ),
         chunker=RecursiveCharacterChunker(
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,

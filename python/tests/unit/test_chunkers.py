@@ -1,6 +1,4 @@
 """Unit tests for chunkers."""
-import pytest
-
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.models import Document
 
