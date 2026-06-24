@@ -44,6 +44,18 @@ def test_chunk_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
+def test_chunk_ids_are_deterministic():
+    """Re-chunking the same document yields identical chunk IDs (idempotent re-ingest)."""
+    chunker = RecursiveCharacterChunker(chunk_size=10, chunk_overlap=2)
+    doc = _make_doc("abcdefghijklmnopqrstuvwxyz")
+    first = [c.id for c in chunker.chunk(doc)]
+    second = [c.id for c in chunker.chunk(doc)]
+    assert first == second
+    # Chunk IDs are bound to the document ID — a different doc gives different IDs.
+    other = chunker.chunk(Document(id="doc2", content=doc.content, source="test"))
+    assert [c.id for c in other] != first
+
+
 def test_chunk_metadata_inherited_from_doc():
     chunker = RecursiveCharacterChunker(chunk_size=512)
     doc = _make_doc("text")
