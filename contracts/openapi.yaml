@@ -64,6 +64,10 @@ paths:
     post:
       operationId: ingest
       summary: Ingest a document
+      description: >
+        Accepts a document for ingestion and processes it in the background.
+        Returns immediately with a job_id and status "accepted"; poll
+        /v1/ingest/{job_id} for progress.
       tags: [Documents]
       requestBody:
         required: true
@@ -85,6 +89,9 @@ paths:
     get:
       operationId: ingestStatus
       summary: Poll ingestion job status
+      description: >
+        Reports job status, one of: accepted, running, completed, failed.
+        An unknown job_id returns status "unknown" with HTTP 200.
       tags: [Documents]
       parameters:
         - name: job_id

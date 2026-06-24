@@ -18,6 +18,7 @@ from ragstack.embedders import make_embedder
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
+from ragstack.jobstore import make_job_store
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 
 log = logging.getLogger(__name__)
@@ -84,11 +85,14 @@ async def lifespan(app: FastAPI):
         text_index=text_index,
     )
 
+    job_store = make_job_store(settings.job_store_backend, settings.job_store_path)
+
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
     app.state.pipeline = pipeline
+    app.state.job_store = job_store
 
     try:
         yield
@@ -106,3 +110,7 @@ def get_vector_store(request: Request):
 
 def get_embedder(request: Request):
     return request.app.state.embedder
+
+
+def get_job_store(request: Request):
+    return request.app.state.job_store

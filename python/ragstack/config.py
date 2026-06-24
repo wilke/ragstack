@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     ingest_root: str = ""
     max_document_bytes: int = 50_000_000
 
+    # Ingestion job tracking. "memory" is process-local (lost on restart);
+    # "sqlite" is durable. Postgres lands in M2 for the 500k path.
+    job_store_backend: str = "memory"       # memory | sqlite
+    job_store_path: str = "ragstack_jobs.db"
+
     # Elasticsearch (text index)
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "ragstack"
