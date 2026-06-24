@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # Embedding backend (used at both ingest and query time)
     embedding_api: str = "sidecar"          # sidecar | openai
     embedding_sidecar_url: str = "http://localhost:50053"
+    # Optional fan-out: multiple embedding endpoints (e.g. vLLM replicas across
+    # the H200s). When set, requests are load-balanced across them with failover;
+    # empty falls back to the single embedding_sidecar_url. max_concurrency bounds
+    # total in-flight embedding requests (backpressure).
+    embedding_endpoints: list[str] = Field(default_factory=list)
+    embedding_max_concurrency: int = 8
     # embedding_model_dim is the vector dimension; defaults to BGE-base.
     # When embedding_api == "openai", set embedding_model to the OpenAI/vLLM model name.
     embedding_model_dim: int = 768

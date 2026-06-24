@@ -14,6 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.config import settings
+from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
@@ -71,6 +72,34 @@ def _build_vector_store():
     return InMemoryVectorStore()
 
 
+def _build_embedder(http: httpx.AsyncClient):
+    """Build the embedder (single endpoint or a load-balanced pool), wrapped in
+    BatchingEmbedder. Multiple ``embedding_endpoints`` → a PooledEmbedder with
+    failover + backpressure; otherwise the single ``embedding_sidecar_url``."""
+    urls = settings.embedding_endpoints or [settings.embedding_sidecar_url]
+    common = {
+        "api": settings.embedding_api,
+        "http": http,
+        "model": settings.embedding_model or None,
+        "api_key": settings.openai_api_key or None,
+    }
+    if len(urls) > 1:
+        base = make_pooled_embedder(
+            base_urls=urls,
+            max_concurrency=settings.embedding_max_concurrency,
+            **common,
+        )
+        log.info("embedding fan-out across %d endpoints", len(urls))
+    else:
+        base = make_embedder(base_url=urls[0], **common)
+    return BatchingEmbedder(
+        base,
+        max_batch_items=settings.embedding_max_batch_items,
+        max_batch_tokens=settings.embedding_max_batch_tokens,
+        chars_per_token=settings.embedding_chars_per_token,
+    )
+
+
 def _build_text_index():
     """Return the text index.
 
@@ -113,18 +142,7 @@ async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
     _validate_production_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
-    embedder = BatchingEmbedder(
-        make_embedder(
-            api=settings.embedding_api,
-            http=http_client,
-            base_url=settings.embedding_sidecar_url,
-            model=settings.embedding_model or None,
-            api_key=settings.openai_api_key or None,
-        ),
-        max_batch_items=settings.embedding_max_batch_items,
-        max_batch_tokens=settings.embedding_max_batch_tokens,
-        chars_per_token=settings.embedding_chars_per_token,
-    )
+    embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()
     text_index = _build_text_index()
 
