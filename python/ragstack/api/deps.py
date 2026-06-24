@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.config import settings
-from ragstack.embedders import make_embedder
+from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -49,12 +49,17 @@ def _build_vector_store():
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
     http_client = httpx.AsyncClient(timeout=120.0)
-    embedder = make_embedder(
-        api=settings.embedding_api,
-        http=http_client,
-        base_url=settings.embedding_sidecar_url,
-        model=settings.embedding_model or None,
-        api_key=settings.openai_api_key or None,
+    embedder = BatchingEmbedder(
+        make_embedder(
+            api=settings.embedding_api,
+            http=http_client,
+            base_url=settings.embedding_sidecar_url,
+            model=settings.embedding_model or None,
+            api_key=settings.openai_api_key or None,
+        ),
+        max_batch_items=settings.embedding_max_batch_items,
+        max_batch_tokens=settings.embedding_max_batch_tokens,
+        chars_per_token=settings.embedding_chars_per_token,
     )
     vector_store = _build_vector_store()
     text_index = InMemoryTextIndex()  # ElasticsearchTextIndex lands in a later cut

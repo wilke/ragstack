@@ -1,6 +1,8 @@
 """Ingestion pipeline — orchestrates loading, chunking, embedding, and indexing."""
 from __future__ import annotations
 
+import logging
+
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
     Chunker,
@@ -11,6 +13,8 @@ from ragstack.protocols import (
     TextIndex,
     VectorStore,
 )
+
+log = logging.getLogger(__name__)
 
 
 class IngestionPipeline:
@@ -45,11 +49,27 @@ class IngestionPipeline:
         for doc in documents:
             all_chunks.extend(self.chunker.chunk(doc))
 
-        # Embed
+        # Embed. Prefer the poison-isolating path when the embedder supports it
+        # (bounded batching wrapper): a single unembeddable chunk is quarantined
+        # rather than failing the whole document.
         texts = [c.content for c in all_chunks]
-        embeddings = await self.embedder.embed(texts)
-        for chunk, embedding in zip(all_chunks, embeddings):
-            chunk.embedding = embedding
+        embed_isolated = getattr(self.embedder, "embed_isolated", None)
+        if embed_isolated is not None:
+            vectors, quarantined = await embed_isolated(texts)
+        else:
+            vectors, quarantined = await self.embedder.embed(texts), 0
+
+        kept: list[Chunk] = []
+        for chunk, vector in zip(all_chunks, vectors, strict=True):
+            if vector is None:
+                continue
+            chunk.embedding = vector
+            kept.append(chunk)
+        if quarantined:
+            log.warning(
+                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
+            )
+        all_chunks = kept
 
         # Index
         await self.vector_store.upsert(all_chunks)
