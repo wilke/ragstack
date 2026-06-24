@@ -22,6 +22,12 @@ Persistent rules, conventions, and lessons-learned. Read before working in the r
 
 These bit us once. Don't repeat them.
 
+### Ingestion / IDs
+
+- **Re-ingest silently duplicated the corpus.** Qdrant point IDs are `uuid5(chunk_id)` (deterministic), but `loaders.py` assigned a random `uuid4` *doc* id and `chunkers.py` a random `uuid4` *chunk* id on every load — so each re-ingest produced new IDs → new points. Fix is **two-layer**: deterministic doc id (resolved path / content) *and* chunk id (`uuid5(f"{doc.id}:{start}:{end}")`). Fixing only the chunker is not enough while the doc id is random. Guard: a double-ingest test asserting the Qdrant point count is unchanged.
+- **Qdrant collections are now scoped to `(model, dim)`** (`collection_name()` in `stores/qdrant.py`); `QDRANT_COLLECTION` is the base/prefix, not the literal name. `ensure_collection` hard-fails (`VectorDimMismatch`) if an existing collection's vector size ≠ the configured `embedding_model_dim` — switching embedding models to a different dim under the same base is safe (new collection), but expect old literal-named collections (e.g. `ragstack`) to be invisible to the API. The `scripts/` CLIs still take a literal `--collection`.
+- **`require_durable_backends=true` is the production marker.** It makes a missing/unreachable Qdrant a fatal startup error (no silent in-memory degrade) and requires `API_KEYS` + `INGEST_ROOT` to be set (auth + LFI confinement). The text index only *warns* under it (no Elasticsearch backend yet). Don't set it in dev/tests.
+
 ### Apptainer
 
 - **No `--cwd` / `--pwd` flag.** When a container CMD uses CWD-relative paths (qdrant's `./entrypoint.sh` which internally calls `./qdrant`), wrap the CMD via the runscript override: `sh -c 'cd /qdrant && exec ./entrypoint.sh'`.

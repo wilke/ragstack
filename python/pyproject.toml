@@ -22,6 +22,9 @@ dependencies = [
 vector = [
     "qdrant-client>=1.9",
 ]
+pdf = [
+    "pymupdf>=1.24",
+]
 text = [
     "elasticsearch>=8.13",
 ]
@@ -53,7 +56,7 @@ dev = [
     "httpx>=0.27",
 ]
 all = [
-    "ragstack[vector,text,graph,embeddings,queue,observability]",
+    "ragstack[vector,pdf,text,graph,embeddings,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]
@@ -70,7 +73,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4"]
-ignore = ["E501"]
+# B008: FastAPI's dependency-injection idiom is `param = Depends(...)` in the
+# signature default — required by the framework and used throughout the routers.
+ignore = ["E501", "B008"]
 
 [tool.mypy]
 python_version = "3.12"

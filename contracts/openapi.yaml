@@ -64,6 +64,18 @@ paths:
     post:
       operationId: ingest
       summary: Ingest a document
+      description: >
+        Accepts a document for ingestion and processes it in the background.
+        Returns immediately with a job_id and status "accepted"; poll
+        /v1/ingest/{job_id} for progress.
+
+
+        Re-ingesting the same source replaces that document's existing chunks
+        (matched by a deterministic document id) rather than duplicating them.
+        A re-ingest that yields no embeddable chunks — an empty document, or one
+        whose chunks all fail embedding — fails the job and leaves the prior
+        version intact; it does not remove the document. To delete a document,
+        use DELETE /v1/documents/{id}.
       tags: [Documents]
       requestBody:
         required: true
@@ -85,6 +97,9 @@ paths:
     get:
       operationId: ingestStatus
       summary: Poll ingestion job status
+      description: >
+        Reports job status, one of: accepted, running, completed, failed.
+        An unknown job_id returns status "unknown" with HTTP 200.
       tags: [Documents]
       parameters:
         - name: job_id

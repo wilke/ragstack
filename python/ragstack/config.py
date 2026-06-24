@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     # Vector store
     vector_backend: str = "qdrant"          # qdrant | memory
+    # When true (production), refuse to start on a non-durable / unreachable
+    # backend instead of silently degrading to in-memory and losing data.
+    require_durable_backends: bool = False
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"
@@ -27,6 +30,23 @@ class Settings(BaseSettings):
     # Chunker defaults
     chunk_size: int = 512
     chunk_overlap: int = 64
+
+    # Embedding request batching (bounds request size so large documents don't
+    # overflow the backend's max batch / context window).
+    embedding_max_batch_items: int = 64
+    embedding_max_batch_tokens: int = 8192
+    embedding_chars_per_token: int = 4
+
+    # Ingestion safety. When ingest_root is set, ingest sources must resolve
+    # within it (defeats path-traversal / arbitrary-file-read). max_document_bytes
+    # caps input size as a DoS guard; 0 disables the cap.
+    ingest_root: str = ""
+    max_document_bytes: int = 50_000_000
+
+    # Ingestion job tracking. "memory" is process-local (lost on restart);
+    # "sqlite" is durable. Postgres lands in M2 for the 500k path.
+    job_store_backend: str = "memory"       # memory | sqlite
+    job_store_path: str = "ragstack_jobs.db"
 
     # Elasticsearch (text index)
     elasticsearch_url: str = "http://localhost:9200"

@@ -22,7 +22,11 @@ class RecursiveCharacterChunker:
             chunk_text = text[start:end]
             chunks.append(
                 Chunk(
-                    id=str(uuid.uuid4()),
+                    # Deterministic chunk ID: stable given a stable doc.id and
+                    # offsets, so re-ingesting the same document overwrites the
+                    # same Qdrant points instead of duplicating them. Requires
+                    # the loader to assign a deterministic doc.id (see loaders.py).
+                    id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc.id}:{start}:{end}")),
                     doc_id=doc.id,
                     content=chunk_text,
                     metadata=dict(doc.metadata),

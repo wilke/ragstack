@@ -1,6 +1,8 @@
 """Ingestion pipeline — orchestrates loading, chunking, embedding, and indexing."""
 from __future__ import annotations
 
+import logging
+
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
     Chunker,
@@ -11,6 +13,15 @@ from ragstack.protocols import (
     TextIndex,
     VectorStore,
 )
+
+log = logging.getLogger(__name__)
+
+
+class EmptyIngestError(RuntimeError):
+    """A source produced no embeddable chunks — either it had no chunkable
+    content or every chunk was quarantined as unembeddable. Raised before the
+    replace step so a failed/empty re-ingest never deletes the document's
+    previously-ingested data."""
 
 
 class IngestionPipeline:
@@ -44,12 +55,53 @@ class IngestionPipeline:
         all_chunks: list[Chunk] = []
         for doc in documents:
             all_chunks.extend(self.chunker.chunk(doc))
+        produced = len(all_chunks)
 
-        # Embed
+        # Embed. Prefer the poison-isolating path when the embedder supports it
+        # (bounded batching wrapper): a single unembeddable chunk is quarantined
+        # rather than failing the whole document.
         texts = [c.content for c in all_chunks]
-        embeddings = await self.embedder.embed(texts)
-        for chunk, embedding in zip(all_chunks, embeddings):
-            chunk.embedding = embedding
+        embed_isolated = getattr(self.embedder, "embed_isolated", None)
+        if embed_isolated is not None:
+            vectors, quarantined = await embed_isolated(texts)
+        else:
+            vectors, quarantined = await self.embedder.embed(texts), 0
+
+        kept: list[Chunk] = []
+        for chunk, vector in zip(all_chunks, vectors, strict=True):
+            if vector is None:
+                continue
+            chunk.embedding = vector
+            kept.append(chunk)
+        if quarantined:
+            log.warning(
+                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
+            )
+        all_chunks = kept
+
+        # Never delete prior data without a replacement. If the source produced
+        # no chunks (empty content) or every chunk was quarantined, the replace
+        # block below would delete the previously-ingested version and upsert
+        # nothing — silent data loss on a failed/empty re-ingest. Fail instead:
+        # the prior corpus stays intact and _run_ingest records a failed job.
+        if not all_chunks:
+            raise EmptyIngestError(
+                f"no embeddable chunks for source "
+                f"(produced {produced}, quarantined {quarantined})"
+            )
+
+        # Replace, don't accumulate. Deterministic IDs make a byte-identical
+        # re-ingest overwrite its points in place, but an *edited* document
+        # produces shifted chunk boundaries — and therefore new chunk IDs — so
+        # the previous chunks would linger as orphans and pollute retrieval.
+        # Delete each document's prior chunks first. Done here, after a
+        # successful embed (a transient embed failure raises before this point),
+        # so old data is never destroyed before its replacement exists.
+        for doc in documents:
+            await self.vector_store.delete(doc.id)
+            await self.text_index.delete(doc.id)
+            if self.graph_store is not None:
+                await self.graph_store.delete_by_doc(doc.id)
 
         # Index
         await self.vector_store.upsert(all_chunks)

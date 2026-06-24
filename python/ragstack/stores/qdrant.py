@@ -1,6 +1,8 @@
 """Qdrant-backed VectorStore adapter."""
 from __future__ import annotations
 
+import hashlib
+import re
 import uuid
 from typing import Any
 
@@ -15,9 +17,45 @@ from qdrant_client.models import (
 )
 
 from ragstack.models import Chunk, ScoredChunk
+from ragstack.stores.errors import VectorDimMismatch
 
+__all__ = ["QdrantVectorStore", "VectorDimMismatch", "collection_name"]
 
 _PAYLOAD_RESERVED = {"chunk_id", "doc_id", "content", "start_char", "end_char"}
+
+
+def collection_name(base: str, model: str | None, dim: int) -> str:
+    """Derive a collection name scoped to ``(model, dim)``.
+
+    Testing different embedding models is a primary goal, and models of
+    different dimensions are physically incompatible in one collection. Scoping
+    the name keeps experiments isolated and makes a dimension change route to a
+    fresh collection instead of corrupting an existing one. A short hash of the
+    full model name disambiguates names that slugify to the same string.
+    """
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", model or "default").strip("_").lower()[:40]
+    digest = hashlib.sha1((model or "").encode()).hexdigest()[:8]
+    return f"{base}_{slug}_{dim}_{digest}"
+
+
+def _existing_vector_size(info: Any) -> int | None:
+    """Best-effort extraction of an existing collection's vector size."""
+    # Defensive: the dimension check is best-effort, so an unexpected or partial
+    # config shape must yield None (skip the check), never raise — an
+    # AttributeError here would turn an optional reconciliation into a hard
+    # startup failure.
+    vectors = getattr(getattr(getattr(info, "config", None), "params", None), "vectors", None)
+    if vectors is None:
+        return None
+    size = getattr(vectors, "size", None)
+    if size is not None:
+        return int(size)
+    # Named-vectors config is a {name: VectorParams} mapping.
+    if isinstance(vectors, dict) and len(vectors) == 1:
+        only = next(iter(vectors.values()))
+        only_size = getattr(only, "size", None)
+        return int(only_size) if only_size is not None else None
+    return None
 
 
 class QdrantVectorStore:
@@ -42,9 +80,23 @@ class QdrantVectorStore:
         self._distance = distance
 
     async def ensure_collection(self) -> None:
-        """Create the collection if it doesn't exist. Safe to call repeatedly."""
+        """Create the collection if absent; if present, verify its vector size
+        matches the configured embedding dimension. Safe to call repeatedly.
+
+        Raises ``VectorDimMismatch`` when an existing collection's size differs —
+        writing mismatched vectors would silently corrupt the index, so this is
+        a fatal startup error rather than a warning.
+        """
         collections = await self._client.get_collections()
         if any(c.name == self._collection for c in collections.collections):
+            info = await self._client.get_collection(self._collection)
+            existing = _existing_vector_size(info)
+            if existing is not None and existing != self._vector_size:
+                raise VectorDimMismatch(
+                    f"collection {self._collection!r} has vector size {existing}, "
+                    f"but the configured embedding dimension is {self._vector_size}. "
+                    f"Use a different collection or embedding model."
+                )
             return
         await self._client.create_collection(
             collection_name=self._collection,

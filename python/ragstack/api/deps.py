@@ -14,49 +14,117 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.config import settings
-from ragstack.embedders import make_embedder
+from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
-from ragstack.ingestion.loaders import TextFileLoader
+from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
+from ragstack.jobstore import make_job_store
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from ragstack.stores.errors import VectorDimMismatch
 
 log = logging.getLogger(__name__)
 
 
 def _build_vector_store():
-    """Return the configured VectorStore. Falls back to in-memory when
-    Qdrant is unavailable so the API still boots in dev / tests."""
+    """Return the configured VectorStore.
+
+    In dev/tests an unavailable Qdrant degrades to InMemory so the API still
+    boots. When ``require_durable_backends`` is set (production), an in-memory
+    store is refused: a 500k ingest must not silently land in RAM and vanish on
+    restart, so a missing/unusable durable backend is a fatal startup error.
+    """
     if settings.vector_backend == "qdrant":
         try:
-            from ragstack.stores.qdrant import QdrantVectorStore
-
-            return QdrantVectorStore(
-                url=settings.qdrant_url,
-                collection=settings.qdrant_collection,
-                vector_size=settings.embedding_model_dim,
-                api_key=settings.qdrant_api_key or None,
-            )
-        except ImportError:
+            from ragstack.stores.qdrant import QdrantVectorStore, collection_name
+        except ImportError as e:
+            if settings.require_durable_backends:
+                raise RuntimeError(
+                    "vector_backend='qdrant' but qdrant-client is not installed "
+                    "and require_durable_backends is set. Install ragstack[vector]."
+                ) from e
             log.warning(
                 "qdrant-client not installed — falling back to InMemoryVectorStore. "
                 "Install ragstack[vector] to use Qdrant."
             )
+            return InMemoryVectorStore()
+        return QdrantVectorStore(
+            url=settings.qdrant_url,
+            # Scope the collection to (model, dim) so swapping embedding models
+            # keeps experiments isolated and a dimension change can't land in an
+            # incompatible collection.
+            collection=collection_name(
+                settings.qdrant_collection,
+                settings.embedding_model,
+                settings.embedding_model_dim,
+            ),
+            vector_size=settings.embedding_model_dim,
+            api_key=settings.qdrant_api_key or None,
+        )
+
+    if settings.require_durable_backends:
+        raise RuntimeError(
+            f"vector_backend={settings.vector_backend!r} is not durable but "
+            "require_durable_backends is set; use 'qdrant'."
+        )
     return InMemoryVectorStore()
+
+
+def _build_text_index():
+    """Return the text index.
+
+    Only the in-memory index exists today (ElasticsearchTextIndex lands in a
+    later cut). Under ``require_durable_backends`` this is a known gap: warn
+    loudly rather than hard-fail, so the flag stays usable for its primary
+    purpose (a durable vector store). Gate this once Elasticsearch lands.
+    """
+    if settings.require_durable_backends:
+        log.warning(
+            "text index is in-memory (Elasticsearch backend not yet implemented); "
+            "the lexical index will not survive restart"
+        )
+    return InMemoryTextIndex()
+
+
+def _validate_production_settings() -> None:
+    """Refuse to start in production without the security-critical settings.
+
+    Without auth, the data API is open; without an ingest_root, request.source
+    is an unconfined arbitrary-file read. Both must be set when durability (the
+    production marker) is required.
+    """
+    if not settings.require_durable_backends:
+        return
+    missing = []
+    if not settings.api_keys:
+        missing.append("api_keys")
+    if not settings.ingest_root:
+        missing.append("ingest_root")
+    if missing:
+        raise RuntimeError(
+            "require_durable_backends is set but these production settings are "
+            f"unset: {', '.join(missing)}"
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
+    _validate_production_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
-    embedder = make_embedder(
-        api=settings.embedding_api,
-        http=http_client,
-        base_url=settings.embedding_sidecar_url,
-        model=settings.embedding_model or None,
-        api_key=settings.openai_api_key or None,
+    embedder = BatchingEmbedder(
+        make_embedder(
+            api=settings.embedding_api,
+            http=http_client,
+            base_url=settings.embedding_sidecar_url,
+            model=settings.embedding_model or None,
+            api_key=settings.openai_api_key or None,
+        ),
+        max_batch_items=settings.embedding_max_batch_items,
+        max_batch_tokens=settings.embedding_max_batch_tokens,
+        chars_per_token=settings.embedding_chars_per_token,
     )
     vector_store = _build_vector_store()
-    text_index = InMemoryTextIndex()  # ElasticsearchTextIndex lands in a later cut
+    text_index = _build_text_index()
 
     # Qdrant: make sure the collection exists at startup so the first request doesn't race.
     if hasattr(vector_store, "ensure_collection"):
@@ -64,14 +132,25 @@ async def lifespan(app: FastAPI):
             await vector_store.ensure_collection()
             log.info(
                 "qdrant collection ready: %s (vector_size=%d)",
-                settings.qdrant_collection,
+                getattr(vector_store, "_collection", settings.qdrant_collection),
                 settings.embedding_model_dim,
             )
+        except VectorDimMismatch:
+            # Fatal misconfiguration — refuse to start rather than write mixed
+            # vectors into the wrong collection.
+            raise
         except Exception as e:
+            # Readiness gate: in production, refuse to start (and thus accept
+            # ingests we can't persist) if the durable store isn't reachable.
+            if settings.require_durable_backends:
+                raise
             log.warning("qdrant ensure_collection failed: %s", e)
 
     pipeline = IngestionPipeline(
-        loader=TextFileLoader(),
+        loader=default_loader_registry(
+            ingest_root=settings.ingest_root or None,
+            max_bytes=settings.max_document_bytes,
+        ),
         chunker=RecursiveCharacterChunker(
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
@@ -81,11 +160,20 @@ async def lifespan(app: FastAPI):
         text_index=text_index,
     )
 
+    job_store = make_job_store(settings.job_store_backend, settings.job_store_path)
+    # Ingestion runs as in-process background tasks, so any job left non-terminal
+    # in a durable store belongs to a worker that died with the previous process.
+    # Mark them failed at startup rather than leaving them stuck "running" forever.
+    interrupted = await job_store.fail_interrupted()
+    if interrupted:
+        log.warning("marked %d interrupted ingest job(s) as failed at startup", interrupted)
+
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
     app.state.pipeline = pipeline
+    app.state.job_store = job_store
 
     try:
         yield
@@ -103,3 +191,7 @@ def get_vector_store(request: Request):
 
 def get_embedder(request: Request):
     return request.app.state.embedder
+
+
+def get_job_store(request: Request):
+    return request.app.state.job_store
