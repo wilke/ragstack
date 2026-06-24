@@ -78,13 +78,12 @@ def build_manifest(
         # Re-confine each file and derive item_id from the *confined* resolved
         # path, so manifest ids match what the loader will store and an escaping
         # symlink is dropped here rather than enumerated and failed later.
-        if ingest_root is not None:
-            try:
-                resolved = confine_to_root(str(f), ingest_root)
-            except LoaderError:
-                log.warning("skipping %s: resolves outside the ingest root", f.name)
-                continue
-        else:
-            resolved = f.resolve()
+        # confine_to_root(x, None) just resolves (never raises), so one path
+        # covers both the rooted and unrooted cases.
+        try:
+            resolved = confine_to_root(str(f), ingest_root)
+        except LoaderError:
+            log.warning("skipping %s: resolves outside the ingest root", f.name)
+            continue
         items.append(WorkItem(item_id=deterministic_doc_id(str(resolved)), source=str(f)))
     return Manifest(items=items)

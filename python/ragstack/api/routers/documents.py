@@ -23,15 +23,14 @@ def _final_status(counts: dict[str, int]) -> str:
     """Decide a run's overall status from its per-item counts.
 
     ``completed`` when at least one item completed (partial failures still
-    surface via ``items.failed``) or there were no items at all. ``failed`` only
-    when nothing completed and something didn't — a non-zero ``failed`` OR
-    leftover ``pending`` (a shard that raised wholesale reports its items failed
-    but never checkpoints them, so they linger as pending; without this branch
-    such a run would falsely read completed).
+    surface via ``items.failed``) or there were no items at all. ``failed`` when
+    there were items but none completed — covering both all-failed and the
+    leftover-``pending`` case (a shard that raised wholesale reports its items
+    failed but never checkpoints them, so they linger pending; without counting
+    those, such a run would falsely read completed).
     """
-    if counts[COMPLETED] == 0 and (counts[FAILED] > 0 or counts[PENDING] > 0):
-        return FAILED
-    return COMPLETED
+    total = sum(counts.values())
+    return FAILED if total > 0 and counts[COMPLETED] == 0 else COMPLETED
 
 
 async def _run_ingest(

@@ -82,9 +82,33 @@ _JOB_ITEMS_DDL = (
 )
 
 
+# The job columns an update() may set. Shared by both SQL stores so the
+# updatable set and the chunk_ids serialization convention live in one place.
+_JOB_UPDATE_COLUMNS = ("status", "source", "chunk_ids", "error")
+
+
 def _zero_item_counts() -> dict[str, int]:
     """The per-status counts dict seeded to zero (the shape all stores return)."""
     return dict.fromkeys((PENDING, COMPLETED, FAILED), 0)
+
+
+def _prepare_job_update(fields: dict[str, object]) -> dict[str, object]:
+    """Filter an update to the allowed job columns and JSON-encode chunk_ids.
+    The dialect-independent half of update(); each SQL store renders its own
+    placeholders from the returned dict's keys."""
+    sets = {k: v for k, v in fields.items() if k in _JOB_UPDATE_COLUMNS}
+    if "chunk_ids" in sets:
+        sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
+    return sets
+
+
+def _fold_status_counts(rows: list[tuple[str, int]]) -> dict[str, int]:
+    """Fold ``(status, count)`` rows onto the zero-seeded counts dict — the
+    shared tail of every SQL ``item_counts`` (GROUP BY status)."""
+    counts = _zero_item_counts()
+    for status, n in rows:
+        counts[status] = n
+    return counts
 
 
 @runtime_checkable
@@ -118,6 +142,11 @@ class JobStore(Protocol):
     async def completed_item_ids(self, job_id: str) -> set[str]: ...
 
     async def item_counts(self, job_id: str) -> dict[str, int]: ...
+
+    async def close(self) -> None:
+        """Release any held resources (e.g. a connection pool). No-op for the
+        in-memory / connection-per-op stores."""
+        ...
 
 
 class InMemoryJobStore:
@@ -195,6 +224,9 @@ class InMemoryJobStore:
                 counts[it.status] = counts.get(it.status, 0) + 1
             return counts
 
+    async def close(self) -> None:
+        """No resources to release."""
+
 
 class SqliteJobStore:
     """Durable job store backed by stdlib sqlite3.
@@ -250,12 +282,9 @@ class SqliteJobStore:
         return self._row_to_job(row) if row is not None else None
 
     def _update_sync(self, job_id: str, fields: dict[str, object]) -> None:
-        allowed = {"status", "source", "chunk_ids", "error"}
-        sets = {k: v for k, v in fields.items() if k in allowed}
+        sets = _prepare_job_update(fields)
         if not sets:
             return
-        if "chunk_ids" in sets:
-            sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
         assignments = ", ".join(f"{k} = ?" for k in sets)
         with closing(self._connect()) as conn, conn:
             conn.execute(
@@ -317,10 +346,7 @@ class SqliteJobStore:
                 "SELECT status, COUNT(*) FROM job_items WHERE job_id = ? GROUP BY status",
                 (job_id,),
             )
-            counts = _zero_item_counts()
-            for status, n in cur.fetchall():
-                counts[status] = n
-            return counts
+            return _fold_status_counts(cur.fetchall())
 
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
         await asyncio.to_thread(self._add_items_sync, job_id, items)
@@ -342,6 +368,9 @@ class SqliteJobStore:
 
     async def item_counts(self, job_id: str) -> dict[str, int]:
         return await asyncio.to_thread(self._item_counts_sync, job_id)
+
+    async def close(self) -> None:
+        """No persistent connection to release — each op opens and closes its own."""
 
 
 def _normalize_dsn(dsn: str) -> str:
@@ -416,12 +445,9 @@ class PostgresJobStore:
         )
 
     async def update(self, job_id: str, **fields: object) -> None:
-        allowed = {"status", "source", "chunk_ids", "error"}
-        sets = {k: v for k, v in fields.items() if k in allowed}
+        sets = _prepare_job_update(fields)
         if not sets:
             return
-        if "chunk_ids" in sets:
-            sets["chunk_ids"] = json.dumps(sets["chunk_ids"])
         cols = list(sets)
         assignments = ", ".join(f"{c} = ${i + 1}" for i, c in enumerate(cols))
         pool = await self._pool_()
@@ -432,13 +458,11 @@ class PostgresJobStore:
             )
 
     async def fail_interrupted(self) -> int:
-        pool = await self._pool_()
-        async with pool.acquire() as conn:
-            res = await conn.execute(
-                "UPDATE jobs SET status = $1, error = $2 WHERE status NOT IN ($3, $4)",
-                FAILED, INTERRUPTED, COMPLETED, FAILED,
-            )
-        return int(res.split()[-1])  # asyncpg returns e.g. "UPDATE 3"
+        # No-op: this is the multi-process backend, and the sweep is unscoped —
+        # it would mark every non-terminal job failed, including ones legitimately
+        # running in sibling workers. Reaping here needs a per-owner lease /
+        # heartbeat (tracked in issue #7); until then, never touch shared state.
+        return 0
 
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
         if not items:
@@ -485,10 +509,7 @@ class PostgresJobStore:
                 "SELECT status, COUNT(*) AS n FROM job_items WHERE job_id = $1 GROUP BY status",
                 job_id,
             )
-        counts = _zero_item_counts()
-        for r in rows:
-            counts[r["status"]] = r["n"]
-        return counts
+        return _fold_status_counts([(r["status"], r["n"]) for r in rows])
 
     async def close(self) -> None:
         if self._pool is not None:

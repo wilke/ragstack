@@ -168,23 +168,13 @@ async def lifespan(app: FastAPI):
     # Ingestion runs as in-process background tasks, so any job left non-terminal
     # in a durable store belongs to a worker that died with the previous process.
     # Mark them failed at startup rather than leaving them stuck "running" forever.
-    #
-    # Skip this for Postgres: it's the multi-process backend, and the sweep is
-    # unscoped — every starting worker would mark *all* non-terminal jobs failed,
-    # including ones legitimately running in sibling workers. Reaping there needs
-    # a per-owner lease/heartbeat (tracked for M2); until then, don't corrupt
-    # shared job state.
-    if settings.job_store_backend == "postgres":
-        log.info(
-            "postgres job store: skipping startup interrupted-job sweep "
-            "(multi-process; per-owner lease required before reaping)"
+    # Each store decides whether the sweep is safe: the multi-process Postgres
+    # store no-ops it (an unscoped sweep would reap sibling workers' live jobs).
+    interrupted = await job_store.fail_interrupted()
+    if interrupted:
+        log.warning(
+            "marked %d interrupted ingest job(s) as failed at startup", interrupted
         )
-    else:
-        interrupted = await job_store.fail_interrupted()
-        if interrupted:
-            log.warning(
-                "marked %d interrupted ingest job(s) as failed at startup", interrupted
-            )
 
     ingestor = ShardedIngestor(
         pipeline,
@@ -205,11 +195,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await http_client.aclose()
-        # Close the job store's resources (e.g. PostgresJobStore's asyncpg pool);
-        # the in-memory/sqlite stores have nothing to close.
-        close = getattr(job_store, "close", None)
-        if close is not None:
-            await close()
+        # Release the job store's resources (PostgresJobStore's asyncpg pool;
+        # a no-op for the in-memory / sqlite stores).
+        await job_store.close()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:
