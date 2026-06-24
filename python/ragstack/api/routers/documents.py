@@ -19,6 +19,21 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _final_status(counts: dict[str, int]) -> str:
+    """Decide a run's overall status from its per-item counts.
+
+    ``completed`` when at least one item completed (partial failures still
+    surface via ``items.failed``) or there were no items at all. ``failed`` only
+    when nothing completed and something didn't — a non-zero ``failed`` OR
+    leftover ``pending`` (a shard that raised wholesale reports its items failed
+    but never checkpoints them, so they linger as pending; without this branch
+    such a run would falsely read completed).
+    """
+    if counts[COMPLETED] == 0 and (counts[FAILED] > 0 or counts[PENDING] > 0):
+        return FAILED
+    return COMPLETED
+
+
 async def _run_ingest(
     job_store: JobStore, ingestor: ShardedIngestor, ingest_root: str, job_id: str, source: str
 ) -> None:
@@ -42,15 +57,16 @@ async def _run_ingest(
         return
 
     counts = await job_store.item_counts(job_id)
-    final = FAILED if counts[COMPLETED] == 0 and counts[FAILED] > 0 else COMPLETED
+    final = _final_status(counts)
+
+    fields: dict[str, object] = {"status": final}
     # Surface chunk ids for the single-document case (back-compat); a batch run
-    # reports progress via item counts instead of an unbounded id list.
-    chunk_ids = (
-        results[0].chunk_ids
-        if len(results) == 1 and results[0].status == COMPLETED
-        else []
-    )
-    await job_store.update(job_id, status=final, chunk_ids=chunk_ids)
+    # reports progress via item counts instead of an unbounded id list. Only set
+    # chunk_ids when this run actually produced them — passing [] on a resume
+    # that skipped the (already-completed) item would erase the stored ids.
+    if len(results) == 1 and results[0].status == COMPLETED:
+        fields["chunk_ids"] = results[0].chunk_ids
+    await job_store.update(job_id, **fields)
 
 
 class IngestRequest(BaseModel):
@@ -93,9 +109,13 @@ async def ingest(
     `GET /v1/ingest/{job_id}` for progress (including per-item counts).
 
     Re-ingesting the same source replaces each document's existing chunks
-    (deterministic doc id) rather than duplicating them, and resumes a prior job
-    of the same id by skipping already-completed items. A document that yields no
-    embeddable chunks fails that item and leaves its prior version intact.
+    (deterministic doc id) rather than duplicating them. A document that yields
+    no embeddable chunks fails that item and leaves its prior version intact.
+
+    Each call mints a new job_id, so re-submitting re-processes every document
+    (idempotent, but not cheap — it re-embeds). The per-item checkpoint makes a
+    run resumable at the ingestor level, but the public API does not yet accept a
+    job_id to resume a specific prior run; that wiring is tracked for M2.
     """
     job = await job_store.create(source=request.source)
     background_tasks.add_task(
