@@ -54,6 +54,19 @@ Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from
 
 Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO. **Residual on #9:** a crash *between* the deletes and the upsert leaves that one document empty until the next re-ingest — atomic replace needs Qdrant delete+upsert in one batch or the M2 job-resumability work; tracked for M2. **Caveat on #10:** `fail_interrupted()` reaps *all* non-terminal jobs at startup; under the durable sqlite store with **multiple uvicorn workers** a (re)starting worker would mark another worker's legitimately-running jobs failed. Fine for the current single-process model; needs a worker/lease guard before multi-worker.
 
+## M2 scalable ingestion (branch `feat/m2-shard-manifest` — in review)
+
+Resumable 1→500k ingestion on a durable checkpoint, per the plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md) (M2 section). What landed:
+
+1. **Sharded-ingestion seam** (`458a428`) — `manifest.py` (`build_manifest` expands a file or directory into `WorkItem`s whose `item_id` == the loader's document id), `backends.py` (`IngestBackend` protocol + `LocalAsyncIORunner`: bounded asyncio concurrency, no broker; Parsl/GoWe/k8s slot in later), `sharded.py` (`ShardedIngestor` runs a manifest through the pipeline with per-item failure isolation).
+2. **Per-item state + resumability** (`25c8cee`) — `JobStore` gains `add_items`/`mark_item`/`completed_item_ids`/`item_counts` (InMemory + Sqlite). `ShardedIngestor` with a job_store skips already-completed items and checkpoints each as it lands, so a crashed run resumes by job_id.
+3. **PostgresJobStore** (`9d001ea`) — multi-process checkpoint of record via asyncpg (lazy pool/schema); new `postgres` extra; selected by `JOB_STORE_BACKEND=postgres` + `postgres_dsn`. Verified live against Postgres 16.
+4. **Batch/directory endpoint** (`075a8fb`) — `/v1/ingest` accepts a directory (recursive, `.pdf/.txt/.md`); `GET` reports per-document `items` counts (contract: optional `items` added to `IngestResponse`). A single file is a 1-item manifest, so one path serves both scales.
+
+**Live smoke (coconut, Postgres job store):** directory of 3 docs → job `completed`, `items={total:3,completed:3}`, Qdrant 0→3 points, 3 `job_items` rows in Postgres, re-ingest kept 3 points (idempotent).
+
+Still open in M2: multi-endpoint `EndpointPool` (fan embedding across the H200s, per-tenant quota); off-request *resumable* manifest build for very large submits (today the build is off-request but in-memory).
+
 ## Active TODOs
 
 ### Near-term — pick up here in the next session

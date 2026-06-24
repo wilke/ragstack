@@ -1,5 +1,33 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-06-24 — M2 scalable ingestion (branch `feat/m2-shard-manifest`)
+
+Built the resumable 1→500k ingestion backbone on top of v0.4.0. 4 commits, 94 unit/API tests +
+a live batch smoke (real Qdrant + BGE sidecar + Postgres job store).
+
+**Commits:** `458a428` sharding seam (manifest + IngestBackend + LocalAsyncIORunner + ShardedIngestor) ·
+`25c8cee` per-item job state + resumable run (skip completed, checkpoint each) · `9d001ea` PostgresJobStore
+(asyncpg, lazy pool) · `075a8fb` batch/directory `/v1/ingest` + `items` counts (contract change).
+
+**Design decisions:**
+- One code path for 1 doc and 500k: a single file is a 1-item manifest. The `IngestBackend` seam is
+  where "single host now, cluster later" lives — `LocalAsyncIORunner` now, Parsl/GoWe/k8s later, same protocol.
+- `WorkItem.item_id == loader's deterministic doc id`, so manifest ids, checkpoint ids, and stored
+  document ids all coincide (resume + future KG re-run address the same id).
+- Resumability is per job_id: `add_items` is idempotent (preserves prior progress), completed items are
+  skipped, each outcome checkpointed as it lands. Postgres is the multi-process checkpoint of record
+  (sqlite's single writer is the reason to move off it for 500k).
+- Job status: `failed` only if the run errors or *every* item fails; partial failures stay `completed`
+  with `items.failed > 0`. Single-doc `chunk_ids` kept for back-compat.
+- Postgres integration test + the live smoke never call `fail_interrupted()` against the shared DB
+  (it reaps ALL non-terminal jobs) and clean up their own rows.
+
+**Live smoke:** dir of 3 docs → completed, items total/completed=3, Qdrant 0→3, 3 Postgres job_items,
+re-ingest stayed at 3 (idempotent). Teardown clean.
+
+**Still open in M2:** multi-endpoint EndpointPool (per-tenant quota); resumable (not just off-request)
+manifest build for huge submits.
+
 ## Session 2026-06-24 — M1 ingest hardening (branch `feat/m1-deterministic-ids`)
 
 Implemented the shortest-path M1 from the multi-team plan (`docs/m1-scalable-pdf-ingest-plan.md`):
