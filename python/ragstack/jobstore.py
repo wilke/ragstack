@@ -58,6 +58,34 @@ _TERMINAL = (COMPLETED, FAILED)
 # Error label for jobs whose worker died with the process (see fail_interrupted).
 INTERRUPTED = "interrupted"
 
+# Table DDL, shared verbatim by the sqlite and postgres stores (both dialects
+# accept this CREATE TABLE form), so the schema lives in one place.
+_JOBS_DDL = (
+    "CREATE TABLE IF NOT EXISTS jobs ("
+    "  job_id TEXT PRIMARY KEY,"
+    "  status TEXT NOT NULL,"
+    "  source TEXT NOT NULL DEFAULT '',"
+    "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
+    "  error TEXT NOT NULL DEFAULT ''"
+    ")"
+)
+_JOB_ITEMS_DDL = (
+    "CREATE TABLE IF NOT EXISTS job_items ("
+    "  job_id TEXT NOT NULL,"
+    "  item_id TEXT NOT NULL,"
+    "  source TEXT NOT NULL DEFAULT '',"
+    "  status TEXT NOT NULL DEFAULT 'pending',"
+    "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
+    "  error TEXT NOT NULL DEFAULT '',"
+    "  PRIMARY KEY (job_id, item_id)"
+    ")"
+)
+
+
+def _zero_item_counts() -> dict[str, int]:
+    """The per-status counts dict seeded to zero (the shape all stores return)."""
+    return dict.fromkeys((PENDING, COMPLETED, FAILED), 0)
+
 
 @runtime_checkable
 class JobStore(Protocol):
@@ -147,14 +175,9 @@ class InMemoryJobStore:
     ) -> None:
         async with self._lock:
             bucket = self._items.setdefault(job_id, {})
-            existing = bucket.get(item_id)
-            bucket[item_id] = JobItem(
-                job_id=job_id,
-                item_id=item_id,
-                source=existing.source if existing else "",
-                status=status,
-                chunk_ids=chunk_ids or [],
-                error=error,
+            item = bucket.get(item_id) or JobItem(job_id=job_id, item_id=item_id)
+            bucket[item_id] = item.model_copy(
+                update={"status": status, "chunk_ids": chunk_ids or [], "error": error}
             )
 
     async def completed_item_ids(self, job_id: str) -> set[str]:
@@ -167,7 +190,7 @@ class InMemoryJobStore:
 
     async def item_counts(self, job_id: str) -> dict[str, int]:
         async with self._lock:
-            counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+            counts = _zero_item_counts()
             for it in self._items.get(job_id, {}).values():
                 counts[it.status] = counts.get(it.status, 0) + 1
             return counts
@@ -184,26 +207,8 @@ class SqliteJobStore:
     def __init__(self, path: str) -> None:
         self._path = path
         with closing(self._connect()) as conn, conn:
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS jobs ("
-                "  job_id TEXT PRIMARY KEY,"
-                "  status TEXT NOT NULL,"
-                "  source TEXT NOT NULL DEFAULT '',"
-                "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
-                "  error TEXT NOT NULL DEFAULT ''"
-                ")"
-            )
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS job_items ("
-                "  job_id TEXT NOT NULL,"
-                "  item_id TEXT NOT NULL,"
-                "  source TEXT NOT NULL DEFAULT '',"
-                "  status TEXT NOT NULL DEFAULT 'pending',"
-                "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
-                "  error TEXT NOT NULL DEFAULT '',"
-                "  PRIMARY KEY (job_id, item_id)"
-                ")"
-            )
+            conn.execute(_JOBS_DDL)
+            conn.execute(_JOB_ITEMS_DDL)
 
     def _connect(self) -> sqlite3.Connection:
         # Callers must wrap this in ``closing(...)``: sqlite3's connection
@@ -312,7 +317,7 @@ class SqliteJobStore:
                 "SELECT status, COUNT(*) FROM job_items WHERE job_id = ? GROUP BY status",
                 (job_id,),
             )
-            counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+            counts = _zero_item_counts()
             for status, n in cur.fetchall():
                 counts[status] = n
             return counts
@@ -377,26 +382,8 @@ class PostgresJobStore:
                         self._dsn, min_size=self._min, max_size=self._max
                     )
                     async with pool.acquire() as conn:
-                        await conn.execute(
-                            "CREATE TABLE IF NOT EXISTS jobs ("
-                            "  job_id TEXT PRIMARY KEY,"
-                            "  status TEXT NOT NULL,"
-                            "  source TEXT NOT NULL DEFAULT '',"
-                            "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
-                            "  error TEXT NOT NULL DEFAULT ''"
-                            ")"
-                        )
-                        await conn.execute(
-                            "CREATE TABLE IF NOT EXISTS job_items ("
-                            "  job_id TEXT NOT NULL,"
-                            "  item_id TEXT NOT NULL,"
-                            "  source TEXT NOT NULL DEFAULT '',"
-                            "  status TEXT NOT NULL DEFAULT 'pending',"
-                            "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
-                            "  error TEXT NOT NULL DEFAULT '',"
-                            "  PRIMARY KEY (job_id, item_id)"
-                            ")"
-                        )
+                        await conn.execute(_JOBS_DDL)
+                        await conn.execute(_JOB_ITEMS_DDL)
                     self._pool = pool
         return self._pool
 
@@ -498,7 +485,7 @@ class PostgresJobStore:
                 "SELECT status, COUNT(*) AS n FROM job_items WHERE job_id = $1 GROUP BY status",
                 job_id,
             )
-        counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+        counts = _zero_item_counts()
         for r in rows:
             counts[r["status"]] = r["n"]
         return counts

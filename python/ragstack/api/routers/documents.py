@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -10,26 +9,14 @@ from pydantic import BaseModel, Field
 
 from ragstack.api.deps import get_ingestor, get_job_store, get_vector_store
 from ragstack.config import settings
+from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.ingestion.manifest import build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 
 log = logging.getLogger(__name__)
 
-# Extensions the loader registry can handle; a directory ingest only enqueues these.
-_INGEST_SUFFIXES = [".pdf", ".txt", ".md"]
-
 router = APIRouter()
-
-
-def _confine(source: str, ingest_root: str) -> None:
-    """Fail fast if a source path escapes the configured ingest root."""
-    if not ingest_root:
-        return
-    resolved = Path(source).resolve()
-    root = Path(ingest_root).resolve()
-    if resolved != root and not resolved.is_relative_to(root):
-        raise PermissionError("source is outside the permitted ingest root")
 
 
 async def _run_ingest(
@@ -45,8 +32,9 @@ async def _run_ingest(
     """
     await job_store.update(job_id, status=RUNNING)
     try:
-        _confine(source, ingest_root)
-        manifest = build_manifest(source, suffixes=_INGEST_SUFFIXES)
+        manifest = build_manifest(
+            source, suffixes=DEFAULT_INGEST_SUFFIXES, ingest_root=ingest_root or None
+        )
         results = await ingestor.ingest_manifest(manifest, job_id=job_id)
     except Exception as e:
         log.warning("ingest job %s failed: %s", job_id, e)
@@ -131,7 +119,7 @@ async def ingest_status(
     if job is None:
         return IngestResponse(job_id=job_id, status=UNKNOWN)
     counts = await job_store.item_counts(job_id)
-    total = counts[PENDING] + counts[COMPLETED] + counts[FAILED]
+    total = sum(counts.values())
     items = (
         IngestItemCounts(
             total=total,

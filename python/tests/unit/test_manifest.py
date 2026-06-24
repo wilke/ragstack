@@ -1,7 +1,9 @@
 """Unit tests for manifest building."""
 from pathlib import Path
 
-from ragstack.ingestion.loaders import TextFileLoader
+import pytest
+
+from ragstack.ingestion.loaders import LoaderError, TextFileLoader
 from ragstack.ingestion.manifest import build_manifest
 
 
@@ -41,3 +43,15 @@ def test_directory_manifest_filters_by_suffix(tmp_path: Path):
     m = build_manifest(str(tmp_path), suffixes=[".pdf", ".txt"])
     sources = {Path(i.source).name for i in m.items}
     assert sources == {"keep.pdf", "keep.txt"}
+
+
+def test_build_manifest_confines_to_ingest_root(tmp_path: Path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "ok.txt").write_text("x", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+
+    assert len(build_manifest(str(root / "ok.txt"), ingest_root=str(root))) == 1
+    with pytest.raises(LoaderError):
+        build_manifest(str(outside), ingest_root=str(root))

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.loaders import confine_to_root, deterministic_doc_id
 
 
 class WorkItem(BaseModel):
@@ -42,15 +42,21 @@ class ItemResult(BaseModel):
     error: str = ""
 
 
-def build_manifest(source: str, suffixes: list[str] | None = None) -> Manifest:
+def build_manifest(
+    source: str,
+    suffixes: list[str] | tuple[str, ...] | None = None,
+    ingest_root: str | None = None,
+) -> Manifest:
     """Expand a file or directory into a manifest.
 
     A directory is walked recursively (sorted for determinism); ``suffixes``
     (e.g. ``[".pdf", ".txt"]``) filters by extension when given. ``item_id`` is
     derived the same way the loaders derive the document id (resolved path), so
-    manifest ids and stored document ids coincide.
+    manifest ids and stored document ids coincide. When ``ingest_root`` is set,
+    the source is confined to it (the LFI guard) before the walk — the same check
+    the loader applies per file.
     """
-    path = Path(source)
+    path = confine_to_root(source, ingest_root) if ingest_root else Path(source)
     if path.is_dir():
         files = sorted(f for f in path.rglob("*") if f.is_file())
         if suffixes is not None:

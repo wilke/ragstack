@@ -47,10 +47,11 @@ class ShardedIngestor:
                 job_id, [(i.item_id, i.source) for i in items]
             )
             completed = await self._job_store.completed_item_ids(job_id)
-            skipped = len(items) - len([i for i in items if i.item_id not in completed])
+            remaining = [i for i in items if i.item_id not in completed]
+            skipped = len(items) - len(remaining)
             if skipped:
                 log.info("resuming job %s: skipping %d completed item(s)", job_id, skipped)
-            items = [i for i in items if i.item_id not in completed]
+            items = remaining
 
         shards = partition(items, self._shard_size)
         return await self._backend.run_shards(
