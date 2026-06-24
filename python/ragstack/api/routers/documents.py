@@ -63,6 +63,12 @@ async def ingest(
     `request.source` is a path the loader can read (confined to INGEST_ROOT
     when configured). Returns immediately with a real job_id and
     `status="accepted"`; poll `GET /v1/ingest/{job_id}` for progress.
+
+    Re-ingesting the same source replaces that document's existing chunks
+    (deterministic doc id) rather than duplicating them. A re-ingest that
+    yields no embeddable chunks (empty document, or all chunks unembeddable)
+    fails the job and leaves the prior version intact — it does not remove the
+    document. Use `DELETE /v1/documents/{id}` to delete.
     """
     job = await job_store.create(source=request.source)
     background_tasks.add_task(_run_ingest, job_store, pipeline, job.job_id, request.source)
