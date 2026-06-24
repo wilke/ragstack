@@ -15,9 +15,11 @@ from fastapi import FastAPI, Request
 
 from ragstack.config import settings
 from ragstack.embedders import BatchingEmbedder, make_embedder
+from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
+from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
@@ -170,12 +172,20 @@ async def lifespan(app: FastAPI):
     if interrupted:
         log.warning("marked %d interrupted ingest job(s) as failed at startup", interrupted)
 
+    ingestor = ShardedIngestor(
+        pipeline,
+        LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency),
+        shard_size=settings.ingest_shard_size,
+        job_store=job_store,
+    )
+
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
     app.state.pipeline = pipeline
     app.state.job_store = job_store
+    app.state.ingestor = ingestor
 
     try:
         yield
@@ -197,3 +207,7 @@ def get_embedder(request: Request):
 
 def get_job_store(request: Request):
     return request.app.state.job_store
+
+
+def get_ingestor(request: Request):
+    return request.app.state.ingestor

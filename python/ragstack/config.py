@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     ingest_root: str = ""
     max_document_bytes: int = 50_000_000
 
+    # Sharded (batch/directory) ingestion: how many documents process at once
+    # and how many per shard. Bounds in-flight work for large directories.
+    ingest_concurrency: int = 4
+    ingest_shard_size: int = 64
+
     # Ingestion job tracking. "memory" is process-local (lost on restart);
     # "sqlite" is durable single-process; "postgres" is the multi-process
     # checkpoint of record for the 500k path (uses postgres_dsn).

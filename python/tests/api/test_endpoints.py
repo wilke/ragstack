@@ -60,6 +60,30 @@ async def test_ingest_async_flow_completes(client, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ingest_directory_reports_item_counts(client, tmp_path):
+    """A directory ingest creates one job spanning many items."""
+    (tmp_path / "a.txt").write_text("alpha " * 40, encoding="utf-8")
+    (tmp_path / "b.txt").write_text("beta " * 40, encoding="utf-8")
+    (tmp_path / "skip.png").write_text("not ingested", encoding="utf-8")
+
+    resp = await client.post("/v1/ingest", json={"source": str(tmp_path)})
+    assert resp.status_code == 200
+    job_id = resp.json()["job_id"]
+
+    body = {}
+    for _ in range(100):
+        body = (await client.get(f"/v1/ingest/{job_id}")).json()
+        if body["status"] in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.01)
+
+    assert body["status"] == "completed"
+    assert body["items"]["total"] == 2  # .png filtered out
+    assert body["items"]["completed"] == 2
+    assert body["items"]["failed"] == 0
+
+
+@pytest.mark.asyncio
 async def test_ingest_status_unknown_job(client):
     resp = await client.get("/v1/ingest/no-such-job")
     assert resp.status_code == 200
