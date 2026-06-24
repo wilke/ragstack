@@ -20,6 +20,7 @@ from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.jobstore import make_job_store
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from ragstack.stores.errors import VectorDimMismatch
 
 log = logging.getLogger(__name__)
 
@@ -29,11 +30,18 @@ def _build_vector_store():
     Qdrant is unavailable so the API still boots in dev / tests."""
     if settings.vector_backend == "qdrant":
         try:
-            from ragstack.stores.qdrant import QdrantVectorStore
+            from ragstack.stores.qdrant import QdrantVectorStore, collection_name
 
             return QdrantVectorStore(
                 url=settings.qdrant_url,
-                collection=settings.qdrant_collection,
+                # Scope the collection to (model, dim) so swapping embedding
+                # models keeps experiments isolated and a dimension change can't
+                # land in an incompatible collection.
+                collection=collection_name(
+                    settings.qdrant_collection,
+                    settings.embedding_model,
+                    settings.embedding_model_dim,
+                ),
                 vector_size=settings.embedding_model_dim,
                 api_key=settings.qdrant_api_key or None,
             )
@@ -70,9 +78,13 @@ async def lifespan(app: FastAPI):
             await vector_store.ensure_collection()
             log.info(
                 "qdrant collection ready: %s (vector_size=%d)",
-                settings.qdrant_collection,
+                getattr(vector_store, "_collection", settings.qdrant_collection),
                 settings.embedding_model_dim,
             )
+        except VectorDimMismatch:
+            # Fatal misconfiguration — refuse to start rather than write mixed
+            # vectors into the wrong collection.
+            raise
         except Exception as e:
             log.warning("qdrant ensure_collection failed: %s", e)
 
