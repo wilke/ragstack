@@ -40,7 +40,11 @@ def collection_name(base: str, model: str | None, dim: int) -> str:
 
 def _existing_vector_size(info: Any) -> int | None:
     """Best-effort extraction of an existing collection's vector size."""
-    vectors = info.config.params.vectors
+    # Defensive: the dimension check is best-effort, so an unexpected or partial
+    # config shape must yield None (skip the check), never raise — an
+    # AttributeError here would turn an optional reconciliation into a hard
+    # startup failure.
+    vectors = getattr(getattr(getattr(info, "config", None), "params", None), "vectors", None)
     if vectors is None:
         return None
     size = getattr(vectors, "size", None)
