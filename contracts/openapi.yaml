@@ -63,11 +63,13 @@ paths:
   /v1/ingest:
     post:
       operationId: ingest
-      summary: Ingest a document
+      summary: Ingest a document or directory
       description: >
-        Accepts a document for ingestion and processes it in the background.
-        Returns immediately with a job_id and status "accepted"; poll
-        /v1/ingest/{job_id} for progress.
+        Accepts a file or directory for ingestion and processes it in the
+        background. A directory is ingested recursively (.pdf/.txt/.md), one
+        document per item. Returns immediately with a job_id and status
+        "accepted"; poll /v1/ingest/{job_id} for progress, including per-document
+        item counts.
 
 
         Re-ingesting the same source replaces that document's existing chunks
@@ -283,6 +285,18 @@ components:
           items:
             type: string
           default: []
+        items:
+          type: [object, "null"]
+          description: Per-document progress for batch/directory ingests.
+          properties:
+            total:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            pending:
+              type: integer
 
     DocumentInfo:
       type: object

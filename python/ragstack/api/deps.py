@@ -15,9 +15,11 @@ from fastapi import FastAPI, Request
 
 from ragstack.config import settings
 from ragstack.embedders import BatchingEmbedder, make_embedder
+from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
+from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
@@ -160,13 +162,26 @@ async def lifespan(app: FastAPI):
         text_index=text_index,
     )
 
-    job_store = make_job_store(settings.job_store_backend, settings.job_store_path)
+    job_store = make_job_store(
+        settings.job_store_backend, settings.job_store_path, settings.postgres_dsn
+    )
     # Ingestion runs as in-process background tasks, so any job left non-terminal
     # in a durable store belongs to a worker that died with the previous process.
     # Mark them failed at startup rather than leaving them stuck "running" forever.
+    # Each store decides whether the sweep is safe: the multi-process Postgres
+    # store no-ops it (an unscoped sweep would reap sibling workers' live jobs).
     interrupted = await job_store.fail_interrupted()
     if interrupted:
-        log.warning("marked %d interrupted ingest job(s) as failed at startup", interrupted)
+        log.warning(
+            "marked %d interrupted ingest job(s) as failed at startup", interrupted
+        )
+
+    ingestor = ShardedIngestor(
+        pipeline,
+        LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency),
+        shard_size=settings.ingest_shard_size,
+        job_store=job_store,
+    )
 
     app.state.http_client = http_client
     app.state.embedder = embedder
@@ -174,11 +189,15 @@ async def lifespan(app: FastAPI):
     app.state.text_index = text_index
     app.state.pipeline = pipeline
     app.state.job_store = job_store
+    app.state.ingestor = ingestor
 
     try:
         yield
     finally:
         await http_client.aclose()
+        # Release the job store's resources (PostgresJobStore's asyncpg pool;
+        # a no-op for the in-memory / sqlite stores).
+        await job_store.close()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:
@@ -195,3 +214,7 @@ def get_embedder(request: Request):
 
 def get_job_store(request: Request):
     return request.app.state.job_store
+
+
+def get_ingestor(request: Request):
+    return request.app.state.ingestor

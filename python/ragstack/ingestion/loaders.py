@@ -26,6 +26,19 @@ class LoaderError(Exception):
     embed raw filesystem paths or upstream exception text in it."""
 
 
+def confine_to_root(source: str, root: str | Path | None) -> Path:
+    """Resolve ``source`` and confine it to ``root`` (the LFI / path-traversal
+    guard). Returns the resolved path; raises ``LoaderError`` if it escapes root.
+    The single home for this check — both per-file loads and directory manifest
+    builds call it so the guard can't drift."""
+    path = Path(source).resolve()  # resolve() collapses .. and follows symlinks
+    if root is not None:
+        root_path = Path(root).resolve()
+        if path != root_path and not path.is_relative_to(root_path):
+            raise LoaderError("source is outside the permitted ingest root")
+    return path
+
+
 class TextFileLoader:
     """Load plain-text or Markdown files from disk."""
 
@@ -125,9 +138,7 @@ class LoaderRegistry:
         self._loaders[suffix.lower()] = loader
 
     def _resolve(self, source: str) -> Path:
-        path = Path(source).resolve()  # resolve() collapses .. and follows symlinks
-        if self._root is not None and not path.is_relative_to(self._root):
-            raise LoaderError("source is outside the permitted ingest root")
+        path = confine_to_root(source, self._root)
         if not path.is_file():
             raise LoaderError("source not found")
         if self._max_bytes and path.stat().st_size > self._max_bytes:
@@ -140,12 +151,18 @@ class LoaderRegistry:
         return loader.load(str(path))
 
 
+# Suffixes the built-in registry handles — the single source of truth for what a
+# directory ingest enqueues. Keep default_loader_registry registrations in sync.
+DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md")
+
+
 def default_loader_registry(
     ingest_root: str | None = None, max_bytes: int = 0
 ) -> LoaderRegistry:
     """A registry wired with the built-in loaders (PDF + text/markdown)."""
     registry = LoaderRegistry(ingest_root=ingest_root, max_bytes=max_bytes)
+    text = TextFileLoader()
     registry.register(".pdf", PdfLoader())
-    registry.register(".txt", TextFileLoader())
-    registry.register(".md", TextFileLoader())
+    registry.register(".txt", text)
+    registry.register(".md", text)
     return registry

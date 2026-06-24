@@ -18,6 +18,17 @@
         "type": "string"
       },
       "default": []
+    },
+    "items": {
+      "type": ["object", "null"],
+      "description": "Per-document progress for batch/directory ingests.",
+      "properties": {
+        "total": { "type": "integer" },
+        "completed": { "type": "integer" },
+        "failed": { "type": "integer" },
+        "pending": { "type": "integer" }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
