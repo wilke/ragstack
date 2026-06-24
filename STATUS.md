@@ -32,7 +32,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 
 ## M1 ingest hardening (branch `feat/m1-deterministic-ids` — in review)
 
-Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from the multi-team plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md). 7 feature commits + 4 post-review fixes, 74 tests (71 pass, 3 skip — the skips are PDF tests needing the `pdf` extra) + a live integration pass against real Qdrant + the BGE sidecar. What landed:
+Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from the multi-team plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md). 7 feature commits + 5 post-review fixes, 76 tests (73 pass, 3 skip — the skips are PDF tests needing the `pdf` extra) + a live integration pass against real Qdrant + the BGE sidecar. What landed:
 
 1. **Deterministic IDs** (`9bd3376`) — `loaders.py` doc IDs and `chunkers.py` chunk IDs are now `uuid5`-derived (was random `uuid4` at *both* layers), so re-ingesting a document overwrites in place instead of **silently duplicating the corpus** in Qdrant.
 2. **PDF + loader registry + LFI confinement** (`16de832`) — `PdfLoader` (PyMuPDF, lazy `pdf` extra), `LoaderRegistry` dispatch by extension, and `INGEST_ROOT` confinement closing the arbitrary-file-read where `request.source` flowed into `open()`.
@@ -50,8 +50,9 @@ Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from
 9. **Replace-on-reingest** (`3dbf9af`) — deterministic IDs only made a *byte-identical* re-ingest idempotent; an *edited* document chunks at shifted offsets (new chunk IDs) and the old chunks lingered as orphans. `pipeline.ingest` now deletes each doc's prior chunks (vector + text + graph) before upserting, after a successful embed so a transient failure can't destroy good data first.
 10. **Reap interrupted jobs** (`3c0a96e`) — ingest runs as in-process background tasks, so a restart left durable jobs stuck `running` forever. `JobStore.fail_interrupted()` runs at startup and marks every non-terminal job `failed`/`interrupted`.
 11. **Defensive dim check** (`d2ed334`, Copilot note) — `_existing_vector_size` walks the Qdrant config via `getattr` so an unexpected shape skips the optional check instead of raising `AttributeError` and hard-failing startup.
+12. **Empty re-ingest no longer wipes data** (`b3b614e`, Copilot note) — the replace step in #9 deleted a document's prior chunks unconditionally; a re-ingest yielding no embeddable chunks (empty doc or all-quarantined) destroyed the prior version and upserted nothing. `pipeline.ingest` now raises `EmptyIngestError` before the delete phase, so the prior corpus survives and the job records `failed`.
 
-Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO. **Residual on #9:** a crash *between* the deletes and the upsert leaves that one document empty until the next re-ingest — atomic replace needs Qdrant delete+upsert in one batch or the M2 job-resumability work; tracked for M2.
+Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO. **Residual on #9:** a crash *between* the deletes and the upsert leaves that one document empty until the next re-ingest — atomic replace needs Qdrant delete+upsert in one batch or the M2 job-resumability work; tracked for M2. **Caveat on #10:** `fail_interrupted()` reaps *all* non-terminal jobs at startup; under the durable sqlite store with **multiple uvicorn workers** a (re)starting worker would mark another worker's legitimately-running jobs failed. Fine for the current single-process model; needs a worker/lease guard before multi-worker.
 
 ## Active TODOs
 
