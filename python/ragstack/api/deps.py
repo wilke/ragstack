@@ -85,9 +85,31 @@ def _build_text_index():
     return InMemoryTextIndex()
 
 
+def _validate_production_settings() -> None:
+    """Refuse to start in production without the security-critical settings.
+
+    Without auth, the data API is open; without an ingest_root, request.source
+    is an unconfined arbitrary-file read. Both must be set when durability (the
+    production marker) is required.
+    """
+    if not settings.require_durable_backends:
+        return
+    missing = []
+    if not settings.api_keys:
+        missing.append("api_keys")
+    if not settings.ingest_root:
+        missing.append("ingest_root")
+    if missing:
+        raise RuntimeError(
+            "require_durable_backends is set but these production settings are "
+            f"unset: {', '.join(missing)}"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
+    _validate_production_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = BatchingEmbedder(
         make_embedder(
