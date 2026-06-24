@@ -13,7 +13,7 @@ import logging
 from ragstack.ingestion.backends import IngestBackend, partition
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline
-from ragstack.jobstore import COMPLETED, FAILED
+from ragstack.jobstore import COMPLETED, FAILED, JobStore
 
 log = logging.getLogger(__name__)
 
@@ -24,20 +24,54 @@ class ShardedIngestor:
         pipeline: IngestionPipeline,
         backend: IngestBackend,
         shard_size: int = 64,
+        job_store: JobStore | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._backend = backend
         self._shard_size = shard_size
+        self._job_store = job_store
 
-    async def ingest_manifest(self, manifest: Manifest) -> list[ItemResult]:
-        """Process every item in the manifest, returning a result for each."""
-        shards = partition(manifest.items, self._shard_size)
-        return await self._backend.run_shards(shards, self._run_shard)
+    async def ingest_manifest(
+        self, manifest: Manifest, job_id: str | None = None
+    ) -> list[ItemResult]:
+        """Process the manifest, returning a result per *processed* item.
 
-    async def _run_shard(self, shard: list[WorkItem]) -> list[ItemResult]:
+        When a ``job_store`` and ``job_id`` are set, the run is **resumable**:
+        items are registered, already-completed items are skipped, and each
+        item's outcome is checkpointed as it finishes. Re-invoking with the same
+        job_id after a crash processes only what's left.
+        """
+        items = manifest.items
+        if self._job_store is not None and job_id is not None:
+            await self._job_store.add_items(
+                job_id, [(i.item_id, i.source) for i in items]
+            )
+            completed = await self._job_store.completed_item_ids(job_id)
+            skipped = len(items) - len([i for i in items if i.item_id not in completed])
+            if skipped:
+                log.info("resuming job %s: skipping %d completed item(s)", job_id, skipped)
+            items = [i for i in items if i.item_id not in completed]
+
+        shards = partition(items, self._shard_size)
+        return await self._backend.run_shards(
+            shards, lambda shard: self._run_shard(shard, job_id)
+        )
+
+    async def _run_shard(
+        self, shard: list[WorkItem], job_id: str | None
+    ) -> list[ItemResult]:
         results: list[ItemResult] = []
         for item in shard:
-            results.append(await self._ingest_item(item))
+            result = await self._ingest_item(item)
+            if self._job_store is not None and job_id is not None:
+                await self._job_store.mark_item(
+                    job_id,
+                    item.item_id,
+                    status=result.status,
+                    chunk_ids=result.chunk_ids,
+                    error=result.error,
+                )
+            results.append(result)
         return results
 
     async def _ingest_item(self, item: WorkItem) -> ItemResult:

@@ -23,6 +23,8 @@ RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
 UNKNOWN = "unknown"
+# Per-item state (resumable manifest runs): an item not yet attempted.
+PENDING = "pending"
 
 
 class IngestJob(BaseModel):
@@ -34,6 +36,18 @@ class IngestJob(BaseModel):
     chunk_ids: list[str] = Field(default_factory=list)
     # Caller-safe error label only (e.g. exception class name) — never raw paths
     # or upstream messages, which would leak internals through the poll endpoint.
+    error: str = ""
+
+
+class JobItem(BaseModel):
+    """Per-item state within a job — the unit a resumable run checkpoints and
+    skips. ``item_id`` equals the manifest/document id."""
+
+    job_id: str
+    item_id: str
+    source: str = ""
+    status: str = PENDING  # pending | completed | failed
+    chunk_ids: list[str] = Field(default_factory=list)
     error: str = ""
 
 
@@ -57,12 +71,33 @@ class JobStore(Protocol):
 
     async def fail_interrupted(self) -> int: ...
 
+    # --- per-item state (resumable manifest runs) ---
+
+    async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
+        """Register (item_id, source) pairs as pending. Idempotent: existing
+        items keep their state, so re-running a job preserves prior progress."""
+        ...
+
+    async def mark_item(
+        self,
+        job_id: str,
+        item_id: str,
+        status: str,
+        chunk_ids: list[str] | None = None,
+        error: str = "",
+    ) -> None: ...
+
+    async def completed_item_ids(self, job_id: str) -> set[str]: ...
+
+    async def item_counts(self, job_id: str) -> dict[str, int]: ...
+
 
 class InMemoryJobStore:
     """Process-local job store. Loses state on restart — dev/tests only."""
 
     def __init__(self) -> None:
         self._jobs: dict[str, IngestJob] = {}
+        self._items: dict[str, dict[str, JobItem]] = {}
         self._lock = asyncio.Lock()
 
     async def create(self, source: str) -> IngestJob:
@@ -93,6 +128,50 @@ class InMemoryJobStore:
                     swept += 1
             return swept
 
+    async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
+        async with self._lock:
+            bucket = self._items.setdefault(job_id, {})
+            for item_id, source in items:
+                if item_id not in bucket:
+                    bucket[item_id] = JobItem(
+                        job_id=job_id, item_id=item_id, source=source
+                    )
+
+    async def mark_item(
+        self,
+        job_id: str,
+        item_id: str,
+        status: str,
+        chunk_ids: list[str] | None = None,
+        error: str = "",
+    ) -> None:
+        async with self._lock:
+            bucket = self._items.setdefault(job_id, {})
+            existing = bucket.get(item_id)
+            bucket[item_id] = JobItem(
+                job_id=job_id,
+                item_id=item_id,
+                source=existing.source if existing else "",
+                status=status,
+                chunk_ids=chunk_ids or [],
+                error=error,
+            )
+
+    async def completed_item_ids(self, job_id: str) -> set[str]:
+        async with self._lock:
+            return {
+                iid
+                for iid, it in self._items.get(job_id, {}).items()
+                if it.status == COMPLETED
+            }
+
+    async def item_counts(self, job_id: str) -> dict[str, int]:
+        async with self._lock:
+            counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+            for it in self._items.get(job_id, {}).values():
+                counts[it.status] = counts.get(it.status, 0) + 1
+            return counts
+
 
 class SqliteJobStore:
     """Durable job store backed by stdlib sqlite3.
@@ -112,6 +191,17 @@ class SqliteJobStore:
                 "  source TEXT NOT NULL DEFAULT '',"
                 "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
                 "  error TEXT NOT NULL DEFAULT ''"
+                ")"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS job_items ("
+                "  job_id TEXT NOT NULL,"
+                "  item_id TEXT NOT NULL,"
+                "  source TEXT NOT NULL DEFAULT '',"
+                "  status TEXT NOT NULL DEFAULT 'pending',"
+                "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
+                "  error TEXT NOT NULL DEFAULT '',"
+                "  PRIMARY KEY (job_id, item_id)"
                 ")"
             )
 
@@ -187,6 +277,66 @@ class SqliteJobStore:
 
     async def fail_interrupted(self) -> int:
         return await asyncio.to_thread(self._fail_interrupted_sync)
+
+    def _add_items_sync(self, job_id: str, items: list[tuple[str, str]]) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO job_items (job_id, item_id, source) "
+                "VALUES (?, ?, ?)",
+                [(job_id, item_id, source) for item_id, source in items],
+            )
+
+    def _mark_item_sync(
+        self, job_id: str, item_id: str, status: str, chunk_ids: list[str], error: str
+    ) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "INSERT INTO job_items (job_id, item_id, status, chunk_ids, error) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(job_id, item_id) DO UPDATE SET "
+                "  status=excluded.status, chunk_ids=excluded.chunk_ids, error=excluded.error",
+                (job_id, item_id, status, json.dumps(chunk_ids), error),
+            )
+
+    def _completed_item_ids_sync(self, job_id: str) -> set[str]:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT item_id FROM job_items WHERE job_id = ? AND status = ?",
+                (job_id, COMPLETED),
+            )
+            return {row[0] for row in cur.fetchall()}
+
+    def _item_counts_sync(self, job_id: str) -> dict[str, int]:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT status, COUNT(*) FROM job_items WHERE job_id = ? GROUP BY status",
+                (job_id,),
+            )
+            counts = {PENDING: 0, COMPLETED: 0, FAILED: 0}
+            for status, n in cur.fetchall():
+                counts[status] = n
+            return counts
+
+    async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
+        await asyncio.to_thread(self._add_items_sync, job_id, items)
+
+    async def mark_item(
+        self,
+        job_id: str,
+        item_id: str,
+        status: str,
+        chunk_ids: list[str] | None = None,
+        error: str = "",
+    ) -> None:
+        await asyncio.to_thread(
+            self._mark_item_sync, job_id, item_id, status, chunk_ids or [], error
+        )
+
+    async def completed_item_ids(self, job_id: str) -> set[str]:
+        return await asyncio.to_thread(self._completed_item_ids_sync, job_id)
+
+    async def item_counts(self, job_id: str) -> dict[str, int]:
+        return await asyncio.to_thread(self._item_counts_sync, job_id)
 
 
 def make_job_store(backend: str, path: str) -> JobStore:
