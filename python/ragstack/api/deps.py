@@ -161,6 +161,12 @@ async def lifespan(app: FastAPI):
     )
 
     job_store = make_job_store(settings.job_store_backend, settings.job_store_path)
+    # Ingestion runs as in-process background tasks, so any job left non-terminal
+    # in a durable store belongs to a worker that died with the previous process.
+    # Mark them failed at startup rather than leaving them stuck "running" forever.
+    interrupted = await job_store.fail_interrupted()
+    if interrupted:
+        log.warning("marked %d interrupted ingest job(s) as failed at startup", interrupted)
 
     app.state.http_client = http_client
     app.state.embedder = embedder

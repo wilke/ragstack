@@ -37,6 +37,14 @@ class IngestJob(BaseModel):
     error: str = ""
 
 
+# Terminal states. A job not in one of these has an in-flight worker — which,
+# since ingestion runs as in-process background tasks, cannot have survived a
+# process restart.
+_TERMINAL = (COMPLETED, FAILED)
+# Error label for jobs whose worker died with the process (see fail_interrupted).
+INTERRUPTED = "interrupted"
+
+
 @runtime_checkable
 class JobStore(Protocol):
     """Persist and update ingestion job state."""
@@ -46,6 +54,8 @@ class JobStore(Protocol):
     async def get(self, job_id: str) -> IngestJob | None: ...
 
     async def update(self, job_id: str, **fields: object) -> None: ...
+
+    async def fail_interrupted(self) -> int: ...
 
 
 class InMemoryJobStore:
@@ -71,6 +81,17 @@ class InMemoryJobStore:
             job = self._jobs.get(job_id)
             if job is not None:
                 self._jobs[job_id] = job.model_copy(update=fields)
+
+    async def fail_interrupted(self) -> int:
+        async with self._lock:
+            swept = 0
+            for job_id, job in self._jobs.items():
+                if job.status not in _TERMINAL:
+                    self._jobs[job_id] = job.model_copy(
+                        update={"status": FAILED, "error": INTERRUPTED}
+                    )
+                    swept += 1
+            return swept
 
 
 class SqliteJobStore:
@@ -155,6 +176,17 @@ class SqliteJobStore:
 
     async def update(self, job_id: str, **fields: object) -> None:
         await asyncio.to_thread(self._update_sync, job_id, fields)
+
+    def _fail_interrupted_sync(self) -> int:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "UPDATE jobs SET status = ?, error = ? WHERE status NOT IN (?, ?)",
+                (FAILED, INTERRUPTED, COMPLETED, FAILED),
+            )
+            return cur.rowcount
+
+    async def fail_interrupted(self) -> int:
+        return await asyncio.to_thread(self._fail_interrupted_sync)
 
 
 def make_job_store(backend: str, path: str) -> JobStore:

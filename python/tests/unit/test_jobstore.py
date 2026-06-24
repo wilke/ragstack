@@ -6,6 +6,9 @@ import pytest
 from ragstack.jobstore import (
     ACCEPTED,
     COMPLETED,
+    FAILED,
+    INTERRUPTED,
+    RUNNING,
     InMemoryJobStore,
     SqliteJobStore,
     make_job_store,
@@ -98,6 +101,45 @@ async def test_sqlite_store_closes_every_connection(tmp_path, monkeypatch):
     await store.get("missing")
 
     assert open_count["n"] == 0, f"{open_count['n']} sqlite connection(s) left open"
+
+
+@pytest.mark.asyncio
+async def test_fail_interrupted_sweeps_non_terminal_jobs(tmp_path):
+    """Orphaned accepted/running jobs become failed/interrupted; terminal untouched."""
+    for store in _stores(tmp_path):
+        running = await store.create(source="r")
+        await store.update(running.job_id, status=RUNNING)
+        accepted = await store.create(source="a")  # left in ACCEPTED
+        done = await store.create(source="d")
+        await store.update(done.job_id, status=COMPLETED, chunk_ids=["x"])
+
+        swept = await store.fail_interrupted()
+        assert swept == 2
+
+        for job_id in (running.job_id, accepted.job_id):
+            job = await store.get(job_id)
+            assert job.status == FAILED
+            assert job.error == INTERRUPTED
+        # A terminal job is left exactly as it was.
+        finished = await store.get(done.job_id)
+        assert finished.status == COMPLETED
+        assert finished.chunk_ids == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_sqlite_fail_interrupted_across_restart(tmp_path):
+    """A job left running when the process dies is reaped by the next startup."""
+    path = str(tmp_path / "jobs.db")
+    first = SqliteJobStore(path)
+    job = await first.create(source="s")
+    await first.update(job.job_id, status=RUNNING)
+
+    # New instance over the same file == a restart; the sweep reaps the orphan.
+    second = SqliteJobStore(path)
+    assert await second.fail_interrupted() == 1
+    fetched = await second.get(job.job_id)
+    assert fetched.status == FAILED
+    assert fetched.error == INTERRUPTED
 
 
 def test_make_job_store_selects_backend(tmp_path):
