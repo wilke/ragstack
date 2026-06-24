@@ -8,11 +8,18 @@ same id the vector store stores under.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from ragstack.ingestion.loaders import confine_to_root, deterministic_doc_id
+from ragstack.ingestion.loaders import (
+    LoaderError,
+    confine_to_root,
+    deterministic_doc_id,
+)
+
+log = logging.getLogger(__name__)
 
 
 class WorkItem(BaseModel):
@@ -53,8 +60,9 @@ def build_manifest(
     (e.g. ``[".pdf", ".txt"]``) filters by extension when given. ``item_id`` is
     derived the same way the loaders derive the document id (resolved path), so
     manifest ids and stored document ids coincide. When ``ingest_root`` is set,
-    the source is confined to it (the LFI guard) before the walk — the same check
-    the loader applies per file.
+    every enumerated file is confined to it (the LFI guard) — not just the
+    top-level source — because ``rglob`` follows symlinks, so a link inside the
+    root pointing outside it must not be enumerated. Such files are skipped.
     """
     path = confine_to_root(source, ingest_root) if ingest_root else Path(source)
     if path.is_dir():
@@ -64,8 +72,19 @@ def build_manifest(
             files = [f for f in files if f.suffix.lower() in allowed]
     else:
         files = [path]
-    items = [
-        WorkItem(item_id=deterministic_doc_id(str(f.resolve())), source=str(f))
-        for f in files
-    ]
+
+    items: list[WorkItem] = []
+    for f in files:
+        # Re-confine each file and derive item_id from the *confined* resolved
+        # path, so manifest ids match what the loader will store and an escaping
+        # symlink is dropped here rather than enumerated and failed later.
+        if ingest_root is not None:
+            try:
+                resolved = confine_to_root(str(f), ingest_root)
+            except LoaderError:
+                log.warning("skipping %s: resolves outside the ingest root", f.name)
+                continue
+        else:
+            resolved = f.resolve()
+        items.append(WorkItem(item_id=deterministic_doc_id(str(resolved)), source=str(f)))
     return Manifest(items=items)

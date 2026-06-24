@@ -55,3 +55,22 @@ def test_build_manifest_confines_to_ingest_root(tmp_path: Path):
     assert len(build_manifest(str(root / "ok.txt"), ingest_root=str(root))) == 1
     with pytest.raises(LoaderError):
         build_manifest(str(outside), ingest_root=str(root))
+
+
+def test_directory_manifest_drops_symlink_escaping_root(tmp_path: Path):
+    """rglob follows symlinks, so a link inside the root pointing outside must be
+    dropped from the manifest — not enumerated with an out-of-root item_id."""
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "ok.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = root / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not supported on this platform")
+
+    m = build_manifest(str(root), ingest_root=str(root))
+    names = {Path(i.source).name for i in m.items}
+    assert names == {"ok.txt"}  # the escaping symlink is gone
