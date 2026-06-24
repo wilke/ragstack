@@ -17,6 +17,13 @@ from ragstack.protocols import (
 log = logging.getLogger(__name__)
 
 
+class EmptyIngestError(RuntimeError):
+    """A source produced no embeddable chunks — either it had no chunkable
+    content or every chunk was quarantined as unembeddable. Raised before the
+    replace step so a failed/empty re-ingest never deletes the document's
+    previously-ingested data."""
+
+
 class IngestionPipeline:
     """
     End-to-end document ingestion:
@@ -48,6 +55,7 @@ class IngestionPipeline:
         all_chunks: list[Chunk] = []
         for doc in documents:
             all_chunks.extend(self.chunker.chunk(doc))
+        produced = len(all_chunks)
 
         # Embed. Prefer the poison-isolating path when the embedder supports it
         # (bounded batching wrapper): a single unembeddable chunk is quarantined
@@ -70,6 +78,17 @@ class IngestionPipeline:
                 "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
             )
         all_chunks = kept
+
+        # Never delete prior data without a replacement. If the source produced
+        # no chunks (empty content) or every chunk was quarantined, the replace
+        # block below would delete the previously-ingested version and upsert
+        # nothing — silent data loss on a failed/empty re-ingest. Fail instead:
+        # the prior corpus stays intact and _run_ingest records a failed job.
+        if not all_chunks:
+            raise EmptyIngestError(
+                f"no embeddable chunks for source "
+                f"(produced {produced}, quarantined {quarantined})"
+            )
 
         # Replace, don't accumulate. Deterministic IDs make a byte-identical
         # re-ingest overwrite its points in place, but an *edited* document
