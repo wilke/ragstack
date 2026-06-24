@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     # Vector store
     vector_backend: str = "qdrant"          # qdrant | memory
+    # When true (production), refuse to start on a non-durable / unreachable
+    # backend instead of silently degrading to in-memory and losing data.
+    require_durable_backends: bool = False
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"

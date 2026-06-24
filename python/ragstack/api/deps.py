@@ -26,31 +26,63 @@ log = logging.getLogger(__name__)
 
 
 def _build_vector_store():
-    """Return the configured VectorStore. Falls back to in-memory when
-    Qdrant is unavailable so the API still boots in dev / tests."""
+    """Return the configured VectorStore.
+
+    In dev/tests an unavailable Qdrant degrades to InMemory so the API still
+    boots. When ``require_durable_backends`` is set (production), an in-memory
+    store is refused: a 500k ingest must not silently land in RAM and vanish on
+    restart, so a missing/unusable durable backend is a fatal startup error.
+    """
     if settings.vector_backend == "qdrant":
         try:
             from ragstack.stores.qdrant import QdrantVectorStore, collection_name
-
-            return QdrantVectorStore(
-                url=settings.qdrant_url,
-                # Scope the collection to (model, dim) so swapping embedding
-                # models keeps experiments isolated and a dimension change can't
-                # land in an incompatible collection.
-                collection=collection_name(
-                    settings.qdrant_collection,
-                    settings.embedding_model,
-                    settings.embedding_model_dim,
-                ),
-                vector_size=settings.embedding_model_dim,
-                api_key=settings.qdrant_api_key or None,
-            )
-        except ImportError:
+        except ImportError as e:
+            if settings.require_durable_backends:
+                raise RuntimeError(
+                    "vector_backend='qdrant' but qdrant-client is not installed "
+                    "and require_durable_backends is set. Install ragstack[vector]."
+                ) from e
             log.warning(
                 "qdrant-client not installed — falling back to InMemoryVectorStore. "
                 "Install ragstack[vector] to use Qdrant."
             )
+            return InMemoryVectorStore()
+        return QdrantVectorStore(
+            url=settings.qdrant_url,
+            # Scope the collection to (model, dim) so swapping embedding models
+            # keeps experiments isolated and a dimension change can't land in an
+            # incompatible collection.
+            collection=collection_name(
+                settings.qdrant_collection,
+                settings.embedding_model,
+                settings.embedding_model_dim,
+            ),
+            vector_size=settings.embedding_model_dim,
+            api_key=settings.qdrant_api_key or None,
+        )
+
+    if settings.require_durable_backends:
+        raise RuntimeError(
+            f"vector_backend={settings.vector_backend!r} is not durable but "
+            "require_durable_backends is set; use 'qdrant'."
+        )
     return InMemoryVectorStore()
+
+
+def _build_text_index():
+    """Return the text index.
+
+    Only the in-memory index exists today (ElasticsearchTextIndex lands in a
+    later cut). Under ``require_durable_backends`` this is a known gap: warn
+    loudly rather than hard-fail, so the flag stays usable for its primary
+    purpose (a durable vector store). Gate this once Elasticsearch lands.
+    """
+    if settings.require_durable_backends:
+        log.warning(
+            "text index is in-memory (Elasticsearch backend not yet implemented); "
+            "the lexical index will not survive restart"
+        )
+    return InMemoryTextIndex()
 
 
 @asynccontextmanager
@@ -70,7 +102,7 @@ async def lifespan(app: FastAPI):
         chars_per_token=settings.embedding_chars_per_token,
     )
     vector_store = _build_vector_store()
-    text_index = InMemoryTextIndex()  # ElasticsearchTextIndex lands in a later cut
+    text_index = _build_text_index()
 
     # Qdrant: make sure the collection exists at startup so the first request doesn't race.
     if hasattr(vector_store, "ensure_collection"):
@@ -86,6 +118,10 @@ async def lifespan(app: FastAPI):
             # vectors into the wrong collection.
             raise
         except Exception as e:
+            # Readiness gate: in production, refuse to start (and thus accept
+            # ingests we can't persist) if the durable store isn't reachable.
+            if settings.require_durable_backends:
+                raise
             log.warning("qdrant ensure_collection failed: %s", e)
 
     pipeline = IngestionPipeline(
