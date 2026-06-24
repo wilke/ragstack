@@ -1,5 +1,35 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-06-24 — M1 ingest hardening (branch `feat/m1-deterministic-ids`)
+
+Implemented the shortest-path M1 from the multi-team plan (`docs/m1-scalable-pdf-ingest-plan.md`):
+robust, scalable PDF→chunk→embed→store→retrieve. 7 commits, 32→69 unit tests, plus a live
+integration pass on coconut (real Qdrant + BGE sidecar).
+
+**Commits (oldest→newest):** `9bd3376` deterministic IDs · `16de832` PdfLoader+LoaderRegistry+INGEST_ROOT ·
+`c73da0c` async ingest + JobStore · `e14fe3b` bounded/poison-isolated embed · `5f95898` dim
+reconciliation + (model,dim) collection scoping · `9a78a5a` loud non-durable fallback ·
+`27b810b` API-key auth + CORS fix + prod gate.
+
+**Key decisions / rationale:**
+- The duplicate-corpus bug was **two layers**: random `uuid4` in both `loaders.py` (doc id) and
+  `chunkers.py` (chunk id). Fixing only the chunker is insufficient — doc id must be deterministic too.
+  Chosen keys: resolved path (TextFileLoader), content (StringLoader), `f"{doc.id}:{start}:{end}"` (chunk).
+- Async ingest reconciled the *stale* `status=="accepted"` tests by making the behavior real (background
+  task) rather than editing assertions. Fixed 3 pre-existing red API tests by adding `tests/api/conftest.py`
+  that wires `app.state` with in-memory doubles (lifespan doesn't run under httpx ASGITransport).
+- Poison isolation distinguishes 4xx (bad input → bisect & quarantine) from 5xx/network (infra → re-raise),
+  so a backend outage never silently drops a corpus.
+- Collections scoped to `(model,dim)` for A/B model isolation; `ensure_collection` hard-fails on size
+  mismatch. `require_durable_backends` gates the vector store strictly; text index only warns (no ES yet).
+- `B008` added to ruff ignore (FastAPI `Depends()`-in-default idiom, pre-existing across routers).
+
+**Live smoke (prod-like config):** auth 401/200 · ingest→poll→completed · 0→1 Qdrant points · retrieve
+score 0.728 · **re-ingest kept count at 1 (idempotency proven)** · `/etc/passwd` rejected by INGEST_ROOT.
+
+**Still open in M1:** tenant isolation (`tenant_id`); conformance HTTP tests for the live flow. Next milestone
+is M2 (shard/manifest + resumable 1→500k) per the plan.
+
 ## Current Session (2026-03-01)
 
 ### Completed Work

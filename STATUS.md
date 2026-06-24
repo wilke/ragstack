@@ -2,9 +2,9 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-06-03
-**Current tag:** [`v0.2.0`](https://github.com/wilke/ragstack/releases/tag/v0.2.0) at `4d28ac5`
-**Branch:** `main` (synced with `origin`)
+**Last updated:** 2026-06-24
+**Current tag:** [`v0.3.0`](https://github.com/wilke/ragstack/releases/tag/v0.3.0) at `435b81c`
+**Branch:** `main` (synced with `origin`). **In review:** `feat/m1-deterministic-ids` — M1 ingest hardening (PR open, see below).
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -29,6 +29,22 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
 - **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `answer` from `/v1/query` is still a placeholder (LLM not yet wired). Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
+
+## M1 ingest hardening (branch `feat/m1-deterministic-ids` — in review)
+
+Shortest-path hardening of the PDF→chunk→embed→store→retrieve loop, from the multi-team plan in [`docs/m1-scalable-pdf-ingest-plan.md`](docs/m1-scalable-pdf-ingest-plan.md). 7 commits, 69 unit tests + a live integration pass against real Qdrant + the BGE sidecar. What landed:
+
+1. **Deterministic IDs** (`9bd3376`) — `loaders.py` doc IDs and `chunkers.py` chunk IDs are now `uuid5`-derived (was random `uuid4` at *both* layers), so re-ingesting a document overwrites in place instead of **silently duplicating the corpus** in Qdrant.
+2. **PDF + loader registry + LFI confinement** (`16de832`) — `PdfLoader` (PyMuPDF, lazy `pdf` extra), `LoaderRegistry` dispatch by extension, and `INGEST_ROOT` confinement closing the arbitrary-file-read where `request.source` flowed into `open()`.
+3. **Async ingest + JobStore** (`c73da0c`) — `/v1/ingest` returns `accepted` + a real `job_id` and runs in the background; `GET /v1/ingest/{job_id}` reports real status (accepted→running→completed/failed) from `jobstore.py` (in-memory or durable stdlib-sqlite).
+4. **Bounded + poison-isolated embed** (`e14fe3b`) — `BatchingEmbedder` bounds request size by item/token budget and bisects a failing batch to quarantine a poison input (re-raising infra errors); `OpenAIEmbedder` now sorts response data by returned index.
+5. **Dim reconciliation + (model,dim) collection scoping** (`5f95898`) — collections are auto-named `f(model,dim)`; `ensure_collection` hard-fails on a vector-size mismatch instead of writing mixed vectors. **The core protection for the "test different embedding models" workflow.**
+6. **Loud non-durable fallback** (`9a78a5a`) — `require_durable_backends` makes a missing/unreachable Qdrant a fatal startup error instead of a silent degrade to in-memory.
+7. **Security gate** (`27b810b`) — API-key auth on `/v1` (constant-time, `/health` open), CORS credentials no longer combined with the wildcard origin, and a production startup gate requiring `api_keys` + `ingest_root`.
+
+**Live smoke test (coconut, prod-like config):** auth 401/200, async ingest→poll→completed, real BGE upsert (0→1 points), retrieval score 0.728, **re-ingest kept point count at 1 (idempotency proven)**, and `/etc/passwd` ingest rejected by `INGEST_ROOT`.
+
+Still open in M1: tenant isolation (server-side `tenant_id`). Conformance HTTP tests against the live flow remain a near-term TODO.
 
 ## Active TODOs
 
@@ -136,6 +152,8 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 
 ## Known issues / friction
 
+- **Collection naming changed** (branch `feat/m1-deterministic-ids`): the API now scopes Qdrant collections to `(model, dim)` (e.g. `ragstack_baai_bge_base_en_v1_5_768_<hash>`), so data in the old literal `ragstack` collection is invisible to the API. Re-ingest, or pin `QDRANT_COLLECTION`. The CLI tools (`scripts/`) still use the literal `--collection` name.
+- **Shared conda env (`/rag/envs/ragstack`) lacks dev tooling**: `pytest`, `pytest-asyncio`, `ruff`, and `pymupdf` were `pip install`ed ad hoc to run tests on this branch. The `pdf`/`dev` extras in `pyproject.toml` are the durable record; a clean `pip install -e ".[all,dev]"` would provision them.
 - `.env.example` still has `NEO4J_PASSWORD=neo4j` — invalid for Neo4j 5. The apptainer `up.sh` defaults to `ragstack` instead. Docker-compose users will hit this until `.env.example` is fixed.
 - `vm.max_map_count` requires sudo on each new host. Not automatable in user-space.
 - Embedding sidecar deps include CUDA libraries even on CPU-only hosts (sentence-transformers pulls torch + cuda). ~5 GB on disk; first-run install is slow.
