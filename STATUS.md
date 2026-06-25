@@ -4,7 +4,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 
 **Last updated:** 2026-06-24
 **Current tag:** [`v0.5.0`](https://github.com/wilke/ragstack/releases/tag/v0.5.0) at `284a344`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4) and M2 scalable ingestion (PR #5) merged; see the M1/M2 sections below.
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), and the multi-endpoint embedder pool (PR #8) merged; see the M1/M2/pool sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -28,6 +28,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Embedding sidecar**: BAAI/bge-base-en-v1.5 (768-d, CPU) on `:50053`.
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
+- **Multi-endpoint fan-out** (PR #8): `python/ragstack/embed_pool.py` load-balances embedding across several endpoints (e.g. vLLM replicas on the H200s) with least-loaded routing, a global concurrency cap, failover, and lazy health re-probing. Enabled via `EMBEDDING_ENDPOINTS`; both CLIs accept multiple `--embedding-url`. See the pool section below.
 - **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `answer` from `/v1/query` is still a placeholder (LLM not yet wired). Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
 
 ## M1 ingest hardening (merged in `v0.4.0`, PR #4)
@@ -75,7 +76,21 @@ Resumable 1→500k ingestion on a durable checkpoint, per the plan in [`docs/m1-
 Still open in M2:
 - **API-level resume wiring** — [#6](https://github.com/wilke/ragstack/issues/6): the resume mechanism exists but no endpoint/startup path triggers it, so a crashed batch re-embeds everything on re-submit.
 - **Per-owner lease for `fail_interrupted` under Postgres** — [#7](https://github.com/wilke/ragstack/issues/7): the startup sweep is unsafe across workers and is currently disabled for Postgres, so crashed Postgres jobs aren't reaped until a lease/heartbeat scopes ownership.
-- Multi-endpoint `EndpointPool` (fan embedding across the H200s, per-tenant quota); off-request *resumable* manifest build for very large submits (today the build is off-request but in-memory).
+- Off-request *resumable* manifest build for very large submits (today the build is off-request but in-memory).
+- Multi-endpoint embedder pool — **landed in PR #8** (see the section below). Per-tenant concurrency quota still deferred.
+
+## Multi-endpoint embedder pool (merged, PR #8)
+
+The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEmbedder` satisfies the `Embedder` protocol and drops in behind `BatchingEmbedder` exactly like a single embedder. Merged to `main` via merge commit `a4432ac`. What landed:
+
+1. **Routing + backpressure + failover + health** — least-loaded selection across endpoints; a global semaphore caps total in-flight requests; a 5xx / network / **retriable-4xx (429·408·425)** failure fails over to another endpoint (5xx/network demote the endpoint, a busy 429 does not), while every other 4xx propagates unchanged so `BatchingEmbedder` still quarantines genuine bad input; endpoints are re-probed lazily every `health_interval` so a recovered one rejoins the rotation.
+2. **Wiring + config** — `deps._build_embedder` picks the pool when `embedding_endpoints` has >1 URL, else the single `embedding_sidecar_url`; both wrapped in `BatchingEmbedder`. New config: `embedding_endpoints` (accepts comma-separated **or** JSON-array env input via `Annotated[..., NoDecode]`), `embedding_max_concurrency`, `embedding_health_path`. CLIs `ingest_chunks.py`/`search.py` take multiple `--embedding-url` (`nargs="+"`) so bulk ingestion fans out.
+
+12 pool unit tests (routing, failover/demotion, all-fail→RuntimeError, 4xx-propagates, retriable-4xx-fails-over, 5xx-fails-over, backpressure cap, least-loaded distribution, end-to-end health recovery, interval gating, health probing); full suite **109 pass / 4 skip**; repo `ruff check .` clean.
+
+**Post-review fixes** (`/review` + Copilot): retriable-4xx now fails over instead of being mis-quarantined; the health refresh moved *outside* the backpressure semaphore so a slow probe can't hold a permit; `e.response is not None` guard before reading `status_code`; configurable `embedding_health_path` for OpenAI/vLLM backends without `/health` under the embeddings base; test `AsyncClient`-leak fixture; also cleared 5 pre-existing repo-wide ruff errors.
+
+**Still deferred:** per-tenant concurrency quota — needs a server-side `tenant_id`, which arrives with the open tenant-isolation work. The global cap lands here.
 
 ## Active TODOs
 
@@ -187,7 +202,7 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 ## Known issues / friction
 
 - **Collection naming changed** (`v0.4.0`): the API now scopes Qdrant collections to `(model, dim)` (e.g. `ragstack_baai_bge_base_en_v1_5_768_<hash>`), so data in the old literal `ragstack` collection is invisible to the API. Re-ingest, or pin `QDRANT_COLLECTION`. The CLI tools (`scripts/`) still use the literal `--collection` name.
-- **Shared conda env (`ragstack`) — runtime extras present, lint tooling not**: `pytest`/`pytest-asyncio`/`pytest-cov` are installed so `make test-python` runs, and the `pdf` (PyMuPDF 1.27) + `postgres` (asyncpg 0.31) runtime extras are present — so PDF ingest and the Postgres job store both work, and the PDF loader tests pass (only the live Postgres integration test still skips, needing a reachable `TEST_PG_DSN`). Deliberately *not* run as `pip install -e ".[all,dev]"` — that would re-resolve pinned runtime deps (qdrant-client/fastapi) in an env that also backs the deployed stack. Still missing: `ruff`/`mypy` (lint/type-check not runnable here). A dedicated dev venv is the clean long-term home for the lint tooling.
+- **Shared conda env (`ragstack`) — runtime extras present, lint tooling not**: `pytest`/`pytest-asyncio`/`pytest-cov` are installed so `make test-python` runs, and the `pdf` (PyMuPDF 1.27) + `postgres` (asyncpg 0.31) runtime extras are present — so PDF ingest and the Postgres job store both work, and the PDF loader tests pass (only the live Postgres integration test still skips, needing a reachable `TEST_PG_DSN`). Deliberately *not* run as `pip install -e ".[all,dev]"` — that would re-resolve pinned runtime deps (qdrant-client/fastapi) in an env that also backs the deployed stack. **`ruff` is now installed in this env** (PR #8 session), so `ruff check .` runs and is clean repo-wide; **`mypy` is still missing**, so the full `make lint-python` (which chains `ruff && mypy`) can't complete. A dedicated dev venv is the clean long-term home for the type-check tooling.
 - `.env.example` still has `NEO4J_PASSWORD=neo4j` — invalid for Neo4j 5. The apptainer `up.sh` defaults to `ragstack` instead. Docker-compose users will hit this until `.env.example` is fixed.
 - `vm.max_map_count` requires sudo on each new host. Not automatable in user-space.
 - Embedding sidecar deps include CUDA libraries even on CPU-only hosts (sentence-transformers pulls torch + cuda). ~5 GB on disk; first-run install is slow.
