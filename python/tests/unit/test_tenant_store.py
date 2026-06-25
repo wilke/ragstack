@@ -1,0 +1,94 @@
+"""Tenant isolation at the vector-store layer."""
+import pytest
+
+from ragstack.models import Chunk, Triple
+from ragstack.stores.memory import (
+    InMemoryGraphStore,
+    InMemoryTextIndex,
+    InMemoryVectorStore,
+)
+
+
+def _chunk(cid: str, doc_id: str, tenant: str) -> Chunk:
+    return Chunk(
+        id=cid,
+        doc_id=doc_id,
+        content=f"chunk {cid}",
+        embedding=[1.0, 0.0],
+        metadata={"tenant_id": tenant},
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_scoped_to_tenant_list():
+    store = InMemoryVectorStore()
+    await store.upsert(
+        [_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob"), _chunk("3", "dP", "public")]
+    )
+    res = await store.search([1.0, 0.0], top_k=10, filters={"tenant_id": ["alice", "public"]})
+    assert {r.chunk.metadata["tenant_id"] for r in res} == {"alice", "public"}  # no bob
+
+
+@pytest.mark.asyncio
+async def test_same_chunk_id_two_tenants_coexist():
+    store = InMemoryVectorStore()
+    await store.upsert([_chunk("same", "d", "alice")])
+    await store.upsert([_chunk("same", "d", "bob")])  # must not clobber alice's
+    alice = await store.search([1.0, 0.0], top_k=10, filters={"tenant_id": ["alice", "public"]})
+    bob = await store.search([1.0, 0.0], top_k=10, filters={"tenant_id": ["bob", "public"]})
+    assert {r.chunk.metadata["tenant_id"] for r in alice} == {"alice"}
+    assert {r.chunk.metadata["tenant_id"] for r in bob} == {"bob"}
+
+
+@pytest.mark.asyncio
+async def test_delete_scoped_to_tenant():
+    store = InMemoryVectorStore()
+    # Two tenants share a doc_id; deleting one tenant's doc must spare the other.
+    await store.upsert([_chunk("a", "d1", "alice"), _chunk("b", "d1", "bob")])
+    await store.delete("d1", tenant_id="alice")
+    res = await store.search([1.0, 0.0], top_k=10)
+    assert {r.chunk.metadata["tenant_id"] for r in res} == {"bob"}
+
+
+@pytest.mark.asyncio
+async def test_empty_list_filter_is_no_constraint():
+    # An empty multi-value filter must mean "no constraint on this key", not
+    # "match nothing" — otherwise a degenerate filter silently drops all results.
+    store = InMemoryVectorStore()
+    await store.upsert([_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob")])
+    res = await store.search([1.0, 0.0], top_k=10, filters={"tenant_id": []})
+    assert len(res) == 2
+
+
+@pytest.mark.asyncio
+async def test_text_index_same_chunk_id_two_tenants_coexist():
+    # InMemoryTextIndex.index must key on (tenant, id), else the second tenant's
+    # chunk is dropped as a duplicate when two tenants share a source.
+    idx = InMemoryTextIndex()
+    await idx.index([_chunk("same", "d", "alice")])
+    await idx.index([_chunk("same", "d", "bob")])
+    alice = await idx.search("chunk", top_k=10, filters={"tenant_id": ["alice", "public"]})
+    bob = await idx.search("chunk", top_k=10, filters={"tenant_id": ["bob", "public"]})
+    assert {r.chunk.metadata["tenant_id"] for r in alice} == {"alice"}
+    assert {r.chunk.metadata["tenant_id"] for r in bob} == {"bob"}
+
+
+@pytest.mark.asyncio
+async def test_text_index_delete_scoped_to_tenant():
+    idx = InMemoryTextIndex()
+    await idx.index([_chunk("a", "d1", "alice"), _chunk("b", "d1", "bob")])
+    await idx.delete("d1", tenant_id="alice")  # must spare bob's copy
+    remaining = await idx.search("chunk", top_k=10)
+    assert {r.chunk.metadata["tenant_id"] for r in remaining} == {"bob"}
+
+
+@pytest.mark.asyncio
+async def test_graph_delete_scoped_to_tenant():
+    graph = InMemoryGraphStore()
+    await graph.add_triples([Triple(subject="s", predicate="p", object="o",
+                                    doc_id="d1", tenant_id="alice")])
+    await graph.add_triples([Triple(subject="s2", predicate="p", object="o2",
+                                    doc_id="d1", tenant_id="bob")])
+    await graph.delete_by_doc("d1", tenant_id="alice")  # must spare bob's triple
+    remaining = await graph.query_neighborhood("s2")
+    assert [t.tenant_id for t in remaining] == ["bob"]

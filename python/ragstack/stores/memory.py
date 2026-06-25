@@ -5,6 +5,22 @@ import math
 from typing import Any
 
 from ragstack.models import Chunk, ScoredChunk, Triple
+from ragstack.tenancy import tenant_of
+
+
+def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
+    """A chunk matches when every filter holds; a list value matches any entry
+    (MatchAny — used for tenant reads: own + public)."""
+    for key, value in filters.items():
+        actual = chunk.metadata.get(key)
+        if isinstance(value, (list, tuple, set)):
+            if not value:
+                continue  # empty multi-value filter = no constraint on this key
+            if actual not in value:
+                return False
+        elif actual != value:
+            return False
+    return True
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -23,11 +39,11 @@ class InMemoryVectorStore:
         self._chunks: list[Chunk] = []
 
     async def upsert(self, chunks: list[Chunk]) -> None:
-        ids = {c.id for c in self._chunks}
-        for chunk in chunks:
-            if chunk.id in ids:
-                self._chunks = [c for c in self._chunks if c.id != chunk.id]
-            self._chunks.append(chunk)
+        # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
+        # coexist rather than clobbering each other.
+        incoming = {(tenant_of(c), c.id) for c in chunks}
+        self._chunks = [c for c in self._chunks if (tenant_of(c), c.id) not in incoming]
+        self._chunks.extend(chunks)
 
     async def search(
         self,
@@ -37,10 +53,7 @@ class InMemoryVectorStore:
     ) -> list[ScoredChunk]:
         candidates = self._chunks
         if filters:
-            candidates = [
-                c for c in candidates
-                if all(c.metadata.get(k) == v for k, v in filters.items())
-            ]
+            candidates = [c for c in candidates if _matches(c, filters)]
         scored = [
             ScoredChunk(
                 chunk=c,
@@ -52,8 +65,12 @@ class InMemoryVectorStore:
         ]
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
-    async def delete(self, doc_id: str) -> None:
-        self._chunks = [c for c in self._chunks if c.doc_id != doc_id]
+    async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
+        self._chunks = [
+            c
+            for c in self._chunks
+            if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
+        ]
 
 
 class InMemoryTextIndex:
@@ -63,10 +80,14 @@ class InMemoryTextIndex:
         self._chunks: list[Chunk] = []
 
     async def index(self, chunks: list[Chunk]) -> None:
-        existing_ids = {c.id for c in self._chunks}
+        # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
+        # coexist rather than the second being dropped as a duplicate.
+        existing = {(tenant_of(c), c.id) for c in self._chunks}
         for chunk in chunks:
-            if chunk.id not in existing_ids:
+            key = (tenant_of(chunk), chunk.id)
+            if key not in existing:
                 self._chunks.append(chunk)
+                existing.add(key)
 
     async def search(
         self,
@@ -77,10 +98,7 @@ class InMemoryTextIndex:
         query_tokens = set(query.lower().split())
         candidates = self._chunks
         if filters:
-            candidates = [
-                c for c in candidates
-                if all(c.metadata.get(k) == v for k, v in filters.items())
-            ]
+            candidates = [c for c in candidates if _matches(c, filters)]
         scored = []
         for chunk in candidates:
             tokens = set(chunk.content.lower().split())
@@ -95,8 +113,12 @@ class InMemoryTextIndex:
                 )
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
-    async def delete(self, doc_id: str) -> None:
-        self._chunks = [c for c in self._chunks if c.doc_id != doc_id]
+    async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
+        self._chunks = [
+            c
+            for c in self._chunks
+            if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
+        ]
 
 
 class InMemoryGraphStore:
@@ -136,5 +158,9 @@ class InMemoryGraphStore:
                 unique.append(t)
         return unique
 
-    async def delete_by_doc(self, doc_id: str) -> None:
-        self._triples = [t for t in self._triples if t.doc_id != doc_id]
+    async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
+        self._triples = [
+            t
+            for t in self._triples
+            if not (t.doc_id == doc_id and (tenant_id is None or t.tenant_id == tenant_id))
+        ]

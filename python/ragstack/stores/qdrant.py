@@ -11,6 +11,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -18,6 +19,7 @@ from qdrant_client.models import (
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
+from ragstack.tenancy import DEFAULT_TENANT, tenant_of
 
 __all__ = ["QdrantVectorStore", "VectorDimMismatch", "collection_name"]
 
@@ -112,6 +114,7 @@ class QdrantVectorStore:
         for c in chunks:
             if c.embedding is None:
                 raise ValueError(f"chunk {c.id!r} has no embedding")
+            tenant = tenant_of(c)
             payload: dict[str, Any] = {
                 "chunk_id": c.id,
                 "doc_id": c.doc_id,
@@ -121,7 +124,13 @@ class QdrantVectorStore:
                 **{k: v for k, v in c.metadata.items() if k not in _PAYLOAD_RESERVED},
             }
             points.append(
-                PointStruct(id=_point_id(c.id), vector=c.embedding, payload=payload)
+                PointStruct(
+                    # Scope the point id by tenant so two tenants ingesting the same
+                    # source (same chunk_id) don't overwrite each other's points.
+                    id=_point_id(c.id, tenant),
+                    vector=c.embedding,
+                    payload=payload,
+                )
             )
         await self._client.upsert(collection_name=self._collection, points=points)
 
@@ -131,14 +140,7 @@ class QdrantVectorStore:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[ScoredChunk]:
-        q_filter: Filter | None = None
-        if filters:
-            q_filter = Filter(
-                must=[
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in filters.items()
-                ]
-            )
+        q_filter = _build_filter(filters)
         # qdrant-client >= 1.10 deprecated `search()` in favour of `query_points()`.
         response = await self._client.query_points(
             collection_name=self._collection,
@@ -163,15 +165,39 @@ class QdrantVectorStore:
             )
         return scored
 
-    async def delete(self, doc_id: str) -> None:
+    async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
+        # Tenant-scoped: a caller can only delete its own documents, even if it
+        # knows another tenant's doc_id. tenant_id=None deletes across tenants.
+        selector: dict[str, Any] = {"doc_id": doc_id}
+        if tenant_id is not None:
+            selector["tenant_id"] = tenant_id
         await self._client.delete(
             collection_name=self._collection,
-            points_selector=Filter(
-                must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
-            ),
+            points_selector=_build_filter(selector),
         )
 
 
-def _point_id(chunk_id: str) -> str:
-    """Map an arbitrary chunk ID to a deterministic UUID Qdrant will accept."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
+def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
+    """Deterministic UUID point id, scoped by tenant so the same chunk under two
+    tenants maps to two distinct points."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{chunk_id}"))
+
+
+def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
+    """Build a Qdrant filter from a flat dict. A list value matches *any* of its
+    entries (MatchAny) — used for tenant reads (own + public); a scalar is an
+    exact match. Keep the empty-list handling in sync with ``_matches`` in
+    stores/memory.py."""
+    if not filters:
+        return None
+    conditions = []
+    for key, value in filters.items():
+        if isinstance(value, (list, tuple, set)):
+            if not value:
+                continue  # empty multi-value filter = no constraint on this key
+            conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value))))
+        else:
+            conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+    if not conditions:
+        return None
+    return Filter(must=conditions)

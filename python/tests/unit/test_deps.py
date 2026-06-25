@@ -18,6 +18,37 @@ def test_require_durable_rejects_memory_backend(monkeypatch):
         deps._build_vector_store()
 
 
+def _prod(monkeypatch):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    monkeypatch.setattr(deps.settings, "ingest_root", "/data")
+
+
+def test_partial_tenant_map_rejected_in_production(monkeypatch):
+    # A configured key with no tenant mapping would collapse into the shared
+    # "default" tenant and break isolation — production must fail closed.
+    _prod(monkeypatch)
+    monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
+    monkeypatch.setattr(deps.settings, "api_key_tenants", {"ka": "alice"})  # kb unmapped
+    with pytest.raises(RuntimeError, match="tenant mapping"):
+        deps._validate_production_settings()
+
+
+def test_full_tenant_map_accepted_in_production(monkeypatch):
+    _prod(monkeypatch)
+    monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
+    monkeypatch.setattr(deps.settings, "api_key_tenants", {"ka": "alice", "kb": "bob"})
+    deps._validate_production_settings()  # no raise
+
+
+def test_no_tenant_map_is_single_tenant_mode(monkeypatch):
+    # No mapping at all is the legitimate single-(default-)tenant mode, not a
+    # partial-map misconfig — must not raise.
+    _prod(monkeypatch)
+    monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
+    monkeypatch.setattr(deps.settings, "api_key_tenants", {})
+    deps._validate_production_settings()  # no raise
+
+
 def test_qdrant_backend_under_durable_returns_qdrant(monkeypatch):
     from ragstack.stores.qdrant import QdrantVectorStore
 

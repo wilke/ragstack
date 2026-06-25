@@ -13,6 +13,7 @@ from ragstack.protocols import (
     TextIndex,
     VectorStore,
 )
+from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +50,19 @@ class IngestionPipeline:
         self.graph_store = graph_store
         self.kg_extractor = kg_extractor
 
-    async def ingest(self, source: str) -> list[str]:
-        """Ingest a source and return the list of chunk IDs created."""
+    async def ingest(self, source: str, tenant_id: str = DEFAULT_TENANT) -> list[str]:
+        """Ingest a source and return the list of chunk IDs created.
+
+        Every chunk is stamped with ``tenant_id`` (the owning tenant, derived
+        server-side from the API key), which scopes both its stored identity and
+        which queries can read it.
+        """
         documents: list[Document] = self.loader.load(source)
         all_chunks: list[Chunk] = []
         for doc in documents:
             all_chunks.extend(self.chunker.chunk(doc))
+        for chunk in all_chunks:
+            chunk.metadata["tenant_id"] = tenant_id
         produced = len(all_chunks)
 
         # Embed. Prefer the poison-isolating path when the embedder supports it
@@ -98,10 +106,10 @@ class IngestionPipeline:
         # successful embed (a transient embed failure raises before this point),
         # so old data is never destroyed before its replacement exists.
         for doc in documents:
-            await self.vector_store.delete(doc.id)
-            await self.text_index.delete(doc.id)
+            await self.vector_store.delete(doc.id, tenant_id=tenant_id)
+            await self.text_index.delete(doc.id, tenant_id=tenant_id)
             if self.graph_store is not None:
-                await self.graph_store.delete_by_doc(doc.id)
+                await self.graph_store.delete_by_doc(doc.id, tenant_id=tenant_id)
 
         # Index
         await self.vector_store.upsert(all_chunks)
@@ -110,6 +118,10 @@ class IngestionPipeline:
         # Knowledge-graph extraction (optional)
         if self.kg_extractor and self.graph_store:
             triples = await self.kg_extractor.extract(all_chunks)
+            # Stamp the owning tenant on every triple so graph deletes/reads can be
+            # tenant-scoped regardless of what the extractor populated.
+            for triple in triples:
+                triple.tenant_id = tenant_id
             await self.graph_store.add_triples(triples)
 
         return [c.id for c in all_chunks]

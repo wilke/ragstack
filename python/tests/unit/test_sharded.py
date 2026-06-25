@@ -8,16 +8,18 @@ from ragstack.jobstore import InMemoryJobStore
 
 
 class _FakePipeline:
-    """Records ingested sources; raises for any source in ``poison``."""
+    """Records (source, tenant) ingested; raises for any source in ``poison``."""
 
     def __init__(self, poison: set[str] | None = None) -> None:
         self.ingested: list[str] = []
+        self.tenants: list[str] = []
         self._poison = poison or set()
 
-    async def ingest(self, source: str) -> list[str]:
+    async def ingest(self, source: str, tenant_id: str = "default") -> list[str]:
         if source in self._poison:
             raise ValueError("bad doc")
         self.ingested.append(source)
+        self.tenants.append(tenant_id)
         return [f"{source}#0", f"{source}#1"]
 
 

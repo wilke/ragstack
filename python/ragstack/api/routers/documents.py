@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 
 from ragstack.api.deps import get_ingestor, get_job_store, get_vector_store
+from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.ingestion.manifest import build_manifest
@@ -34,7 +35,12 @@ def _final_status(counts: dict[str, int]) -> str:
 
 
 async def _run_ingest(
-    job_store: JobStore, ingestor: ShardedIngestor, ingest_root: str, job_id: str, source: str
+    job_store: JobStore,
+    ingestor: ShardedIngestor,
+    ingest_root: str,
+    job_id: str,
+    source: str,
+    tenant_id: str,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -49,7 +55,9 @@ async def _run_ingest(
         manifest = build_manifest(
             source, suffixes=DEFAULT_INGEST_SUFFIXES, ingest_root=ingest_root or None
         )
-        results = await ingestor.ingest_manifest(manifest, job_id=job_id)
+        results = await ingestor.ingest_manifest(
+            manifest, job_id=job_id, tenant_id=tenant_id
+        )
     except Exception as e:
         log.warning("ingest job %s failed: %s", job_id, e)
         await job_store.update(job_id, status=FAILED, error=type(e).__name__)
@@ -97,6 +105,7 @@ class DocumentInfo(BaseModel):
 async def ingest(
     request: IngestRequest,
     background_tasks: BackgroundTasks,
+    tenant: str = Depends(resolve_tenant),
     ingestor: ShardedIngestor = Depends(get_ingestor),
     job_store: JobStore = Depends(get_job_store),
 ) -> IngestResponse:
@@ -118,7 +127,13 @@ async def ingest(
     """
     job = await job_store.create(source=request.source)
     background_tasks.add_task(
-        _run_ingest, job_store, ingestor, settings.ingest_root, job.job_id, request.source
+        _run_ingest,
+        job_store,
+        ingestor,
+        settings.ingest_root,
+        job.job_id,
+        request.source,
+        tenant,
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 
@@ -167,7 +182,9 @@ async def list_documents() -> list[DocumentInfo]:
 @router.delete("/documents/{doc_id}", status_code=204)
 async def delete_document(
     doc_id: str,
+    tenant: str = Depends(resolve_tenant),
     vector_store=Depends(get_vector_store),
 ) -> None:
-    """Delete a document and all its chunks from the vector store."""
-    await vector_store.delete(doc_id)
+    """Delete a document and its chunks — scoped to the caller's tenant, so one
+    tenant cannot delete another's document even by id."""
+    await vector_store.delete(doc_id, tenant_id=tenant)
