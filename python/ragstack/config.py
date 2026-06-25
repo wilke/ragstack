@@ -1,8 +1,11 @@
 """Application configuration loaded from environment variables."""
 from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+import json
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode
 
 
 class Settings(BaseSettings):
@@ -27,8 +30,32 @@ class Settings(BaseSettings):
     # the H200s). When set, requests are load-balanced across them with failover;
     # empty falls back to the single embedding_sidecar_url. max_concurrency bounds
     # total in-flight embedding requests (backpressure).
-    embedding_endpoints: list[str] = Field(default_factory=list)
+    # Accepts either a comma-separated string or a JSON array, e.g.
+    #   EMBEDDING_ENDPOINTS=http://h1:8000,http://h2:8000
+    #   EMBEDDING_ENDPOINTS=["http://h1:8000","http://h2:8000"]
+    # NoDecode: skip pydantic-settings' default JSON decode so the validator below
+    # receives the raw env string and can accept comma-separated input too.
+    embedding_endpoints: Annotated[list[str], NoDecode] = Field(default_factory=list)
     embedding_max_concurrency: int = 8
+    # Probe path appended to each fan-out endpoint for health checks. The default
+    # suits the sidecar and vLLM's OpenAI server; override for backends that
+    # expose readiness elsewhere (a backend with no /health would otherwise read
+    # as permanently unhealthy and degrade pool routing).
+    embedding_health_path: str = "/health"
+
+    @field_validator("embedding_endpoints", mode="before")
+    @classmethod
+    def _split_embedding_endpoints(cls, value: object) -> object:
+        # pydantic-settings parses list[str] env vars as JSON, so a bare
+        # comma-separated operator input would otherwise raise. Accept both forms.
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                return json.loads(value)
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
     # embedding_model_dim is the vector dimension; defaults to BGE-base.
     # When embedding_api == "openai", set embedding_model to the OpenAI/vLLM model name.
     embedding_model_dim: int = 768

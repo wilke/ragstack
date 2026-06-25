@@ -51,6 +51,12 @@ Usage:
         --embedding-api openai \\
         --embedding-url http://localhost:9998 \\
         --embedding-model Salesforce/SFR-Embedding-Mistral
+
+    # fan out the bulk ingest across several replicas (load-balanced + failover):
+    python scripts/ingest_chunks.py path/to/chunks.json \\
+        --embedding-api openai \\
+        --embedding-url http://gpu0:9998 http://gpu1:9998 http://gpu2:9998 \\
+        --embedding-model Salesforce/SFR-Embedding-Mistral
 """
 from __future__ import annotations
 
@@ -64,6 +70,7 @@ from typing import Any
 
 import httpx
 
+from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.models import Chunk
 from ragstack.stores.qdrant import QdrantVectorStore
@@ -111,13 +118,24 @@ async def run(args: argparse.Namespace) -> None:
     )
 
     async with httpx.AsyncClient() as http:
-        embedder = make_embedder(
+        urls = args.embedding_url
+        common = dict(
             api=args.embedding_api,
             http=http,
-            base_url=args.embedding_url,
             model=args.embedding_model,
             api_key=os.getenv("OPENAI_API_KEY"),
         )
+        if len(urls) > 1:
+            embedder = make_pooled_embedder(
+                base_urls=urls,
+                max_concurrency=args.embedding_max_concurrency,
+                **common,
+            )
+            print(
+                f"embedding fan-out across {len(urls)} endpoints", file=sys.stderr
+            )
+        else:
+            embedder = make_embedder(base_url=urls[0], **common)
 
         # Embed first batch so we can size the collection to the model's dim.
         head, tail = chunks[: args.batch_size], chunks[args.batch_size:]
@@ -164,13 +182,23 @@ def main() -> None:
     )
     p.add_argument(
         "--embedding-url",
-        default="http://localhost:50053",
-        help="base URL of the embedding service (default: %(default)s)",
+        nargs="+",
+        default=["http://localhost:50053"],
+        help=(
+            "base URL(s) of the embedding service (default: %(default)s); "
+            "pass multiple to load-balance across them with failover"
+        ),
     )
     p.add_argument(
         "--embedding-model",
         default=None,
         help="model name (required for --embedding-api openai)",
+    )
+    p.add_argument(
+        "--embedding-max-concurrency",
+        type=int,
+        default=8,
+        help="max in-flight embedding requests when fanning out across URLs",
     )
     p.add_argument("--batch-size", type=int, default=64)
     args = p.parse_args()

@@ -87,6 +87,7 @@ def _build_embedder(http: httpx.AsyncClient):
         base = make_pooled_embedder(
             base_urls=urls,
             max_concurrency=settings.embedding_max_concurrency,
+            health_path=settings.embedding_health_path,
             **common,
         )
         log.info("embedding fan-out across %d endpoints", len(urls))

@@ -19,6 +19,12 @@ from ragstack.embedders import make_embedder
 
 log = logging.getLogger(__name__)
 
+# 4xx codes that mean "retry on another endpoint", not "bad input": a busy /
+# rate-limited or momentarily-unavailable endpoint. Every other 4xx is the
+# input's fault (it fails the same way on every endpoint) and must propagate so
+# BatchingEmbedder can quarantine it instead of pointlessly failing over.
+_RETRIABLE_STATUS = frozenset({408, 425, 429})
+
 
 class Endpoint:
     """One backend endpoint: its embedder, health URL, and live load."""
@@ -40,7 +46,9 @@ class PooledEmbedder:
     - **Least-loaded:** each request goes to the healthy endpoint with the fewest
       in-flight requests.
     - **Failover:** a 5xx / network failure demotes the endpoint and retries on
-      another. A 4xx is a bad-input error (same on every endpoint), so it
+      another. A retriable 4xx (429/408/425 — busy or rate-limited) also fails
+      over but does *not* demote, so a momentarily busy replica isn't sidelined.
+      Every other 4xx is a bad-input error (same on every endpoint), so it
       propagates unchanged — letting ``BatchingEmbedder`` quarantine the input
       instead of pointlessly failing over.
     - **Health:** endpoints are re-probed lazily at most every ``health_interval``
@@ -67,8 +75,10 @@ class PooledEmbedder:
         self._health_lock = asyncio.Lock()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        # Refresh health *outside* the semaphore: a slow probe round must not hold
+        # a backpressure permit hostage while it waits on /health GETs.
+        await self._maybe_refresh_health()
         async with self._sem:
-            await self._maybe_refresh_health()
             tried: set[int] = set()
             last_exc: Exception | None = None
             for _ in range(len(self._eps)):
@@ -79,18 +89,30 @@ class PooledEmbedder:
                 try:
                     return await ep.embedder.embed(texts)
                 except (httpx.HTTPError, OSError) as e:
+                    status = (
+                        e.response.status_code
+                        if isinstance(e, httpx.HTTPStatusError)
+                        else None
+                    )
                     if (
-                        isinstance(e, httpx.HTTPStatusError)
-                        and 400 <= e.response.status_code < 500
+                        status is not None
+                        and 400 <= status < 500
+                        and status not in _RETRIABLE_STATUS
                     ):
                         # Bad input, not an endpoint fault — let the caller handle it.
                         raise
-                    ep.healthy = False
+                    # Transient: a busy/rate-limited endpoint (retriable 4xx) or a
+                    # 5xx / network fault. Demote only on a real fault — a 429 means
+                    # "busy", not "down", so don't sideline a healthy replica for a
+                    # full health_interval.
+                    if status is None or status >= 500:
+                        ep.healthy = False
                     last_exc = e
                     tried.add(id(ep))
                     log.warning(
-                        "embedding endpoint %s failed, failing over: %s",
+                        "embedding endpoint %s failed (%s), failing over: %s",
                         ep.health_url,
+                        status or "network",
                         e,
                     )
                 finally:
@@ -135,13 +157,20 @@ def make_pooled_embedder(
     model: str | None = None,
     api_key: str | None = None,
     max_concurrency: int = 8,
+    health_path: str = "/health",
 ) -> PooledEmbedder:
     """Build a PooledEmbedder over ``base_urls`` using the same per-endpoint
-    embedder as the single-endpoint path (``make_embedder``)."""
+    embedder as the single-endpoint path (``make_embedder``).
+
+    ``health_path`` is the probe path appended to each base URL. The default
+    ``/health`` suits the sidecar and vLLM's OpenAI server; point it elsewhere
+    for backends that expose readiness under a different path (a backend with no
+    health route would otherwise read as permanently unhealthy)."""
+    suffix = health_path.lstrip("/")
     endpoints = [
         Endpoint(
             make_embedder(api=api, http=http, base_url=url, model=model, api_key=api_key),
-            health_url=f"{url.rstrip('/')}/health",
+            health_url=f"{url.rstrip('/')}/{suffix}",
         )
         for url in base_urls
     ]
