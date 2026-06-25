@@ -17,6 +17,7 @@ from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import InMemoryJobStore
+from ragstack.quota import TenantQuota
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 
 
@@ -41,8 +42,13 @@ async def client():
         text_index=text_index,
     )
 
+    tenant_quota = TenantQuota(0)
     ingestor = ShardedIngestor(
-        pipeline, LocalAsyncIORunner(max_concurrency=4), shard_size=64, job_store=job_store
+        pipeline,
+        LocalAsyncIORunner(max_concurrency=4),
+        shard_size=64,
+        job_store=job_store,
+        quota=tenant_quota,
     )
 
     app.state.embedder = embedder
@@ -51,6 +57,7 @@ async def client():
     app.state.job_store = job_store
     app.state.pipeline = pipeline
     app.state.ingestor = ingestor
+    app.state.tenant_quota = tenant_quota
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

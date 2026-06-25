@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import get_embedder, get_vector_store
+from ragstack.api.deps import get_embedder, get_tenant_quota, get_vector_store
 from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
 from ragstack.tenancy import scope_filters
@@ -67,16 +67,18 @@ async def retrieve(
     tenant: str = Depends(resolve_tenant),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
+    quota=Depends(get_tenant_quota),
 ) -> RetrieveResponse:
     """Retrieve relevant chunks (from the caller's tenant + public) without
     generating an answer."""
-    sources = await _retrieve(
-        request.query,
-        request.top_k,
-        scope_filters(request.filters, tenant),
-        embedder,
-        vector_store,
-    )
+    async with quota.slot(tenant):
+        sources = await _retrieve(
+            request.query,
+            request.top_k,
+            scope_filters(request.filters, tenant),
+            embedder,
+            vector_store,
+        )
     return RetrieveResponse(sources=sources)
 
 
@@ -86,19 +88,21 @@ async def query(
     tenant: str = Depends(resolve_tenant),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
+    quota=Depends(get_tenant_quota),
 ) -> QueryResponse:
     """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
     return them with the rewritten queries. The LLM-backed `answer` generation
     isn't wired yet, so we return a placeholder that surfaces what *would* be
     passed to it.
     """
-    sources = await _retrieve(
-        request.query,
-        request.top_k,
-        scope_filters(request.filters, tenant),
-        embedder,
-        vector_store,
-    )
+    async with quota.slot(tenant):
+        sources = await _retrieve(
+            request.query,
+            request.top_k,
+            scope_filters(request.filters, tenant),
+            embedder,
+            vector_store,
+        )
     answer = (
         f"[LLM not yet wired] retrieved {len(sources)} chunks for query "
         f"{request.query!r}; top score "

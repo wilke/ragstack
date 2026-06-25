@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     ingest_concurrency: int = 4
     ingest_shard_size: int = 64
 
+    # Per-tenant concurrency cap (fairness on the shared embedding fleet): the
+    # max in-flight ingest items + queries one tenant may have at once. 0 =
+    # unlimited.
+    tenant_max_concurrency: int = 0
+
     # Ingestion job tracking. "memory" is process-local (lost on restart);
     # "sqlite" is durable single-process; "postgres" is the multi-process
     # checkpoint of record for the 500k path (uses postgres_dsn).
