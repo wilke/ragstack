@@ -1,8 +1,6 @@
 """Scoring and reranking of retrieved chunks."""
 from __future__ import annotations
 
-import math
-
 from ragstack.models import Chunk, ScoredChunk
 
 
@@ -70,6 +68,6 @@ class CrossEncoderScorer:
         raw_scores: list[float] = self._model.predict(pairs).tolist()  # type: ignore[attr-defined]
         scored = [
             ScoredChunk(chunk=c, score=float(s), retrieval_method="reranked")
-            for c, s in zip(candidates, raw_scores)
+            for c, s in zip(candidates, raw_scores, strict=True)
         ]
         return sorted(scored, key=lambda x: x.score, reverse=True)

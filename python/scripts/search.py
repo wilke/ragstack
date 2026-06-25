@@ -19,10 +19,10 @@ Usage:
     python scripts/search.py "rerank" --filter tags=architecture
     python scripts/search.py "qdrant" --json > hits.json
 
-    # against vLLM:
+    # against vLLM (one or more replicas; multiple load-balance with failover):
     python scripts/search.py "what is HNSW" \\
         --embedding-api openai \\
-        --embedding-url http://localhost:9998 \\
+        --embedding-url http://gpu0:9998 http://gpu1:9998 \\
         --embedding-model Salesforce/SFR-Embedding-Mistral
 """
 from __future__ import annotations
@@ -35,6 +35,7 @@ import sys
 
 import httpx
 
+from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.stores.qdrant import QdrantVectorStore
 
@@ -53,13 +54,21 @@ async def run(args: argparse.Namespace) -> None:
     filters = parse_filters(args.filter) or None
 
     async with httpx.AsyncClient() as http:
-        embedder = make_embedder(
-            api=args.embedding_api,
-            http=http,
-            base_url=args.embedding_url,
-            model=args.embedding_model,
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
+        urls = args.embedding_url
+        common = {
+            "api": args.embedding_api,
+            "http": http,
+            "model": args.embedding_model,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        }
+        if len(urls) > 1:
+            embedder = make_pooled_embedder(
+                base_urls=urls,
+                max_concurrency=args.embedding_max_concurrency,
+                **common,
+            )
+        else:
+            embedder = make_embedder(base_url=urls[0], **common)
         qvec = (await embedder.embed([args.query]))[0]
 
     store = QdrantVectorStore(url=args.qdrant_url, collection=args.collection)
@@ -110,13 +119,23 @@ def main() -> None:
     )
     p.add_argument(
         "--embedding-url",
-        default="http://localhost:50053",
-        help="base URL of the embedding service (default: %(default)s)",
+        nargs="+",
+        default=["http://localhost:50053"],
+        help=(
+            "base URL(s) of the embedding service (default: %(default)s); "
+            "pass multiple to load-balance across them with failover"
+        ),
     )
     p.add_argument(
         "--embedding-model",
         default=None,
         help="model name (required for --embedding-api openai)",
+    )
+    p.add_argument(
+        "--embedding-max-concurrency",
+        type=int,
+        default=8,
+        help="max in-flight embedding requests when fanning out across URLs",
     )
     p.add_argument("--top-k", type=int, default=5)
     p.add_argument(
