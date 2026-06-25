@@ -26,14 +26,9 @@ def resolve_tenant(api_key: str | None = Security(_api_key_header)) -> str:
     keys = settings.api_keys
     if not keys:
         return DEFAULT_TENANT
-    # Compare against every configured key without short-circuiting, so total
-    # time doesn't reveal which key matched (or how far down the list it was).
-    matched = False
-    if api_key is not None:
-        for k in keys:
-            if secrets.compare_digest(api_key, k):
-                matched = True
-    if matched:
+    # sum() over the generator evaluates every compare_digest (no short-circuit),
+    # so total time doesn't reveal which key matched or how far down the list.
+    if api_key is not None and sum(secrets.compare_digest(api_key, k) for k in keys) > 0:
         return settings.api_key_tenants.get(api_key, DEFAULT_TENANT)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

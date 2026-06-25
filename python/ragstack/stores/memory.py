@@ -5,7 +5,7 @@ import math
 from typing import Any
 
 from ragstack.models import Chunk, ScoredChunk, Triple
-from ragstack.tenancy import DEFAULT_TENANT
+from ragstack.tenancy import tenant_of
 
 
 def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
@@ -21,10 +21,6 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
         elif actual != value:
             return False
     return True
-
-
-def _tenant_of(chunk: Chunk) -> str:
-    return str(chunk.metadata.get("tenant_id", DEFAULT_TENANT))
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -45,11 +41,8 @@ class InMemoryVectorStore:
     async def upsert(self, chunks: list[Chunk]) -> None:
         # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
         # coexist rather than clobbering each other.
-        def key(c: Chunk) -> tuple[str, str]:
-            return (_tenant_of(c), c.id)
-
-        incoming = {key(c) for c in chunks}
-        self._chunks = [c for c in self._chunks if key(c) not in incoming]
+        incoming = {(tenant_of(c), c.id) for c in chunks}
+        self._chunks = [c for c in self._chunks if (tenant_of(c), c.id) not in incoming]
         self._chunks.extend(chunks)
 
     async def search(
@@ -76,7 +69,7 @@ class InMemoryVectorStore:
         self._chunks = [
             c
             for c in self._chunks
-            if not (c.doc_id == doc_id and (tenant_id is None or _tenant_of(c) == tenant_id))
+            if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
         ]
 
 
@@ -89,9 +82,9 @@ class InMemoryTextIndex:
     async def index(self, chunks: list[Chunk]) -> None:
         # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
         # coexist rather than the second being dropped as a duplicate.
-        existing = {(_tenant_of(c), c.id) for c in self._chunks}
+        existing = {(tenant_of(c), c.id) for c in self._chunks}
         for chunk in chunks:
-            key = (_tenant_of(chunk), chunk.id)
+            key = (tenant_of(chunk), chunk.id)
             if key not in existing:
                 self._chunks.append(chunk)
                 existing.add(key)
@@ -124,7 +117,7 @@ class InMemoryTextIndex:
         self._chunks = [
             c
             for c in self._chunks
-            if not (c.doc_id == doc_id and (tenant_id is None or _tenant_of(c) == tenant_id))
+            if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
         ]
 
 

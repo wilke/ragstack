@@ -19,7 +19,7 @@ from qdrant_client.models import (
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
-from ragstack.tenancy import DEFAULT_TENANT
+from ragstack.tenancy import DEFAULT_TENANT, tenant_of
 
 __all__ = ["QdrantVectorStore", "VectorDimMismatch", "collection_name"]
 
@@ -114,7 +114,7 @@ class QdrantVectorStore:
         for c in chunks:
             if c.embedding is None:
                 raise ValueError(f"chunk {c.id!r} has no embedding")
-            tenant = str(c.metadata.get("tenant_id", DEFAULT_TENANT))
+            tenant = tenant_of(c)
             payload: dict[str, Any] = {
                 "chunk_id": c.id,
                 "doc_id": c.doc_id,

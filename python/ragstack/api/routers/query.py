@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from ragstack.api.deps import get_embedder, get_vector_store
 from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
-from ragstack.tenancy import readable_tenants
+from ragstack.tenancy import scope_filters
 
 router = APIRouter()
 
@@ -61,12 +61,6 @@ async def _retrieve(
     ]
 
 
-def _tenant_filters(filters: dict[str, Any], tenant: str) -> dict[str, Any]:
-    """Scope a request's filters to the tenants the caller may read (own +
-    public). The tenant_id is set server-side last, so a client can't widen it."""
-    return {**filters, "tenant_id": readable_tenants(tenant)}
-
-
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     request: RetrieveRequest,
@@ -79,7 +73,7 @@ async def retrieve(
     sources = await _retrieve(
         request.query,
         request.top_k,
-        _tenant_filters(request.filters, tenant),
+        scope_filters(request.filters, tenant),
         embedder,
         vector_store,
     )
@@ -101,7 +95,7 @@ async def query(
     sources = await _retrieve(
         request.query,
         request.top_k,
-        _tenant_filters(request.filters, tenant),
+        scope_filters(request.filters, tenant),
         embedder,
         vector_store,
     )

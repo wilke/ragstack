@@ -41,7 +41,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.stores.qdrant import QdrantVectorStore
-from ragstack.tenancy import readable_tenants
+from ragstack.tenancy import scope_filters
 
 
 def parse_filters(items: list[str]) -> dict[str, str]:
@@ -55,9 +55,8 @@ def parse_filters(items: list[str]) -> dict[str, str]:
 
 
 async def run(args: argparse.Namespace) -> None:
-    filters = parse_filters(args.filter)
-    # Set last so a user-supplied --filter tenant_id=... can't widen the scope.
-    filters["tenant_id"] = readable_tenants(args.tenant)
+    # scope_filters sets tenant_id last so a user --filter tenant_id=... can't widen it.
+    filters = scope_filters(parse_filters(args.filter), args.tenant)
 
     async with httpx.AsyncClient() as http:
         urls = args.embedding_url
