@@ -14,6 +14,7 @@ from ragstack.ingestion.backends import IngestBackend, partition
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.jobstore import COMPLETED, FAILED, JobStore
+from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +33,10 @@ class ShardedIngestor:
         self._job_store = job_store
 
     async def ingest_manifest(
-        self, manifest: Manifest, job_id: str | None = None
+        self,
+        manifest: Manifest,
+        job_id: str | None = None,
+        tenant_id: str = DEFAULT_TENANT,
     ) -> list[ItemResult]:
         """Process the manifest, returning a result per *processed* item.
 
@@ -55,15 +59,15 @@ class ShardedIngestor:
 
         shards = partition(items, self._shard_size)
         return await self._backend.run_shards(
-            shards, lambda shard: self._run_shard(shard, job_id)
+            shards, lambda shard: self._run_shard(shard, job_id, tenant_id)
         )
 
     async def _run_shard(
-        self, shard: list[WorkItem], job_id: str | None
+        self, shard: list[WorkItem], job_id: str | None, tenant_id: str
     ) -> list[ItemResult]:
         results: list[ItemResult] = []
         for item in shard:
-            result = await self._ingest_item(item)
+            result = await self._ingest_item(item, tenant_id)
             if self._job_store is not None and job_id is not None:
                 await self._job_store.mark_item(
                     job_id,
@@ -75,9 +79,9 @@ class ShardedIngestor:
             results.append(result)
         return results
 
-    async def _ingest_item(self, item: WorkItem) -> ItemResult:
+    async def _ingest_item(self, item: WorkItem, tenant_id: str) -> ItemResult:
         try:
-            chunk_ids = await self._pipeline.ingest(item.source)
+            chunk_ids = await self._pipeline.ingest(item.source, tenant_id=tenant_id)
         except Exception as e:
             log.warning("ingest item %s failed: %s", item.item_id, e)
             return ItemResult(

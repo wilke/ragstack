@@ -104,6 +104,10 @@ class Settings(BaseSettings):
 
     # API
     api_keys: list[str] = Field(default_factory=list)
+    # Maps an API key to its tenant_id (data isolation). Keys absent from the map
+    # resolve to the "default" tenant. A key mapped to "public" writes into the
+    # shared public corpus everyone can read.
+    api_key_tenants: dict[str, str] = Field(default_factory=dict)
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # Retrieval defaults

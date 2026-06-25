@@ -7,7 +7,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from ragstack.api.deps import get_embedder, get_vector_store
+from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
+from ragstack.tenancy import readable_tenants
 
 router = APIRouter()
 
@@ -59,15 +61,27 @@ async def _retrieve(
     ]
 
 
+def _tenant_filters(filters: dict[str, Any], tenant: str) -> dict[str, Any]:
+    """Scope a request's filters to the tenants the caller may read (own +
+    public). The tenant_id is set server-side last, so a client can't widen it."""
+    return {**filters, "tenant_id": readable_tenants(tenant)}
+
+
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     request: RetrieveRequest,
+    tenant: str = Depends(resolve_tenant),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
 ) -> RetrieveResponse:
-    """Retrieve relevant chunks without generating an answer."""
+    """Retrieve relevant chunks (from the caller's tenant + public) without
+    generating an answer."""
     sources = await _retrieve(
-        request.query, request.top_k, request.filters, embedder, vector_store
+        request.query,
+        request.top_k,
+        _tenant_filters(request.filters, tenant),
+        embedder,
+        vector_store,
     )
     return RetrieveResponse(sources=sources)
 
@@ -75,15 +89,21 @@ async def retrieve(
 @router.post("/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
+    tenant: str = Depends(resolve_tenant),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
 ) -> QueryResponse:
-    """Full RAG flow: retrieve relevant chunks and return them with the
-    rewritten queries. The LLM-backed `answer` generation isn't wired yet,
-    so we return a placeholder that surfaces what *would* be passed to it.
+    """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
+    return them with the rewritten queries. The LLM-backed `answer` generation
+    isn't wired yet, so we return a placeholder that surfaces what *would* be
+    passed to it.
     """
     sources = await _retrieve(
-        request.query, request.top_k, request.filters, embedder, vector_store
+        request.query,
+        request.top_k,
+        _tenant_filters(request.filters, tenant),
+        embedder,
+        vector_store,
     )
     answer = (
         f"[LLM not yet wired] retrieved {len(sources)} chunks for query "
