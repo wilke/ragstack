@@ -2,9 +2,9 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-06-24
-**Current tag:** [`v0.5.0`](https://github.com/wilke/ragstack/releases/tag/v0.5.0) at `284a344`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), and the multi-endpoint embedder pool (PR #8) merged; see the M1/M2/pool sections below.
+**Last updated:** 2026-06-25
+**Current tag:** [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) at `bad0ef3`
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), and tenant isolation (PR #10) merged; see the M1/M2/pool sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -125,6 +125,8 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 | [`v0.3.0`](https://github.com/wilke/ragstack/releases/tag/v0.3.0) | `435b81c` | 2026-06-24 | Functional REST API — Qdrant wired into the FastAPI app (`/v1/ingest`, `/v1/retrieve`, `/v1/query`, `DELETE`) |
 | [`v0.4.0`](https://github.com/wilke/ragstack/releases/tag/v0.4.0) | `03d549e` | 2026-06-24 | M1 ingest hardening (PR #4) — deterministic IDs, PDF + LFI confinement, async ingest/JobStore, bounded+poison-isolated embed, (model,dim) collection scoping, durable-backend gate, API-key auth |
 | [`v0.5.0`](https://github.com/wilke/ragstack/releases/tag/v0.5.0) | `284a344` | 2026-06-24 | M2 scalable ingestion (PR #5) — sharded-ingestion seam (manifest + IngestBackend + runner), per-item resumable checkpoint, PostgresJobStore, batch/directory ingest with per-item counts |
+| [`v0.6.0`](https://github.com/wilke/ragstack/releases/tag/v0.6.0) | `a4432ac` | 2026-06-25 | Multi-endpoint embedder pool (PR #8) — `PooledEmbedder` fan-out across backends with least-loaded routing, global concurrency cap, 5xx/retriable-4xx failover, lazy health re-probe |
+| [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) | `bad0ef3` | 2026-06-25 | Tenant isolation (PR #10) — server-derived `tenant_id` per API key, tenant-scoped vector/text/graph stores, shared `public` corpus, read-scope set server-side; fail-closed on partial tenant maps |
 
 ## Production layout (`/rag/`)
 
