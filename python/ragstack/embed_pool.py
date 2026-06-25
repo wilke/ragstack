@@ -91,7 +91,7 @@ class PooledEmbedder:
                 except (httpx.HTTPError, OSError) as e:
                     status = (
                         e.response.status_code
-                        if isinstance(e, httpx.HTTPStatusError)
+                        if isinstance(e, httpx.HTTPStatusError) and e.response is not None
                         else None
                     )
                     if (

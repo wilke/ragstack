@@ -55,12 +55,12 @@ async def run(args: argparse.Namespace) -> None:
 
     async with httpx.AsyncClient() as http:
         urls = args.embedding_url
-        common = dict(
-            api=args.embedding_api,
-            http=http,
-            model=args.embedding_model,
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
+        common = {
+            "api": args.embedding_api,
+            "http": http,
+            "model": args.embedding_model,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        }
         if len(urls) > 1:
             embedder = make_pooled_embedder(
                 base_urls=urls,

@@ -119,12 +119,12 @@ async def run(args: argparse.Namespace) -> None:
 
     async with httpx.AsyncClient() as http:
         urls = args.embedding_url
-        common = dict(
-            api=args.embedding_api,
-            http=http,
-            model=args.embedding_model,
-            api_key=os.getenv("OPENAI_API_KEY"),
-        )
+        common = {
+            "api": args.embedding_api,
+            "http": http,
+            "model": args.embedding_model,
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        }
         if len(urls) > 1:
             embedder = make_pooled_embedder(
                 base_urls=urls,
@@ -151,7 +151,7 @@ async def run(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
 
-        for c, v in zip(head, head_vecs):
+        for c, v in zip(head, head_vecs, strict=True):
             c.embedding = v
         await store.upsert(head)
         done = len(head)
@@ -160,7 +160,7 @@ async def run(args: argparse.Namespace) -> None:
         for i in range(0, len(tail), args.batch_size):
             batch = tail[i : i + args.batch_size]
             vecs = await embedder.embed([c.content for c in batch])
-            for c, v in zip(batch, vecs):
+            for c, v in zip(batch, vecs, strict=True):
                 c.embedding = v
             await store.upsert(batch)
             done += len(batch)
