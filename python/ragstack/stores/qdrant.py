@@ -186,13 +186,18 @@ def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
 def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     """Build a Qdrant filter from a flat dict. A list value matches *any* of its
     entries (MatchAny) — used for tenant reads (own + public); a scalar is an
-    exact match."""
+    exact match. Keep the empty-list handling in sync with ``_matches`` in
+    stores/memory.py."""
     if not filters:
         return None
     conditions = []
     for key, value in filters.items():
         if isinstance(value, (list, tuple, set)):
+            if not value:
+                continue  # empty multi-value filter = no constraint on this key
             conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value))))
         else:
             conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+    if not conditions:
+        return None
     return Filter(must=conditions)

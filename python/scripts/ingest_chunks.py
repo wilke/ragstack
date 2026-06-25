@@ -46,6 +46,9 @@ Usage:
     pip install -e ".[vector]"
     python scripts/ingest_chunks.py path/to/chunks.json
 
+    # stamp a tenant_id so the corpus is visible to that tenant (data isolation):
+    python scripts/ingest_chunks.py path/to/chunks.json --tenant acme
+
     # against vLLM serving SFR-Embedding-Mistral on :9998:
     python scripts/ingest_chunks.py path/to/chunks.json \\
         --embedding-api openai \\
@@ -110,6 +113,8 @@ async def run(args: argparse.Namespace) -> None:
     raw = json.loads(args.input.read_text())
     docs = raw if isinstance(raw, list) else [raw]
     chunks = flatten(docs)
+    for c in chunks:
+        c.metadata["tenant_id"] = args.tenant
     if not chunks:
         print("no chunks to ingest", file=sys.stderr)
         return
@@ -174,6 +179,14 @@ def main() -> None:
     p.add_argument("input", type=Path, help="JSON file with documents+chunks")
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--collection", default="ragstack")
+    p.add_argument(
+        "--tenant",
+        default="default",
+        help=(
+            "tenant_id to stamp on every ingested chunk (data isolation); "
+            "use 'public' for a world-readable corpus"
+        ),
+    )
     p.add_argument(
         "--embedding-api",
         choices=["sidecar", "openai"],

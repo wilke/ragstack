@@ -136,6 +136,17 @@ def _validate_production_settings() -> None:
             "require_durable_backends is set but these production settings are "
             f"unset: {', '.join(missing)}"
         )
+    # Fail closed on a partial tenant map: if any key→tenant mapping is set, every
+    # configured key must be mapped. Otherwise an unmapped key silently collapses
+    # into the shared "default" tenant and loses isolation. (Keys are not logged.)
+    if settings.api_key_tenants:
+        unmapped = sum(1 for k in settings.api_keys if k not in settings.api_key_tenants)
+        if unmapped:
+            raise RuntimeError(
+                f"api_key_tenants is set but {unmapped} configured api_key(s) have no "
+                "tenant mapping; map every key (unmapped keys would share the "
+                "'default' tenant and break isolation)"
+            )
 
 
 @asynccontextmanager

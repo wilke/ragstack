@@ -107,9 +107,9 @@ class IngestionPipeline:
         # so old data is never destroyed before its replacement exists.
         for doc in documents:
             await self.vector_store.delete(doc.id, tenant_id=tenant_id)
-            await self.text_index.delete(doc.id)
+            await self.text_index.delete(doc.id, tenant_id=tenant_id)
             if self.graph_store is not None:
-                await self.graph_store.delete_by_doc(doc.id)
+                await self.graph_store.delete_by_doc(doc.id, tenant_id=tenant_id)
 
         # Index
         await self.vector_store.upsert(all_chunks)
@@ -118,6 +118,10 @@ class IngestionPipeline:
         # Knowledge-graph extraction (optional)
         if self.kg_extractor and self.graph_store:
             triples = await self.kg_extractor.extract(all_chunks)
+            # Stamp the owning tenant on every triple so graph deletes/reads can be
+            # tenant-scoped regardless of what the extractor populated.
+            for triple in triples:
+                triple.tenant_id = tenant_id
             await self.graph_store.add_triples(triples)
 
         return [c.id for c in all_chunks]

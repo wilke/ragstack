@@ -19,6 +19,9 @@ Usage:
     python scripts/search.py "rerank" --filter tags=architecture
     python scripts/search.py "qdrant" --json > hits.json
 
+    # reads are tenant-scoped: only this tenant's chunks (+ public) are returned:
+    python scripts/search.py "what is HNSW?" --tenant acme
+
     # against vLLM (one or more replicas; multiple load-balance with failover):
     python scripts/search.py "what is HNSW" \\
         --embedding-api openai \\
@@ -38,6 +41,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.stores.qdrant import QdrantVectorStore
+from ragstack.tenancy import readable_tenants
 
 
 def parse_filters(items: list[str]) -> dict[str, str]:
@@ -51,7 +55,9 @@ def parse_filters(items: list[str]) -> dict[str, str]:
 
 
 async def run(args: argparse.Namespace) -> None:
-    filters = parse_filters(args.filter) or None
+    filters = parse_filters(args.filter)
+    # Set last so a user-supplied --filter tenant_id=... can't widen the scope.
+    filters["tenant_id"] = readable_tenants(args.tenant)
 
     async with httpx.AsyncClient() as http:
         urls = args.embedding_url
@@ -112,6 +118,14 @@ def main() -> None:
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--collection", default="ragstack")
     p.add_argument(
+        "--tenant",
+        default="default",
+        help=(
+            "tenant whose chunks (plus 'public') are searched; reads are "
+            "tenant-scoped and this scope can't be widened via --filter"
+        ),
+    )
+    p.add_argument(
         "--embedding-api",
         choices=["sidecar", "openai"],
         default="sidecar",
@@ -143,7 +157,8 @@ def main() -> None:
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="restrict to chunks whose payload has KEY=VALUE (repeatable)",
+        help="restrict to chunks whose payload has KEY=VALUE (repeatable); "
+        "the --tenant read scope is always applied on top and wins on conflict",
     )
     p.add_argument("--json", action="store_true", help="emit JSON instead of text")
     args = p.parse_args()

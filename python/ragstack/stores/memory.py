@@ -14,6 +14,8 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
         if isinstance(value, (list, tuple, set)):
+            if not value:
+                continue  # empty multi-value filter = no constraint on this key
             if actual not in value:
                 return False
         elif actual != value:
@@ -85,10 +87,14 @@ class InMemoryTextIndex:
         self._chunks: list[Chunk] = []
 
     async def index(self, chunks: list[Chunk]) -> None:
-        existing_ids = {c.id for c in self._chunks}
+        # Identity is (tenant, chunk id) so two tenants' copies of the same chunk
+        # coexist rather than the second being dropped as a duplicate.
+        existing = {(_tenant_of(c), c.id) for c in self._chunks}
         for chunk in chunks:
-            if chunk.id not in existing_ids:
+            key = (_tenant_of(chunk), chunk.id)
+            if key not in existing:
                 self._chunks.append(chunk)
+                existing.add(key)
 
     async def search(
         self,
@@ -114,8 +120,12 @@ class InMemoryTextIndex:
                 )
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
-    async def delete(self, doc_id: str) -> None:
-        self._chunks = [c for c in self._chunks if c.doc_id != doc_id]
+    async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
+        self._chunks = [
+            c
+            for c in self._chunks
+            if not (c.doc_id == doc_id and (tenant_id is None or _tenant_of(c) == tenant_id))
+        ]
 
 
 class InMemoryGraphStore:
@@ -155,5 +165,9 @@ class InMemoryGraphStore:
                 unique.append(t)
         return unique
 
-    async def delete_by_doc(self, doc_id: str) -> None:
-        self._triples = [t for t in self._triples if t.doc_id != doc_id]
+    async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
+        self._triples = [
+            t
+            for t in self._triples
+            if not (t.doc_id == doc_id and (tenant_id is None or t.tenant_id == tenant_id))
+        ]

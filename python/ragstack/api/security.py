@@ -26,14 +26,16 @@ def resolve_tenant(api_key: str | None = Security(_api_key_header)) -> str:
     keys = settings.api_keys
     if not keys:
         return DEFAULT_TENANT
-    if api_key is not None and any(secrets.compare_digest(api_key, k) for k in keys):
+    # Compare against every configured key without short-circuiting, so total
+    # time doesn't reveal which key matched (or how far down the list it was).
+    matched = False
+    if api_key is not None:
+        for k in keys:
+            if secrets.compare_digest(api_key, k):
+                matched = True
+    if matched:
         return settings.api_key_tenants.get(api_key, DEFAULT_TENANT)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="missing or invalid API key",
     )
-
-
-# Back-compat alias: the enforcement-only dependency.
-def require_api_key(api_key: str | None = Security(_api_key_header)) -> None:
-    resolve_tenant(api_key)

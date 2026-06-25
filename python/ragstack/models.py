@@ -34,6 +34,7 @@ class Triple(BaseModel):
     predicate: str
     object: str
     doc_id: str = ""
+    tenant_id: str = ""
 
 
 class ScoredChunk(BaseModel):
