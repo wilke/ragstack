@@ -22,6 +22,7 @@ from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
+from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -115,6 +116,21 @@ def _build_text_index():
             "the lexical index will not survive restart"
         )
     return InMemoryTextIndex()
+
+
+def _build_generator(http: httpx.AsyncClient) -> RagGenerator | None:
+    """Build the RAG answer generator if an LLM endpoint is configured; else None
+    (so /v1/query keeps its retrieval-only placeholder)."""
+    if not settings.llm_endpoint:
+        return None
+    llm = OpenAILLM(
+        base_url=settings.llm_endpoint,
+        model=settings.llm_model,
+        http=http,
+        api_key=settings.openai_api_key or None,
+    )
+    log.info("LLM generation enabled: %s @ %s", settings.llm_model, settings.llm_endpoint)
+    return RagGenerator(llm)
 
 
 def _validate_production_settings() -> None:
@@ -220,6 +236,7 @@ async def lifespan(app: FastAPI):
     app.state.pipeline = pipeline
     app.state.job_store = job_store
     app.state.ingestor = ingestor
+    app.state.generator = _build_generator(http_client)
 
     try:
         yield
@@ -240,6 +257,10 @@ def get_vector_store(request: Request):
 
 def get_embedder(request: Request):
     return request.app.state.embedder
+
+
+def get_generator(request: Request):
+    return request.app.state.generator
 
 
 def get_job_store(request: Request):

@@ -51,6 +51,7 @@ async def client():
     app.state.job_store = job_store
     app.state.pipeline = pipeline
     app.state.ingestor = ingestor
+    app.state.generator = None  # no LLM by default → placeholder answer
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

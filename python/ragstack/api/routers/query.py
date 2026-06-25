@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import get_embedder, get_vector_store
+from ragstack.api.deps import get_embedder, get_generator, get_vector_store
 from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
 from ragstack.tenancy import scope_filters
@@ -80,17 +80,26 @@ async def retrieve(
     return RetrieveResponse(sources=sources)
 
 
+def _placeholder_answer(query_text: str, sources: list[Source]) -> str:
+    if sources:
+        return (
+            f"[LLM not configured] retrieved {len(sources)} chunks for query "
+            f"{query_text!r}; top score {sources[0].score:.4f}"
+        )
+    return f"[LLM not configured] no relevant chunks found for query {query_text!r}"
+
+
 @router.post("/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
     tenant: str = Depends(resolve_tenant),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
+    generator=Depends(get_generator),
 ) -> QueryResponse:
     """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
-    return them with the rewritten queries. The LLM-backed `answer` generation
-    isn't wired yet, so we return a placeholder that surfaces what *would* be
-    passed to it.
+    generate a grounded answer. When no LLM endpoint is configured the answer is
+    a retrieval-only placeholder.
     """
     sources = await _retrieve(
         request.query,
@@ -99,12 +108,10 @@ async def query(
         embedder,
         vector_store,
     )
-    answer = (
-        f"[LLM not yet wired] retrieved {len(sources)} chunks for query "
-        f"{request.query!r}; top score "
-        f"{sources[0].score:.4f}" if sources else
-        f"[LLM not yet wired] no relevant chunks found for query {request.query!r}"
-    )
+    if generator is not None:
+        answer = await generator.generate(request.query, sources)
+    else:
+        answer = _placeholder_answer(request.query, sources)
     return QueryResponse(
         answer=answer,
         sources=sources,
