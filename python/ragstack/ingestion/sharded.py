@@ -14,6 +14,7 @@ from ragstack.ingestion.backends import IngestBackend, partition
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.jobstore import COMPLETED, FAILED, JobStore
+from ragstack.quota import TenantQuota
 from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
@@ -26,11 +27,14 @@ class ShardedIngestor:
         backend: IngestBackend,
         shard_size: int = 64,
         job_store: JobStore | None = None,
+        quota: TenantQuota | None = None,
     ) -> None:
         self._pipeline = pipeline
         self._backend = backend
         self._shard_size = shard_size
         self._job_store = job_store
+        # No quota configured → unlimited (a disabled TenantQuota).
+        self._quota = quota or TenantQuota(0)
 
     async def ingest_manifest(
         self,
@@ -81,7 +85,10 @@ class ShardedIngestor:
 
     async def _ingest_item(self, item: WorkItem, tenant_id: str) -> ItemResult:
         try:
-            chunk_ids = await self._pipeline.ingest(item.source, tenant_id=tenant_id)
+            # Hold one of the tenant's concurrency slots so a single tenant can't
+            # monopolize the shared embedding fleet during a large ingest.
+            async with self._quota.slot(tenant_id):
+                chunk_ids = await self._pipeline.ingest(item.source, tenant_id=tenant_id)
         except Exception as e:
             log.warning("ingest item %s failed: %s", item.item_id, e)
             return ItemResult(
