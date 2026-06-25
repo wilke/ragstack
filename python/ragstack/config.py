@@ -83,7 +83,9 @@ class Settings(BaseSettings):
 
     # Per-tenant concurrency cap (fairness on the shared embedding fleet): the
     # max in-flight ingest items + queries one tenant may have at once. 0 =
-    # unlimited.
+    # unlimited. For real isolation set this below embedding_max_concurrency —
+    # otherwise tenants still all contend on the embedder pool's global cap and
+    # the per-tenant bound buys little.
     tenant_max_concurrency: int = 0
 
     # Ingestion job tracking. "memory" is process-local (lost on restart);

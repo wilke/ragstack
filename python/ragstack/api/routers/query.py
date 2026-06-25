@@ -1,6 +1,7 @@
 """Query and retrieve endpoints."""
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -61,48 +62,55 @@ async def _retrieve(
     ]
 
 
+async def tenant_slot(
+    tenant: str = Depends(resolve_tenant),
+    quota=Depends(get_tenant_quota),
+) -> AsyncIterator[str]:
+    """Resolve the caller's tenant and hold one of its concurrency slots for the
+    whole request — admission control so one tenant can't monopolize the shared
+    embedding fleet. Yields the tenant for read-scoping."""
+    async with quota.slot(tenant):
+        yield tenant
+
+
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     request: RetrieveRequest,
-    tenant: str = Depends(resolve_tenant),
+    tenant: str = Depends(tenant_slot),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
-    quota=Depends(get_tenant_quota),
 ) -> RetrieveResponse:
     """Retrieve relevant chunks (from the caller's tenant + public) without
     generating an answer."""
-    async with quota.slot(tenant):
-        sources = await _retrieve(
-            request.query,
-            request.top_k,
-            scope_filters(request.filters, tenant),
-            embedder,
-            vector_store,
-        )
+    sources = await _retrieve(
+        request.query,
+        request.top_k,
+        scope_filters(request.filters, tenant),
+        embedder,
+        vector_store,
+    )
     return RetrieveResponse(sources=sources)
 
 
 @router.post("/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
-    tenant: str = Depends(resolve_tenant),
+    tenant: str = Depends(tenant_slot),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
-    quota=Depends(get_tenant_quota),
 ) -> QueryResponse:
     """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
     return them with the rewritten queries. The LLM-backed `answer` generation
     isn't wired yet, so we return a placeholder that surfaces what *would* be
     passed to it.
     """
-    async with quota.slot(tenant):
-        sources = await _retrieve(
-            request.query,
-            request.top_k,
-            scope_filters(request.filters, tenant),
-            embedder,
-            vector_store,
-        )
+    sources = await _retrieve(
+        request.query,
+        request.top_k,
+        scope_filters(request.filters, tenant),
+        embedder,
+        vector_store,
+    )
     answer = (
         f"[LLM not yet wired] retrieved {len(sources)} chunks for query "
         f"{request.query!r}; top score "

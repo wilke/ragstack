@@ -18,6 +18,10 @@ from contextlib import asynccontextmanager
 class TenantQuota:
     def __init__(self, limit: int) -> None:
         self._limit = limit
+        # One Semaphore per tenant, created lazily and kept for the process
+        # lifetime. Tenant strings come from the bounded api_key_tenants map, so
+        # this never grows unbounded; add eviction if tenant ever derives from
+        # untrusted/arbitrary input.
         self._sems: dict[str, asyncio.Semaphore] = {}
 
     @asynccontextmanager

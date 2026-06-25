@@ -208,6 +208,14 @@ async def lifespan(app: FastAPI):
         )
 
     tenant_quota = TenantQuota(settings.tenant_max_concurrency)
+    if 0 < settings.embedding_max_concurrency <= settings.tenant_max_concurrency:
+        log.warning(
+            "tenant_max_concurrency (%d) >= embedding_max_concurrency (%d): the "
+            "per-tenant quota won't isolate tenants on the shared embedder pool; "
+            "set it lower for real fairness.",
+            settings.tenant_max_concurrency,
+            settings.embedding_max_concurrency,
+        )
     ingestor = ShardedIngestor(
         pipeline,
         LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency),
