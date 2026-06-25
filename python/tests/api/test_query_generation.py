@@ -36,3 +36,22 @@ async def test_query_placeholder_without_generator(client):
     body = resp.json()
     assert "answer" in body and "sources" in body
     assert "[LLM not configured]" in body["answer"]
+
+
+class _BoomGenerator:
+    async def generate(self, query, sources) -> str:
+        raise RuntimeError("LLM endpoint is down")
+
+
+@pytest.mark.asyncio
+async def test_query_degrades_when_generation_fails(client):
+    # Retrieval succeeded; an LLM outage must degrade to sources + a note, not 500.
+    app.state.generator = _BoomGenerator()
+    try:
+        resp = await client.post("/v1/query", json={"query": "what is RAG?"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "[answer generation failed]" in body["answer"]
+        assert "sources" in body
+    finally:
+        app.state.generator = None

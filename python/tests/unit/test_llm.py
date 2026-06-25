@@ -1,7 +1,8 @@
 """Unit tests for the RAG answer generator."""
+import httpx
 import pytest
 
-from ragstack.llm import RagGenerator
+from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.models import Source
 
 
@@ -53,3 +54,32 @@ async def test_context_respects_char_budget():
     # First passage always included; the budget stops further ones.
     assert "x" * 15 in ctx
     assert "z" * 15 not in ctx
+
+
+async def _complete_against(payload: dict) -> str:
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http)
+        return await llm.complete([{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_on_empty_choices():
+    # Content-filtered / gateway responses can omit choices → must not IndexError.
+    with pytest.raises(ValueError):
+        await _complete_against({"choices": []})
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_on_null_content():
+    # finish_reason length / tool_calls can yield null content → must not return None.
+    with pytest.raises(ValueError):
+        await _complete_against({"choices": [{"message": {"content": None}}]})
+
+
+@pytest.mark.asyncio
+async def test_complete_returns_content_on_well_formed_response():
+    out = await _complete_against({"choices": [{"message": {"content": "hello"}}]})
+    assert out == "hello"

@@ -1,6 +1,7 @@
 """Query and retrieve endpoints."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -11,6 +12,7 @@ from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
 from ragstack.tenancy import scope_filters
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -80,13 +82,15 @@ async def retrieve(
     return RetrieveResponse(sources=sources)
 
 
-def _placeholder_answer(query_text: str, sources: list[Source]) -> str:
+def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str:
+    """A non-generated answer (no LLM configured, or generation failed) that still
+    surfaces what was retrieved so the caller gets the sources, not just an error."""
     if sources:
         return (
-            f"[LLM not configured] retrieved {len(sources)} chunks for query "
+            f"{prefix} retrieved {len(sources)} chunks for query "
             f"{query_text!r}; top score {sources[0].score:.4f}"
         )
-    return f"[LLM not configured] no relevant chunks found for query {query_text!r}"
+    return f"{prefix} no relevant chunks found for query {query_text!r}"
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -108,10 +112,16 @@ async def query(
         embedder,
         vector_store,
     )
-    if generator is not None:
-        answer = await generator.generate(request.query, sources)
+    if generator is None:
+        answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:
-        answer = _placeholder_answer(request.query, sources)
+        try:
+            answer = await generator.generate(request.query, sources)
+        except Exception:
+            # Retrieval already succeeded — don't fail the whole query on an LLM
+            # outage or a malformed/empty response. Return the sources with a note.
+            log.warning("answer generation failed; returning sources only", exc_info=True)
+            answer = _fallback_answer("[answer generation failed]", request.query, sources)
     return QueryResponse(
         answer=answer,
         sources=sources,

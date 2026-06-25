@@ -59,7 +59,18 @@ class OpenAILLM:
             timeout=120.0,
         )
         r.raise_for_status()
-        return r.json()["choices"][0]["message"]["content"]
+        # Don't trust the response shape: some OpenAI-compatible servers return no
+        # choices (content filter) or a null content (finish_reason length /
+        # tool_calls). Surface a clear error the caller can degrade on rather than
+        # an IndexError / a None answer that fails response validation downstream.
+        data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise ValueError("LLM response contained no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if not content:
+            raise ValueError("LLM returned an empty answer")
+        return content
 
 
 class RagGenerator:
@@ -74,10 +85,13 @@ class RagGenerator:
         used = 0
         for i, s in enumerate(sources, start=1):
             block = f"[{i}] {s.content}"
-            if parts and used + len(block) > self._max_context_chars:
-                break  # keep at least one passage; otherwise stop at the budget
+            sep = 2 if parts else 0  # the "\n\n" join adds 2 chars between blocks
+            if parts and used + sep + len(block) > self._max_context_chars:
+                break  # at the budget; stop adding passages
+            if not parts and len(block) > self._max_context_chars:
+                block = block[: self._max_context_chars]  # cap a lone oversized passage
             parts.append(block)
-            used += len(block)
+            used += sep + len(block)
         return "\n\n".join(parts)
 
     async def generate(self, query: str, sources: list[Source]) -> str:
