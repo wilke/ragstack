@@ -15,7 +15,7 @@ __all__ = [
 ]
 
 try:
-    from ragstack.stores.qdrant import QdrantVectorStore
+    from ragstack.stores.qdrant import QdrantVectorStore as QdrantVectorStore
 
     __all__.append("QdrantVectorStore")
 except ImportError:
