@@ -72,6 +72,17 @@ class OpenAILLM:
             raise ValueError("LLM returned an empty answer")
         return content
 
+    async def complete_text(
+        self, prompt: str, max_tokens: int = 512, temperature: float = 0.0
+    ) -> str:
+        """Single-prompt completion — wraps the prompt as one user message. Used by
+        the query rewriters, which think in plain prompts rather than chat turns."""
+        return await self.complete(
+            [{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
 
 class RagGenerator:
     """Synthesize an answer from a question and its retrieved sources."""

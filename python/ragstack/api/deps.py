@@ -25,6 +25,11 @@ from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.quota import TenantQuota
 from ragstack.retrieval.retriever import HybridRetriever
+from ragstack.rewriting.rewriters import (
+    HyDERewriter,
+    MultiQueryRewriter,
+    PassthroughRewriter,
+)
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -133,19 +138,28 @@ def _build_text_index():
     return InMemoryTextIndex()
 
 
-def _build_generator(http: httpx.AsyncClient) -> RagGenerator | None:
-    """Build the RAG answer generator if an LLM endpoint is configured; else None
-    (so /v1/query keeps its retrieval-only placeholder)."""
+def _build_llm(http: httpx.AsyncClient) -> OpenAILLM | None:
+    """The shared OpenAI-compatible LLM client (answer generation + rewriters), or
+    None when no endpoint is configured."""
     if not settings.llm_endpoint:
         return None
-    llm = OpenAILLM(
+    log.info("LLM enabled: %s @ %s", settings.llm_model, settings.llm_endpoint)
+    return OpenAILLM(
         base_url=settings.llm_endpoint,
         model=settings.llm_model,
         http=http,
         api_key=settings.openai_api_key or None,
     )
-    log.info("LLM generation enabled: %s @ %s", settings.llm_model, settings.llm_endpoint)
-    return RagGenerator(llm)
+
+
+def _build_rewriters(llm: OpenAILLM | None) -> dict[str, object]:
+    """Query-rewriter registry keyed by strategy name. Passthrough is always
+    available; the LLM-backed strategies only when an LLM is configured."""
+    rewriters: dict[str, object] = {"passthrough": PassthroughRewriter()}
+    if llm is not None:
+        rewriters["multiquery"] = MultiQueryRewriter(llm)
+        rewriters["hyde"] = HyDERewriter(llm)
+    return rewriters
 
 
 def _validate_production_settings() -> None:
@@ -269,6 +283,9 @@ async def lifespan(app: FastAPI):
     # backend that makes the BM25 leg real.
     retriever = HybridRetriever(vector_store, text_index, embedder)
 
+    # One LLM client, shared by answer generation and the query rewriters.
+    llm = _build_llm(http_client)
+
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
@@ -276,9 +293,10 @@ async def lifespan(app: FastAPI):
     app.state.pipeline = pipeline
     app.state.job_store = job_store
     app.state.ingestor = ingestor
-    app.state.generator = _build_generator(http_client)
+    app.state.generator = RagGenerator(llm) if llm is not None else None
     app.state.tenant_quota = tenant_quota
     app.state.retriever = retriever
+    app.state.rewriters = _build_rewriters(llm)
 
     try:
         yield
@@ -314,6 +332,10 @@ def get_generator(request: Request):
 
 def get_retriever(request: Request):
     return request.app.state.retriever
+
+
+def get_rewriters(request: Request):
+    return request.app.state.rewriters
 
 
 def get_job_store(request: Request):
