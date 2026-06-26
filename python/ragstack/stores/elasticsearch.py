@@ -73,7 +73,18 @@ class ElasticsearchTextIndex:
                 }
             )
         # refresh so the just-indexed docs are immediately searchable.
-        await self._es.bulk(operations=operations, refresh=True)
+        resp = await self._es.bulk(operations=operations, refresh=True)
+        # ES returns HTTP 200 with errors=true on partial failure rather than
+        # raising, so a malformed/conflicting doc would silently never be indexed
+        # (and a later BM25 search would miss it). Surface the first failure.
+        if resp.get("errors"):
+            for item in resp.get("items", []):
+                result = next(iter(item.values()))
+                if result.get("error"):
+                    raise RuntimeError(
+                        f"elasticsearch bulk index failed for _id={result.get('_id')}: "
+                        f"{result['error']}"
+                    )
 
     async def search(
         self,
