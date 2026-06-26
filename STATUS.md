@@ -2,9 +2,9 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-06-25
-**Current tag:** [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) at `bad0ef3`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), and tenant isolation (PR #10) merged; see the M1/M2/pool sections below.
+**Last updated:** 2026-06-26
+**Current tag:** [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) at `c9c1944`
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), and the per-tenant concurrency quota (PR #13) merged; see the M1/M2/pool sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -29,7 +29,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
 - **Multi-endpoint fan-out** (PR #8): `python/ragstack/embed_pool.py` load-balances embedding across several endpoints (e.g. vLLM replicas on the H200s) with least-loaded routing, a global concurrency cap, failover, and lazy health re-probing. Enabled via `EMBEDDING_ENDPOINTS`; both CLIs accept multiple `--embedding-url`. See the pool section below.
-- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `answer` from `/v1/query` is still a placeholder (LLM not yet wired). Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
+- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `/v1/query` returns an LLM-generated grounded answer when `llm_endpoint` is configured (PR #12), else a retrieval-only placeholder. Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
 
 ## M1 ingest hardening (merged in `v0.4.0`, PR #4)
 
@@ -77,7 +77,7 @@ Still open in M2:
 - **API-level resume wiring** — [#6](https://github.com/wilke/ragstack/issues/6): the resume mechanism exists but no endpoint/startup path triggers it, so a crashed batch re-embeds everything on re-submit.
 - **Per-owner lease for `fail_interrupted` under Postgres** — [#7](https://github.com/wilke/ragstack/issues/7): the startup sweep is unsafe across workers and is currently disabled for Postgres, so crashed Postgres jobs aren't reaped until a lease/heartbeat scopes ownership.
 - Off-request *resumable* manifest build for very large submits (today the build is off-request but in-memory).
-- Multi-endpoint embedder pool — **landed in PR #8** (see the section below). Per-tenant concurrency quota still deferred.
+- Multi-endpoint embedder pool — **landed in PR #8** (see the section below). Per-tenant concurrency quota **landed in PR #13** (v0.8.0).
 
 ## Multi-endpoint embedder pool (merged, PR #8)
 
@@ -90,7 +90,7 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 
 **Post-review fixes** (`/review` + Copilot): retriable-4xx now fails over instead of being mis-quarantined; the health refresh moved *outside* the backpressure semaphore so a slow probe can't hold a permit; `e.response is not None` guard before reading `status_code`; configurable `embedding_health_path` for OpenAI/vLLM backends without `/health` under the embeddings base; test `AsyncClient`-leak fixture; also cleared 5 pre-existing repo-wide ruff errors.
 
-**Still deferred:** per-tenant concurrency quota — needs a server-side `tenant_id`, which arrives with the open tenant-isolation work. The global cap lands here.
+**Per-tenant concurrency quota:** **landed in PR #13** (v0.8.0) — once tenant identity flowed end-to-end (tenant isolation, PR #10), `TenantQuota` caps in-flight ingest items + queries per tenant via a `tenant_slot` dependency. Set `tenant_max_concurrency` below `embedding_max_concurrency` for real isolation.
 
 ## Active TODOs
 
@@ -98,7 +98,7 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 
 - [x] ~~Wire `QdrantVectorStore` into `IngestionPipeline` + `api/main.py`~~ — done in `9114fd1`. `python/ragstack/api/deps.py` provides the lifespan + factory; routers depend on `get_pipeline`/`get_vector_store`/`get_embedder`. Qdrant is the default backend.
 - [ ] Add conformance tests that exercise the live Qdrant-backed flow against the JSON schemas (`/v1/ingest`, `/v1/retrieve`, `/v1/query`, `DELETE /v1/documents/{id}`). The schemas pass for our shapes (manually verified), but no automated coverage yet.
-- [ ] Wire an LLM into `/v1/query` so `answer` stops being a placeholder. Easiest path is another OpenAI-compatible URL (vLLM serving Llama 3.x), reusing the embedder-style abstraction.
+- [x] ~~Wire an LLM into `/v1/query` so `answer` stops being a placeholder~~ — done in PR #12 (v0.8.0): `OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades to sources-with-a-note on LLM failure. Wiring a real model = `vllm serve <model>` + `LLM_ENDPOINT`.
 - [ ] Implement `GET /v1/documents` — needs a metadata store (Postgres) since the vector store only knows about chunks. Currently stub returns `[]`.
 
 ### Medium-term
@@ -127,6 +127,7 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 | [`v0.5.0`](https://github.com/wilke/ragstack/releases/tag/v0.5.0) | `284a344` | 2026-06-24 | M2 scalable ingestion (PR #5) — sharded-ingestion seam (manifest + IngestBackend + runner), per-item resumable checkpoint, PostgresJobStore, batch/directory ingest with per-item counts |
 | [`v0.6.0`](https://github.com/wilke/ragstack/releases/tag/v0.6.0) | `a4432ac` | 2026-06-25 | Multi-endpoint embedder pool (PR #8) — `PooledEmbedder` fan-out across backends with least-loaded routing, global concurrency cap, 5xx/retriable-4xx failover, lazy health re-probe |
 | [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) | `bad0ef3` | 2026-06-25 | Tenant isolation (PR #10) — server-derived `tenant_id` per API key, tenant-scoped vector/text/graph stores, shared `public` corpus, read-scope set server-side; fail-closed on partial tenant maps |
+| [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) | `c9c1944` | 2026-06-26 | RAG answer generation (PR #12) — `/v1/query` returns a grounded LLM answer (`OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades on LLM failure) — plus the per-tenant concurrency quota (PR #13) gating ingest + queries via a `tenant_slot` dependency |
 
 ## Production layout (`/rag/`)
 
