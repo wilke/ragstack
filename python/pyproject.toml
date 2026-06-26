@@ -57,6 +57,9 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "httpx>=0.27",
+    # Conformance suite validates responses against contracts/schemas/.
+    # Floor matches conformance/pyproject.toml so dev installs don't diverge.
+    "jsonschema>=4.22",
 ]
 all = [
     "ragstack[vector,pdf,postgres,text,graph,embeddings,queue,observability]",
