@@ -18,6 +18,7 @@ from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import InMemoryJobStore
 from ragstack.quota import TenantQuota
+from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 
 
@@ -59,6 +60,7 @@ async def client():
     app.state.ingestor = ingestor
     app.state.generator = None  # no LLM by default → placeholder answer
     app.state.tenant_quota = tenant_quota
+    app.state.retriever = HybridRetriever(vector_store, text_index, embedder)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

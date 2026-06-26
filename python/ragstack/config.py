@@ -99,9 +99,12 @@ class Settings(BaseSettings):
     job_store_backend: str = "memory"       # memory | sqlite | postgres
     job_store_path: str = "ragstack_jobs.db"
 
-    # Elasticsearch (text index)
+    # Text index (BM25). "memory" is the dev Jaccard placeholder; "elasticsearch"
+    # is the real durable BM25 backend used for hybrid retrieval.
+    text_backend: str = "memory"            # memory | elasticsearch
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "ragstack"
+    elasticsearch_api_key: str = ""
 
     # Neo4j (knowledge graph)
     neo4j_uri: str = "bolt://localhost:7687"

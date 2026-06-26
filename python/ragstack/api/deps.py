@@ -24,6 +24,7 @@ from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.quota import TenantQuota
+from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -104,17 +105,30 @@ def _build_embedder(http: httpx.AsyncClient):
 
 
 def _build_text_index():
-    """Return the text index.
+    """Return the text index. ``text_backend=elasticsearch`` is the durable BM25
+    backend used for hybrid retrieval; otherwise the in-memory Jaccard placeholder
+    (non-durable — warned under require_durable_backends)."""
+    if settings.text_backend == "elasticsearch":
+        try:
+            from ragstack.stores.elasticsearch import ElasticsearchTextIndex
+        except ImportError as e:
+            if settings.require_durable_backends:
+                raise RuntimeError(
+                    "text_backend='elasticsearch' but the elasticsearch client is "
+                    "not installed. Install ragstack[text]."
+                ) from e
+            log.warning("elasticsearch client not installed — using in-memory text index")
+            return InMemoryTextIndex()
+        return ElasticsearchTextIndex(
+            settings.elasticsearch_url,
+            settings.elasticsearch_index,
+            settings.elasticsearch_api_key or None,
+        )
 
-    Only the in-memory index exists today (ElasticsearchTextIndex lands in a
-    later cut). Under ``require_durable_backends`` this is a known gap: warn
-    loudly rather than hard-fail, so the flag stays usable for its primary
-    purpose (a durable vector store). Gate this once Elasticsearch lands.
-    """
     if settings.require_durable_backends:
         log.warning(
-            "text index is in-memory (Elasticsearch backend not yet implemented); "
-            "the lexical index will not survive restart"
+            "text index is in-memory (text_backend=memory); set "
+            "text_backend=elasticsearch for durable BM25 + hybrid retrieval"
         )
     return InMemoryTextIndex()
 
@@ -195,6 +209,16 @@ async def lifespan(app: FastAPI):
                 raise
             log.warning("qdrant ensure_collection failed: %s", e)
 
+    # Elasticsearch: create the index at startup; same readiness gate as Qdrant.
+    if hasattr(text_index, "ensure_index"):
+        try:
+            await text_index.ensure_index()
+            log.info("elasticsearch index ready: %s", settings.elasticsearch_index)
+        except Exception as e:
+            if settings.require_durable_backends:
+                raise
+            log.warning("elasticsearch ensure_index failed: %s", e)
+
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,
@@ -240,6 +264,11 @@ async def lifespan(app: FastAPI):
         quota=tenant_quota,
     )
 
+    # Hybrid retrieval: fuse dense (vector) + BM25 (text) via RRF. With the
+    # in-memory text index this still works (Jaccard), but it's the Elasticsearch
+    # backend that makes the BM25 leg real.
+    retriever = HybridRetriever(vector_store, text_index, embedder)
+
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
@@ -249,6 +278,7 @@ async def lifespan(app: FastAPI):
     app.state.ingestor = ingestor
     app.state.generator = _build_generator(http_client)
     app.state.tenant_quota = tenant_quota
+    app.state.retriever = retriever
 
     try:
         yield
@@ -257,6 +287,9 @@ async def lifespan(app: FastAPI):
         # Release the job store's resources (PostgresJobStore's asyncpg pool;
         # a no-op for the in-memory / sqlite stores).
         await job_store.close()
+        # Close the ES client if the text index holds one.
+        if hasattr(text_index, "close"):
+            await text_index.close()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:
@@ -273,6 +306,10 @@ def get_embedder(request: Request):
 
 def get_generator(request: Request):
     return request.app.state.generator
+
+
+def get_retriever(request: Request):
+    return request.app.state.retriever
 
 
 def get_job_store(request: Request):
