@@ -1,17 +1,24 @@
 """Query and retrieve endpoints."""
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import get_embedder, get_tenant_quota, get_vector_store
+from ragstack.api.deps import (
+    get_embedder,
+    get_generator,
+    get_tenant_quota,
+    get_vector_store,
+)
 from ragstack.api.security import resolve_tenant
 from ragstack.models import Source
 from ragstack.tenancy import scope_filters
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -92,17 +99,28 @@ async def retrieve(
     return RetrieveResponse(sources=sources)
 
 
+def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str:
+    """A non-generated answer (no LLM configured, or generation failed) that still
+    surfaces what was retrieved so the caller gets the sources, not just an error."""
+    if sources:
+        return (
+            f"{prefix} retrieved {len(sources)} chunks for query "
+            f"{query_text!r}; top score {sources[0].score:.4f}"
+        )
+    return f"{prefix} no relevant chunks found for query {query_text!r}"
+
+
 @router.post("/query", response_model=QueryResponse)
 async def query(
     request: QueryRequest,
     tenant: str = Depends(tenant_slot),
     embedder=Depends(get_embedder),
     vector_store=Depends(get_vector_store),
+    generator=Depends(get_generator),
 ) -> QueryResponse:
     """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
-    return them with the rewritten queries. The LLM-backed `answer` generation
-    isn't wired yet, so we return a placeholder that surfaces what *would* be
-    passed to it.
+    generate a grounded answer. When no LLM endpoint is configured the answer is
+    a retrieval-only placeholder.
     """
     sources = await _retrieve(
         request.query,
@@ -111,12 +129,16 @@ async def query(
         embedder,
         vector_store,
     )
-    answer = (
-        f"[LLM not yet wired] retrieved {len(sources)} chunks for query "
-        f"{request.query!r}; top score "
-        f"{sources[0].score:.4f}" if sources else
-        f"[LLM not yet wired] no relevant chunks found for query {request.query!r}"
-    )
+    if generator is None:
+        answer = _fallback_answer("[LLM not configured]", request.query, sources)
+    else:
+        try:
+            answer = await generator.generate(request.query, sources)
+        except Exception:
+            # Retrieval already succeeded — don't fail the whole query on an LLM
+            # outage or a malformed/empty response. Return the sources with a note.
+            log.warning("answer generation failed; returning sources only", exc_info=True)
+            answer = _fallback_answer("[answer generation failed]", request.query, sources)
     return QueryResponse(
         answer=answer,
         sources=sources,

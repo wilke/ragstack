@@ -12,7 +12,12 @@ class Settings(BaseSettings):
     # LLM / Embeddings
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = "gpt-4o-mini"  # must name the model the llm_endpoint serves
+    # OpenAI-compatible chat endpoint for answer generation (e.g. vLLM serving
+    # Llama). Empty → /v1/query keeps its retrieval-only placeholder. When set to
+    # a vLLM/self-hosted endpoint, also set llm_model to that server's model name
+    # (the gpt-4o-mini default will be rejected as unknown).
+    llm_endpoint: str = ""
 
     # Vector store
     vector_backend: str = "qdrant"          # qdrant | memory
