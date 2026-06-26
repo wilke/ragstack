@@ -8,14 +8,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import (
-    get_embedder,
-    get_generator,
-    get_tenant_quota,
-    get_vector_store,
-)
+from ragstack.api.deps import get_generator, get_retriever, get_tenant_quota
 from ragstack.api.security import resolve_tenant
-from ragstack.models import Source
+from ragstack.models import ScoredChunk, Source
 from ragstack.tenancy import scope_filters
 
 log = logging.getLogger(__name__)
@@ -48,15 +43,7 @@ class RetrieveResponse(BaseModel):
     sources: list[Source]
 
 
-async def _retrieve(
-    query: str,
-    top_k: int,
-    filters: dict[str, Any],
-    embedder,
-    vector_store,
-) -> list[Source]:
-    [qvec] = await embedder.embed([query])
-    results = await vector_store.search(qvec, top_k=top_k, filters=filters or None)
+def _to_sources(scored: list[ScoredChunk]) -> list[Source]:
     return [
         Source(
             doc_id=r.chunk.doc_id,
@@ -65,7 +52,7 @@ async def _retrieve(
             score=r.score,
             metadata=r.chunk.metadata,
         )
-        for r in results
+        for r in scored
     ]
 
 
@@ -84,19 +71,17 @@ async def tenant_slot(
 async def retrieve(
     request: RetrieveRequest,
     tenant: str = Depends(tenant_slot),
-    embedder=Depends(get_embedder),
-    vector_store=Depends(get_vector_store),
+    retriever=Depends(get_retriever),
 ) -> RetrieveResponse:
-    """Retrieve relevant chunks (from the caller's tenant + public) without
-    generating an answer."""
-    sources = await _retrieve(
+    """Retrieve relevant chunks (caller's tenant + public) via hybrid
+    vector + BM25 retrieval, without generating an answer."""
+    scored = await retriever.retrieve(
         request.query,
-        request.top_k,
-        scope_filters(request.filters, tenant),
-        embedder,
-        vector_store,
+        top_k=request.top_k,
+        filters=scope_filters(request.filters, tenant),
+        use_graph=request.use_graph,
     )
-    return RetrieveResponse(sources=sources)
+    return RetrieveResponse(sources=_to_sources(scored))
 
 
 def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str:
@@ -114,21 +99,20 @@ def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str
 async def query(
     request: QueryRequest,
     tenant: str = Depends(tenant_slot),
-    embedder=Depends(get_embedder),
-    vector_store=Depends(get_vector_store),
+    retriever=Depends(get_retriever),
     generator=Depends(get_generator),
 ) -> QueryResponse:
-    """Full RAG flow: retrieve relevant chunks (caller's tenant + public) and
-    generate a grounded answer. When no LLM endpoint is configured the answer is
-    a retrieval-only placeholder.
+    """Full RAG flow: hybrid-retrieve relevant chunks (caller's tenant + public)
+    and generate a grounded answer. When no LLM endpoint is configured the answer
+    is a retrieval-only placeholder.
     """
-    sources = await _retrieve(
+    scored = await retriever.retrieve(
         request.query,
-        request.top_k,
-        scope_filters(request.filters, tenant),
-        embedder,
-        vector_store,
+        top_k=request.top_k,
+        filters=scope_filters(request.filters, tenant),
+        use_graph=request.use_graph,
     )
+    sources = _to_sources(scored)
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:

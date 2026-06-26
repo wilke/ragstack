@@ -85,3 +85,15 @@ async def test_delete_is_tenant_scoped(client, tmp_path):
 
     assert "SHARED" in " ".join(await _contents(client, "alice"))  # alice's survives
     assert "SHARED" not in " ".join(await _contents(client, "bob"))  # bob's gone
+
+    # Delete must purge BOTH retrieval legs. "name" lexically hits the BM25/text
+    # leg (the "doc" query above does not), so this catches a stale text-index
+    # entry that would otherwise resurface a "deleted" document.
+    async def _retrieve(tenant: str, query: str) -> str:
+        r = await client.post(
+            "/v1/retrieve", json={"query": query, "top_k": 50}, headers=_h(tenant)
+        )
+        return " ".join(s["content"] for s in r.json()["sources"])
+
+    assert "SHARED" in await _retrieve("alice", "name")  # alice's still indexed
+    assert "SHARED" not in await _retrieve("bob", "name")  # bob's gone from text leg too

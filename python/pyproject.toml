@@ -29,7 +29,8 @@ postgres = [
     "asyncpg>=0.29",
 ]
 text = [
-    "elasticsearch>=8.13",
+    # [async] pulls aiohttp, required by AsyncElasticsearch.
+    "elasticsearch[async]>=8.13",
 ]
 graph = [
     "neo4j>=5.20",
