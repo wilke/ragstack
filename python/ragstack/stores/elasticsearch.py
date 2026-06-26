@@ -46,9 +46,19 @@ def _es_id(tenant: str, chunk_id: str) -> str:
 def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
     """BM25 match on content, plus exact filters. Filter keys are chunk metadata
     keys (same as the vector store), so they target ``metadata.<key>``. A list
-    value matches any of its entries (used for tenant reads: own + public)."""
+    value matches any of its entries (used for tenant reads: own + public).
+
+    This index is a tenancy boundary, so a non-empty ``tenant_id`` filter is
+    required: an unscoped (or empty-scoped) search would silently return chunks
+    across every tenant. Fail closed rather than leak."""
+    filters = filters or {}
+    if not filters.get("tenant_id"):
+        raise ValueError(
+            "ElasticsearchTextIndex.search requires a non-empty tenant_id filter; "
+            "an unscoped search would return chunks across all tenants"
+        )
     filter_clauses: list[dict[str, Any]] = []
-    for key, value in (filters or {}).items():
+    for key, value in filters.items():
         field = f"metadata.{key}"
         if isinstance(value, (list, tuple, set)):
             values = list(value)
@@ -70,8 +80,17 @@ class ElasticsearchTextIndex:
         self._index = index
 
     async def ensure_index(self) -> None:
-        if not await self._es.indices.exists(index=self._index):
+        # Create idempotently rather than gating on exists(): two workers can both
+        # pass an exists-check and then race on create, and the loser gets
+        # resource_already_exists_exception. Treat an already-existing index as
+        # success; re-raise any other API error.
+        from elasticsearch import ApiError
+
+        try:
             await self._es.indices.create(index=self._index, mappings=_MAPPINGS)
+        except ApiError as e:
+            if "resource_already_exists_exception" not in str(e):
+                raise
 
     async def index(self, chunks: list[Chunk]) -> None:
         if not chunks:
