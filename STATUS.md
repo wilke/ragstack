@@ -3,8 +3,8 @@
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
 **Last updated:** 2026-06-26
-**Current tag:** [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) at `c9c1944`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), and the per-tenant concurrency quota (PR #13) merged; see the M1/M2/pool sections below.
+**Current tag:** [`v0.9.0`](https://github.com/wilke/ragstack/releases/tag/v0.9.0) at `2947414`
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), and the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16) merged; see the M1/M2/pool/hybrid sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -29,7 +29,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
 - **Multi-endpoint fan-out** (PR #8): `python/ragstack/embed_pool.py` load-balances embedding across several endpoints (e.g. vLLM replicas on the H200s) with least-loaded routing, a global concurrency cap, failover, and lazy health re-probing. Enabled via `EMBEDDING_ENDPOINTS`; both CLIs accept multiple `--embedding-url`. See the pool section below.
-- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` embed the query and return scored hits; `DELETE /v1/documents/{id}` removes a doc from Qdrant. `/v1/query` returns an LLM-generated grounded answer when `llm_endpoint` is configured (PR #12), else a retrieval-only placeholder. Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
+- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` go through `HybridRetriever` — dense (Qdrant) + BM25 (Elasticsearch) fused via RRF (PR #15), scoped to the caller's tenant on both legs — and return scored hits; `DELETE /v1/documents/{id}` removes a doc from **both** legs. `/v1/query` returns an LLM-generated grounded answer when `llm_endpoint` is configured (PR #12), else a retrieval-only placeholder. Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
 
 ## M1 ingest hardening (merged in `v0.4.0`, PR #4)
 
@@ -92,6 +92,25 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 
 **Per-tenant concurrency quota:** **landed in PR #13** (v0.8.0) — once tenant identity flowed end-to-end (tenant isolation, PR #10), `TenantQuota` caps in-flight ingest items + queries per tenant via a `tenant_slot` dependency. Set `tenant_max_concurrency` below `embedding_max_concurrency` for real isolation.
 
+## Hybrid retrieval — Elasticsearch BM25 text index (merged in `v0.9.0`, PRs #14/#15/#16)
+
+Makes the text-index leg real and routes retrieval through the already-coded `HybridRetriever` (dense vector + BM25, fused via Reciprocal Rank Fusion), replacing vector-only retrieval. Closes the "text index written but never read" gap and the Medium-term "Elasticsearch `TextIndex` adapter" TODO. Tagged at `2947414`. What landed:
+
+1. **`ElasticsearchTextIndex` (BM25), tenant-scoped** (PR #15) — `python/ragstack/stores/elasticsearch.py` over ES BM25, scoped exactly like the Qdrant store: the ES document id is `tenant:chunk_id` (same source under two tenants → distinct docs), searches filter to the caller's readable tenants (`terms`, mirroring Qdrant `MatchAny`), delete is tenant-scoped. Full chunk metadata is persisted and rehydrated so RRF fusion doesn't clobber metadata-rich vector hits. Lazy client import (optional `text` extra; `[async]` pulls `aiohttp` for `AsyncElasticsearch`).
+2. **Config + durable gate** (PR #15) — `text_backend` (`memory` | `elasticsearch`) + `elasticsearch_api_key`; `_build_text_index` builds ES when configured and **hard-fails under `require_durable_backends`** (mirroring Qdrant — closes the old "text index is in-memory" warning gap); `ensure_index` readiness gate at startup; ES client closed on shutdown.
+3. **Hybrid wiring** (PR #15) — `/v1/retrieve` and `/v1/query` go through `HybridRetriever` via `get_retriever`; the tenant scope reaches **both** legs, so isolation holds in hybrid retrieval. `DELETE /v1/documents/{id}` now purges **both** legs (vector + text) so a deleted doc can't resurface via BM25.
+4. **jsonschema dev dep** (PR #14) — `jsonschema>=4.22` (matched to conformance's floor) so the 4 conformance schema-validation tests collect and run (was importing 13, silently skipping 4).
+
+**Live hybrid smoke** (coconut: real Qdrant + BGE sidecar + Elasticsearch 8.13 + Postgres jobs, dedicated test index): ingest writes to both Qdrant and ES (ES index = 3 docs); a lexical query (`"reciprocal rank fusion"`) surfaces the exact-term doc top via the BM25 leg; tenant isolation holds across both legs (alice sees own+public, not bob).
+
+**Post-review hardening** (PRs #15/#16, `/review` + Copilot pass):
+- ES `bulk()` now inspects the response and raises on partial failure (was silently dropping docs that never got indexed → a later BM25 search would miss them while ingest reported success).
+- Full metadata round-trips through ES (was `tenant_id` only), and filters target `metadata.<key>` (keyword via a dynamic template) for parity with the vector store's metadata-based filtering.
+- `ensure_index` creates idempotently and swallows `resource_already_exists_exception` (was a check-then-create TOCTOU race that could crash concurrent / `require_durable_backends` startup).
+- `_build_query` fails closed on a missing/empty `tenant_id` filter (an unscoped search would otherwise return chunks across all tenants).
+
+Still off: the graph retrieval leg (`use_graph` flows through but no graph store is wired) until M4/M5. Enable ES with `TEXT_BACKEND=elasticsearch` (+ existing `ELASTICSEARCH_URL`/`_INDEX`). 147 unit/api tests pass; live ES integration test exercises tenant-scoped BM25 search/delete + metadata round-trip (skips if ES absent).
+
 ## Active TODOs
 
 ### Near-term — pick up here in the next session
@@ -104,14 +123,14 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 ### Medium-term
 
 - [ ] Cross-encoder reranker apptainer sidecar — mirror the embedding sidecar pattern in `apptainer/sidecars-up.sh`
-- [ ] Elasticsearch `TextIndex` adapter (`python/ragstack/stores/elasticsearch.py`) — paralleling the Qdrant one
+- [x] ~~Elasticsearch `TextIndex` adapter (`python/ragstack/stores/elasticsearch.py`) — paralleling the Qdrant one~~ — landed in PR #15 (v0.9.0), wired into hybrid retrieval; see the hybrid section above
 - [ ] Apptainer wrapper for the Python API itself (currently only available via `deploy/docker-compose.python.yml`)
 - [ ] Bring vLLM serving SFR-Embedding-Mistral up on a GPU and run the embed-vs-BGE benchmark against representative chunks
 
 ### Long-term (per [SPEC.md](SPEC.md) milestones)
 
 - [ ] **M4 — Graph**: KG extractor, Neo4j adapter (`GraphStore` protocol), graph-augmented retrieval
-- [ ] **M5 — Intelligence**: Query rewriters (HyDE, multi-query, step-back, entity expansion), cross-encoder reranking in the pipeline, hybrid retrieval with RRF
+- [ ] **M5 — Intelligence**: Query rewriters (HyDE, multi-query, step-back, entity expansion), cross-encoder reranking in the pipeline, ~~hybrid retrieval with RRF~~ (**hybrid vector+BM25 RRF landed in v0.9.0** — rewriters + reranking still open)
 - [ ] **M6 — API & Auth**: API-key auth, rate limiting, streaming responses
 - [ ] **M7 — Observability**: Prometheus metrics, OpenTelemetry tracing, Grafana dashboards
 - [ ] **M8 — Production**: Helm chart, horizontal scaling, load testing, runbook
@@ -128,6 +147,7 @@ The last item on the M2 work-list. `python/ragstack/embed_pool.py` — `PooledEm
 | [`v0.6.0`](https://github.com/wilke/ragstack/releases/tag/v0.6.0) | `a4432ac` | 2026-06-25 | Multi-endpoint embedder pool (PR #8) — `PooledEmbedder` fan-out across backends with least-loaded routing, global concurrency cap, 5xx/retriable-4xx failover, lazy health re-probe |
 | [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) | `bad0ef3` | 2026-06-25 | Tenant isolation (PR #10) — server-derived `tenant_id` per API key, tenant-scoped vector/text/graph stores, shared `public` corpus, read-scope set server-side; fail-closed on partial tenant maps |
 | [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) | `c9c1944` | 2026-06-26 | RAG answer generation (PR #12) — `/v1/query` returns a grounded LLM answer (`OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades on LLM failure) — plus the per-tenant concurrency quota (PR #13) gating ingest + queries via a `tenant_slot` dependency |
+| [`v0.9.0`](https://github.com/wilke/ragstack/releases/tag/v0.9.0) | `2947414` | 2026-06-26 | Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16) — `ElasticsearchTextIndex` (tenant-scoped, durable BM25), `/v1/retrieve` + `/v1/query` fused vector+BM25 via RRF, delete purges both legs; post-review hardening: bulk-error surfacing, metadata round-trip + filter parity, race-safe `ensure_index`, fail-closed tenant scoping |
 
 ## Production layout (`/rag/`)
 
