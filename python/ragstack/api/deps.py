@@ -300,6 +300,10 @@ def get_vector_store(request: Request):
     return request.app.state.vector_store
 
 
+def get_text_index(request: Request):
+    return request.app.state.text_index
+
+
 def get_embedder(request: Request):
     return request.app.state.embedder
 

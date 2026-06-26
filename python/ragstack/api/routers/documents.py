@@ -7,7 +7,12 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import get_ingestor, get_job_store, get_vector_store
+from ragstack.api.deps import (
+    get_ingestor,
+    get_job_store,
+    get_text_index,
+    get_vector_store,
+)
 from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
@@ -184,7 +189,10 @@ async def delete_document(
     doc_id: str,
     tenant: str = Depends(resolve_tenant),
     vector_store=Depends(get_vector_store),
+    text_index=Depends(get_text_index),
 ) -> None:
     """Delete a document and its chunks — scoped to the caller's tenant, so one
-    tenant cannot delete another's document even by id."""
+    tenant cannot delete another's document even by id. Purge both retrieval
+    legs (vector + text) so a deleted doc can't resurface via BM25."""
     await vector_store.delete(doc_id, tenant_id=tenant)
+    await text_index.delete(doc_id, tenant_id=tenant)
