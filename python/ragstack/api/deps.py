@@ -23,6 +23,7 @@ from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
+from ragstack.quota import TenantQuota
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -222,11 +223,21 @@ async def lifespan(app: FastAPI):
             "marked %d interrupted ingest job(s) as failed at startup", interrupted
         )
 
+    tenant_quota = TenantQuota(settings.tenant_max_concurrency)
+    if 0 < settings.embedding_max_concurrency <= settings.tenant_max_concurrency:
+        log.warning(
+            "tenant_max_concurrency (%d) >= embedding_max_concurrency (%d): the "
+            "per-tenant quota won't isolate tenants on the shared embedder pool; "
+            "set it lower for real fairness.",
+            settings.tenant_max_concurrency,
+            settings.embedding_max_concurrency,
+        )
     ingestor = ShardedIngestor(
         pipeline,
         LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency),
         shard_size=settings.ingest_shard_size,
         job_store=job_store,
+        quota=tenant_quota,
     )
 
     app.state.http_client = http_client
@@ -237,6 +248,7 @@ async def lifespan(app: FastAPI):
     app.state.job_store = job_store
     app.state.ingestor = ingestor
     app.state.generator = _build_generator(http_client)
+    app.state.tenant_quota = tenant_quota
 
     try:
         yield
@@ -269,3 +281,7 @@ def get_job_store(request: Request):
 
 def get_ingestor(request: Request):
     return request.app.state.ingestor
+
+
+def get_tenant_quota(request: Request):
+    return request.app.state.tenant_quota
