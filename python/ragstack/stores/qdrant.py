@@ -8,6 +8,7 @@ from typing import Any
 
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
+    Condition,
     Distance,
     FieldCondition,
     Filter,
@@ -171,9 +172,12 @@ class QdrantVectorStore:
         selector: dict[str, Any] = {"doc_id": doc_id}
         if tenant_id is not None:
             selector["tenant_id"] = tenant_id
+        points_filter = _build_filter(selector)
+        # selector always contains doc_id, so _build_filter never returns None here.
+        assert points_filter is not None
         await self._client.delete(
             collection_name=self._collection,
-            points_selector=_build_filter(selector),
+            points_selector=points_filter,
         )
 
 
@@ -190,7 +194,7 @@ def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     stores/memory.py."""
     if not filters:
         return None
-    conditions = []
+    conditions: list[Condition] = []
     for key, value in filters.items():
         if isinstance(value, (list, tuple, set)):
             if not value:

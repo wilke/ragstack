@@ -92,7 +92,7 @@ class PdfLoader:
         except Exception as e:
             raise LoaderError(f"could not open PDF '{path.name}'") from e
         try:
-            pages = [page.get_text() for page in doc]
+            pages = [page.get_text() for page in doc.pages()]
         except Exception as e:
             raise LoaderError(f"could not extract text from PDF '{path.name}'") from e
         finally:
