@@ -162,6 +162,9 @@ async def _run_catalog_only(
         for line_no, record in _iter_records(fh):
             if line_no <= start_line:
                 continue
+            # Advance over every processed line, including skipped ones, so a
+            # resume doesn't re-scan a trailing run of filtered records forever.
+            pending = line_no
             stats["seen"] += 1
             enriched = enrich(record)
             if not _kept(enriched, keep_types):
@@ -239,6 +242,7 @@ async def run(args: argparse.Namespace) -> None:
         concurrency = max(1, args.concurrency)
         queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 2)
         completed: dict[int, int] = {}
+        failed: list[int] = []  # seqs whose batch errored (checkpoint stalls at the gap)
         next_seq = 0
         lock = asyncio.Lock()
 
@@ -273,7 +277,9 @@ async def run(args: argparse.Namespace) -> None:
                     except Exception as e:
                         # Don't kill the worker (or deadlock the producer): leave
                         # this seq out of `completed` so the checkpoint stalls at
-                        # the gap and --resume reprocesses from here.
+                        # the gap and --resume reprocesses from here. Record it so
+                        # the run reports failure (non-zero exit) instead of "done".
+                        failed.append(seq)
                         print(f"  batch seq={seq} failed: {type(e).__name__}: {e}; "
                               f"will reprocess on --resume", file=sys.stderr)
                         continue
@@ -296,10 +302,12 @@ async def run(args: argparse.Namespace) -> None:
         seq = 0
         buf: list[Chunk] = []
         buf_end_line = 0
+        last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
         with args.input.open(encoding="utf-8") as fh:
             for line_no, record in _iter_records(fh):
                 if line_no <= start_line:
                     continue
+                last_line = line_no
                 stats["seen"] += 1
                 enriched = enrich(record)
                 if not _kept(enriched, keep_types):
@@ -333,12 +341,26 @@ async def run(args: argparse.Namespace) -> None:
             await queue.put(None)
         await asyncio.gather(*workers)
 
+        # All batches done with no gap (next_seq caught up to the batch count):
+        # advance the checkpoint over any trailing skipped lines after the last
+        # kept doc, so a resume of a finished run doesn't re-scan them. A gap
+        # (failed batch) leaves next_seq < seq, so the checkpoint correctly stalls.
+        if next_seq == seq:
+            _write_checkpoint(ckpt_path, last_line, current_doc_types)
+
         if text_index is not None and hasattr(text_index, "close"):
             await text_index.close()
 
     if catalog is not None:
         catalog.close()
         print(f"catalog written to {args.catalog_out}", file=sys.stderr)
+    if failed:
+        # Don't report success when batches errored: the checkpoint stalled at the
+        # first gap, so the run is partial. Exit non-zero so the operator notices.
+        print(f"FAILED: {len(failed)} batch(es) errored (seq {sorted(failed)}); "
+              f"checkpoint stalled at the first gap — re-run with --resume to retry.",
+              file=sys.stderr)
+        raise SystemExit(1)
     print(f"done: {stats['docs']} docs indexed, {stats['skipped']} skipped, "
           f"{stats['chunks']} chunks (saw {stats['seen']} records)", file=sys.stderr)
 
