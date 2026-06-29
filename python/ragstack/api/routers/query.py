@@ -1,6 +1,7 @@
 """Query and retrieve endpoints."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -16,6 +17,7 @@ from ragstack.api.deps import (
 )
 from ragstack.api.security import resolve_tenant
 from ragstack.models import ScoredChunk, Source
+from ragstack.protocols import QueryRewriter
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.tenancy import scope_filters
 
@@ -27,7 +29,7 @@ _RRF = RRFScorer()
 
 
 async def _expand_query(
-    query: str, strategies: list[str], rewriters: dict[str, object]
+    query: str, strategies: list[str], rewriters: dict[str, QueryRewriter]
 ) -> list[str]:
     """Expand the query into retrieval variants per the requested strategies.
 
@@ -43,7 +45,9 @@ async def _expand_query(
         if rewriter is None:
             continue
         try:
-            produced = await rewriter.rewrite(query)  # type: ignore[attr-defined]
+            produced = await rewriter.rewrite(query)
+        except asyncio.CancelledError:
+            raise  # never swallow cancellation (client disconnect / timeout)
         except Exception:
             log.warning("query rewriter %r failed; skipping", name, exc_info=True)
             continue
@@ -154,13 +158,18 @@ async def query(
             variants[0], top_k=request.top_k, filters=filters, use_graph=request.use_graph
         )
     else:
-        ranked = [
-            await retriever.retrieve(
-                v, top_k=request.top_k, filters=filters, use_graph=request.use_graph
+        # The per-variant retrievals are independent — run them concurrently so
+        # latency is one retrieve, not N. The embedder pool's concurrency cap
+        # bounds the actual fan-out to the backends.
+        ranked = await asyncio.gather(
+            *(
+                retriever.retrieve(
+                    v, top_k=request.top_k, filters=filters, use_graph=request.use_graph
+                )
+                for v in variants
             )
-            for v in variants
-        ]
-        scored = _RRF.fuse(ranked)[: request.top_k]
+        )
+        scored = _RRF.fuse(list(ranked))[: request.top_k]
 
     sources = _to_sources(scored)
     if generator is None:

@@ -23,6 +23,7 @@ from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
+from ragstack.protocols import QueryRewriter
 from ragstack.quota import TenantQuota
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.rewriting.rewriters import (
@@ -152,10 +153,10 @@ def _build_llm(http: httpx.AsyncClient) -> OpenAILLM | None:
     )
 
 
-def _build_rewriters(llm: OpenAILLM | None) -> dict[str, object]:
+def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
     """Query-rewriter registry keyed by strategy name. Passthrough is always
     available; the LLM-backed strategies only when an LLM is configured."""
-    rewriters: dict[str, object] = {"passthrough": PassthroughRewriter()}
+    rewriters: dict[str, QueryRewriter] = {"passthrough": PassthroughRewriter()}
     if llm is not None:
         rewriters["multiquery"] = MultiQueryRewriter(llm)
         rewriters["hyde"] = HyDERewriter(llm)

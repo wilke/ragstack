@@ -57,16 +57,27 @@ async def test_expand_skips_unknown_and_failing_strategies():
 @pytest.mark.asyncio
 async def test_query_rewriting_retrieves_each_variant_and_fuses(client):
     retriever = _RecordingRetriever()
+    # app is a shared module-level instance; restore the doubles the client
+    # fixture set so this test can't leak state into later (order-dependent) tests.
+    prev_retriever, prev_rewriters = app.state.retriever, app.state.rewriters
     app.state.retriever = retriever
     app.state.rewriters = {"multiquery": _FakeRewriter(["paraphrase A", "paraphrase B"])}
 
-    resp = await client.post(
-        "/v1/query", json={"query": "orig", "rewrite_strategies": ["multiquery"]}
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    # The variants are reported and each was retrieved...
-    assert body["rewritten_queries"] == ["orig", "paraphrase A", "paraphrase B"]
-    assert retriever.queries == ["orig", "paraphrase A", "paraphrase B"]
-    # ...and their results are fused into the sources.
-    assert {s["content"] for s in body["sources"]} == {"orig", "paraphrase A", "paraphrase B"}
+    try:
+        resp = await client.post(
+            "/v1/query", json={"query": "orig", "rewrite_strategies": ["multiquery"]}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # The variants are reported and each was retrieved...
+        assert body["rewritten_queries"] == ["orig", "paraphrase A", "paraphrase B"]
+        # Retrievals run concurrently (asyncio.gather), so compare as a set.
+        assert set(retriever.queries) == {"orig", "paraphrase A", "paraphrase B"}
+        # ...and their results are fused into the sources.
+        assert {s["content"] for s in body["sources"]} == {
+            "orig",
+            "paraphrase A",
+            "paraphrase B",
+        }
+    finally:
+        app.state.retriever, app.state.rewriters = prev_retriever, prev_rewriters
