@@ -73,16 +73,32 @@ def _doc_id_key(record: dict[str, Any], text: str) -> str:
     return str(Path(rec_path).resolve()) if rec_path else text
 
 
-def _read_checkpoint(path: Path) -> int:
+def _read_checkpoint(path: Path) -> dict[str, Any]:
+    """Persisted resume state: ``{"line": int, "doc_types": list[str] | None}``.
+
+    Missing/corrupt reads as a zero checkpoint (fresh start). The legacy
+    bare-integer format is still accepted (line only, no filter recorded).
+    """
     try:
-        return int(path.read_text().strip())
-    except (FileNotFoundError, ValueError):
-        return 0
+        raw = path.read_text().strip()
+    except FileNotFoundError:
+        return {"line": 0, "doc_types": None}
+    try:
+        data = json.loads(raw)
+        return {"line": int(data.get("line", 0)), "doc_types": data.get("doc_types")}
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        try:
+            return {"line": int(raw), "doc_types": None}  # legacy bare-int checkpoint
+        except ValueError:
+            return {"line": 0, "doc_types": None}
 
 
-def _write_checkpoint(path: Path, line_no: int) -> None:
+def _write_checkpoint(path: Path, line_no: int, doc_types: list[str] | None) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(str(line_no))
+    # Persist the active doc-type filter alongside the line so a resume with a
+    # *different* filter is rejected rather than silently skipping lines the new
+    # filter would now keep.
+    tmp.write_text(json.dumps({"line": line_no, "doc_types": doc_types}))
     tmp.replace(path)  # atomic so a crash mid-write can't corrupt the checkpoint
 
 
@@ -101,6 +117,9 @@ def _iter_records(fh: TextIO):
 async def run(args: argparse.Namespace) -> None:
     src = args.input
     keep_types = set(args.doc_types) if args.doc_types else None
+    # Canonical (sorted) form of the active filter, persisted in the checkpoint so
+    # a resume under a different filter is detected.
+    current_doc_types = sorted(keep_types) if keep_types else None
     chunker = RecursiveCharacterChunker(
         chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
     )
@@ -111,7 +130,17 @@ async def run(args: argparse.Namespace) -> None:
         ckpt_path = args.checkpoint
     else:
         ckpt_path = src.with_suffix(src.suffix + (".catalog.ckpt" if args.no_index else ".ckpt"))
-    start_line = _read_checkpoint(ckpt_path) if args.resume else 0
+    ckpt = _read_checkpoint(ckpt_path) if args.resume else {"line": 0, "doc_types": None}
+    start_line = ckpt["line"]
+    if start_line and ckpt["doc_types"] != current_doc_types:
+        # Resume keys only on line number, so a looser filter would silently skip
+        # every line the stricter run had filtered out. Fail closed instead.
+        raise SystemExit(
+            f"checkpoint {ckpt_path.name} was written with --doc-types "
+            f"{ckpt['doc_types']}, but this run uses {current_doc_types}. Resuming "
+            "would silently skip lines the new filter would keep. Re-run with the "
+            "same --doc-types, a fresh --checkpoint, or without --resume."
+        )
     if start_line:
         print(f"resuming after line {start_line} (from {ckpt_path.name})", file=sys.stderr)
 
@@ -142,6 +171,7 @@ async def run(args: argparse.Namespace) -> None:
         stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
         buffer: list[Chunk] = []
         pending_line = 0  # highest line whose document is fully built into `buffer`
+        deleted_docs: set[str] = set()  # doc ids whose prior chunks we've purged this run
 
         async def flush(up_to_line: int) -> None:
             """Embed + upsert the buffered chunks, then checkpoint ``up_to_line``.
@@ -155,6 +185,19 @@ async def run(args: argparse.Namespace) -> None:
                 vecs = await embedder.embed([c.content for c in buffer])
                 for c, v in zip(buffer, vecs, strict=True):
                     c.embedding = v
+                # Replace-on-reingest: delete each document's prior chunks once per
+                # run before writing its new ones, so an *edited* doc (shifted
+                # offsets → new chunk ids) doesn't leave orphans (mirrors
+                # IngestionPipeline.ingest). Done after a successful embed so a
+                # transient embed failure can't destroy good data first; the
+                # per-run set keeps a doc spanning two flushes from deleting the
+                # chunks the first flush just wrote.
+                for doc_id in dict.fromkeys(c.doc_id for c in buffer):
+                    if doc_id not in deleted_docs:
+                        await store.delete(doc_id, tenant_id=args.tenant)
+                        if text_index is not None:
+                            await text_index.delete(doc_id, tenant_id=args.tenant)
+                        deleted_docs.add(doc_id)
                 await store.upsert(buffer)
                 if text_index is not None:
                     await text_index.index(buffer)
@@ -162,7 +205,7 @@ async def run(args: argparse.Namespace) -> None:
                 buffer = []
                 print(f"  indexed {stats['chunks']} chunks / {stats['docs']} docs "
                       f"(line {up_to_line})", file=sys.stderr)
-            _write_checkpoint(ckpt_path, up_to_line)
+            _write_checkpoint(ckpt_path, up_to_line, current_doc_types)
 
         with src.open(encoding="utf-8") as fh:
             for line_no, record in _iter_records(fh):
@@ -187,7 +230,7 @@ async def run(args: argparse.Namespace) -> None:
                     # Catalog-only pass: no chunking/embedding. Checkpoint
                     # periodically so a long metadata run is resumable too.
                     if stats["docs"] % 2000 == 0:
-                        _write_checkpoint(ckpt_path, pending_line)
+                        _write_checkpoint(ckpt_path, pending_line, current_doc_types)
                     if args.limit and stats["docs"] >= args.limit:
                         break
                     continue
