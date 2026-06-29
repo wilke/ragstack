@@ -6,7 +6,9 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-reranker-v2-m3")
+# Default matches python config.reranker_model and apptainer/sidecars-up.sh so
+# every launch path loads the same model unless MODEL_NAME is set explicitly.
+MODEL_NAME = os.environ.get("MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "512"))
 PORT = int(os.environ.get("PORT", "50052"))
 DEVICE = os.environ.get("DEVICE", "cpu")

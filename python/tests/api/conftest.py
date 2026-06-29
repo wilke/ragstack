@@ -63,6 +63,7 @@ async def client():
     app.state.tenant_quota = tenant_quota
     app.state.retriever = HybridRetriever(vector_store, text_index, embedder)
     app.state.rewriters = {"passthrough": PassthroughRewriter()}  # no LLM in tests
+    app.state.reranker = None  # rerank off by default → fused order
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

@@ -2,7 +2,7 @@
 # Stop the ragstack sidecar Apptainer instances. Idempotent.
 
 set -euo pipefail
-for name in embedding; do
+for name in embedding crossencoder; do
     if apptainer instance stop "$name" 2>/dev/null; then
         echo "[$name] stopped"
     else

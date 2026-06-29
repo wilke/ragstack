@@ -11,11 +11,13 @@ from pydantic import BaseModel, Field
 
 from ragstack.api.deps import (
     get_generator,
+    get_reranker,
     get_retriever,
     get_rewriters,
     get_tenant_quota,
 )
 from ragstack.api.security import resolve_tenant
+from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
 from ragstack.scoring.scorers import RRFScorer
@@ -85,6 +87,58 @@ class RetrieveResponse(BaseModel):
     sources: list[Source]
 
 
+async def _maybe_rerank(
+    reranker, query: str, scored: list[ScoredChunk]
+) -> list[ScoredChunk]:
+    """Rescore the fused candidate pool with the cross-encoder, if one is wired.
+
+    Degrades gracefully: a reranker outage / bad response falls back to the
+    fused order rather than failing the request (same contract as the LLM and
+    rewriter stages). Cancellation is never swallowed."""
+    if reranker is None or not scored:
+        return scored
+    try:
+        return await reranker.score(query, [s.chunk for s in scored])
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.warning("rerank failed; using fused order", exc_info=True)
+        return scored
+
+
+async def _retrieve_fused(
+    retriever,
+    reranker,
+    query: str,
+    variants: list[str],
+    top_k: int,
+    filters: dict[str, Any],
+    use_graph: bool,
+) -> list[ScoredChunk]:
+    """Hybrid-retrieve each query variant, RRF-fuse, optionally rerank, truncate.
+
+    When a reranker is active the per-variant retrievals fetch a deeper pool
+    (``rerank_candidates``) so the cross-encoder has real recall to work with;
+    the final cut to ``top_k`` happens after reranking. With no reranker this is
+    exactly the previous behaviour (retrieve top_k, fuse, slice)."""
+    depth = max(top_k, settings.rerank_candidates) if reranker is not None else top_k
+    if len(variants) == 1:
+        scored = await retriever.retrieve(
+            variants[0], top_k=depth, filters=filters, use_graph=use_graph
+        )
+    else:
+        # Independent retrievals run concurrently — latency is one retrieve, not N.
+        ranked = await asyncio.gather(
+            *(
+                retriever.retrieve(v, top_k=depth, filters=filters, use_graph=use_graph)
+                for v in variants
+            )
+        )
+        scored = _RRF.fuse(list(ranked))
+    scored = await _maybe_rerank(reranker, query, scored)
+    return scored[:top_k]
+
+
 def _to_sources(scored: list[ScoredChunk]) -> list[Source]:
     return [
         Source(
@@ -114,14 +168,19 @@ async def retrieve(
     request: RetrieveRequest,
     tenant: str = Depends(tenant_slot),
     retriever=Depends(get_retriever),
+    reranker=Depends(get_reranker),
 ) -> RetrieveResponse:
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
-    vector + BM25 retrieval, without generating an answer."""
-    scored = await retriever.retrieve(
+    vector + BM25 retrieval (+ optional cross-encoder rerank), without
+    generating an answer."""
+    scored = await _retrieve_fused(
+        retriever,
+        reranker,
         request.query,
-        top_k=request.top_k,
-        filters=scope_filters(request.filters, tenant),
-        use_graph=request.use_graph,
+        [request.query],
+        request.top_k,
+        scope_filters(request.filters, tenant),
+        request.use_graph,
     )
     return RetrieveResponse(sources=_to_sources(scored))
 
@@ -144,32 +203,18 @@ async def query(
     retriever=Depends(get_retriever),
     generator=Depends(get_generator),
     rewriters=Depends(get_rewriters),
+    reranker=Depends(get_reranker),
 ) -> QueryResponse:
     """Full RAG flow: optionally rewrite the query (HyDE / multi-query), hybrid-
-    retrieve for each variant (caller's tenant + public), fuse with RRF, and
-    generate a grounded answer. When no LLM endpoint is configured the answer is a
-    retrieval-only placeholder.
+    retrieve for each variant (caller's tenant + public), fuse with RRF,
+    optionally cross-encoder rerank, and generate a grounded answer. When no LLM
+    endpoint is configured the answer is a retrieval-only placeholder.
     """
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
-
-    if len(variants) == 1:
-        scored = await retriever.retrieve(
-            variants[0], top_k=request.top_k, filters=filters, use_graph=request.use_graph
-        )
-    else:
-        # The per-variant retrievals are independent — run them concurrently so
-        # latency is one retrieve, not N. The embedder pool's concurrency cap
-        # bounds the actual fan-out to the backends.
-        ranked = await asyncio.gather(
-            *(
-                retriever.retrieve(
-                    v, top_k=request.top_k, filters=filters, use_graph=request.use_graph
-                )
-                for v in variants
-            )
-        )
-        scored = _RRF.fuse(list(ranked))[: request.top_k]
+    scored = await _retrieve_fused(
+        retriever, reranker, request.query, variants, request.top_k, filters, request.use_graph
+    )
 
     sources = _to_sources(scored)
     if generator is None:
