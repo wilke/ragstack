@@ -65,6 +65,17 @@ def test_doi_text_keeps_balanced_parens():
     assert src == "text"
 
 
+def test_doi_text_internal_parens_wrapped_in_prose_parens():
+    # A DOI that BOTH contains balanced parens AND is wrapped in prose parens:
+    # the enclosing ')' must be stripped while the DOI's own '(98)' is kept.
+    doi, _ = derive_doi(
+        "/x/note.pdf",
+        text="cited as (10.1016/S0140-6736(98)01085-X) in the review",
+        meta_doi="",
+    )
+    assert doi == "10.1016/S0140-6736(98)01085-X"
+
+
 def test_doi_absent():
     assert derive_doi("/x/cover.pdf", text="no identifier here", meta_doi="") == ("", "")
 
@@ -172,6 +183,29 @@ def test_extract_citations_none_without_section():
 def test_extract_citations_cap():
     body = "REFERENCES\n" + "\n".join(f"{i}. Author {i}. 2000. Title number {i}." for i in range(1, 50))
     assert len(extract_citations(body, cap=10)) == 10
+
+
+def test_extract_citations_multicolumn_interleave_not_truncated():
+    # A mis-ordered two-column extraction interleaves low/high numbers
+    # (1, 26, 2, 27, ...). The old "any backwards step > 5" heuristic truncated
+    # at the first 26->2 drop; requiring a reset to the list start (n<=2) keeps
+    # the whole list.
+    lines = []
+    for a, b in zip(range(1, 6), range(26, 31), strict=True):
+        lines.append(f"{a}. Author {a}. 2001. Title about subject number {a}.")
+        lines.append(f"{b}. Author {b}. 2001. Title about subject number {b}.")
+    cites = extract_citations("REFERENCES\n" + "\n".join(lines))
+    assert len(cites) == 10  # all kept, not cut off at the first column jump
+
+
+def test_extract_citations_truncates_at_reset_to_start():
+    # A genuine new numbered list after the references (a figure list restarting
+    # at 1) is still excluded — the intended behavior is preserved. Needs enough
+    # references that the reset is a >5 drop (the heuristic's threshold).
+    refs = [f"{i}. Author {i}. 2001. Real reference number {i} here." for i in range(1, 21)]
+    figs = [f"{i}. Figure caption number {i} describing the panel." for i in range(1, 4)]
+    cites = extract_citations("REFERENCES\n" + "\n".join(refs + figs))
+    assert len(cites) == 20  # the restart-at-1 figure list is dropped
 
 
 # --- end-to-end enrich + index projection -----------------------------------

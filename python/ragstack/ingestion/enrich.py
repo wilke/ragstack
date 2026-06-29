@@ -123,12 +123,14 @@ def _trim_text_doi(doi: str) -> str:
     """Strip sentence punctuation a prose match may have appended to a DOI.
 
     ``.``/``,``/``;`` at the end are always sentence punctuation. A trailing
-    ``)`` is only stripped when it doesn't close a ``(`` that is part of the DOI
-    itself — some DOIs legitimately contain balanced parentheses, e.g.
-    ``10.1016/S0140-6736(98)...``."""
+    ``)`` is stripped only when it is *unbalanced* — i.e. it closes a paren from
+    the surrounding prose rather than one inside the DOI. DOIs can legitimately
+    contain balanced parens, e.g. ``10.1016/S0140-6736(98)01085-X``; the old
+    "contains no ``(``" check wrongly kept the stray ``)`` when such a DOI was
+    itself wrapped in prose parens, so count parens instead."""
     doi = doi.rstrip(".,;")
-    if doi.endswith(")") and "(" not in doi:
-        doi = doi[:-1]
+    while doi.endswith(")") and doi.count(")") > doi.count("("):
+        doi = doi[:-1].rstrip(".,;")
     return doi
 
 
@@ -166,9 +168,13 @@ def extract_citations(text: str, cap: int = 250) -> list[str]:
             if cur:
                 cites.append(" ".join(cur).strip())
                 cur = []
-            # A hard reset in numbering after we already have several entries
-            # signals we've run past the reference list (e.g. into a figure).
-            if n < last_num - 5 and len(cites) > 3:
+            # A reset to the *start* of a new numbered list (1 or 2) after we
+            # already have several entries signals we've run past the reference
+            # list (e.g. into a figure list). Requiring n<=2 — rather than any
+            # backwards step — avoids falsely truncating a mis-ordered multi-
+            # column extraction that interleaves high/low numbers (1,26,2,27,…),
+            # where a bare "n < last_num - 5" would cut the list off early.
+            if n <= 2 and n < last_num - 5 and len(cites) > 3:
                 break
             last_num = n
             cur = [cm.group(2).strip()]
