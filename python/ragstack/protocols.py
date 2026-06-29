@@ -90,4 +90,6 @@ class QueryRewriter(Protocol):
 class Scorer(Protocol):
     """Score / rerank a list of candidate chunks against a query."""
 
-    async def score(self, query: str, candidates: list[Chunk]) -> list[ScoredChunk]: ...
+    async def score(
+        self, query: str, candidates: list[Chunk], top_k: int | None = None
+    ) -> list[ScoredChunk]: ...

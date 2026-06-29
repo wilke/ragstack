@@ -63,7 +63,7 @@ async def _expand_query(
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     rewrite_strategies: list[str] = Field(default_factory=lambda: ["passthrough"])
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
@@ -78,7 +78,7 @@ class QueryResponse(BaseModel):
 
 class RetrieveRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
 
@@ -88,9 +88,13 @@ class RetrieveResponse(BaseModel):
 
 
 async def _maybe_rerank(
-    reranker, query: str, scored: list[ScoredChunk]
+    reranker, query: str, scored: list[ScoredChunk], top_k: int
 ) -> list[ScoredChunk]:
     """Rescore the fused candidate pool with the cross-encoder, if one is wired.
+
+    Only the top ``top_k`` are kept downstream, so we ask the sidecar to return
+    just those — it scores the whole pool either way, but the response payload
+    shrinks from the full pool to ``top_k``.
 
     Degrades gracefully: a reranker outage / bad response falls back to the
     fused order rather than failing the request (same contract as the LLM and
@@ -98,11 +102,17 @@ async def _maybe_rerank(
     if reranker is None or not scored:
         return scored
     try:
-        return await reranker.score(query, [s.chunk for s in scored])
+        return await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
     except asyncio.CancelledError:
         raise
+    except (KeyError, ValueError) as e:
+        # A malformed/invalid sidecar response is a contract bug, not a transient
+        # outage — log it distinctly (ERROR) so it isn't lost among flaky-network
+        # warnings. Still degrade to the fused order.
+        log.error("rerank response invalid (%s); using fused order", e, exc_info=True)
+        return scored
     except Exception:
-        log.warning("rerank failed; using fused order", exc_info=True)
+        log.warning("rerank unavailable; using fused order", exc_info=True)
         return scored
 
 
@@ -135,7 +145,7 @@ async def _retrieve_fused(
             )
         )
         scored = _RRF.fuse(list(ranked))
-    scored = await _maybe_rerank(reranker, query, scored)
+    scored = await _maybe_rerank(reranker, query, scored, top_k)
     return scored[:top_k]
 
 
