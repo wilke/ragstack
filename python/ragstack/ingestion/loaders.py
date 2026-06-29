@@ -1,9 +1,12 @@
 """Document loaders."""
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 
+from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata
 from ragstack.models import Document
 from ragstack.protocols import DocumentLoader
 
@@ -113,6 +116,68 @@ class PdfLoader:
         ]
 
 
+class JsonlLoader:
+    """Load a JSONL corpus of *pre-extracted* documents.
+
+    Each line is one JSON object ``{"text", "path", "metadata"}`` (the shape
+    emitted by the upstream PDF-extraction pipeline). Every line becomes one
+    :class:`Document`, with scholarly metadata recovered by
+    :mod:`ragstack.ingestion.enrich` (DOI / title / authors / year / doc_type)
+    and stamped onto ``Document.metadata`` — so it propagates to every chunk and
+    is filterable at query time. The heavy document-level fields (full citation
+    list, abstract) are deliberately *not* propagated here to keep chunk payloads
+    small; the bulk operator script captures those in a separate catalog.
+
+    The document id is derived from the record's ``path`` (the original source
+    PDF), so re-ingesting the same corpus overwrites in place rather than
+    duplicating — same invariant the other loaders rely on.
+
+    Records are skipped (not errored) when their ``doc_type`` is in
+    ``skip_types`` — by default only empty-text records — and malformed lines
+    are skipped too, so a single bad line never aborts a large ingest. An
+    otherwise-empty file (no usable documents) raises :class:`LoaderError`.
+    """
+
+    def __init__(self, skip_types: Iterable[str] | None = None) -> None:
+        self._skip = frozenset(skip_types) if skip_types is not None else frozenset({EMPTY})
+
+    def load(self, source: str) -> list[Document]:
+        path = Path(source)
+        docs: list[Document] = []
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    # One corrupt line shouldn't sink the whole corpus.
+                    continue
+                doc = self._document(record)
+                if doc is not None:
+                    docs.append(doc)
+        if not docs:
+            raise LoaderError("no usable documents in JSONL source")
+        return docs
+
+    def _document(self, record: dict) -> Document | None:
+        enriched = enrich(record)
+        if enriched.doc_type in self._skip:
+            return None
+        text = record.get("text", "") or ""
+        rec_path = record.get("path", "") or ""
+        # Fall back to the line content for the id key only if no path is given,
+        # so a path-less record still gets a stable, content-derived id.
+        key = str(Path(rec_path).resolve()) if rec_path else text
+        return Document(
+            id=deterministic_doc_id(key),
+            content=text,
+            metadata=index_metadata(enriched),
+            source=rec_path,
+        )
+
+
 class LoaderRegistry:
     """Dispatch a source path to a loader by file extension.
 
@@ -153,16 +218,24 @@ class LoaderRegistry:
 
 # Suffixes the built-in registry handles — the single source of truth for what a
 # directory ingest enqueues. Keep default_loader_registry registrations in sync.
-DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md")
+DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md", ".jsonl")
 
 
 def default_loader_registry(
     ingest_root: str | None = None, max_bytes: int = 0
 ) -> LoaderRegistry:
-    """A registry wired with the built-in loaders (PDF + text/markdown)."""
+    """A registry wired with the built-in loaders (PDF + text/markdown + JSONL).
+
+    Note ``.jsonl`` is a *batch* format — one file yields many documents. The
+    registry's ``max_bytes`` guard still applies per file, so very large corpora
+    (the multi-hundred-MB extraction dumps) should be ingested with the
+    ``scripts/ingest_jsonl.py`` operator tool, which streams and bypasses that
+    single-file size ceiling.
+    """
     registry = LoaderRegistry(ingest_root=ingest_root, max_bytes=max_bytes)
     text = TextFileLoader()
     registry.register(".pdf", PdfLoader())
     registry.register(".txt", text)
     registry.register(".md", text)
+    registry.register(".jsonl", JsonlLoader())
     return registry
