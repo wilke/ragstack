@@ -23,10 +23,11 @@ class RRFScorer:
         self.k = k
 
     async def score(
-        self, query: str, candidates: list[Chunk]  # noqa: ARG002
+        self, query: str, candidates: list[Chunk], top_k: int | None = None  # noqa: ARG002
     ) -> list[ScoredChunk]:
         # Trivial case: assign uniform score when no ranking information available.
-        return [ScoredChunk(chunk=c, score=1.0 / (self.k + i + 1)) for i, c in enumerate(candidates)]
+        scored = [ScoredChunk(chunk=c, score=1.0 / (self.k + i + 1)) for i, c in enumerate(candidates)]
+        return scored if top_k is None else scored[:top_k]
 
     def fuse(self, ranked_lists: list[list[ScoredChunk]]) -> list[ScoredChunk]:
         """Fuse multiple ranked lists using RRF."""
@@ -69,7 +70,9 @@ class CrossEncoderScorer:
                 "Install it with: pip install sentence-transformers"
             ) from exc
 
-    async def score(self, query: str, candidates: list[Chunk]) -> list[ScoredChunk]:
+    async def score(
+        self, query: str, candidates: list[Chunk], top_k: int | None = None
+    ) -> list[ScoredChunk]:
         self._load_model()
         assert self._model is not None  # _load_model guarantees this or raises
         pairs = [(query, c.content) for c in candidates]
@@ -78,7 +81,10 @@ class CrossEncoderScorer:
             ScoredChunk(chunk=c, score=float(s), retrieval_method="reranked")
             for c, s in zip(candidates, raw_scores, strict=True)
         ]
-        return sorted(scored, key=lambda x: x.score, reverse=True)
+        ranked = sorted(scored, key=lambda x: x.score, reverse=True)
+        # Mirror SidecarReranker: honor the caller's cut so implementers of the
+        # Scorer protocol are interchangeable (top_k=None → the full ranked pool).
+        return ranked if top_k is None else ranked[:top_k]
 
 
 class SidecarReranker:

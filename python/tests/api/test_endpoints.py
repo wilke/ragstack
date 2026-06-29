@@ -29,6 +29,16 @@ async def test_retrieve_endpoint_returns_200(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/query", "/v1/retrieve"])
+@pytest.mark.parametrize("bad_top_k", [0, -1])
+async def test_non_positive_top_k_rejected(client, path, bad_top_k):
+    # top_k must be >= 1; a non-positive value is a 422, not a silently truncated
+    # (negative-slice) result set.
+    resp = await client.post(path, json={"query": "q", "top_k": bad_top_k})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_ingest_endpoint_returns_accepted(client):
     response = await client.post("/v1/ingest", json={"source": "/tmp/test.txt"})
     assert response.status_code == 200

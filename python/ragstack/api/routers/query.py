@@ -63,7 +63,7 @@ async def _expand_query(
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     rewrite_strategies: list[str] = Field(default_factory=lambda: ["passthrough"])
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
@@ -78,7 +78,7 @@ class QueryResponse(BaseModel):
 
 class RetrieveRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1)
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
 
