@@ -31,10 +31,12 @@ pip install -e ".[dev]"
 uvicorn ragstack.api.main:app --reload
 ```
 
-API docs are available at `http://localhost:8000/docs`.
+Interactive API docs are served at `http://localhost:8000/docs`; see
+**[docs/API.md](docs/API.md)** for the written HTTP API reference.
 
 ## Documentation
 
+- **[docs/API.md](docs/API.md)** — HTTP API reference (endpoints, auth, retrieval pipeline, config)
 - **[SPEC.md](SPEC.md)** — Full architecture specification, data models, milestones
 - **[docs/](docs/)** — Additional guides (deployment, configuration, contributing)
 
