@@ -21,7 +21,7 @@ class _StubRetriever:
 
 
 class _ReverseReranker:
-    async def score(self, query, candidates):
+    async def score(self, query, candidates, top_k=None):
         return [
             ScoredChunk(chunk=c, score=float(i), retrieval_method="reranked")
             for i, c in enumerate(reversed(candidates))
@@ -29,7 +29,7 @@ class _ReverseReranker:
 
 
 class _BoomReranker:
-    async def score(self, query, candidates):
+    async def score(self, query, candidates, top_k=None):
         raise RuntimeError("reranker down")
 
 

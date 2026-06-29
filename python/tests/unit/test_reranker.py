@@ -43,6 +43,23 @@ async def test_reranker_maps_sidecar_ranking_onto_chunks():
 
 
 @pytest.mark.asyncio
+async def test_reranker_forwards_top_k_and_accepts_subset_response():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        # Sidecar honours top_k and returns just the top 2 of the 5 sent.
+        return httpx.Response(200, json={"scores": [3.0, 2.0], "indices": [4, 1]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        rr = SidecarReranker("http://crossencoder:50052", http)
+        out = await rr.score("q", _chunks(5), top_k=2)
+
+    assert captured["top_k"] == 2  # forwarded, not len(candidates)
+    assert [s.chunk.id for s in out] == ["c4", "c1"]  # subset mapped correctly
+
+
+@pytest.mark.asyncio
 async def test_reranker_empty_candidates_short_circuits():
     called = False
 

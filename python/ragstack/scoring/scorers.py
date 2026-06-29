@@ -90,16 +90,19 @@ class SidecarReranker:
     wherever ``CrossEncoderScorer`` would, without pulling sentence-transformers
     into the API environment.
 
-    The sidecar ranks and truncates to its ``top_k``; we pass ``top_k =
-    len(candidates)`` so the full pool comes back rescored and the caller decides
-    the final cut. Returns ``ScoredChunk``s in the sidecar's ranked order.
+    The sidecar scores the whole pool and truncates to its ``top_k``. ``top_k``
+    defaults to the full pool (caller decides the cut); pass a smaller value when
+    only the top results are kept to shrink the response payload. Returns
+    ``ScoredChunk``s in the sidecar's ranked order.
     """
 
     def __init__(self, base_url: str, http: httpx.AsyncClient) -> None:
         self.base_url = base_url.rstrip("/")
         self.http = http
 
-    async def score(self, query: str, candidates: list[Chunk]) -> list[ScoredChunk]:
+    async def score(
+        self, query: str, candidates: list[Chunk], top_k: int | None = None
+    ) -> list[ScoredChunk]:
         if not candidates:
             return []
         r = await self.http.post(
@@ -107,7 +110,7 @@ class SidecarReranker:
             json={
                 "query": query,
                 "documents": [c.content for c in candidates],
-                "top_k": len(candidates),
+                "top_k": len(candidates) if top_k is None else min(top_k, len(candidates)),
             },
             timeout=120.0,
         )
