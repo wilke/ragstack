@@ -114,18 +114,13 @@ def _iter_records(fh: TextIO):
             print(f"  warn: skipping malformed line {line_no}", file=sys.stderr)
 
 
-async def run(args: argparse.Namespace) -> None:
+def _open_checkpoint_paths(args: argparse.Namespace, current_doc_types: list[str] | None):
+    """Resolve the checkpoint path and resume start-line.
+
+    Index and catalog-only passes keep *separate* default checkpoints: a cheap
+    ``--no-index`` catalog run must not advance the checkpoint the expensive
+    indexing run resumes from (which would make indexing skip every document)."""
     src = args.input
-    keep_types = set(args.doc_types) if args.doc_types else None
-    # Canonical (sorted) form of the active filter, persisted in the checkpoint so
-    # a resume under a different filter is detected.
-    current_doc_types = sorted(keep_types) if keep_types else None
-    chunker = RecursiveCharacterChunker(
-        chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
-    )
-    # Index and catalog-only passes keep *separate* default checkpoints: a cheap
-    # --no-index catalog run must not advance the checkpoint the expensive
-    # indexing run resumes from (which would make indexing skip every document).
     if args.checkpoint:
         ckpt_path = args.checkpoint
     else:
@@ -143,98 +138,183 @@ async def run(args: argparse.Namespace) -> None:
         )
     if start_line:
         print(f"resuming after line {start_line} (from {ckpt_path.name})", file=sys.stderr)
+    return ckpt_path, start_line
 
+
+def _open_catalog(args: argparse.Namespace, start_line: int) -> TextIO | None:
+    if not args.catalog_out:
+        return None
     # Append on resume so a resumed run doesn't truncate the catalog written so far.
-    catalog_mode = "a" if (args.catalog_out and args.resume and start_line) else "w"
-    catalog: TextIO | None = (
-        open(args.catalog_out, catalog_mode, encoding="utf-8") if args.catalog_out else None
+    mode = "a" if (args.resume and start_line) else "w"
+    return open(args.catalog_out, mode, encoding="utf-8")
+
+
+def _kept(enriched, keep_types) -> bool:
+    return enriched.doc_type != EMPTY and (keep_types is None or enriched.doc_type in keep_types)
+
+
+async def _run_catalog_only(
+    args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types
+) -> None:
+    """Metadata-only pass: enrich + write the catalog, no chunking/embedding."""
+    with args.input.open(encoding="utf-8") as fh:
+        pending = 0
+        for line_no, record in _iter_records(fh):
+            if line_no <= start_line:
+                continue
+            # Advance over every processed line, including skipped ones, so a
+            # resume doesn't re-scan a trailing run of filtered records forever.
+            pending = line_no
+            stats["seen"] += 1
+            enriched = enrich(record)
+            if not _kept(enriched, keep_types):
+                stats["skipped"] += 1
+                continue
+            if catalog is not None:
+                catalog.write(json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n")
+            stats["docs"] += 1
+            pending = line_no
+            if stats["docs"] % 2000 == 0:
+                _write_checkpoint(ckpt_path, pending, current_doc_types)
+            if args.limit and stats["docs"] >= args.limit:
+                break
+        _write_checkpoint(ckpt_path, pending, current_doc_types)
+
+
+async def run(args: argparse.Namespace) -> None:
+    keep_types = set(args.doc_types) if args.doc_types else None
+    # Canonical (sorted) form of the active filter, persisted in the checkpoint so
+    # a resume under a different filter is detected.
+    current_doc_types = sorted(keep_types) if keep_types else None
+    chunker = RecursiveCharacterChunker(
+        chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
     )
+    ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
+    catalog = _open_catalog(args, start_line)
+    stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
+
+    if args.no_index:
+        await _run_catalog_only(
+            args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types
+        )
+        if catalog is not None:
+            catalog.close()
+            print(f"catalog written to {args.catalog_out}", file=sys.stderr)
+        print(f"done: {stats['docs']} docs cataloged, {stats['skipped']} skipped "
+              f"(saw {stats['seen']} records)", file=sys.stderr)
+        return
 
     async with httpx.AsyncClient() as http:
-        embedder = store = text_index = None
-        if not args.no_index:
-            urls = args.embedding_url
-            common = {
-                "api": args.embedding_api,
-                "http": http,
-                "model": args.embedding_model,
-                "api_key": os.getenv("OPENAI_API_KEY"),
-            }
-            if len(urls) > 1:
-                embedder = make_pooled_embedder(
-                    base_urls=urls, max_concurrency=args.embedding_max_concurrency, **common
-                )
-                print(f"embedding fan-out across {len(urls)} endpoints", file=sys.stderr)
-            else:
-                embedder = make_embedder(base_url=urls[0], **common)
+        urls = args.embedding_url
+        common = {
+            "api": args.embedding_api, "http": http,
+            "model": args.embedding_model, "api_key": os.getenv("OPENAI_API_KEY"),
+        }
+        if len(urls) > 1:
+            embedder = make_pooled_embedder(
+                base_urls=urls, max_concurrency=args.embedding_max_concurrency, **common
+            )
+            print(f"embedding fan-out across {len(urls)} endpoints", file=sys.stderr)
+        else:
+            embedder = make_embedder(base_url=urls[0], **common)
 
-        stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
-        buffer: list[Chunk] = []
-        pending_line = 0  # highest line whose document is fully built into `buffer`
-        deleted_docs: set[str] = set()  # doc ids whose prior chunks we've purged this run
+        # Size the collection to the model's vector dim via a one-text probe, so
+        # the store exists before the concurrent workers start.
+        dim = len((await embedder.embed(["dimension probe"]))[0])
+        coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
+        store = QdrantVectorStore(url=args.qdrant_url, collection=coll, vector_size=dim)
+        await store.ensure_collection()
+        print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
+        text_index = None
+        if args.text_backend == "elasticsearch":
+            text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
+            await text_index.ensure_index()
+            print(f"elasticsearch index {args.es_index!r} ready", file=sys.stderr)
 
-        async def flush(up_to_line: int) -> None:
-            """Embed + upsert the buffered chunks, then checkpoint ``up_to_line``.
+        # Concurrent pipeline: a producer streams fixed-size chunk batches onto a
+        # bounded queue (constant memory on huge inputs); `concurrency` workers
+        # embed+upsert in parallel, fanning out across the embedder pool. Each
+        # batch carries a monotonic seq + the last record line it covers; the
+        # checkpoint only advances over the contiguous *completed* prefix, so a
+        # crash never records a line whose batch (or an earlier one) hadn't
+        # finished — resume re-does from the first unfinished batch (idempotent,
+        # deterministic chunk IDs overwrite in place).
+        concurrency = max(1, args.concurrency)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 2)
+        completed: dict[int, int] = {}
+        failed: list[int] = []  # seqs whose batch errored (checkpoint stalls at the gap)
+        next_seq = 0
+        lock = asyncio.Lock()
 
-            Always advances the checkpoint to ``up_to_line`` — by construction
-            that is the last line whose document is wholly contained in the
-            buffer being flushed, so everything up to it is durably indexed.
-            """
-            nonlocal buffer
-            if store is not None and buffer:
-                vecs = await embedder.embed([c.content for c in buffer])
-                for c, v in zip(buffer, vecs, strict=True):
-                    c.embedding = v
-                # Replace-on-reingest: delete each document's prior chunks once per
-                # run before writing its new ones, so an *edited* doc (shifted
-                # offsets → new chunk ids) doesn't leave orphans (mirrors
-                # IngestionPipeline.ingest). Done after a successful embed so a
-                # transient embed failure can't destroy good data first; the
-                # per-run set keeps a doc spanning two flushes from deleting the
-                # chunks the first flush just wrote.
-                for doc_id in dict.fromkeys(c.doc_id for c in buffer):
-                    if doc_id not in deleted_docs:
-                        await store.delete(doc_id, tenant_id=args.tenant)
+        async def worker() -> None:
+            nonlocal next_seq
+            while True:
+                item = await queue.get()
+                try:
+                    if item is None:
+                        return
+                    seq, end_line, chunks = item
+                    try:
+                        vecs = await embedder.embed([c.content for c in chunks])
+                        for c, v in zip(chunks, vecs, strict=True):
+                            c.embedding = v
+                        # Replace-on-reingest: delete each document's prior chunks
+                        # before writing its new ones, so an *edited* doc (shifted
+                        # offsets → new chunk ids) doesn't leave orphans (mirrors
+                        # IngestionPipeline.ingest). After a successful embed so a
+                        # transient embed failure can't destroy good data first. The
+                        # producer only flushes on a document boundary, so a doc's
+                        # chunks live entirely in one batch / one worker — deleting
+                        # this batch's distinct doc ids removes each exactly once
+                        # with no cross-worker race.
+                        for doc_id in dict.fromkeys(c.doc_id for c in chunks):
+                            await store.delete(doc_id, tenant_id=args.tenant)
+                            if text_index is not None:
+                                await text_index.delete(doc_id, tenant_id=args.tenant)
+                        await store.upsert(chunks)
                         if text_index is not None:
-                            await text_index.delete(doc_id, tenant_id=args.tenant)
-                        deleted_docs.add(doc_id)
-                await store.upsert(buffer)
-                if text_index is not None:
-                    await text_index.index(buffer)
-                stats["chunks"] += len(buffer)
-                buffer = []
-                print(f"  indexed {stats['chunks']} chunks / {stats['docs']} docs "
-                      f"(line {up_to_line})", file=sys.stderr)
-            _write_checkpoint(ckpt_path, up_to_line, current_doc_types)
+                            await text_index.index(chunks)
+                    except Exception as e:
+                        # Don't kill the worker (or deadlock the producer): leave
+                        # this seq out of `completed` so the checkpoint stalls at
+                        # the gap and --resume reprocesses from here. Record it so
+                        # the run reports failure (non-zero exit) instead of "done".
+                        failed.append(seq)
+                        print(f"  batch seq={seq} failed: {type(e).__name__}: {e}; "
+                              f"will reprocess on --resume", file=sys.stderr)
+                        continue
+                    async with lock:
+                        completed[seq] = end_line
+                        stats["chunks"] += len(chunks)
+                        advanced = None
+                        while next_seq in completed:
+                            advanced = completed.pop(next_seq)
+                            next_seq += 1
+                        if advanced is not None:
+                            _write_checkpoint(ckpt_path, advanced, current_doc_types)
+                            print(f"  indexed {stats['chunks']} chunks / {stats['docs']} docs "
+                                  f"(line {advanced})", file=sys.stderr)
+                finally:
+                    queue.task_done()
 
-        with src.open(encoding="utf-8") as fh:
+        workers = [asyncio.create_task(worker()) for _ in range(concurrency)]
+
+        seq = 0
+        buf: list[Chunk] = []
+        buf_end_line = 0
+        last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
+        with args.input.open(encoding="utf-8") as fh:
             for line_no, record in _iter_records(fh):
                 if line_no <= start_line:
                     continue
+                last_line = line_no
                 stats["seen"] += 1
                 enriched = enrich(record)
-                if enriched.doc_type == EMPTY or (
-                    keep_types is not None and enriched.doc_type not in keep_types
-                ):
+                if not _kept(enriched, keep_types):
                     stats["skipped"] += 1
-                    pending_line = line_no
                     continue
-
                 if catalog is not None:
                     catalog.write(json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n")
-
-                stats["docs"] += 1
-                pending_line = line_no
-
-                if args.no_index:
-                    # Catalog-only pass: no chunking/embedding. Checkpoint
-                    # periodically so a long metadata run is resumable too.
-                    if stats["docs"] % 2000 == 0:
-                        _write_checkpoint(ckpt_path, pending_line, current_doc_types)
-                    if args.limit and stats["docs"] >= args.limit:
-                        break
-                    continue
-
                 text = record.get("text", "") or ""
                 doc = Document(
                     id=deterministic_doc_id(_doc_id_key(record, text)),
@@ -245,48 +325,42 @@ async def run(args: argparse.Namespace) -> None:
                 chunks = chunker.chunk(doc)
                 for c in chunks:
                     c.metadata["tenant_id"] = args.tenant
-                buffer.extend(chunks)
-
-                # First flush sizes the collection to the model's vector dim.
-                if store is None and not args.no_index and len(buffer) >= args.batch_size:
-                    sample = await embedder.embed([buffer[0].content])
-                    dim = len(sample[0])
-                    coll = args.collection or collection_name(
-                        "ragstack", args.embedding_model, dim
-                    )
-                    store = QdrantVectorStore(url=args.qdrant_url, collection=coll, vector_size=dim)
-                    await store.ensure_collection()
-                    print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
-                    if args.text_backend == "elasticsearch":
-                        text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
-                        await text_index.ensure_index()
-                        print(f"elasticsearch index {args.es_index!r} ready", file=sys.stderr)
-
-                if store is not None and len(buffer) >= args.batch_size:
-                    await flush(pending_line)
+                buf.extend(chunks)
+                buf_end_line = line_no
+                stats["docs"] += 1
+                if len(buf) >= args.batch_size:
+                    await queue.put((seq, buf_end_line, buf))
+                    seq += 1
+                    buf = []
                 if args.limit and stats["docs"] >= args.limit:
                     break
+        if buf:
+            await queue.put((seq, buf_end_line, buf))
+            seq += 1
+        for _ in workers:  # one sentinel per worker
+            await queue.put(None)
+        await asyncio.gather(*workers)
 
-            # Tail: a corpus smaller than one batch never triggered store creation.
-            if buffer and store is None and not args.no_index:
-                sample = await embedder.embed([buffer[0].content])
-                dim = len(sample[0])
-                coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
-                store = QdrantVectorStore(url=args.qdrant_url, collection=coll, vector_size=dim)
-                await store.ensure_collection()
-                if args.text_backend == "elasticsearch":
-                    text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
-                    await text_index.ensure_index()
-            await flush(pending_line)
+        # All batches done with no gap (next_seq caught up to the batch count):
+        # advance the checkpoint over any trailing skipped lines after the last
+        # kept doc, so a resume of a finished run doesn't re-scan them. A gap
+        # (failed batch) leaves next_seq < seq, so the checkpoint correctly stalls.
+        if next_seq == seq:
+            _write_checkpoint(ckpt_path, last_line, current_doc_types)
 
-            # Close the ES client's connection pool — it owns an aiohttp session
-            # independent of `http`, which otherwise warns "Unclosed connector".
-            if text_index is not None and hasattr(text_index, "close"):
-                await text_index.close()
+        if text_index is not None and hasattr(text_index, "close"):
+            await text_index.close()
 
     if catalog is not None:
         catalog.close()
         print(f"catalog written to {args.catalog_out}", file=sys.stderr)
+    if failed:
+        # Don't report success when batches errored: the checkpoint stalled at the
+        # first gap, so the run is partial. Exit non-zero so the operator notices.
+        print(f"FAILED: {len(failed)} batch(es) errored (seq {sorted(failed)}); "
+              f"checkpoint stalled at the first gap — re-run with --resume to retry.",
+              file=sys.stderr)
+        raise SystemExit(1)
     print(f"done: {stats['docs']} docs indexed, {stats['skipped']} skipped, "
           f"{stats['chunks']} chunks (saw {stats['seen']} records)", file=sys.stderr)
 
@@ -324,6 +398,9 @@ def main() -> None:
     p.add_argument("--chunk-size", type=int, default=512)
     p.add_argument("--chunk-overlap", type=int, default=64)
     p.add_argument("--batch-size", type=int, default=128, help="chunks embedded/upserted per batch")
+    p.add_argument("--concurrency", type=int, default=1,
+                   help="in-flight batches embedded+upserted in parallel; set >1 to fan out "
+                        "across multiple --embedding-url endpoints (default: 1 = serial)")
     # resume
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,
