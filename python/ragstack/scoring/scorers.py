@@ -115,9 +115,22 @@ class SidecarReranker:
         data = r.json()
         # The sidecar returns parallel `scores`/`indices` arrays already sorted
         # by descending score; `indices` point back into the documents we sent.
+        scores, indices = data["scores"], data["indices"]
+        # Validate the indices are a clean subset of what we sent before using them
+        # to index `candidates`: an out-of-range index would raise IndexError and a
+        # duplicate would silently duplicate one chunk while dropping another. Raise
+        # on any violation so _maybe_rerank degrades to the fused order rather than
+        # returning a corrupted result set.
+        n = len(candidates)
+        if len(scores) != len(indices):
+            raise ValueError(f"rerank returned {len(scores)} scores for {len(indices)} indices")
+        if any(not isinstance(i, int) or not (0 <= i < n) for i in indices):
+            raise ValueError(f"rerank returned an out-of-range index (pool size {n})")
+        if len(set(indices)) != len(indices):
+            raise ValueError("rerank returned duplicate indices")
         return [
             ScoredChunk(
                 chunk=candidates[i], score=float(s), retrieval_method="reranked"
             )
-            for s, i in zip(data["scores"], data["indices"], strict=True)
+            for s, i in zip(scores, indices, strict=True)
         ]

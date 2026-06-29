@@ -66,3 +66,28 @@ async def test_reranker_propagates_http_errors():
         rr = SidecarReranker("http://crossencoder:50052", http)
         with pytest.raises(httpx.HTTPStatusError):
             await rr.score("q", _chunks(2))
+
+
+def _resp(scores, indices):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"scores": scores, "indices": indices})
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scores,indices,match",
+    [
+        ([1.0, 0.5], [0, 5], "out-of-range"),       # index past pool size
+        ([1.0, 0.5], [-1, 0], "out-of-range"),      # negative index
+        ([1.0, 0.5], [1, 1], "duplicate"),          # duplicate → would dup+drop a chunk
+        ([1.0], [0, 1], "scores"),                  # scores/indices length divergence
+    ],
+)
+async def test_reranker_rejects_malformed_indices(scores, indices, match):
+    # A bad index set must raise (so _maybe_rerank degrades) rather than
+    # silently corrupting the result by duplicating/dropping chunks.
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_resp(scores, indices))) as http:
+        rr = SidecarReranker("http://crossencoder:50052", http)
+        with pytest.raises(ValueError, match=match):
+            await rr.score("q", _chunks(3))

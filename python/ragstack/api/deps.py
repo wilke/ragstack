@@ -321,6 +321,28 @@ async def lifespan(app: FastAPI):
     app.state.rewriters = _build_rewriters(llm)
     app.state.reranker = _build_reranker(http_client)
 
+    # Best-effort: the sidecar picks its own model from MODEL_NAME, so a mismatched
+    # deploy would silently rerank with a different model than config advertises.
+    # Probe /health at startup and warn loudly on a mismatch (don't fail — the
+    # sidecar may still be warming up).
+    if app.state.reranker is not None:
+        try:
+            resp = await http_client.get(
+                f"{settings.crossencoder_sidecar_url.rstrip('/')}/health", timeout=5.0
+            )
+            actual = resp.json().get("model")
+            if actual and actual != settings.reranker_model:
+                log.warning(
+                    "reranker model mismatch: sidecar loaded %r but config.reranker_model "
+                    "is %r — rerank scores will not reflect the advertised model",
+                    actual,
+                    settings.reranker_model,
+                )
+            else:
+                log.info("reranker model confirmed: %s", actual)
+        except Exception as e:
+            log.warning("could not verify reranker model at startup: %s", e)
+
     try:
         yield
     finally:
