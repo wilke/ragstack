@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import TypedDict
 
 import httpx
 from fastapi import FastAPI, Request
@@ -31,6 +32,7 @@ from ragstack.rewriting.rewriters import (
     MultiQueryRewriter,
     PassthroughRewriter,
 )
+from ragstack.scoring.scorers import SidecarReranker
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -81,12 +83,19 @@ def _build_vector_store():
     return InMemoryVectorStore()
 
 
+class _CommonEmbedderKwargs(TypedDict):
+    api: str
+    http: httpx.AsyncClient
+    model: str | None
+    api_key: str | None
+
+
 def _build_embedder(http: httpx.AsyncClient):
     """Build the embedder (single endpoint or a load-balanced pool), wrapped in
     BatchingEmbedder. Multiple ``embedding_endpoints`` → a PooledEmbedder with
     failover + backpressure; otherwise the single ``embedding_sidecar_url``."""
     urls = settings.embedding_endpoints or [settings.embedding_sidecar_url]
-    common = {
+    common: _CommonEmbedderKwargs = {
         "api": settings.embedding_api,
         "http": http,
         "model": settings.embedding_model or None,
@@ -161,6 +170,18 @@ def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
         rewriters["multiquery"] = MultiQueryRewriter(llm)
         rewriters["hyde"] = HyDERewriter(llm)
     return rewriters
+
+
+def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
+    """The cross-encoder reranker (sidecar HTTP client), or None when disabled.
+
+    Opt-in via ``rerank_enabled``; an unreachable sidecar is *not* fatal here —
+    the query path catches rerank failures and falls back to the fused order, so
+    a reranker outage degrades quality rather than availability."""
+    if not settings.rerank_enabled:
+        return None
+    log.info("reranker enabled: %s @ %s", settings.reranker_model, settings.crossencoder_sidecar_url)
+    return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
 def _validate_production_settings() -> None:
@@ -298,6 +319,7 @@ async def lifespan(app: FastAPI):
     app.state.tenant_quota = tenant_quota
     app.state.retriever = retriever
     app.state.rewriters = _build_rewriters(llm)
+    app.state.reranker = _build_reranker(http_client)
 
     try:
         yield
@@ -337,6 +359,10 @@ def get_retriever(request: Request):
 
 def get_rewriters(request: Request):
     return request.app.state.rewriters
+
+
+def get_reranker(request: Request):
+    return request.app.state.reranker
 
 
 def get_job_store(request: Request):

@@ -129,6 +129,15 @@ class Settings(BaseSettings):
     top_k: int = 5
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+    # Cross-encoder reranking (final stage over the fused candidate pool).
+    # Off by default; when enabled, the hybrid result is re-fetched to a pool of
+    # `rerank_candidates`, rescored by the cross-encoder sidecar, then truncated
+    # to top_k. A rerank failure degrades to the fused order (never a 500), so
+    # this is not gated by require_durable_backends.
+    rerank_enabled: bool = False
+    rerank_candidates: int = 50
+    crossencoder_sidecar_url: str = "http://localhost:50052"
+
     # Observability
     log_level: str = "INFO"
     otel_exporter_otlp_endpoint: str = ""

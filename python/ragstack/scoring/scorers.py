@@ -1,7 +1,14 @@
 """Scoring and reranking of retrieved chunks."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+import httpx
+
 from ragstack.models import Chunk, ScoredChunk
+
+if TYPE_CHECKING:
+    from sentence_transformers import CrossEncoder
 
 
 class RRFScorer:
@@ -47,7 +54,7 @@ class CrossEncoderScorer:
 
     def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2") -> None:
         self.model_name = model_name
-        self._model: object | None = None
+        self._model: CrossEncoder | None = None
 
     def _load_model(self) -> None:
         if self._model is not None:
@@ -64,10 +71,53 @@ class CrossEncoderScorer:
 
     async def score(self, query: str, candidates: list[Chunk]) -> list[ScoredChunk]:
         self._load_model()
+        assert self._model is not None  # _load_model guarantees this or raises
         pairs = [(query, c.content) for c in candidates]
-        raw_scores: list[float] = self._model.predict(pairs).tolist()  # type: ignore[attr-defined]
+        raw_scores: list[float] = self._model.predict(pairs).tolist()
         scored = [
             ScoredChunk(chunk=c, score=float(s), retrieval_method="reranked")
             for c, s in zip(candidates, raw_scores, strict=True)
         ]
         return sorted(scored, key=lambda x: x.score, reverse=True)
+
+
+class SidecarReranker:
+    """Cross-encoder reranker backed by the crossencoder sidecar (POST ``/rerank``).
+
+    Mirrors :class:`~ragstack.embedders.SidecarEmbedder`: it keeps the heavy
+    model out of the API process and behind an HTTP boundary that can scale or
+    swap models independently. Implements the ``Scorer`` protocol so it drops in
+    wherever ``CrossEncoderScorer`` would, without pulling sentence-transformers
+    into the API environment.
+
+    The sidecar ranks and truncates to its ``top_k``; we pass ``top_k =
+    len(candidates)`` so the full pool comes back rescored and the caller decides
+    the final cut. Returns ``ScoredChunk``s in the sidecar's ranked order.
+    """
+
+    def __init__(self, base_url: str, http: httpx.AsyncClient) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.http = http
+
+    async def score(self, query: str, candidates: list[Chunk]) -> list[ScoredChunk]:
+        if not candidates:
+            return []
+        r = await self.http.post(
+            f"{self.base_url}/rerank",
+            json={
+                "query": query,
+                "documents": [c.content for c in candidates],
+                "top_k": len(candidates),
+            },
+            timeout=120.0,
+        )
+        r.raise_for_status()
+        data = r.json()
+        # The sidecar returns parallel `scores`/`indices` arrays already sorted
+        # by descending score; `indices` point back into the documents we sent.
+        return [
+            ScoredChunk(
+                chunk=candidates[i], score=float(s), retrieval_method="reranked"
+            )
+            for s, i in zip(data["scores"], data["indices"], strict=True)
+        ]
