@@ -1,6 +1,7 @@
 """Query and retrieve endpoints."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -8,13 +9,54 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from ragstack.api.deps import get_generator, get_retriever, get_tenant_quota
+from ragstack.api.deps import (
+    get_generator,
+    get_retriever,
+    get_rewriters,
+    get_tenant_quota,
+)
 from ragstack.api.security import resolve_tenant
 from ragstack.models import ScoredChunk, Source
+from ragstack.protocols import QueryRewriter
+from ragstack.scoring.scorers import RRFScorer
 from ragstack.tenancy import scope_filters
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+# Stateless RRF fusion for combining per-rewrite ranked lists.
+_RRF = RRFScorer()
+
+
+async def _expand_query(
+    query: str, strategies: list[str], rewriters: dict[str, QueryRewriter]
+) -> list[str]:
+    """Expand the query into retrieval variants per the requested strategies.
+
+    Always includes the original query. Unknown or unavailable strategies (e.g.
+    an LLM strategy with no LLM configured) are skipped, and a rewriter that
+    raises is skipped too — so retrieval degrades to the plain query rather than
+    failing the request. Variants are de-duplicated, original first.
+    """
+    variants: list[str] = [query]
+    seen = {query}
+    for name in strategies:
+        rewriter = rewriters.get(name)
+        if rewriter is None:
+            continue
+        try:
+            produced = await rewriter.rewrite(query)
+        except asyncio.CancelledError:
+            raise  # never swallow cancellation (client disconnect / timeout)
+        except Exception:
+            log.warning("query rewriter %r failed; skipping", name, exc_info=True)
+            continue
+        for v in produced:
+            v = (v or "").strip()
+            if v and v not in seen:
+                seen.add(v)
+                variants.append(v)
+    return variants
 
 
 class QueryRequest(BaseModel):
@@ -101,17 +143,34 @@ async def query(
     tenant: str = Depends(tenant_slot),
     retriever=Depends(get_retriever),
     generator=Depends(get_generator),
+    rewriters=Depends(get_rewriters),
 ) -> QueryResponse:
-    """Full RAG flow: hybrid-retrieve relevant chunks (caller's tenant + public)
-    and generate a grounded answer. When no LLM endpoint is configured the answer
-    is a retrieval-only placeholder.
+    """Full RAG flow: optionally rewrite the query (HyDE / multi-query), hybrid-
+    retrieve for each variant (caller's tenant + public), fuse with RRF, and
+    generate a grounded answer. When no LLM endpoint is configured the answer is a
+    retrieval-only placeholder.
     """
-    scored = await retriever.retrieve(
-        request.query,
-        top_k=request.top_k,
-        filters=scope_filters(request.filters, tenant),
-        use_graph=request.use_graph,
-    )
+    filters = scope_filters(request.filters, tenant)
+    variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
+
+    if len(variants) == 1:
+        scored = await retriever.retrieve(
+            variants[0], top_k=request.top_k, filters=filters, use_graph=request.use_graph
+        )
+    else:
+        # The per-variant retrievals are independent — run them concurrently so
+        # latency is one retrieve, not N. The embedder pool's concurrency cap
+        # bounds the actual fan-out to the backends.
+        ranked = await asyncio.gather(
+            *(
+                retriever.retrieve(
+                    v, top_k=request.top_k, filters=filters, use_graph=request.use_graph
+                )
+                for v in variants
+            )
+        )
+        scored = _RRF.fuse(list(ranked))[: request.top_k]
+
     sources = _to_sources(scored)
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
@@ -126,5 +185,5 @@ async def query(
     return QueryResponse(
         answer=answer,
         sources=sources,
-        rewritten_queries=[request.query],
+        rewritten_queries=variants,
     )

@@ -26,8 +26,8 @@ class MultiQueryRewriter:
             f"Generate {self.n} alternative phrasings of the following question. "
             f"Return one per line, no numbering.\n\nQuestion: {query}"
         )
-        # llm_client is expected to expose an async `complete(prompt) -> str` method.
-        response: str = await self._llm.complete(prompt)  # type: ignore[attr-defined]
+        # llm_client exposes an async `complete_text(prompt) -> str` (see OpenAILLM).
+        response: str = await self._llm.complete_text(prompt)  # type: ignore[attr-defined]
         alternatives = [line.strip() for line in response.splitlines() if line.strip()]
         return [query] + alternatives[: self.n]
 
@@ -49,5 +49,5 @@ class HyDERewriter:
             "as if you found it in a document:\n\n"
             f"Question: {query}\n\nHypothetical answer:"
         )
-        hypothetical: str = await self._llm.complete(prompt)  # type: ignore[attr-defined]
+        hypothetical: str = await self._llm.complete_text(prompt)  # type: ignore[attr-defined]
         return [query, hypothetical.strip()]
