@@ -61,7 +61,7 @@ class LocalAsyncIORunner:
         )
         out: list[ItemResult] = []
         for shard, res in zip(shards, gathered, strict=True):
-            if isinstance(res, Exception):
+            if isinstance(res, BaseException):
                 out.extend(
                     ItemResult(
                         item_id=i.item_id,
