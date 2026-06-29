@@ -159,6 +159,18 @@ async def _run_catalog_only(
     """Metadata-only pass: enrich + write the catalog, no chunking/embedding."""
     with args.input.open(encoding="utf-8") as fh:
         pending = 0
+        catalog_pending: list[str] = []  # rows not yet covered by the checkpoint
+
+        def checkpoint(up_to_line: int) -> None:
+            # Flush buffered catalog rows BEFORE advancing the checkpoint so the
+            # catalog never gets ahead of the resume point; a crash-resume would
+            # otherwise re-append them (deterministic per doc, but duplicated).
+            if catalog is not None and catalog_pending:
+                catalog.write("".join(catalog_pending))
+                catalog.flush()
+                catalog_pending.clear()
+            _write_checkpoint(ckpt_path, up_to_line, current_doc_types)
+
         for line_no, record in _iter_records(fh):
             if line_no <= start_line:
                 continue
@@ -171,14 +183,16 @@ async def _run_catalog_only(
                 stats["skipped"] += 1
                 continue
             if catalog is not None:
-                catalog.write(json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n")
+                catalog_pending.append(
+                    json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                )
             stats["docs"] += 1
             pending = line_no
             if stats["docs"] % 2000 == 0:
-                _write_checkpoint(ckpt_path, pending, current_doc_types)
+                checkpoint(pending)
             if args.limit and stats["docs"] >= args.limit:
                 break
-        _write_checkpoint(ckpt_path, pending, current_doc_types)
+        checkpoint(pending)
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -241,7 +255,8 @@ async def run(args: argparse.Namespace) -> None:
         # deterministic chunk IDs overwrite in place).
         concurrency = max(1, args.concurrency)
         queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 2)
-        completed: dict[int, int] = {}
+        # seq -> (last record line, buffered catalog rows) for completed batches.
+        completed: dict[int, tuple[int, list[str]]] = {}
         failed: list[int] = []  # seqs whose batch errored (checkpoint stalls at the gap)
         next_seq = 0
         lock = asyncio.Lock()
@@ -253,7 +268,7 @@ async def run(args: argparse.Namespace) -> None:
                 try:
                     if item is None:
                         return
-                    seq, end_line, chunks = item
+                    seq, end_line, chunks, cat_rows = item
                     try:
                         vecs = await embedder.embed([c.content for c in chunks])
                         for c, v in zip(chunks, vecs, strict=True):
@@ -284,13 +299,23 @@ async def run(args: argparse.Namespace) -> None:
                               f"will reprocess on --resume", file=sys.stderr)
                         continue
                     async with lock:
-                        completed[seq] = end_line
+                        completed[seq] = (end_line, cat_rows)
                         stats["chunks"] += len(chunks)
                         advanced = None
                         while next_seq in completed:
-                            advanced = completed.pop(next_seq)
+                            end_line_n, rows_n = completed.pop(next_seq)
+                            # Write this batch's catalog rows in seq order, in
+                            # lockstep with the checkpoint, so the catalog never
+                            # gets ahead of the resume point. Rows for batches that
+                            # finished out of order wait in `completed` until the
+                            # contiguous prefix reaches them.
+                            if catalog is not None and rows_n:
+                                catalog.write("".join(rows_n))
+                            advanced = end_line_n
                             next_seq += 1
                         if advanced is not None:
+                            if catalog is not None:
+                                catalog.flush()
                             _write_checkpoint(ckpt_path, advanced, current_doc_types)
                             print(f"  indexed {stats['chunks']} chunks / {stats['docs']} docs "
                                   f"(line {advanced})", file=sys.stderr)
@@ -301,6 +326,7 @@ async def run(args: argparse.Namespace) -> None:
 
         seq = 0
         buf: list[Chunk] = []
+        buf_catalog: list[str] = []  # catalog rows for the docs in `buf`
         buf_end_line = 0
         last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
         with args.input.open(encoding="utf-8") as fh:
@@ -313,8 +339,12 @@ async def run(args: argparse.Namespace) -> None:
                 if not _kept(enriched, keep_types):
                     stats["skipped"] += 1
                     continue
+                # Buffer the catalog row with its batch; the worker writes it in
+                # lockstep with the checkpoint when this batch's seq is folded.
                 if catalog is not None:
-                    catalog.write(json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n")
+                    buf_catalog.append(
+                        json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                    )
                 text = record.get("text", "") or ""
                 doc = Document(
                     id=deterministic_doc_id(_doc_id_key(record, text)),
@@ -329,13 +359,14 @@ async def run(args: argparse.Namespace) -> None:
                 buf_end_line = line_no
                 stats["docs"] += 1
                 if len(buf) >= args.batch_size:
-                    await queue.put((seq, buf_end_line, buf))
+                    await queue.put((seq, buf_end_line, buf, buf_catalog))
                     seq += 1
                     buf = []
+                    buf_catalog = []
                 if args.limit and stats["docs"] >= args.limit:
                     break
         if buf:
-            await queue.put((seq, buf_end_line, buf))
+            await queue.put((seq, buf_end_line, buf, buf_catalog))
             seq += 1
         for _ in workers:  # one sentinel per worker
             await queue.put(None)

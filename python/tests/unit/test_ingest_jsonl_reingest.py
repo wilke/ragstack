@@ -151,3 +151,27 @@ async def test_failed_batch_exits_nonzero_and_stalls_checkpoint(tmp_path, monkey
     # Checkpoint stalled at the contiguous completed prefix (before the failed
     # batch), not at the last line.
     assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 2
+
+
+@pytest.mark.asyncio
+async def test_catalog_lockstep_writes_no_rows_past_gap(tmp_path, monkeypatch):
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
+                            _article(4), _article(5)])
+    cat = tmp_path / "cat.jsonl"
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=2, catalog_out=cat,
+            checkpoint=tmp_path / "c.ckpt",
+        ))
+
+    # Catalog holds only the completed prefix before the gap (docs 1-2); rows for
+    # docs 3-5 stay buffered (unwritten) so the catalog never outruns the
+    # checkpoint — they'd be written on a --resume past the gap.
+    titles = [json.loads(line)["title"] for line in cat.read_text().splitlines()]
+    assert titles == ["T1", "T2"]
