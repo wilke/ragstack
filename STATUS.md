@@ -2,9 +2,9 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-06-26
-**Current tag:** [`v0.9.0`](https://github.com/wilke/ragstack/releases/tag/v0.9.0) at `2947414`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), and the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16) merged; see the M1/M2/pool/hybrid sections below.
+**Last updated:** 2026-06-29
+**Current tag:** [`v0.10.0`](https://github.com/wilke/ragstack/releases/tag/v0.10.0) at `3679436`
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16), and the **M5 intelligence layer + scholarly ingestion** — query rewriting (PR #17), cross-encoder reranking (PRs #20/#23), JSONL corpus ingestion with metadata enrichment (PRs #19/#22), and the parallel bulk ingester (PR #21) — merged; see the sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -29,7 +29,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 - **Qdrant integration**: `python/ragstack/stores/qdrant.py` implements the `VectorStore` protocol; CLI tools `python/scripts/{ingest_chunks,search}.py` provide round-trip ingest + semantic search with payload filtering.
 - **Embedder abstraction**: `python/ragstack/embedders.py` supports both the local sidecar and any OpenAI-compatible endpoint (e.g. vLLM `--runner pooling`), selectable via `--embedding-api {sidecar,openai}`.
 - **Multi-endpoint fan-out** (PR #8): `python/ragstack/embed_pool.py` load-balances embedding across several endpoints (e.g. vLLM replicas on the H200s) with least-loaded routing, a global concurrency cap, failover, and lazy health re-probing. Enabled via `EMBEDDING_ENDPOINTS`; both CLIs accept multiple `--embedding-url`. See the pool section below.
-- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` go through `HybridRetriever` — dense (Qdrant) + BM25 (Elasticsearch) fused via RRF (PR #15), scoped to the caller's tenant on both legs — and return scored hits; `DELETE /v1/documents/{id}` removes a doc from **both** legs. `/v1/query` returns an LLM-generated grounded answer when `llm_endpoint` is configured (PR #12), else a retrieval-only placeholder. Validated: ingested a markdown file, retrieved with score 0.66, deleted, points went to 0.
+- **Functional REST API** (post-`9114fd1`): `/v1/ingest` runs the real load→chunk→embed→upsert pipeline against Qdrant; `/v1/retrieve` and `/v1/query` run the full M5 pipeline — **query rewrite** (`passthrough`/`multiquery`/`hyde`, PR #17) → `HybridRetriever` dense (Qdrant) + BM25 (Elasticsearch) per variant, tenant-scoped on both legs (PR #15) → **RRF fuse** → optional **cross-encoder rerank** (crossencoder sidecar, PR #20) → answer generation (PR #12). Every stage degrades gracefully (failures return 200 + sources). `DELETE /v1/documents/{id}` removes a doc from both legs.
 
 ## M1 ingest hardening (merged in `v0.4.0`, PR #4)
 
@@ -111,6 +111,20 @@ Makes the text-index leg real and routes retrieval through the already-coded `Hy
 
 Still off: the graph retrieval leg (`use_graph` flows through but no graph store is wired) until M4/M5. Enable ES with `TEXT_BACKEND=elasticsearch` (+ existing `ELASTICSEARCH_URL`/`_INDEX`). 147 unit/api tests pass; live ES integration test exercises tenant-scoped BM25 search/delete + metadata round-trip (skips if ES absent).
 
+## M5 intelligence + scholarly ingestion (merged in `v0.10.0`, PRs #17/#19/#20/#21/#22/#23)
+
+The M5 retrieval-intelligence layer plus a scholarly-corpus ingestion path. Tagged at `3679436`. What landed:
+
+1. **Query rewriting** (PR #17) — `/v1/query` and `/v1/retrieve` expand the query into retrieval variants per `rewrite_strategies` (`passthrough` default; `multiquery` + `hyde` when an LLM is configured), retrieve each variant concurrently (`asyncio.gather`), and RRF-fuse. Unknown/failing strategies degrade to the plain query. `OpenAILLM.complete_text` backs the rewriters.
+2. **Cross-encoder reranking** (PRs #20/#23) — `SidecarReranker` posts the fused pool to the crossencoder sidecar (`:50052`), maps `(scores, indices)` back onto chunks, and cuts to `top_k`. Opt-in (`RERANK_ENABLED`); a deeper `rerank_candidates` pool is fetched when on. Hardened post-review: aligned model defaults across launch paths + startup `/health` model check; sidecar-index validation (range/uniqueness → degrade, not corrupt); `top_k` forwarded to shrink the response; `top_k` on the `Scorer` protocol so implementers are interchangeable; `top_k>=1` request validation. A rerank failure degrades to the fused order (never a 500).
+3. **JSONL corpus ingestion + scholarly enrichment** (PRs #19/#22) — `ingestion/enrich.py` recovers DOI / title / authors / citations / year / doc_type from the sparse extraction dumps; `JsonlLoader` registered for `.jsonl`; `scripts/ingest_jsonl.py` streams a multi-hundred-MB dump → chunk → embed → upsert (+ optional ES), resumable via an atomic line checkpoint that persists the active `--doc-types` filter (fail-closed on a mismatched resume) and replaces a doc's prior chunks before upsert (no orphans). `--catalog-out` writes the full per-doc metadata catalog (lockstep with the checkpoint so it can't outrun a resume).
+4. **Parallel bulk ingester** (PR #21) — `ingest_jsonl.py`'s index path is a bounded producer→worker pipeline: `--concurrency N` workers embed+upsert in parallel (fan-out across the embedder pool), with ordered crash-safe checkpointing (each batch carries a seq + last line; the checkpoint advances only over the contiguous completed prefix). A failed batch stalls the checkpoint at the gap and exits non-zero; `--resume` reprocesses from there.
+5. **mypy baseline cleanup** (PR #18 + follow-ups) — the 11 pre-existing mypy errors are fixed; `python/` type-checks clean.
+
+**Validation:** live corpus (11,573 records): DOI recovered for ~88%, reference lists for ~94% of articles, PubMed cross-check 12/12 DOIs / 6/6 titles. Live rerank smoke promoted an on-topic AAC chunk to top-1 over an off-topic one. Parallel ingest verified idempotent under `--concurrency 4`. 211 unit/api tests pass; ruff + mypy clean.
+
+**This completes M5's core** (query rewriters + cross-encoder reranking + hybrid RRF). Still off: graph-augmented retrieval (`use_graph` flows through but no graph store is wired) until M4. Follow-ups tracked as issues [#25](https://github.com/wilke/ragstack/issues/25)–[#28](https://github.com/wilke/ragstack/issues/28) (consolidate the script onto `IngestionPipeline`; make enrichment publisher-config-driven; per-request rerank opt-out; shared sidecar-client base).
+
 ## Active TODOs
 
 ### Near-term — pick up here in the next session
@@ -130,7 +144,7 @@ Still off: the graph retrieval leg (`use_graph` flows through but no graph store
 ### Long-term (per [SPEC.md](SPEC.md) milestones)
 
 - [ ] **M4 — Graph**: KG extractor, Neo4j adapter (`GraphStore` protocol), graph-augmented retrieval
-- [ ] **M5 — Intelligence**: Query rewriters (HyDE, multi-query, step-back, entity expansion), cross-encoder reranking in the pipeline, ~~hybrid retrieval with RRF~~ (**hybrid vector+BM25 RRF landed in v0.9.0** — rewriters + reranking still open)
+- [x] **M5 — Intelligence**: ~~Query rewriters (HyDE, multi-query), cross-encoder reranking in the pipeline, hybrid retrieval with RRF~~ — **core landed in v0.10.0** (rewriting PR #17, reranking PRs #20/#23) on top of hybrid RRF (v0.9.0). Still open within M5: step-back / entity-expansion rewriters, and graph-augmented retrieval (needs M4).
 - [ ] **M6 — API & Auth**: API-key auth, rate limiting, streaming responses
 - [ ] **M7 — Observability**: Prometheus metrics, OpenTelemetry tracing, Grafana dashboards
 - [ ] **M8 — Production**: Helm chart, horizontal scaling, load testing, runbook
@@ -148,6 +162,7 @@ Still off: the graph retrieval leg (`use_graph` flows through but no graph store
 | [`v0.7.0`](https://github.com/wilke/ragstack/releases/tag/v0.7.0) | `bad0ef3` | 2026-06-25 | Tenant isolation (PR #10) — server-derived `tenant_id` per API key, tenant-scoped vector/text/graph stores, shared `public` corpus, read-scope set server-side; fail-closed on partial tenant maps |
 | [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) | `c9c1944` | 2026-06-26 | RAG answer generation (PR #12) — `/v1/query` returns a grounded LLM answer (`OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades on LLM failure) — plus the per-tenant concurrency quota (PR #13) gating ingest + queries via a `tenant_slot` dependency |
 | [`v0.9.0`](https://github.com/wilke/ragstack/releases/tag/v0.9.0) | `2947414` | 2026-06-26 | Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16) — `ElasticsearchTextIndex` (tenant-scoped, durable BM25), `/v1/retrieve` + `/v1/query` fused vector+BM25 via RRF, delete purges both legs; post-review hardening: bulk-error surfacing, metadata round-trip + filter parity, race-safe `ensure_index`, fail-closed tenant scoping |
+| [`v0.10.0`](https://github.com/wilke/ragstack/releases/tag/v0.10.0) | `3679436` | 2026-06-29 | M5 intelligence + scholarly ingestion — query rewriting (PR #17: multiquery/hyde → concurrent retrieve → RRF), cross-encoder reranking via sidecar (PRs #20/#23: index-validation, model-default alignment, `top_k` on the `Scorer` protocol), JSONL corpus ingestion with DOI/title/author/citation enrichment (PRs #19/#22: resumable, filter-aware checkpoint, replace-on-reingest, catalog lockstep), parallel bulk ingester (PR #21: producer→worker, ordered crash-safe checkpoint), mypy baseline clean (PR #18) |
 
 ## Production layout (`/rag/`)
 
