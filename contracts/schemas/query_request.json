@@ -31,6 +31,17 @@
     "stream": {
       "type": "boolean",
       "default": false
+    },
+    "rerank": {
+      "description": "Per-request rerank control. null (default) preserves the server-wide default; false forces a rerank skip; true is a no-op when no reranker is wired.",
+      "type": ["boolean", "null"],
+      "default": null
+    },
+    "rerank_candidates": {
+      "description": "Override for the candidate-pool depth fed to the reranker. null (default) uses the server default (max(top_k, server's rerank_candidates)).",
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null
     }
   },
   "additionalProperties": false
