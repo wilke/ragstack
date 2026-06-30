@@ -213,7 +213,7 @@ async def run(args: argparse.Namespace) -> None:
         def _embedder_factory(http: httpx.AsyncClient):
             common = {
                 "api": args.embedding_api, "http": http,
-                "model": args.embedding_model, "api_key": os.getenv("OPENAI_API_KEY"),
+                "model": args.embedding_model, "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
             }
             if len(args.embedding_url) > 1:
                 return make_pooled_embedder(
@@ -252,7 +252,7 @@ async def run(args: argparse.Namespace) -> None:
         urls = args.embedding_url
         common = {
             "api": args.embedding_api, "http": http,
-            "model": args.embedding_model, "api_key": os.getenv("OPENAI_API_KEY"),
+            "model": args.embedding_model, "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
         }
         if len(urls) > 1:
             embedder = make_pooled_embedder(
@@ -482,6 +482,10 @@ def main() -> None:
     p.add_argument("--embedding-model", default=None,
                    help="model name (required for --embedding-api openai; used to name the collection)")
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--embedding-api-key", default=None,
+                   help="Bearer token sent as 'Authorization: Bearer <key>' to every "
+                        "--embedding-url (keyless endpoints ignore it, so one key is safe "
+                        "for a mixed pool). Falls back to $OPENAI_API_KEY.")
     # chunking
     p.add_argument("--chunk-method", choices=["fixed", "sentence", "words", "semantic"],
                    default="fixed",
