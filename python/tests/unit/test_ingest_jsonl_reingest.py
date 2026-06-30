@@ -39,6 +39,15 @@ class _FakeStore:
             cid: c for cid, c in self.points.items() if c.doc_id != doc_id
         }
 
+    async def delete_except(self, doc_id, keep_chunk_ids, tenant_id=None) -> None:
+        # Prune only this doc's points whose chunk id is NOT being kept (orphans).
+        self.ops.append(f"delete_except:{doc_id}:{len(keep_chunk_ids)}")
+        self.points = {
+            cid: c
+            for cid, c in self.points.items()
+            if c.doc_id != doc_id or cid in keep_chunk_ids
+        }
+
 
 class _FakeEmbedder:
     async def embed(self, texts):
@@ -57,6 +66,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "embedding_url": ["http://x"], "embedding_api": "openai", "embedding_model": "m",
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
+        "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
     }
     base.update(over)
     return argparse.Namespace(**base)
@@ -100,22 +110,45 @@ async def test_reingest_edited_doc_leaves_no_orphans(tmp_path, monkeypatch):
     await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "a.ckpt"))
     assert store.points, "first ingest produced no chunks"
 
-    # Re-ingest the SAME path with a much SHORTER edited body → fewer chunks.
-    # Without delete-before-upsert, the first ingest's trailing chunks linger as
-    # orphans; with it, the store holds exactly the second ingest's chunks.
+    # Re-ingest the SAME path with a much SHORTER edited body under --replace →
+    # fewer chunks. The orphan trailing chunks must be pruned, leaving exactly the
+    # second ingest's chunks.
     store.ops.clear()
     _write_corpus(corpus, "completely different shorter wording now. " * 20)
-    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "b.ckpt"))
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "b.ckpt", replace=True))
 
     second_upserted = sum(
         int(op.split(":")[1]) for op in store.ops if op.startswith("upsert:")
     )
-    # Store holds exactly the second ingest's chunks — no first-ingest orphans.
+    # Store holds exactly the second ingest's chunks — orphans pruned.
     assert len(store.points) == second_upserted
-    # And the delete preceded the upsert for the document (replace, not append).
-    first_delete = next(i for i, op in enumerate(store.ops) if op.startswith("delete:"))
+    # Safety: upsert precedes the prune (upsert-then-prune), so a prune failure
+    # can never lose the freshly written data.
     first_upsert = next(i for i, op in enumerate(store.ops) if op.startswith("upsert:"))
-    assert first_delete < first_upsert
+    first_prune = next(i for i, op in enumerate(store.ops) if op.startswith("delete_except:"))
+    assert first_upsert < first_prune
+
+
+@pytest.mark.asyncio
+async def test_default_reingest_is_upsert_only_and_idempotent(tmp_path, monkeypatch):
+    """Without --replace the worker NEVER deletes (so a failure can't lose data),
+    and re-ingesting identical content is idempotent (deterministic ids overwrite)."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_corpus(corpus, "alpha beta gamma delta epsilon zeta. " * 160)
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "a.ckpt"))
+    n = len(store.points)
+    assert n > 0
+
+    store.ops.clear()
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "b.ckpt"))
+    # No delete of any kind on the default path; identical content → same count.
+    assert not any(op.startswith(("delete:", "delete_except:")) for op in store.ops)
+    assert len(store.points) == n
 
 
 @pytest.mark.asyncio

@@ -166,5 +166,26 @@ class ElasticsearchTextIndex:
             conflicts="proceed",
         )
 
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune a document's orphan chunks (chunk_id not in ``keep_chunk_ids``).
+        Mirror of ``QdrantVectorStore.delete_except`` for the BM25 side; call after
+        indexing the kept chunks so a failure here can't lose data."""
+        filter_clauses: list[dict[str, Any]] = [{"term": {"doc_id": doc_id}}]
+        if tenant_id is not None:
+            filter_clauses.append({"term": {"metadata.tenant_id": tenant_id}})
+        await self._es.delete_by_query(
+            index=self._index,
+            query={
+                "bool": {
+                    "filter": filter_clauses,
+                    "must_not": [{"terms": {"chunk_id": list(keep_chunk_ids)}}],
+                }
+            },
+            refresh=True,
+            conflicts="proceed",
+        )
+
     async def close(self) -> None:
         await self._es.close()

@@ -239,7 +239,9 @@ async def run(args: argparse.Namespace) -> None:
         # the store exists before the concurrent workers start.
         dim = len((await embedder.embed(["dimension probe"]))[0])
         coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
-        store = QdrantVectorStore(url=args.qdrant_url, collection=coll, vector_size=dim)
+        store = QdrantVectorStore(
+            url=args.qdrant_url, collection=coll, vector_size=dim, timeout=args.qdrant_timeout
+        )
         await store.ensure_collection()
         print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
         text_index = None
@@ -263,6 +265,9 @@ async def run(args: argparse.Namespace) -> None:
         failed: list[int] = []  # seqs whose batch errored (checkpoint stalls at the gap)
         next_seq = 0
         lock = asyncio.Lock()
+        # Bound concurrent prune-deletes separately from the embed fan-out so a wide
+        # --concurrency doesn't issue a burst of heavy deletes at the store.
+        delete_sem = asyncio.Semaphore(max(1, args.delete_concurrency))
 
         async def worker() -> None:
             nonlocal next_seq
@@ -276,22 +281,31 @@ async def run(args: argparse.Namespace) -> None:
                         vecs = await embedder.embed([c.content for c in chunks])
                         for c, v in zip(chunks, vecs, strict=True):
                             c.embedding = v
-                        # Replace-on-reingest: delete each document's prior chunks
-                        # before writing its new ones, so an *edited* doc (shifted
-                        # offsets → new chunk ids) doesn't leave orphans (mirrors
-                        # IngestionPipeline.ingest). After a successful embed so a
-                        # transient embed failure can't destroy good data first. The
-                        # producer only flushes on a document boundary, so a doc's
-                        # chunks live entirely in one batch / one worker — deleting
-                        # this batch's distinct doc ids removes each exactly once
-                        # with no cross-worker race.
-                        for doc_id in dict.fromkeys(c.doc_id for c in chunks):
-                            await store.delete(doc_id, tenant_id=args.tenant)
-                            if text_index is not None:
-                                await text_index.delete(doc_id, tenant_id=args.tenant)
+                        # Upsert FIRST. Deterministic chunk ids overwrite an
+                        # unchanged doc's points in place, so plain upsert is correct
+                        # for re-ingest and — critically — a failure here never
+                        # deletes anything. (A prior delete-before-upsert ordering lost
+                        # data when a filtered delete on a large collection timed out
+                        # mid-batch: the delete landed, the upsert didn't.)
                         await store.upsert(chunks)
                         if text_index is not None:
                             await text_index.index(chunks)
+                        # Only an EDITED doc (shifted offsets → new chunk ids) leaves
+                        # orphan points; prune them only when asked (--replace), and
+                        # only AFTER the successful upsert above, by id (cost O(stale),
+                        # not a collection-wide filtered delete). Bounded concurrency
+                        # so a wide embed fan-out can't issue many heavy deletes at once.
+                        if args.replace:
+                            by_doc: dict[str, set[str]] = {}
+                            for c in chunks:
+                                by_doc.setdefault(c.doc_id, set()).add(c.id)
+                            for doc_id, keep in by_doc.items():
+                                async with delete_sem:
+                                    await store.delete_except(doc_id, keep, tenant_id=args.tenant)
+                                    if text_index is not None:
+                                        await text_index.delete_except(
+                                            doc_id, keep, tenant_id=args.tenant
+                                        )
                     except Exception as e:
                         # Don't kill the worker (or deadlock the producer): leave
                         # this seq out of `completed` so the checkpoint stalls at
@@ -418,8 +432,16 @@ def main() -> None:
                    help="skip embedding/upsert; only build the catalog")
     # vector store
     p.add_argument("--qdrant-url", default="http://localhost:6333")
+    p.add_argument("--qdrant-timeout", type=int, default=120,
+                   help="per-request Qdrant timeout in seconds (default: %(default)s)")
     p.add_argument("--collection", default=None,
                    help="Qdrant collection (default: auto-named from model+dim)")
+    p.add_argument("--replace", action="store_true",
+                   help="prune orphan chunks of EDITED docs after upsert (upsert-then-prune, by id). "
+                        "Default off = upsert-only, which is correct for unchanged re-ingest and never "
+                        "deletes data on failure.")
+    p.add_argument("--delete-concurrency", type=int, default=4,
+                   help="max concurrent prune-deletes under --replace (default: %(default)s)")
     # text index (BM25)
     p.add_argument("--text-backend", choices=["none", "elasticsearch"], default="none")
     p.add_argument("--es-url", default="http://localhost:9200")
