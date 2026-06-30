@@ -41,6 +41,12 @@ embeddings = [
     "openai>=1.30",
     "sentence-transformers>=3.0",
 ]
+chunking = [
+    # NLTK Punkt sentence tokenizer, used by the sentence/semantic chunkers for
+    # high-quality sentence splitting (a regex fallback is used when absent).
+    # Vendor or download the punkt model: `python -m nltk.downloader punkt`.
+    "nltk>=3.8",
+]
 queue = [
     "celery[redis]>=5.4",
     "redis>=5.0",
@@ -63,7 +69,7 @@ dev = [
     "jsonschema>=4.22",
 ]
 all = [
-    "ragstack[vector,pdf,postgres,text,graph,embeddings,queue,observability]",
+    "ragstack[vector,pdf,postgres,text,graph,embeddings,chunking,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]

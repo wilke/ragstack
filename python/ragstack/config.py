@@ -74,8 +74,15 @@ class Settings(BaseSettings):
     publisher_profile: str = "asm"
 
     # Chunker defaults
+    chunk_method: str = "fixed"             # fixed | sentence | words | semantic
     chunk_size: int = 512
     chunk_overlap: int = 64
+    # Semantic chunker (chunk_method=semantic) tunables. Embeds sentence buffers
+    # to find topic breakpoints; needs the [chunking] extra (NLTK punkt) for
+    # high-quality sentence splitting (a regex fallback is used otherwise).
+    chunk_buffer_size: int = 3
+    chunk_breakpoint_percentile: float = 80.0
+    chunk_min_length: int = 500
 
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).
