@@ -20,43 +20,33 @@ endpoint's ``max_model_len`` so the budget is auto-detected from the live model.
 """
 from __future__ import annotations
 
+import logging
 import math
-import sys
 import threading
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 import httpx
 
+log = logging.getLogger(__name__)
 
-@runtime_checkable
+# Tokens of headroom left below the model window for BOS/EOS/pooling specials the
+# chunker doesn't count (it counts with ``add_special_tokens=False``).
+DEFAULT_TOKEN_RESERVE = 16
+
+
 class TokenCounter(Protocol):
     """Counts tokens in text the way the embedding model would.
 
     Implementations should be cheap to call repeatedly (the packing chunkers call
-    :meth:`count` many times). :meth:`count_batch` defaults to mapping
-    :meth:`count`; a backend with a real batch API may override it.
+    :meth:`count` many times).
     """
 
     def count(self, text: str) -> int:
         """Number of tokens ``text`` encodes to (no special/BOS/EOS tokens)."""
         ...
 
-    def count_batch(self, texts: list[str]) -> list[int]:
-        """Token counts for several texts; default maps :meth:`count`."""
-        ...
 
-
-class _BaseTokenCounter:
-    """Mixin providing the default ``count_batch`` (map ``count``)."""
-
-    def count(self, text: str) -> int:  # pragma: no cover - overridden
-        raise NotImplementedError
-
-    def count_batch(self, texts: list[str]) -> list[int]:
-        return [self.count(t) for t in texts]
-
-
-class EstimatingTokenCounter(_BaseTokenCounter):
+class EstimatingTokenCounter:
     """Estimate tokens as ``ceil(len(text) / chars_per_token)``.
 
     Zero-dependency fallback used when neither a local tokenizer nor an endpoint
@@ -80,7 +70,7 @@ class EstimatingTokenCounter(_BaseTokenCounter):
         return math.ceil(len(text) / self.chars_per_token)
 
 
-class HFTokenCounter(_BaseTokenCounter):
+class HFTokenCounter:
     """Count with the embedding model's ``transformers.AutoTokenizer``.
 
     The tokenizer is loaded lazily on first :meth:`count` and cached on the
@@ -108,7 +98,7 @@ class HFTokenCounter(_BaseTokenCounter):
         return len(self._tokenizer().encode(text, add_special_tokens=False))
 
 
-class EndpointTokenCounter(_BaseTokenCounter):
+class EndpointTokenCounter:
     """Count via a vLLM ``/tokenize`` endpoint (exact, server-side tokenizer).
 
     POSTs ``{"model": ..., "prompt": text}`` and returns the response ``count``.
@@ -175,8 +165,8 @@ def make_token_counter(
       ``model``).
     - ``"estimate"``: :class:`EstimatingTokenCounter`.
 
-    The chosen backend is logged to stderr so an operator can see when a fallback
-    fired (e.g. transformers missing → endpoint, or no endpoint → estimator).
+    The chosen backend is logged so an operator can see when a fallback fired
+    (e.g. transformers missing → endpoint, or no endpoint → estimator).
     """
     if backend == "estimate":
         _log_backend("estimate", chars_per_token=chars_per_token)
@@ -197,10 +187,9 @@ def make_token_counter(
             # than blowing up mid-ingest on the first chunk.
             counter._tokenizer()
         except Exception as exc:  # noqa: BLE001 - any load failure → fall back
-            print(
-                f"[tokenization] HF tokenizer for {model!r} unavailable "
-                f"({type(exc).__name__}: {exc}); falling back.",
-                file=sys.stderr,
+            log.warning(
+                "HF tokenizer for %r unavailable (%s: %s); falling back.",
+                model, type(exc).__name__, exc,
             )
             if base_url:
                 _log_backend("endpoint", base_url=base_url, model=model)
@@ -215,7 +204,7 @@ def make_token_counter(
 
 def _log_backend(name: str, **kw: object) -> None:
     detail = " ".join(f"{k}={v!r}" for k, v in kw.items())
-    print(f"[tokenization] token counter: {name} {detail}".rstrip(), file=sys.stderr)
+    log.info("token counter: %s", f"{name} {detail}".rstrip())
 
 
 def resolve_max_tokens(
@@ -223,7 +212,7 @@ def resolve_max_tokens(
     *,
     base_url: str | None,
     api_key: str | None = None,
-    reserve: int = 16,
+    reserve: int = DEFAULT_TOKEN_RESERVE,
     default: int = 4096,
 ) -> int:
     """The per-chunk token budget: explicit override, else auto-detect.
@@ -253,16 +242,14 @@ def resolve_max_tokens(
                 raise ValueError("no max_model_len in /v1/models response")
             max_len = int(data[0]["max_model_len"])
         budget = max(1, max_len - reserve)
-        print(
-            f"[tokenization] auto-detected max_model_len={max_len}, "
-            f"using budget {budget} (reserve {reserve})",
-            file=sys.stderr,
+        log.info(
+            "auto-detected max_model_len=%d, using budget %d (reserve %d)",
+            max_len, budget, reserve,
         )
         return budget
     except Exception as exc:  # noqa: BLE001 - any failure → safe default
-        print(
-            f"[tokenization] could not auto-detect max_model_len from "
-            f"{base_url!r} ({type(exc).__name__}: {exc}); using default {default}.",
-            file=sys.stderr,
+        log.warning(
+            "could not auto-detect max_model_len from %r (%s: %s); using default %d.",
+            base_url, type(exc).__name__, exc, default,
         )
         return default

@@ -22,18 +22,12 @@ class WordTokenCounter:
     def count(self, text: str) -> int:
         return len(text.split())
 
-    def count_batch(self, texts: list[str]) -> list[int]:
-        return [self.count(t) for t in texts]
-
 
 class CharTokenCounter:
     """Fake where every character is a token (lets us force single-unit splits)."""
 
     def count(self, text: str) -> int:
         return len(text)
-
-    def count_batch(self, texts: list[str]) -> list[int]:
-        return [self.count(t) for t in texts]
 
 
 def _doc(content: str) -> Document:

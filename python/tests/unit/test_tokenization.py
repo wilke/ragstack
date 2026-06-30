@@ -47,11 +47,6 @@ def test_estimating_counter_rejects_bad_ratio():
         EstimatingTokenCounter(chars_per_token=0)
 
 
-def test_estimating_count_batch_defaults_to_map():
-    c = EstimatingTokenCounter(chars_per_token=4.0)
-    assert c.count_batch(["abcd", "abcdefgh"]) == [1, 2]
-
-
 # --------------------------------------------------------------------------- #
 # HFTokenCounter — uses the cached SFR tokenizer; skipped if transformers absent.
 # --------------------------------------------------------------------------- #

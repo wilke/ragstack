@@ -284,14 +284,7 @@ class SentenceChunker:
         if not text:
             return []
         if self.chunk_size == -1:
-            # Disable chunking: emit the whole document as one logical chunk. With
-            # a token budget set, still token-split it so a chunk can't exceed the
-            # window (a long doc becomes its minimal set of <=budget pieces).
-            if self.max_tokens is not None and self.token_counter is not None:
-                return _token_split_span(
-                    doc, 0, len(text), self.max_tokens, self.token_counter
-                )
-            return [_make_chunk(doc, 0, len(text))]
+            return _whole_doc(doc, self.max_tokens, self.token_counter)
 
         spans = sentence_spans(text)
         if not spans:
@@ -355,14 +348,7 @@ class WordChunker:
         if not text:
             return []
         if self.chunk_size == -1:
-            # Disable chunking: emit the whole document as one logical chunk. With
-            # a token budget set, still token-split it so a chunk can't exceed the
-            # window (a long doc becomes its minimal set of <=budget pieces).
-            if self.max_tokens is not None and self.token_counter is not None:
-                return _token_split_span(
-                    doc, 0, len(text), self.max_tokens, self.token_counter
-                )
-            return [_make_chunk(doc, 0, len(text))]
+            return _whole_doc(doc, self.max_tokens, self.token_counter)
 
         spans = word_spans(text)
         if not spans:
@@ -372,6 +358,38 @@ class WordChunker:
             doc, spans, self.chunk_size, self.chunk_overlap,
             max_tokens=self.max_tokens, token_counter=self.token_counter,
         )
+
+
+def _whole_doc(
+    doc: Document, max_tokens: int | None, token_counter: TokenCounter | None
+) -> list[Chunk]:
+    """The whole document as one logical chunk (``chunk_size == -1`` / disable
+    chunking). With a token budget set, still token-split it so a chunk can't
+    exceed the window (a long doc becomes its minimal set of <=budget pieces)."""
+    if max_tokens is not None and token_counter is not None:
+        return _token_split_span(doc, 0, len(doc.content), max_tokens, token_counter)
+    return [_make_chunk(doc, 0, len(doc.content))]
+
+
+def _overlap_resume(
+    spans: list[tuple[int, int]], i: int, j: int, chunk_overlap: int
+) -> int:
+    """Start-unit index for the next chunk (sliding-window overlap): walk back from
+    ``j`` accumulating whole trailing units until their combined char length would
+    exceed ``chunk_overlap``, then resume there. Always advances by at least one
+    unit past ``i`` so a large overlap can't loop. ``chunk_overlap <= 0`` disables
+    overlap (resume at ``j``). Shared by the char- and token-budget packers."""
+    if chunk_overlap <= 0:
+        return j
+    overlap = 0
+    k = j
+    while k > i + 1:
+        prev_len = spans[k - 1][1] - spans[k - 1][0]
+        if overlap + prev_len > chunk_overlap:
+            break
+        overlap += prev_len
+        k -= 1
+    return k if k > i else i + 1
 
 
 def _pack_spans(
@@ -423,21 +441,7 @@ def _pack_spans(
         chunks.append(_make_chunk(doc, cur_start, end))
         if j >= n:
             break
-        # Overlap: walk back from j accumulating units until we'd exceed
-        # chunk_overlap chars, then resume there. Always make forward progress
-        # (i advances by at least one unit) so overlap >= chunk_size can't loop.
-        if chunk_overlap > 0:
-            overlap = 0
-            k = j
-            while k > i + 1:
-                prev_len = spans[k - 1][1] - spans[k - 1][0]
-                if overlap + prev_len > chunk_overlap:
-                    break
-                overlap += prev_len
-                k -= 1
-            i = k if k > i else i + 1
-        else:
-            i = j
+        i = _overlap_resume(spans, i, j, chunk_overlap)
     return chunks
 
 
@@ -502,21 +506,7 @@ def _pack_spans_tokens(
         chunks.append(_make_chunk(doc, cur_start, end))
         if j >= n:
             break
-        # Overlap: walk back from j accumulating whole trailing units until we'd
-        # exceed chunk_overlap chars, then resume there. Always make forward
-        # progress (i advances by at least one unit) so overlap can't loop.
-        if chunk_overlap > 0:
-            overlap = 0
-            k = j
-            while k > i + 1:
-                prev_len = spans[k - 1][1] - spans[k - 1][0]
-                if overlap + prev_len > chunk_overlap:
-                    break
-                overlap += prev_len
-                k -= 1
-            i = k if k > i else i + 1
-        else:
-            i = j
+        i = _overlap_resume(spans, i, j, chunk_overlap)
     return chunks
 
 
