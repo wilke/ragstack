@@ -971,8 +971,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chunk-overlap", type=int, default=64)
     p.add_argument(
         "--chunk-max-tokens", type=int, default=None,
-        help="hard token budget per chunk (no chunk exceeds it). Default None = "
-        "auto-detect from the SFR endpoint's max_model_len (minus a small reserve).",
+        help="the embedding model's context window in tokens; the chunker keeps a "
+        "small reserve below it and caps every chunk to that budget. Default None = "
+        "auto-detect the window from the SFR endpoint's max_model_len. A given value "
+        "is treated as the window, so the reserve is subtracted from it too.",
     )
     p.add_argument(
         "--chunk-token-counter", choices=["hf", "endpoint", "estimate"], default="hf",

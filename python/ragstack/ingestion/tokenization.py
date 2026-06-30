@@ -60,13 +60,16 @@ class EstimatingTokenCounter(_BaseTokenCounter):
     """Estimate tokens as ``ceil(len(text) / chars_per_token)``.
 
     Zero-dependency fallback used when neither a local tokenizer nor an endpoint
-    is available. ``chars_per_token`` defaults to 3.7 — a middle-of-the-road
-    English ratio; dense scientific text runs lower (~2.5), so this *under*-counts
-    there and can let a chunk slip slightly over budget. Prefer the exact backends
-    when you can; this only guarantees order-of-magnitude sizing.
+    is available. ``chars_per_token`` defaults to **2.5** — deliberately
+    conservative: dense scientific text tokenizes around that ratio (plain English
+    runs ~3.7), so a low divisor makes the estimate *over*-count and pack *smaller*
+    chunks rather than let one slip over the embedder window. This is the
+    unreliable last-resort backend (prefer ``hf``/``endpoint`` for an exact count);
+    pair it with the embed-side backstop so a residual over-budget chunk can't
+    abort an ingest.
     """
 
-    def __init__(self, chars_per_token: float = 3.7) -> None:
+    def __init__(self, chars_per_token: float = 2.5) -> None:
         if chars_per_token <= 0:
             raise ValueError("chars_per_token must be > 0")
         self.chars_per_token = chars_per_token
@@ -161,7 +164,7 @@ def make_token_counter(
     model: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
-    chars_per_token: float = 3.7,
+    chars_per_token: float = 2.5,
 ) -> TokenCounter:
     """Build a :class:`TokenCounter` for ``backend``.
 

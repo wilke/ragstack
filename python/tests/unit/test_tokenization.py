@@ -24,6 +24,24 @@ def test_estimating_counter_math():
     assert c.count("a" * 40) == 10
 
 
+def test_estimating_counter_default_ratio_is_conservative():
+    # The default divisor is deliberately low (2.5) so the zero-info fallback
+    # OVER-counts dense text rather than letting a chunk slip over budget.
+    assert EstimatingTokenCounter().chars_per_token == 2.5
+    # 100 chars -> ceil(100/2.5)=40 tokens; the conservative default reports more
+    # tokens than the looser 3.7 English ratio, so packing stops sooner.
+    assert EstimatingTokenCounter().count("x" * 100) == 40
+    assert EstimatingTokenCounter().count("x" * 100) > EstimatingTokenCounter(
+        chars_per_token=3.7
+    ).count("x" * 100)
+
+
+def test_make_token_counter_estimate_default_is_conservative():
+    from ragstack.ingestion.tokenization import make_token_counter
+
+    assert make_token_counter("estimate").chars_per_token == 2.5
+
+
 def test_estimating_counter_rejects_bad_ratio():
     with pytest.raises(ValueError):
         EstimatingTokenCounter(chars_per_token=0)

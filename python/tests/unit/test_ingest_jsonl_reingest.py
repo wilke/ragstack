@@ -274,3 +274,46 @@ async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
     await ingest_jsonl.run(_args(corpus, chunk_method="fixed", checkpoint=tmp_path / "f.ckpt"))
     assert calls["method"] == "fixed"
     assert calls["embed_fn"] is None
+
+
+class _IsolatingEmbedder:
+    """Embedder exposing embed_isolated: any chunk containing POISONPILL is
+    quarantined (None vector) rather than failing the whole batch — mirrors
+    BatchingEmbedder's 4xx/over-context isolation."""
+
+    async def embed(self, texts):
+        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+    async def embed_isolated(self, texts):
+        out, quarantined = [], 0
+        for t in texts:
+            if "POISONPILL" in t:
+                out.append(None)
+                quarantined += 1
+            else:
+                out.append([1.0, 0.0, 0.0, 0.0])
+        return out, quarantined
+
+
+@pytest.mark.asyncio
+async def test_oversized_chunk_is_dropped_not_aborting_the_run(tmp_path, monkeypatch):
+    """An unembeddable chunk (over the context window) is dropped via the embedder's
+    embed_isolated backstop and the run COMPLETES, instead of failing the whole
+    batch and exiting non-zero (the pre-backstop behaviour with all-or-nothing
+    embed())."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _IsolatingEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    # Long enough to classify as ARTICLE and chunk into several pieces; POISONPILL
+    # lands in exactly one chunk (chunk_size=200 chars in _args).
+    _write_corpus(corpus, ("alpha beta gamma. " * 60) + " POISONPILL " + ("delta epsilon. " * 60))
+
+    # Must not raise SystemExit — the run completes despite the bad chunk.
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "a.ckpt"))
+
+    assert store.points, "good chunks should still be stored"
+    # The quarantined chunk's text is never indexed.
+    assert not any("POISONPILL" in c.content for c in store.points.values())
