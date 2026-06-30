@@ -6,7 +6,12 @@ import uuid
 from collections.abc import Iterable
 from pathlib import Path
 
-from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata
+from ragstack.ingestion.enrich import (
+    EMPTY,
+    PublisherProfile,
+    enrich,
+    index_metadata,
+)
 from ragstack.models import Document
 from ragstack.protocols import DocumentLoader
 
@@ -138,8 +143,16 @@ class JsonlLoader:
     otherwise-empty file (no usable documents) raises :class:`LoaderError`.
     """
 
-    def __init__(self, skip_types: Iterable[str] | None = None) -> None:
+    def __init__(
+        self,
+        skip_types: Iterable[str] | None = None,
+        profile: PublisherProfile | None = None,
+    ) -> None:
         self._skip = frozenset(skip_types) if skip_types is not None else frozenset({EMPTY})
+        # None → enrich() uses the ASM DEFAULT_PROFILE; pass a profile to ingest
+        # a different publisher's corpus (different DOI prefix / filename rule /
+        # front-matter set). Resolve from config via enrich.resolve_profile().
+        self._profile = profile
 
     def load(self, source: str) -> list[Document]:
         path = Path(source)
@@ -162,7 +175,7 @@ class JsonlLoader:
         return docs
 
     def _document(self, record: dict) -> Document | None:
-        enriched = enrich(record)
+        enriched = enrich(record, profile=self._profile)
         if enriched.doc_type in self._skip:
             return None
         text = record.get("text", "") or ""
@@ -222,9 +235,14 @@ DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md", ".jsonl")
 
 
 def default_loader_registry(
-    ingest_root: str | None = None, max_bytes: int = 0
+    ingest_root: str | None = None,
+    max_bytes: int = 0,
+    profile: PublisherProfile | None = None,
 ) -> LoaderRegistry:
     """A registry wired with the built-in loaders (PDF + text/markdown + JSONL).
+
+    ``profile`` is the publisher profile the JSONL loader enriches with (DOI
+    prefix / filename rule / front-matter set); ``None`` keeps the ASM default.
 
     Note ``.jsonl`` is a *batch* format — one file yields many documents. The
     registry's ``max_bytes`` guard still applies per file, so very large corpora
@@ -237,5 +255,5 @@ def default_loader_registry(
     registry.register(".pdf", PdfLoader())
     registry.register(".txt", text)
     registry.register(".md", text)
-    registry.register(".jsonl", JsonlLoader())
+    registry.register(".jsonl", JsonlLoader(profile=profile))
     return registry

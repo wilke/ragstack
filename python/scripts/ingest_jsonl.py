@@ -61,7 +61,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
-from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata
+from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.models import Chunk, Document
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -154,7 +154,7 @@ def _kept(enriched, keep_types) -> bool:
 
 
 async def _run_catalog_only(
-    args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types
+    args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types, profile
 ) -> None:
     """Metadata-only pass: enrich + write the catalog, no chunking/embedding."""
     with args.input.open(encoding="utf-8") as fh:
@@ -178,7 +178,7 @@ async def _run_catalog_only(
             # resume doesn't re-scan a trailing run of filtered records forever.
             pending = line_no
             stats["seen"] += 1
-            enriched = enrich(record)
+            enriched = enrich(record, profile=profile)
             if not _kept(enriched, keep_types):
                 stats["skipped"] += 1
                 continue
@@ -197,6 +197,9 @@ async def _run_catalog_only(
 
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
+    # Publisher profile (DOI prefix / filename rule / front-matter set) for
+    # enrichment; unknown names degrade to the ASM default in resolve_profile.
+    profile = resolve_profile(args.publisher_profile)
     # Canonical (sorted) form of the active filter, persisted in the checkpoint so
     # a resume under a different filter is detected.
     current_doc_types = sorted(keep_types) if keep_types else None
@@ -209,7 +212,7 @@ async def run(args: argparse.Namespace) -> None:
 
     if args.no_index:
         await _run_catalog_only(
-            args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types
+            args, ckpt_path, start_line, catalog, stats, keep_types, current_doc_types, profile
         )
         if catalog is not None:
             catalog.close()
@@ -335,7 +338,7 @@ async def run(args: argparse.Namespace) -> None:
                     continue
                 last_line = line_no
                 stats["seen"] += 1
-                enriched = enrich(record)
+                enriched = enrich(record, profile=profile)
                 if not _kept(enriched, keep_types):
                     stats["skipped"] += 1
                     continue
@@ -404,6 +407,9 @@ def main() -> None:
     p.add_argument("--doc-types", nargs="+", default=None,
                    help="only ingest these doc_type classes (default: all non-empty). "
                         "e.g. --doc-types article supplement")
+    p.add_argument("--publisher-profile", default="asm",
+                   help="enrichment profile (DOI prefix / filename rule / front-matter set); "
+                        "unknown names fall back to the default. See enrich.PROFILES")
     p.add_argument("--limit", type=int, default=0, help="stop after N ingested docs (0 = all)")
     # outputs
     p.add_argument("--catalog-out", type=Path, default=None,

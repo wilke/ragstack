@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # --- document classes -------------------------------------------------------
 # Tagged onto every chunk as ``doc_type`` so retrieval can filter (e.g. exclude
@@ -32,12 +32,13 @@ SHORT = "short"
 EMPTY = "empty"
 
 # Non-article PDFs that recur across issues (mastheads, ads, ToCs, …). Matched
-# on the bare filename, case-insensitively.
-_FRONT_MATTER_NAMES = {
+# on the bare filename, case-insensitively. This is the ASM/default front-matter
+# set; a different publisher can supply its own via a PublisherProfile.
+_FRONT_MATTER_NAMES = frozenset({
     "admin.pdf", "cover.pdf", "advertising.pdf", "masthead.pdf",
     "editorial-board.pdf", "table-of-contents.pdf", "reviewer-comments.pdf",
     "front-matter.pdf", "back-matter.pdf", "index.pdf", "errata.pdf",
-}
+})
 
 # This publisher (ASM) names the per-article PDF after the DOI suffix, e.g.
 # ``jvi.02415-06.pdf`` -> 10.1128/jvi.02415-06 and the older volume-style
@@ -66,6 +67,71 @@ _CITE_LINE = re.compile(r"^\s*(\d{1,3})[.)]\s+(\S.{8,})")
 _SHORT_TEXT_THRESHOLD = 1500
 
 
+class PublisherProfile(BaseModel):
+    """Publisher-specific knobs that drive DOI recovery and classification.
+
+    Everything in here is *publisher* (not corpus) specific: how the DOI prefix
+    looks, how a per-article filename maps to its DOI suffix, and which bare
+    filenames are recurring front-matter. The rest of enrichment (year, citation,
+    text-DOI fallback, author/keyword parsing) is publisher-agnostic and lives in
+    the module-level functions.
+
+    ``filename_doi_rule`` is a compiled regex applied to the *stem* (the filename
+    with any ``.pdf`` suffix stripped); when it matches, the DOI is
+    ``f"{doi_prefix}/{group(1) or group(0)}"``. This generalises the ASM rule
+    (``jvi.02415-06`` -> ``10.1128/jvi.02415-06``) to other publishers that name
+    files after their DOI suffix without baking ASM specifics into the code.
+
+    Frozen so a single shared instance (e.g. the module ``DEFAULT_PROFILE`` or a
+    config-selected one) is safe to reuse across calls without aliasing hazards.
+    """
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    name: str = "asm"
+    doi_prefix: str = _DEFAULT_DOI_PREFIX
+    filename_doi_rule: re.Pattern[str] = _FN_DOI
+    front_matter_names: frozenset[str] = _FRONT_MATTER_NAMES
+
+    def doi_from_filename(self, stem: str) -> str | None:
+        """Return the DOI for ``stem`` if the filename rule matches, else None.
+
+        ``stem`` is the filename with any ``.pdf`` suffix already stripped. The
+        rule's first capture group (or the whole match when it has none) is the
+        DOI suffix appended to ``doi_prefix``.
+        """
+        m = self.filename_doi_rule.match(stem)
+        if not m:
+            return None
+        suffix = m.group(1) if m.groups() else m.group(0)
+        return f"{self.doi_prefix}/{suffix}"
+
+
+# The default (ASM) profile: 10.1128 prefix, the ``jvi.02415-06`` filename rule,
+# and the front-matter set above. Selecting nothing keeps behaviour byte-for-byte
+# identical to before profiles existed.
+DEFAULT_PROFILE = PublisherProfile()
+
+# Registry of named, built-in publisher profiles selectable via config
+# (``Settings.publisher_profile``). Keyed by lowercase name. Today only ASM ships
+# built in; add more here (or, longer term, load from a config file) as new
+# corpora arrive.
+PROFILES: dict[str, PublisherProfile] = {DEFAULT_PROFILE.name: DEFAULT_PROFILE}
+
+
+def resolve_profile(name: str | None) -> PublisherProfile:
+    """Look up a built-in profile by name, degrading to the default.
+
+    Unknown / empty names fall back to :data:`DEFAULT_PROFILE` rather than raising
+    — enrichment must never hard-fail an ingest over a misconfigured profile name
+    (graceful degradation); the worst case is ASM defaults on a non-ASM corpus,
+    recoverable by re-ingesting once the name is fixed.
+    """
+    if not name:
+        return DEFAULT_PROFILE
+    return PROFILES.get(name.strip().lower(), DEFAULT_PROFILE)
+
+
 def parse_authors(raw: str) -> list[str]:
     """Split the extractor's ``;``-separated author string into a clean list."""
     if not raw:
@@ -82,14 +148,19 @@ def split_keywords(raw: str) -> list[str]:
     return [k.strip() for k in parts if k.strip()]
 
 
-def classify(path: str, text: str) -> str:
-    """Classify a record as article / supplement / front-matter / short / empty."""
+def classify(path: str, text: str, profile: PublisherProfile | None = None) -> str:
+    """Classify a record as article / supplement / front-matter / short / empty.
+
+    ``profile`` supplies the publisher-specific front-matter name set; it
+    defaults to the ASM :data:`DEFAULT_PROFILE`.
+    """
+    profile = profile or DEFAULT_PROFILE
     base = path.rsplit("/", 1)[-1].lower()
     if not text or not text.strip():
         return EMPTY
     if "/suppl/" in path.lower() or base.startswith("suppl"):
         return SUPPLEMENT
-    if base in _FRONT_MATTER_NAMES:
+    if base in profile.front_matter_names:
         return FRONT_MATTER
     if len(text) < _SHORT_TEXT_THRESHOLD:
         return SHORT
@@ -97,22 +168,35 @@ def classify(path: str, text: str) -> str:
 
 
 def derive_doi(
-    path: str, text: str, meta_doi: str = "", prefix: str = _DEFAULT_DOI_PREFIX
+    path: str,
+    text: str,
+    meta_doi: str = "",
+    prefix: str | None = None,
+    profile: PublisherProfile | None = None,
 ) -> tuple[str, str]:
     """Recover the DOI, preferring the most trustworthy source.
 
     Returns ``(doi, source)`` where ``source`` is one of ``metadata`` /
-    ``filename`` / ``text`` / ``""`` (not found). The filename rule is exact for
-    this publisher and validated against the in-text DOI across the corpus; the
-    text scan is a fallback for the volume-style names the filename rule misses.
+    ``filename`` / ``text`` / ``""`` (not found). The filename rule and DOI prefix
+    come from ``profile`` (default ASM): exact for that publisher and validated
+    against the in-text DOI across the corpus; the text scan is a publisher-
+    agnostic fallback for the volume-style names the filename rule misses.
+
+    ``prefix`` is a back-compat shortcut to override just the profile's DOI prefix
+    (e.g. ``derive_doi(..., prefix="10.1099")``); pass a full ``profile`` to also
+    swap the filename rule.
     """
+    profile = profile or DEFAULT_PROFILE
+    if prefix is not None and prefix != profile.doi_prefix:
+        profile = profile.model_copy(update={"doi_prefix": prefix})
     if meta_doi and meta_doi.strip():
         return meta_doi.strip(), "metadata"
     stem = path.rsplit("/", 1)[-1]
     if stem.lower().endswith(".pdf"):
         stem = stem[:-4]
-    if _FN_DOI.match(stem):
-        return f"{prefix}/{stem}", "filename"
+    fn_doi = profile.doi_from_filename(stem)
+    if fn_doi is not None:
+        return fn_doi, "filename"
     m = _DOI_IN_TEXT.search(text[:4000])
     if m:
         return _trim_text_doi(m.group(0)), "text"
@@ -215,18 +299,30 @@ class EnrichedDoc(BaseModel):
 _HEAVY_FIELDS = {"citations", "abstract"}
 
 
-def enrich(record: dict[str, Any], *, prefix: str = _DEFAULT_DOI_PREFIX) -> EnrichedDoc:
+def enrich(
+    record: dict[str, Any],
+    *,
+    prefix: str | None = None,
+    profile: PublisherProfile | None = None,
+) -> EnrichedDoc:
     """Turn a raw JSONL record (``{text, path, metadata}``) into an EnrichedDoc.
 
     Pure and total: it always returns a record (callers decide whether to skip
     based on ``doc_type``); empty-text records come back tagged ``EMPTY``.
+
+    ``profile`` injects the publisher specifics (DOI prefix, filename->DOI rule,
+    front-matter names); it defaults to the ASM :data:`DEFAULT_PROFILE`. ``prefix``
+    is a back-compat shortcut to override just the profile's DOI prefix.
     """
+    profile = profile or DEFAULT_PROFILE
+    if prefix is not None and prefix != profile.doi_prefix:
+        profile = profile.model_copy(update={"doi_prefix": prefix})
     path = record.get("path", "") or ""
     text = record.get("text", "") or ""
     meta = record.get("metadata") or {}
 
-    doc_type = classify(path, text)
-    doi, doi_source = derive_doi(path, text, meta.get("doi", ""), prefix=prefix)
+    doc_type = classify(path, text, profile)
+    doi, doi_source = derive_doi(path, text, meta.get("doi", ""), profile=profile)
     citations = extract_citations(text) if doc_type == ARTICLE else []
 
     return EnrichedDoc(

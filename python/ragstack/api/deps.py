@@ -19,6 +19,7 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
@@ -259,6 +260,7 @@ async def lifespan(app: FastAPI):
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,
             max_bytes=settings.max_document_bytes,
+            profile=resolve_profile(settings.publisher_profile),
         ),
         chunker=RecursiveCharacterChunker(
             chunk_size=settings.chunk_size,

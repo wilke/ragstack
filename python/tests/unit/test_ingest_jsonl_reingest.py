@@ -51,6 +51,7 @@ class _FakeEmbedder:
 def _args(input_path: Path, **over) -> argparse.Namespace:
     base = {
         "input": input_path, "tenant": "public", "doc_types": None, "limit": 0,
+        "publisher_profile": "asm",
         "catalog_out": None, "no_index": False, "checkpoint": None, "resume": False,
         "chunk_size": 200, "chunk_overlap": 20, "batch_size": 2, "concurrency": 2,
         "embedding_url": ["http://x"], "embedding_api": "openai", "embedding_model": "m",
