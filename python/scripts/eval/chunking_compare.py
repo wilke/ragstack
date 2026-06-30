@@ -98,7 +98,8 @@ def _store_name(mode: str) -> str:
 # SFR's context window is 4096 tokens. This corpus is dense scientific text that
 # tokenizes at ~2.45 chars/token (probed against the live endpoint), so 4096 tokens
 # is as little as ~10k chars — and some passages (tables, references, formulae) are
-# denser still. We use a conservative 8000-char budget; chunks above it are split
+# denser still. We use a conservative 4000-char budget (SAFE_CHUNK_CHARS, well
+# under the ~10k ceiling); chunks above it are split
 # with a RecursiveCharacterChunker before embedding (text preserved, just
 # re-segmented). A defensive bisect + iterative shrink guards the rare batch that
 # still trips the 400 token-limit error so a single chunk can't abort the run.
