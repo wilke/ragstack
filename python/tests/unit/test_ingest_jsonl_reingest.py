@@ -63,6 +63,8 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "publisher_profile": "asm",
         "catalog_out": None, "no_index": False, "checkpoint": None, "resume": False,
         "chunk_size": 200, "chunk_overlap": 20, "batch_size": 2, "concurrency": 2,
+        "chunk_method": "fixed", "chunk_buffer_size": 3,
+        "chunk_breakpoint_percentile": 80.0, "chunk_min_length": 500,
         "embedding_url": ["http://x"], "embedding_api": "openai", "embedding_model": "m",
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
@@ -236,3 +238,35 @@ async def test_prune_failure_after_upsert_preserves_data(tmp_path, monkeypatch):
     # Upsert ran before the failing prune, so the chunks are still present.
     assert store.points, "a prune failure must not lose the upserted chunks"
     assert any(op.startswith("upsert:") for op in store.ops)
+
+
+@pytest.mark.asyncio
+async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
+    """--chunk-method selects the chunker via make_chunker; semantic gets a
+    (non-None) embed_fn bridge, fixed does not."""
+    from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+
+    calls: dict = {}
+
+    def fake_make_chunker(method, **kw):
+        calls["method"] = method
+        calls["embed_fn"] = kw.get("embed_fn")
+        return RecursiveCharacterChunker(
+            chunk_size=kw.get("chunk_size", 512), chunk_overlap=kw.get("chunk_overlap", 64)
+        )
+
+    monkeypatch.setattr(ingest_jsonl, "make_chunker", fake_make_chunker)
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_corpus(corpus, "alpha beta gamma. " * 50)
+
+    await ingest_jsonl.run(_args(corpus, chunk_method="semantic", checkpoint=tmp_path / "s.ckpt"))
+    assert calls["method"] == "semantic"
+    assert calls["embed_fn"] is not None  # SyncEmbedBridge handed to the chunker
+
+    await ingest_jsonl.run(_args(corpus, chunk_method="fixed", checkpoint=tmp_path / "f.ckpt"))
+    assert calls["method"] == "fixed"
+    assert calls["embed_fn"] is None

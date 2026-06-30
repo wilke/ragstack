@@ -60,7 +60,8 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.models import Chunk, Document
@@ -203,8 +204,32 @@ async def run(args: argparse.Namespace) -> None:
     # Canonical (sorted) form of the active filter, persisted in the checkpoint so
     # a resume under a different filter is detected.
     current_doc_types = sorted(keep_types) if keep_types else None
-    chunker = RecursiveCharacterChunker(
-        chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
+    # Chunker selected by --chunk-method. The semantic chunker needs to embed
+    # sentence buffers; it runs synchronously inside the (async) ingest, so hand it
+    # a SyncEmbedBridge that builds its own embedder against the same --embedding-*
+    # backend on a background loop. Built only for semantic; closed at run() exit.
+    embed_bridge: SyncEmbedBridge | None = None
+    if args.chunk_method == "semantic":
+        def _embedder_factory(http: httpx.AsyncClient):
+            common = {
+                "api": args.embedding_api, "http": http,
+                "model": args.embedding_model, "api_key": os.getenv("OPENAI_API_KEY"),
+            }
+            if len(args.embedding_url) > 1:
+                return make_pooled_embedder(
+                    base_urls=args.embedding_url,
+                    max_concurrency=args.embedding_max_concurrency, **common,
+                )
+            return make_embedder(base_url=args.embedding_url[0], **common)
+        embed_bridge = SyncEmbedBridge(_embedder_factory)
+    chunker = make_chunker(
+        args.chunk_method,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        embed_fn=embed_bridge,
+        buffer_size=args.chunk_buffer_size,
+        breakpoint_percentile_threshold=args.chunk_breakpoint_percentile,
+        min_chunk_length=args.chunk_min_length,
     )
     ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
@@ -219,6 +244,8 @@ async def run(args: argparse.Namespace) -> None:
             print(f"catalog written to {args.catalog_out}", file=sys.stderr)
         print(f"done: {stats['docs']} docs cataloged, {stats['skipped']} skipped "
               f"(saw {stats['seen']} records)", file=sys.stderr)
+        if embed_bridge is not None:
+            embed_bridge.close()
         return
 
     async with httpx.AsyncClient() as http:
@@ -402,6 +429,8 @@ async def run(args: argparse.Namespace) -> None:
     if catalog is not None:
         catalog.close()
         print(f"catalog written to {args.catalog_out}", file=sys.stderr)
+    if embed_bridge is not None:
+        embed_bridge.close()
     if failed:
         # Don't report success when batches errored: the checkpoint stalled at the
         # first gap, so the run is partial. Exit non-zero so the operator notices.
@@ -454,8 +483,19 @@ def main() -> None:
                    help="model name (required for --embedding-api openai; used to name the collection)")
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
     # chunking
+    p.add_argument("--chunk-method", choices=["fixed", "sentence", "words", "semantic"],
+                   default="fixed",
+                   help="chunking strategy (default: fixed). semantic embeds sentence "
+                        "buffers via the configured --embedding-* backend.")
     p.add_argument("--chunk-size", type=int, default=512)
     p.add_argument("--chunk-overlap", type=int, default=64)
+    # Semantic-only tunables (ignored by other methods).
+    p.add_argument("--chunk-buffer-size", type=int, default=3,
+                   help="semantic: sentences of context on each side of a buffer")
+    p.add_argument("--chunk-breakpoint-percentile", type=float, default=80.0,
+                   help="semantic: distance percentile above which a chunk boundary is placed")
+    p.add_argument("--chunk-min-length", type=int, default=500,
+                   help="semantic: merge chunks shorter than this many chars into a neighbor")
     p.add_argument("--batch-size", type=int, default=128, help="chunks embedded/upserted per batch")
     p.add_argument("--concurrency", type=int, default=1,
                    help="in-flight batches embedded+upserted in parallel; set >1 to fan out "
