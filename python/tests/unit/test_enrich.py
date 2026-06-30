@@ -3,6 +3,7 @@ document classification, citation extraction, author/keyword parsing, and the
 index-safe metadata projection."""
 from __future__ import annotations
 
+import json
 import re
 
 from ragstack.ingestion.enrich import (
@@ -24,6 +25,7 @@ from ragstack.ingestion.enrich import (
     resolve_profile,
     split_keywords,
 )
+from ragstack.ingestion.loaders import default_loader_registry
 
 # --- DOI recovery -----------------------------------------------------------
 
@@ -352,6 +354,25 @@ def test_resolve_profile_known_and_unknown():
 
 def test_default_profile_registered():
     assert PROFILES["asm"] is DEFAULT_PROFILE
+
+
+def test_default_loader_registry_forwards_profile_to_jsonl(tmp_path):
+    # End-to-end wiring: a profile passed to default_loader_registry must reach
+    # JsonlLoader -> enrich(), so a .jsonl record is enriched with that profile's
+    # DOI rule rather than the ASM default. (Guards the config->loader plumbing,
+    # not just the enrich() function boundary.)
+    f = tmp_path / "c.jsonl"
+    rec = {"text": "Body text. " * 200, "path": "/corpus/brief-04217.pdf", "metadata": {}}
+    f.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+
+    docs = default_loader_registry(profile=_FAKE_PROFILE).load(str(f))
+    assert len(docs) == 1
+    assert docs[0].metadata["doi"] == "10.5555/brief-04217"  # fake profile rule, not 10.1128
+
+    # The default (ASM) registry's filename rule does not match this stem → no DOI,
+    # confirming the profile (not a hardcoded default) drove the result above.
+    default_docs = default_loader_registry().load(str(f))
+    assert default_docs[0].metadata.get("doi", "") == ""
 
 
 def test_publisher_profile_is_frozen():

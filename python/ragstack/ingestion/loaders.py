@@ -235,9 +235,14 @@ DEFAULT_INGEST_SUFFIXES = (".pdf", ".txt", ".md", ".jsonl")
 
 
 def default_loader_registry(
-    ingest_root: str | None = None, max_bytes: int = 0
+    ingest_root: str | None = None,
+    max_bytes: int = 0,
+    profile: PublisherProfile | None = None,
 ) -> LoaderRegistry:
     """A registry wired with the built-in loaders (PDF + text/markdown + JSONL).
+
+    ``profile`` is the publisher profile the JSONL loader enriches with (DOI
+    prefix / filename rule / front-matter set); ``None`` keeps the ASM default.
 
     Note ``.jsonl`` is a *batch* format — one file yields many documents. The
     registry's ``max_bytes`` guard still applies per file, so very large corpora
@@ -250,5 +255,5 @@ def default_loader_registry(
     registry.register(".pdf", PdfLoader())
     registry.register(".txt", text)
     registry.register(".md", text)
-    registry.register(".jsonl", JsonlLoader())
+    registry.register(".jsonl", JsonlLoader(profile=profile))
     return registry
