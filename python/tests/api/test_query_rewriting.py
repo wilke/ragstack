@@ -23,7 +23,7 @@ class _RecordingRetriever:
     def __init__(self) -> None:
         self.queries: list[str] = []
 
-    async def retrieve(self, query, top_k=5, filters=None, use_graph=True):
+    async def retrieve(self, query, top_k=5, filters=None, use_graph=True, tenant_id=None):
         self.queries.append(query)
         return [ScoredChunk(chunk=Chunk(id=f"{query}#c", doc_id="d", content=query), score=1.0)]
 

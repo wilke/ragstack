@@ -15,7 +15,7 @@ class _StubRetriever:
         self.chunks = [Chunk(id=f"c{i}", doc_id="d", content=f"text {i}") for i in range(n)]
         self.depths: list[int] = []
 
-    async def retrieve(self, query, top_k=5, filters=None, use_graph=True):
+    async def retrieve(self, query, top_k=5, filters=None, use_graph=True, tenant_id=None):
         self.depths.append(top_k)
         return [ScoredChunk(chunk=c, score=1.0 / (i + 1)) for i, c in enumerate(self.chunks)]
 

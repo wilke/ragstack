@@ -3,8 +3,8 @@ import pytest
 
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.pipeline import EmptyIngestError, IngestionPipeline
-from ragstack.models import Document
-from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from ragstack.models import Chunk, Document, Triple
+from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 
 
 class _FixedDocLoader:
@@ -119,6 +119,39 @@ async def test_reingest_with_all_chunks_quarantined_preserves_prior_data():
     # Prior data is untouched.
     assert {c.id for c in vector_store._chunks} == seeded
     assert {c.id for c in text_index._chunks} == seeded
+
+
+class _StubExtractor:
+    """KGExtractor double: emits a fixed triple per ingest, doc_id from the chunk,
+    tenant_id left empty (the pipeline must stamp it)."""
+
+    async def extract(self, chunks: list[Chunk]) -> list[Triple]:
+        doc_id = chunks[0].doc_id if chunks else ""
+        return [Triple(subject="Alice", predicate="knows", object="Bob", doc_id=doc_id)]
+
+
+@pytest.mark.asyncio
+async def test_ingest_stamps_tenant_on_extracted_triples_and_stores_them():
+    vector_store = InMemoryVectorStore()
+    text_index = InMemoryTextIndex()
+    graph_store = InMemoryGraphStore()
+    pipeline = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnop"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=vector_store,
+        text_index=text_index,
+        graph_store=graph_store,
+        kg_extractor=_StubExtractor(),
+    )
+    await pipeline.ingest("file.txt", tenant_id="alice")
+
+    stored = graph_store._triples
+    assert len(stored) == 1
+    assert (stored[0].subject, stored[0].predicate, stored[0].object) == ("Alice", "knows", "Bob")
+    assert stored[0].doc_id == "doc-1"
+    # The pipeline stamps the owning tenant; the extractor never set it.
+    assert stored[0].tenant_id == "alice"
 
 
 @pytest.mark.asyncio

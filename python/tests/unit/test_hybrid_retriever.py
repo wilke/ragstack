@@ -1,7 +1,7 @@
 """HybridRetriever fuses vector + BM25 and scopes both legs by tenant."""
 import pytest
 
-from ragstack.models import Chunk, ScoredChunk
+from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.retrieval.retriever import HybridRetriever
 
 
@@ -47,6 +47,44 @@ async def test_hybrid_fuses_both_legs_and_passes_tenant_filter():
     # The tenant scope reached BOTH stores — isolation holds in hybrid retrieval.
     assert vec.filters == filters
     assert txt.filters == filters
+
+
+class _SpyGraphStore:
+    """Records the tenant_id passed to query_neighborhood and returns one triple."""
+
+    def __init__(self) -> None:
+        self.tenant_id = "unset"
+
+    async def query_neighborhood(self, entity, depth=1, tenant_id=None):
+        self.tenant_id = tenant_id
+        return [Triple(subject="Alice", predicate="knows", object="Bob", doc_id="d")]
+
+
+@pytest.mark.asyncio
+async def test_graph_leg_is_tenant_scoped_and_fuses():
+    vec = _FakeVectorStore([Chunk(id="v", doc_id="d", content="from vector")])
+    txt = _FakeTextIndex([Chunk(id="t", doc_id="d", content="from bm25")])
+    graph = _SpyGraphStore()
+    retriever = HybridRetriever(vec, txt, _FakeEmbedder(), graph_store=graph)
+
+    fused = await retriever.retrieve("Alice", top_k=5, use_graph=True, tenant_id="alice")
+
+    # The caller's tenant reached query_neighborhood — no cross-tenant graph read.
+    assert graph.tenant_id == "alice"
+    # The graph triple fused in alongside the vector + BM25 legs.
+    methods = {r.chunk.id for r in fused}
+    assert "graph-Alice-knows-Bob" in methods
+    assert {"v", "t"} <= methods
+
+
+@pytest.mark.asyncio
+async def test_graph_leg_disabled_when_no_store():
+    # No graph store wired → graph leg is skipped, only vector + BM25 fuse.
+    vec = _FakeVectorStore([Chunk(id="v", doc_id="d", content="from vector")])
+    txt = _FakeTextIndex([Chunk(id="t", doc_id="d", content="from bm25")])
+    retriever = HybridRetriever(vec, txt, _FakeEmbedder())
+    fused = await retriever.retrieve("q", top_k=5, use_graph=True, tenant_id="alice")
+    assert {r.chunk.id for r in fused} == {"v", "t"}
 
 
 @pytest.mark.asyncio
