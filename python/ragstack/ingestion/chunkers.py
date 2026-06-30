@@ -283,7 +283,14 @@ class SentenceChunker:
         text = doc.content
         if not text:
             return []
-        if self.chunk_size == -1 and self.max_tokens is None:
+        if self.chunk_size == -1:
+            # Disable chunking: emit the whole document as one logical chunk. With
+            # a token budget set, still token-split it so a chunk can't exceed the
+            # window (a long doc becomes its minimal set of <=budget pieces).
+            if self.max_tokens is not None and self.token_counter is not None:
+                return _token_split_span(
+                    doc, 0, len(text), self.max_tokens, self.token_counter
+                )
             return [_make_chunk(doc, 0, len(text))]
 
         spans = sentence_spans(text)
@@ -347,7 +354,14 @@ class WordChunker:
         text = doc.content
         if not text:
             return []
-        if self.chunk_size == -1 and self.max_tokens is None:
+        if self.chunk_size == -1:
+            # Disable chunking: emit the whole document as one logical chunk. With
+            # a token budget set, still token-split it so a chunk can't exceed the
+            # window (a long doc becomes its minimal set of <=budget pieces).
+            if self.max_tokens is not None and self.token_counter is not None:
+                return _token_split_span(
+                    doc, 0, len(text), self.max_tokens, self.token_counter
+                )
             return [_make_chunk(doc, 0, len(text))]
 
         spans = word_spans(text)
@@ -431,20 +445,25 @@ def _pack_spans_tokens(
     doc: Document,
     spans: list[tuple[int, int]],
     max_tokens: int,
-    overlap_units: int,
+    chunk_overlap: int,
     token_counter: TokenCounter,
 ) -> list[Chunk]:
     """Token-budget variant of :func:`_pack_spans`.
 
-    Packs whole units until the *exact* joined-token count of the candidate chunk
-    would exceed ``max_tokens``. A per-span token cache keeps counter calls down;
-    the joined candidate is counted exactly (per-span sums over-count because unit
-    boundaries merge tokens), so the emitted chunk is guaranteed <= ``max_tokens``
-    — except a single unit that alone exceeds the budget, which is hard-split by
-    tokens so no text is dropped. Overlap is expressed in *whole trailing units*
-    (``overlap_units`` is reinterpreted from the chars param: 0 disables overlap,
-    any positive value re-emits one trailing unit) to keep boundaries on unit
-    edges and offsets exact.
+    Packs whole units while their *memoized per-span* running token sum stays
+    within ``max_tokens``. Each span is counted exactly once (via the ``tok_of``
+    memo), so total tokenization is O(k) per chunk rather than O(k^2). The
+    per-span sum *over*-counts the joined chunk (tokens that merge across a unit
+    seam are double-counted), so packing by the sum already **guarantees** the
+    emitted chunk is <= ``max_tokens`` — it just forgoes the seam-merge reclaim,
+    yielding occasionally slightly smaller chunks. A single unit that alone
+    exceeds the budget is hard-split by tokens so no text is dropped.
+
+    Overlap honours ``chunk_overlap`` **chars** with the same semantics as the
+    char path: after emitting a chunk, walk back from the end accumulating whole
+    trailing units until their combined char length would exceed ``chunk_overlap``,
+    then resume there. ``i`` always advances by at least one unit so a large
+    overlap can't loop.
     """
     text = doc.content
     n = len(spans)
@@ -469,27 +488,33 @@ def _pack_spans_tokens(
 
         cur_start = spans[i][0]
         j = i + 1
-        # Grow while the next unit's token count *could* fit (cheap per-span gate),
-        # then verify the exact joined count and back off if the merge tipped over.
+        # Grow by the memoized per-span running sum only (each span counted once).
+        # The sum >= the joined-token count, so staying <= max_tokens by the sum
+        # keeps the joined chunk <= max_tokens without any per-step recount.
         running = tok_of(i)
         while j < n:
             nxt = tok_of(j)
             if running + nxt > max_tokens:
                 break
-            # Exact check on the joined candidate (merging may add/remove a token
-            # at the seam vs. the per-span sum).
-            joined = token_counter.count(text[cur_start : spans[j][1]])
-            if joined > max_tokens:
-                break
-            running = joined
+            running += nxt
             j += 1
         end = spans[j - 1][1]
         chunks.append(_make_chunk(doc, cur_start, end))
         if j >= n:
             break
-        # Overlap by one whole trailing unit when requested; always advance.
-        if overlap_units > 0 and j - 1 > i:
-            i = j - 1
+        # Overlap: walk back from j accumulating whole trailing units until we'd
+        # exceed chunk_overlap chars, then resume there. Always make forward
+        # progress (i advances by at least one unit) so overlap can't loop.
+        if chunk_overlap > 0:
+            overlap = 0
+            k = j
+            while k > i + 1:
+                prev_len = spans[k - 1][1] - spans[k - 1][0]
+                if overlap + prev_len > chunk_overlap:
+                    break
+                overlap += prev_len
+                k -= 1
+            i = k if k > i else i + 1
         else:
             i = j
     return chunks

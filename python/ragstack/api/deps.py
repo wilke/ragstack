@@ -25,6 +25,7 @@ from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
+from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.protocols import QueryRewriter
@@ -270,6 +271,34 @@ def _build_chunker():
     if method == "semantic":
         bridge = SyncEmbedBridge(_build_embedder)
         embed_fn = bridge
+
+    # Token-based sizing is opt-in (chunk_max_tokens set). When off, pass nothing
+    # so the char-budget path is unchanged and no tokenizer/endpoint is touched at
+    # startup. When on, build a TokenCounter and resolve the per-chunk budget from
+    # the embedding endpoint so /v1/ingest never emits an over-window chunk.
+    max_tokens: int | None = None
+    token_counter = None
+    if settings.chunk_max_tokens is not None:
+        base_url = (settings.embedding_endpoints or [settings.embedding_sidecar_url])[0]
+        api_key = settings.openai_api_key or None
+        model = settings.embedding_model or None
+        token_counter = make_token_counter(
+            settings.chunk_token_counter,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        max_tokens = resolve_max_tokens(
+            settings.chunk_max_tokens,
+            base_url=base_url,
+            api_key=api_key,
+        )
+        log.info(
+            "token-based chunk sizing on: max_tokens=%d counter=%s",
+            max_tokens,
+            settings.chunk_token_counter,
+        )
+
     chunker = make_chunker(
         method,
         chunk_size=settings.chunk_size,
@@ -278,6 +307,8 @@ def _build_chunker():
         buffer_size=settings.chunk_buffer_size,
         breakpoint_percentile_threshold=settings.chunk_breakpoint_percentile,
         min_chunk_length=settings.chunk_min_length,
+        max_tokens=max_tokens,
+        token_counter=token_counter,
     )
     log.info("chunker: chunk_method=%s", method)
     return chunker, bridge

@@ -119,11 +119,13 @@ def test_sentence_chunker_hard_splits_single_oversized_unit():
     assert _reconstructs(doc, chunks)
 
 
-def test_token_overlap_reemits_one_unit():
+def test_token_overlap_reemits_trailing_units():
     counter = WordTokenCounter()
     doc = _doc(_sentences(8, words_each=3))  # 8 sentences x 3 = 24 tokens
+    # Each sentence is 16 chars; an overlap budget of 20 chars re-emits one whole
+    # trailing sentence on the token path (char-budget overlap semantics).
     chunker = SentenceChunker(
-        chunk_size=512, chunk_overlap=10, max_tokens=6, token_counter=counter
+        chunk_size=512, chunk_overlap=20, max_tokens=6, token_counter=counter
     )
     chunks = chunker.chunk(doc)
     assert len(chunks) > 1
@@ -132,6 +134,34 @@ def test_token_overlap_reemits_one_unit():
         chunks[i + 1].start_char < chunks[i].end_char for i in range(len(chunks) - 1)
     )
     assert all(counter.count(c.content) <= 6 for c in chunks)
+
+
+def _total_overlap_chars(chunks) -> int:
+    """Sum of overlapping char extents between consecutive chunks."""
+    return sum(
+        max(0, chunks[i].end_char - chunks[i + 1].start_char)
+        for i in range(len(chunks) - 1)
+    )
+
+
+def test_token_overlap_honors_chunk_overlap_magnitude():
+    # A larger --chunk-overlap must re-emit more trailing units on the token path
+    # (char-budget overlap semantics), not a fixed single unit regardless of size.
+    counter = WordTokenCounter()
+    doc = _doc(_sentences(12, words_each=3))  # 12 sentences x 16 chars each
+    small = SentenceChunker(
+        chunk_size=512, chunk_overlap=5, max_tokens=9, token_counter=counter
+    ).chunk(doc)
+    large = SentenceChunker(
+        chunk_size=512, chunk_overlap=40, max_tokens=9, token_counter=counter
+    ).chunk(doc)
+    # Both stay within budget and reconstruct.
+    assert all(counter.count(c.content) <= 9 for c in small)
+    assert all(counter.count(c.content) <= 9 for c in large)
+    assert _reconstructs(doc, small) and _reconstructs(doc, large)
+    # Overlap of 5 chars (< one 16-char sentence) re-emits nothing; 40 chars
+    # (two sentences) re-emits more → strictly larger total overlap span.
+    assert _total_overlap_chars(large) > _total_overlap_chars(small)
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +218,46 @@ def test_max_tokens_none_is_backward_compatible():
     assert [(c.start_char, c.end_char) for c in no_tok] == [
         (c.start_char, c.end_char) for c in with_none
     ]
+
+
+# --------------------------------------------------------------------------- #
+# chunk_size == -1 (disable chunking) still honours a token budget
+# --------------------------------------------------------------------------- #
+def test_disable_chunking_with_token_budget_fits_whole_doc():
+    # chunk_size=-1 means "one chunk", and when the whole doc fits the budget it
+    # stays a single whole-doc chunk (token budget never forces a split).
+    counter = WordTokenCounter()
+    doc = _doc(_sentences(3, words_each=4))  # 12 tokens
+    for cls in (SentenceChunker, WordChunker):
+        chunker = cls(chunk_size=-1, chunk_overlap=0, max_tokens=50, token_counter=counter)
+        chunks = chunker.chunk(doc)
+        assert len(chunks) == 1
+        assert chunks[0].start_char == 0 and chunks[0].end_char == len(doc.content)
+        assert counter.count(chunks[0].content) <= 50
+        assert _reconstructs(doc, chunks)
+
+
+def test_disable_chunking_with_token_budget_splits_when_over_budget():
+    # chunk_size=-1 must NOT silently emit an over-budget whole-doc chunk: when the
+    # doc exceeds the budget it is token-split into <=budget pieces, losslessly.
+    counter = WordTokenCounter()
+    doc = _doc(_sentences(10, words_each=4))  # 40 tokens > budget
+    for cls in (SentenceChunker, WordChunker):
+        chunker = cls(chunk_size=-1, chunk_overlap=0, max_tokens=7, token_counter=counter)
+        chunks = chunker.chunk(doc)
+        assert len(chunks) > 1
+        assert all(counter.count(c.content) <= 7 for c in chunks)
+        assert "".join(c.content for c in chunks) == doc.content
+        assert _reconstructs(doc, chunks)
+
+
+def test_disable_chunking_no_budget_is_single_chunk():
+    # Back-compat: -1 with no token budget remains a single whole-doc chunk.
+    doc = _doc(_sentences(10, words_each=4))
+    for cls in (SentenceChunker, WordChunker):
+        chunks = cls(chunk_size=-1, chunk_overlap=0).chunk(doc)
+        assert len(chunks) == 1
+        assert chunks[0].start_char == 0 and chunks[0].end_char == len(doc.content)
 
 
 def test_make_chunker_threads_token_params():

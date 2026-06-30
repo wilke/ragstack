@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 from typing import Protocol, runtime_checkable
 
 import httpx
@@ -111,6 +112,9 @@ class EndpointTokenCounter(_BaseTokenCounter):
     A Bearer token is sent when ``api_key`` is set (keyless endpoints ignore it,
     so one key is safe for a mixed pool). Uses a sync :class:`httpx.Client`
     because chunkers run synchronously; a client is created lazily and reused.
+    The lazy init is guarded by a lock so concurrent :meth:`count` calls (e.g.
+    ``chunking_compare`` chunks in a ``ThreadPoolExecutor``) share one client
+    instead of racing to construct several.
     """
 
     def __init__(
@@ -127,10 +131,15 @@ class EndpointTokenCounter(_BaseTokenCounter):
         self.api_key = api_key
         self.timeout = timeout
         self._client = client
+        self._client_lock = threading.Lock()
 
     def _http(self) -> httpx.Client:
+        # Double-checked locking: the fast path (client already built) stays
+        # lock-free, and the no-key/no-call case never pays for the lock at all.
         if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout)
+            with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.Client(timeout=self.timeout)
         return self._client
 
     def count(self, text: str) -> int:
@@ -216,14 +225,19 @@ def resolve_max_tokens(
 ) -> int:
     """The per-chunk token budget: explicit override, else auto-detect.
 
-    When ``explicit`` is given it's returned as-is. Otherwise GET
-    ``{base_url}/v1/models`` and return ``max_model_len - reserve`` from the first
-    model entry; ``reserve`` leaves headroom for BOS/EOS/pooling specials the
-    chunker doesn't count. On any failure (no endpoint, network error, missing
-    field) return ``default`` unchanged.
+    ``explicit`` (the ``--chunk-max-tokens`` flag) is interpreted as the *model
+    window*, not the final budget: the chunker counts content tokens with
+    ``add_special_tokens=False``, so the same ``reserve`` headroom for
+    BOS/EOS/pooling specials is subtracted here too — ``max(1, explicit -
+    reserve)``. Setting the flag to the model's true window therefore no longer
+    overflows at embed time. Otherwise GET ``{base_url}/v1/models`` and return
+    ``max(1, max_model_len - reserve)`` from the first model entry (clamped so a
+    tiny/odd ``max_model_len`` can't yield a zero/negative budget that would
+    silently disable capping). On any failure (no endpoint, network error,
+    missing/empty data, missing field) return ``default`` unchanged.
     """
     if explicit is not None:
-        return explicit
+        return max(1, explicit - reserve)
     if not base_url:
         return default
     try:
@@ -231,8 +245,11 @@ def resolve_max_tokens(
         with httpx.Client(timeout=30.0) as client:
             resp = client.get(f"{base_url.rstrip('/')}/v1/models", headers=headers)
             resp.raise_for_status()
-            max_len = int(resp.json()["data"][0]["max_model_len"])
-        budget = max_len - reserve
+            data = resp.json().get("data") or []
+            if not data or "max_model_len" not in data[0]:
+                raise ValueError("no max_model_len in /v1/models response")
+            max_len = int(data[0]["max_model_len"])
+        budget = max(1, max_len - reserve)
         print(
             f"[tokenization] auto-detected max_model_len={max_len}, "
             f"using budget {budget} (reserve {reserve})",

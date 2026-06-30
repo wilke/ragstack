@@ -100,16 +100,63 @@ def test_endpoint_counter_empty_text_short_circuits():
     assert c.count("") == 0
 
 
+def test_endpoint_counter_lazy_client_is_thread_safe(monkeypatch):
+    # Concurrent count() calls must share a single lazily-built client, not race
+    # to construct several (chunking_compare chunks in a ThreadPoolExecutor).
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    constructed: list[object] = []
+    real_client_cls = httpx.Client
+    start = threading.Event()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"count": 5})
+
+    def counting_factory(*a, **k):
+        # Widen the race window so a non-locked lazy init would construct twice.
+        start.wait()
+        inst = real_client_cls(transport=httpx.MockTransport(handler))
+        constructed.append(inst)
+        return inst
+
+    monkeypatch.setattr(httpx, "Client", counting_factory)
+    c = EndpointTokenCounter(base_url="http://embed.test", model="m")
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(c.count, "some text here") for _ in range(8)]
+        start.set()
+        results = [f.result() for f in futures]
+
+    assert results == [5] * 8
+    # Exactly one client constructed and reused; identity stable.
+    assert len(constructed) == 1
+    assert c._http() is constructed[0]
+
+
 # --------------------------------------------------------------------------- #
 # resolve_max_tokens
 # --------------------------------------------------------------------------- #
 def test_resolve_max_tokens_explicit_wins(monkeypatch):
-    # Explicit value returned without any network call.
+    # Explicit value short-circuits with no network call, but is treated as the
+    # model window: the same `reserve` headroom is subtracted (1234 - 16).
     def boom(*a, **k):  # pragma: no cover
         raise AssertionError("no HTTP call when explicit is given")
 
     monkeypatch.setattr(httpx, "Client", boom)
-    assert resolve_max_tokens(1234, base_url="http://x") == 1234
+    assert resolve_max_tokens(1234, base_url="http://x") == 1218
+    # Explicit honours a custom reserve too.
+    assert resolve_max_tokens(1234, base_url="http://x", reserve=34) == 1200
+
+
+def test_resolve_max_tokens_explicit_subtracts_reserve_and_floors():
+    # The flag is the model window; the chunker keeps `reserve` headroom, so the
+    # returned budget is window - reserve, floored at >= 1 for tiny windows.
+    assert resolve_max_tokens(100, base_url=None, reserve=16) == 84
+    # window <= reserve must not produce a zero/negative budget.
+    assert resolve_max_tokens(10, base_url=None, reserve=16) == 1
+    assert resolve_max_tokens(16, base_url=None, reserve=16) == 1
+    assert resolve_max_tokens(1, base_url=None, reserve=16) == 1
 
 
 def test_resolve_max_tokens_parses_max_model_len(monkeypatch):
@@ -145,6 +192,51 @@ def test_resolve_max_tokens_falls_back_on_error(monkeypatch):
 
 def test_resolve_max_tokens_no_base_url_returns_default():
     assert resolve_max_tokens(None, base_url=None, default=2048) == 2048
+
+
+def test_resolve_max_tokens_clamps_tiny_max_model_len(monkeypatch):
+    # max_model_len <= reserve must not silently disable capping with a
+    # zero/negative budget — it's clamped to >= 1.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "m", "max_model_len": 8}]})
+
+    real_client = httpx.Client
+
+    def factory(*a, **k):
+        return real_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    # 8 - 16 = -8 -> clamped to 1
+    assert resolve_max_tokens(None, base_url="http://embed.test", reserve=16) == 1
+
+
+def test_resolve_max_tokens_empty_data_returns_default(monkeypatch):
+    # An empty {"data": []} (or absent max_model_len) falls through to default
+    # without crashing.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+
+    real_client = httpx.Client
+
+    def factory(*a, **k):
+        return real_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    assert resolve_max_tokens(None, base_url="http://embed.test", default=4096) == 4096
+
+
+def test_resolve_max_tokens_missing_field_returns_default(monkeypatch):
+    # data present but no max_model_len key -> default, no crash.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "m"}]})
+
+    real_client = httpx.Client
+
+    def factory(*a, **k):
+        return real_client(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "Client", factory)
+    assert resolve_max_tokens(None, base_url="http://embed.test", default=777) == 777
 
 
 # --------------------------------------------------------------------------- #

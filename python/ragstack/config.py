@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     chunk_buffer_size: int = 3
     chunk_breakpoint_percentile: float = 80.0
     chunk_min_length: int = 500
+    # Token-based chunk sizing (opt-in; default None = OFF — char-budget behaviour
+    # unchanged and no tokenizer is loaded or endpoint probed at startup). When set
+    # to an int, that int is the embedding model's context window: every chunk is
+    # capped so its token count stays a small `reserve` below it (see
+    # resolve_max_tokens), so /v1/ingest can't emit a chunk that overflows the
+    # window. chunk_token_counter selects how tokens are counted: "hf" loads the
+    # model's HF tokenizer (exact, needs the [chunking] extra), "endpoint" asks the
+    # serving endpoint, "estimate" uses a chars-per-token heuristic.
+    chunk_max_tokens: int | None = None
+    chunk_token_counter: str = "hf"          # hf | endpoint | estimate
 
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).
