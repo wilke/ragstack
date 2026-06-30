@@ -18,7 +18,8 @@ from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.ingestion.backends import LocalAsyncIORunner
-from ragstack.ingestion.chunkers import RecursiveCharacterChunker
+from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -228,6 +229,38 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
+def _build_chunker():
+    """Build the configured chunker.
+
+    Returns ``(chunker, embed_bridge)``. ``embed_bridge`` is non-None only for
+    ``chunk_method=semantic``: that chunker embeds sentence buffers synchronously
+    from inside the (async) ingestion pipeline, so we hand it a sync bridge. The
+    bridge builds its *own* embedder + httpx client on its background loop (via
+    ``_build_embedder``) — not the app's main-loop client, which would otherwise
+    raise a cross-loop error — and is closed at shutdown.
+    """
+    method = settings.chunk_method
+    if method not in ("fixed", "sentence", "words", "semantic"):
+        log.warning("unknown chunk_method %r — falling back to 'fixed'", method)
+        method = "fixed"
+    bridge: SyncEmbedBridge | None = None
+    embed_fn = None
+    if method == "semantic":
+        bridge = SyncEmbedBridge(_build_embedder)
+        embed_fn = bridge
+    chunker = make_chunker(
+        method,
+        chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+        embed_fn=embed_fn,
+        buffer_size=settings.chunk_buffer_size,
+        breakpoint_percentile_threshold=settings.chunk_breakpoint_percentile,
+        min_chunk_length=settings.chunk_min_length,
+    )
+    log.info("chunker: chunk_method=%s", method)
+    return chunker, bridge
+
+
 def _validate_production_settings() -> None:
     """Refuse to start in production without the security-critical settings.
 
@@ -311,16 +344,14 @@ async def lifespan(app: FastAPI):
                 raise
             log.warning("elasticsearch ensure_index failed: %s", e)
 
+    chunker, embed_bridge = _build_chunker()
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,
             max_bytes=settings.max_document_bytes,
             profile=resolve_profile(settings.publisher_profile),
         ),
-        chunker=RecursiveCharacterChunker(
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-        ),
+        chunker=chunker,
         embedder=embedder,
         vector_store=vector_store,
         text_index=text_index,
@@ -371,6 +402,7 @@ async def lifespan(app: FastAPI):
     app.state.text_index = text_index
     app.state.graph_store = graph_store
     app.state.pipeline = pipeline
+    app.state.embed_bridge = embed_bridge
     app.state.job_store = job_store
     app.state.ingestor = ingestor
     app.state.generator = RagGenerator(llm) if llm is not None else None
@@ -414,6 +446,9 @@ async def lifespan(app: FastAPI):
         # Close the Neo4j driver if the graph store holds one.
         if graph_store is not None and hasattr(graph_store, "close"):
             await graph_store.close()
+        # Stop the semantic chunker's background embed loop, if any.
+        if embed_bridge is not None:
+            embed_bridge.close()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:
