@@ -66,6 +66,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "chunk_method": "fixed", "chunk_buffer_size": 3,
         "chunk_breakpoint_percentile": 80.0, "chunk_min_length": 500,
         "embedding_url": ["http://x"], "embedding_api": "openai", "embedding_model": "m",
+        "embedding_api_key": None,
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
