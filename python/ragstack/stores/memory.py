@@ -72,6 +72,20 @@ class InMemoryVectorStore:
             if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
         ]
 
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune the doc's orphan chunks (id not in keep), tenant-scoped."""
+        self._chunks = [
+            c
+            for c in self._chunks
+            if not (
+                c.doc_id == doc_id
+                and (tenant_id is None or tenant_of(c) == tenant_id)
+                and c.id not in keep_chunk_ids
+            )
+        ]
+
 
 class InMemoryTextIndex:
     """Very simple bag-of-words text search for development/testing."""
@@ -118,6 +132,20 @@ class InMemoryTextIndex:
             c
             for c in self._chunks
             if not (c.doc_id == doc_id and (tenant_id is None or tenant_of(c) == tenant_id))
+        ]
+
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune the doc's orphan chunks (id not in keep), tenant-scoped."""
+        self._chunks = [
+            c
+            for c in self._chunks
+            if not (
+                c.doc_id == doc_id
+                and (tenant_id is None or tenant_of(c) == tenant_id)
+                and c.id not in keep_chunk_ids
+            )
         ]
 
 

@@ -14,6 +14,7 @@ from qdrant_client.models import (
     Filter,
     MatchAny,
     MatchValue,
+    PointIdsList,
     PointStruct,
     VectorParams,
 )
@@ -76,8 +77,11 @@ class QdrantVectorStore:
         vector_size: int = 768,
         distance: Distance = Distance.COSINE,
         api_key: str | None = None,
+        timeout: int | None = None,
     ) -> None:
-        self._client = AsyncQdrantClient(url=url, api_key=api_key or None)
+        # `timeout` (seconds) bounds each request; raise it for heavy ops (large
+        # filtered deletes) so they fail fast/explicitly instead of hanging.
+        self._client = AsyncQdrantClient(url=url, api_key=api_key or None, timeout=timeout)
         self._collection = collection
         self._vector_size = vector_size
         self._distance = distance
@@ -179,6 +183,40 @@ class QdrantVectorStore:
             collection_name=self._collection,
             points_selector=points_filter,
         )
+
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune a document's *orphan* points — those whose chunk is no longer
+        produced (e.g. an edited doc shifted offsets → new chunk ids). Scrolls the
+        doc's existing point ids and deletes only the stale remainder **by id**
+        (cost O(stale), not O(collection)), so it avoids the filtered-delete-at-
+        scale timeout. Caller must upsert the kept chunks first, so a failure here
+        can never lose data."""
+        keep = {_point_id(cid, tenant_id or DEFAULT_TENANT) for cid in keep_chunk_ids}
+        selector: dict[str, Any] = {"doc_id": doc_id}
+        if tenant_id is not None:
+            selector["tenant_id"] = tenant_id
+        scroll_filter = _build_filter(selector)
+        stale: list[str] = []
+        offset: Any = None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=scroll_filter,
+                with_payload=False,
+                with_vectors=False,
+                limit=1024,
+                offset=offset,
+            )
+            stale.extend(str(p.id) for p in points if str(p.id) not in keep)
+            if offset is None:
+                break
+        if stale:
+            await self._client.delete(
+                collection_name=self._collection,
+                points_selector=PointIdsList(points=stale),  # type: ignore[arg-type]
+            )
 
 
 def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
