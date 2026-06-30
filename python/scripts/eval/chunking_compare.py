@@ -36,6 +36,7 @@ import asyncio
 import itertools
 import json
 import math
+import random
 import statistics
 import sys
 import threading
@@ -200,17 +201,21 @@ async def _embed_one_batch(
                 raise
     # 400: an input is over the token budget. Bisect to find it.
     if len(texts) == 1:
-        # Single over-budget input: iteratively shrink to 75% until it embeds.
-        # (Truncating to a fixed budget can be a no-op when the chunk already
-        # equals that budget but is denser than the chars/token estimate assumed.)
+        # Single over-budget input: descend through absolute char caps until it
+        # embeds. A fixed-ratio shrink with a 512-char floor can stall (512 chars
+        # of dense reference text can still exceed 4096 tokens), so we step down
+        # to a hard 200-char floor — well under 4096 tokens for any text — which
+        # guarantees convergence. This path only happens for pathological inputs
+        # like a single multi-page "sentence" buffer with no sentence breaks;
+        # truncating it only affects breakpoint detection, not stored chunk text.
         text = texts[0]
-        for _ in range(8):
-            text = text[: max(512, int(len(text) * 0.75))]
+        for cap in (3000, 2000, 1200, 800, 400, 200):
+            cand = text[:cap]
             try:
                 async with sem:
-                    vecs = await _post_embeddings(client, base_url, [text])
+                    vecs = await _post_embeddings(client, base_url, [cand])
                 print(
-                    f"[embed] shrank over-budget chunk to {len(text)} chars "
+                    f"[embed] shrank over-budget chunk to {len(cand)} chars "
                     f"to fit SFR/4096",
                     flush=True,
                 )
@@ -218,7 +223,9 @@ async def _embed_one_batch(
             except httpx.HTTPStatusError as exc:
                 if exc.response is None or exc.response.status_code != 400:
                     raise
-        raise RuntimeError("could not shrink chunk under the SFR token budget")
+        raise RuntimeError(
+            "could not shrink chunk under the SFR token budget even at 200 chars"
+        )
     mid = len(texts) // 2
     left = await _embed_one_batch(client, base_url, texts[:mid], sem)
     right = await _embed_one_batch(client, base_url, texts[mid:], sem)
@@ -523,6 +530,20 @@ def _metrics_from_ranks(ranks: list[int | None], top_k: int) -> dict:
     }
 
 
+def _sample_eval_docs(docs: list[Document], n: int) -> list[Document]:
+    """Deterministically pick ``n`` docs to evaluate (0/<=0 or >= len → all).
+
+    Sorts docs by id (stable, corpus-order-independent) then draws a fixed
+    ``random.Random(0)`` sample, so the chosen query set is identical on every
+    run and across all three modes — no wall-clock / global-RNG nondeterminism.
+    """
+    if n <= 0 or n >= len(docs):
+        return docs
+    ordered = sorted(docs, key=lambda d: d.id)
+    idx = sorted(random.Random(0).sample(range(len(ordered)), n))
+    return [ordered[i] for i in idx]
+
+
 async def evaluate_mode(
     mode: str,
     docs: list[Document],
@@ -701,6 +722,29 @@ def write_csv(ingest_stats: dict, eval_stats: dict) -> None:
             })
 
 
+def build_timing_table(ingest_stats: dict, n_docs: int) -> str:
+    """Separate chunk(+embed) time vs ingest/upsert time + throughput per mode.
+
+    The user asked to benchmark embedding and ingest time *separately*, so these
+    are reported as distinct columns rather than folded into one total.
+    """
+    header = (
+        "| mode | chunk+embed s | ingest/upsert s | total s | docs/s | chunks/s |\n"
+    )
+    sep = "|" + "---|" * 6 + "\n"
+    rows = ""
+    for mode in MODES:
+        s = ingest_stats[mode]
+        tot = s["total_time_s"]
+        docs_s = n_docs / tot if tot else 0.0
+        chunks_s = s["n_chunks"] / tot if tot else 0.0
+        rows += (
+            f"| {mode} | {s['chunk_time_s']:.1f} | {s['ingest_time_s']:.1f} | "
+            f"{tot:.1f} | {docs_s:.2f} | {chunks_s:.1f} |\n"
+        )
+    return header + sep + rows
+
+
 def recommend(ingest_stats: dict, eval_stats: dict) -> str:
     """Pick the quality winner (by reranked recall@5, tie-break hybrid MRR@10)."""
     def quality(mode: str) -> tuple[float, float]:
@@ -732,9 +776,18 @@ def recommend(ingest_stats: dict, eval_stats: dict) -> str:
 
 
 def write_report(
-    ingest_stats: dict, eval_stats: dict, n_docs: int, args: argparse.Namespace
+    ingest_stats: dict,
+    eval_stats: dict,
+    n_docs: int,
+    n_eval: int,
+    args: argparse.Namespace,
 ) -> str:
     table = build_table(ingest_stats, eval_stats)
+    eval_note = (
+        f" (deterministic sample of {n_eval}/{n_docs}, seed 0)"
+        if n_eval < n_docs
+        else " (every ingested doc)"
+    )
 
     # Pick one query shared across all modes for the qualitative side-by-side.
     shared_queries = set.intersection(
@@ -759,8 +812,9 @@ Generated by `scripts/eval/chunking_compare.py`.
 
 - **Corpus subset:** first {n_docs} `article`-class records (non-empty title) from
   `{args.input}` — the *same* subset for all three modes.
-- **Embedding model:** `{SFR_MODEL}` (4096-dim, 4096-token context) via the four
-  vLLM endpoints `:9001-9004`.
+- **Embedding model:** `{SFR_MODEL}` (4096-dim, 4096-token context) via
+  {len(SFR_ENDPOINTS)} vLLM endpoint(s): {", ".join(SFR_ENDPOINTS)}.
+- **Eval queries:** {n_eval} known-item queries{eval_note}.
 - **Chunk params:** `fixed`/`sentence` = chunk_size {args.chunk_size} / overlap
   {args.chunk_overlap}; `semantic` = buffer_size 3 / breakpoint percentile 80 /
   min_chunk_length 500.
@@ -777,6 +831,13 @@ Generated by `scripts/eval/chunking_compare.py`.
 ## Results
 
 {table}
+## Timing & throughput (full corpus)
+
+Chunk(+embed) time and ingest/upsert time are kept separate so embedding cost and
+store-write cost can be read independently. docs/s and chunks/s are over {n_docs}
+docs and the per-mode chunk count.
+
+{build_timing_table(ingest_stats, n_docs)}
 ## Qualitative side-by-side (top-1 chunk per mode, shared query)
 {qual}
 ## Recommendation
@@ -820,13 +881,22 @@ async def amain(args: argparse.Namespace) -> int:
                 args.chunk_overlap, resume=args.resume,
             )
 
+        eval_docs = _sample_eval_docs(docs, args.eval_sample)
+        if len(eval_docs) != len(docs):
+            print(
+                f"Evaluating a deterministic sample of {len(eval_docs)} / "
+                f"{len(docs)} docs (seed 0).",
+                flush=True,
+            )
         eval_stats: dict = {}
         for mode in MODES:
             eval_stats[mode] = await evaluate_mode(
-                mode, docs, client, args.top_k, args.rerank_pool, reranker
+                mode, eval_docs, client, args.top_k, args.rerank_pool, reranker
             )
 
-        table = write_report(ingest_stats, eval_stats, len(docs), args)
+        table = write_report(
+            ingest_stats, eval_stats, len(docs), len(eval_docs), args
+        )
         write_csv(ingest_stats, eval_stats)
         print("\n" + "=" * 80)
         print("RESULTS")
@@ -856,6 +926,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chunk-size", type=int, default=512)
     p.add_argument("--chunk-overlap", type=int, default=64)
     p.add_argument(
+        "--endpoints",
+        default=None,
+        help="comma-separated SFR embedding base URLs that override the built-in "
+        f"default ({len(SFR_ENDPOINTS)} endpoints: {','.join(SFR_ENDPOINTS)}). "
+        "Lets a run target more (or fewer) vLLM endpoints without editing the "
+        "module-level default, keeping the committed default environment-agnostic.",
+    )
+    p.add_argument(
+        "--eval-sample",
+        type=int,
+        default=0,
+        help="deterministically sample N known-item queries for the eval phase "
+        "instead of evaluating every ingested doc (0 = all). The sample is the "
+        "SAME set across all three modes (seeded random.Random(0) over doc ids), "
+        "so the comparison stays apples-to-apples while bounding eval cost at "
+        "full corpus scale.",
+    )
+    p.add_argument(
         "--collection-prefix",
         default=DEFAULT_PREFIX,
         help="Qdrant/ES name prefix for this run's isolated stores (default "
@@ -880,13 +968,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _PREFIX
+    global _PREFIX, SFR_ENDPOINTS
     args = parse_args(argv)
     if not args.collection_prefix.startswith("chunkcmp"):
         raise SystemExit(
             "--collection-prefix must start with 'chunkcmp' (teardown safety guard)"
         )
     _PREFIX = args.collection_prefix
+    if args.endpoints:
+        SFR_ENDPOINTS = [u.strip() for u in args.endpoints.split(",") if u.strip()]
+        if not SFR_ENDPOINTS:
+            raise SystemExit("--endpoints parsed to an empty list")
+        print(
+            f"Using {len(SFR_ENDPOINTS)} SFR endpoint(s): "
+            f"{', '.join(SFR_ENDPOINTS)}",
+            flush=True,
+        )
     return asyncio.run(amain(args))
 
 
