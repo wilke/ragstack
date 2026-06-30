@@ -209,3 +209,30 @@ async def test_catalog_lockstep_writes_no_rows_past_gap(tmp_path, monkeypatch):
     # checkpoint — they'd be written on a --resume past the gap.
     titles = [json.loads(line)["title"] for line in cat.read_text().splitlines()]
     assert titles == ["T1", "T2"]
+
+
+@pytest.mark.asyncio
+async def test_prune_failure_after_upsert_preserves_data(tmp_path, monkeypatch):
+    # The whole point of upsert-then-prune (#31): if the orphan prune fails (e.g.
+    # a delete timeout), the just-upserted chunks must survive — only orphans/
+    # duplicates linger, never data loss — and the run exits non-zero so it's seen.
+    class _PruneFailsStore(_FakeStore):
+        async def delete_except(self, doc_id, keep_chunk_ids, tenant_id=None):
+            raise RuntimeError("prune timed out")
+
+    store = _PruneFailsStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2)])
+    with pytest.raises(SystemExit):  # failed batches → non-zero exit
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=1, replace=True,
+            checkpoint=tmp_path / "c.ckpt",
+        ))
+
+    # Upsert ran before the failing prune, so the chunks are still present.
+    assert store.points, "a prune failure must not lose the upserted chunks"
+    assert any(op.startswith("upsert:") for op in store.ops)

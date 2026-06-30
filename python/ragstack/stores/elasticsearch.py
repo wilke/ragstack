@@ -170,8 +170,11 @@ class ElasticsearchTextIndex:
         self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
     ) -> None:
         """Prune a document's orphan chunks (chunk_id not in ``keep_chunk_ids``).
-        Mirror of ``QdrantVectorStore.delete_except`` for the BM25 side; call after
-        indexing the kept chunks so a failure here can't lose data."""
+        The BM25 counterpart to ``QdrantVectorStore.delete_except`` — same
+        upsert-then-prune safety (call after indexing the kept chunks so a failure
+        here can't lose data) — but via a ``delete_by_query`` scoped to this one
+        ``doc_id`` (O(chunks-per-doc), not a whole-index filtered delete), so it
+        doesn't hit the at-scale timeout the Qdrant side scrolls-by-id to avoid."""
         filter_clauses: list[dict[str, Any]] = [{"term": {"doc_id": doc_id}}]
         if tenant_id is not None:
             filter_clauses.append({"term": {"metadata.tenant_id": tenant_id}})

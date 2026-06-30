@@ -42,6 +42,13 @@ class VectorStore(Protocol):
 
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None: ...
 
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune a document's orphan chunks (those not in ``keep_chunk_ids``).
+        Call after upserting the kept chunks so a failure here can't lose data."""
+        ...
+
 
 @runtime_checkable
 class TextIndex(Protocol):
@@ -57,6 +64,13 @@ class TextIndex(Protocol):
     ) -> list[ScoredChunk]: ...
 
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None: ...
+
+    async def delete_except(
+        self, doc_id: str, keep_chunk_ids: set[str], tenant_id: str | None = None
+    ) -> None:
+        """Prune a document's orphan chunks (those not in ``keep_chunk_ids``).
+        Call after indexing the kept chunks so a failure here can't lose data."""
+        ...
 
 
 @runtime_checkable
