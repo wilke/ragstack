@@ -114,10 +114,15 @@ class Settings(BaseSettings):
     elasticsearch_index: str = "ragstack"
     elasticsearch_api_key: str = ""
 
-    # Neo4j (knowledge graph)
+    # Neo4j (knowledge graph). "memory" is the in-process dev graph (lost on
+    # restart); "neo4j" is the durable property-graph backend (M4). Neo4j 5
+    # rejects the literal password "neo4j", so the default here is "ragstack"
+    # (matches config/rag.env).
+    graph_backend: str = "memory"           # memory | neo4j
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "neo4j"
+    neo4j_password: str = "ragstack"
+    neo4j_database: str = ""                 # empty → driver default ("neo4j")
 
     # PostgreSQL (metadata / job queue)
     postgres_dsn: str = "postgresql+asyncpg://ragstack:ragstack@localhost/ragstack"

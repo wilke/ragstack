@@ -5,7 +5,7 @@ import math
 from typing import Any
 
 from ragstack.models import Chunk, ScoredChunk, Triple
-from ragstack.tenancy import tenant_of
+from ragstack.tenancy import readable_tenants, tenant_of
 
 
 def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
@@ -128,17 +128,31 @@ class InMemoryGraphStore:
         self._triples: list[Triple] = []
 
     async def add_triples(self, triples: list[Triple]) -> None:
-        existing = {(t.subject, t.predicate, t.object) for t in self._triples}
+        # Dedup includes tenant_id so two tenants' identical (s,p,o) triples both
+        # survive — matching Neo4j's per-tenant MERGE and the store's isolation
+        # contract (keying on (s,p,o) alone would drop the second tenant's copy).
+        existing = {(t.subject, t.predicate, t.object, t.tenant_id) for t in self._triples}
         for triple in triples:
-            key = (triple.subject, triple.predicate, triple.object)
+            key = (triple.subject, triple.predicate, triple.object, triple.tenant_id)
             if key not in existing:
                 self._triples.append(triple)
                 existing.add(key)
 
-    async def query_neighborhood(self, entity: str, depth: int = 1) -> list[Triple]:
+    def _visible(self, tenant_id: str | None) -> list[Triple]:
+        """Triples the caller may read: all when unscoped (dev/tests), else the
+        caller's own tenant plus the shared ``public`` corpus."""
+        if tenant_id is None:
+            return self._triples
+        allowed = set(readable_tenants(tenant_id))
+        return [t for t in self._triples if t.tenant_id in allowed]
+
+    async def query_neighborhood(
+        self, entity: str, depth: int = 1, tenant_id: str | None = None
+    ) -> list[Triple]:
         entity_lower = entity.lower()
+        visible = self._visible(tenant_id)
         direct = [
-            t for t in self._triples
+            t for t in visible
             if entity_lower in t.subject.lower() or entity_lower in t.object.lower()
         ]
         if depth <= 1:
@@ -147,7 +161,7 @@ class InMemoryGraphStore:
         neighbours = {t.subject for t in direct} | {t.object for t in direct}
         extended = list(direct)
         for n in neighbours:
-            extended += await self.query_neighborhood(n, depth=depth - 1)
+            extended += await self.query_neighborhood(n, depth=depth - 1, tenant_id=tenant_id)
         # Deduplicate
         seen: set[tuple[str, str, str]] = set()
         unique = []
@@ -157,6 +171,18 @@ class InMemoryGraphStore:
                 seen.add(key)
                 unique.append(t)
         return unique
+
+    async def list_entities(
+        self, tenant_id: str | None = None, limit: int = 100
+    ) -> list[tuple[str, int]]:
+        """Distinct entities (subjects + objects) the caller may read, each with
+        the count of triples it participates in, most-connected first."""
+        counts: dict[str, int] = {}
+        for t in self._visible(tenant_id):
+            counts[t.subject] = counts.get(t.subject, 0) + 1
+            counts[t.object] = counts.get(t.object, 0) + 1
+        ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        return ranked[:limit]
 
     async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
         self._triples = [

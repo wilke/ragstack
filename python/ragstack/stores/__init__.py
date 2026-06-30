@@ -7,11 +7,13 @@ from ragstack.stores.memory import (
     InMemoryTextIndex,
     InMemoryVectorStore,
 )
+from ragstack.stores.neo4j import Neo4jGraphStore
 
 __all__ = [
     "InMemoryGraphStore",
     "InMemoryTextIndex",
     "InMemoryVectorStore",
+    "Neo4jGraphStore",
 ]
 
 try:

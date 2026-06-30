@@ -58,6 +58,44 @@ def test_qdrant_backend_under_durable_returns_qdrant(monkeypatch):
     assert isinstance(deps._build_vector_store(), QdrantVectorStore)
 
 
+def test_graph_backend_memory_returns_inmemory(monkeypatch):
+    from ragstack.stores import InMemoryGraphStore
+
+    monkeypatch.setattr(deps.settings, "graph_backend", "memory")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    assert isinstance(deps._build_graph_store(), InMemoryGraphStore)
+
+
+def test_graph_backend_disabled_returns_none(monkeypatch):
+    monkeypatch.setattr(deps.settings, "graph_backend", "disabled")
+    assert deps._build_graph_store() is None
+
+
+def test_graph_backend_neo4j_returns_neo4j_store(monkeypatch):
+    # Constructing the driver opens no socket (offline-safe), so this works
+    # without a live Neo4j as long as the neo4j driver is importable.
+    pytest.importorskip("neo4j")
+    from ragstack.stores import Neo4jGraphStore
+
+    monkeypatch.setattr(deps.settings, "graph_backend", "neo4j")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    store = deps._build_graph_store()
+    assert isinstance(store, Neo4jGraphStore)
+
+
+def test_graph_memory_warns_under_durable(monkeypatch, caplog):
+    import logging
+
+    from ragstack.stores import InMemoryGraphStore
+
+    monkeypatch.setattr(deps.settings, "graph_backend", "memory")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    with caplog.at_level(logging.WARNING):
+        store = deps._build_graph_store()
+    assert isinstance(store, InMemoryGraphStore)
+    assert any("knowledge graph is in-memory" in r.message for r in caplog.records)
+
+
 def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
     import logging
 
