@@ -64,6 +64,7 @@ from ragstack.ingestion.chunkers import make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.qdrant import QdrantVectorStore, collection_name
@@ -229,6 +230,32 @@ async def run(args: argparse.Namespace) -> None:
     embed_bridge: SyncEmbedBridge | None = None
     if args.chunk_method == "semantic":
         embed_bridge = SyncEmbedBridge(lambda http: _build_embedder(args, http))
+    # Token budget: size/cap chunks so none exceeds the embedder's context window.
+    # The counter is the embedding model's tokenizer by default (--chunk-token-counter
+    # hf); the budget is auto-detected from the endpoint's max_model_len unless
+    # --chunk-max-tokens overrides it. Cheap/lazy, so build it for every method.
+    embed_base_url = args.embedding_url[0] if args.embedding_url else None
+    embed_api_key = args.embedding_api_key or os.getenv("OPENAI_API_KEY")
+    # The 'hf' and 'endpoint' backends need a model name (the embedding model's
+    # tokenizer). When none is configured (e.g. the BGE sidecar path doesn't pass
+    # --embedding-model), fall back to the zero-dep estimator so sizing still works.
+    token_backend = args.chunk_token_counter
+    if token_backend in ("hf", "endpoint") and not args.embedding_model:
+        print(
+            f"[ingest] --chunk-token-counter {token_backend} needs --embedding-model; "
+            "falling back to 'estimate'.",
+            file=sys.stderr,
+        )
+        token_backend = "estimate"
+    token_counter = make_token_counter(
+        token_backend,
+        model=args.embedding_model,
+        base_url=embed_base_url,
+        api_key=embed_api_key,
+    )
+    max_tokens = resolve_max_tokens(
+        args.chunk_max_tokens, base_url=embed_base_url, api_key=embed_api_key
+    )
     chunker = make_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -237,6 +264,8 @@ async def run(args: argparse.Namespace) -> None:
         buffer_size=args.chunk_buffer_size,
         breakpoint_percentile_threshold=args.chunk_breakpoint_percentile,
         min_chunk_length=args.chunk_min_length,
+        max_tokens=max_tokens,
+        token_counter=token_counter,
     )
     ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
@@ -499,6 +528,19 @@ def main() -> None:
                    help="semantic: distance percentile above which a chunk boundary is placed")
     p.add_argument("--chunk-min-length", type=int, default=500,
                    help="semantic: merge chunks shorter than this many chars into a neighbor")
+    # Token-based sizing: keep every chunk within the embedder's context window.
+    p.add_argument("--chunk-max-tokens", type=int, default=None,
+                   help="hard token budget per chunk (no chunk exceeds it). Default "
+                        "None = auto-detect from the embedding endpoint's max_model_len "
+                        "(minus a small reserve for specials); falls back to 4096 if the "
+                        "endpoint can't be probed.")
+    p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
+                   default="hf",
+                   help="how to count tokens: 'hf' loads the embedding model's "
+                        "AutoTokenizer (exact, default), 'endpoint' POSTs /tokenize to the "
+                        "embedding URL, 'estimate' uses a chars/token heuristic (zero deps). "
+                        "'hf'/'endpoint' need --embedding-model; without it sizing falls "
+                        "back to 'estimate'.")
     p.add_argument("--batch-size", type=int, default=128, help="chunks embedded/upserted per batch")
     p.add_argument("--concurrency", type=int, default=1,
                    help="in-flight batches embedded+upserted in parallel; set >1 to fan out "
