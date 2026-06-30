@@ -36,6 +36,7 @@ import asyncio
 import itertools
 import json
 import math
+import os
 import random
 import statistics
 import sys
@@ -69,6 +70,11 @@ SFR_ENDPOINTS = [
     "http://localhost:9004",
 ]
 SFR_MODEL = "Salesforce/SFR-Embedding-Mistral"
+# Bearer token sent to the embedding endpoints (set from --embedding-api-key /
+# $OPENAI_API_KEY in main()). None = no Authorization header. Keyless endpoints
+# (e.g. coconut :9001-9008) ignore the header, so sending one key to a mixed pool
+# of keyless + token-authed endpoints (e.g. lambda13 :9990-9997) is safe.
+EMBED_API_KEY: str | None = None
 VECTOR_SIZE = 4096
 QDRANT_URL = "http://localhost:6333"
 ES_URL = "http://localhost:9200"
@@ -162,12 +168,16 @@ async def _post_embeddings(
 
     A 400 (token-limit / bad input) is raised immediately so the caller can
     bisect/truncate instead of retrying an unfixable request."""
+    headers = (
+        {"Authorization": f"Bearer {EMBED_API_KEY}"} if EMBED_API_KEY else None
+    )
     last_exc: Exception | None = None
     for attempt in range(EMBED_RETRIES):
         try:
             resp = await client.post(
                 f"{base_url}/v1/embeddings",
                 json={"input": texts, "model": SFR_MODEL},
+                headers=headers,
                 timeout=300.0,
             )
             resp.raise_for_status()
@@ -934,6 +944,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "module-level default, keeping the committed default environment-agnostic.",
     )
     p.add_argument(
+        "--embedding-api-key",
+        default=None,
+        help="Bearer token sent as 'Authorization: Bearer <key>' to every "
+        "embedding endpoint. Falls back to $OPENAI_API_KEY when omitted. "
+        "Keyless endpoints ignore the header, so one key safely covers a mixed "
+        "pool of keyless + token-authed vLLM endpoints (same single-key model as "
+        "the production ingester).",
+    )
+    p.add_argument(
         "--eval-sample",
         type=int,
         default=0,
@@ -968,13 +987,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _PREFIX, SFR_ENDPOINTS
+    global _PREFIX, SFR_ENDPOINTS, EMBED_API_KEY
     args = parse_args(argv)
     if not args.collection_prefix.startswith("chunkcmp"):
         raise SystemExit(
             "--collection-prefix must start with 'chunkcmp' (teardown safety guard)"
         )
     _PREFIX = args.collection_prefix
+    EMBED_API_KEY = args.embedding_api_key or os.environ.get("OPENAI_API_KEY")
+    if EMBED_API_KEY:
+        print("Using a Bearer token for embedding endpoints.", flush=True)
     if args.endpoints:
         SFR_ENDPOINTS = [u.strip() for u in args.endpoints.split(",") if u.strip()]
         if not SFR_ENDPOINTS:
