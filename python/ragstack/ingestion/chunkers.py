@@ -106,7 +106,12 @@ def _fallback_sentence_spans(text: str) -> list[tuple[int, int]]:
 
 
 def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
-    """NLTK Punkt sentence spans, or ``None`` if NLTK/punkt is unavailable.
+    """NLTK Punkt sentence spans, or ``None`` if NLTK is unavailable.
+
+    Uses ``PunktSentenceTokenizer()`` with NLTK's built-in default parameters, so
+    it needs only ``nltk`` installed (the ``[chunking]`` extra) — no ``punkt``
+    data download. The regex fallback (:func:`_fallback_sentence_spans`) is used
+    only when ``nltk`` itself is not installed.
 
     Punkt's ``span_tokenize`` yields spans over the sentence tokens only,
     dropping the inter-sentence whitespace. We re-expand each span to start
@@ -121,7 +126,7 @@ def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
         tokenizer = nltk.tokenize.PunktSentenceTokenizer()
         raw = list(tokenizer.span_tokenize(text))
     except LookupError:
-        # punkt model not downloaded/vendored
+        # Defensive: some NLTK builds load punkt data; fall back if it's absent.
         return None
     except Exception:
         return None

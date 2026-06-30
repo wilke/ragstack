@@ -229,14 +229,15 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
-def _build_chunker(embedder):
+def _build_chunker():
     """Build the configured chunker.
 
     Returns ``(chunker, embed_bridge)``. ``embed_bridge`` is non-None only for
-    ``chunk_method=semantic``: that chunker needs to embed sentence buffers
-    synchronously from inside the (async) ingestion pipeline, so we hand it the
-    *same* embedder the rest of the pipeline uses, wrapped in a sync bridge. The
-    bridge owns a background loop thread and is closed at shutdown.
+    ``chunk_method=semantic``: that chunker embeds sentence buffers synchronously
+    from inside the (async) ingestion pipeline, so we hand it a sync bridge. The
+    bridge builds its *own* embedder + httpx client on its background loop (via
+    ``_build_embedder``) — not the app's main-loop client, which would otherwise
+    raise a cross-loop error — and is closed at shutdown.
     """
     method = settings.chunk_method
     if method not in ("fixed", "sentence", "words", "semantic"):
@@ -245,7 +246,7 @@ def _build_chunker(embedder):
     bridge: SyncEmbedBridge | None = None
     embed_fn = None
     if method == "semantic":
-        bridge = SyncEmbedBridge(embedder)
+        bridge = SyncEmbedBridge(_build_embedder)
         embed_fn = bridge
     chunker = make_chunker(
         method,
@@ -343,7 +344,7 @@ async def lifespan(app: FastAPI):
                 raise
             log.warning("elasticsearch ensure_index failed: %s", e)
 
-    chunker, embed_bridge = _build_chunker(embedder)
+    chunker, embed_bridge = _build_chunker()
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,

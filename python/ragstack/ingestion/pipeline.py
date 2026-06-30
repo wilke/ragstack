@@ -1,6 +1,7 @@
 """Ingestion pipeline — orchestrates loading, chunking, embedding, and indexing."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from ragstack.models import Chunk, Document
@@ -60,7 +61,10 @@ class IngestionPipeline:
         documents: list[Document] = self.loader.load(source)
         all_chunks: list[Chunk] = []
         for doc in documents:
-            all_chunks.extend(self.chunker.chunk(doc))
+            # Run chunking in a worker thread: chunkers are synchronous, and the
+            # SemanticChunker blocks on a (bridged) embed round-trip, which would
+            # otherwise stall the event loop. to_thread keeps the loop responsive.
+            all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
         for chunk in all_chunks:
             chunk.metadata["tenant_id"] = tenant_id
         produced = len(all_chunks)
