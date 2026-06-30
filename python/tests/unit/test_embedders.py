@@ -2,7 +2,37 @@
 import httpx
 import pytest
 
-from ragstack.embedders import BatchingEmbedder
+from ragstack.embedders import BatchingEmbedder, make_embedder
+
+
+def _capture_auth_transport(seen: dict) -> httpx.MockTransport:
+    """A transport that records the Authorization header and returns one vector."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"data": [{"index": 0, "embedding": [0.1, 0.2, 0.3]}]})
+
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.asyncio
+async def test_openai_embedder_sends_bearer_when_api_key_set():
+    seen: dict = {}
+    async with httpx.AsyncClient(transport=_capture_auth_transport(seen)) as http:
+        emb = make_embedder(
+            api="openai", base_url="http://embed", model="m", http=http, api_key="BRCMistral"
+        )
+        await emb.embed(["hello"])
+    assert seen["authorization"] == "Bearer BRCMistral"
+
+
+@pytest.mark.asyncio
+async def test_openai_embedder_omits_auth_header_when_no_key():
+    seen: dict = {}
+    async with httpx.AsyncClient(transport=_capture_auth_transport(seen)) as http:
+        emb = make_embedder(api="openai", base_url="http://embed", model="m", http=http)
+        await emb.embed(["hello"])
+    assert seen["authorization"] is None
 
 
 class _RecordingBase:
