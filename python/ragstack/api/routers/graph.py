@@ -8,7 +8,7 @@ no 500s).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from ragstack.api.deps import get_graph_store
@@ -16,6 +16,10 @@ from ragstack.api.security import resolve_tenant
 from ragstack.protocols import GraphStore
 
 router = APIRouter()
+
+# Cap neighbourhood hops: depth feeds a Cypher variable-length traversal, so an
+# unbounded value is a DoS. Mirrors stores.neo4j._MAX_DEPTH.
+MAX_GRAPH_DEPTH = 5
 
 
 class EntityInfo(BaseModel):
@@ -46,7 +50,7 @@ async def list_entities(
 @router.get("/neighbors/{entity}", response_model=list[TripleResponse])
 async def get_neighbors(
     entity: str,
-    depth: int = 1,
+    depth: int = Query(default=1, ge=1, le=MAX_GRAPH_DEPTH),
     tenant: str = Depends(resolve_tenant),
     graph_store: GraphStore | None = Depends(get_graph_store),
 ) -> list[TripleResponse]:

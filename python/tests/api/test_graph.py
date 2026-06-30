@@ -59,3 +59,12 @@ async def test_neighbors_scoped_to_tenant(client):
     app.state.graph_store = graph
     neighbors = (await client.get("/v1/graph/neighbors/Alice")).json()
     assert {t["object"] for t in neighbors} == {"Bob"}
+
+
+@pytest.mark.asyncio
+async def test_neighbors_rejects_out_of_range_depth(client):
+    # depth feeds a Cypher variable-length traversal, so it's capped to avoid a
+    # DoS: out-of-range values are a 422, not an unbounded query.
+    assert (await client.get("/v1/graph/neighbors/Alice?depth=0")).status_code == 422
+    assert (await client.get("/v1/graph/neighbors/Alice?depth=999")).status_code == 422
+    assert (await client.get("/v1/graph/neighbors/Alice?depth=3")).status_code == 200

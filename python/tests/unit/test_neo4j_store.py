@@ -156,6 +156,22 @@ async def test_query_neighborhood_depth_floored_to_one(store):
     assert "*1..1" in query
 
 
+async def test_query_neighborhood_depth_capped(store):
+    # An absurd depth is clamped so it can't blow up the variable-length pattern.
+    await store.query_neighborhood("x", depth=1000, tenant_id="t")
+    query, _ = _driver(store).calls[-1]
+    assert "*1..5" in query
+    assert "*1..1000" not in query
+
+
+async def test_query_neighborhood_scopes_the_traversal_not_just_returned_edges(store):
+    # The path predicate must require every hop to be readable, so a multi-hop
+    # query can't tunnel through another tenant's edge to reach a hidden entity.
+    await store.query_neighborhood("x", depth=3, tenant_id="alice")
+    query, _ = _driver(store).calls[-1]
+    assert "all(rel IN rels WHERE rel.tenant_id IN $tenants)" in query
+
+
 async def test_list_entities_scoped_and_ranked(store):
     _driver(store).results.append([
         {"name": "Alice", "degree": 3},
@@ -180,14 +196,15 @@ async def test_list_entities_unscoped(store):
 
 async def test_delete_by_doc_scoped_to_tenant(store):
     await store.delete_by_doc("d1", tenant_id="alice")
-    # First call deletes relationships scoped by doc + tenant.
+    # A single query deletes the doc's relationships scoped by doc + tenant, then
+    # sweeps only THIS delete's endpoint entities if now edgeless (not a global
+    # scan that could delete other tenants' nodes).
     del_query, del_params = _driver(store).calls[0]
     assert "r.doc_id = $doc_id" in del_query
     assert "r.tenant_id = $tenant_id" in del_query
     assert del_params == {"doc_id": "d1", "tenant_id": "alice"}
-    # Second call sweeps orphaned entities.
-    orphan_query, _ = _driver(store).calls[1]
-    assert "WHERE NOT (e)--() DELETE e" in orphan_query
+    assert "MATCH (e:Entity) WHERE NOT (e)--()" not in del_query  # no global sweep
+    assert "UNWIND ends AS e" in del_query  # endpoint-scoped sweep
 
 
 async def test_delete_by_doc_unscoped_omits_tenant_clause(store):

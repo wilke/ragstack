@@ -19,6 +19,11 @@ from typing import TYPE_CHECKING, Any
 from ragstack.models import Triple
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
+# Upper bound on neighbourhood hops. ``depth`` is interpolated into the Cypher
+# variable-length pattern ``REL*1..{depth}``, so an unbounded value would make
+# Neo4j enumerate exponentially many paths (a DoS). The API caps it too.
+_MAX_DEPTH = 5
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from neo4j import AsyncDriver
 
@@ -102,12 +107,18 @@ class Neo4jGraphStore:
         (graph-aware reranking / passage expansion) instead of returning raw
         triples; couple with LLM extraction quality work.
         """
-        depth = max(1, depth)
+        depth = max(1, min(depth, _MAX_DEPTH))
         params: dict[str, Any] = {"entity": entity.lower()}
         tenant_clause = ""
+        path_clause = ""
         if tenant_id is not None:
             params["tenants"] = readable_tenants(tenant_id)
             tenant_clause = "AND r.tenant_id IN $tenants "
+            # Scope the TRAVERSAL, not just the returned edges: every hop on the
+            # path must be readable, so a multi-hop query can't tunnel through
+            # another tenant's edge to reach an entity the caller can't otherwise
+            # see (a connectivity leak at depth > 1).
+            path_clause = "WHERE all(rel IN rels WHERE rel.tenant_id IN $tenants) "
         # Variable-length path 1..depth from any node whose name contains the term
         # (either as subject or object). Collect each relationship's endpoints so we
         # can reconstruct directed (subject, predicate, object) triples.
@@ -115,6 +126,7 @@ class Neo4jGraphStore:
             "MATCH (start:Entity) "
             "WHERE toLower(start.name) CONTAINS $entity "
             f"MATCH (start)-[rels:REL*1..{depth}]-(:Entity) "
+            + path_clause +
             "UNWIND rels AS r "
             "WITH DISTINCT r "
             "WHERE true " + tenant_clause +
@@ -152,17 +164,21 @@ class Neo4jGraphStore:
         if tenant_id is not None:
             params["tenant_id"] = tenant_id
             tenant_clause = "AND r.tenant_id = $tenant_id "
+        # Delete this doc's relationships, then sweep ONLY their endpoint entities
+        # if they're now edgeless — scoped to the entities this delete touched, so
+        # it never deletes another tenant's nodes and never full-scans the graph.
         query = (
-            "MATCH ()-[r:REL]->() "
+            "MATCH (s:Entity)-[r:REL]->(o:Entity) "
             "WHERE r.doc_id = $doc_id " + tenant_clause +
-            "DELETE r"
+            "WITH collect(DISTINCT s) + collect(DISTINCT o) AS ends, collect(r) AS rels "
+            "FOREACH (x IN rels | DELETE x) "
+            "WITH ends "
+            "UNWIND ends AS e "
+            "WITH DISTINCT e WHERE NOT (e)--() "
+            "DELETE e"
         )
         async with self._session() as session:
             await session.run(query, **params)
-            # Sweep entities left with no relationships of either direction.
-            await session.run(
-                "MATCH (e:Entity) WHERE NOT (e)--() DELETE e"
-            )
 
     async def _run_triples(self, query: str, params: dict[str, Any]) -> list[Triple]:
         async with self._session() as session:

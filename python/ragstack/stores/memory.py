@@ -128,9 +128,12 @@ class InMemoryGraphStore:
         self._triples: list[Triple] = []
 
     async def add_triples(self, triples: list[Triple]) -> None:
-        existing = {(t.subject, t.predicate, t.object) for t in self._triples}
+        # Dedup includes tenant_id so two tenants' identical (s,p,o) triples both
+        # survive — matching Neo4j's per-tenant MERGE and the store's isolation
+        # contract (keying on (s,p,o) alone would drop the second tenant's copy).
+        existing = {(t.subject, t.predicate, t.object, t.tenant_id) for t in self._triples}
         for triple in triples:
-            key = (triple.subject, triple.predicate, triple.object)
+            key = (triple.subject, triple.predicate, triple.object, triple.tenant_id)
             if key not in existing:
                 self._triples.append(triple)
                 existing.add(key)

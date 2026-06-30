@@ -95,6 +95,23 @@ async def test_graph_delete_scoped_to_tenant():
 
 
 @pytest.mark.asyncio
+async def test_graph_add_triples_dedup_keyed_by_tenant():
+    # Two tenants ingesting the same surface-form triple must BOTH survive — the
+    # dedup is per-tenant (matches Neo4j's tenant-keyed MERGE), not (s,p,o)-only
+    # which would silently drop the second tenant's copy.
+    graph = InMemoryGraphStore()
+    await graph.add_triples([Triple(subject="A", predicate="isA", object="Co",
+                                    doc_id="da", tenant_id="alice")])
+    await graph.add_triples([Triple(subject="A", predicate="isA", object="Co",
+                                    doc_id="db", tenant_id="bob")])
+    assert {t.tenant_id for t in await graph.query_neighborhood("A")} == {"alice", "bob"}
+    # Same tenant re-adding the identical triple is still deduped.
+    await graph.add_triples([Triple(subject="A", predicate="isA", object="Co",
+                                    doc_id="da", tenant_id="alice")])
+    assert len(await graph.query_neighborhood("A", tenant_id=None)) == 2
+
+
+@pytest.mark.asyncio
 async def test_graph_query_scoped_to_readable_tenants():
     graph = InMemoryGraphStore()
     await graph.add_triples([
