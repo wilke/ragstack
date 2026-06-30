@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
+from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
@@ -207,6 +208,27 @@ def _build_llm(http: httpx.AsyncClient) -> OpenAILLM | None:
     )
 
 
+def _build_kg_extractor(llm: OpenAILLM | None) -> LLMKGExtractor | None:
+    """The LLM knowledge-graph triple extractor, or ``None`` when disabled.
+
+    Built only when ``kg_extraction_enabled`` is set AND an LLM is configured —
+    extraction is an LLM cost, so it's opt-in and a no-op without an endpoint.
+    The pipeline only runs it when a graph store is also present, so an enabled
+    extractor with ``graph_backend=disabled`` is harmless."""
+    if not settings.kg_extraction_enabled or llm is None:
+        return None
+    log.info(
+        "kg extraction enabled (max_chunks=%d, max_triples_per_chunk=%d)",
+        settings.kg_extraction_max_chunks,
+        settings.kg_extraction_max_triples_per_chunk,
+    )
+    return LLMKGExtractor(
+        llm,
+        max_chunks=settings.kg_extraction_max_chunks,
+        max_triples_per_chunk=settings.kg_extraction_max_triples_per_chunk,
+    )
+
+
 def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
     """Query-rewriter registry keyed by strategy name. Passthrough is always
     available; the LLM-backed strategies only when an LLM is configured."""
@@ -344,6 +366,12 @@ async def lifespan(app: FastAPI):
                 raise
             log.warning("elasticsearch ensure_index failed: %s", e)
 
+    # One LLM client, shared by answer generation, the query rewriters, and the
+    # knowledge-graph extractor. Built before the pipeline so the (optional)
+    # extractor can be wired into ingestion.
+    llm = _build_llm(http_client)
+    kg_extractor = _build_kg_extractor(llm)
+
     chunker, embed_bridge = _build_chunker()
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
@@ -355,6 +383,8 @@ async def lifespan(app: FastAPI):
         embedder=embedder,
         vector_store=vector_store,
         text_index=text_index,
+        graph_store=graph_store,
+        kg_extractor=kg_extractor,
     )
 
     job_store = make_job_store(
@@ -388,19 +418,18 @@ async def lifespan(app: FastAPI):
         quota=tenant_quota,
     )
 
-    # Hybrid retrieval: fuse dense (vector) + BM25 (text) via RRF. With the
-    # in-memory text index this still works (Jaccard), but it's the Elasticsearch
-    # backend that makes the BM25 leg real.
-    retriever = HybridRetriever(vector_store, text_index, embedder)
-
-    # One LLM client, shared by answer generation and the query rewriters.
-    llm = _build_llm(http_client)
+    # Hybrid retrieval: fuse dense (vector) + BM25 (text) + optional graph context
+    # via RRF. With the in-memory text index the BM25 leg still works (Jaccard),
+    # but it's the Elasticsearch backend that makes it real; the graph leg is
+    # active only when a graph store is configured.
+    retriever = HybridRetriever(vector_store, text_index, embedder, graph_store=graph_store)
 
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
     app.state.graph_store = graph_store
+    app.state.kg_extractor = kg_extractor
     app.state.pipeline = pipeline
     app.state.embed_bridge = embed_bridge
     app.state.job_store = job_store
@@ -466,6 +495,11 @@ def get_text_index(request: Request):
 def get_graph_store(request: Request):
     """The configured GraphStore, or ``None`` when graph support is disabled."""
     return request.app.state.graph_store
+
+
+def get_kg_extractor(request: Request):
+    """The configured KGExtractor, or ``None`` when KG extraction is disabled."""
+    return request.app.state.kg_extractor
 
 
 def get_embedder(request: Request):

@@ -136,6 +136,7 @@ async def _retrieve_fused(
     use_graph: bool,
     rerank: bool | None = None,
     rerank_candidates: int | None = None,
+    tenant_id: str | None = None,
 ) -> list[ScoredChunk]:
     """Hybrid-retrieve each query variant, RRF-fuse, optionally rerank, truncate.
 
@@ -159,13 +160,17 @@ async def _retrieve_fused(
         depth = top_k
     if len(variants) == 1:
         scored = await retriever.retrieve(
-            variants[0], top_k=depth, filters=filters, use_graph=use_graph
+            variants[0], top_k=depth, filters=filters, use_graph=use_graph,
+            tenant_id=tenant_id,
         )
     else:
         # Independent retrievals run concurrently — latency is one retrieve, not N.
         ranked = await asyncio.gather(
             *(
-                retriever.retrieve(v, top_k=depth, filters=filters, use_graph=use_graph)
+                retriever.retrieve(
+                    v, top_k=depth, filters=filters, use_graph=use_graph,
+                    tenant_id=tenant_id,
+                )
                 for v in variants
             )
         )
@@ -218,6 +223,7 @@ async def retrieve(
         request.use_graph,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
+        tenant_id=tenant,
     )
     return RetrieveResponse(sources=_to_sources(scored))
 
@@ -259,6 +265,7 @@ async def query(
         request.use_graph,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
+        tenant_id=tenant,
     )
 
     sources = _to_sources(scored)

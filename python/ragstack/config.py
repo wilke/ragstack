@@ -131,6 +131,18 @@ class Settings(BaseSettings):
     neo4j_password: str = "ragstack"
     neo4j_database: str = ""                 # empty → driver default ("neo4j")
 
+    # Knowledge-graph triple extraction (M4 Phase 2). Off by default so ingest
+    # behaviour is unchanged. When enabled AND an LLM is configured
+    # (``llm_endpoint`` set), the ingestion pipeline runs an LLM extractor over
+    # each document's chunks and stores the resulting triples in the graph store.
+    # An extraction failure degrades gracefully (skips the chunk) and never fails
+    # the ingest. The two bounds cap LLM cost — 0 means unbounded:
+    #   * kg_extraction_max_chunks         — process at most N chunks per document
+    #   * kg_extraction_max_triples_per_chunk — keep at most N triples per chunk
+    kg_extraction_enabled: bool = False
+    kg_extraction_max_chunks: int = 0
+    kg_extraction_max_triples_per_chunk: int = 0
+
     # PostgreSQL (metadata / job queue)
     postgres_dsn: str = "postgresql+asyncpg://ragstack:ragstack@localhost/ragstack"
 

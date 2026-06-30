@@ -96,6 +96,33 @@ def test_graph_memory_warns_under_durable(monkeypatch, caplog):
     assert any("knowledge graph is in-memory" in r.message for r in caplog.records)
 
 
+class _FakeLLM:
+    """Stand-in for OpenAILLM — _build_kg_extractor only checks for not-None."""
+
+
+def test_kg_extractor_none_when_disabled(monkeypatch):
+    monkeypatch.setattr(deps.settings, "kg_extraction_enabled", False)
+    assert deps._build_kg_extractor(_FakeLLM()) is None
+
+
+def test_kg_extractor_none_without_llm(monkeypatch):
+    # Enabled but no LLM configured → no extractor (extraction needs an LLM).
+    monkeypatch.setattr(deps.settings, "kg_extraction_enabled", True)
+    assert deps._build_kg_extractor(None) is None
+
+
+def test_kg_extractor_built_when_enabled_with_llm(monkeypatch):
+    from ragstack.graph.extractor import LLMKGExtractor
+
+    monkeypatch.setattr(deps.settings, "kg_extraction_enabled", True)
+    monkeypatch.setattr(deps.settings, "kg_extraction_max_chunks", 3)
+    monkeypatch.setattr(deps.settings, "kg_extraction_max_triples_per_chunk", 7)
+    extractor = deps._build_kg_extractor(_FakeLLM())
+    assert isinstance(extractor, LLMKGExtractor)
+    assert extractor._max_chunks == 3
+    assert extractor._max_triples_per_chunk == 7
+
+
 def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
     import logging
 
