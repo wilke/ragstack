@@ -196,6 +196,24 @@ async def _run_catalog_only(
         checkpoint(pending)
 
 
+def _build_embedder(args: argparse.Namespace, http: httpx.AsyncClient):
+    """The embedder for ``args`` against ``http``: a pooled fan-out when multiple
+    --embedding-url are given, else a single-endpoint embedder. Shared by the main
+    ingest path and the semantic chunker's SyncEmbedBridge factory so backend
+    selection (api / model / api_key / pooling) lives in exactly one place."""
+    common = {
+        "api": args.embedding_api, "http": http,
+        "model": args.embedding_model,
+        "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
+    }
+    if len(args.embedding_url) > 1:
+        return make_pooled_embedder(
+            base_urls=args.embedding_url,
+            max_concurrency=args.embedding_max_concurrency, **common,
+        )
+    return make_embedder(base_url=args.embedding_url[0], **common)
+
+
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
@@ -210,18 +228,7 @@ async def run(args: argparse.Namespace) -> None:
     # backend on a background loop. Built only for semantic; closed at run() exit.
     embed_bridge: SyncEmbedBridge | None = None
     if args.chunk_method == "semantic":
-        def _embedder_factory(http: httpx.AsyncClient):
-            common = {
-                "api": args.embedding_api, "http": http,
-                "model": args.embedding_model, "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
-            }
-            if len(args.embedding_url) > 1:
-                return make_pooled_embedder(
-                    base_urls=args.embedding_url,
-                    max_concurrency=args.embedding_max_concurrency, **common,
-                )
-            return make_embedder(base_url=args.embedding_url[0], **common)
-        embed_bridge = SyncEmbedBridge(_embedder_factory)
+        embed_bridge = SyncEmbedBridge(lambda http: _build_embedder(args, http))
     chunker = make_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -249,18 +256,10 @@ async def run(args: argparse.Namespace) -> None:
         return
 
     async with httpx.AsyncClient() as http:
-        urls = args.embedding_url
-        common = {
-            "api": args.embedding_api, "http": http,
-            "model": args.embedding_model, "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
-        }
-        if len(urls) > 1:
-            embedder = make_pooled_embedder(
-                base_urls=urls, max_concurrency=args.embedding_max_concurrency, **common
-            )
-            print(f"embedding fan-out across {len(urls)} endpoints", file=sys.stderr)
-        else:
-            embedder = make_embedder(base_url=urls[0], **common)
+        embedder = _build_embedder(args, http)
+        if len(args.embedding_url) > 1:
+            print(f"embedding fan-out across {len(args.embedding_url)} endpoints",
+                  file=sys.stderr)
 
         # Size the collection to the model's vector dim via a one-text probe, so
         # the store exists before the concurrent workers start.

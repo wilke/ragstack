@@ -7,9 +7,13 @@ into isolated Qdrant collections + Elasticsearch indices, then measures known-it
 retrieval quality (recall@k / MRR@10 / nDCG@10, hybrid and reranked) and chunk
 structure/cost per mode, and writes a markdown report.
 
-It uses the package internals **directly** (chunkers, stores, retriever, embedder,
-reranker) rather than shelling out to ``ingest_jsonl.py`` so the three modes share
-exactly one code path and one subset.
+It uses the package internals **directly** (chunkers, stores, retriever, reranker)
+rather than shelling out to ``ingest_jsonl.py`` so the three modes share one
+chunk/index/retrieve code path and one subset. The embedding layer is the
+exception: it's a self-contained async fan-out over the four SFR endpoints (with
+its own retry / 400-bisect / oversize-shrink), because the harness needs to
+*measure* the oversize-cap count and guarantee no chunk is dropped — eval-specific
+semantics the production embedder path doesn't express.
 
 Embedding backend is the production SFR/4096 model served by four vLLM endpoints
 (``http://localhost:9001..9004``, OpenAI ``/v1/embeddings`` API). SFR's max context
@@ -707,7 +711,8 @@ def write_csv(ingest_stats: dict, eval_stats: dict) -> None:
         w = csv.DictWriter(fh, fieldnames=fields)
         w.writeheader()
         for mode in MODES:
-            s, e, h = ingest_stats[mode], eval_stats[mode], eval_stats[mode]["hybrid"]
+            s, e = ingest_stats[mode], eval_stats[mode]
+            h = e["hybrid"]
             w.writerow({
                 "mode": mode,
                 "n_chunks": s["n_chunks"],
