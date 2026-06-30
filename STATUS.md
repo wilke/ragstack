@@ -12,6 +12,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 | Doc | Role |
 |---|---|
 | [SPEC.md](SPEC.md) | Architectural north star — data models, milestones, planned endpoints. Authoritative for *intent*. |
+| [docs/API.md](docs/API.md) | HTTP API reference — endpoints, auth/tenancy, the retrieval pipeline, metadata filtering, config. Grounded in `contracts/openapi.yaml`. |
 | [STATUS.md](STATUS.md) | **This file.** Current state, open TODOs, checkpoints, how to pick up. |
 | [MEMORY.md](MEMORY.md) | Project rules, conventions, failures-and-fixes. Read before coding. |
 | [CLAUDE.md](CLAUDE.md) | Operating instructions for Claude Code in this repo (commands, layout, working notes). |
