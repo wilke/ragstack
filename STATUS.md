@@ -147,6 +147,7 @@ A batch of feature + hardening work, each reviewed (multi-agent) and fixed befor
 - [ ] Add conformance tests that exercise the live Qdrant-backed flow against the JSON schemas (`/v1/ingest`, `/v1/retrieve`, `/v1/query`, `DELETE /v1/documents/{id}`). The schemas pass for our shapes (manually verified), but no automated coverage yet.
 - [x] ~~Wire an LLM into `/v1/query` so `answer` stops being a placeholder~~ — done in PR #12 (v0.8.0): `OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades to sources-with-a-note on LLM failure. Wiring a real model = `vllm serve <model>` + `LLM_ENDPOINT`.
 - [ ] Implement `GET /v1/documents` — needs a metadata store (Postgres) since the vector store only knows about chunks. Currently stub returns `[]`.
+- [ ] **Go parity for KG extraction (M4 Phase 2)** — [#41](https://github.com/wilke/ragstack/issues/41). Python landed the LLM triple extractor + tenant-scoped graph retrieval fusion in PR #40; `go/` has no equivalent. Bring over the extractor, default-OFF config keys, ingestion wiring (server-side `tenant_id` stamping), and a tenant-scoped graph leg (own + `public`, must not reintroduce the [#38](https://github.com/wilke/ragstack/issues/38) cross-tenant leak).
 
 ### Medium-term
 
@@ -157,7 +158,7 @@ A batch of feature + hardening work, each reviewed (multi-agent) and fixed befor
 
 ### Long-term (per [SPEC.md](SPEC.md) milestones)
 
-- [~] **M4 — Graph**: ~~Neo4j adapter (`GraphStore` protocol)~~ + tenant-scoped graph endpoints landed in v0.11.0 (PR #35). Still open: a KG extractor to populate the graph, and **graph-augmented retrieval** — wiring the graph leg into `HybridRetriever` (needs the [#38](https://github.com/wilke/ragstack/issues/38) tenant fix first).
+- [~] **M4 — Graph**: ~~Neo4j adapter (`GraphStore` protocol) + tenant-scoped graph endpoints~~ (v0.11.0, PR #35), and ~~Phase 2 — LLM KG extractor + graph-augmented retrieval wired into `HybridRetriever`, tenant-scoped~~ (PR #40, with the [#38](https://github.com/wilke/ragstack/issues/38) tenant fix folded in). Python is feature-complete (default-OFF via `kg_extraction_enabled`). Still open: **Go parity** — [#41](https://github.com/wilke/ragstack/issues/41).
 - [x] **M5 — Intelligence**: ~~Query rewriters (HyDE, multi-query), cross-encoder reranking in the pipeline, hybrid retrieval with RRF~~ — **core landed in v0.10.0** (rewriting PR #17, reranking PRs #20/#23) on top of hybrid RRF (v0.9.0). Still open within M5: step-back / entity-expansion rewriters, and graph-augmented retrieval (needs M4).
 - [ ] **M6 — API & Auth**: API-key auth, rate limiting, streaming responses
 - [ ] **M7 — Observability**: Prometheus metrics, OpenTelemetry tracing, Grafana dashboards
