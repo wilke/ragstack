@@ -135,9 +135,10 @@ curl -s http://localhost:8000/v1/ingest/<job_id> -H 'X-API-Key: kp'
 
 ### GET /v1/documents · DELETE /v1/documents/{doc_id}
 
-List documents for the caller's readable tenants (`DocumentInfo[]`:
-`{ doc_id, source, metadata }`), or delete one document and all its chunks
-(scoped to the caller's tenant; **204** on success).
+List documents (`DocumentInfo[]`: `{ doc_id, source, metadata }`) — **not yet
+implemented: currently returns `[]`** (needs a document-registry metadata store;
+the vector store holds chunks, not documents). Or delete one document and all
+its chunks (scoped to the caller's tenant; **204** on success).
 
 ### GET /v1/graph/entities · GET /v1/graph/neighbors/{entity}
 
