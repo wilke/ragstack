@@ -1,5 +1,55 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-06-29 — review→fix→merge cycle: hybrid (v0.9.0) + M5 intelligence (v0.10.0)
+
+A long review-driven session: opened at `v0.8.0` with PRs #14/#15 pending; closed at `v0.10.0` with
+M5's core complete. Pattern throughout: `/review` (multi-agent finders + adversarial verify) → fix
+blockers on the branch → check Copilot's comments → merge → reconcile downstream. Every merge was
+preceded by a conflict probe (detached test-merge); `/rag/envs/ragstack` is the env that has the deps
+(the base `python` env does not).
+
+**Shipped two releases.**
+- **v0.9.0** (`2947414`) — Elasticsearch BM25 + hybrid retrieval. #14 jsonschema floor (`>=4.22` to match
+  conformance), #15 `ElasticsearchTextIndex` + hybrid wiring, #16 hardening. Review/Copilot fixes:
+  `bulk()` surfaces partial-failure errors; full metadata round-trips through ES (filters target
+  `metadata.<key>` for parity with the vector store); `ensure_index` is idempotent (create-and-catch,
+  not check-then-create — closed a TOCTOU); `_build_query` fails closed without a `tenant_id` filter.
+- **v0.10.0** (`3679436`) — M5 intelligence + scholarly ingestion. #17 query rewriting (multiquery/hyde
+  → concurrent retrieve via `asyncio.gather` → RRF), #18 mypy baseline clean, #19/#22 JSONL ingestion +
+  enrichment, #20/#23 cross-encoder reranking, #21 parallel bulk ingester.
+
+**Design decisions / non-obvious fixes:**
+- **mypy baseline (11 errors) cleared via 4 parallel subagents** (one per file group). Split into a portable
+  PR #18 (qdrant/loaders/backends — no in-flight work) merged to `main`, while deps.py (TypedDict for the
+  embedder kwargs) + scorers.py (`CrossEncoder` type under `TYPE_CHECKING`) rode with the reranker branch.
+  `backends.py`: widened `isinstance(res, Exception)` → `BaseException` (gather can return a non-Exception
+  BaseException that would crash `.extend`).
+- **ingest_jsonl orphan-delete under concurrency** (#21): the producer only flushes a batch on a *document
+  boundary*, so a doc's chunks live entirely in one batch/one worker → deleting the batch's distinct doc
+  ids before upsert is race-free without a lock, and preserves "delete after a successful embed".
+- **Resume-filter footgun** (#19): the checkpoint persists the active `--doc-types`; a resume under a
+  different filter fails closed (was silently skipping lines the looser filter would keep).
+- **Catalog lockstep** (#22, reconciled onto #21): catalog rows are buffered per batch and written by the
+  worker in seq order in lockstep with the checkpoint, so the catalog never outruns the resume point and
+  nothing past a failed-batch gap is written.
+- **Reranker model mismatch** (#20): the sidecar picks its own model from `MODEL_NAME`; apptainer and
+  config defaulted to MiniLM while docker-compose/sidecar defaulted to bge-reranker-v2-m3. Aligned all
+  paths + added a startup `/health` model check. Also: validate sidecar `indices` (range/uniqueness →
+  degrade, not silently dup/drop); `top_k` added to the `Scorer` protocol so implementers are
+  interchangeable; `top_k>=1` request validation.
+- **PR #21 was cut from the pre-fix commit** and reverted #19's orphan/resume fixes — rebased onto `main`
+  and re-applied them inside the new worker/checkpoint structure (this is why conflict-probing every merge
+  mattered).
+
+**Follow-ups deferred → tracked as issues #25–#28:** consolidate `ingest_jsonl.py` onto `IngestionPipeline`
+(three hand-rolled copies of the loop now); make enrichment publisher-config-driven (ASM-specific constants);
+per-request rerank opt-out; shared sidecar-client base (SidecarReranker/SidecarEmbedder dup HTTP boilerplate).
+
+**Also:** #24 API reference (`docs/API.md`) reviewed + merged (flagged `GET /v1/documents` as a stub
+returning `[]`); STATUS.md + README cross-link it. STATUS bumped with an M5 section + checkpoint rows.
+
+---
+
 ## Session 2026-06-24 — M2 scalable ingestion (branch `feat/m2-shard-manifest`)
 
 Built the resumable 1→500k ingestion backbone on top of v0.4.0. 4 commits, 94 unit/API tests +
