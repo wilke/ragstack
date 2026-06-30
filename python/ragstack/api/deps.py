@@ -34,7 +34,7 @@ from ragstack.rewriting.rewriters import (
     PassthroughRewriter,
 )
 from ragstack.scoring.scorers import SidecarReranker
-from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
 log = logging.getLogger(__name__)
@@ -149,6 +149,49 @@ def _build_text_index():
     return InMemoryTextIndex()
 
 
+def _build_graph_store():
+    """Return the configured GraphStore (knowledge graph), or ``None`` when graph
+    support is disabled.
+
+    ``graph_backend=neo4j`` selects the durable Neo4j property-graph backend; the
+    ``neo4j`` driver is the optional ``graph`` extra and is imported lazily, so an
+    unconfigured/uninstalled graph degrades to the in-memory store in dev (and to
+    ``None`` only when explicitly disabled). Under ``require_durable_backends`` a
+    selected-but-unavailable Neo4j is fatal — the same readiness contract as the
+    vector/text backends — rather than silently dropping the graph.
+    """
+    if settings.graph_backend == "neo4j":
+        try:
+            from ragstack.stores.neo4j import Neo4jGraphStore
+        except ImportError as e:  # pragma: no cover - module has no hard import
+            if settings.require_durable_backends:
+                raise RuntimeError(
+                    "graph_backend='neo4j' but the neo4j driver is not installed "
+                    "and require_durable_backends is set. Install ragstack[graph]."
+                ) from e
+            log.warning(
+                "neo4j driver not installed — falling back to InMemoryGraphStore. "
+                "Install ragstack[graph] to use Neo4j."
+            )
+            return InMemoryGraphStore()
+        return Neo4jGraphStore(
+            uri=settings.neo4j_uri,
+            user=settings.neo4j_user,
+            password=settings.neo4j_password,
+            database=settings.neo4j_database or None,
+        )
+
+    if settings.graph_backend == "disabled":
+        return None
+
+    if settings.require_durable_backends:
+        log.warning(
+            "knowledge graph is in-memory (graph_backend=memory); set "
+            "graph_backend=neo4j for a durable graph"
+        )
+    return InMemoryGraphStore()
+
+
 def _build_llm(http: httpx.AsyncClient) -> OpenAILLM | None:
     """The shared OpenAI-compatible LLM client (answer generation + rewriters), or
     None when no endpoint is configured."""
@@ -225,6 +268,7 @@ async def lifespan(app: FastAPI):
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()
     text_index = _build_text_index()
+    graph_store = _build_graph_store()
 
     # Qdrant: make sure the collection exists at startup so the first request doesn't race.
     if hasattr(vector_store, "ensure_collection"):
@@ -245,6 +289,17 @@ async def lifespan(app: FastAPI):
             if settings.require_durable_backends:
                 raise
             log.warning("qdrant ensure_collection failed: %s", e)
+
+    # Neo4j: create the entity uniqueness constraint at startup; same readiness
+    # gate as Qdrant/Elasticsearch (fatal under require_durable_backends).
+    if graph_store is not None and hasattr(graph_store, "ensure_schema"):
+        try:
+            await graph_store.ensure_schema()
+            log.info("neo4j graph schema ready")
+        except Exception as e:
+            if settings.require_durable_backends:
+                raise
+            log.warning("neo4j ensure_schema failed: %s", e)
 
     # Elasticsearch: create the index at startup; same readiness gate as Qdrant.
     if hasattr(text_index, "ensure_index"):
@@ -314,6 +369,7 @@ async def lifespan(app: FastAPI):
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
+    app.state.graph_store = graph_store
     app.state.pipeline = pipeline
     app.state.job_store = job_store
     app.state.ingestor = ingestor
@@ -355,6 +411,9 @@ async def lifespan(app: FastAPI):
         # Close the ES client if the text index holds one.
         if hasattr(text_index, "close"):
             await text_index.close()
+        # Close the Neo4j driver if the graph store holds one.
+        if graph_store is not None and hasattr(graph_store, "close"):
+            await graph_store.close()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:
@@ -367,6 +426,11 @@ def get_vector_store(request: Request):
 
 def get_text_index(request: Request):
     return request.app.state.text_index
+
+
+def get_graph_store(request: Request):
+    """The configured GraphStore, or ``None`` when graph support is disabled."""
+    return request.app.state.graph_store
 
 
 def get_embedder(request: Request):

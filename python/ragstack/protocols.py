@@ -61,13 +61,22 @@ class TextIndex(Protocol):
 
 @runtime_checkable
 class GraphStore(Protocol):
-    """Knowledge-graph store."""
+    """Knowledge-graph store.
+
+    Tenant-scoped: every triple carries a ``tenant_id`` (set server-side at
+    ingest), reads pass the caller's tenant so they see only their own corpus
+    plus the shared ``public`` one, and ``delete_by_doc`` never crosses tenants.
+    """
 
     async def add_triples(self, triples: list[Triple]) -> None: ...
 
     async def query_neighborhood(
-        self, entity: str, depth: int = 1
+        self, entity: str, depth: int = 1, tenant_id: str | None = None
     ) -> list[Triple]: ...
+
+    async def list_entities(
+        self, tenant_id: str | None = None, limit: int = 100
+    ) -> list[tuple[str, int]]: ...
 
     async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None: ...
 

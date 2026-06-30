@@ -152,6 +152,13 @@ paths:
       operationId: listEntities
       summary: List entities in the knowledge graph
       tags: [Graph]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 100
       responses:
         "200":
           description: List of entities

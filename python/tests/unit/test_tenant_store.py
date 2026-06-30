@@ -92,3 +92,34 @@ async def test_graph_delete_scoped_to_tenant():
     await graph.delete_by_doc("d1", tenant_id="alice")  # must spare bob's triple
     remaining = await graph.query_neighborhood("s2")
     assert [t.tenant_id for t in remaining] == ["bob"]
+
+
+@pytest.mark.asyncio
+async def test_graph_query_scoped_to_readable_tenants():
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="A", predicate="p", object="B", doc_id="d", tenant_id="alice"),
+        Triple(subject="A", predicate="p", object="C", doc_id="d", tenant_id="bob"),
+        Triple(subject="A", predicate="p", object="D", doc_id="d", tenant_id="public"),
+    ])
+    # Alice sees her own + public, never bob's.
+    triples = await graph.query_neighborhood("A", tenant_id="alice")
+    assert {t.object for t in triples} == {"B", "D"}
+    # Unscoped (dev/tests) sees everything.
+    everyone = await graph.query_neighborhood("A", tenant_id=None)
+    assert {t.object for t in everyone} == {"B", "C", "D"}
+
+
+@pytest.mark.asyncio
+async def test_graph_list_entities_scoped_and_ranked():
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="A", predicate="p", object="B", tenant_id="alice"),
+        Triple(subject="A", predicate="p", object="C", tenant_id="alice"),
+        Triple(subject="X", predicate="p", object="Y", tenant_id="bob"),
+    ])
+    entities = await graph.list_entities(tenant_id="alice")
+    names = {name for name, _ in entities}
+    assert names == {"A", "B", "C"}  # bob's X/Y excluded
+    # A participates in 2 triples → ranked first.
+    assert entities[0] == ("A", 2)

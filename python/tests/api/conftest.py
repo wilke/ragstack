@@ -20,7 +20,7 @@ from ragstack.jobstore import InMemoryJobStore
 from ragstack.quota import TenantQuota
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.rewriting.rewriters import PassthroughRewriter
-from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 
 
 class _FakeEmbedder:
@@ -56,6 +56,7 @@ async def client():
     app.state.embedder = embedder
     app.state.vector_store = vector_store
     app.state.text_index = text_index
+    app.state.graph_store = InMemoryGraphStore()
     app.state.job_store = job_store
     app.state.pipeline = pipeline
     app.state.ingestor = ingestor
