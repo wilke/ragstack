@@ -16,24 +16,34 @@ import logging
 
 import httpx
 
+from ragstack.sidecar_http import DEFAULT_TIMEOUT, SidecarClient
+
 log = logging.getLogger(__name__)
 
 
 class SidecarEmbedder:
     """RAGStack embedding sidecar client (``POST <base>/embed``)."""
 
-    def __init__(self, base_url: str, http: httpx.AsyncClient) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.http = http
+    def __init__(
+        self,
+        base_url: str,
+        http: httpx.AsyncClient,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        self._client = SidecarClient(base_url, http, timeout=timeout)
+
+    @property
+    def base_url(self) -> str:
+        return self._client.base_url
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        return self._client.http
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        r = await self.http.post(
-            f"{self.base_url}/embed",
-            json={"texts": texts},
-            timeout=120.0,
-        )
-        r.raise_for_status()
-        return r.json()["embeddings"]
+        body = await self._client.post_json("embed", {"texts": texts})
+        return body["embeddings"]
 
 
 class OpenAIEmbedder:
@@ -49,27 +59,34 @@ class OpenAIEmbedder:
         model: str,
         http: httpx.AsyncClient,
         api_key: str | None = None,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        self._client = SidecarClient(base_url, http, timeout=timeout)
         self.model = model
-        self.http = http
         self.api_key = api_key
+
+    @property
+    def base_url(self) -> str:
+        return self._client.base_url
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        return self._client.http
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        r = await self.http.post(
-            f"{self.base_url}/v1/embeddings",
-            json={"model": self.model, "input": texts},
+        body = await self._client.post_json(
+            "v1/embeddings",
+            {"model": self.model, "input": texts},
             headers=headers,
-            timeout=120.0,
         )
-        r.raise_for_status()
         # Sort by the returned index: not every OpenAI-compatible server (e.g.
         # some vLLM builds) preserves input order, and a silent reordering would
         # bind embeddings to the wrong chunks.
-        data = sorted(r.json()["data"], key=lambda item: item["index"])
+        data = sorted(body["data"], key=lambda item: item["index"])
         return [item["embedding"] for item in data]
 
 

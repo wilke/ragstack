@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from ragstack.models import Chunk, ScoredChunk
+from ragstack.sidecar_http import DEFAULT_TIMEOUT, SidecarClient
 
 if TYPE_CHECKING:
     from sentence_transformers import CrossEncoder
@@ -102,26 +103,36 @@ class SidecarReranker:
     ``ScoredChunk``s in the sidecar's ranked order.
     """
 
-    def __init__(self, base_url: str, http: httpx.AsyncClient) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.http = http
+    def __init__(
+        self,
+        base_url: str,
+        http: httpx.AsyncClient,
+        *,
+        timeout: float = DEFAULT_TIMEOUT,
+    ) -> None:
+        self._client = SidecarClient(base_url, http, timeout=timeout)
+
+    @property
+    def base_url(self) -> str:
+        return self._client.base_url
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        return self._client.http
 
     async def score(
         self, query: str, candidates: list[Chunk], top_k: int | None = None
     ) -> list[ScoredChunk]:
         if not candidates:
             return []
-        r = await self.http.post(
-            f"{self.base_url}/rerank",
-            json={
+        data = await self._client.post_json(
+            "rerank",
+            {
                 "query": query,
                 "documents": [c.content for c in candidates],
                 "top_k": len(candidates) if top_k is None else min(top_k, len(candidates)),
             },
-            timeout=120.0,
         )
-        r.raise_for_status()
-        data = r.json()
         # The sidecar returns parallel `scores`/`indices` arrays already sorted
         # by descending score; `indices` point back into the documents we sent.
         scores, indices = data["scores"], data["indices"]
