@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chunking — Why RAGStack Diverges</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --accent:#2563eb; --accent-bg:#eff6ff; --good:#16a34a; --warn:#dc2626;
+    --chip:#f1f5f9;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:#cbd5e1;display:flex;align-items:center;justify-content:center;
+    color:var(--ink);padding:24px;
+  }
+  .slide{
+    width:1280px;height:720px;background:#fff;border-radius:14px;
+    box-shadow:0 20px 60px rgba(15,23,42,.25);padding:36px 54px;display:flex;flex-direction:column;
+  }
+  .eyebrow{color:var(--accent);font-weight:700;letter-spacing:.08em;font-size:15px;text-transform:uppercase}
+  h1{font-size:38px;line-height:1.08;margin:6px 0 2px}
+  .sub{color:var(--muted);font-size:17px;margin-bottom:10px}
+  table{width:100%;border-collapse:collapse;font-size:14.5px}
+  th,td{text-align:left;padding:6.5px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:2px solid var(--line)}
+  td.dim{font-weight:600;width:215px;color:#334155}
+  col.rs{background:var(--accent-bg)}
+  thead th.rs{color:var(--accent);border-bottom:2px solid var(--accent)}
+  .rs-cell{font-weight:600}
+  .good{color:var(--good);font-weight:700}
+  .warn{color:var(--warn);font-weight:700}
+  .pill{display:inline-block;background:var(--chip);border-radius:999px;padding:1px 8px;font-size:12.5px;color:#475569}
+  thead th .hh{font-weight:600;text-transform:none;letter-spacing:0;color:#94a3b8;font-size:11px}
+  .ctx{font-size:13.5px;color:#334155;background:#f8fafc;border-left:3px solid var(--accent);
+       border-radius:0 8px 8px 0;padding:7px 13px;margin-bottom:14px}
+  .ctx b{color:var(--accent)}
+  .foot{margin-top:auto;display:flex;gap:14px;padding-top:10px}
+  .why{flex:1;background:var(--accent-bg);border:1px solid #dbeafe;border-radius:10px;padding:10px 16px}
+  .why b{color:var(--accent)}
+  .why-title{font-weight:800;color:var(--accent);font-size:13px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+  .why p{font-size:12.8px;line-height:1.34;color:#1e293b}
+  .legend{font-size:12px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+  <div class="slide">
+    <div class="eyebrow">Chunking strategy</div>
+    <h1>Why RAGStack chunks differently</h1>
+    <div class="sub">Same semantic-chunking DNA across the stack — RAGStack adds what an <b>online, multi-tenant retrieval API</b> needs that batch/HPC tools don't.</div>
+
+    <div class="ctx">These are stages of an HPC scientific-RAG pipeline: <b>distllm</b> is the backbone of Argonne's <b>HiPerRAG</b> (3.6M papers; SciQ 90% / PubMedQA 76%; Polaris/Sunspot/Frontier). The real axis is <b>HiPerRAG-style batch corpus-build vs. RAGStack online serving</b>.</div>
+
+    <table>
+      <colgroup><col><col class="rs"><col><col><col></colgroup>
+      <thead>
+        <tr>
+          <th>Dimension</th>
+          <th class="rs">RAGStack</th>
+          <th>embedding_app</th>
+          <th>distllm<br><span class="hh">= HiPerRAG backbone</span></th>
+          <th>ExaForge</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="dim">Role</td>
+          <td class="rs-cell">Online serving RAG API</td>
+          <td>Offline embedding (BV-BRC)</td>
+          <td>HPC batch embed + RAG</td>
+          <td>HPC batch LLM inference</td>
+        </tr>
+        <tr>
+          <td class="dim">Methods</td>
+          <td class="rs-cell">fixed · sentence · words · semantic</td>
+          <td>fixed · sentence · words · semantic</td>
+          <td>semantic · full-seq</td>
+          <td><span class="warn">none</span> (doc-level)</td>
+        </tr>
+        <tr>
+          <td class="dim">Sentence splitting</td>
+          <td class="rs-cell good">NLTK Punkt + regex</td>
+          <td class="warn">naive · hardcoded 100-char cap</td>
+          <td>NLTK Punkt</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td class="dim">Sizing unit</td>
+          <td class="rs-cell good">characters <b>or tokens</b></td>
+          <td>characters</td>
+          <td>characters</td>
+          <td>~4 chars/token estimate</td>
+        </tr>
+        <tr>
+          <td class="dim">Token budget</td>
+          <td class="rs-cell good">auto-detected from max_model_len</td>
+          <td class="warn">none</td>
+          <td class="warn">none</td>
+          <td class="warn">none</td>
+        </tr>
+        <tr>
+          <td class="dim">Oversize handling</td>
+          <td class="rs-cell good">lossless token-split (no text dropped)</td>
+          <td class="warn">char-cap (boundary-arbitrary)</td>
+          <td class="warn">silent truncation*</td>
+          <td class="warn">reject whole doc (lossy)</td>
+        </tr>
+        <tr>
+          <td class="dim">Offsets / provenance</td>
+          <td class="rs-cell good">char spans + deterministic uuid5 ids</td>
+          <td>bare strings</td>
+          <td>bare strings / HF rows</td>
+          <td>whole-doc id</td>
+        </tr>
+        <tr>
+          <td class="dim">Semantic defaults <span class="pill">buf/pct/min</span></td>
+          <td class="rs-cell">3 / 80 / 500</td>
+          <td>3 / 80 / 500 <span class="pill">identical</span></td>
+          <td>1 / 90 / 750</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td class="dim">Validated</td>
+          <td class="rs-cell good">conformance + retrieval benchmark</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="legend">Shared lineage: RAGStack & distllm semantic chunkers both derive from llama_index; RAGStack mirrors embedding_app's method names & semantic defaults on purpose. &nbsp;•&nbsp; *truncation only bites <b>small-context</b> embedders (SFR-4096); distllm's NVEmbed-32k path rarely truncates.</div>
+
+    <div class="foot">
+      <div class="why">
+        <div class="why-title">The justification &nbsp;<span style="font-weight:600;color:#94a3b8;text-transform:none;letter-spacing:0">— chunking stage only, not RAG quality</span></div>
+        <p><b>Scope:</b> HiPerRAG's edge is parsing (Oreo) + retrieval encoder (ColTrast) — different stages; this is not a RAG-quality claim. <b>For chunking:</b> RAGStack — the only <b>online-serving</b> system — adds <b>token-exact lossless sizing</b> (auto-detected from the model), <b>real NLP boundaries</b>, and <b>deterministic ids</b> for re-ingest, tenant isolation & citations. A truncated chunk is unsearchable — <b>critical for small-context embedders</b> (SFR-4096: 12% of semantic chunks overflow), less so for long-context (NVEmbed 32k).</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
