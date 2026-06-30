@@ -68,6 +68,13 @@ class QueryRequest(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
     stream: bool = False
+    # Per-request rerank control. ``None`` preserves the server-wide default
+    # (rerank iff a reranker is wired). ``False`` forces a rerank skip even when
+    # one is available; ``True`` is a no-op when none is wired (graceful).
+    rerank: bool | None = None
+    # Override for the candidate-pool depth fed to the reranker. ``None`` uses
+    # the server default (``max(top_k, settings.rerank_candidates)``).
+    rerank_candidates: int | None = Field(default=None, ge=1)
 
 
 class QueryResponse(BaseModel):
@@ -81,6 +88,9 @@ class RetrieveRequest(BaseModel):
     top_k: int = Field(default=5, ge=1)
     filters: dict[str, Any] = Field(default_factory=dict)
     use_graph: bool = True
+    # See QueryRequest for semantics — same per-request rerank control.
+    rerank: bool | None = None
+    rerank_candidates: int | None = Field(default=None, ge=1)
 
 
 class RetrieveResponse(BaseModel):
@@ -124,14 +134,29 @@ async def _retrieve_fused(
     top_k: int,
     filters: dict[str, Any],
     use_graph: bool,
+    rerank: bool | None = None,
+    rerank_candidates: int | None = None,
 ) -> list[ScoredChunk]:
     """Hybrid-retrieve each query variant, RRF-fuse, optionally rerank, truncate.
 
     When a reranker is active the per-variant retrievals fetch a deeper pool
     (``rerank_candidates``) so the cross-encoder has real recall to work with;
     the final cut to ``top_k`` happens after reranking. With no reranker this is
-    exactly the previous behaviour (retrieve top_k, fuse, slice)."""
-    depth = max(top_k, settings.rerank_candidates) if reranker is not None else top_k
+    exactly the previous behaviour (retrieve top_k, fuse, slice).
+
+    Per-request overrides (issue #27):
+      * ``rerank=False`` skips reranking even when a reranker is wired — the
+        pool is then a shallow ``top_k`` (no deep fetch). ``rerank=True`` is a
+        no-op when none is wired (graceful: can't conjure a reranker).
+      * ``rerank_candidates`` overrides the pool depth used when reranking.
+      * Both ``None`` (the default) preserve the prior server-wide behaviour.
+    """
+    active = reranker if rerank is not False else None
+    if active is not None:
+        pool = rerank_candidates if rerank_candidates is not None else settings.rerank_candidates
+        depth = max(top_k, pool)
+    else:
+        depth = top_k
     if len(variants) == 1:
         scored = await retriever.retrieve(
             variants[0], top_k=depth, filters=filters, use_graph=use_graph
@@ -145,7 +170,7 @@ async def _retrieve_fused(
             )
         )
         scored = _RRF.fuse(list(ranked))
-    scored = await _maybe_rerank(reranker, query, scored, top_k)
+    scored = await _maybe_rerank(active, query, scored, top_k)
     return scored[:top_k]
 
 
@@ -191,6 +216,8 @@ async def retrieve(
         request.top_k,
         scope_filters(request.filters, tenant),
         request.use_graph,
+        rerank=request.rerank,
+        rerank_candidates=request.rerank_candidates,
     )
     return RetrieveResponse(sources=_to_sources(scored))
 
@@ -223,7 +250,15 @@ async def query(
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(
-        retriever, reranker, request.query, variants, request.top_k, filters, request.use_graph
+        retriever,
+        reranker,
+        request.query,
+        variants,
+        request.top_k,
+        filters,
+        request.use_graph,
+        rerank=request.rerank,
+        rerank_candidates=request.rerank_candidates,
     )
 
     sources = _to_sources(scored)
