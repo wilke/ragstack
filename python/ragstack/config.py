@@ -65,6 +65,14 @@ class Settings(BaseSettings):
     # When embedding_api == "openai", set embedding_model to the OpenAI/vLLM model name.
     embedding_model_dim: int = 768
 
+    # Ingestion: publisher profile driving scholarly-metadata enrichment (DOI
+    # prefix, filename->DOI rule, front-matter name set). "asm" is the default,
+    # built-in profile (10.1128 + the jvi.02415-06 filename rule) and keeps
+    # behaviour identical to before profiles existed. See
+    # ``ragstack.ingestion.enrich.PROFILES`` for the registry; resolve a profile
+    # with ``ragstack.ingestion.enrich.resolve_profile(settings.publisher_profile)``.
+    publisher_profile: str = "asm"
+
     # Chunker defaults
     chunk_size: int = 512
     chunk_overlap: int = 64

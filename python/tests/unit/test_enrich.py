@@ -3,12 +3,17 @@ document classification, citation extraction, author/keyword parsing, and the
 index-safe metadata projection."""
 from __future__ import annotations
 
+import re
+
 from ragstack.ingestion.enrich import (
     ARTICLE,
+    DEFAULT_PROFILE,
     EMPTY,
     FRONT_MATTER,
+    PROFILES,
     SHORT,
     SUPPLEMENT,
+    PublisherProfile,
     classify,
     derive_doi,
     derive_year,
@@ -16,6 +21,7 @@ from ragstack.ingestion.enrich import (
     extract_citations,
     index_metadata,
     parse_authors,
+    resolve_profile,
     split_keywords,
 )
 
@@ -253,3 +259,107 @@ def test_index_metadata_excludes_heavy_fields_and_blanks():
     assert meta["doi"] == "10.1128/jvi.02415-06"
     assert meta["n_citations"] == 1  # lightweight count is kept
     assert meta["doc_type"] == ARTICLE
+
+
+# --- publisher profiles -----------------------------------------------------
+
+# A fake second publisher: different DOI prefix, a filename rule keyed on a
+# different stem shape (``brief-<digits>`` rather than ASM's ``jvi.02415-06``),
+# and its own front-matter set. Nothing here overlaps the ASM defaults, so a
+# record that derives under this profile would NOT derive under ASM — proving the
+# profile is actually driving the behaviour.
+_FAKE_PROFILE = PublisherProfile(
+    name="fake",
+    doi_prefix="10.5555",
+    filename_doi_rule=re.compile(r"^(brief-\d{3,})$", re.IGNORECASE),
+    front_matter_names=frozenset({"sponsors.pdf", "colophon.pdf"}),
+)
+
+
+def test_default_profile_is_asm_and_byte_identical():
+    # Passing the explicit default profile must equal passing nothing (the
+    # implicit default), for both classify and derive_doi.
+    path, text = "/x/jvi.02415-06.pdf", ""
+    assert derive_doi(path, text, "") == derive_doi(path, text, "", profile=DEFAULT_PROFILE)
+    assert derive_doi(path, text, "") == ("10.1128/jvi.02415-06", "filename")
+    assert classify("/x/masthead.pdf", "x" * 5000) == classify(
+        "/x/masthead.pdf", "x" * 5000, DEFAULT_PROFILE
+    ) == FRONT_MATTER
+
+
+def test_default_profile_filename_rule_unchanged_under_explicit_default():
+    # The volume-style ASM filename still derives under the explicit default.
+    doi, src = derive_doi(
+        "/x/iai.70.9.4833-4840.2002.pdf", text="", meta_doi="", profile=DEFAULT_PROFILE
+    )
+    assert (doi, src) == ("10.1128/iai.70.9.4833-4840.2002", "filename")
+
+
+def test_fake_profile_derives_doi_from_its_own_filename_rule():
+    doi, src = derive_doi("/corpus/brief-04217.pdf", text="", meta_doi="", profile=_FAKE_PROFILE)
+    assert (doi, src) == ("10.5555/brief-04217", "filename")
+
+
+def test_fake_profile_filename_not_matched_by_asm_default():
+    # The same record under ASM's rule does NOT match the filename — it has no
+    # in-text DOI either, so it comes back empty. This is what makes the prior
+    # test meaningful: the prefix/rule swap is load-bearing.
+    assert derive_doi("/corpus/brief-04217.pdf", text="", meta_doi="") == ("", "")
+    # And ASM's own filenames do NOT match the fake rule.
+    assert derive_doi("/x/jvi.02415-06.pdf", text="", meta_doi="", profile=_FAKE_PROFILE) == ("", "")
+
+
+def test_fake_profile_front_matter_set_is_used():
+    # Fake profile's front-matter names classify as FRONT_MATTER...
+    assert classify("/x/sponsors.pdf", "x" * 5000, _FAKE_PROFILE) == FRONT_MATTER
+    # ...while ASM's masthead.pdf is just an article under the fake profile
+    # (not in its front-matter set).
+    assert classify("/x/masthead.pdf", "x" * 5000, _FAKE_PROFILE) == ARTICLE
+
+
+def test_enrich_threads_fake_profile_end_to_end():
+    record = {
+        "path": "/corpus/brief-04217.pdf",
+        "text": "Body text.\n" + "z" * 3000,
+        "metadata": {"title": "A Brief Report", "authors": "Ada L."},
+    }
+    e = enrich(record, profile=_FAKE_PROFILE)
+    assert e.doc_type == ARTICLE
+    assert e.doi == "10.5555/brief-04217"
+    assert e.doi_source == "filename"
+    # Same record under the default ASM profile finds no DOI.
+    assert enrich(record).doi == ""
+
+
+def test_prefix_shortcut_overrides_profile_prefix():
+    # Back-compat: the bare prefix= kwarg still overrides just the DOI prefix,
+    # keeping the (default) filename rule.
+    doi, src = derive_doi("/x/abc.12345.pdf", text="", meta_doi="", prefix="10.1099")
+    assert (doi, src) == ("10.1099/abc.12345", "filename")
+    # And enrich() honours the prefix shortcut too.
+    e = enrich({"path": "/x/abc.12345.pdf", "text": "z" * 3000, "metadata": {}}, prefix="10.1099")
+    assert e.doi == "10.1099/abc.12345"
+
+
+def test_resolve_profile_known_and_unknown():
+    assert resolve_profile("asm") is DEFAULT_PROFILE
+    assert resolve_profile("ASM") is DEFAULT_PROFILE  # case-insensitive
+    # Unknown / empty names degrade gracefully to the default (never raise).
+    assert resolve_profile("does-not-exist") is DEFAULT_PROFILE
+    assert resolve_profile("") is DEFAULT_PROFILE
+    assert resolve_profile(None) is DEFAULT_PROFILE
+
+
+def test_default_profile_registered():
+    assert PROFILES["asm"] is DEFAULT_PROFILE
+
+
+def test_publisher_profile_is_frozen():
+    import pydantic
+
+    try:
+        DEFAULT_PROFILE.doi_prefix = "10.9999"  # type: ignore[misc]
+    except pydantic.ValidationError:
+        pass
+    else:  # pragma: no cover
+        raise AssertionError("PublisherProfile should be frozen")
