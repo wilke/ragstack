@@ -1,0 +1,4 @@
+mode,n_chunks,chunks_per_doc,mean_chars,median_chars,p95_chars,n_capped,chunk_time_s,ingest_time_s,total_time_s,recall@1,recall@5,recall@10,mrr@10,ndcg@10,reranked_recall@5,reranked_mrr@10,mean_rerank_top1
+fixed,31041,103.47,509.9,512,512.0,0,0.28,129.98,130.26,0.9067,0.9167,0.9167,0.9117,0.913,0.91,0.9103,8.1096
+sentence,32732,109.107,434.7,447.0,510.0,4,2.47,156.24,158.71,0.9033,0.91,0.9133,0.9065,0.9081,0.9167,0.9119,8.1953
+semantic,7111,23.703,1949.0,1572,4000.0,735,430.91,81.52,512.43,0.9067,0.9167,0.9167,0.9106,0.9121,0.91,0.9063,6.9042
