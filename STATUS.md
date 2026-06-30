@@ -2,9 +2,9 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-06-29
-**Current tag:** [`v0.10.0`](https://github.com/wilke/ragstack/releases/tag/v0.10.0) at `3679436`
-**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16), and the **M5 intelligence layer + scholarly ingestion** — query rewriting (PR #17), cross-encoder reranking (PRs #20/#23), JSONL corpus ingestion with metadata enrichment (PRs #19/#22), and the parallel bulk ingester (PR #21) — merged; see the sections below.
+**Last updated:** 2026-06-30
+**Current tag:** [`v0.11.0`](https://github.com/wilke/ragstack/releases/tag/v0.11.0) at `e89d3f6`
+**Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16), and the **M5 intelligence layer + scholarly ingestion** — query rewriting (PR #17), cross-encoder reranking (PRs #20/#23), JSONL corpus ingestion with metadata enrichment (PRs #19/#22), and the parallel bulk ingester (PR #21) — merged. **v0.11.0** adds M4 Phase 1 (Neo4j graph store + tenant-scoped graph endpoints, PR #35), pluggable chunkers (PR #36), per-request rerank control (PR #33), injectable publisher profiles (PR #34), a shared sidecar HTTP client (PR #32), and upsert-then-prune ingest safety (PR #37). See the sections below.
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
 
 ## Where this fits
@@ -126,6 +126,19 @@ The M5 retrieval-intelligence layer plus a scholarly-corpus ingestion path. Tagg
 
 **This completes M5's core** (query rewriters + cross-encoder reranking + hybrid RRF). Still off: graph-augmented retrieval (`use_graph` flows through but no graph store is wired) until M4. Follow-ups tracked as issues [#25](https://github.com/wilke/ragstack/issues/25)–[#28](https://github.com/wilke/ragstack/issues/28) (consolidate the script onto `IngestionPipeline`; make enrichment publisher-config-driven; per-request rerank opt-out; shared sidecar-client base).
 
+## M4 Phase 1 + extensibility (merged in `v0.11.0`, PRs #32–#37)
+
+A batch of feature + hardening work, each reviewed (multi-agent) and fixed before merge. Tagged at `e89d3f6`.
+
+1. **M4 Phase 1 — knowledge graph** (PR #35): `Neo4jGraphStore` (`graph` extra) behind the `GraphStore` protocol, wired into `deps.py` (lazy import, durable-gate, closed on shutdown) and the `/v1/graph/{entities,neighbors}` endpoints, which are now **tenant-scoped** (own + public). Review fixes: depth capped (`Query(ge=1, le=5)` + store clamp) against a Cypher variable-length DoS; the traversal itself is tenant-scoped (`all(rel … IN $tenants)`) so a multi-hop query can't tunnel through another tenant's edge; `delete_by_doc`'s orphan sweep is endpoint-scoped (no global scan / cross-tenant node delete); in-memory dedup keyed by tenant. **Not yet wired into retrieval** — `use_graph` is still a no-op in `/query` (tracked: [#38](https://github.com/wilke/ragstack/issues/38), which must be fixed first to avoid a cross-tenant leak in `_graph_context`).
+2. **Pluggable chunkers** (PR #36): `SentenceChunker`, `WordChunker`, `SemanticChunker` (selectable via `chunk_method`; default `fixed` unchanged), with deterministic ids/offsets. The semantic chunker embeds via a `SyncEmbedBridge` that owns its embedder+httpx client on a dedicated background loop (review fix: was using the app's main-loop client across loops); chunking runs via `asyncio.to_thread` so it never blocks the event loop. `[chunking]` is an optional extra.
+3. **Per-request rerank control** (PR #33): `rerank` / `rerank_candidates` on the query/retrieve requests (null = server default), across openapi + JSON schemas + models. Closes [#27](https://github.com/wilke/ragstack/issues/27).
+4. **Injectable publisher profiles** (PR #34): enrichment's DOI prefix / filename rule / front-matter set are now a config-selected `PublisherProfile` threaded through the API and bulk-ingest paths (`--publisher-profile`); ASM default unchanged. Closes [#26](https://github.com/wilke/ragstack/issues/26).
+5. **Shared sidecar HTTP client** (PR #32): `sidecar_http.SidecarClient` dedups the embedder/reranker HTTP boilerplate. Closes [#28](https://github.com/wilke/ragstack/issues/28).
+6. **Ingest upsert-then-prune** (PR #37): the bulk ingester upserts before pruning orphan points by id (`delete_except`, now on the store protocols), so a prune/delete timeout leaves harmless duplicates instead of losing data (closes [#31](https://github.com/wilke/ragstack/issues/31)).
+
+**300 unit/api tests pass, 1 skipped; ruff + mypy clean.** Every PR was rebased onto main and reconciled (the shared `deps.py`/`config.py` made each later merge a small rebase).
+
 ## Active TODOs
 
 ### Near-term — pick up here in the next session
@@ -144,7 +157,7 @@ The M5 retrieval-intelligence layer plus a scholarly-corpus ingestion path. Tagg
 
 ### Long-term (per [SPEC.md](SPEC.md) milestones)
 
-- [ ] **M4 — Graph**: KG extractor, Neo4j adapter (`GraphStore` protocol), graph-augmented retrieval
+- [~] **M4 — Graph**: ~~Neo4j adapter (`GraphStore` protocol)~~ + tenant-scoped graph endpoints landed in v0.11.0 (PR #35). Still open: a KG extractor to populate the graph, and **graph-augmented retrieval** — wiring the graph leg into `HybridRetriever` (needs the [#38](https://github.com/wilke/ragstack/issues/38) tenant fix first).
 - [x] **M5 — Intelligence**: ~~Query rewriters (HyDE, multi-query), cross-encoder reranking in the pipeline, hybrid retrieval with RRF~~ — **core landed in v0.10.0** (rewriting PR #17, reranking PRs #20/#23) on top of hybrid RRF (v0.9.0). Still open within M5: step-back / entity-expansion rewriters, and graph-augmented retrieval (needs M4).
 - [ ] **M6 — API & Auth**: API-key auth, rate limiting, streaming responses
 - [ ] **M7 — Observability**: Prometheus metrics, OpenTelemetry tracing, Grafana dashboards
@@ -164,6 +177,7 @@ The M5 retrieval-intelligence layer plus a scholarly-corpus ingestion path. Tagg
 | [`v0.8.0`](https://github.com/wilke/ragstack/releases/tag/v0.8.0) | `c9c1944` | 2026-06-26 | RAG answer generation (PR #12) — `/v1/query` returns a grounded LLM answer (`OpenAILLM` + `RagGenerator`, opt-in via `llm_endpoint`, degrades on LLM failure) — plus the per-tenant concurrency quota (PR #13) gating ingest + queries via a `tenant_slot` dependency |
 | [`v0.9.0`](https://github.com/wilke/ragstack/releases/tag/v0.9.0) | `2947414` | 2026-06-26 | Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16) — `ElasticsearchTextIndex` (tenant-scoped, durable BM25), `/v1/retrieve` + `/v1/query` fused vector+BM25 via RRF, delete purges both legs; post-review hardening: bulk-error surfacing, metadata round-trip + filter parity, race-safe `ensure_index`, fail-closed tenant scoping |
 | [`v0.10.0`](https://github.com/wilke/ragstack/releases/tag/v0.10.0) | `3679436` | 2026-06-29 | M5 intelligence + scholarly ingestion — query rewriting (PR #17: multiquery/hyde → concurrent retrieve → RRF), cross-encoder reranking via sidecar (PRs #20/#23: index-validation, model-default alignment, `top_k` on the `Scorer` protocol), JSONL corpus ingestion with DOI/title/author/citation enrichment (PRs #19/#22: resumable, filter-aware checkpoint, replace-on-reingest, catalog lockstep), parallel bulk ingester (PR #21: producer→worker, ordered crash-safe checkpoint), mypy baseline clean (PR #18) |
+| [`v0.11.0`](https://github.com/wilke/ragstack/releases/tag/v0.11.0) | `e89d3f6` | 2026-06-30 | M4 Phase 1 + extensibility — Neo4j graph store + tenant-scoped graph endpoints (PR #35: depth-cap DoS, traversal-scope, endpoint-scoped orphan sweep), pluggable Sentence/Word/Semantic chunkers (PR #36: dedicated-loop embed bridge, non-blocking chunking), per-request rerank control (PR #33), injectable publisher profiles (PR #34), shared `SidecarClient` (PR #32), upsert-then-prune ingest safety (PR #37: no data loss on prune timeout) |
 
 ## Production layout (`/rag/`)
 
