@@ -22,6 +22,7 @@ import re
 import uuid
 from collections.abc import Callable, Sequence
 
+from ragstack.ingestion.tokenization import TokenCounter
 from ragstack.models import Chunk, Document
 
 # A callable that turns a list of texts into a list of dense vectors. Sync on
@@ -54,12 +55,77 @@ def _make_chunk(doc: Document, start: int, end: int) -> Chunk:
     )
 
 
-class RecursiveCharacterChunker:
-    """Split text by characters with configurable size and overlap."""
+# --------------------------------------------------------------------------- #
+# Token-budget splitting
+# --------------------------------------------------------------------------- #
+# Shared by every chunker's hard-cap path: split a single piece of text into
+# substrings that each encode to <= max_tokens, preserving the text exactly
+# (concatenating the pieces reproduces the input). Used both to enforce the cap
+# on a packed chunk and to break a single over-budget unit (a very long sentence
+# or word) so no source text is ever dropped.
 
-    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 64) -> None:
+
+def split_text_to_token_budget(
+    text: str, max_tokens: int, token_counter: TokenCounter
+) -> list[str]:
+    """Split ``text`` into substrings each <= ``max_tokens`` tokens, lossless.
+
+    The pieces concatenate back to ``text`` exactly (no characters added or
+    dropped), so a caller mapping them onto char spans keeps offsets honest.
+
+    Strategy: if the whole text already fits, return it unchanged. Otherwise grow
+    a candidate prefix by binary search on character length up to the largest
+    prefix that still fits ``max_tokens`` (token boundaries don't line up with
+    char boundaries, so we search in char space and let the counter judge), emit
+    it, and continue from there. A hard 1-char floor guarantees forward progress
+    even for a pathological single character that the counter claims is over
+    budget.
+    """
+    if not text or max_tokens <= 0:
+        return [text] if text else []
+    if token_counter.count(text) <= max_tokens:
+        return [text]
+
+    pieces: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        # Largest end in (start, n] whose slice fits the budget, by binary search.
+        lo, hi = start + 1, n
+        best = start + 1  # always make progress with at least one char
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if token_counter.count(text[start:mid]) <= max_tokens:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        pieces.append(text[start:best])
+        start = best
+    return pieces
+
+
+class RecursiveCharacterChunker:
+    """Split text by characters with configurable size and overlap.
+
+    When ``max_tokens`` + ``token_counter`` are supplied, any emitted piece that
+    still exceeds the token budget (a char window of dense text can) is further
+    split by tokens so no chunk overflows the embedder context. With
+    ``max_tokens`` None the behaviour is the original char-only splitting.
+    """
+
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
+        *,
+        max_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
+    ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.max_tokens = max_tokens
+        self.token_counter = token_counter
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
@@ -67,11 +133,41 @@ class RecursiveCharacterChunker:
         start = 0
         while start < len(text):
             end = min(start + self.chunk_size, len(text))
-            chunks.append(_make_chunk(doc, start, end))
+            chunks.extend(self._emit(doc, start, end))
             if end == len(text):
                 break
             start = end - self.chunk_overlap
         return chunks
+
+    def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
+        """Emit the span, token-splitting it first if a budget is configured."""
+        if self.max_tokens is None or self.token_counter is None:
+            return [_make_chunk(doc, start, end)]
+        return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
+
+
+def _token_split_span(
+    doc: Document,
+    start: int,
+    end: int,
+    max_tokens: int,
+    token_counter: TokenCounter,
+) -> list[Chunk]:
+    """Make Chunk(s) for ``doc.content[start:end]``, splitting on the token budget.
+
+    The pieces from :func:`split_text_to_token_budget` tile the span gaplessly, so
+    each maps to a contiguous ``(start, start+len)`` char range — offsets still
+    reconstruct the source and chunk ids stay deterministic.
+    """
+    pieces = split_text_to_token_budget(doc.content[start:end], max_tokens, token_counter)
+    if len(pieces) <= 1:
+        return [_make_chunk(doc, start, end)]
+    out: list[Chunk] = []
+    cursor = start
+    for piece in pieces:
+        out.append(_make_chunk(doc, cursor, cursor + len(piece)))
+        cursor += len(piece)
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -162,24 +258,49 @@ class SentenceChunker:
     sentence and ``start_char``/``end_char`` reconstruct the source exactly.
 
     ``chunk_size == -1`` disables chunking (the whole document is one chunk).
+
+    When ``max_tokens`` + ``token_counter`` are supplied, packing is driven by the
+    token budget instead of the char budget (whole sentences accumulated until the
+    next would exceed ``max_tokens``), and any single over-budget sentence is
+    hard-split by tokens. With ``max_tokens`` None the char-budget behaviour is
+    unchanged.
     """
 
-    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 64) -> None:
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
+        *,
+        max_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
+    ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.max_tokens = max_tokens
+        self.token_counter = token_counter
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
         if not text:
             return []
         if self.chunk_size == -1:
+            # Disable chunking: emit the whole document as one logical chunk. With
+            # a token budget set, still token-split it so a chunk can't exceed the
+            # window (a long doc becomes its minimal set of <=budget pieces).
+            if self.max_tokens is not None and self.token_counter is not None:
+                return _token_split_span(
+                    doc, 0, len(text), self.max_tokens, self.token_counter
+                )
             return [_make_chunk(doc, 0, len(text))]
 
         spans = sentence_spans(text)
         if not spans:
             return [_make_chunk(doc, 0, len(text))]
 
-        return _pack_spans(doc, spans, self.chunk_size, self.chunk_overlap)
+        return _pack_spans(
+            doc, spans, self.chunk_size, self.chunk_overlap,
+            max_tokens=self.max_tokens, token_counter=self.token_counter,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -210,24 +331,47 @@ class WordChunker:
     Word boundaries are non-whitespace runs; trailing whitespace stays attached
     so spans tile the source and offsets reconstruct it exactly. ``chunk_size
     == -1`` disables chunking.
+
+    When ``max_tokens`` + ``token_counter`` are supplied, packing is driven by the
+    token budget instead of the char budget, and any single over-budget word is
+    hard-split by tokens. With ``max_tokens`` None the behaviour is unchanged.
     """
 
-    def __init__(self, chunk_size: int = 512, chunk_overlap: int = 64) -> None:
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
+        *,
+        max_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
+    ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.max_tokens = max_tokens
+        self.token_counter = token_counter
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
         if not text:
             return []
         if self.chunk_size == -1:
+            # Disable chunking: emit the whole document as one logical chunk. With
+            # a token budget set, still token-split it so a chunk can't exceed the
+            # window (a long doc becomes its minimal set of <=budget pieces).
+            if self.max_tokens is not None and self.token_counter is not None:
+                return _token_split_span(
+                    doc, 0, len(text), self.max_tokens, self.token_counter
+                )
             return [_make_chunk(doc, 0, len(text))]
 
         spans = word_spans(text)
         if not spans:
             return [_make_chunk(doc, 0, len(text))]
 
-        return _pack_spans(doc, spans, self.chunk_size, self.chunk_overlap)
+        return _pack_spans(
+            doc, spans, self.chunk_size, self.chunk_overlap,
+            max_tokens=self.max_tokens, token_counter=self.token_counter,
+        )
 
 
 def _pack_spans(
@@ -235,16 +379,32 @@ def _pack_spans(
     spans: list[tuple[int, int]],
     chunk_size: int,
     chunk_overlap: int,
+    *,
+    max_tokens: int | None = None,
+    token_counter: TokenCounter | None = None,
 ) -> list[Chunk]:
-    """Greedily pack consecutive unit spans (sentences/words) into chunks of at
-    most ~``chunk_size`` characters, then start the next chunk with a tail of
-    units whose combined length is <= ``chunk_overlap`` (sliding-window overlap).
+    """Greedily pack consecutive unit spans (sentences/words) into chunks, then
+    start the next chunk with a tail of units (sliding-window overlap).
+
+    The packing *budget* is either characters (default) or tokens. When
+    ``max_tokens`` + ``token_counter`` are given, a unit's "length" is its token
+    count (memoized per span to limit counter calls) and a chunk grows until
+    adding the next unit's tokens would exceed ``max_tokens``; the candidate
+    combined chunk is then verified against the exact joined-token count, and if a
+    single accumulated unit is itself over budget it's hard-split by tokens via
+    :func:`_token_split_span`. With ``max_tokens`` None this is the original
+    char-budget packing, byte-for-byte.
 
     Because units are consecutive and tile the source, each chunk's span is
     ``(units[first].start, units[last].end)`` — a contiguous char range that
     reconstructs that slice of the source exactly. Overlap re-emits earlier
     units, so chunk ranges may overlap (and their ids differ by start/end).
     """
+    use_tokens = max_tokens is not None and token_counter is not None
+    if use_tokens:
+        assert token_counter is not None and max_tokens is not None  # narrow for mypy
+        return _pack_spans_tokens(doc, spans, max_tokens, chunk_overlap, token_counter)
+
     chunks: list[Chunk] = []
     n = len(spans)
     i = 0
@@ -266,6 +426,85 @@ def _pack_spans(
         # Overlap: walk back from j accumulating units until we'd exceed
         # chunk_overlap chars, then resume there. Always make forward progress
         # (i advances by at least one unit) so overlap >= chunk_size can't loop.
+        if chunk_overlap > 0:
+            overlap = 0
+            k = j
+            while k > i + 1:
+                prev_len = spans[k - 1][1] - spans[k - 1][0]
+                if overlap + prev_len > chunk_overlap:
+                    break
+                overlap += prev_len
+                k -= 1
+            i = k if k > i else i + 1
+        else:
+            i = j
+    return chunks
+
+
+def _pack_spans_tokens(
+    doc: Document,
+    spans: list[tuple[int, int]],
+    max_tokens: int,
+    chunk_overlap: int,
+    token_counter: TokenCounter,
+) -> list[Chunk]:
+    """Token-budget variant of :func:`_pack_spans`.
+
+    Packs whole units while their *memoized per-span* running token sum stays
+    within ``max_tokens``. Each span is counted exactly once (via the ``tok_of``
+    memo), so total tokenization is O(k) per chunk rather than O(k^2). The
+    per-span sum *over*-counts the joined chunk (tokens that merge across a unit
+    seam are double-counted), so packing by the sum already **guarantees** the
+    emitted chunk is <= ``max_tokens`` — it just forgoes the seam-merge reclaim,
+    yielding occasionally slightly smaller chunks. A single unit that alone
+    exceeds the budget is hard-split by tokens so no text is dropped.
+
+    Overlap honours ``chunk_overlap`` **chars** with the same semantics as the
+    char path: after emitting a chunk, walk back from the end accumulating whole
+    trailing units until their combined char length would exceed ``chunk_overlap``,
+    then resume there. ``i`` always advances by at least one unit so a large
+    overlap can't loop.
+    """
+    text = doc.content
+    n = len(spans)
+    # Per-span token counts, memoized (a span is re-counted across overlap).
+    span_tok: dict[int, int] = {}
+
+    def tok_of(idx: int) -> int:
+        if idx not in span_tok:
+            s, e = spans[idx]
+            span_tok[idx] = token_counter.count(text[s:e])
+        return span_tok[idx]
+
+    chunks: list[Chunk] = []
+    i = 0
+    while i < n:
+        # Single unit already over budget → hard-split it and advance.
+        if tok_of(i) > max_tokens:
+            s, e = spans[i]
+            chunks.extend(_token_split_span(doc, s, e, max_tokens, token_counter))
+            i += 1
+            continue
+
+        cur_start = spans[i][0]
+        j = i + 1
+        # Grow by the memoized per-span running sum only (each span counted once).
+        # The sum >= the joined-token count, so staying <= max_tokens by the sum
+        # keeps the joined chunk <= max_tokens without any per-step recount.
+        running = tok_of(i)
+        while j < n:
+            nxt = tok_of(j)
+            if running + nxt > max_tokens:
+                break
+            running += nxt
+            j += 1
+        end = spans[j - 1][1]
+        chunks.append(_make_chunk(doc, cur_start, end))
+        if j >= n:
+            break
+        # Overlap: walk back from j accumulating whole trailing units until we'd
+        # exceed chunk_overlap chars, then resume there. Always make forward
+        # progress (i advances by at least one unit) so overlap can't loop.
         if chunk_overlap > 0:
             overlap = 0
             k = j
@@ -338,11 +577,25 @@ class SemanticChunker:
         buffer_size: int = 3,
         breakpoint_percentile_threshold: float = 80.0,
         min_chunk_length: int = 500,
+        *,
+        max_tokens: int | None = None,
+        token_counter: TokenCounter | None = None,
     ) -> None:
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
         self.breakpoint_percentile_threshold = breakpoint_percentile_threshold
         self.min_chunk_length = min_chunk_length
+        # When set, any semantic chunk over the token budget is split into
+        # <=max_tokens pieces by tokens — replacing the harness's ad-hoc char cap
+        # and guaranteeing no chunk overflows the embedder context.
+        self.max_tokens = max_tokens
+        self.token_counter = token_counter
+
+    def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
+        """Emit a semantic chunk span, token-splitting it if over budget."""
+        if self.max_tokens is None or self.token_counter is None:
+            return [_make_chunk(doc, start, end)]
+        return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
@@ -351,10 +604,10 @@ class SemanticChunker:
 
         spans = sentence_spans(text)
         if not spans:
-            return [_make_chunk(doc, 0, len(text))]
+            return self._emit(doc, 0, len(text))
         # A single sentence can't have an internal boundary.
         if len(spans) == 1:
-            return [_make_chunk(doc, 0, len(text))]
+            return self._emit(doc, 0, len(text))
 
         # Build overlapping buffers (as text) for similarity comparison.
         buffers: list[str] = []
@@ -378,7 +631,10 @@ class SemanticChunker:
             (spans[s][0], spans[e - 1][1]) for s, e in groups if e > s
         ]
         chunk_spans = self._merge_short(chunk_spans)
-        return [_make_chunk(doc, s, e) for s, e in chunk_spans]
+        out: list[Chunk] = []
+        for s, e in chunk_spans:
+            out.extend(self._emit(doc, s, e))
+        return out
 
     def _breakpoint_groups(
         self, distances: list[float], n_sentences: int
@@ -432,6 +688,8 @@ def make_chunker(
     buffer_size: int = 3,
     breakpoint_percentile_threshold: float = 80.0,
     min_chunk_length: int = 500,
+    max_tokens: int | None = None,
+    token_counter: TokenCounter | None = None,
 ):
     """Build the chunker named by ``method``.
 
@@ -440,13 +698,26 @@ def make_chunker(
     :class:`SemanticChunker` (which requires ``embed_fn``). The return type is
     the protocol :class:`ragstack.protocols.Chunker`; the concrete classes are
     not a common base, so it is left unannotated.
+
+    When ``max_tokens`` + ``token_counter`` are passed, every method sizes/caps by
+    tokens so no emitted chunk exceeds the embedder context. With them None the
+    char-budget behaviour is unchanged (back-compat).
     """
     if method == "fixed":
-        return RecursiveCharacterChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return RecursiveCharacterChunker(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            max_tokens=max_tokens, token_counter=token_counter,
+        )
     if method == "sentence":
-        return SentenceChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return SentenceChunker(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            max_tokens=max_tokens, token_counter=token_counter,
+        )
     if method == "words":
-        return WordChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return WordChunker(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            max_tokens=max_tokens, token_counter=token_counter,
+        )
     if method == "semantic":
         if embed_fn is None:
             raise ValueError("chunk_method='semantic' requires an embed_fn")
@@ -455,5 +726,6 @@ def make_chunker(
             buffer_size=buffer_size,
             breakpoint_percentile_threshold=breakpoint_percentile_threshold,
             min_chunk_length=min_chunk_length,
+            max_tokens=max_tokens, token_counter=token_counter,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")

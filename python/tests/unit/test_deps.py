@@ -123,6 +123,109 @@ def test_kg_extractor_built_when_enabled_with_llm(monkeypatch):
     assert extractor._max_triples_per_chunk == 7
 
 
+def _capture_make_chunker(monkeypatch):
+    """Patch deps.make_chunker to record the kwargs it was called with.
+
+    Returns the dict that will hold the captured call. Also stubs out the
+    semantic SyncEmbedBridge path is avoided by leaving chunk_method at its
+    default ("fixed"), so no embedder is built.
+    """
+    captured: dict = {}
+
+    def fake_make_chunker(method, **kwargs):
+        captured["method"] = method
+        captured.update(kwargs)
+        return object()  # a stand-in chunker; deps only returns it
+
+    monkeypatch.setattr(deps, "make_chunker", fake_make_chunker)
+    return captured
+
+
+def test_chunker_no_token_sizing_by_default(monkeypatch):
+    # Default (chunk_max_tokens=None): the token-sizing path is off — make_chunker
+    # gets max_tokens/token_counter=None and no token counter is built (no
+    # tokenizer load / endpoint probe at startup).
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", None)
+
+    def boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("make_token_counter must not run when feature is off")
+
+    monkeypatch.setattr(deps, "make_token_counter", boom)
+    monkeypatch.setattr(deps, "resolve_max_tokens", boom)
+    captured = _capture_make_chunker(monkeypatch)
+
+    chunker, bridge = deps._build_chunker()
+    assert bridge is None
+    assert captured["max_tokens"] is None
+    assert captured["token_counter"] is None
+
+
+def test_chunker_token_sizing_when_enabled(monkeypatch):
+    # chunk_max_tokens set: a TokenCounter is built and a resolved budget +
+    # counter are passed into make_chunker, so /v1/ingest caps chunks by tokens.
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", 256)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", ["http://emb-1:8000"])
+    monkeypatch.setattr(deps.settings, "embedding_model", "BAAI/bge-base")
+    monkeypatch.setattr(deps.settings, "openai_api_key", "sk-test")
+
+    sentinel_counter = object()
+    counter_calls: dict = {}
+    resolve_calls: dict = {}
+
+    def fake_make_token_counter(backend, **kwargs):
+        counter_calls["backend"] = backend
+        counter_calls.update(kwargs)
+        return sentinel_counter
+
+    def fake_resolve_max_tokens(explicit, **kwargs):
+        resolve_calls["explicit"] = explicit
+        resolve_calls.update(kwargs)
+        return 240
+
+    monkeypatch.setattr(deps, "make_token_counter", fake_make_token_counter)
+    monkeypatch.setattr(deps, "resolve_max_tokens", fake_resolve_max_tokens)
+    captured = _capture_make_chunker(monkeypatch)
+
+    deps._build_chunker()
+
+    # counter built from the configured backend + embedding endpoint/model/key
+    assert counter_calls["backend"] == "estimate"
+    assert counter_calls["model"] == "BAAI/bge-base"
+    assert counter_calls["base_url"] == "http://emb-1:8000"
+    assert counter_calls["api_key"] == "sk-test"
+    # budget resolved from the explicit override against the same endpoint
+    assert resolve_calls["explicit"] == 256
+    assert resolve_calls["base_url"] == "http://emb-1:8000"
+    # both threaded into make_chunker
+    assert captured["max_tokens"] == 240
+    assert captured["token_counter"] is sentinel_counter
+
+
+def test_chunker_token_sizing_falls_back_to_sidecar_url(monkeypatch):
+    # With no embedding_endpoints fan-out configured, the single
+    # embedding_sidecar_url is used as the budget/counter endpoint.
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", 128)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", [])
+    monkeypatch.setattr(deps.settings, "embedding_sidecar_url", "http://localhost:50053")
+
+    seen: dict = {}
+    monkeypatch.setattr(
+        deps, "make_token_counter", lambda backend, **kw: seen.update(kw) or object()
+    )
+    monkeypatch.setattr(
+        deps, "resolve_max_tokens", lambda explicit, **kw: 100
+    )
+    _capture_make_chunker(monkeypatch)
+
+    deps._build_chunker()
+    assert seen["base_url"] == "http://localhost:50053"
+
+
 def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
     import logging
 

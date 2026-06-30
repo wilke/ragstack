@@ -47,6 +47,14 @@ chunking = [
     # Vendor or download the punkt model: `python -m nltk.downloader punkt`.
     "nltk>=3.8",
 ]
+tokenization = [
+    # transformers.AutoTokenizer is the default token counter (HFTokenCounter):
+    # it loads the *embedding model's* tokenizer for an exact token count so
+    # chunks can be sized/capped to the model context (e.g. SFR-Mistral 4096).
+    # Lazy-imported; the endpoint (/tokenize) and char-ratio backends need no
+    # extra deps, so this is opt-in. torch is NOT required for tokenizing.
+    "transformers>=4.40",
+]
 queue = [
     "celery[redis]>=5.4",
     "redis>=5.0",
@@ -69,7 +77,7 @@ dev = [
     "jsonschema>=4.22",
 ]
 all = [
-    "ragstack[vector,pdf,postgres,text,graph,embeddings,chunking,queue,observability]",
+    "ragstack[vector,pdf,postgres,text,graph,embeddings,chunking,tokenization,queue,observability]",
 ]
 
 [tool.setuptools.packages.find]

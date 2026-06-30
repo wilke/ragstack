@@ -64,6 +64,7 @@ from ragstack.ingestion.chunkers import make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.qdrant import QdrantVectorStore, collection_name
@@ -214,6 +215,39 @@ def _build_embedder(args: argparse.Namespace, http: httpx.AsyncClient):
     return make_embedder(base_url=args.embedding_url[0], **common)
 
 
+async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
+    """Embed each chunk's content, returning the chunks that embedded (with
+    ``.embedding`` set).
+
+    Backstop: when the embedder exposes ``embed_isolated`` (the single-endpoint
+    ``BatchingEmbedder``), a 4xx / over-context-window chunk is bisected out and
+    **dropped** with a warning rather than failing the whole batch — so one
+    oversized chunk (e.g. an estimate-counter undercount) can't abort a long
+    ingest. Infra failures (5xx / network) still raise and leave the batch for
+    ``--resume``. The pooled fan-out has no ``embed_isolated`` and keeps the prior
+    all-or-nothing behaviour."""
+    texts = [c.content for c in chunks]
+    if hasattr(embedder, "embed_isolated"):
+        vecs, quarantined = await embedder.embed_isolated(texts)
+        kept: list[Chunk] = []
+        for c, v in zip(chunks, vecs, strict=True):
+            if v is None:
+                continue
+            c.embedding = v
+            kept.append(c)
+        if quarantined:
+            print(
+                f"  warn: dropped {quarantined} unembeddable chunk(s) "
+                "(over context window / bad input); continuing",
+                file=sys.stderr,
+            )
+        return kept
+    vecs = await embedder.embed(texts)
+    for c, v in zip(chunks, vecs, strict=True):
+        c.embedding = v
+    return chunks
+
+
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
@@ -229,6 +263,32 @@ async def run(args: argparse.Namespace) -> None:
     embed_bridge: SyncEmbedBridge | None = None
     if args.chunk_method == "semantic":
         embed_bridge = SyncEmbedBridge(lambda http: _build_embedder(args, http))
+    # Token budget: size/cap chunks so none exceeds the embedder's context window.
+    # The counter is the embedding model's tokenizer by default (--chunk-token-counter
+    # hf); the budget is auto-detected from the endpoint's max_model_len unless
+    # --chunk-max-tokens overrides it. Cheap/lazy, so build it for every method.
+    embed_base_url = args.embedding_url[0] if args.embedding_url else None
+    embed_api_key = args.embedding_api_key or os.getenv("OPENAI_API_KEY")
+    # The 'hf' and 'endpoint' backends need a model name (the embedding model's
+    # tokenizer). When none is configured (e.g. the BGE sidecar path doesn't pass
+    # --embedding-model), fall back to the zero-dep estimator so sizing still works.
+    token_backend = args.chunk_token_counter
+    if token_backend in ("hf", "endpoint") and not args.embedding_model:
+        print(
+            f"[ingest] --chunk-token-counter {token_backend} needs --embedding-model; "
+            "falling back to 'estimate'.",
+            file=sys.stderr,
+        )
+        token_backend = "estimate"
+    token_counter = make_token_counter(
+        token_backend,
+        model=args.embedding_model,
+        base_url=embed_base_url,
+        api_key=embed_api_key,
+    )
+    max_tokens = resolve_max_tokens(
+        args.chunk_max_tokens, base_url=embed_base_url, api_key=embed_api_key
+    )
     chunker = make_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -237,6 +297,8 @@ async def run(args: argparse.Namespace) -> None:
         buffer_size=args.chunk_buffer_size,
         breakpoint_percentile_threshold=args.chunk_breakpoint_percentile,
         min_chunk_length=args.chunk_min_length,
+        max_tokens=max_tokens,
+        token_counter=token_counter,
     )
     ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
@@ -304,26 +366,29 @@ async def run(args: argparse.Namespace) -> None:
                         return
                     seq, end_line, chunks, cat_rows = item
                     try:
-                        vecs = await embedder.embed([c.content for c in chunks])
-                        for c, v in zip(chunks, vecs, strict=True):
-                            c.embedding = v
+                        # Embed; an over-context/bad chunk is dropped (warned) rather
+                        # than failing the whole batch (see _embed_drop_bad). A fully
+                        # quarantined batch yields []; nothing to store but the seq
+                        # still completes so the checkpoint advances (no stall).
+                        kept = await _embed_drop_bad(embedder, chunks)
                         # Upsert FIRST. Deterministic chunk ids overwrite an
                         # unchanged doc's points in place, so plain upsert is correct
                         # for re-ingest and — critically — a failure here never
                         # deletes anything. (A prior delete-before-upsert ordering lost
                         # data when a filtered delete on a large collection timed out
                         # mid-batch: the delete landed, the upsert didn't.)
-                        await store.upsert(chunks)
-                        if text_index is not None:
-                            await text_index.index(chunks)
+                        if kept:
+                            await store.upsert(kept)
+                            if text_index is not None:
+                                await text_index.index(kept)
                         # Only an EDITED doc (shifted offsets → new chunk ids) leaves
                         # orphan points; prune them only when asked (--replace), and
                         # only AFTER the successful upsert above, by id (cost O(stale),
                         # not a collection-wide filtered delete). Bounded concurrency
                         # so a wide embed fan-out can't issue many heavy deletes at once.
-                        if args.replace:
+                        if args.replace and kept:
                             by_doc: dict[str, set[str]] = {}
-                            for c in chunks:
+                            for c in kept:
                                 by_doc.setdefault(c.doc_id, set()).add(c.id)
                             for doc_id, keep in by_doc.items():
                                 async with delete_sem:
@@ -343,7 +408,7 @@ async def run(args: argparse.Namespace) -> None:
                         continue
                     async with lock:
                         completed[seq] = (end_line, cat_rows)
-                        stats["chunks"] += len(chunks)
+                        stats["chunks"] += len(kept)
                         advanced = None
                         while next_seq in completed:
                             end_line_n, rows_n = completed.pop(next_seq)
@@ -499,6 +564,21 @@ def main() -> None:
                    help="semantic: distance percentile above which a chunk boundary is placed")
     p.add_argument("--chunk-min-length", type=int, default=500,
                    help="semantic: merge chunks shorter than this many chars into a neighbor")
+    # Token-based sizing: keep every chunk within the embedder's context window.
+    p.add_argument("--chunk-max-tokens", type=int, default=None,
+                   help="the embedding model's context window in tokens. The chunker "
+                        "keeps a small reserve below it (for BOS/EOS specials) and caps "
+                        "every chunk to that budget. Default None = auto-detect the "
+                        "window from the endpoint's max_model_len (falls back to 4096 if "
+                        "it can't be probed). A given value is treated as the window, so "
+                        "the reserve is subtracted from it too.")
+    p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
+                   default="hf",
+                   help="how to count tokens: 'hf' loads the embedding model's "
+                        "AutoTokenizer (exact, default), 'endpoint' POSTs /tokenize to the "
+                        "embedding URL, 'estimate' uses a chars/token heuristic (zero deps). "
+                        "'hf'/'endpoint' need --embedding-model; without it sizing falls "
+                        "back to 'estimate'.")
     p.add_argument("--batch-size", type=int, default=128, help="chunks embedded/upserted per batch")
     p.add_argument("--concurrency", type=int, default=1,
                    help="in-flight batches embedded+upserted in parallel; set >1 to fan out "

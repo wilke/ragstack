@@ -46,6 +46,7 @@ import statistics
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -53,9 +54,14 @@ from pathlib import Path
 import httpx
 
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import RecursiveCharacterChunker, make_chunker
+from ragstack.ingestion.chunkers import make_chunker, split_text_to_token_budget
 from ragstack.ingestion.enrich import ARTICLE, enrich, index_metadata
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.tokenization import (
+    TokenCounter,
+    make_token_counter,
+    resolve_max_tokens,
+)
 from ragstack.models import Chunk, Document
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.scoring.scorers import SidecarReranker
@@ -99,15 +105,15 @@ def _store_name(mode: str) -> str:
     return f"{_PREFIX}_{mode}"
 
 
-# SFR's context window is 4096 tokens. This corpus is dense scientific text that
-# tokenizes at ~2.45 chars/token (probed against the live endpoint), so 4096 tokens
-# is as little as ~10k chars — and some passages (tables, references, formulae) are
-# denser still. We use a conservative 4000-char budget (SAFE_CHUNK_CHARS, well
-# under the ~10k ceiling); chunks above it are split
-# with a RecursiveCharacterChunker before embedding (text preserved, just
-# re-segmented). A defensive bisect + iterative shrink guards the rare batch that
-# still trips the 400 token-limit error so a single chunk can't abort the run.
-SAFE_CHUNK_CHARS = 4000
+# SFR's context window is 4096 tokens. Rather than approximate it with a char cap
+# (this corpus is dense scientific text at ~2.45 chars/token, and some passages —
+# tables, references, formulae — are denser still), chunks are sized/capped by
+# *tokens*: any chunk over MAX_TOKENS is split to <=MAX_TOKENS pieces by tokens
+# before embedding (text preserved, just re-segmented). MAX_TOKENS + TOKEN_COUNTER
+# are set from the live endpoint in main(). A defensive bisect + iterative shrink
+# still guards the rare batch that trips a 400 so a single chunk can't abort the run.
+MAX_TOKENS = VECTOR_SIZE  # placeholder; overwritten from the endpoint in main()
+TOKEN_COUNTER: TokenCounter | None = None
 
 EMBED_BATCH = 64
 EMBED_CONCURRENCY = 8  # bounded in-flight embed requests across endpoints
@@ -206,8 +212,10 @@ async def _embed_one_batch(
     sem: asyncio.Semaphore,
 ) -> list[list[float]]:
     """Embed one batch, bisecting on a 400 to isolate an over-budget input and, as
-    a last resort, truncating a single offending text to SAFE_CHUNK_CHARS so the
-    run never aborts. Order-preserving."""
+    a last resort, truncating a single offending text by char caps so the run never
+    aborts. With token-based sizing this path should essentially never fire (chunks
+    are pre-capped to the token budget); it remains a defensive backstop.
+    Order-preserving."""
     async with sem:
         try:
             return await _post_embeddings(client, base_url, texts)
@@ -231,7 +239,7 @@ async def _embed_one_batch(
                     vecs = await _post_embeddings(client, base_url, [cand])
                 print(
                     f"[embed] shrank over-budget chunk to {len(cand)} chars "
-                    f"to fit SFR/4096",
+                    f"to fit the SFR token window",
                     flush=True,
                 )
                 return vecs
@@ -328,25 +336,43 @@ def make_sync_embed_fn():
 # Oversize cap
 # --------------------------------------------------------------------------- #
 def cap_oversized(chunks: list[Chunk]) -> tuple[list[Chunk], int]:
-    """Split any chunk whose content exceeds SAFE_CHUNK_CHARS into <=budget pieces
-    using a RecursiveCharacterChunker (no overlap). All text is preserved; doc_id
-    and deterministic ids are kept. Returns (capped_chunks, n_oversized)."""
-    splitter = RecursiveCharacterChunker(chunk_size=SAFE_CHUNK_CHARS, chunk_overlap=0)
+    """Split any chunk whose content exceeds the token budget (MAX_TOKENS) into
+    <=budget pieces by tokens (TOKEN_COUNTER). All text is preserved; doc_id and
+    deterministic ids are kept. Returns (capped_chunks, n_oversized).
+
+    Token-based replacement for the old SAFE_CHUNK_CHARS char cap: it guarantees
+    no chunk exceeds the embedder's *token* context, which a char cap could only
+    approximate. The split pieces tile each oversized chunk gaplessly, so the
+    re-derived ids (uuid5 of doc_id:start:end relative to the sub-document) stay
+    deterministic and re-runnable."""
+    assert TOKEN_COUNTER is not None, "TOKEN_COUNTER must be set before cap_oversized"
     out: list[Chunk] = []
     n_oversized = 0
     for c in chunks:
-        if len(c.content) <= SAFE_CHUNK_CHARS:
+        if TOKEN_COUNTER.count(c.content) <= MAX_TOKENS:
             out.append(c)
             continue
         n_oversized += 1
-        # Re-chunk the oversized content as its own mini-document so the resulting
-        # ids are deterministic (uuid5 of doc_id:start:end) and re-runnable.
-        sub_doc = Document(
-            id=c.doc_id, content=c.content, metadata=dict(c.metadata), source=""
-        )
-        for piece in splitter.chunk(sub_doc):
-            piece.metadata = dict(c.metadata)
-            out.append(piece)
+        # Split the oversized content by tokens; pieces tile the chunk gaplessly,
+        # so each maps to a contiguous [cursor, cursor+len) char range with a
+        # deterministic id (uuid5 of doc_id:start:end), re-runnable across runs.
+        pieces = split_text_to_token_budget(c.content, MAX_TOKENS, TOKEN_COUNTER)
+        cursor = 0
+        for piece in pieces:
+            out.append(
+                Chunk(
+                    id=str(uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{c.doc_id}:{cursor}:{cursor + len(piece)}",
+                    )),
+                    doc_id=c.doc_id,
+                    content=piece,
+                    metadata=dict(c.metadata),
+                    start_char=cursor,
+                    end_char=cursor + len(piece),
+                )
+            )
+            cursor += len(piece)
     return out, n_oversized
 
 
@@ -384,6 +410,8 @@ async def ingest_mode(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         embed_fn=embed_fn,
+        max_tokens=MAX_TOKENS,
+        token_counter=TOKEN_COUNTER,
     )
 
     t0 = time.perf_counter()
@@ -834,9 +862,9 @@ Generated by `scripts/eval/chunking_compare.py`.
 - **Chunk params:** `fixed`/`sentence` = chunk_size {args.chunk_size} / overlap
   {args.chunk_overlap}; `semantic` = buffer_size 3 / breakpoint percentile 80 /
   min_chunk_length 500.
-- **Oversize cap:** chunks > {SAFE_CHUNK_CHARS} chars are split (RecursiveCharacter,
-  no overlap) before embedding so they fit the SFR 4096-token window. Capped counts
-  are reported below (a real semantic cost).
+- **Oversize cap:** chunks over the token budget ({MAX_TOKENS} tokens, auto-detected
+  from the endpoint's `max_model_len`) are split by tokens before embedding so they
+  fit the SFR window exactly. Capped counts are reported below (a real semantic cost).
 - **Retrieval:** `HybridRetriever` (Qdrant dense + ES BM25, RRF fusion), tenant
   `public`, isolated `chunkcmp_<mode>` stores. Reranked pass pulls a
   {args.rerank_pool}-candidate pool and reranks with the crossencoder sidecar
@@ -942,6 +970,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--chunk-size", type=int, default=512)
     p.add_argument("--chunk-overlap", type=int, default=64)
     p.add_argument(
+        "--chunk-max-tokens", type=int, default=None,
+        help="the embedding model's context window in tokens; the chunker keeps a "
+        "small reserve below it and caps every chunk to that budget. Default None = "
+        "auto-detect the window from the SFR endpoint's max_model_len. A given value "
+        "is treated as the window, so the reserve is subtracted from it too.",
+    )
+    p.add_argument(
+        "--chunk-token-counter", choices=["hf", "endpoint", "estimate"], default="hf",
+        help="token counter: 'hf' loads the SFR AutoTokenizer (exact, default), "
+        "'endpoint' POSTs /tokenize, 'estimate' uses a chars/token heuristic.",
+    )
+    p.add_argument(
         "--endpoints",
         default=None,
         help="comma-separated SFR embedding base URLs that override the built-in "
@@ -993,7 +1033,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _PREFIX, SFR_ENDPOINTS, EMBED_API_KEY
+    global _PREFIX, SFR_ENDPOINTS, EMBED_API_KEY, MAX_TOKENS, TOKEN_COUNTER
     args = parse_args(argv)
     if not args.collection_prefix.startswith("chunkcmp"):
         raise SystemExit(
@@ -1012,6 +1052,19 @@ def main(argv: list[str] | None = None) -> int:
             f"{', '.join(SFR_ENDPOINTS)}",
             flush=True,
         )
+    # Token budget + counter for sizing/capping chunks to the SFR window. The
+    # budget is auto-detected from the endpoint's max_model_len (override with
+    # --chunk-max-tokens); the counter defaults to the SFR AutoTokenizer.
+    TOKEN_COUNTER = make_token_counter(
+        args.chunk_token_counter,
+        model=SFR_MODEL,
+        base_url=SFR_ENDPOINTS[0],
+        api_key=EMBED_API_KEY,
+    )
+    MAX_TOKENS = resolve_max_tokens(
+        args.chunk_max_tokens, base_url=SFR_ENDPOINTS[0], api_key=EMBED_API_KEY
+    )
+    print(f"Token budget per chunk: {MAX_TOKENS} tokens.", flush=True)
     return asyncio.run(amain(args))
 
 
