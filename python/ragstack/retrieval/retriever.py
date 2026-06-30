@@ -34,6 +34,7 @@ class HybridRetriever:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
         use_graph: bool = True,
+        tenant_id: str | None = None,
     ) -> list[ScoredChunk]:
         # Dense retrieval
         query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
@@ -48,18 +49,26 @@ class HybridRetriever:
 
         # Optional graph-augmented context
         if use_graph and self.graph_store:
-            graph_chunks = await self._graph_context(query, top_k)
+            graph_chunks = await self._graph_context(query, top_k, tenant_id)
             if graph_chunks:
                 ranked_lists.append(graph_chunks)
 
         fused = self.rrf.fuse(ranked_lists)
         return fused[:top_k]
 
-    async def _graph_context(self, query: str, top_k: int) -> list[ScoredChunk]:
-        """Retrieve graph-neighbourhood context for entities in the query."""
+    async def _graph_context(
+        self, query: str, top_k: int, tenant_id: str | None = None
+    ) -> list[ScoredChunk]:
+        """Retrieve graph-neighbourhood context for entities in the query,
+        scoped to the caller's readable tenants. ``tenant_id`` is the caller's
+        own tenant (the store expands it to own + public); ``None`` means
+        unscoped (dev/tests), mirroring the vector/BM25 legs' filter handling.
+        """
         from ragstack.models import Chunk
 
-        triples = await self.graph_store.query_neighborhood(query, depth=1)  # type: ignore[union-attr]
+        triples = await self.graph_store.query_neighborhood(  # type: ignore[union-attr]
+            query, depth=1, tenant_id=tenant_id
+        )
         chunks = []
         for triple in triples[:top_k]:
             content = f"{triple.subject} {triple.predicate} {triple.object}"

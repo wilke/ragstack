@@ -134,6 +134,7 @@ async def _retrieve_fused(
     top_k: int,
     filters: dict[str, Any],
     use_graph: bool,
+    tenant: str | None = None,
     rerank: bool | None = None,
     rerank_candidates: int | None = None,
 ) -> list[ScoredChunk]:
@@ -159,13 +160,15 @@ async def _retrieve_fused(
         depth = top_k
     if len(variants) == 1:
         scored = await retriever.retrieve(
-            variants[0], top_k=depth, filters=filters, use_graph=use_graph
+            variants[0], top_k=depth, filters=filters, use_graph=use_graph, tenant_id=tenant
         )
     else:
         # Independent retrievals run concurrently — latency is one retrieve, not N.
         ranked = await asyncio.gather(
             *(
-                retriever.retrieve(v, top_k=depth, filters=filters, use_graph=use_graph)
+                retriever.retrieve(
+                    v, top_k=depth, filters=filters, use_graph=use_graph, tenant_id=tenant
+                )
                 for v in variants
             )
         )
@@ -216,6 +219,7 @@ async def retrieve(
         request.top_k,
         scope_filters(request.filters, tenant),
         request.use_graph,
+        tenant=tenant,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
     )
@@ -257,6 +261,7 @@ async def query(
         request.top_k,
         filters,
         request.use_graph,
+        tenant=tenant,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
     )

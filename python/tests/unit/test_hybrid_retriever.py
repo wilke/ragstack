@@ -1,8 +1,9 @@
 """HybridRetriever fuses vector + BM25 and scopes both legs by tenant."""
 import pytest
 
-from ragstack.models import Chunk, ScoredChunk
+from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.retrieval.retriever import HybridRetriever
+from ragstack.stores.memory import InMemoryGraphStore
 
 
 class _FakeVectorStore:
@@ -55,3 +56,28 @@ async def test_hybrid_respects_top_k():
     retriever = HybridRetriever(_FakeVectorStore(chunks), _FakeTextIndex(chunks), _FakeEmbedder())
     fused = await retriever.retrieve("q", top_k=3, use_graph=False)
     assert len(fused) == 3
+
+
+@pytest.mark.asyncio
+async def test_graph_leg_never_leaks_another_tenants_triples():
+    """The graph leg must be tenant-scoped like the vector/BM25 legs: a caller's
+    ``use_graph=True`` retrieval must never surface another tenant's triples
+    (regression guard for issue #38 — the latent cross-tenant graph leak)."""
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="acme", predicate="owns", object="widget",
+               doc_id="d-alice", tenant_id="alice"),
+        Triple(subject="acme", predicate="owns", object="secret",
+               doc_id="d-bob", tenant_id="bob"),
+    ])
+    # No vector/BM25 hits — the graph leg is the only source of results.
+    retriever = HybridRetriever(
+        _FakeVectorStore([]), _FakeTextIndex([]), _FakeEmbedder(), graph_store=graph
+    )
+
+    fused = await retriever.retrieve("acme", top_k=5, use_graph=True, tenant_id="alice")
+
+    contents = {r.chunk.content for r in fused}
+    assert any("widget" in c for c in contents)  # alice sees her own triple
+    assert not any("secret" in c for c in contents)  # bob's triple never leaks
+    assert all("d-bob" != r.chunk.doc_id for r in fused)
