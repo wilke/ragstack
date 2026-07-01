@@ -1104,33 +1104,19 @@ def build_significance_section(eval_stats: dict) -> str:
     Wilcoxon test on per-query reciprocal-rank deltas vs the reference.
     """
     ref = STATS_REFERENCE if STATS_REFERENCE in eval_stats else CONFIG_KEYS[0]
-    # Per-query metric arrays, keyed metric -> config -> [per query].
-    hybrid_rr = {
-        k: [_stats.reciprocal_rank(r, cap=10) for r in eval_stats[k]["hybrid_ranks"]]
-        for k in CONFIG_KEYS
-    }
-    hybrid_r5 = {
-        k: [_stats.hit_at_k(r, 5) for r in eval_stats[k]["hybrid_ranks"]]
-        for k in CONFIG_KEYS
-    }
-    hybrid_ndcg = {
-        k: [_stats.dcg_single(r, 10) for r in eval_stats[k]["hybrid_ranks"]]
-        for k in CONFIG_KEYS
-    }
-    rer_rr = {
-        k: [_stats.reciprocal_rank(r, cap=10) for r in eval_stats[k]["reranked_ranks"]]
-        for k in CONFIG_KEYS
-    }
-    rer_r5 = {
-        k: [_stats.hit_at_k(r, 5) for r in eval_stats[k]["reranked_ranks"]]
-        for k in CONFIG_KEYS
-    }
+
+    # Per-query metric arrays, keyed metric -> config -> [per query]. ``_pq`` maps a
+    # per-config rank array (``rank_key``) through a scalar metric ``fn``.
+    def _pq(rank_key: str, fn):
+        return {k: [fn(r) for r in eval_stats[k][rank_key]] for k in CONFIG_KEYS}
+
+    rer_rr = _pq("reranked_ranks", lambda r: _stats.reciprocal_rank(r, cap=10))
     metrics = {
-        "hybrid MRR@10": hybrid_rr,
-        "hybrid recall@5": hybrid_r5,
-        "hybrid nDCG@10": hybrid_ndcg,
+        "hybrid MRR@10": _pq("hybrid_ranks", lambda r: _stats.reciprocal_rank(r, cap=10)),
+        "hybrid recall@5": _pq("hybrid_ranks", lambda r: _stats.hit_at_k(r, 5)),
+        "hybrid nDCG@10": _pq("hybrid_ranks", lambda r: _stats.dcg_single(r, 10)),
         "rerank MRR@10": rer_rr,
-        "rerank recall@5": rer_r5,
+        "rerank recall@5": _pq("reranked_ranks", lambda r: _stats.hit_at_k(r, 5)),
     }
     # Primary metric = reranked MRR@10; RR deltas for the Wilcoxon test.
     table, interp = _stats.build_stats_table(
@@ -1138,7 +1124,7 @@ def build_significance_section(eval_stats: dict) -> str:
     )
     return (
         f"Reference config = `{ref}`. 95% CIs are paired bootstraps over the "
-        f"{len(hybrid_rr[ref])} eval queries (10,000 iters, seed 0). The "
+        f"{len(rer_rr[ref])} eval queries (10,000 iters, seed 0). The "
         f"`Δrerank MRR@10` column is the paired bootstrap difference vs the "
         f"reference; the Wilcoxon column is a Holm–Bonferroni-corrected signed-rank "
         f"test on per-query reciprocal-rank deltas.\n\n"

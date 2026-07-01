@@ -285,7 +285,7 @@ def build_stats_table(
     reference: str,
     metrics: dict[str, dict[str, list[float]]],
     primary_metric: str,
-    rr_per_query: dict[str, list[float]],
+    delta_per_query: dict[str, list[float]],
     iters: int = BOOTSTRAP_ITERS,
     seed: int = SEED,
 ) -> tuple[str, str]:
@@ -294,8 +294,9 @@ def build_stats_table(
     ``metrics`` maps metric-name → {config → per-query list}. For every metric we
     emit each config's ``point [lo, hi]`` (paired bootstrap CI). We additionally
     compute, for ``primary_metric``, the pairwise **difference** CI vs the
-    ``reference`` and a Wilcoxon test on the per-query reciprocal-rank deltas
-    (``rr_per_query``) with Holm–Bonferroni correction, marking each config as
+    ``reference`` and a Wilcoxon test on the primary metric's per-query deltas
+    (``delta_per_query`` — reciprocal rank for the known-item harness, nDCG for
+    SciFact) with Holm–Bonferroni correction, marking each config as
     distinguishable (``*``) or not from the reference.
 
     Returns ``(markdown_table, interpretation_line)``.
@@ -307,12 +308,12 @@ def build_stats_table(
     diff_ci = bootstrap_diff_ci(
         metrics[primary_metric], reference, iters=iters, seed=seed
     )
-    # Wilcoxon on reciprocal-rank deltas vs reference, Holm-corrected.
+    # Wilcoxon on the primary metric's per-query deltas vs reference, Holm-corrected.
     raw_p: dict[str, float] = {}
     for k in config_keys:
         if k == reference:
             continue
-        _, p = wilcoxon_signed_rank(rr_per_query[k], rr_per_query[reference])
+        _, p = wilcoxon_signed_rank(delta_per_query[k], delta_per_query[reference])
         raw_p[k] = p
     holm = holm_bonferroni(raw_p) if raw_p else {}
 

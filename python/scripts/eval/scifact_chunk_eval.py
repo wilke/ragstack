@@ -68,7 +68,7 @@ import chunking_compare_7way as c7  # noqa: E402
 
 CACHE_DIR = Path(os.environ.get("HF_HOME", "/rag/cache"))
 SCIFACT_PREFIX = "scifact_m7"
-STATS_REFERENCE = "fixed_tok512"
+STATS_REFERENCE = c7.STATS_REFERENCE  # single source of truth: the 7-way harness
 REPORT_PATH = _HERE / "scifact_chunk_eval_report.md"
 CSV_PATH = _HERE / "scifact_chunk_eval_results.csv"
 
@@ -104,6 +104,17 @@ def load_scifact() -> tuple[
     )
 
 
+def _make_doc(did: str, title: str, text: str) -> Document | None:
+    """Assemble one SciFact corpus Document (title + text); None if empty."""
+    title, text = title.strip(), text.strip()
+    content = f"{title}\n{text}".strip() if title else text
+    if not content:
+        return None
+    return Document(id=did, content=content,
+                    metadata={"tenant_id": c7.TENANT, "title": title},
+                    source=f"scifact:{did}")
+
+
 def _load_via_datasets():
     from datasets import load_dataset
 
@@ -114,17 +125,9 @@ def _load_via_datasets():
 
     corpus_docs: list[Document] = []
     for row in corpus_ds:
-        did = str(row["_id"])
-        title = (row.get("title") or "").strip()
-        text = (row.get("text") or "").strip()
-        content = f"{title}\n{text}".strip() if title else text
-        if not content:
-            continue
-        corpus_docs.append(
-            Document(id=did, content=content,
-                     metadata={"tenant_id": c7.TENANT, "title": title},
-                     source=f"scifact:{did}")
-        )
+        doc = _make_doc(str(row["_id"]), row.get("title") or "", row.get("text") or "")
+        if doc is not None:
+            corpus_docs.append(doc)
 
     qrels: dict[str, dict[str, int]] = {}
     for row in qrels_ds:
@@ -159,15 +162,9 @@ def _load_via_beir():
     )
     corpus_docs: list[Document] = []
     for did, doc in corpus.items():
-        title = (doc.get("title") or "").strip()
-        text = (doc.get("text") or "").strip()
-        content = f"{title}\n{text}".strip() if title else text
-        if content:
-            corpus_docs.append(
-                Document(id=str(did), content=content,
-                         metadata={"tenant_id": c7.TENANT, "title": title},
-                         source=f"scifact:{did}")
-            )
+        cd = _make_doc(str(did), doc.get("title") or "", doc.get("text") or "")
+        if cd is not None:
+            corpus_docs.append(cd)
     qrels = {str(q): {str(d): int(s) for d, s in rels.items() if int(s) > 0}
              for q, rels in qrels_raw.items()}
     queries = {str(q): (t, "") for q, t in queries_raw.items() if str(q) in qrels}
@@ -180,15 +177,10 @@ def _load_via_ir_datasets():
     ds = ir_datasets.load("beir/scifact/test")
     corpus_docs: list[Document] = []
     for doc in ds.docs_iter():
-        title = (getattr(doc, "title", "") or "").strip()
-        text = (getattr(doc, "text", "") or "").strip()
-        content = f"{title}\n{text}".strip() if title else text
-        if content:
-            corpus_docs.append(
-                Document(id=str(doc.doc_id), content=content,
-                         metadata={"tenant_id": c7.TENANT, "title": title},
-                         source=f"scifact:{doc.doc_id}")
-            )
+        cd = _make_doc(str(doc.doc_id), getattr(doc, "title", "") or "",
+                       getattr(doc, "text", "") or "")
+        if cd is not None:
+            corpus_docs.append(cd)
     qrels: dict[str, dict[str, int]] = {}
     for qr in ds.qrels_iter():
         if qr.relevance > 0:
@@ -304,13 +296,7 @@ async def evaluate_config(
 
     def _ranked_docs(chunk_doc_ids: list[str]) -> list[str]:
         """Collapse a ranked chunk list to unique doc_ids, best-rank-first."""
-        seen: set[str] = set()
-        out: list[str] = []
-        for did in chunk_doc_ids:
-            if did not in seen:
-                seen.add(did)
-                out.append(did)
-        return out
+        return list(dict.fromkeys(chunk_doc_ids))
 
     async def _eval_one(qid: str):
         query = queries[qid][0]
