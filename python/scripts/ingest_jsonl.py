@@ -365,7 +365,13 @@ async def run(args: argparse.Namespace) -> None:
     # backend on a background loop. Built only for semantic; closed at run() exit.
     embed_bridge: SyncEmbedBridge | None = None
     if args.chunk_method == "semantic":
-        embed_bridge = SyncEmbedBridge(lambda http: _build_embedder(args, http))
+        # batch_size lets the bridge fan one document's sentence-buffer embed out
+        # into concurrent sub-batch calls, which the pooled embedder spreads across
+        # all --embedding-url endpoints (otherwise the single per-doc call pins one
+        # GPU). Matches the ingest --batch-size for a consistent request granularity.
+        embed_bridge = SyncEmbedBridge(
+            lambda http: _build_embedder(args, http), batch_size=args.batch_size
+        )
     # Token budget: size/cap chunks so none exceeds the embedder's context window.
     # The counter is the embedding model's tokenizer by default (--chunk-token-counter
     # hf); the budget is auto-detected from the endpoint's max_model_len unless

@@ -47,6 +47,65 @@ async def test_bridge_runs_embed_on_its_own_loop_from_within_running_loop():
         bridge.close()
 
 
+class _CountingOrderedEmbedder:
+    """Embeds each text to a single-element vector = its running global index, so
+    the flattened result reveals both the ORDER and how many calls were made."""
+
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self.http = http
+        self.calls = 0
+        self.max_concurrent = 0
+        self._active = 0
+
+    async def embed(self, texts):
+        self.calls += 1
+        self._active += 1
+        self.max_concurrent = max(self.max_concurrent, self._active)
+        # yield so concurrent sub-batches actually overlap on the loop
+        await asyncio.sleep(0.01)
+        self._active -= 1
+        # tag each text with its content (an int) so order is checkable
+        return [[float(t)] for t in texts]
+
+
+@pytest.mark.asyncio
+async def test_fanout_splits_into_concurrent_subbatches_preserving_order():
+    made = {}
+
+    def factory(http):
+        made["e"] = _CountingOrderedEmbedder(http)
+        return made["e"]
+
+    bridge = SyncEmbedBridge(factory, batch_size=4)
+    try:
+        texts = [str(i) for i in range(10)]  # 10 -> ceil(10/4)=3 sub-batches
+        out = await asyncio.to_thread(bridge, texts)
+    finally:
+        bridge.close()
+    # order preserved end-to-end (this is what keeps breakpoints byte-identical)
+    assert out == [[float(i)] for i in range(10)]
+    e = made["e"]
+    assert e.calls == 3  # split into 3 sub-batches, not 1
+    assert e.max_concurrent >= 2  # dispatched concurrently, not serially
+
+
+@pytest.mark.asyncio
+async def test_fanout_single_call_for_small_lists():
+    made = {}
+
+    def factory(http):
+        made["e"] = _CountingOrderedEmbedder(http)
+        return made["e"]
+
+    bridge = SyncEmbedBridge(factory, batch_size=64)
+    try:
+        out = await asyncio.to_thread(bridge, [str(i) for i in range(5)])
+    finally:
+        bridge.close()
+    assert out == [[float(i)] for i in range(5)]
+    assert made["e"].calls == 1  # <= batch_size -> exactly one call, no overhead
+
+
 @pytest.mark.asyncio
 async def test_bridge_reuses_one_loop_across_calls():
     loops = []
