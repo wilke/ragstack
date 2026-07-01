@@ -81,7 +81,7 @@ chunks/s are over 1500 docs.
 
 **(c) Does any method beat the cheap fixed baseline at full token-safety?** Baseline `fixed_char512` reranked recall@5 0.902. Best token-safe config `fixed_tok256` = 0.905 (delta +0.003). Every non-baseline config is token-capped at 4080 so none can overflow the SFR window.
 
-**(d) Per-config token-overflow (chunks that exceeded 4080 tokens and had to be split):** fixed_char512=0, fixed_char2048=0, fixed_tok256=0, fixed_tok512=0, sentence_tok512=0, words_tok512=0, semantic_tokcap=0. This is the token-safety payoff: the char configs and semantic are where un-capped chunking would have sent over-window text to the embedder; the token-sized configs never overflow by construction.
+**(d) Per-config token-overflow (chunks over the 4080-token cap that the post-chunk `cap_oversized` net had to split):** fixed_char512=0, fixed_char2048=0, fixed_tok256=0, fixed_tok512=0, sentence_tok512=0, words_tok512=0, semantic_tokcap=0. Every config is 0 by construction: each chunker already enforces its own token cap (<= 4080) — char configs via `max_tokens`, token/sentence/word configs via their token budget, semantic via its token cap — so no chunk ever reaches `cap_oversized` over-budget. These 0s confirm the in-chunker caps hold; they are NOT a measurement of how far an un-capped method would overflow (this harness never runs one). The real safety evidence is the `max tok` column, where no config exceeds 4080: fixed_char512=513, fixed_char2048=2049, fixed_tok256=259, fixed_tok512=514, sentence_tok512=513, words_tok512=526, semantic_tokcap=4080.
 
 ## Recommendation
 

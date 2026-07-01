@@ -1028,11 +1028,19 @@ def _findings(ingest_stats: dict, eval_stats: dict) -> str:
     )
     # (d) overflow counts.
     ov = ", ".join(f"{k}={ingest_stats[k]['n_capped']}" for k in CONFIG_KEYS)
+    max_tok = ", ".join(
+        f"{k}={ingest_stats[k]['max_tokens_seen']}" for k in CONFIG_KEYS
+    )
     lines.append(
-        f"**(d) Per-config token-overflow (chunks that exceeded 4080 tokens and had "
-        f"to be split):** {ov}. This is the token-safety payoff: the char configs and "
-        f"semantic are where un-capped chunking would have sent over-window text to "
-        f"the embedder; the token-sized configs never overflow by construction."
+        f"**(d) Per-config token-overflow (chunks over the {HARD_CAP_TOKENS}-token cap "
+        f"that the post-chunk `cap_oversized` net had to split):** {ov}. Every config is "
+        f"0 by construction: each chunker already enforces its own token cap "
+        f"(<= {HARD_CAP_TOKENS}) — char configs via `max_tokens`, token/sentence/word "
+        f"configs via their token budget, semantic via its token cap — so no chunk ever "
+        f"reaches `cap_oversized` over-budget. These 0s confirm the in-chunker caps hold; "
+        f"they are NOT a measurement of how far an un-capped method would overflow (this "
+        f"harness never runs one). The real safety evidence is the `max tok` column, where "
+        f"no config exceeds {HARD_CAP_TOKENS}: {max_tok}."
     )
     return "\n\n".join(lines)
 
