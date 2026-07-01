@@ -163,37 +163,77 @@ char-512) in which all three tied at ~0.88–0.90 recall, `fixed` was cheapest, 
 **Decision rule.** Recommend the cheapest configuration that is statistically tied with the best on
 reranked recall@5 / MRR@10. (Prediction: a small/standard *fixed* token config.)
 
-## 6. Results (TO BE POPULATED)
+## 6. Results
 
-> _Pending the 7-config run (1,500-doc subset, 1,000-query eval, 16-GPU SFR fleet). The harness writes
-> `chunking_compare_7way_report.md` + CSV; those numbers drop in here._
+*1,500 docs (500 balanced per shard) · 1,000 known-item queries · SFR/4096 across 16 vLLM endpoints.*
 
-**6.1 Retrieval quality**
+**6.1 Retrieval quality** (all within a ~0.01 band — differences are at/below noise)
 
 | config | recall@1 | recall@5 | recall@10 | MRR@10 | nDCG@10 | rerank R@5 | rerank MRR | mean rerank |
 |---|---|---|---|---|---|---|---|---|
-| fixed_char512 | … | | | | | | | |
-| fixed_char2048 | … | | | | | | | |
-| fixed_tok256 | … | | | | | | | |
-| fixed_tok512 | … | | | | | | | |
-| sentence_tok512 | … | | | | | | | |
-| words_tok512 | … | | | | | | | |
-| semantic_tokcap | … | | | | | | | |
+| fixed_char512 | 0.880 | 0.898 | 0.903 | 0.889 | 0.892 | 0.902 | 0.891 | 8.280 |
+| fixed_char2048 | 0.885 | **0.905** | **0.912** | **0.894** | **0.898** | 0.900 | **0.894** | 7.396 |
+| fixed_tok256 | 0.882 | 0.898 | 0.903 | 0.890 | 0.893 | **0.905** | 0.893 | **8.315** |
+| **fixed_tok512** | 0.883 | 0.897 | 0.905 | 0.890 | 0.893 | 0.902 | **0.894** | 7.861 |
+| sentence_tok512 | 0.884 | 0.897 | 0.903 | 0.891 | 0.894 | 0.902 | 0.892 | 7.937 |
+| words_tok512 | 0.885 | 0.899 | 0.904 | 0.892 | 0.895 | 0.899 | 0.890 | 8.180 |
+| semantic_tokcap | **0.886** | 0.897 | 0.905 | 0.892 | 0.895 | 0.898 | 0.891 | 7.536 |
 
 **6.2 Structure & cost**
 
-| config | #chunks | chunks/doc | median chars | median tokens | p95 tokens | over-cap | ingest s | chunks/s |
+| config | #chunks | chunks/doc | median chars | median tok | p95 tok | **over-cap** | ingest s | chunks/s |
 |---|---|---|---|---|---|---|---|---|
-| … | | | | | | | | |
+| fixed_char512 | 149,677 | 99.8 | 512 | 171 | 261 | **0** | 566 | 264 |
+| fixed_char2048 | 37,832 | 25.2 | 2048 | 681 | 1000 | **0** | 210 | 180 |
+| fixed_tok256 | 108,032 | 72.0 | 722 | 257 | 257 | **0** | 426 | 253 |
+| fixed_tok512 | 54,270 | 36.2 | 1456 | 513 | 513 | **0** | 261 | 208 |
+| sentence_tok512 | 58,099 | 38.7 | 1276 | 475 | 504 | **0** | 292 | 199 |
+| words_tok512 | 77,264 | 51.5 | 1046 | 367 | 419 | **0** | 530 | 146 |
+| semantic_tokcap | 29,536 | 19.7 | 1573 | 521 | **2749** | **0** | **1529** | **19** |
 
-**6.3 The three contrasts** (to fill from results):
-- (a) char vs token *unit*, size-matched (#2 vs #4): …
-- (b) chunk *size* (#3 vs #4): …
-- (c) boundary strategy at a common budget (#4 vs #5/#6/#7): …
-- (d) overflow eliminated (per-config over-cap counts): …
+**6.3 The three contrasts**
+- **(a) char vs token *unit*, size-matched (#2 vs #4):** second-order. `fixed_char2048` (median 681 tok)
+  ≈ `fixed_tok512` (513 tok): reranked recall@5 0.900 vs 0.902. The token window buys
+  **determinism + a guaranteed cap**, not accuracy.
+- **(b) chunk *size* (#3 vs #4):** barely matters for known-item retrieval — 0.905 vs 0.902 reranked
+  recall@5, at 2× the chunks (72 vs 36/doc) and 1.6× the ingest time for the smaller size.
+- **(c) boundary strategy at a common budget (#4 vs #5/#6/#7):** no boundary-aware method beats the plain
+  token window. `fixed_tok256`'s 0.905 is the top reranked recall@5; sentence/words/semantic do not
+  separate from it.
+- **(d) overflow eliminated:** **all 7 configs = 0 chunks over 4080 tokens.** Note semantic's raw p95 was
+  2,749 tokens with a chunk hitting exactly the 4080 cap — i.e., without the cap it *would* overflow;
+  the token-sized configs never can, by construction. **Token-safety is structural, not a quality trade.**
 
-## 7. Discussion & recommendation (TO BE POPULATED)
-> Which configuration to adopt for the full production rebuild, and which hypotheses held.
+**Observation for the deck:** *mean rerank confidence falls as chunk size grows* (8.3 at ~170–260 tok →
+7.4–7.9 at ~500–680 tok) — larger chunks dilute the per-chunk relevance signal even when recall is
+unchanged. And **chars-per-token ran < 4** on this corpus (2048 chars ≈ 681 tok), the exact drift that
+makes character sizing unsafe and motivates token sizing.
+
+## 7. Discussion & recommendation
+
+**Which hypotheses held**
+
+| | prediction | verdict |
+|---|---|---|
+| H1 | size dominates method | ✅ *stronger* — retrieval near-**invariant** to both (all within ~0.01) |
+| H2 | smaller → better recall; rerank score falls with size | ⚠️ **split** — recall flat; but rerank confidence **did** fall with size |
+| H3 | char↔token unit ≈ neutral, size-matched | ✅ held (char2048 ≈ tok512) |
+| H4 | token-safety is free | ✅✅ **0 overflow all 7, no quality penalty** |
+| H5 | semantic doesn't pay for itself | ✅ held — 6× the cost, no gain |
+| H6 | sentence edges ahead post-rerank | ❌ refuted — plain `fixed_tok256` led |
+
+**Recommendation for the full production rebuild: `fixed_tok512`.**
+On this benchmark every configuration is statistically tied on retrieval quality, so the decision falls to
+**safety, determinism, and cost** — where a 512-token sliding window wins: it can never overflow the
+embedder window (0/54,270), produces reproducible boundaries, matches the production corpus' effective
+chunk size, and ingests **~6× faster than semantic** (261 s vs 1,529 s). `fixed_tok256` is the alternative
+if slightly higher rerank confidence is worth 2× the chunk count (storage + index cost). **Semantic is not
+justified** by these results.
+
+*Scope caveats (unchanged): title→own-doc is a known-item proxy that flatters lexical matching (we report
+fused **and** reranked); single-relevant-doc ground truth; one biomedical corpus; one embedder. A harder
+query set (paraphrased questions, multi-relevant docs) could separate the methods more — a sensible
+follow-up (tracked as issue #46, cross-system head-to-head).*
 
 ## 8. Reproducibility (appendix slide)
 - Harness: `python/scripts/eval/chunking_compare_7way.py` (RAGStack); chunkers in
