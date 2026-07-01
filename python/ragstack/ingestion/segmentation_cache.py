@@ -34,8 +34,9 @@ def config_fingerprint(**parts: object) -> str:
     """A stable string identifying the segmentation config. Any change (chunk
     method, buffer/percentile/min-length, token budgets, breakpoint model) yields a
     different fingerprint → a different cache key → a clean recompute (never a stale
-    span reused under new settings)."""
-    return "|".join(f"{k}={parts[k]}" for k in sorted(parts))
+    span reused under new settings). Uses json so values are quoted/escaped — a
+    model id containing a delimiter can't collide with a different config."""
+    return json.dumps(parts, sort_keys=True, default=str)
 
 
 class SegmentationCache:

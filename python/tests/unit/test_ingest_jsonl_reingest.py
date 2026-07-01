@@ -75,6 +75,12 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
         "batch_retries": 0,
+        # Semantic breakpoint / segmentation-cache / concurrency knobs (match main()'s
+        # argparse defaults so production code uses plain attribute access).
+        "breakpoint_embedding_api": None, "breakpoint_embedding_url": None,
+        "breakpoint_embedding_model": None, "breakpoint_embedding_max_concurrency": None,
+        "breakpoint_embedding_api_key": None, "breakpoint_max_tokens": None,
+        "segmentation_cache": None, "chunk_concurrency": 1,
     }
     base.update(over)
     return argparse.Namespace(**base)
@@ -847,3 +853,25 @@ async def test_chunk_concurrency_actually_overlaps(tmp_path, monkeypatch):
                                  concurrency=2, checkpoint=tmp_path / "c.ckpt",
                                  chunk_concurrency=4))
     assert chunker.max_active >= 2, "expected concurrent chunk() calls with cc=4"
+
+
+@pytest.mark.asyncio
+async def test_chunk_failure_propagates_without_hang(tmp_path, monkeypatch):
+    """A chunker.chunk() exception must propagate out of run() (not be swallowed)
+    AND run() must still return — the producer's finally drains sentinels + gathers
+    the workers, so a chunk failure can't hang or orphan the pipeline."""
+    class _BoomChunker:
+        def chunk(self, doc):
+            raise RuntimeError("chunk boom")
+
+    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: _BoomChunker())
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3)])
+    with pytest.raises(RuntimeError, match="chunk boom"):
+        await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
+                                     concurrency=2, chunk_concurrency=3,
+                                     checkpoint=tmp_path / "c.ckpt"))

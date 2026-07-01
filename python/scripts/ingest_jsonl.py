@@ -318,18 +318,18 @@ def _build_breakpoint_embedder(args: argparse.Namespace, http: httpx.AsyncClient
     detection). Defaults to the main --embedding-* backend; when --breakpoint-
     embedding-url is given, boundary detection runs on a SEPARATE (cheaper, e.g.
     GPU-served BGE) model while stored chunks keep using the main model. Each
-    --breakpoint-embedding-* field falls back to its --embedding-* counterpart.
-    getattr keeps older Namespaces (e.g. tests) safe → falls back to _build_embedder."""
-    urls = getattr(args, "breakpoint_embedding_url", None)
+    --breakpoint-embedding-* field falls back to its --embedding-* counterpart;
+    unset --breakpoint-embedding-url → reuse the main embedder (no behaviour change)."""
+    urls = args.breakpoint_embedding_url
     if not urls:
         return _build_embedder(args, http)
     return _make_endpoint_embedder(
         http,
-        api=getattr(args, "breakpoint_embedding_api", None) or args.embedding_api,
+        api=args.breakpoint_embedding_api or args.embedding_api,
         urls=urls,
-        model=getattr(args, "breakpoint_embedding_model", None) or args.embedding_model,
-        api_key=getattr(args, "breakpoint_embedding_api_key", None) or args.embedding_api_key,
-        max_concurrency=(getattr(args, "breakpoint_embedding_max_concurrency", None)
+        model=args.breakpoint_embedding_model or args.embedding_model,
+        api_key=args.breakpoint_embedding_api_key or args.embedding_api_key,
+        max_concurrency=(args.breakpoint_embedding_max_concurrency
                          or args.embedding_max_concurrency),
     )
 
@@ -602,10 +602,10 @@ async def run(args: argparse.Namespace) -> None:
     # (exact with its own tokenizer; padded down if we must reuse the stored one).
     breakpoint_max_tokens = None
     breakpoint_token_counter = None
-    bp_urls = getattr(args, "breakpoint_embedding_url", None)
+    bp_urls = args.breakpoint_embedding_url
     if embed_bridge is not None and bp_urls:
-        bp_model = getattr(args, "breakpoint_embedding_model", None)
-        bp_key = getattr(args, "breakpoint_embedding_api_key", None) or embed_api_key
+        bp_model = args.breakpoint_embedding_model
+        bp_key = args.breakpoint_embedding_api_key or embed_api_key
         if bp_model:
             try:
                 breakpoint_token_counter = make_token_counter("hf", model=bp_model)
@@ -640,12 +640,12 @@ async def run(args: argparse.Namespace) -> None:
     # of it recomputes cleanly. Most valuable for the (embedding-based) semantic
     # methods; harmless for deterministic ones.
     seg_cache: SegmentationCache | None = None
-    if getattr(args, "segmentation_cache", None) and not args.no_index:
+    if args.segmentation_cache and not args.no_index:
         fp = config_fingerprint(
             method=args.chunk_method, buffer_size=args.chunk_buffer_size,
             pct=args.chunk_breakpoint_percentile, min_len=args.chunk_min_length,
             max_tokens=max_tokens, bp_max_tokens=breakpoint_max_tokens,
-            bp_model=getattr(args, "breakpoint_embedding_model", None) or args.embedding_model,
+            bp_model=args.breakpoint_embedding_model or args.embedding_model,
             embed_model=args.embedding_model,
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
@@ -715,7 +715,7 @@ async def run(args: argparse.Namespace) -> None:
         concurrency = max(1, args.concurrency)
         # --batch-retries: in-process transient-error retries per batch (default 0
         # = off, unchanged behaviour). getattr keeps older Namespaces safe.
-        batch_retries = max(0, getattr(args, "batch_retries", 0))
+        batch_retries = max(0, args.batch_retries)
         queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 2)
         # seq -> (last record line, buffered catalog rows) for completed batches.
         completed: dict[int, tuple[int, list[str]]] = {}
@@ -901,7 +901,7 @@ async def run(args: argparse.Namespace) -> None:
         # runs items oldest-first, they stay monotonic and the #65 done_ranges
         # frontier is unaffected regardless of the order chunk() calls finish in.
         # Default 1 ≈ the prior single-in-flight behaviour (one doc prefetched).
-        chunk_concurrency = max(1, getattr(args, "chunk_concurrency", 1))
+        chunk_concurrency = max(1, args.chunk_concurrency)
         chunk_sem = asyncio.Semaphore(chunk_concurrency)
 
         async def _chunk_task(doc: Document) -> list[Chunk]:
@@ -960,72 +960,87 @@ async def run(args: argparse.Namespace) -> None:
         inflight: deque = deque()
         window = chunk_concurrency + 1  # bound pending tasks/results (memory)
         dispatched_docs = 0
-        with args.input.open(encoding="utf-8") as fh:
-            for line_no, record in _iter_records(fh):
-                if line_no <= start_line:
-                    continue
-                last_line = line_no
-                stats["seen"] += 1
-                enriched = enrich(record, profile=profile)
-                if not _kept(enriched, keep_types):
-                    # Filtered (doc_type/empty): no batch; a zero-chunk skipped
-                    # metrics row (folded in file order).
-                    stats["skipped"] += 1
-                    d_id = d_src = None
-                    if doc_metrics is not None:
-                        d_src = record.get("path", "") or ""
-                        d_id = deterministic_doc_id(
-                            _doc_id_key(record, record.get("text", "") or "")
+        # Producer wrapped so a chunk()/fold failure still shuts the workers down
+        # cleanly (sentinels + gather) — completed batches keep their checkpoints and
+        # no worker task is orphaned — before the error propagates.
+        producer_exc: Exception | None = None
+        try:
+            with args.input.open(encoding="utf-8") as fh:
+                for line_no, record in _iter_records(fh):
+                    if line_no <= start_line:
+                        continue
+                    last_line = line_no
+                    stats["seen"] += 1
+                    enriched = enrich(record, profile=profile)
+                    if not _kept(enriched, keep_types):
+                        # Filtered (doc_type/empty): no batch; a zero-chunk skipped
+                        # metrics row (folded in file order).
+                        stats["skipped"] += 1
+                        d_id = d_src = None
+                        if doc_metrics is not None:
+                            d_src = record.get("path", "") or ""
+                            d_id = deterministic_doc_id(
+                                _doc_id_key(record, record.get("text", "") or "")
+                            )
+                        inflight.append(("skip", line_no, d_id, d_src))
+                    elif track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
+                        # #65 resume fast-path: durably upserted in a prior run. Skip the
+                        # expensive chunk+embed+upsert, but still buffer the cheap catalog
+                        # row (folds in lockstep) and emit a "resumed" metrics row.
+                        cat_row = (
+                            json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                            if catalog is not None else None
                         )
-                    inflight.append(("skip", line_no, d_id, d_src))
-                elif track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
-                    # #65 resume fast-path: durably upserted in a prior run. Skip the
-                    # expensive chunk+embed+upsert, but still buffer the cheap catalog
-                    # row (folds in lockstep) and emit a "resumed" metrics row.
-                    cat_row = (
-                        json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
-                        if catalog is not None else None
-                    )
-                    d_id = d_src = None
-                    if doc_metrics is not None:
-                        d_src = record.get("path", "") or ""
-                        d_id = deterministic_doc_id(
-                            _doc_id_key(record, record.get("text", "") or "")
+                        d_id = d_src = None
+                        if doc_metrics is not None:
+                            d_src = record.get("path", "") or ""
+                            d_id = deterministic_doc_id(
+                                _doc_id_key(record, record.get("text", "") or "")
+                            )
+                        inflight.append(("resume", line_no, cat_row, d_id, d_src))
+                        dispatched_docs += 1
+                    else:
+                        text = record.get("text", "") or ""
+                        doc = Document(
+                            id=deterministic_doc_id(_doc_id_key(record, text)),
+                            content=text,
+                            metadata=index_metadata(enriched),
+                            source=record.get("path", "") or "",
                         )
-                    inflight.append(("resume", line_no, cat_row, d_id, d_src))
-                    dispatched_docs += 1
-                else:
-                    text = record.get("text", "") or ""
-                    doc = Document(
-                        id=deterministic_doc_id(_doc_id_key(record, text)),
-                        content=text,
-                        metadata=index_metadata(enriched),
-                        source=record.get("path", "") or "",
-                    )
-                    cat_row = (
-                        json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
-                        if catalog is not None else None
-                    )
-                    task = asyncio.create_task(_chunk_task(doc))
-                    inflight.append(("chunk", line_no, task, doc.id, doc.source, cat_row))
-                    dispatched_docs += 1
-                # Keep the in-flight window bounded; fold oldest-first (file order).
-                while len(inflight) > window:
+                        cat_row = (
+                            json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                            if catalog is not None else None
+                        )
+                        task = asyncio.create_task(_chunk_task(doc))
+                        inflight.append(("chunk", line_no, task, doc.id, doc.source, cat_row))
+                        dispatched_docs += 1
+                    # Keep the in-flight window bounded; fold oldest-first (file order).
+                    while len(inflight) > window:
+                        await _fold(inflight.popleft())
+                    if args.limit and dispatched_docs >= args.limit:
+                        break
+                while inflight:
                     await _fold(inflight.popleft())
-                if args.limit and dispatched_docs >= args.limit:
-                    break
-            while inflight:
-                await _fold(inflight.popleft())
-        # Flush a trailing batch — including a catalog-only one (buf empty but
-        # done-range resume rows buffered) so those rows still fold in lockstep.
-        if buf or buf_catalog:
-            await queue.put(
-                (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
-            )
-            seq += 1
-        for _ in workers:  # one sentinel per worker
-            await queue.put(None)
-        await asyncio.gather(*workers)
+            # Flush a trailing batch — including a catalog-only one (buf empty but
+            # done-range resume rows buffered) so those rows still fold in lockstep.
+            if buf or buf_catalog:
+                await queue.put(
+                    (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+                )
+                seq += 1
+        except Exception as e:
+            # Cancel any still-pending chunk tasks so they don't leak, then fall to
+            # the finally for an orderly worker drain; re-raise after.
+            producer_exc = e
+            for _it in inflight:
+                if _it[0] == "chunk":
+                    _it[2].cancel()
+        finally:
+            for _ in workers:  # one sentinel per worker
+                await queue.put(None)
+            await asyncio.gather(*workers)
+        if producer_exc is not None:
+            raise producer_exc
 
         # All batches done with no gap (next_seq caught up to the batch count):
         # advance the checkpoint over any trailing skipped lines after the last
