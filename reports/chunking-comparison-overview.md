@@ -137,6 +137,27 @@ token-safety payoff), ingest wall-time, and throughput (docs/s, chunks/s).
 we therefore report dense+lexical **and** reranked numbers so no single figure is over-read. Ground truth
 is single-relevant-document. One corpus, one domain (biomedical), one embedder.
 
+### 4.1 Threats to validity (read the results through these)
+
+1. **The known-item task is chunking-insensitive.** Title→own-doc retrieval is dominated by the lead
+   chunk, where the title's own words recur; *every* reasonable chunker captures that chunk, so the task
+   has little power to separate chunkers. A near-tie here is **expected under the null**, not evidence
+   that chunking doesn't matter.
+2. **No power for sub-1-point gaps.** With ~1,000 single-relevant queries the 95% CI on recall@5 is on
+   the order of ±0.02; the observed spread across configs (~0.008) sits **entirely inside** that band.
+   The harness reports paired-bootstrap CIs and Holm-corrected Wilcoxon tests (§6.3a) precisely so this
+   is not over-read: **statistically tied ≠ equal**, it means *underpowered to distinguish*.
+3. **Single-relevant, document-level ground truth.** One correct doc per query and no graded relevance
+   means the metrics can't reward a chunker that surfaces *more* of the relevant material or localizes
+   it better.
+4. **Subset + proxy, not the production workload.** 1,500 docs from 3 shards, biomedical, one embedder,
+   and a *title* proxy for real user questions. Absolute numbers and possibly the ordering could shift
+   on the full corpus with real queries.
+
+These are exactly the gaps the **SciFact benchmark (§6.4)** is designed to close: real claim queries,
+multi-relevant document-level qrels, and the same statistics layer — a task that *can* discriminate
+chunkers if a difference exists.
+
 ## 5. Expected performance — hypotheses (slide: "What we predict, and why")
 
 *Registered before results, informed by a prior full-corpus 3-mode run (fixed/sentence/semantic at
@@ -145,10 +166,14 @@ char-512) in which all three tied at ~0.88–0.90 recall, `fixed` was cheapest, 
 
 - **H1 — Quality is dominated by size, not method.** Retrieval metrics will cluster within noise across
   *segmentation strategies* at a fixed budget; chunk *size* will move the needle more than boundary type.
+  *(Softened post-hoc: on the underpowered known-item proxy we can only claim **no detectable
+  difference** between methods — see the Threats to Validity in §4.1. SciFact (§6.4) is the
+  discriminating test.)*
 - **H2 — Smaller chunks favour known-item recall.** `fixed_tok256` and `fixed_char512` (small) should
   match or slightly beat the larger configs on recall@1/MRR, because a tight chunk concentrates the
   title's lexical/semantic signal; larger chunks dilute it (and we expect the **mean rerank score to fall
-  as chunk size rises**).
+  as chunk size rises**). *(Softened post-hoc: the recall gaps are sub-1-point and inside the 95% CI —
+  **no detectable size effect** on known-item recall; only the rerank-confidence trend survives.)*
 - **H3 — The char-vs-token *unit* is nearly neutral once size is matched.** `fixed_char2048` ≈
   `fixed_tok512` on retrieval; the token unit's advantage is **safety and predictability**, not accuracy.
 - **H4 — Token-safety is free.** All seven configs report **0 overflow** by construction, with **no
@@ -159,6 +184,8 @@ char-512) in which all three tied at ~0.88–0.90 recall, `fixed` was cheapest, 
   prior run.
 - **H6 — Boundary-aware methods help precision modestly.** If any method edges ahead post-rerank, expect
   `sentence_tok512` (clean sentence boundaries) by a small margin, as in the prior 3-mode run.
+  *(Softened post-hoc: no method separates from the plain token window beyond the 95% CI — **no
+  detectable boundary-strategy effect** on the known-item proxy.)*
 
 **Decision rule.** Recommend the cheapest configuration that is statistically tied with the best on
 reranked recall@5 / MRR@10. (Prediction: a small/standard *fixed* token config.)
@@ -167,7 +194,14 @@ reranked recall@5 / MRR@10. (Prediction: a small/standard *fixed* token config.)
 
 *1,500 docs (500 balanced per shard) · 1,000 known-item queries · SFR/4096 across 16 vLLM endpoints.*
 
-**6.1 Retrieval quality** (all within a ~0.01 band — differences are at/below noise)
+**6.1 Retrieval quality** (all within a ~0.01 band — differences are **at/below noise**)
+
+> **Read with §4.1.** This is a *known-item, single-relevant, document-level* proxy: the title
+> query lands in the lead chunk that every chunker captures, so the task is largely
+> chunking-insensitive and underpowered for sub-1-point gaps. A near-tie here means **no
+> *detectable* difference**, not "the configs are equal." The **SciFact benchmark (§6.4)** —
+> real claim queries, multi-relevant qrels, and the same bootstrap-CI + Wilcoxon/Holm stats —
+> is the experiment that *can* discriminate, and it is now wired into the harness.
 
 | config | recall@1 | recall@5 | recall@10 | MRR@10 | nDCG@10 | rerank R@5 | rerank MRR | mean rerank |
 |---|---|---|---|---|---|---|---|---|
@@ -191,6 +225,27 @@ reranked recall@5 / MRR@10. (Prediction: a small/standard *fixed* token config.)
 | words_tok512 | 77,264 | 51.5 | 1046 | 367 | 419 | **0** | 530 | 146 |
 | semantic_tokcap | 29,536 | 19.7 | 1573 | 521 | **2749** | **0** | **1529** | **19** |
 
+**6.2b Known-item retrieval WITH statistical rigor (paired bootstrap CIs + Holm-Wilcoxon).**
+A re-run through the new stats layer (300 balanced docs · 300 known-item queries · same
+pipeline; the harness now retains per-query arrays) attaches 95% CIs and a Holm-corrected
+Wilcoxon test vs `fixed_tok512`:
+
+| config | hybrid MRR@10 [95% CI] | rerank recall@5 | Δrerank MRR@10 vs ref | Holm p | distinguishable |
+|---|---|---|---|---|---|
+| fixed_char512 | 0.896 [0.861, 0.928] | 0.913 | +0.000 [−0.008, 0.010] | 1.000 | no |
+| fixed_char2048 | 0.902 [0.866, 0.933] | 0.907 | −0.001 [−0.009, 0.007] | 1.000 | no |
+| fixed_tok256 | 0.901 [0.866, 0.932] | 0.917 | −0.001 [−0.008, 0.008] | 1.000 | no |
+| fixed_tok512 (ref) | 0.900 [0.865, 0.932] | 0.910 | — | — | ref |
+| sentence_tok512 | 0.897 [0.862, 0.930] | 0.913 | −0.001 [−0.008, 0.006] | 1.000 | no |
+| words_tok512 | 0.897 [0.861, 0.930] | 0.913 | −0.001 [−0.008, 0.007] | 1.000 | no |
+| semantic_tokcap | 0.900 [0.865, 0.931] | 0.913 | −0.001 [−0.005, 0.003] | 1.000 | no |
+
+**No config is distinguishable from `fixed_tok512`** — every difference CI spans 0 and no Wilcoxon
+test survives Holm–Bonferroni (all p = 1.000). This is the CI-backed statement of the "no *detectable*
+difference" softening: even `fixed_tok256`'s nominal recall@5 edge is well inside the CI. It **agrees
+with SciFact (§6.4)**. *(Caveat per §4.1: single-relevant, document-level ground truth on a
+chunking-insensitive proxy — the CIs quantify the lack of power; they do not prove equality.)*
+
 **6.3 The three contrasts**
 - **(a) char vs token *unit*, size-matched (#2 vs #4):** second-order. `fixed_char2048` (median 681 tok)
   ≈ `fixed_tok512` (513 tok): reranked recall@5 0.900 vs 0.902. The token window buys
@@ -209,18 +264,61 @@ reranked recall@5 / MRR@10. (Prediction: a small/standard *fixed* token config.)
 unchanged. And **chars-per-token ran < 4** on this corpus (2048 chars ≈ 681 tok), the exact drift that
 makes character sizing unsafe and motivates token sizing.
 
+### 6.4 SciFact (BEIR) — the discriminating experiment (real queries + real qrels)
+
+To close the validity gaps in §4.1 we re-ran the same 7 configs on **SciFact** (BEIR): ~5,183
+scientific abstracts, **300 held-out claim queries with real document-level qrels** (339
+judgments, multi-relevant, graded), loaded via HuggingFace `datasets` and cached under
+`/rag/cache`. Each abstract is chunked by each config, embedded with SFR/4096 across 16
+endpoints into isolated `scifact_m7_*` stores, retrieved with the *identical* hybrid+rerank
+pipeline, mapped chunk→doc, and scored at the **document level** (BEIR standard): **nDCG@10
+(primary), recall@{10,20,100}, MAP**. The Part-2 statistics layer (paired bootstrap 95% CIs,
+paired difference CIs, Holm-corrected Wilcoxon) is applied throughout. Reference = `fixed_tok512`.
+
+| config | nDCG@10 [95% CI] | recall@10 | recall@100 | MAP | ΔnDCG@10 vs ref | Wilcoxon p (Holm) | distinguishable |
+|---|---|---|---|---|---|---|---|
+| fixed_char512 | 0.703 [0.658, 0.745] | 0.826 | 0.953 | 0.665 | +0.005 [−0.018, 0.027] | 1.000 | no |
+| fixed_char2048 | 0.694 [0.650, 0.738] | 0.813 | **0.977** | 0.659 | −0.004 [−0.009, −0.000] | 0.115 | no |
+| **fixed_tok256** | **0.721 [0.679, 0.762]** | **0.838** | 0.960 | **0.684** | **+0.023 [+0.006, +0.040]** | 0.077 | no |
+| fixed_tok512 (ref) | 0.698 [0.654, 0.742] | 0.816 | 0.973 | 0.663 | — | — | ref |
+| sentence_tok512 | 0.696 [0.651, 0.739] | 0.812 | 0.970 | 0.661 | −0.002 [−0.009, 0.003] | 1.000 | no |
+| words_tok512 | 0.694 [0.650, 0.736] | 0.818 | 0.963 | 0.657 | −0.004 [−0.017, 0.009] | 1.000 | no |
+| semantic_tokcap | 0.697 [0.652, 0.741] | 0.809 | 0.963 | 0.664 | −0.001 [−0.017, 0.014] | 1.000 | no |
+
+**Result: no config is distinguishable from `fixed_tok512` on nDCG@10.** Every pairwise
+difference CI spans (or touches) zero and **no Wilcoxon test survives Holm–Bonferroni
+correction**. `fixed_tok256` is *nominally* highest (nDCG 0.721, ΔnDCG +0.023, MAP 0.684) — its
+raw Wilcoxon p is 0.077, but that does **not** survive multiplicity correction, so it is a
+suggestive-not-significant lead, consistent with the known-item hint that a tighter window
+concentrates signal. `semantic_tokcap` again shows **no gain** (nDCG 0.697) at by far the highest
+chunk cost (its per-doc buffer-embed pass dominated ingest). `fixed_char2048` has the best
+deep-recall (recall@100 0.977) — the only place a larger chunk helps — but loses the nDCG@10
+difference test.
+
+**Why this matters:** SciFact *can* separate chunkers (real multi-relevant queries), and it still
+finds them statistically tied at the primary cutoff. That **upgrades the invariance claim from an
+"underpowered null" (known-item) to a CI-backed no-difference on a real IR task** — while leaving
+`fixed_tok256`'s nominal edge as a low-priority thing to re-test with more queries. The ordering
+roughly agrees with the known-item result (tok256 nominally on top, semantic no gain, the field
+tight), which is reassuring for the recommendation below.
+
+*Scope: SciFact is biomedical claim verification with mostly single-relevant qrels — one
+benchmark, one embedder; it complements, not replaces, a domain-matched eval on the production
+corpus. All `scifact_m7_*` stores were torn down after the run; the production corpus was never
+touched.*
+
 ## 7. Discussion & recommendation
 
 **Which hypotheses held**
 
 | | prediction | verdict |
 |---|---|---|
-| H1 | size dominates method | ✅ *stronger* — retrieval near-**invariant** to both (all within ~0.01) |
+| H1 | size dominates method | ⚠️ **softened** — no *detectable* difference between methods on the underpowered known-item proxy; **SciFact (real qrels + CIs) confirms no distinguishable difference** |
 | H2 | smaller → better recall; rerank score falls with size | ⚠️ **split** — recall flat; but rerank confidence **did** fall with size |
 | H3 | char↔token unit ≈ neutral, size-matched | ✅ held (char2048 ≈ tok512) |
 | H4 | token-safety is free | ✅✅ **0 overflow all 7, no quality penalty** |
 | H5 | semantic doesn't pay for itself | ✅ held — 6× the cost, no gain |
-| H6 | sentence edges ahead post-rerank | ❌ refuted — plain `fixed_tok256` led |
+| H6 | sentence edges ahead post-rerank | ❌ refuted — no boundary method separates beyond CI; `fixed_tok256` is the *nominal* (not significant) leader on both evals |
 
 **Recommendation for the full production rebuild: `fixed_tok512`.**
 On this benchmark every configuration is statistically tied on retrieval quality, so the decision falls to
@@ -228,7 +326,11 @@ On this benchmark every configuration is statistically tied on retrieval quality
 embedder window (0/54,270), produces reproducible boundaries, matches the production corpus' effective
 chunk size, and ingests **~6× faster than semantic** (261 s vs 1,529 s). `fixed_tok256` is the alternative
 if slightly higher rerank confidence is worth 2× the chunk count (storage + index cost). **Semantic is not
-justified** by these results.
+justified** by these results — and **SciFact confirms it** (semantic nDCG@10 0.697, no gain, highest
+cost). The token-safety win is **structural** (0 overflow by construction), and `fixed_tok512`
+remains the **low-regret default**: on *both* the known-item proxy and SciFact's real qrels it is
+statistically tied with the best while being the cheapest fully-safe option. The one open thread is
+`fixed_tok256`'s *nominal* (not-significant) edge — worth a larger-query re-test, not a rebuild.
 
 *Scope caveats (unchanged): title→own-doc is a known-item proxy that flatters lexical matching (we report
 fused **and** reranked); single-relevant-doc ground truth; one biomedical corpus; one embedder. A harder

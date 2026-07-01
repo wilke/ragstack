@@ -277,16 +277,33 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 
 ---
 
+## Threats to validity (read the results through these)
+
+- **The known-item task is chunking-*insensitive*.** Title→own-doc is dominated by the lead
+  chunk where the title's words recur; *every* reasonable chunker captures it → little power to
+  separate chunkers. A near-tie is **expected under the null**.
+- **No power for sub-1-point gaps.** ~1,000 single-relevant queries → 95% CI on recall@5 ≈ ±0.02;
+  the observed spread (~0.008) sits **entirely inside** it. <span class="accent">Statistically
+  tied ≠ equal</span> — it means *underpowered to distinguish*.
+- **Single-relevant, document-level ground truth** — can't reward surfacing *more* relevant
+  material or better localization.
+- **Subset + proxy**, not the production workload (1,500 docs, biomedical, *title* ≠ real query).
+
+> These are exactly the gaps the **SciFact benchmark** (next) closes: real claim queries,
+> multi-relevant qrels, same bootstrap-CI + Wilcoxon/Holm stats.
+
+---
+
 ## Hypotheses (registered before results)
 
 <span class="small">Informed by a prior full-corpus 3-mode run: all tied ~0.88–0.90 recall; `fixed` cheapest; `semantic` overflowed 12% & lowest rerank confidence.</span>
 
-- **H1** Quality dominated by **size, not method** (strategies cluster within noise at fixed budget)
-- **H2** **Smaller chunks → better known-item recall**; mean rerank score falls as size rises
+- **H1** Quality dominated by **size, not method** — *softened post-hoc to* **no *detectable* difference** (underpowered proxy)
+- **H2** **Smaller chunks → better known-item recall** — *softened:* recall gaps sub-1-pt, inside CI (**no detectable size effect**); only the rerank-confidence trend holds
 - **H3** Char-vs-token **unit ≈ neutral** once size-matched (#2 ≈ #4); token's gain is *safety*
 - **H4** **Token-safety is free** — 0 overflow, no quality penalty vs legacy char baseline
 - **H5** **Semantic doesn't pay for itself** here (most cost, no quality gain)
-- **H6** If anything edges ahead post-rerank, it's **sentence**, by a small margin
+- **H6** If anything edges ahead post-rerank, it's **sentence** — *refuted:* no method separates beyond CI; `fixed_tok256` is the *nominal* leader
 
 **Decision rule:** cheapest config statistically tied with the best on reranked recall@5 / MRR@10.
 
@@ -326,6 +343,24 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 
 ---
 
+## SciFact (BEIR) — the discriminating experiment
+
+<span class="small">5,183 abstracts · **300 real claim queries + document-level qrels** · same hybrid+rerank · bootstrap CIs + Holm-Wilcoxon · ref = `fixed_tok512`.</span>
+
+| config | nDCG@10 [95% CI] | R@100 | MAP | ΔnDCG vs ref | Holm p | distinct? |
+|---|---|---|---|---|---|---|
+| fixed_char512 | 0.703 [0.658, 0.745] | 0.953 | 0.665 | +0.005 [−0.018, 0.027] | 1.000 | no |
+| fixed_char2048 | 0.694 [0.650, 0.738] | **0.977** | 0.659 | −0.004 [−0.009, −0.000] | 0.115 | no |
+| **fixed_tok256** | **0.721 [0.679, 0.762]** | 0.960 | **0.684** | **+0.023 [+0.006, +0.040]** | 0.077 | no |
+| fixed_tok512 (ref) | 0.698 [0.654, 0.742] | 0.973 | 0.663 | — | — | ref |
+| sentence_tok512 | 0.696 [0.651, 0.739] | 0.970 | 0.661 | −0.002 | 1.000 | no |
+| words_tok512 | 0.694 [0.650, 0.736] | 0.963 | 0.657 | −0.004 | 1.000 | no |
+| semantic_tokcap | 0.697 [0.652, 0.741] | 0.963 | 0.664 | −0.001 | 1.000 | no |
+
+<span class="good">No config distinguishable from `fixed_tok512`</span> — every diff-CI spans 0, **no Wilcoxon survives Holm**. `fixed_tok256` *nominally* top (p=0.077, **not** significant after correction); <span class="warn">semantic = no gain</span>, highest cost. **Real qrels + CIs upgrade "underpowered null" → CI-backed no-difference.**
+
+---
+
 ## The four contrasts
 
 - **(a) char vs token *unit*, size-matched** (#2≈#4): second-order — reranked recall@5 0.900 vs 0.902.
@@ -344,12 +379,12 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 
 | | prediction | verdict |
 |---|---|---|
-| **H1** | size dominates method | ✅ *stronger* — near-**invariant** to both |
-| **H2** | smaller → better recall; rerank ↓ with size | ⚠️ split — recall flat, **rerank ↓ held** |
+| **H1** | size dominates method | ⚠️ **softened** — no *detectable* difference (proxy); **SciFact + CIs confirm** no distinguishable difference |
+| **H2** | smaller → better recall; rerank ↓ with size | ⚠️ split — recall flat (inside CI), **rerank ↓ held**; tok256 *nominal* top on SciFact too |
 | **H3** | char↔token unit ≈ neutral, size-matched | ✅ held |
 | **H4** | token-safety is free | <span class="good">✅✅ 0 overflow, no penalty</span> |
 | **H5** | semantic doesn't pay for itself | ✅ held — 6× cost, no gain |
-| **H6** | sentence edges ahead post-rerank | ❌ refuted — `fixed_tok256` led |
+| **H6** | sentence edges ahead post-rerank | ❌ refuted — no method separates beyond CI; `fixed_tok256` *nominal* (not sig.) on both evals |
 
 ---
 
@@ -362,7 +397,7 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 - Matches the production corpus' effective chunk size
 - **~6× cheaper to ingest than semantic** (261 s vs 1,529 s)
 
-<span class="small">Alternative: `fixed_tok256` for slightly higher rerank confidence at 2× chunk count. **Semantic is not justified** by these results.</span>
+<span class="small">Alternative: `fixed_tok256` — *nominally* best on both evals (SciFact nDCG 0.721) but **not significant** after Holm; a larger-query re-test, not a rebuild. **Semantic is not justified** (SciFact nDCG 0.697, no gain, highest cost). Token-safety is **structural**; `fixed_tok512` is the CI-backed **low-regret default** — tied with the best on *both* the proxy and SciFact's real qrels.</span>
 
 **Adopt `fixed_tok512` for the full 3-shard production rebuild (~2.5M chunks).**
 
@@ -370,7 +405,7 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 
 ## Reproducibility
 
-- **Harness:** `python/scripts/eval/chunking_compare_7way.py`
+- **Harness:** `python/scripts/eval/chunking_compare_7way.py` · **SciFact:** `scifact_chunk_eval.py` · **stats:** `_stats.py` (bootstrap CIs + Holm-Wilcoxon)
 - **Chunkers:** `ragstack/ingestion/chunkers.py` · **token logic:** `ragstack/ingestion/tokenization.py` (v0.13.0)
 - **Embedder:** SFR-Embedding-Mistral (4096) via vLLM, 16 endpoints
 - **Stores:** isolated `chunkcmp_m7_*` (torn down after); production corpus untouched
