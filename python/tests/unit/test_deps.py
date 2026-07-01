@@ -58,6 +58,62 @@ def test_qdrant_backend_under_durable_returns_qdrant(monkeypatch):
     assert isinstance(deps._build_vector_store(), QdrantVectorStore)
 
 
+def test_qdrant_collection_derived_by_default(monkeypatch):
+    # Override empty (default): the collection is derived from
+    # (qdrant_collection, embedding_model, embedding_model_dim) via collection_name().
+    from ragstack.stores.qdrant import collection_name
+
+    monkeypatch.setattr(deps.settings, "vector_backend", "qdrant")
+    monkeypatch.setattr(deps.settings, "qdrant_collection_explicit", "")
+    monkeypatch.setattr(deps.settings, "qdrant_collection", "ragstack")
+    monkeypatch.setattr(
+        deps.settings, "embedding_model", "Salesforce/SFR-Embedding-Mistral"
+    )
+    monkeypatch.setattr(deps.settings, "embedding_model_dim", 4096)
+
+    store = deps._build_vector_store()
+    expected = collection_name("ragstack", "Salesforce/SFR-Embedding-Mistral", 4096)
+    assert store._collection == expected
+
+
+def test_qdrant_collection_explicit_override(monkeypatch):
+    # Override set: the literal collection is served verbatim, ignoring derivation.
+    monkeypatch.setattr(deps.settings, "vector_backend", "qdrant")
+    monkeypatch.setattr(
+        deps.settings, "qdrant_collection_explicit", "ragstack_sfr_tok256"
+    )
+    monkeypatch.setattr(deps.settings, "qdrant_collection", "ragstack")
+    monkeypatch.setattr(
+        deps.settings, "embedding_model", "Salesforce/SFR-Embedding-Mistral"
+    )
+    monkeypatch.setattr(deps.settings, "embedding_model_dim", 4096)
+
+    store = deps._build_vector_store()
+    assert store._collection == "ragstack_sfr_tok256"
+
+
+def test_es_index_follows_explicit_collection_when_default(monkeypatch):
+    # With the explicit override set and elasticsearch_index left at its default,
+    # the BM25 leg follows the pinned collection so hybrid reads one corpus.
+    monkeypatch.setattr(deps.settings, "qdrant_collection_explicit", "ragstack_sfr_tok256")
+    monkeypatch.setattr(deps.settings, "elasticsearch_index", "ragstack")  # default
+    assert deps._es_index_name() == "ragstack_sfr_tok256"
+
+
+def test_es_index_explicit_override_wins(monkeypatch):
+    # A non-default elasticsearch_index is respected even under the collection override.
+    monkeypatch.setattr(deps.settings, "qdrant_collection_explicit", "ragstack_sfr_tok256")
+    monkeypatch.setattr(deps.settings, "elasticsearch_index", "my_custom_bm25")
+    assert deps._es_index_name() == "my_custom_bm25"
+
+
+def test_es_index_default_unchanged_without_override(monkeypatch):
+    # No explicit collection → ES index is exactly elasticsearch_index (unchanged).
+    monkeypatch.setattr(deps.settings, "qdrant_collection_explicit", "")
+    monkeypatch.setattr(deps.settings, "elasticsearch_index", "ragstack")
+    assert deps._es_index_name() == "ragstack"
+
+
 def test_graph_backend_memory_returns_inmemory(monkeypatch):
     from ragstack.stores import InMemoryGraphStore
 
