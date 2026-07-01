@@ -10,7 +10,11 @@ from starlette.concurrency import run_in_threadpool
 # Default matches python config.reranker_model and apptainer/sidecars-up.sh so
 # every launch path loads the same model unless MODEL_NAME is set explicitly.
 MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-reranker-v2-m3")
-MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "512"))
+# bge-reranker-v2-m3 handles up to 8k tokens; default to the SFR window / chunk
+# hard cap (4096) so the reranker sees whole chunks and doesn't truncate the
+# large-chunk configs — a fair cross-config benchmark. Lower it (e.g. 512) to
+# trade recall on long chunks for query-serving latency at prod scale.
+MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "4096"))
 PORT = int(os.environ.get("PORT", "50052"))
 DEVICE = os.environ.get("DEVICE", "cpu")
 
