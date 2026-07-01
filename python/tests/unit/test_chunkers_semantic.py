@@ -381,6 +381,33 @@ def test_semantic_pooled_token_caps_long_sentence():
     _check(doc, chunks)  # emitted chunk offsets still reconstruct the FULL source
 
 
+def test_semantic_pooled_breakpoint_budget_smaller_than_stored():
+    """A smaller breakpoint model (breakpoint_max_tokens < max_tokens) bounds the
+    breakpoint-embed inputs to the SMALLER budget (so they can't overflow the
+    breakpoint model's context), while the emitted chunk text is unaffected."""
+    class _FakeCounter:
+        def count(self, text: str) -> int:
+            return len(text)  # 1 token per char
+
+    text = ("z " * 300) + ". Short tail here."  # 600-char first "sentence"
+    doc = _make_doc(text)
+    seen: list[str] = []
+
+    def recording(texts):
+        seen.extend(texts)
+        return _topic_embed_fn(texts)
+
+    chunker = SemanticChunker(
+        embed_fn=recording, buffer_size=1, breakpoint_percentile_threshold=50.0,
+        min_chunk_length=0, max_tokens=1000, token_counter=_FakeCounter(),
+        pool_sentences=True, distance_round=6, breakpoint_max_tokens=50,
+    )
+    chunks = chunker.chunk(doc)
+    # bounded to the BREAKPOINT budget (50), not the stored budget (1000)
+    assert seen and all(len(t) <= 50 for t in seen)
+    _check(doc, chunks)
+
+
 def test_make_chunker_dispatch():
     from ragstack.ingestion.chunkers import (
         RecursiveCharacterChunker,

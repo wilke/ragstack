@@ -752,6 +752,8 @@ class SemanticChunker:
         token_counter: TokenCounter | None = None,
         pool_sentences: bool = False,
         distance_round: int | None = None,
+        breakpoint_max_tokens: int | None = None,
+        breakpoint_token_counter: TokenCounter | None = None,
     ) -> None:
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
@@ -762,6 +764,19 @@ class SemanticChunker:
         # and guaranteeing no chunk overflows the embedder context.
         self.max_tokens = max_tokens
         self.token_counter = token_counter
+        # breakpoint_max_tokens: the context budget for the BREAKPOINT embed inputs
+        # (buffers/sentences), used when the breakpoint model has a SMALLER window
+        # than the stored model — e.g. BGE (512) doing boundary detection while SFR
+        # (4096) stores chunks. Without it, a long sentence bounded only to the
+        # stored budget would overflow the breakpoint model (HTTP 400). None →
+        # falls back to max_tokens (single-model behaviour, unchanged).
+        self.breakpoint_max_tokens = breakpoint_max_tokens
+        # breakpoint_token_counter: count the breakpoint-embed inputs with the
+        # BREAKPOINT model's own tokenizer. Critical when it differs from the stored
+        # tokenizer — a BPE stored counter (e.g. Mistral) undercounts vs a wordpiece
+        # breakpoint model (e.g. BGE/BERT), so counting with the stored tokenizer can
+        # still overflow the breakpoint context. None → use token_counter.
+        self.breakpoint_token_counter = breakpoint_token_counter
         # pool_sentences: embed each SENTENCE once and mean-pool the
         # (2*buffer_size+1)-sentence window into each buffer vector, instead of
         # embedding N overlapping buffer TEXTS. Same breakpoint math downstream,
@@ -782,13 +797,17 @@ class SemanticChunker:
         return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
 
     def _cap_tokens(self, s: str) -> str:
-        """Bound ``s`` to the embedder's token budget (first lossless piece) so a
-        long buffer/sentence can't exceed the context window (HTTP 400). Only the
-        similarity input is bounded — never the emitted chunk text. No-op without
-        max_tokens/token_counter, so the legacy behaviour is unchanged."""
-        if self.max_tokens is not None and self.token_counter is not None:
-            if self.token_counter.count(s) > self.max_tokens:
-                return split_text_to_token_budget(s, self.max_tokens, self.token_counter)[0]
+        """Bound ``s`` to the BREAKPOINT embedder's token budget (first lossless
+        piece) so a long buffer/sentence can't exceed its context window (HTTP 400).
+        Uses breakpoint_max_tokens when set (a smaller breakpoint model), else
+        max_tokens, and the breakpoint model's own tokenizer when given (so a
+        tokenizer mismatch can't undercount). Only the similarity input is bounded —
+        never the emitted chunk text. No-op without a budget/counter (legacy)."""
+        budget = self.breakpoint_max_tokens or self.max_tokens
+        counter = self.breakpoint_token_counter or self.token_counter
+        if budget is not None and counter is not None:
+            if counter.count(s) > budget:
+                return split_text_to_token_budget(s, budget, counter)[0]
         return s
 
     def _buffer_embeddings(
@@ -909,6 +928,8 @@ def make_chunker(
     min_chunk_length: int = 500,
     max_tokens: int | None = None,
     token_counter: TokenCounter | None = None,
+    breakpoint_max_tokens: int | None = None,
+    breakpoint_token_counter: TokenCounter | None = None,
 ):
     """Build the chunker named by ``method``.
 
@@ -962,5 +983,7 @@ def make_chunker(
             max_tokens=max_tokens, token_counter=token_counter,
             pool_sentences=pooled,
             distance_round=6 if pooled else None,
+            breakpoint_max_tokens=breakpoint_max_tokens,
+            breakpoint_token_counter=breakpoint_token_counter,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")

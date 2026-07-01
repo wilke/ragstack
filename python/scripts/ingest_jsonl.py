@@ -590,6 +590,34 @@ async def run(args: argparse.Namespace) -> None:
     max_tokens = resolve_max_tokens(
         args.chunk_max_tokens, base_url=embed_base_url, api_key=embed_api_key
     )
+    # Separate budget + tokenizer for the breakpoint-embed inputs when a distinct
+    # breakpoint endpoint is configured (e.g. BGE-512 detecting boundaries while
+    # SFR-4096 stores chunks). Count with the breakpoint model's OWN tokenizer when
+    # its model name is known — a BPE stored counter (Mistral) undercounts vs a
+    # wordpiece breakpoint model (BGE/BERT), so counting with the stored tokenizer
+    # would still overflow the breakpoint context (HTTP 400). Explicit
+    # --breakpoint-max-tokens wins; else resolve the breakpoint endpoint's window
+    # (exact with its own tokenizer; padded down if we must reuse the stored one).
+    breakpoint_max_tokens = None
+    breakpoint_token_counter = None
+    bp_urls = getattr(args, "breakpoint_embedding_url", None)
+    if embed_bridge is not None and bp_urls:
+        bp_model = getattr(args, "breakpoint_embedding_model", None)
+        bp_key = getattr(args, "breakpoint_embedding_api_key", None) or embed_api_key
+        if bp_model:
+            try:
+                breakpoint_token_counter = make_token_counter("hf", model=bp_model)
+            except Exception as e:
+                print(f"[ingest] breakpoint tokenizer for {bp_model!r} unavailable "
+                      f"({type(e).__name__}); counting with the stored tokenizer.",
+                      file=sys.stderr)
+        if args.breakpoint_max_tokens is not None:
+            breakpoint_max_tokens = args.breakpoint_max_tokens
+        else:
+            bp_window = resolve_max_tokens(None, base_url=bp_urls[0], api_key=bp_key)
+            # Exact when counting with the bp tokenizer; otherwise pad hard for the
+            # cross-tokenizer undercount.
+            breakpoint_max_tokens = bp_window if breakpoint_token_counter else int(bp_window * 0.5)
     chunker = make_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
@@ -600,6 +628,8 @@ async def run(args: argparse.Namespace) -> None:
         min_chunk_length=args.chunk_min_length,
         max_tokens=max_tokens,
         token_counter=token_counter,
+        breakpoint_max_tokens=breakpoint_max_tokens,
+        breakpoint_token_counter=breakpoint_token_counter,
     )
     ckpt_path, start_line, resume_done_ranges = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
@@ -1055,6 +1085,11 @@ def main() -> None:
                    help="breakpoint embedder max concurrency (default: --embedding-max-concurrency)")
     p.add_argument("--breakpoint-embedding-api-key", default=None,
                    help="breakpoint embedder Bearer token (default: --embedding-api-key)")
+    p.add_argument("--breakpoint-max-tokens", type=int, default=None,
+                   help="token budget for breakpoint-embed inputs when the breakpoint "
+                        "model has a smaller context than the stored model (e.g. BGE 512). "
+                        "Default: auto from the breakpoint endpoint's window × 0.75 safety "
+                        "margin (the chunker counts tokens with the stored model's tokenizer).")
     # chunking
     p.add_argument("--chunk-method",
                    choices=["fixed", "fixed_token", "sentence", "words", "semantic",
