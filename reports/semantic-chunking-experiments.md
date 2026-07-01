@@ -198,10 +198,65 @@ The BGE model is ~64× smaller (110M vs 7B params, 512- vs 4096-token context), 
 **equal footing — served on a GPU via vLLM — it should be dramatically faster** than
 SFR (plausibly 10–50× a single SFR endpoint). But that serving does not exist today.
 
-> **Conclusion:** #73's "cheap = faster" is **not realizable on current infra**. It
-> requires serving a small model on **GPU (vLLM or a GPU sidecar)** — the CPU sidecar
-> is the wrong vehicle. Absent that, `fixed_tok512` (eliminates the breakpoint embed
-> entirely) is the only speedup that needs no new serving.
+> **Conclusion:** #73's "cheap = faster" is **not realizable on the *current* CPU
+> sidecar** — but see Experiment 4: on a GPU the small model is an order of magnitude
+> faster, and the machine has idle GPU headroom.
+
+---
+
+## Experiment 4 — BGE on a GPU, and the break-even vs CPU
+
+**Rationale.** Experiment 3's cheap model was slow only because it ran on CPU. The
+machine has **384 cores** and **8 H200s that sit at ~0% compute between embed bursts**
+(~64 GB free each). Measure BGE on a GPU, then work out how much cheap capacity —
+GPU or many-CPU — is needed to move the build.
+
+**Algorithm.** `scratchpad/bge_gpu_bench.py` (torch+CUDA via the `/rag/envs/vllm` env,
+transformers `AutoModel`, fp16, CLS pooling): load `BAAI/bge-base-en-v1.5` on one idle
+H200 (GPU 6) and time encoding ~512 real buffers (truncated to 512 tokens) at several
+batch sizes.
+
+**Results — throughput of every option (embeds/s):**
+
+| Serving | embeds/s | vs CPU sidecar |
+|---|---:|---:|
+| BGE-base — **CPU sidecar** (1 proc) | 23 | 1× |
+| SFR-Mistral — 1 endpoint (H200, loaded) | 78 | 3.4× |
+| SFR-Mistral — pooled ×8 (loaded) | 281 | 12× |
+| BGE-base — **1 H200** (bs=64 / 128 / 256) | **1,322 / 1,675 / 1,959** | ~85× |
+
+**One BGE GPU ≈ 85 CPU sidecar instances ≈ 7× the entire 8-way SFR fleet.**
+
+### Break-even analysis
+
+The plan: offload the **~374 breakpoint embeds/doc** to BGE, leaving the SFR fleet to
+do only the **~19 stored embeds/doc**.
+
+- **Today (SFR does both):** 393 embeds/doc ÷ 281 embeds/s = **0.71 doc/s**.
+- **SFR-final ceiling (breakpoints fully offloaded):** 19 embeds/doc ÷ 281/s = **14.8 doc/s** — a ~20× headroom, *if* breakpoint capacity keeps up.
+- Breakpoint capacity needed to hit a target rate = `374 × docs/s`.
+
+| Breakpoint serving | embeds/s | → semantic docs/s | vs today |
+|---|---:|---:|---:|
+| **CPU BGE ×12** | ~276 | ~0.7 | **break-even** with today |
+| CPU BGE ×80 | ~1,840 | ~4.9 | ~7× |
+| CPU BGE ×240 | ~5,520 | ~14.8 (SFR-bound) | ~20× — impractical (RAM/procs) |
+| **1 GPU BGE** | ~1,959 | **~5.2** | **~7×** |
+| **~3 GPU BGE** | ~5,880 | ~14.8 (SFR-bound) | **~20×** |
+
+**Break-even points:**
+- **CPU multi-instance:** ~**12** BGE workers break even with today's rate; ~**80** for ~7×; ~**240** to saturate the SFR-final ceiling (impractical — ~120 GB RAM, process overhead, CPU encode of 512-token inputs is heavy).
+- **GPU:** **1** co-located BGE instance already beats 85 CPU workers *and* the whole SFR fleet, lifting the build to **~5 doc/s (~7×)**; **~3** co-located instances saturate the SFR-final ceiling (**~15 doc/s, ~20×**). BGE-base is ~1 GB and the H200s are idle between bursts, so this needs **no new hardware** — just run BGE (GPU) alongside SFR on a few existing GPUs.
+
+**The crossover:** one GPU does the work of ~85 CPU instances, so with GPU headroom
+available the CPU-scaling path is never worth it beyond ~12 workers (break-even). Use
+a GPU.
+
+**Caveats.** GPU numbers are peak (fp16, 512-token-truncated buffers, buffers slightly
+shorter than Exp. 2's); real throughput with full 512-token buffers is somewhat lower
+but still ~5–6× the SFR fleet. And this whole win only matters if semantic chunking
+must stay: `fixed_tok512` reaches the same SFR-final ceiling (~15 doc/s) with **no
+breakpoint embed and no BGE serving at all**, and the evals find it retrieval-equivalent.
 
 ---
 
@@ -225,6 +280,9 @@ CHEAP_MAX_TOKENS=512 /rag/envs/ragstack/bin/python \
 
 # Experiment 3 — embed throughput (is the cheap model faster?)
 /rag/envs/ragstack/bin/python python/scripts/eval/embed_speed.py
+
+# Experiment 4 — BGE on a GPU (needs torch+CUDA; use the vllm env)
+CUDA_VISIBLE_DEVICES=6 /rag/envs/vllm/bin/python python/scripts/eval/bge_gpu_bench.py
 ```
 
 Both are parameterized by env vars (`INPUT`, `N_SAMPLE`, `EMBED_MODEL`/`REF_MODEL`,
@@ -248,8 +306,10 @@ their tables to stdout and are cheap to re-run.
   equivalence must hold (512-bound re-test, then a retrieval eval if borderline).
 - **Standing recommendation** — for ingest speed with no new serving, prefer
   `fixed_tok512` (the evals' recommended method): it eliminates the ~20×-volume
-  breakpoint embed entirely. The cheap-breakpoint-model path is worth pursuing only
-  if semantic must stay **and** a small model is served on GPU.
+  breakpoint embed entirely and reaches the same ~15 doc/s SFR-final ceiling.
+  If semantic must stay, serve **BGE on a GPU** (1 co-located instance ≈ 7×, ~3 ≈ 20×;
+  one GPU beats ~85 CPU workers) — the CPU-scaling path only reaches break-even at
+  ~12 workers and isn't worth it given idle GPU headroom.
 
 ## References
 
