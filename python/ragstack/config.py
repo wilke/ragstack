@@ -169,7 +169,7 @@ class Settings(BaseSettings):
 
     # Retrieval defaults
     top_k: int = 5
-    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Cross-encoder reranking (final stage over the fused candidate pool).
     # Off by default; when enabled, the hybrid result is re-fetched to a pool of
