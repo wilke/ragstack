@@ -763,11 +763,24 @@ class SemanticChunker:
             return self._emit(doc, 0, len(text))
 
         # Build overlapping buffers (as text) for similarity comparison.
+        # Buffers span up to (2*buffer_size + 1) sentences, so a dense doc can
+        # produce a buffer longer than the embedder's context window, which the
+        # server rejects (HTTP 400). Buffers only drive breakpoint *distances*,
+        # not the emitted chunk text, so bounding an over-long buffer to the
+        # token budget (first lossless piece) is a valid similarity proxy and
+        # never affects chunk boundaries. With no max_tokens/token_counter the
+        # behaviour is unchanged.
         buffers: list[str] = []
         for i in range(len(spans)):
             lo = max(0, i - self.buffer_size)
             hi = min(i + 1 + self.buffer_size, len(spans))
-            buffers.append(text[spans[lo][0] : spans[hi - 1][1]])
+            buf = text[spans[lo][0] : spans[hi - 1][1]]
+            if self.max_tokens is not None and self.token_counter is not None:
+                if self.token_counter.count(buf) > self.max_tokens:
+                    buf = split_text_to_token_budget(
+                        buf, self.max_tokens, self.token_counter
+                    )[0]
+            buffers.append(buf)
 
         embeddings = self.embed_fn(buffers)
 
