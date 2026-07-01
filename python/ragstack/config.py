@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # collection_name(). This lets the serving API point at a pre-built collection
     # whose name the derivation can't reproduce (e.g. ragstack_sfr_tok256). Empty
     # (default) keeps the derived behaviour byte-for-byte unchanged.
+    # The Elasticsearch (BM25) index follows this name too when elasticsearch_index
+    # is left at its default, so hybrid retrieval's two legs read the same corpus;
+    # set elasticsearch_index explicitly to override that.
     qdrant_collection_explicit: str = ""
 
     # Embedding backend (used at both ingest and query time)

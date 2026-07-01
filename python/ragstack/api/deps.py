@@ -125,6 +125,22 @@ def _build_embedder(http: httpx.AsyncClient):
     )
 
 
+def _es_index_name() -> str:
+    """The Elasticsearch (BM25) index the API serves.
+
+    When a pre-built collection is pinned via ``qdrant_collection_explicit``, the
+    BM25 leg must read the SAME corpus or hybrid retrieval silently fuses two
+    different indices (the vector leg on the pinned collection, BM25 on the default
+    ``ragstack``). So default the ES index to the explicit collection name, unless
+    the operator set ``elasticsearch_index`` to a non-default value of its own.
+    """
+    es_index = settings.elasticsearch_index
+    default_es = type(settings).model_fields["elasticsearch_index"].default
+    if settings.qdrant_collection_explicit and es_index == default_es:
+        return settings.qdrant_collection_explicit
+    return es_index
+
+
 def _build_text_index():
     """Return the text index. ``text_backend=elasticsearch`` is the durable BM25
     backend used for hybrid retrieval; otherwise the in-memory Jaccard placeholder
@@ -142,7 +158,7 @@ def _build_text_index():
             return InMemoryTextIndex()
         return ElasticsearchTextIndex(
             settings.elasticsearch_url,
-            settings.elasticsearch_index,
+            _es_index_name(),
             settings.elasticsearch_api_key or None,
         )
 
@@ -412,7 +428,7 @@ async def lifespan(app: FastAPI):
     if hasattr(text_index, "ensure_index"):
         try:
             await text_index.ensure_index()
-            log.info("elasticsearch index ready: %s", settings.elasticsearch_index)
+            log.info("elasticsearch index ready: %s", _es_index_name())
         except Exception as e:
             if settings.require_durable_backends:
                 raise
