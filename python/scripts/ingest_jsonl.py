@@ -640,7 +640,17 @@ async def run(args: argparse.Namespace) -> None:
                     metadata=index_metadata(enriched),
                     source=record.get("path", "") or "",
                 )
-                chunks = chunker.chunk(doc)
+                # Chunk OFF the main event loop: chunker.chunk() is synchronous
+                # CPU work (sentence split + token counting), and for the semantic
+                # chunker it further blocks on the embed bridge's fut.result(). Run
+                # inline it would pin the loop and starve the embed+upsert workers
+                # (bursty single-GPU use, #66); awaiting to_thread lets the workers
+                # drain while this doc is chunked. SINGLE IN-FLIGHT by construction
+                # (we await before reading the next line), so exactly one thread ever
+                # enters the embed bridge — matching its one-caller guarantees, so no
+                # bridge hardening is needed. Raising this to N-concurrent chunks would
+                # require an on-loop init lock in the bridge AND higher httpx pool limits.
+                chunks = await asyncio.to_thread(chunker.chunk, doc)
                 for c in chunks:
                     c.metadata["tenant_id"] = args.tenant
                 buf.extend(chunks)
