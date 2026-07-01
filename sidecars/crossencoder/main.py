@@ -3,12 +3,13 @@
 import os
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 # Default matches python config.reranker_model and apptainer/sidecars-up.sh so
 # every launch path loads the same model unless MODEL_NAME is set explicitly.
-MODEL_NAME = os.environ.get("MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-reranker-v2-m3")
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "512"))
 PORT = int(os.environ.get("PORT", "50052"))
 DEVICE = os.environ.get("DEVICE", "cpu")
@@ -24,6 +25,10 @@ def _get_model():
         from sentence_transformers import CrossEncoder
 
         _model = CrossEncoder(MODEL_NAME, max_length=MAX_LENGTH, device=DEVICE)
+        # Half precision on GPU ~halves memory and speeds inference with no
+        # measurable rerank-quality loss; skipped on CPU (fp16 is slow there).
+        if DEVICE.startswith("cuda"):
+            _model.model.half()
     return _model
 
 
@@ -50,7 +55,10 @@ async def rerank(request: RerankRequest):
 
     model = _get_model()
     pairs = [[request.query, doc] for doc in request.documents]
-    scores = model.predict(pairs).tolist()
+    # predict() is a blocking (CPU/GPU-bound) call; run it off the event loop so
+    # a single uvicorn worker keeps accepting concurrent requests instead of
+    # stalling and dropping connections (httpx ReadError) under load.
+    scores = (await run_in_threadpool(model.predict, pairs)).tolist()
 
     scored_indices = sorted(
         enumerate(scores), key=lambda x: x[1], reverse=True

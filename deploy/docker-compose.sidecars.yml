@@ -5,7 +5,7 @@ services:
     ports:
       - "50052:50052"
     environment:
-      - MODEL_NAME=${CROSSENCODER_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+      - MODEL_NAME=${CROSSENCODER_MODEL:-BAAI/bge-reranker-v2-m3}
       - DEVICE=${SIDECAR_DEVICE:-cpu}
     restart: unless-stopped
 

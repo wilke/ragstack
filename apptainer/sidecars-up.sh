@@ -16,8 +16,14 @@ DATA="${RAG_DATA:-$HERE/data}"
 IMG="${RAG_IMAGES:-$HERE/images}"
 SIDECARS_SRC="$(cd "$HERE/.." && pwd)/sidecars"
 # Cross-encoder model the reranker sidecar loads. Default matches
-# config.reranker_model (a small, CPU-friendly MS-MARCO MiniLM).
-CROSSENCODER_MODEL="${CROSSENCODER_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}"
+# config.reranker_model (BGE reranker v2-m3 — multilingual, 8k-context, ~560M
+# params; runs on GPU by default below).
+CROSSENCODER_MODEL="${CROSSENCODER_MODEL:-BAAI/bge-reranker-v2-m3}"
+# Reranker device. Default cuda on this GPU host (~1.1 GB fp16, so it shares one
+# card with the SFR fleet). Set CROSSENCODER_DEVICE=cpu to disable GPU (no --nv,
+# and note this model is slow on CPU). CROSSENCODER_GPU pins which card.
+CROSSENCODER_DEVICE="${CROSSENCODER_DEVICE:-cuda}"
+CROSSENCODER_GPU="${CROSSENCODER_GPU:-0}"
 
 mkdir -p "$DATA"/embedding/{deps,cache}
 mkdir -p "$DATA"/crossencoder/{deps,cache}
@@ -75,16 +81,25 @@ start_crossencoder() {
         echo "[crossencoder] already running — skipping"
         return
     fi
-    echo "[crossencoder] starting on :50052 (model: $CROSSENCODER_MODEL)"
+    # Expose one GPU to the container when DEVICE=cuda. CUDA_VISIBLE_DEVICES pins
+    # the card; inside the container it is remapped to cuda:0, so DEVICE=cuda is
+    # correct regardless of which physical card CROSSENCODER_GPU selects.
+    local gpu_args=()
+    if [[ "$CROSSENCODER_DEVICE" == cuda* ]]; then
+        gpu_args=(--nv --env CUDA_VISIBLE_DEVICES="$CROSSENCODER_GPU")
+    fi
+    echo "[crossencoder] starting on :50052 (model: $CROSSENCODER_MODEL, device: $CROSSENCODER_DEVICE)"
     apptainer instance run \
         --bind "$SIDECARS_SRC/crossencoder:/app:ro" \
         --bind "$DATA/crossencoder/deps:/deps:ro" \
         --bind "$DATA/crossencoder/cache:/cache" \
+        "${gpu_args[@]}" \
         --env PYTHONPATH=/deps \
         --env HF_HOME=/cache \
         --env TRANSFORMERS_CACHE=/cache \
         --env SENTENCE_TRANSFORMERS_HOME=/cache \
         --env MODEL_NAME="$CROSSENCODER_MODEL" \
+        --env DEVICE="$CROSSENCODER_DEVICE" \
         --env PORT=50052 \
         "$SIF" crossencoder \
         /bin/sh -c 'cd /app && exec /usr/local/bin/python -m uvicorn main:app --host 0.0.0.0 --port 50052'
