@@ -577,22 +577,26 @@ def cap_oversized(chunks: list[Chunk]) -> tuple[list[Chunk], int]:
             continue
         n_oversized += 1
         pieces = split_text_to_token_budget(c.content, HARD_CAP_TOKENS, TOKEN_COUNTER)
-        cursor = 0
+        # Anchor at the parent chunk's source offset (pieces are a lossless split
+        # of c.content) so start/end are honest source spans and the uuid5 ids are
+        # unique across a doc's chunks — matching the doc_id:start:end convention.
+        cursor = c.start_char
         for piece in pieces:
+            start, end = cursor, cursor + len(piece)
             out.append(
                 Chunk(
                     id=str(uuid.uuid5(
                         uuid.NAMESPACE_URL,
-                        f"{c.doc_id}:{cursor}:{cursor + len(piece)}",
+                        f"{c.doc_id}:{start}:{end}",
                     )),
                     doc_id=c.doc_id,
                     content=piece,
                     metadata=dict(c.metadata),
-                    start_char=cursor,
-                    end_char=cursor + len(piece),
+                    start_char=start,
+                    end_char=end,
                 )
             )
-            cursor += len(piece)
+            cursor = end
     return out, n_oversized
 
 
