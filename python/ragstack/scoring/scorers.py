@@ -54,7 +54,13 @@ class CrossEncoderScorer:
     Falls back gracefully if the library is not available.
     """
 
-    def __init__(self, model_name: str = "BAAI/bge-reranker-v2-m3") -> None:
+    def __init__(self, model_name: str | None = None) -> None:
+        # Default to config.reranker_model so the reranker model has ONE Python
+        # source of truth (config.py) rather than a re-literal here.
+        if model_name is None:
+            from ragstack.config import Settings
+
+            model_name = Settings().reranker_model
         self.model_name = model_name
         self._model: CrossEncoder | None = None
 

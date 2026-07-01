@@ -1,6 +1,7 @@
 """Cross-encoder sidecar service for reranking documents."""
 
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI
@@ -15,10 +16,12 @@ MODEL_NAME = os.environ.get("MODEL_NAME", "BAAI/bge-reranker-v2-m3")
 # large-chunk configs — a fair cross-config benchmark. Lower it (e.g. 512) to
 # trade recall on long chunks for query-serving latency at prod scale.
 MAX_LENGTH = int(os.environ.get("MAX_LENGTH", "4096"))
+# Per-forward-pass batch cap so a deep candidate pool of long (up to MAX_LENGTH-
+# token) chunks can't OOM the shared GPU — predict() iterates in batches of this
+# size rather than padding the whole pool into one tensor.
+BATCH_SIZE = int(os.environ.get("RERANK_BATCH_SIZE", "32"))
 PORT = int(os.environ.get("PORT", "50052"))
 DEVICE = os.environ.get("DEVICE", "cpu")
-
-app = FastAPI(title="Cross-Encoder Reranking Service")
 
 _model = None
 
@@ -34,6 +37,19 @@ def _get_model():
         if DEVICE.startswith("cuda"):
             _model.model.half()
     return _model
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Warm the model at startup so the (large) download + GPU load + fp16 cast
+    # happen off the request path: the first /rerank no longer blocks the event
+    # loop, and a GPU/model failure surfaces at boot (fail-fast) rather than
+    # mid-request. Loaded in a worker thread so startup stays cooperative.
+    await run_in_threadpool(_get_model)
+    yield
+
+
+app = FastAPI(title="Cross-Encoder Reranking Service", lifespan=lifespan)
 
 
 class RerankRequest(BaseModel):
@@ -61,8 +77,11 @@ async def rerank(request: RerankRequest):
     pairs = [[request.query, doc] for doc in request.documents]
     # predict() is a blocking (CPU/GPU-bound) call; run it off the event loop so
     # a single uvicorn worker keeps accepting concurrent requests instead of
-    # stalling and dropping connections (httpx ReadError) under load.
-    scores = (await run_in_threadpool(model.predict, pairs)).tolist()
+    # stalling and dropping connections (httpx ReadError) under load. batch_size
+    # bounds peak GPU memory regardless of pool depth.
+    scores = (
+        await run_in_threadpool(model.predict, pairs, batch_size=BATCH_SIZE)
+    ).tolist()
 
     scored_indices = sorted(
         enumerate(scores), key=lambda x: x[1], reverse=True

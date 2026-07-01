@@ -4,9 +4,22 @@ services:
       context: ../sidecars/crossencoder
     ports:
       - "50052:50052"
+    # NOTE: the default reranker (BAAI/bge-reranker-v2-m3, ~560M) at MAX_LENGTH=4096
+    # is impractically slow on CPU — a rerank pool takes seconds/pass and query-path
+    # reranks will time out. For real use set SIDECAR_DEVICE=cuda AND uncomment the
+    # `deploy.resources` GPU reservation below (requires the nvidia-container-toolkit),
+    # or set MAX_LENGTH=512 to make the CPU default merely slow rather than unusable.
     environment:
       - MODEL_NAME=${CROSSENCODER_MODEL:-BAAI/bge-reranker-v2-m3}
       - DEVICE=${SIDECAR_DEVICE:-cpu}
+      - MAX_LENGTH=${CROSSENCODER_MAX_LENGTH:-4096}
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
     restart: unless-stopped
 
   embedding-sidecar:

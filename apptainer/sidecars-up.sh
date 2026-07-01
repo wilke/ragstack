@@ -83,10 +83,18 @@ start_crossencoder() {
     fi
     # Expose one GPU to the container when DEVICE=cuda. CUDA_VISIBLE_DEVICES pins
     # the card; inside the container it is remapped to cuda:0, so DEVICE=cuda is
-    # correct regardless of which physical card CROSSENCODER_GPU selects.
+    # correct regardless of which physical card CROSSENCODER_GPU selects. If cuda
+    # is requested but the host has no NVIDIA driver, fall back to CPU rather than
+    # letting `--nv` abort instance startup with a cryptic error.
     local gpu_args=()
     if [[ "$CROSSENCODER_DEVICE" == cuda* ]]; then
-        gpu_args=(--nv --env CUDA_VISIBLE_DEVICES="$CROSSENCODER_GPU")
+        if command -v nvidia-smi >/dev/null 2>&1; then
+            gpu_args=(--nv --env CUDA_VISIBLE_DEVICES="$CROSSENCODER_GPU")
+        else
+            echo "[crossencoder] WARNING: CROSSENCODER_DEVICE=$CROSSENCODER_DEVICE but no" \
+                 "nvidia-smi found — falling back to CPU (set CROSSENCODER_DEVICE=cpu to silence)"
+            CROSSENCODER_DEVICE=cpu
+        fi
     fi
     echo "[crossencoder] starting on :50052 (model: $CROSSENCODER_MODEL, device: $CROSSENCODER_DEVICE)"
     apptainer instance run \
