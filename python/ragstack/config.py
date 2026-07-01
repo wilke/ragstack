@@ -73,8 +73,9 @@ class Settings(BaseSettings):
     # with ``ragstack.ingestion.enrich.resolve_profile(settings.publisher_profile)``.
     publisher_profile: str = "asm"
 
-    # Chunker defaults
-    chunk_method: str = "fixed"             # fixed | sentence | words | semantic
+    # Chunker defaults. fixed_token is a sliding TOKEN window (chunk_size/overlap in
+    # tokens) and needs embedding_model (its HF tokenizer). See CHUNK_METHODS.
+    chunk_method: str = "fixed"   # fixed | fixed_token | sentence | words | semantic
     chunk_size: int = 512
     chunk_overlap: int = 64
     # Semantic chunker (chunk_method=semantic) tunables. Embeds sentence buffers
@@ -93,6 +94,19 @@ class Settings(BaseSettings):
     # serving endpoint, "estimate" uses a chars-per-token heuristic.
     chunk_max_tokens: int | None = None
     chunk_token_counter: str = "hf"          # hf | endpoint | estimate
+
+    @field_validator("chunk_method")
+    @classmethod
+    def _validate_chunk_method(cls, value: str) -> str:
+        # Fail fast with a clear message at config load rather than deep inside
+        # make_chunker. Lazy import keeps config free of an ingestion dependency.
+        from ragstack.ingestion.chunkers import CHUNK_METHODS
+
+        if value not in CHUNK_METHODS:
+            raise ValueError(
+                f"chunk_method {value!r} not in {CHUNK_METHODS}"
+            )
+        return value
 
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).

@@ -276,28 +276,44 @@ def _build_chunker():
     # so the char-budget path is unchanged and no tokenizer/endpoint is touched at
     # startup. When on, build a TokenCounter and resolve the per-chunk budget from
     # the embedding endpoint so /v1/ingest never emits an over-window chunk.
+    #
+    # The ``fixed_token`` method ALSO needs a TokenCounter (its window is the sizing
+    # unit) even when chunk_max_tokens is unset — and specifically the HF fast
+    # tokenizer's offset mapping, so force the 'hf' backend and require a model.
+    # Without this, make_chunker('fixed_token') would raise the opaque
+    # "requires a token_counter" at startup.
     max_tokens: int | None = None
     token_counter = None
-    if settings.chunk_max_tokens is not None:
+    if settings.chunk_max_tokens is not None or method == "fixed_token":
         base_url = (settings.embedding_endpoints or [settings.embedding_sidecar_url])[0]
         api_key = settings.openai_api_key or None
         model = settings.embedding_model or None
+        if method == "fixed_token":
+            if not model:
+                raise ValueError(
+                    "chunk_method='fixed_token' requires embedding_model (its sliding "
+                    "token window is built from that model's HF tokenizer)"
+                )
+            counter_backend = "hf"
+        else:
+            counter_backend = settings.chunk_token_counter
         token_counter = make_token_counter(
-            settings.chunk_token_counter,
+            counter_backend,
             model=model,
             base_url=base_url,
             api_key=api_key,
         )
-        max_tokens = resolve_max_tokens(
-            settings.chunk_max_tokens,
-            base_url=base_url,
-            api_key=api_key,
-        )
-        log.info(
-            "token-based chunk sizing on: max_tokens=%d counter=%s",
-            max_tokens,
-            settings.chunk_token_counter,
-        )
+        if settings.chunk_max_tokens is not None:
+            max_tokens = resolve_max_tokens(
+                settings.chunk_max_tokens,
+                base_url=base_url,
+                api_key=api_key,
+            )
+            log.info(
+                "token-based chunk sizing on: max_tokens=%d counter=%s",
+                max_tokens,
+                counter_backend,
+            )
 
     chunker = make_chunker(
         method,

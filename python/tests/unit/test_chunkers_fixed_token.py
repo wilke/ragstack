@@ -240,3 +240,26 @@ def test_non_hf_counter_degrades_to_whole_doc():
     chunks = chunker.chunk(doc)
     assert len(chunks) == 1
     assert chunks[0].content == doc.content
+
+
+def test_interior_trim_at_zero_overlap_keeps_all_tokens_covered():
+    # Regression for the interior-trim gap: when the boundary trim fires on a
+    # NON-first window with chunk_overlap=0, the advance must not skip the
+    # trimmed-off token(s). We trip the +1 merge inflation on the window that
+    # starts at token "w5"; under the old fixed `start += window` advance, token
+    # w9 was dropped from all chunks. Now every non-whitespace char is covered.
+    doc = _doc(_words(15))  # tokens w0..w14
+    counter = _MergeBoundaryCounter(trip_prefix="w5")  # trips the interior window
+    chunker = FixedTokenWindowChunker(
+        chunk_size=5, chunk_overlap=0, token_counter=counter
+    )
+    chunks = chunker.chunk(doc)
+    assert chunks
+    covered = [False] * len(doc.content)
+    for c in chunks:
+        for i in range(c.start_char, c.end_char):
+            covered[i] = True
+    for i, ch in enumerate(doc.content):
+        if not ch.isspace():
+            assert covered[i], f"non-whitespace char {i} ({doc.content[i]!r}) dropped"
+    assert all(counter.count(c.content) <= 5 for c in chunks)

@@ -60,7 +60,7 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import link_neighbors, make_chunker
+from ragstack.ingestion.chunkers import link_neighbors_by_document, make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
@@ -388,6 +388,11 @@ async def run(args: argparse.Namespace) -> None:
                         # quarantined batch yields []; nothing to store but the seq
                         # still completes so the checkpoint advances (no stall).
                         kept = await _embed_drop_bad(embedder, chunks)
+                        # Stamp prev/next/chunk_index per document on the SURVIVING
+                        # chunks (after the drop above) so neighbor links never
+                        # dangle to a quarantined chunk, and a mixed-doc batch never
+                        # cross-links one doc's tail to the next doc's head.
+                        link_neighbors_by_document(kept)
                         # Upsert FIRST. Deterministic chunk ids overwrite an
                         # unchanged doc's points in place, so plain upsert is correct
                         # for re-ingest and — critically — a failure here never
@@ -478,11 +483,6 @@ async def run(args: argparse.Namespace) -> None:
                     source=record.get("path", "") or "",
                 )
                 chunks = chunker.chunk(doc)
-                # Stamp prev/next/chunk_index on the doc's FINAL ordered chunk
-                # list (ids/offsets are final here, after any token-cap splitting),
-                # so the neighbor links flow to both Qdrant and ES. Uses the
-                # doc-level chunk.id, not the tenant-prefixed store point id.
-                link_neighbors(chunks)
                 for c in chunks:
                     c.metadata["tenant_id"] = args.tenant
                 buf.extend(chunks)

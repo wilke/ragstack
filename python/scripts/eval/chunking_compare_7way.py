@@ -79,7 +79,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # for the _stats helpe
 import _stats  # noqa: E402
 
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import make_chunker, split_text_to_token_budget
+from ragstack.ingestion.chunkers import (
+    FixedTokenWindowChunker,
+    make_chunker,
+    split_text_to_token_budget,
+)
 from ragstack.ingestion.enrich import ARTICLE, enrich, index_metadata
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.tokenization import HFTokenCounter, TokenCounter
@@ -439,76 +443,20 @@ def token_window_chunks(
     overlap_tokens: int,
     token_counter: TokenCounter,
 ) -> list[Chunk]:
-    """Sliding TOKEN-window chunker with exact source char offsets.
+    """Sliding TOKEN-window chunker — delegates to the package's
+    :class:`FixedTokenWindowChunker`.
 
-    RecursiveCharacterChunker's ``max_tokens`` is only a CAP, so a true token-SIZE
-    config needs its own chunker. Here we tokenize the whole doc with the SFR
-    AutoTokenizer using ``return_offsets_mapping=True`` (so each token carries its
-    exact ``[char_start, char_end)`` source span), then slide an ``window_tokens``
-    window with ``overlap_tokens`` overlap. Each window maps back to a contiguous
-    char span ``[offs[i][0], offs[j-1][1])`` via the offset mapping, so chunk
-    content is sliced from the source and the deterministic uuid5 id
-    (``doc_id:start:end``) is preserved exactly like the package chunkers.
-
-    Falls back to a single whole-doc chunk when the counter isn't an HF fast
-    tokenizer (no offset mapping); in practice the harness always uses HFTokenCounter.
-
-    The emitted char span is trimmed so that *re-tokenizing the sliced substring*
-    yields <= ``window_tokens`` tokens. Slicing on token-boundary char offsets and
-    re-encoding the substring can add a boundary token (a merge that spanned the
-    cut re-splits), so a naive window of exactly ``window_tokens`` tokens could
-    re-count as N+1. We shrink the window by whole tokens until the re-counted
-    content fits, keeping offsets exact (content is always the source slice).
+    This harness is where the sliding-token-window logic was prototyped; it now
+    lives in ``ragstack.ingestion.chunkers`` as a first-class chunker, so we reuse
+    it here rather than keeping a second copy (which would drift — e.g. the
+    boundary-trim / no-source-loss fix). Ids/offsets are identical
+    (``uuid5(doc_id:start:end)``), so committed results reproduce.
     """
-    text = doc.content
-    if not text:
-        return []
-    tok = getattr(token_counter, "_tokenizer", None)
-    if tok is None:
-        # Not an HF counter — degrade to a single whole-doc chunk.
-        return [_window_chunk(doc, 0, len(text))]
-    tokenizer = tok()
-    enc = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
-    offsets = enc["offset_mapping"]
-    n = len(offsets)
-    if n == 0:
-        return [_window_chunk(doc, 0, len(text))]
-    step = max(1, window_tokens - overlap_tokens)
-    chunks: list[Chunk] = []
-    seen_spans: set[tuple[int, int]] = set()
-    start_tok = 0
-    while start_tok < n:
-        end_tok = min(start_tok + window_tokens, n)
-        char_start = offsets[start_tok][0]
-        char_end = offsets[end_tok - 1][1]
-        # Trim by whole tokens until the re-tokenized slice is <= window_tokens.
-        # A re-encode of the boundary-cut substring can add one merge token, so
-        # this shrinks end_tok (never below start_tok+1) to honour the budget.
-        while (
-            end_tok - 1 > start_tok
-            and token_counter.count(text[char_start:char_end]) > window_tokens
-        ):
-            end_tok -= 1
-            char_end = offsets[end_tok - 1][1]
-        span = (char_start, char_end)
-        if char_end > char_start and span not in seen_spans:
-            seen_spans.add(span)
-            chunks.append(_window_chunk(doc, char_start, char_end))
-        if end_tok >= n:
-            break
-        start_tok += step
-    return chunks
-
-
-def _window_chunk(doc: Document, start: int, end: int) -> Chunk:
-    return Chunk(
-        id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc.id}:{start}:{end}")),
-        doc_id=doc.id,
-        content=doc.content[start:end],
-        metadata=dict(doc.metadata),
-        start_char=start,
-        end_char=end,
-    )
+    return FixedTokenWindowChunker(
+        chunk_size=window_tokens,
+        chunk_overlap=overlap_tokens,
+        token_counter=token_counter,
+    ).chunk(doc)
 
 
 # --------------------------------------------------------------------------- #

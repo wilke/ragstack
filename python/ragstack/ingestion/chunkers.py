@@ -534,11 +534,14 @@ class FixedTokenWindowChunker:
     other chunkers.
 
     The emitted char span is trimmed so that *re-tokenizing the sliced substring*
-    yields <= ``chunk_size`` tokens: slicing on token-boundary char offsets and
-    re-encoding the substring can add a boundary token (a merge that spanned the
-    cut re-splits), so a naive window of exactly ``chunk_size`` tokens could
-    re-count as N+1. The window is shrunk by whole tokens until the re-counted
-    content fits, keeping offsets exact.
+    yields <= ``chunk_size`` tokens: a substring re-encoded in isolation can gain a
+    token vs. its in-context tokenization (a leading/merge token), so a naive window
+    of exactly ``chunk_size`` tokens could re-count as N+1. The window is shrunk by
+    whole tokens until the re-counted content fits, and the next window advances from
+    the *trimmed* end so a trimmed-off token is never skipped (no source-text loss,
+    even at ``chunk_overlap=0``). The one case the trim can't fix is a single token
+    that alone re-counts > ``chunk_size`` (an indivisible long token): it is emitted
+    as-is and left to the ingest embed path's isolate-and-drop backstop.
 
     Requires an HF ``TokenCounter`` (it needs the fast tokenizer's offset
     mapping); when the counter isn't an HF counter it degrades to a single
@@ -574,30 +577,37 @@ class FixedTokenWindowChunker:
             return [_make_chunk(doc, 0, len(text))]
         window = max(1, self.chunk_size)
         overlap = max(0, min(self.chunk_overlap, window - 1))
-        step = max(1, window - overlap)
         chunks: list[Chunk] = []
-        seen_spans: set[tuple[int, int]] = set()
         start_tok = 0
         while start_tok < n:
             end_tok = min(start_tok + window, n)
             char_start = offsets[start_tok][0]
             char_end = offsets[end_tok - 1][1]
             # Trim by whole tokens until the re-tokenized slice is <= window: a
-            # re-encode of the boundary-cut substring can add one merge token, so
-            # shrink end_tok (never below start_tok+1) to honour the budget.
+            # re-encode of the boundary-cut substring can add one merge token
+            # (isolated, the slice tokenizes with an extra leading/merge token), so
+            # shrink end_tok to honour the budget. The guard stops at a single token
+            # (end_tok - 1 == start_tok): a lone token that itself re-counts > window
+            # is indivisible and emitted as-is — the ingest embed path's isolate-and-
+            # drop backstop handles that rare case rather than the chunker.
             while (
                 end_tok - 1 > start_tok
                 and counter.count(text[char_start:char_end]) > window
             ):
                 end_tok -= 1
                 char_end = offsets[end_tok - 1][1]
-            span = (char_start, char_end)
-            if char_end > char_start and span not in seen_spans:
-                seen_spans.add(span)
+            # start_tok strictly increases each step, so char_start does too — spans
+            # never repeat; only skip a zero-width span.
+            if char_end > char_start:
                 chunks.append(_make_chunk(doc, char_start, char_end))
             if end_tok >= n:
                 break
-            start_tok += step
+            # Advance from the (possibly trimmed) end, keeping `overlap` tokens of
+            # context. Tying the step to end_tok — not a fixed window-overlap step —
+            # means a trimmed window never skips its trimmed-off tokens (which would
+            # silently drop source text when overlap is small). max(start_tok+1, …)
+            # guarantees forward progress even if overlap spans the whole window.
+            start_tok = max(start_tok + 1, end_tok - overlap)
         # A whitespace-only or degenerate tail can leave no chunk; never drop text.
         if not chunks:
             return [_make_chunk(doc, 0, len(text))]
@@ -632,6 +642,24 @@ def link_neighbors(chunks: list[Chunk]) -> None:
         c.metadata["chunk_index"] = i
         c.metadata["prev_chunk_id"] = chunks[i - 1].id if i > 0 else None
         c.metadata["next_chunk_id"] = chunks[i + 1].id if i < n - 1 else None
+
+
+def link_neighbors_by_document(chunks: list[Chunk]) -> None:
+    """Group ``chunks`` by ``doc_id`` (preserving order) and :func:`link_neighbors`
+    each document's group, in place.
+
+    Call this on the FINAL list of chunks that will actually be STORED — i.e. after
+    embedding has dropped any unembeddable chunks — so a survivor's
+    ``prev_chunk_id`` / ``next_chunk_id`` never dangles to a chunk that was
+    quarantined and never written. Grouping by ``doc_id`` also keeps a mixed
+    multi-document batch (both ingest paths flatten several docs together) from
+    cross-linking one document's tail chunk to the next document's head.
+    """
+    groups: dict[str, list[Chunk]] = {}
+    for c in chunks:
+        groups.setdefault(c.doc_id, []).append(c)
+    for group in groups.values():
+        link_neighbors(group)
 
 
 # --------------------------------------------------------------------------- #

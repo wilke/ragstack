@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
     Chunker,
@@ -90,6 +91,11 @@ class IngestionPipeline:
                 "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
             )
         all_chunks = kept
+
+        # Stamp prev/next/chunk_index on the SURVIVING chunks (per document, after
+        # the embed drop above) so both the Qdrant payload and the ES document carry
+        # a neighbor chain that never dangles to a quarantined chunk.
+        link_neighbors_by_document(all_chunks)
 
         # Never delete prior data without a replacement. If the source produced
         # no chunks (empty content) or every chunk was quarantined, the replace

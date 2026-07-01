@@ -96,3 +96,44 @@ def test_integration_with_a_real_chunker():
         assert c.metadata["next_chunk_id"] == (
             chunks[i + 1].id if i < len(chunks) - 1 else None
         )
+
+
+# --------------------------------------------------------------------------- #
+# link_neighbors_by_document: per-doc grouping + survivor re-linking (no dangle)
+# --------------------------------------------------------------------------- #
+def test_by_document_does_not_cross_link_between_docs():
+    from ragstack.ingestion.chunkers import link_neighbors_by_document
+
+    a = [
+        Chunk(id="a0", doc_id="A", content="x", start_char=0, end_char=1),
+        Chunk(id="a1", doc_id="A", content="y", start_char=1, end_char=2),
+    ]
+    b = [
+        Chunk(id="b0", doc_id="B", content="z", start_char=0, end_char=1),
+    ]
+    link_neighbors_by_document(a + b)  # flattened multi-doc batch
+    # A's tail must NOT link to B's head.
+    assert a[-1].metadata["next_chunk_id"] is None
+    assert b[0].metadata["prev_chunk_id"] is None
+    assert a[0].metadata["next_chunk_id"] == "a1"
+    # Each doc is indexed from 0 independently.
+    assert [c.metadata["chunk_index"] for c in a] == [0, 1]
+    assert b[0].metadata["chunk_index"] == 0
+
+
+def test_by_document_relinks_survivors_no_dangling_id():
+    # Simulate an embed drop: chunk B was quarantined and is absent from the list
+    # passed to link_neighbors_by_document. The chain must skip it entirely — no
+    # survivor may reference the dropped id.
+    from ragstack.ingestion.chunkers import link_neighbors_by_document
+
+    a = Chunk(id="A", doc_id="d", content="x", start_char=0, end_char=1)
+    c = Chunk(id="C", doc_id="d", content="z", start_char=2, end_char=3)
+    link_neighbors_by_document([a, c])  # B dropped
+    assert a.metadata["next_chunk_id"] == "C"
+    assert c.metadata["prev_chunk_id"] == "A"
+    assert a.metadata["prev_chunk_id"] is None
+    assert c.metadata["next_chunk_id"] is None
+    all_refs = {a.metadata["prev_chunk_id"], a.metadata["next_chunk_id"],
+                c.metadata["prev_chunk_id"], c.metadata["next_chunk_id"]}
+    assert "B" not in all_refs  # never references the dropped chunk
