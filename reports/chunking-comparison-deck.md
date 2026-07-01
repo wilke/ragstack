@@ -292,36 +292,79 @@ Same **1,500 article docs** (balanced 500/500/500 across 3 shards) feed every ar
 
 ---
 
-## Results — retrieval quality  *(to be populated)*
+## Results — retrieval quality
 
-| config | R@1 | R@5 | R@10 | MRR@10 | nDCG@10 | rerank R@5 | rerank MRR | mean rerank |
+<span class="small">1,500 docs · 1,000 known-item queries · SFR/4096 · 16 GPUs. **All within a ~0.01 band.**</span>
+
+| config | R@1 | R@5 | R@10 | MRR@10 | nDCG@10 | rerank R@5 | rerank MRR | mean rr |
 |---|---|---|---|---|---|---|---|---|
-| fixed_char512 | … | | | | | | | |
-| fixed_char2048 | … | | | | | | | |
-| fixed_tok256 | … | | | | | | | |
-| fixed_tok512 | … | | | | | | | |
-| sentence_tok512 | … | | | | | | | |
-| words_tok512 | … | | | | | | | |
-| semantic_tokcap | … | | | | | | | |
+| fixed_char512 | 0.880 | 0.898 | 0.903 | 0.889 | 0.892 | 0.902 | 0.891 | 8.28 |
+| fixed_char2048 | 0.885 | 0.905 | 0.912 | 0.894 | 0.898 | 0.900 | 0.894 | 7.40 |
+| fixed_tok256 | 0.882 | 0.898 | 0.903 | 0.890 | 0.893 | **0.905** | 0.893 | **8.32** |
+| **fixed_tok512** | 0.883 | 0.897 | 0.905 | 0.890 | 0.893 | 0.902 | 0.894 | 7.86 |
+| sentence_tok512 | 0.884 | 0.897 | 0.903 | 0.891 | 0.894 | 0.902 | 0.892 | 7.94 |
+| words_tok512 | 0.885 | 0.899 | 0.904 | 0.892 | 0.895 | 0.899 | 0.890 | 8.18 |
+| semantic_tokcap | 0.886 | 0.897 | 0.905 | 0.892 | 0.895 | 0.898 | 0.891 | 7.54 |
+
+**Retrieval quality is essentially invariant to chunking method *and* size.**
 
 ---
 
-## Results — structure & cost  *(to be populated)*
+## Results — structure & cost
 
 | config | #chunks | chunks/doc | median tok | p95 tok | over-cap | ingest s | chunks/s |
 |---|---|---|---|---|---|---|---|
-| … | | | | | | | |
+| fixed_char512 | 149,677 | 99.8 | 171 | 261 | <span class="good">0</span> | 566 | 264 |
+| fixed_char2048 | 37,832 | 25.2 | 681 | 1000 | <span class="good">0</span> | 210 | 180 |
+| fixed_tok256 | 108,032 | 72.0 | 257 | 257 | <span class="good">0</span> | 426 | 253 |
+| **fixed_tok512** | 54,270 | 36.2 | 513 | 513 | <span class="good">0</span> | **261** | 208 |
+| sentence_tok512 | 58,099 | 38.7 | 475 | 504 | <span class="good">0</span> | 292 | 199 |
+| words_tok512 | 77,264 | 51.5 | 367 | 419 | <span class="good">0</span> | 530 | 146 |
+| semantic_tokcap | 29,536 | 19.7 | 521 | <span class="warn">2749</span> | <span class="good">0</span> | <span class="warn">1529</span> | 19 |
 
-**The three contrasts (fill from data):**
-- (a) char vs token *unit*, size-matched · (b) chunk *size* · (c) boundary strategy · (d) overflow eliminated
+<span class="small">**0 overflow everywhere** (token-safety is structural). Semantic costs **6×** the rest. Corpus ran **< 4 chars/token** (2048 char ≈ 681 tok) — the drift that makes char-sizing unsafe.</span>
 
 ---
 
-## Discussion & recommendation  *(to be populated)*
+## The four contrasts
 
-- Which hypotheses held / were refuted
-- **Recommended configuration** for the full production rebuild (3 shards, ~2.5M chunks)
-- Cost/quality trade-off summary
+- **(a) char vs token *unit*, size-matched** (#2≈#4): second-order — reranked recall@5 0.900 vs 0.902.
+  Token window buys <span class="accent">determinism + a guaranteed cap</span>, not accuracy.
+- **(b) chunk *size*** (tok256 vs tok512): barely moves quality; smaller = 2× the chunks & cost.
+- **(c) boundary strategy** (#4 vs sentence/words/semantic): no boundary-aware method beats the plain
+  token window on these metrics.
+- **(d) overflow**: <span class="good">all 7 = 0 over 4080 tok</span> — semantic *would* overflow
+  (p95 2749, max hit the cap) without the guard.
+
+> Aside: **mean rerank confidence falls as chunk size grows** (8.3 → 7.4) — big chunks dilute per-chunk relevance even when recall holds.
+
+---
+
+## Hypotheses — verdict
+
+| | prediction | verdict |
+|---|---|---|
+| **H1** | size dominates method | ✅ *stronger* — near-**invariant** to both |
+| **H2** | smaller → better recall; rerank ↓ with size | ⚠️ split — recall flat, **rerank ↓ held** |
+| **H3** | char↔token unit ≈ neutral, size-matched | ✅ held |
+| **H4** | token-safety is free | <span class="good">✅✅ 0 overflow, no penalty</span> |
+| **H5** | semantic doesn't pay for itself | ✅ held — 6× cost, no gain |
+| **H6** | sentence edges ahead post-rerank | ❌ refuted — `fixed_tok256` led |
+
+---
+
+## Recommendation
+
+# → `fixed_tok512`
+
+- All configs **statistically tied** on quality → decide on **safety · determinism · cost**
+- <span class="good">Cannot overflow</span> the embedder window (0 / 54,270) · reproducible boundaries
+- Matches the production corpus' effective chunk size
+- **~6× cheaper to ingest than semantic** (261 s vs 1,529 s)
+
+<span class="small">Alternative: `fixed_tok256` for slightly higher rerank confidence at 2× chunk count. **Semantic is not justified** by these results.</span>
+
+**Adopt `fixed_tok512` for the full 3-shard production rebuild (~2.5M chunks).**
 
 ---
 
