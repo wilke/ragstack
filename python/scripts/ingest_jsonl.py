@@ -73,6 +73,7 @@ from ragstack.ingestion.chunkers import link_neighbors_by_document, make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -631,6 +632,24 @@ async def run(args: argparse.Namespace) -> None:
         breakpoint_max_tokens=breakpoint_max_tokens,
         breakpoint_token_counter=breakpoint_token_counter,
     )
+    # Optional segmentation cache: store each doc's chunk spans keyed by
+    # content+config, so a re-ingest rebuilds identical blocks from the cache
+    # (reproducible regardless of embedding-backend jitter) and skips the
+    # breakpoint embed. Keyed on the config that determines spans, so changing any
+    # of it recomputes cleanly. Most valuable for the (embedding-based) semantic
+    # methods; harmless for deterministic ones.
+    seg_cache: SegmentationCache | None = None
+    if getattr(args, "segmentation_cache", None) and not args.no_index:
+        fp = config_fingerprint(
+            method=args.chunk_method, buffer_size=args.chunk_buffer_size,
+            pct=args.chunk_breakpoint_percentile, min_len=args.chunk_min_length,
+            max_tokens=max_tokens, bp_max_tokens=breakpoint_max_tokens,
+            bp_model=getattr(args, "breakpoint_embedding_model", None) or args.embedding_model,
+            embed_model=args.embedding_model,
+        )
+        seg_cache = SegmentationCache(args.segmentation_cache, fp)
+        print(f"segmentation cache {args.segmentation_cache} "
+              f"({len(seg_cache._spans)} cached spans loaded)", file=sys.stderr)
     ckpt_path, start_line, resume_done_ranges = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
     stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
@@ -949,7 +968,12 @@ async def run(args: argparse.Namespace) -> None:
                 # enters the embed bridge — matching its one-caller guarantees, so no
                 # bridge hardening is needed. Raising this to N-concurrent chunks would
                 # require an on-loop init lock in the bridge AND higher httpx pool limits.
-                chunks = await asyncio.to_thread(chunker.chunk, doc)
+                # With a segmentation cache, reuse the doc's stored spans (rebuilds
+                # identical blocks, skips the breakpoint embed) on a hit.
+                if seg_cache is not None:
+                    chunks = await asyncio.to_thread(seg_cache.get_or_compute, doc, chunker.chunk)
+                else:
+                    chunks = await asyncio.to_thread(chunker.chunk, doc)
                 for c in chunks:
                     c.metadata["tenant_id"] = args.tenant
                 buf.extend(chunks)
@@ -994,6 +1018,10 @@ async def run(args: argparse.Namespace) -> None:
         print(f"catalog written to {args.catalog_out}", file=sys.stderr)
     if embed_bridge is not None:
         embed_bridge.close()
+    if seg_cache is not None:
+        print(f"segmentation cache: {seg_cache.hits} hit / {seg_cache.misses} miss "
+              f"(hits skipped the breakpoint embed)", file=sys.stderr)
+        seg_cache.close()
     # Emit the per-file run summary + close the per-doc writer BEFORE the failure
     # exit below, so a partial (failed-batch) run still leaves its metrics behind.
     if doc_metrics is not None:
@@ -1088,8 +1116,13 @@ def main() -> None:
     p.add_argument("--breakpoint-max-tokens", type=int, default=None,
                    help="token budget for breakpoint-embed inputs when the breakpoint "
                         "model has a smaller context than the stored model (e.g. BGE 512). "
-                        "Default: auto from the breakpoint endpoint's window × 0.75 safety "
-                        "margin (the chunker counts tokens with the stored model's tokenizer).")
+                        "Default: auto from the breakpoint endpoint's window (exact when its "
+                        "own tokenizer is loaded, else padded down for the tokenizer mismatch).")
+    p.add_argument("--segmentation-cache", type=Path, default=None,
+                   help="cache each document's chunk SPANS to this JSONL file keyed by "
+                        "content+segmentation-config. A re-ingest rebuilds identical blocks "
+                        "from the cache (reproducible regardless of embedding-backend jitter) "
+                        "and skips the breakpoint embed. Ignored under --no-index.")
     # chunking
     p.add_argument("--chunk-method",
                    choices=["fixed", "fixed_token", "sentence", "words", "semantic",
