@@ -301,8 +301,11 @@ class DocMetricsWriter:
             "skipped": skipped,
             "error": error,
         }
+        # No per-row flush: this is a diagnostic side-file, not the durability
+        # mechanism (the .ckpt carries resume state). Normal buffering + the
+        # close() flush avoid a syscall per document on a million-doc ingest; a
+        # hard-crash tail loss is re-derived on --resume.
         self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        self._fh.flush()
 
     def close(self) -> None:
         self._fh.close()
@@ -507,15 +510,14 @@ async def run(args: argparse.Namespace) -> None:
                         # chunks (after the drop above) so neighbor links never
                         # dangle to a quarantined chunk, and a mixed-doc batch never
                         # cross-links one doc's tail to the next doc's head.
-                        link_neighbors_by_document(kept)
+                        # Reuse the by-doc grouping link_neighbors just built rather
+                        # than re-grouping `kept` a second time.
+                        surviving = link_neighbors_by_document(kept)
                         if doc_metrics is not None:
                             # One per-doc row right after link_neighbors, over the
                             # SURVIVING chunks grouped by doc_id. A doc all of whose
                             # chunks were quarantined leaves no survivors -> emit a
                             # zero-chunk row with an error so it's not silently lost.
-                            surviving: dict[str, list[Chunk]] = {}
-                            for c in kept:
-                                surviving.setdefault(c.doc_id, []).append(c)
                             async with lock:
                                 for d_id, src in doc_info.items():
                                     doc_chunks = surviving.get(d_id, [])

@@ -655,9 +655,11 @@ def link_neighbors(chunks: list[Chunk]) -> None:
         c.metadata["next_chunk_id"] = chunks[i + 1].id if i < n - 1 else None
 
 
-def link_neighbors_by_document(chunks: list[Chunk]) -> None:
+def link_neighbors_by_document(chunks: list[Chunk]) -> dict[str, list[Chunk]]:
     """Group ``chunks`` by ``doc_id`` (preserving order) and :func:`link_neighbors`
-    each document's group, in place.
+    each document's group, in place. Returns the per-``doc_id`` grouping so a caller
+    that also needs it (e.g. per-document metrics) can reuse it instead of
+    re-grouping the same list.
 
     Call this on the FINAL list of chunks that will actually be STORED — i.e. after
     embedding has dropped any unembeddable chunks — so a survivor's
@@ -671,6 +673,7 @@ def link_neighbors_by_document(chunks: list[Chunk]) -> None:
         groups.setdefault(c.doc_id, []).append(c)
     for group in groups.values():
         link_neighbors(group)
+    return groups
 
 
 # --------------------------------------------------------------------------- #
