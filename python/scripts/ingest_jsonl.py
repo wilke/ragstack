@@ -62,6 +62,7 @@ import os
 import statistics
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -892,6 +893,73 @@ async def run(args: argparse.Namespace) -> None:
         buf_start_line = 0  # first record line in the current batch (0 = empty batch)
         buf_end_line = 0
         last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
+
+        # --chunk-concurrency: chunk up to N documents at once (each fans its
+        # breakpoint embeds across the pool), while a single coordinator (`_fold`)
+        # folds the results into batches in STRICT FILE ORDER. Because seq /
+        # buf_start_line / buf_end_line are only ever assigned inside `_fold`, which
+        # runs items oldest-first, they stay monotonic and the #65 done_ranges
+        # frontier is unaffected regardless of the order chunk() calls finish in.
+        # Default 1 ≈ the prior single-in-flight behaviour (one doc prefetched).
+        chunk_concurrency = max(1, getattr(args, "chunk_concurrency", 1))
+        chunk_sem = asyncio.Semaphore(chunk_concurrency)
+
+        async def _chunk_task(doc: Document) -> list[Chunk]:
+            # Off the event loop; the semaphore caps concurrent chunk() calls. The
+            # embed bridge is safe for concurrent callers (one background loop);
+            # seg_cache is thread-safe. On a cache hit the breakpoint embed is skipped.
+            async with chunk_sem:
+                if seg_cache is not None:
+                    return await asyncio.to_thread(seg_cache.get_or_compute, doc, chunker.chunk)
+                return await asyncio.to_thread(chunker.chunk, doc)
+
+        async def _fold(item) -> None:
+            # Fold one prepared item into the current batch. Called oldest-first, so
+            # every seq/buf mutation here is strictly file-ordered.
+            nonlocal seq, buf, buf_catalog, buf_doc_info, buf_start_line, buf_end_line
+            kind, line_no = item[0], item[1]
+            if kind == "skip":
+                d_id, d_src = item[2], item[3]
+                if doc_metrics is not None and d_id is not None:
+                    doc_metrics.emit(d_id, d_src, [], skipped=True, error=None)
+                return
+            if kind == "resume":
+                cat_row, d_id, d_src = item[2], item[3], item[4]
+                if cat_row is not None:
+                    if buf_start_line == 0:
+                        buf_start_line = line_no
+                    buf_catalog.append(cat_row)
+                    buf_end_line = line_no
+                if doc_metrics is not None and d_id is not None:
+                    doc_metrics.emit(d_id, d_src, [], skipped=True,
+                                     error="resumed (already indexed)")
+                stats["docs"] += 1
+            else:  # "chunk"
+                task, doc_id, source, cat_row = item[2], item[3], item[4], item[5]
+                chunks = await task
+                for c in chunks:
+                    c.metadata["tenant_id"] = args.tenant
+                if buf_start_line == 0:
+                    buf_start_line = line_no
+                if cat_row is not None:
+                    buf_catalog.append(cat_row)
+                buf.extend(chunks)
+                buf_doc_info[doc_id] = source
+                buf_end_line = line_no
+                stats["docs"] += 1
+            if len(buf) >= args.batch_size or (
+                catalog is not None and len(buf_catalog) >= args.batch_size
+            ):
+                await queue.put(
+                    (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+                )
+                seq += 1
+                buf, buf_catalog, buf_doc_info = [], [], {}
+                buf_start_line = 0
+
+        inflight: deque = deque()
+        window = chunk_concurrency + 1  # bound pending tasks/results (memory)
+        dispatched_docs = 0
         with args.input.open(encoding="utf-8") as fh:
             for line_no, record in _iter_records(fh):
                 if line_no <= start_line:
@@ -900,95 +968,54 @@ async def run(args: argparse.Namespace) -> None:
                 stats["seen"] += 1
                 enriched = enrich(record, profile=profile)
                 if not _kept(enriched, keep_types):
+                    # Filtered (doc_type/empty): no batch; a zero-chunk skipped
+                    # metrics row (folded in file order).
                     stats["skipped"] += 1
-                    if doc_metrics is not None:
-                        # Skipped docs (filtered doc_type / empty) never reach a
-                        # batch; record them here as zero-chunk skipped rows.
-                        d_src = record.get("path", "") or ""
-                        d_id = deterministic_doc_id(
-                            _doc_id_key(record, record.get("text", "") or "")
-                        )
-                        doc_metrics.emit(d_id, d_src, [], skipped=True, error=None)
-                    continue
-                # #65 resume fast-path: this line was durably upserted in a prior run
-                # (recorded in done_ranges above the frontier gap). Skip the expensive
-                # chunk+embed+upsert, but STILL buffer the cheap catalog row so it folds
-                # in lockstep with the frontier (never lost, never ahead of the resume
-                # point) and emit a per-doc "resumed" metrics row. Disabled under
-                # --replace (track_done_ranges) so a replace always reprocesses.
-                if track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
-                    if catalog is not None:
-                        if buf_start_line == 0:
-                            buf_start_line = line_no
-                        buf_catalog.append(
-                            json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
-                        )
-                        buf_end_line = line_no
+                    d_id = d_src = None
                     if doc_metrics is not None:
                         d_src = record.get("path", "") or ""
                         d_id = deterministic_doc_id(
                             _doc_id_key(record, record.get("text", "") or "")
                         )
-                        doc_metrics.emit(
-                            d_id, d_src, [], skipped=True, error="resumed (already indexed)"
-                        )
-                    stats["docs"] += 1
-                    # Bound buffered catalog rows when a long done-range run has no
-                    # interspersed fresh docs to trigger the size-based flush below.
-                    if catalog is not None and len(buf_catalog) >= args.batch_size:
-                        await queue.put(
-                            (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
-                        )
-                        seq += 1
-                        buf, buf_catalog, buf_doc_info = [], [], {}
-                        buf_start_line = 0
-                    continue
-                # Buffer the catalog row with its batch; the worker writes it in
-                # lockstep with the checkpoint when this batch's seq is folded.
-                if buf_start_line == 0:
-                    buf_start_line = line_no
-                if catalog is not None:
-                    buf_catalog.append(
+                    inflight.append(("skip", line_no, d_id, d_src))
+                elif track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
+                    # #65 resume fast-path: durably upserted in a prior run. Skip the
+                    # expensive chunk+embed+upsert, but still buffer the cheap catalog
+                    # row (folds in lockstep) and emit a "resumed" metrics row.
+                    cat_row = (
                         json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                        if catalog is not None else None
                     )
-                text = record.get("text", "") or ""
-                doc = Document(
-                    id=deterministic_doc_id(_doc_id_key(record, text)),
-                    content=text,
-                    metadata=index_metadata(enriched),
-                    source=record.get("path", "") or "",
-                )
-                # Chunk OFF the main event loop: chunker.chunk() is synchronous
-                # CPU work (sentence split + token counting), and for the semantic
-                # chunker it further blocks on the embed bridge's fut.result(). Run
-                # inline it would pin the loop and starve the embed+upsert workers
-                # (bursty single-GPU use, #66); awaiting to_thread lets the workers
-                # drain while this doc is chunked. SINGLE IN-FLIGHT by construction
-                # (we await before reading the next line), so exactly one thread ever
-                # enters the embed bridge — matching its one-caller guarantees, so no
-                # bridge hardening is needed. Raising this to N-concurrent chunks would
-                # require an on-loop init lock in the bridge AND higher httpx pool limits.
-                # With a segmentation cache, reuse the doc's stored spans (rebuilds
-                # identical blocks, skips the breakpoint embed) on a hit.
-                if seg_cache is not None:
-                    chunks = await asyncio.to_thread(seg_cache.get_or_compute, doc, chunker.chunk)
+                    d_id = d_src = None
+                    if doc_metrics is not None:
+                        d_src = record.get("path", "") or ""
+                        d_id = deterministic_doc_id(
+                            _doc_id_key(record, record.get("text", "") or "")
+                        )
+                    inflight.append(("resume", line_no, cat_row, d_id, d_src))
+                    dispatched_docs += 1
                 else:
-                    chunks = await asyncio.to_thread(chunker.chunk, doc)
-                for c in chunks:
-                    c.metadata["tenant_id"] = args.tenant
-                buf.extend(chunks)
-                buf_doc_info[doc.id] = doc.source
-                buf_end_line = line_no
-                stats["docs"] += 1
-                if len(buf) >= args.batch_size:
-                    await queue.put(
-                        (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+                    text = record.get("text", "") or ""
+                    doc = Document(
+                        id=deterministic_doc_id(_doc_id_key(record, text)),
+                        content=text,
+                        metadata=index_metadata(enriched),
+                        source=record.get("path", "") or "",
                     )
-                    seq += 1
-                    buf, buf_catalog, buf_doc_info = [], [], {}
-                    buf_start_line = 0
-                if args.limit and stats["docs"] >= args.limit:
+                    cat_row = (
+                        json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                        if catalog is not None else None
+                    )
+                    task = asyncio.create_task(_chunk_task(doc))
+                    inflight.append(("chunk", line_no, task, doc.id, doc.source, cat_row))
+                    dispatched_docs += 1
+                # Keep the in-flight window bounded; fold oldest-first (file order).
+                while len(inflight) > window:
+                    await _fold(inflight.popleft())
+                if args.limit and dispatched_docs >= args.limit:
                     break
+            while inflight:
+                await _fold(inflight.popleft())
         # Flush a trailing batch — including a catalog-only one (buf empty but
         # done-range resume rows buffered) so those rows still fold in lockstep.
         if buf or buf_catalog:
@@ -1175,6 +1202,12 @@ def main() -> None:
     p.add_argument("--concurrency", type=int, default=1,
                    help="in-flight batches embedded+upserted in parallel; set >1 to fan out "
                         "across multiple --embedding-url endpoints (default: 1 = serial)")
+    p.add_argument("--chunk-concurrency", type=int, default=1,
+                   help="documents chunked concurrently for the semantic methods (each "
+                        "fans its breakpoint embeds across the pool); a single coordinator "
+                        "folds results in strict file order so the resume checkpoint is "
+                        "unaffected. Set >1 to saturate a breakpoint-model fleet (e.g. "
+                        "several BGE replicas). Default 1.")
     # resume
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,

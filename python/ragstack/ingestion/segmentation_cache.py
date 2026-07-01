@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -42,8 +43,10 @@ class SegmentationCache:
 
     Loaded fully into memory at construction (one dict entry per doc: a hex key and
     a small int-pair list). Appends are flushed on each miss so a crash keeps the
-    segmentations computed so far. Single-writer: the ingest producer is the only
-    caller, so no locking is needed.
+    segmentations computed so far. Thread-safe: with --chunk-concurrency the ingest
+    runs get_or_compute from several worker threads at once, so the dict / file /
+    counters are guarded by a lock (the expensive chunk_fn runs OUTSIDE the lock, so
+    concurrent misses still segment in parallel — distinct docs have distinct keys).
     """
 
     def __init__(self, path: Path, fingerprint: str) -> None:
@@ -52,6 +55,7 @@ class SegmentationCache:
         self._spans: dict[str, list[tuple[int, int]]] = {}
         self.hits = 0
         self.misses = 0
+        self._lock = threading.Lock()
         self._load()
         # Append handle opened after load so a fresh file starts empty.
         self._fh = open(self._path, "a", encoding="utf-8")
@@ -88,16 +92,22 @@ class SegmentationCache:
         embedding-backend jitter since. On a miss ``chunk_fn`` runs and its spans
         are persisted."""
         key = self._key(doc.content)
-        spans = self._spans.get(key)
+        with self._lock:
+            spans = self._spans.get(key)
+            if spans is not None:
+                self.hits += 1
         if spans is not None:
-            self.hits += 1
             return [_make_chunk(doc, s, e) for s, e in spans]
-        self.misses += 1
+        # Compute OUTSIDE the lock so concurrent misses (distinct docs/keys) segment
+        # in parallel; only the record is serialized.
         chunks = chunk_fn(doc)
         spans = [(c.start_char, c.end_char) for c in chunks]
-        self._spans[key] = spans
-        self._fh.write(json.dumps({"k": key, "s": spans}) + "\n")
-        self._fh.flush()
+        with self._lock:
+            self.misses += 1
+            if key not in self._spans:  # a racing thread can't share this key, but be safe
+                self._spans[key] = spans
+                self._fh.write(json.dumps({"k": key, "s": spans}) + "\n")
+                self._fh.flush()
         return chunks
 
     def close(self) -> None:

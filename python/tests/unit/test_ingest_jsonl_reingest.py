@@ -769,3 +769,81 @@ async def test_batch_retries_converge_on_wrapped_pool_failure(tmp_path, monkeypa
     assert emb.calls == 3, "wrapped-pool-failure batch should retry until success"
     assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 5
     assert len({c.doc_id for c in store.points.values()}) == 5
+
+
+# --------------------------------------------------------------------------- #
+# --chunk-concurrency (issue #66 phase 2): concurrent chunking, file-order folds.
+# --------------------------------------------------------------------------- #
+
+async def _run_and_capture(tmp_path, monkeypatch, chunk_concurrency):
+    """Ingest a fixed corpus at a given --chunk-concurrency; return (chunk-id set,
+    checkpoint line, catalog text). Deterministic chunker (fixed), so any two runs
+    must agree — that is the file-order invariant the pipeline must preserve."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    corpus = tmp_path / f"c{chunk_concurrency}.jsonl"
+    # articles (kept) interleaved with front-matter (filtered) to exercise skips.
+    _write_records(corpus, [_article(1), _front_matter(2), _article(3), _article(4),
+                            _front_matter(5), _article(6), _article(7)])
+    cat = tmp_path / f"cat{chunk_concurrency}.jsonl"
+    ckpt = tmp_path / f"c{chunk_concurrency}.ckpt"
+    await ingest_jsonl.run(_args(
+        corpus, chunk_method="fixed", chunk_size=200, chunk_overlap=20,
+        batch_size=2, concurrency=2, doc_types=["article"],
+        catalog_out=cat, checkpoint=ckpt, chunk_concurrency=chunk_concurrency,
+    ))
+    ids = frozenset(store.points)
+    line = ingest_jsonl._read_checkpoint(ckpt)["line"]
+    return ids, line, cat.read_text()
+
+
+@pytest.mark.asyncio
+async def test_chunk_concurrency_matches_serial(tmp_path, monkeypatch):
+    """--chunk-concurrency>1 must produce byte-identical results to serial: same
+    chunk ids, same checkpoint line, same catalog (rows in the same file order).
+    This is the #65 invariant — concurrent chunking, strictly file-ordered folds."""
+    ids1, line1, cat1 = await _run_and_capture(tmp_path, monkeypatch, 1)
+    ids4, line4, cat4 = await _run_and_capture(tmp_path, monkeypatch, 4)
+    assert ids1 == ids4 and len(ids1) > 0
+    assert line1 == line4 == 7  # checkpoint advances over the filtered tail equally
+    assert cat1 == cat4  # catalog rows identical AND in the same order
+
+
+@pytest.mark.asyncio
+async def test_chunk_concurrency_actually_overlaps(tmp_path, monkeypatch):
+    """With --chunk-concurrency>1 several documents are chunked at once."""
+    import threading
+    import time as _time
+
+    from ragstack.models import Chunk
+
+    class _SlowChunker:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self._lock = threading.Lock()
+
+        def chunk(self, doc):
+            with self._lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            _time.sleep(0.03)  # hold the slot so overlap is observable
+            with self._lock:
+                self.active -= 1
+            return [Chunk(id=f"{doc.id}:0:1", doc_id=doc.id, content=doc.content[:1],
+                          metadata=dict(doc.metadata), start_char=0, end_char=1)]
+
+    chunker = _SlowChunker()
+    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: chunker)
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(i) for i in range(1, 9)])
+    await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
+                                 concurrency=2, checkpoint=tmp_path / "c.ckpt",
+                                 chunk_concurrency=4))
+    assert chunker.max_active >= 2, "expected concurrent chunk() calls with cc=4"
