@@ -74,6 +74,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
+        "batch_retries": 0,
     }
     base.update(over)
     return argparse.Namespace(**base)
@@ -572,3 +573,159 @@ async def test_run_metrics_accumulates_across_files(tmp_path, monkeypatch):
     rows = _read_jsonl(run_out)
     assert len(rows) == 2, "each fresh run must APPEND its per-file row"
     assert {Path(r["file"]).name for r in rows} == {"a.jsonl", "b.jsonl"}
+
+
+# --------------------------------------------------------------------------
+# --batch-retries: in-process transient-error retry (issue #71 part 2).
+# --------------------------------------------------------------------------
+
+class _FlakyEmbedder:
+    """Embed the poison batch raises a TRANSIENT error its first `fail_times`
+    calls, then succeeds — models a flapping endpoint that self-heals. Every
+    non-poison batch always succeeds."""
+
+    def __init__(self, fail_times: int, exc: Exception | None = None) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+        self._exc = exc or ConnectionError("Server disconnected without sending a response")
+
+    async def embed(self, texts):
+        if any("POISONPILL" in t for t in texts):
+            self.calls += 1
+            if self.calls <= self.fail_times:
+                raise self._exc
+        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+
+def test_is_transient_error_classification():
+    assert ingest_jsonl._is_transient_error(ConnectionError("x"))
+    assert ingest_jsonl._is_transient_error(TimeoutError("x"))
+    assert ingest_jsonl._is_transient_error(RuntimeError("Server disconnected mid-stream"))
+    assert ingest_jsonl._is_transient_error(RuntimeError("Connection timed out"))
+
+    class _Resp:
+        status_code = 503
+
+    class _HTTPish(Exception):
+        response = _Resp()
+
+    assert ingest_jsonl._is_transient_error(_HTTPish("bad gateway"))
+    # A genuine bad-input / 4xx must NOT be treated as transient.
+    assert not ingest_jsonl._is_transient_error(ValueError("bad input"))
+    assert not ingest_jsonl._is_transient_error(RuntimeError("dimension mismatch"))
+
+    # Chained cause: PooledEmbedder raises RuntimeError('all embedding endpoints
+    # failed') from the real transient fault — the walk must see through it, so a
+    # multi-endpoint fan-out flap is retried, not misread as a hard failure.
+    wrapped = RuntimeError("all embedding endpoints failed")
+    wrapped.__cause__ = ConnectionError("Server disconnected without sending a response")
+    assert ingest_jsonl._is_transient_error(wrapped)
+    # The aggregate message alone is enough (explicit backstop), even with no cause.
+    assert ingest_jsonl._is_transient_error(RuntimeError("all embedding endpoints failed"))
+    # But a wrapper over a genuine bad-input cause stays non-transient.
+    hard = RuntimeError("batch failed")
+    hard.__cause__ = ValueError("dimension mismatch")
+    assert not ingest_jsonl._is_transient_error(hard)
+
+
+def test_retry_delay_is_capped_exponential():
+    assert ingest_jsonl._retry_delay(1) == 1.0
+    assert ingest_jsonl._retry_delay(2) == 2.0
+    assert ingest_jsonl._retry_delay(3) == 4.0
+    assert ingest_jsonl._retry_delay(99) == 30.0  # capped
+
+
+@pytest.mark.asyncio
+async def test_batch_retries_lets_transient_flap_converge(tmp_path, monkeypatch):
+    """A batch that hits a transient error twice then succeeds converges (rc=0,
+    checkpoint reaches the last line) when --batch-retries covers the flaps."""
+    store = _FakeStore()
+    emb = _FlakyEmbedder(fail_times=2)
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)  # no real sleeps
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
+                            _article(4), _article(5)])
+    ckpt = tmp_path / "c.ckpt"
+    # batch_size=1 → doc 3 is its own batch; batch_retries=3 covers its 2 flaps.
+    await ingest_jsonl.run(_args(corpus, batch_size=1, concurrency=2,
+                                 batch_retries=3, checkpoint=ckpt))
+
+    assert emb.calls == 3, "poison batch should have been retried until success"
+    # No stall: checkpoint advanced over the whole file, all 5 docs stored.
+    assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 5
+    stored_docs = {c.doc_id for c in store.points.values()}
+    assert len(stored_docs) == 5
+
+
+@pytest.mark.asyncio
+async def test_batch_retries_exhausted_still_stalls(tmp_path, monkeypatch):
+    """If the flap outlasts the retry budget the run still exits non-zero and the
+    checkpoint stalls at the gap — retries harden, they never mask a real failure."""
+    store = _FakeStore()
+    emb = _FlakyEmbedder(fail_times=99)  # never recovers
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
+                            _article(4), _article(5)])
+    ckpt = tmp_path / "c.ckpt"
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(corpus, batch_size=1, concurrency=2,
+                                     batch_retries=2, checkpoint=ckpt))
+    assert emb.calls == 3, "1 initial attempt + 2 retries, then give up"
+    assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 2  # stalls before the gap
+
+
+@pytest.mark.asyncio
+async def test_non_transient_error_is_not_retried(tmp_path, monkeypatch):
+    """A non-transient (bad-input) error must fail immediately, not burn retries."""
+    store = _FakeStore()
+    emb = _FlakyEmbedder(fail_times=99, exc=ValueError("dimension mismatch"))
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True)])
+    ckpt = tmp_path / "c.ckpt"
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(corpus, batch_size=1, concurrency=2,
+                                     batch_retries=5, checkpoint=ckpt))
+    assert emb.calls == 1, "non-transient error must not be retried"
+
+
+@pytest.mark.asyncio
+async def test_batch_retries_converge_on_wrapped_pool_failure(tmp_path, monkeypatch):
+    """The prod case: a multi-endpoint fan-out flap surfaces as
+    RuntimeError('all embedding endpoints failed') from a transient cause (as
+    PooledEmbedder raises). --batch-retries must see through the wrapper and
+    converge, not misread it as a hard failure."""
+    def _wrapped():
+        e = RuntimeError("all embedding endpoints failed")
+        e.__cause__ = ConnectionError("Server disconnected without sending a response")
+        return e
+
+    store = _FakeStore()
+    emb = _FlakyEmbedder(fail_times=2, exc=_wrapped())
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
+                            _article(4), _article(5)])
+    ckpt = tmp_path / "c.ckpt"
+    await ingest_jsonl.run(_args(corpus, batch_size=1, concurrency=2,
+                                 batch_retries=3, checkpoint=ckpt))
+    assert emb.calls == 3, "wrapped-pool-failure batch should retry until success"
+    assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 5
+    assert len({c.doc_id for c in store.points.values()}) == 5

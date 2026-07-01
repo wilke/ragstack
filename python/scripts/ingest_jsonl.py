@@ -445,6 +445,63 @@ def _write_run_metrics(
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+# Transient-error classification for --batch-retries. A flapping endpoint (a
+# remote vLLM replica dropping a connection, a store 5xx/timeout) raises these and
+# can self-heal on a retry; a 4xx / bad-input is NOT transient and must surface so
+# the batch fails and --resume re-feeds it rather than silently spinning.
+_TRANSIENT_ERROR_NAMES = frozenset({
+    "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
+    "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
+    "ConnectionError", "ConnectionResetError", "ConnectionTimeout",
+    "ResponseHandlingException", "UnexpectedResponse", "ServiceException",
+    "TimeoutError",
+})
+_TRANSIENT_ERROR_SUBSTRINGS = (
+    "disconnect", "timed out", "timeout", "connection reset",
+    "connection refused", "temporarily unavailable", "broken pipe",
+    "server disconnected", "502", "503", "504",
+    # PooledEmbedder raises this when every endpoint is momentarily down; it
+    # chains the real (transient) fault as __cause__, which the walk below also
+    # catches — the phrase is an explicit backstop.
+    "all embedding endpoints failed",
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """True if ``exc`` (or a chained cause) looks like a transient network/store
+    blip worth retrying.
+
+    Walks ``__cause__``/``__context__`` because a fanned-out embed wraps the real
+    fault: ``PooledEmbedder`` raises ``RuntimeError('all embedding endpoints
+    failed') from last_exc``, so the retriable httpx/timeout error is one level
+    down. Inspecting only the top exception would miss the multi-endpoint flap
+    this feature exists to survive."""
+
+    def _one(e: BaseException) -> bool:
+        if isinstance(e, (TimeoutError, ConnectionError)):
+            return True
+        if type(e).__name__ in _TRANSIENT_ERROR_NAMES:
+            return True
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if isinstance(status, int) and 500 <= status < 600:
+            return True
+        return any(s in str(e).lower() for s in _TRANSIENT_ERROR_SUBSTRINGS)
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _one(cur):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+def _retry_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:
+    """Exponential backoff for --batch-retries; ``attempt`` is 1-based (1,2,4,…)."""
+    return min(base * (2.0 ** (attempt - 1)), cap)
+
+
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
@@ -582,6 +639,9 @@ async def run(args: argparse.Namespace) -> None:
         # finished — resume re-does from the first unfinished batch (idempotent,
         # deterministic chunk IDs overwrite in place).
         concurrency = max(1, args.concurrency)
+        # --batch-retries: in-process transient-error retries per batch (default 0
+        # = off, unchanged behaviour). getattr keeps older Namespaces safe.
+        batch_retries = max(0, getattr(args, "batch_retries", 0))
         queue: asyncio.Queue = asyncio.Queue(maxsize=concurrency * 2)
         # seq -> (last record line, buffered catalog rows) for completed batches.
         completed: dict[int, tuple[int, list[str]]] = {}
@@ -604,6 +664,40 @@ async def run(args: argparse.Namespace) -> None:
         # --concurrency doesn't issue a burst of heavy deletes at the store.
         delete_sem = asyncio.Semaphore(max(1, args.delete_concurrency))
 
+        async def _store_batch(chunks):
+            """Embed + upsert (+ optional --replace prune) one batch, returning
+            (kept, surviving-by-doc). Idempotent — upsert-first, deterministic
+            uuid5 ids, no delete-before-upsert — so --batch-retries can re-run it
+            after a transient failure without duplicating or losing data."""
+            kept = await _embed_drop_bad(embedder, chunks)
+            # Stamp prev/next/chunk_index per document on the SURVIVING chunks so
+            # neighbor links never dangle to a quarantined chunk and a mixed-doc
+            # batch never cross-links one doc's tail to the next doc's head.
+            surviving = link_neighbors_by_document(kept)
+            # Upsert FIRST. Deterministic chunk ids overwrite an unchanged doc's
+            # points in place; a failure here never deletes anything (a prior
+            # delete-before-upsert ordering lost data when a filtered delete on a
+            # large collection timed out mid-batch: the delete landed, upsert didn't).
+            if kept:
+                await store.upsert(kept)
+                if text_index is not None:
+                    await text_index.index(kept)
+            # Only an EDITED doc (shifted offsets → new chunk ids) leaves orphans;
+            # prune only when asked (--replace) and only AFTER the upsert, by id,
+            # with bounded concurrency so a wide fan-out can't burst heavy deletes.
+            if args.replace and kept:
+                by_doc: dict[str, set[str]] = {}
+                for c in kept:
+                    by_doc.setdefault(c.doc_id, set()).add(c.id)
+                for doc_id, keep in by_doc.items():
+                    async with delete_sem:
+                        await store.delete_except(doc_id, keep, tenant_id=args.tenant)
+                        if text_index is not None:
+                            await text_index.delete_except(
+                                doc_id, keep, tenant_id=args.tenant
+                            )
+            return kept, surviving
+
         async def worker() -> None:
             nonlocal next_seq, done_ranges, frontier_line
             while True:
@@ -613,23 +707,33 @@ async def run(args: argparse.Namespace) -> None:
                         return
                     seq, start_ln, end_line, chunks, cat_rows, doc_info = item
                     try:
-                        # Embed; an over-context/bad chunk is dropped (warned) rather
-                        # than failing the whole batch (see _embed_drop_bad). A fully
-                        # quarantined batch yields []; nothing to store but the seq
-                        # still completes so the checkpoint advances (no stall).
-                        kept = await _embed_drop_bad(embedder, chunks)
-                        # Stamp prev/next/chunk_index per document on the SURVIVING
-                        # chunks (after the drop above) so neighbor links never
-                        # dangle to a quarantined chunk, and a mixed-doc batch never
-                        # cross-links one doc's tail to the next doc's head.
-                        # Reuse the by-doc grouping link_neighbors just built rather
-                        # than re-grouping `kept` a second time.
-                        surviving = link_neighbors_by_document(kept)
+                        # --batch-retries: a TRANSIENT embed/store error (endpoint
+                        # disconnect, timeout, 5xx) on a flapping endpoint can
+                        # self-heal in place. _store_batch is idempotent, so re-run
+                        # is safe; a 4xx/bad-input is NOT transient and surfaces at
+                        # once. Exhaustion (or a non-transient error) re-raises to the
+                        # failed-batch handler below → frontier stalls, --resume re-feeds.
+                        attempt = 0
+                        while True:
+                            try:
+                                kept, surviving = await _store_batch(chunks)
+                                break
+                            except Exception as e:
+                                if attempt < batch_retries and _is_transient_error(e):
+                                    attempt += 1
+                                    delay = _retry_delay(attempt)
+                                    print(f"  batch seq={seq} transient "
+                                          f"{type(e).__name__} (retry {attempt}/"
+                                          f"{batch_retries} in {delay:.1f}s): {e}",
+                                          file=sys.stderr)
+                                    await asyncio.sleep(delay)
+                                    continue
+                                raise
+                        # Batch stored. Emit each doc's metrics ONCE here (after the
+                        # retry loop) so a retried attempt never double-writes a row.
+                        # A doc all of whose chunks were quarantined leaves no
+                        # survivors -> a zero-chunk error row so it's not silently lost.
                         if doc_metrics is not None:
-                            # One per-doc row right after link_neighbors, over the
-                            # SURVIVING chunks grouped by doc_id. A doc all of whose
-                            # chunks were quarantined leaves no survivors -> emit a
-                            # zero-chunk row with an error so it's not silently lost.
                             async with lock:
                                 for d_id, src in doc_info.items():
                                     doc_chunks = surviving.get(d_id, [])
@@ -640,32 +744,6 @@ async def run(args: argparse.Namespace) -> None:
                                     doc_metrics.emit(
                                         d_id, src, doc_chunks, skipped=False, error=err
                                     )
-                        # Upsert FIRST. Deterministic chunk ids overwrite an
-                        # unchanged doc's points in place, so plain upsert is correct
-                        # for re-ingest and — critically — a failure here never
-                        # deletes anything. (A prior delete-before-upsert ordering lost
-                        # data when a filtered delete on a large collection timed out
-                        # mid-batch: the delete landed, the upsert didn't.)
-                        if kept:
-                            await store.upsert(kept)
-                            if text_index is not None:
-                                await text_index.index(kept)
-                        # Only an EDITED doc (shifted offsets → new chunk ids) leaves
-                        # orphan points; prune them only when asked (--replace), and
-                        # only AFTER the successful upsert above, by id (cost O(stale),
-                        # not a collection-wide filtered delete). Bounded concurrency
-                        # so a wide embed fan-out can't issue many heavy deletes at once.
-                        if args.replace and kept:
-                            by_doc: dict[str, set[str]] = {}
-                            for c in kept:
-                                by_doc.setdefault(c.doc_id, set()).add(c.id)
-                            for doc_id, keep in by_doc.items():
-                                async with delete_sem:
-                                    await store.delete_except(doc_id, keep, tenant_id=args.tenant)
-                                    if text_index is not None:
-                                        await text_index.delete_except(
-                                            doc_id, keep, tenant_id=args.tenant
-                                        )
                     except Exception as e:
                         # Don't kill the worker (or deadlock the producer): leave
                         # this seq out of `completed` so the checkpoint stalls at
@@ -975,6 +1053,13 @@ def main() -> None:
                         "'hf'/'endpoint' need --embedding-model; without it sizing falls "
                         "back to 'estimate'.")
     p.add_argument("--batch-size", type=int, default=128, help="chunks embedded/upserted per batch")
+    p.add_argument("--batch-retries", type=int, default=0,
+                   help="in-process retries for a batch that hits a TRANSIENT embed/"
+                        "store error (disconnect/timeout/5xx) before deferring to "
+                        "--resume; exponential backoff (1s,2s,4s… capped 30s). The "
+                        "batch body is idempotent (upsert-first, deterministic ids), "
+                        "so retry is safe. Default 0 = off. Helps a flapping endpoint "
+                        "converge (rc=0) without a full restart.")
     p.add_argument("--concurrency", type=int, default=1,
                    help="in-flight batches embedded+upserted in parallel; set >1 to fan out "
                         "across multiple --embedding-url endpoints (default: 1 = serial)")
