@@ -460,20 +460,41 @@ _TRANSIENT_ERROR_SUBSTRINGS = (
     "disconnect", "timed out", "timeout", "connection reset",
     "connection refused", "temporarily unavailable", "broken pipe",
     "server disconnected", "502", "503", "504",
+    # PooledEmbedder raises this when every endpoint is momentarily down; it
+    # chains the real (transient) fault as __cause__, which the walk below also
+    # catches — the phrase is an explicit backstop.
+    "all embedding endpoints failed",
 )
 
 
 def _is_transient_error(exc: BaseException) -> bool:
-    """True if ``exc`` looks like a transient network/store blip worth retrying."""
-    if isinstance(exc, (TimeoutError, ConnectionError)):
-        return True
-    if type(exc).__name__ in _TRANSIENT_ERROR_NAMES:
-        return True
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    if isinstance(status, int) and 500 <= status < 600:
-        return True
-    msg = str(exc).lower()
-    return any(s in msg for s in _TRANSIENT_ERROR_SUBSTRINGS)
+    """True if ``exc`` (or a chained cause) looks like a transient network/store
+    blip worth retrying.
+
+    Walks ``__cause__``/``__context__`` because a fanned-out embed wraps the real
+    fault: ``PooledEmbedder`` raises ``RuntimeError('all embedding endpoints
+    failed') from last_exc``, so the retriable httpx/timeout error is one level
+    down. Inspecting only the top exception would miss the multi-endpoint flap
+    this feature exists to survive."""
+
+    def _one(e: BaseException) -> bool:
+        if isinstance(e, (TimeoutError, ConnectionError)):
+            return True
+        if type(e).__name__ in _TRANSIENT_ERROR_NAMES:
+            return True
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if isinstance(status, int) and 500 <= status < 600:
+            return True
+        return any(s in str(e).lower() for s in _TRANSIENT_ERROR_SUBSTRINGS)
+
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _one(cur):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _retry_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:
