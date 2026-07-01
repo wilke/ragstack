@@ -406,3 +406,28 @@ async def test_doc_metrics_record_failed_batch_error(tmp_path, monkeypatch):
     assert store.points, "good chunks should still be stored"
     # The quarantined chunk's text is never indexed.
     assert not any("POISONPILL" in c.content for c in store.points.values())
+
+
+@pytest.mark.asyncio
+async def test_run_metrics_accumulates_across_files(tmp_path, monkeypatch):
+    """Two separate (non-resume) invocations into the same --run-metrics-out
+    accumulate one row each — the run-metrics log must not truncate on a fresh run."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    run_out = tmp_path / "run.jsonl"
+    file_a = tmp_path / "a.jsonl"
+    file_b = tmp_path / "b.jsonl"
+    _write_records(file_a, [_article(1)])
+    _write_records(file_b, [_article(2)])
+
+    await ingest_jsonl.run(_args(file_a, run_metrics_out=run_out,
+                                 checkpoint=tmp_path / "a.ckpt"))
+    await ingest_jsonl.run(_args(file_b, run_metrics_out=run_out,
+                                 checkpoint=tmp_path / "b.ckpt"))
+
+    rows = _read_jsonl(run_out)
+    assert len(rows) == 2, "each fresh run must APPEND its per-file row"
+    assert {Path(r["file"]).name for r in rows} == {"a.jsonl", "b.jsonl"}

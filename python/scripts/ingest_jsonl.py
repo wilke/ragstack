@@ -315,7 +315,6 @@ def _write_run_metrics(
     stats: dict[str, int],
     failed_seqs: list[int],
     wall_s: float,
-    append: bool,
 ) -> None:
     """Append one per-FILE summary row to ``--run-metrics-out`` at end-of-run::
 
@@ -327,6 +326,10 @@ def _write_run_metrics(
     that produced chunks and were handed to a batch (``stats['docs']``); note a
     doc in a failed batch still counts here — the per-doc metrics carry the
     per-document error detail.
+
+    ALWAYS appends (unlike the per-doc writer): each row is one file's summary, so
+    ingesting several files into one --run-metrics-out — as separate invocations —
+    must accumulate rows, not truncate the prior file's row.
     """
     wall = round(wall_s, 3)
     chunks = stats["chunks"]
@@ -341,7 +344,7 @@ def _write_run_metrics(
         "wall_s": wall,
         "chunks_per_s": round(chunks / wall, 2) if wall > 0 else None,
     }
-    with open(path, "a" if append else "w", encoding="utf-8") as fh:
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
@@ -443,7 +446,6 @@ async def run(args: argparse.Namespace) -> None:
             _write_run_metrics(
                 args.run_metrics_out, input_file=str(args.input), stats=stats,
                 failed_seqs=[], wall_s=time.monotonic() - run_started,
-                append=bool(args.resume and start_line),
             )
         return
 
@@ -675,7 +677,6 @@ async def run(args: argparse.Namespace) -> None:
         _write_run_metrics(
             args.run_metrics_out, input_file=str(args.input), stats=stats,
             failed_seqs=failed, wall_s=time.monotonic() - run_started,
-            append=bool(args.resume and start_line),
         )
     if failed:
         # Don't report success when batches errored: the checkpoint stalled at the
