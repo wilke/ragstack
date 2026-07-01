@@ -60,7 +60,7 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.chunkers import link_neighbors_by_document, make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
@@ -273,6 +273,23 @@ async def run(args: argparse.Namespace) -> None:
     # tokenizer). When none is configured (e.g. the BGE sidecar path doesn't pass
     # --embedding-model), fall back to the zero-dep estimator so sizing still works.
     token_backend = args.chunk_token_counter
+    if args.chunk_method == "fixed_token":
+        # The sliding token window needs the HF fast tokenizer's offset mapping
+        # (only HFTokenCounter exposes it); an estimate/endpoint counter would make
+        # the chunker degrade to a single whole-doc chunk. Force 'hf' + require a
+        # model so --chunk-size/--chunk-overlap are honoured as real token windows.
+        if not args.embedding_model:
+            raise SystemExit(
+                "--chunk-method fixed_token requires --embedding-model (its sliding "
+                "token window is built from that model's HF tokenizer)."
+            )
+        if token_backend != "hf":
+            print(
+                f"[ingest] --chunk-method fixed_token needs the HF tokenizer; "
+                f"overriding --chunk-token-counter {token_backend!r} -> 'hf'.",
+                file=sys.stderr,
+            )
+            token_backend = "hf"
     if token_backend in ("hf", "endpoint") and not args.embedding_model:
         print(
             f"[ingest] --chunk-token-counter {token_backend} needs --embedding-model; "
@@ -371,6 +388,11 @@ async def run(args: argparse.Namespace) -> None:
                         # quarantined batch yields []; nothing to store but the seq
                         # still completes so the checkpoint advances (no stall).
                         kept = await _embed_drop_bad(embedder, chunks)
+                        # Stamp prev/next/chunk_index per document on the SURVIVING
+                        # chunks (after the drop above) so neighbor links never
+                        # dangle to a quarantined chunk, and a mixed-doc batch never
+                        # cross-links one doc's tail to the next doc's head.
+                        link_neighbors_by_document(kept)
                         # Upsert FIRST. Deterministic chunk ids overwrite an
                         # unchanged doc's points in place, so plain upsert is correct
                         # for re-ingest and — critically — a failure here never
@@ -551,12 +573,20 @@ def main() -> None:
                         "--embedding-url (keyless endpoints ignore it, so one key is safe "
                         "for a mixed pool). Falls back to $OPENAI_API_KEY.")
     # chunking
-    p.add_argument("--chunk-method", choices=["fixed", "sentence", "words", "semantic"],
+    p.add_argument("--chunk-method",
+                   choices=["fixed", "fixed_token", "sentence", "words", "semantic"],
                    default="fixed",
-                   help="chunking strategy (default: fixed). semantic embeds sentence "
-                        "buffers via the configured --embedding-* backend.")
-    p.add_argument("--chunk-size", type=int, default=512)
-    p.add_argument("--chunk-overlap", type=int, default=64)
+                   help="chunking strategy (default: fixed). 'fixed_token' is a "
+                        "sliding TOKEN window: --chunk-size/--chunk-overlap are "
+                        "interpreted as TOKENS (of the --embedding-model tokenizer), "
+                        "not chars. semantic embeds sentence buffers via the "
+                        "configured --embedding-* backend.")
+    p.add_argument("--chunk-size", type=int, default=512,
+                   help="chunk size (chars for fixed/sentence/words; TOKENS for "
+                        "fixed_token)")
+    p.add_argument("--chunk-overlap", type=int, default=64,
+                   help="chunk overlap (chars for fixed/sentence/words; TOKENS for "
+                        "fixed_token)")
     # Semantic-only tunables (ignored by other methods).
     p.add_argument("--chunk-buffer-size", type=int, default=3,
                    help="semantic: sentences of context on each side of a buffer")

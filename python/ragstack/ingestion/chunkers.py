@@ -511,6 +511,169 @@ def _pack_spans_tokens(
 
 
 # --------------------------------------------------------------------------- #
+# Fixed sliding-token-window chunking with char spans
+# --------------------------------------------------------------------------- #
+# A true token-SIZE chunker (not just a token CAP like RecursiveCharacterChunker's
+# max_tokens path): it tokenizes the whole doc with the embedding model's HF fast
+# tokenizer (``return_offsets_mapping=True``, ``add_special_tokens=False``), slides
+# an N-token window advancing (N - overlap) tokens, and maps each window back to
+# EXACT source char offsets via the offset map so chunk content is sliced from the
+# source and the deterministic uuid5(doc_id:start:end) id is preserved. Ported from
+# the eval harness's ``token_window_chunks`` (chunking_compare_7way.py).
+
+
+class FixedTokenWindowChunker:
+    """Sliding TOKEN-window chunker with exact source char offsets.
+
+    Tokenizes the whole document with the embedding model's HF fast tokenizer
+    (via the injected :class:`TokenCounter`), then slides a ``chunk_size``-token
+    window advancing ``chunk_size - chunk_overlap`` tokens each step. Each window
+    maps back to a contiguous char span ``[offs[i][0], offs[j-1][1])`` through the
+    tokenizer's offset mapping, so chunk content is sliced from the source and the
+    deterministic ``uuid5(doc_id:start:end)`` id is preserved exactly like the
+    other chunkers.
+
+    The emitted char span is trimmed so that *re-tokenizing the sliced substring*
+    yields <= ``chunk_size`` tokens: a substring re-encoded in isolation can gain a
+    token vs. its in-context tokenization (a leading/merge token), so a naive window
+    of exactly ``chunk_size`` tokens could re-count as N+1. The window is shrunk by
+    whole tokens until the re-counted content fits, and the next window advances from
+    the *trimmed* end so a trimmed-off token is never skipped (no source-text loss,
+    even at ``chunk_overlap=0``). The one case the trim can't fix is a single token
+    that alone re-counts > ``chunk_size`` (an indivisible long token): it is emitted
+    as-is and left to the ingest embed path's isolate-and-drop backstop.
+
+    Requires an HF ``TokenCounter`` (it needs the fast tokenizer's offset
+    mapping) — a non-HF counter is rejected at construction (see ``__init__``),
+    because silently degrading to a single whole-doc chunk per document would be an
+    invisible corpus-wide chunking regression. ``chunk_size``/``chunk_overlap`` are
+    **tokens**, unlike the char-based chunkers.
+    """
+
+    def __init__(
+        self,
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
+        *,
+        token_counter: TokenCounter | None = None,
+    ) -> None:
+        # fixed_token needs the HF fast tokenizer's offset mapping. A non-HF counter
+        # (estimate/endpoint) — including one that make_token_counter('hf') silently
+        # fell back to because the tokenizer couldn't load — has no offset map and
+        # would yield ONE whole-doc chunk per document: a silent, corpus-wide
+        # chunking regression. Fail fast at construction instead of degrading.
+        tok = getattr(token_counter, "_tokenizer", None)
+        if not callable(tok):
+            raise ValueError(
+                "FixedTokenWindowChunker requires an HF TokenCounter with a fast "
+                f"tokenizer (offset mapping); got {type(token_counter).__name__}"
+            )
+        assert token_counter is not None  # a None counter has no callable _tokenizer
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.token_counter: TokenCounter = token_counter
+        self._get_tokenizer = tok
+
+    def chunk(self, doc: Document) -> list[Chunk]:
+        text = doc.content
+        if not text:
+            return []
+        counter = self.token_counter
+        tokenizer = self._get_tokenizer()
+        enc = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+        offsets = enc["offset_mapping"]
+        n = len(offsets)
+        if n == 0:
+            return [_make_chunk(doc, 0, len(text))]
+        window = max(1, self.chunk_size)
+        overlap = max(0, min(self.chunk_overlap, window - 1))
+        chunks: list[Chunk] = []
+        start_tok = 0
+        while start_tok < n:
+            end_tok = min(start_tok + window, n)
+            char_start = offsets[start_tok][0]
+            char_end = offsets[end_tok - 1][1]
+            # Only a FULL window (== `window` tokens) can re-count over budget; a
+            # short tail window never can, so skip the re-tokenizing count() there.
+            if end_tok - start_tok >= window:
+                # Trim by whole tokens until the re-tokenized slice is <= window: an
+                # isolated boundary re-encode can add one merge token. The guard
+                # stops at a single token (end_tok - 1 == start_tok): a lone token
+                # that itself re-counts > window is indivisible and emitted as-is —
+                # the ingest embed path's isolate-and-drop backstop handles that.
+                while (
+                    end_tok - 1 > start_tok
+                    and counter.count(text[char_start:char_end]) > window
+                ):
+                    end_tok -= 1
+                    char_end = offsets[end_tok - 1][1]
+            # start_tok strictly increases each step, so char_start does too — spans
+            # never repeat; only skip a zero-width span.
+            if char_end > char_start:
+                chunks.append(_make_chunk(doc, char_start, char_end))
+            if end_tok >= n:
+                break
+            # Advance from the (possibly trimmed) end, keeping `overlap` tokens of
+            # context. Tying the step to end_tok — not a fixed window-overlap step —
+            # means a trimmed window never skips its trimmed-off tokens (which would
+            # silently drop source text when overlap is small). max(start_tok+1, …)
+            # guarantees forward progress even if overlap spans the whole window.
+            start_tok = max(start_tok + 1, end_tok - overlap)
+        # A whitespace-only or degenerate tail can leave no chunk; never drop text.
+        if not chunks:
+            return [_make_chunk(doc, 0, len(text))]
+        return chunks
+
+
+# --------------------------------------------------------------------------- #
+# Neighbor-link metadata
+# --------------------------------------------------------------------------- #
+
+
+def link_neighbors(chunks: list[Chunk]) -> None:
+    """Stamp ``chunk_index`` / ``prev_chunk_id`` / ``next_chunk_id`` on an ORDERED
+    document chunk list, in place.
+
+    Given a document's final ordered chunks (after any token-cap splitting), set on
+    every chunk's ``metadata``:
+
+    - ``chunk_index`` — 0-based position in the document.
+    - ``prev_chunk_id`` — the preceding chunk's ``chunk.id`` (the doc-level
+      ``uuid5(doc_id:start:end)``), or ``None`` for the first chunk.
+    - ``next_chunk_id`` — the following chunk's ``chunk.id``, or ``None`` for the
+      last chunk.
+
+    Uses the doc-level ``chunk.id``, NOT the tenant-prefixed store point id, so the
+    links are stable across tenants and idempotent re-ingest. Call once per
+    document on its final chunk list; the fields flow through to both the Qdrant
+    payload and the ES document via ``Chunk.metadata``.
+    """
+    n = len(chunks)
+    for i, c in enumerate(chunks):
+        c.metadata["chunk_index"] = i
+        c.metadata["prev_chunk_id"] = chunks[i - 1].id if i > 0 else None
+        c.metadata["next_chunk_id"] = chunks[i + 1].id if i < n - 1 else None
+
+
+def link_neighbors_by_document(chunks: list[Chunk]) -> None:
+    """Group ``chunks`` by ``doc_id`` (preserving order) and :func:`link_neighbors`
+    each document's group, in place.
+
+    Call this on the FINAL list of chunks that will actually be STORED — i.e. after
+    embedding has dropped any unembeddable chunks — so a survivor's
+    ``prev_chunk_id`` / ``next_chunk_id`` never dangles to a chunk that was
+    quarantined and never written. Grouping by ``doc_id`` also keeps a mixed
+    multi-document batch (both ingest paths flatten several docs together) from
+    cross-linking one document's tail chunk to the next document's head.
+    """
+    groups: dict[str, list[Chunk]] = {}
+    for c in chunks:
+        groups.setdefault(c.doc_id, []).append(c)
+    for group in groups.values():
+        link_neighbors(group)
+
+
+# --------------------------------------------------------------------------- #
 # Semantic chunking
 # --------------------------------------------------------------------------- #
 
@@ -666,7 +829,7 @@ class SemanticChunker:
 # Factory
 # --------------------------------------------------------------------------- #
 
-CHUNK_METHODS = ("fixed", "sentence", "words", "semantic")
+CHUNK_METHODS = ("fixed", "fixed_token", "sentence", "words", "semantic")
 
 
 def make_chunker(
@@ -683,8 +846,10 @@ def make_chunker(
 ):
     """Build the chunker named by ``method``.
 
-    ``fixed`` → :class:`RecursiveCharacterChunker`, ``sentence`` →
-    :class:`SentenceChunker`, ``words`` → :class:`WordChunker`, ``semantic`` →
+    ``fixed`` → :class:`RecursiveCharacterChunker`, ``fixed_token`` →
+    :class:`FixedTokenWindowChunker` (a sliding TOKEN window; ``chunk_size`` /
+    ``chunk_overlap`` are tokens and it requires a ``token_counter``), ``sentence``
+    → :class:`SentenceChunker`, ``words`` → :class:`WordChunker`, ``semantic`` →
     :class:`SemanticChunker` (which requires ``embed_fn``). The return type is
     the protocol :class:`ragstack.protocols.Chunker`; the concrete classes are
     not a common base, so it is left unannotated.
@@ -697,6 +862,15 @@ def make_chunker(
         return RecursiveCharacterChunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             max_tokens=max_tokens, token_counter=token_counter,
+        )
+    if method == "fixed_token":
+        # chunk_size / chunk_overlap are TOKENS here; the window IS the cap so
+        # max_tokens is not threaded (the chunker enforces <= chunk_size tokens).
+        if token_counter is None:
+            raise ValueError("chunk_method='fixed_token' requires a token_counter")
+        return FixedTokenWindowChunker(
+            chunk_size=chunk_size, chunk_overlap=chunk_overlap,
+            token_counter=token_counter,
         )
     if method == "sentence":
         return SentenceChunker(
