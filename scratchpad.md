@@ -1,5 +1,49 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-07-01 — semantic ingest: fan-out review + #66/#65 producer & checkpoint fixes
+
+Reviewed and merged **PR #67** (semantic breakpoint-embed fan-out across the pool: 2.06×, all 8 GPUs
+vs 1-pinned), then planned+implemented its two filed follow-ups. Planning ran a multi-agent workflow
+(understand → design panel per issue → adversarial critic); the critic caught real defects that shaped
+the final designs. Both shipped as stacked PRs off `main`.
+
+- **#66 → PR #68** (`perf/ingest-pipeline-producer`): one line — `chunks = await asyncio.to_thread(chunker.chunk, doc)`
+  in `ingest_jsonl.py`'s producer. `chunker.chunk()` ran synchronously on the main event loop and the
+  semantic path further blocked on the embed bridge's `fut.result()`, starving the embed+upsert workers
+  (bursty single-GPU). Awaiting off-thread lets workers drain during the split. **Single in-flight by
+  construction** (producer awaits each before the next line) → exactly one caller in `SyncEmbedBridge`,
+  so no bridge hardening needed and determinism/#65-frontier untouched. Phase 2 (`--chunk-concurrency`)
+  deferred → [#71](https://github.com/wilke/ragstack/issues/71).
+- **#65 → PR #70** (`fix/ingest-checkpoint-interval-set`, merged via #70 after the stacked #69 was
+  auto-closed when its base #68 merged): the checkpoint advanced only over the contiguous completed-seq
+  prefix, so a slow/failed early batch pinned the frontier at the head while later batches upserted out
+  of order — every restart re-embedded the lot. Fix: persist **`done_ranges`** (coalesced `[lo,hi]` line
+  intervals of above-gap completions); resume skips a line if `<= frontier OR in done_ranges`.
+
+**Non-obvious decisions / critic catches:**
+- **The naive skip predicate loses catalog + doc-metrics.** Catalog rows for above-gap batches are
+  buffered in `completed[seq]` and only flushed when the frontier folds; a full skip on resume drops
+  them permanently. Fix: scope the `done_ranges` skip to **chunk+embed+upsert only** — a resume-skipped
+  doc still buffers its catalog row (folds in lockstep) and emits a `"resumed (already indexed)"`
+  doc-metrics row. Catalog-only batches (buf empty, buf_catalog non-empty) required a flush-on-catalog-size
+  guard + an `if buf or buf_catalog:` EOF flush.
+- **Edited-input / `--replace` regression:** `done_ranges` assumes the input is byte-stable across
+  restarts (same as the line frontier already does). Gated the skip OFF under `--replace` (which must
+  reprocess to prune orphans) and documented the immutability assumption in the module header.
+- **No-data-loss invariant preserved:** a *failed* seq is never unioned into `done_ranges`, so its lines
+  are in neither set and always re-fed. `done_ranges` is pure optimization metadata — sanitizes to `[]`
+  on corruption, degrading to redundant work, never loss. Legacy bare-int + `{line,doc_types}` load with
+  `done_ranges=[]`. Also moved `failed.append(seq)` under the lock.
+- **Prod tie-in:** the lambda `next-batch` (tok256/tok512) build was hitting exactly this #65 churn under
+  lambda-endpoint flapping (checkpoint pinned at line 51, doc-metrics ≈ 2× the file). #70 stops the
+  whole-file re-churn, but a *flapping* endpoint still exits non-zero — the convergence lever is the
+  deferred `--batch-retries` in [#71](https://github.com/wilke/ragstack/issues/71). Prod must redeploy
+  on `main` and restart lambda **without `--replace`**.
+- **Env gotcha (again):** tests need the `ragstack` conda env (Python 3.12); the bare `pytest`/`make
+  test-python` on PATH is miniconda 3.8 and fails at collection on `dict[str, Any]` annotations.
+
+Closed **#65** and **#66** (linking #70/#68); filed **#71** for the deferred hardening. #67 merged earlier.
+
 ## Session 2026-06-29 — review→fix→merge cycle: hybrid (v0.9.0) + M5 intelligence (v0.10.0)
 
 A long review-driven session: opened at `v0.8.0` with PRs #14/#15 pending; closed at `v0.10.0` with
