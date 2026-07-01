@@ -65,16 +65,18 @@ def _build_vector_store():
                 "Install ragstack[vector] to use Qdrant."
             )
             return InMemoryVectorStore()
+        # An explicit override serves that literal collection verbatim; otherwise
+        # scope the collection to (model, dim) so swapping embedding models keeps
+        # experiments isolated and a dimension change can't land in an incompatible
+        # collection.
+        collection = settings.qdrant_collection_explicit or collection_name(
+            settings.qdrant_collection,
+            settings.embedding_model,
+            settings.embedding_model_dim,
+        )
         return QdrantVectorStore(
             url=settings.qdrant_url,
-            # Scope the collection to (model, dim) so swapping embedding models
-            # keeps experiments isolated and a dimension change can't land in an
-            # incompatible collection.
-            collection=collection_name(
-                settings.qdrant_collection,
-                settings.embedding_model,
-                settings.embedding_model_dim,
-            ),
+            collection=collection,
             vector_size=settings.embedding_model_dim,
             api_key=settings.qdrant_api_key or None,
         )
@@ -377,7 +379,11 @@ async def lifespan(app: FastAPI):
             await vector_store.ensure_collection()
             log.info(
                 "qdrant collection ready: %s (vector_size=%d)",
-                getattr(vector_store, "_collection", settings.qdrant_collection),
+                getattr(
+                    vector_store,
+                    "_collection",
+                    settings.qdrant_collection_explicit or settings.qdrant_collection,
+                ),
                 settings.embedding_model_dim,
             )
         except VectorDimMismatch:
