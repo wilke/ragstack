@@ -277,6 +277,147 @@ async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
     assert calls["embed_fn"] is None
 
 
+class _RecordingEmbedder:
+    """Records every text it embeds, so a test can assert which docs were (not)
+    re-embedded. Fails the batch carrying the poison marker, like _FakeEmbedder."""
+
+    def __init__(self) -> None:
+        self.embedded: list[str] = []
+
+    async def embed(self, texts):
+        if any("POISONPILL" in t for t in texts):
+            raise RuntimeError("embed boom")
+        self.embedded.extend(texts)
+        return [[1.0, 0.0, 0.0, 0.0] for _ in texts]
+
+
+@pytest.mark.asyncio
+async def test_failed_early_batch_records_done_ranges_above_gap(tmp_path, monkeypatch):
+    # #65: an early failed batch stalls the frontier, but the LATER batches that
+    # completed out of order must be durably recorded so a resume doesn't redo them.
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
+                            _article(4), _article(5)])
+    ckpt = tmp_path / "c.ckpt"
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(corpus, batch_size=1, concurrency=2, checkpoint=ckpt))
+
+    ck = ingest_jsonl._read_checkpoint(ckpt)
+    # Frontier still pinned before the failed batch (no-data-loss invariant)...
+    assert ck["line"] == 2
+    # ...and docs 4,5 (completed above the gap) are recorded so a resume skips them.
+    assert ck["done_ranges"] == [[4, 5]]
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_done_ranges_embed_but_writes_catalog_once(tmp_path, monkeypatch):
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    cat = tmp_path / "cat.jsonl"
+    ckpt = tmp_path / "c.ckpt"
+
+    # Run 1: doc 3 poisons; docs 4,5 complete above the gap → done_ranges=[[4,5]],
+    # catalog holds only T1,T2 (lockstep can't write past the gap).
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    corpus = tmp_path / "c.jsonl"
+    records = [_article(1), _article(2), _article(3, poison=True), _article(4), _article(5)]
+    _write_records(corpus, records)
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=2, catalog_out=cat, checkpoint=ckpt))
+    assert [json.loads(x)["title"] for x in cat.read_text().splitlines()] == ["T1", "T2"]
+
+    # Run 2 (resume): fix doc 3 (others byte-identical). Docs 4,5 must NOT be
+    # re-embedded (done_ranges skip), but their catalog rows must still be written
+    # exactly once so the catalog is complete.
+    rec = _RecordingEmbedder()
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: rec)
+    records[2] = _article(3)  # de-poison line 3, everything else unchanged
+    _write_records(corpus, records)
+    await ingest_jsonl.run(_args(
+        corpus, batch_size=1, concurrency=2, catalog_out=cat, checkpoint=ckpt, resume=True))
+
+    # doc 3 reprocessed; docs 4,5 skipped (not re-embedded).
+    joined = " ".join(rec.embedded)
+    assert "number 3" in joined
+    assert "number 4" not in joined and "number 5" not in joined
+    # Catalog now complete, every title exactly once (T1,T2 from run 1; T3,T4,T5 run 2).
+    assert [json.loads(x)["title"] for x in cat.read_text().splitlines()] == \
+        ["T1", "T2", "T3", "T4", "T5"]
+    # Checkpoint fully advanced, done_ranges cleared.
+    ck = ingest_jsonl._read_checkpoint(ckpt)
+    assert ck["line"] == 5 and ck["done_ranges"] == []
+
+
+@pytest.mark.asyncio
+async def test_resume_under_replace_reprocesses_ignoring_done_ranges(tmp_path, monkeypatch):
+    # Under --replace done_ranges is disabled: a resume must REPROCESS above-gap docs
+    # (re-embed + prune orphans), not skip them, so edited content can't leave stale
+    # chunks. Verified by the above-gap docs being re-embedded on resume.
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    ckpt = tmp_path / "c.ckpt"
+
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    corpus = tmp_path / "c.jsonl"
+    records = [_article(1), _article(2), _article(3, poison=True), _article(4), _article(5)]
+    _write_records(corpus, records)
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=2, replace=True, checkpoint=ckpt))
+    # Under --replace done_ranges is never recorded.
+    assert ingest_jsonl._read_checkpoint(ckpt)["done_ranges"] == []
+
+    rec = _RecordingEmbedder()
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: rec)
+    records[2] = _article(3)
+    _write_records(corpus, records)
+    await ingest_jsonl.run(_args(
+        corpus, batch_size=1, concurrency=2, replace=True, checkpoint=ckpt, resume=True))
+    # Above-gap docs 4,5 are re-embedded (reprocessed), not skipped.
+    joined = " ".join(rec.embedded)
+    assert "number 4" in joined and "number 5" in joined
+
+
+@pytest.mark.asyncio
+async def test_resume_done_ranges_emits_doc_metrics_rows(tmp_path, monkeypatch):
+    # A resume-skipped (done_range) doc must still get a per-doc metrics row so the
+    # metrics file stays complete — marked skipped/resumed rather than silently gone.
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    ckpt = tmp_path / "c.ckpt"
+    metrics = tmp_path / "docs.jsonl"
+
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    corpus = tmp_path / "c.jsonl"
+    records = [_article(1), _article(2), _article(3, poison=True), _article(4), _article(5)]
+    _write_records(corpus, records)
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=2, doc_metrics_out=metrics, checkpoint=ckpt))
+
+    rec = _RecordingEmbedder()
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: rec)
+    records[2] = _article(3)
+    _write_records(corpus, records)
+    await ingest_jsonl.run(_args(
+        corpus, batch_size=1, concurrency=2, doc_metrics_out=metrics, checkpoint=ckpt,
+        resume=True))
+
+    rows = [json.loads(x) for x in metrics.read_text().splitlines()]
+    resumed = [r for r in rows if r.get("error") == "resumed (already indexed)"]
+    # Both above-gap docs (4,5) get a resumed row on the second pass.
+    assert len(resumed) == 2 and all(r["skipped"] and r["n_chunks"] == 0 for r in resumed)
+
+
 class _IsolatingEmbedder:
     """Embedder exposing embed_isolated: any chunk containing POISONPILL is
     quarantined (None vector) rather than failing the whole batch — mirrors
