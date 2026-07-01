@@ -288,15 +288,14 @@ def _build_chunker():
         base_url = (settings.embedding_endpoints or [settings.embedding_sidecar_url])[0]
         api_key = settings.openai_api_key or None
         model = settings.embedding_model or None
-        if method == "fixed_token":
-            if not model:
-                raise ValueError(
-                    "chunk_method='fixed_token' requires embedding_model (its sliding "
-                    "token window is built from that model's HF tokenizer)"
-                )
-            counter_backend = "hf"
-        else:
-            counter_backend = settings.chunk_token_counter
+        # fixed_token forces the HF backend (it needs the fast tokenizer's offset
+        # map) and requires a model to load that tokenizer.
+        if method == "fixed_token" and not model:
+            raise ValueError(
+                "chunk_method='fixed_token' requires embedding_model (its sliding "
+                "token window is built from that model's HF tokenizer)"
+            )
+        counter_backend = "hf" if method == "fixed_token" else settings.chunk_token_counter
         token_counter = make_token_counter(
             counter_backend,
             model=model,

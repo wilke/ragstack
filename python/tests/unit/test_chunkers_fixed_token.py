@@ -231,15 +231,16 @@ def test_empty_doc_yields_no_chunks():
     assert FixedTokenWindowChunker(token_counter=counter).chunk(_doc("")) == []
 
 
-def test_non_hf_counter_degrades_to_whole_doc():
-    # A counter without ``_tokenizer`` (estimate/endpoint) → single whole-doc chunk.
-    doc = _doc(_words(50))
-    chunker = FixedTokenWindowChunker(
-        chunk_size=5, chunk_overlap=0, token_counter=PlainWordCounter()
-    )
-    chunks = chunker.chunk(doc)
-    assert len(chunks) == 1
-    assert chunks[0].content == doc.content
+def test_non_hf_counter_raises_at_construction():
+    # A counter without ``_tokenizer`` (estimate/endpoint) can't slide a token
+    # window; constructing the chunker with one must fail fast rather than silently
+    # degrade to a single whole-doc chunk per document (a corpus-wide regression).
+    import pytest
+
+    with pytest.raises(ValueError):
+        FixedTokenWindowChunker(
+            chunk_size=5, chunk_overlap=0, token_counter=PlainWordCounter()
+        )
 
 
 def test_interior_trim_at_zero_overlap_keeps_all_tokens_covered():

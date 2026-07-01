@@ -544,9 +544,10 @@ class FixedTokenWindowChunker:
     as-is and left to the ingest embed path's isolate-and-drop backstop.
 
     Requires an HF ``TokenCounter`` (it needs the fast tokenizer's offset
-    mapping); when the counter isn't an HF counter it degrades to a single
-    whole-doc chunk. ``chunk_size``/``chunk_overlap`` are **tokens**, unlike the
-    char-based chunkers.
+    mapping) — a non-HF counter is rejected at construction (see ``__init__``),
+    because silently degrading to a single whole-doc chunk per document would be an
+    invisible corpus-wide chunking regression. ``chunk_size``/``chunk_overlap`` are
+    **tokens**, unlike the char-based chunkers.
     """
 
     def __init__(
@@ -556,20 +557,29 @@ class FixedTokenWindowChunker:
         *,
         token_counter: TokenCounter | None = None,
     ) -> None:
+        # fixed_token needs the HF fast tokenizer's offset mapping. A non-HF counter
+        # (estimate/endpoint) — including one that make_token_counter('hf') silently
+        # fell back to because the tokenizer couldn't load — has no offset map and
+        # would yield ONE whole-doc chunk per document: a silent, corpus-wide
+        # chunking regression. Fail fast at construction instead of degrading.
+        tok = getattr(token_counter, "_tokenizer", None)
+        if not callable(tok):
+            raise ValueError(
+                "FixedTokenWindowChunker requires an HF TokenCounter with a fast "
+                f"tokenizer (offset mapping); got {type(token_counter).__name__}"
+            )
+        assert token_counter is not None  # a None counter has no callable _tokenizer
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.token_counter = token_counter
+        self.token_counter: TokenCounter = token_counter
+        self._get_tokenizer = tok
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
         if not text:
             return []
         counter = self.token_counter
-        tok = getattr(counter, "_tokenizer", None)
-        if counter is None or tok is None:
-            # Not an HF counter (no offset mapping) — degrade to one whole-doc chunk.
-            return [_make_chunk(doc, 0, len(text))]
-        tokenizer = tok()
+        tokenizer = self._get_tokenizer()
         enc = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
         offsets = enc["offset_mapping"]
         n = len(offsets)
@@ -583,19 +593,20 @@ class FixedTokenWindowChunker:
             end_tok = min(start_tok + window, n)
             char_start = offsets[start_tok][0]
             char_end = offsets[end_tok - 1][1]
-            # Trim by whole tokens until the re-tokenized slice is <= window: a
-            # re-encode of the boundary-cut substring can add one merge token
-            # (isolated, the slice tokenizes with an extra leading/merge token), so
-            # shrink end_tok to honour the budget. The guard stops at a single token
-            # (end_tok - 1 == start_tok): a lone token that itself re-counts > window
-            # is indivisible and emitted as-is — the ingest embed path's isolate-and-
-            # drop backstop handles that rare case rather than the chunker.
-            while (
-                end_tok - 1 > start_tok
-                and counter.count(text[char_start:char_end]) > window
-            ):
-                end_tok -= 1
-                char_end = offsets[end_tok - 1][1]
+            # Only a FULL window (== `window` tokens) can re-count over budget; a
+            # short tail window never can, so skip the re-tokenizing count() there.
+            if end_tok - start_tok >= window:
+                # Trim by whole tokens until the re-tokenized slice is <= window: an
+                # isolated boundary re-encode can add one merge token. The guard
+                # stops at a single token (end_tok - 1 == start_tok): a lone token
+                # that itself re-counts > window is indivisible and emitted as-is —
+                # the ingest embed path's isolate-and-drop backstop handles that.
+                while (
+                    end_tok - 1 > start_tok
+                    and counter.count(text[char_start:char_end]) > window
+                ):
+                    end_tok -= 1
+                    char_end = offsets[end_tok - 1][1]
             # start_tok strictly increases each step, so char_start does too — spans
             # never repeat; only skip a zero-width span.
             if char_end > char_start:
