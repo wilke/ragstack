@@ -210,6 +210,12 @@ CONFIGS: list[ChunkConfig] = [
         extra={"buffer_size": 3, "breakpoint_percentile_threshold": 80.0,
                "min_chunk_length": 500},
     ),
+    ChunkConfig(
+        key="semantic_pooled", kind="semantic_pooled", size=4080,
+        label="semantic pooled (embed sentences once + mean-pool), token-cap 4080",
+        extra={"buffer_size": 3, "breakpoint_percentile_threshold": 80.0,
+               "min_chunk_length": 500},
+    ),
 ]
 CONFIG_KEYS = [c.key for c in CONFIGS]
 CONFIG_BY_KEY = {c.key: c for c in CONFIGS}
@@ -498,10 +504,13 @@ def chunk_docs_for_config(cfg: ChunkConfig, docs: list[Document]) -> list[Chunk]
             all_chunks.extend(chunks)
         return all_chunks
 
-    if cfg.kind == "semantic":
+    if cfg.kind in ("semantic", "semantic_pooled"):
+        # semantic_pooled embeds each sentence once + mean-pools (cheaper, still
+        # deterministic); both use the same breakpoint model here so this isolates
+        # the effect of pooling on retrieval quality vs full semantic / fixed_tok512.
         embed_fn = make_sync_embed_fn()
         chunker = make_chunker(
-            "semantic", embed_fn=embed_fn,
+            cfg.kind, embed_fn=embed_fn,
             max_tokens=cfg.size, token_counter=TOKEN_COUNTER,
             **cfg.extra,
         )

@@ -507,16 +507,27 @@ async def amain(args, live_eps) -> int:
         qrels = {q: qrels[q] for q in keep}
         print(f"[data] limited to {len(queries)} queries (--query-limit).", flush=True)
 
-    keys = list(c7.CONFIG_KEYS)
+    # Optional subset (default: all). The stats reference config (fixed_tok512) is
+    # force-included so the significance section still has its baseline.
+    configs = list(c7.CONFIGS)
+    if getattr(args, "configs", None):
+        want = {k.strip() for k in args.configs.split(",") if k.strip()}
+        unknown = want - set(c7.CONFIG_KEYS)
+        if unknown:
+            raise SystemExit(f"unknown --configs {sorted(unknown)}; valid: {c7.CONFIG_KEYS}")
+        want.add("fixed_tok512")
+        configs = [c for c in c7.CONFIGS if c.key in want]
+        print(f"[configs] running subset: {[c.key for c in configs]}", flush=True)
+    keys = [c.key for c in configs]
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         reranker = SidecarReranker(c7.RERANKER_URL, http=client)
         ingest_stats: dict = {}
-        for cfg in c7.CONFIGS:
+        for cfg in configs:
             ingest_stats[cfg.key] = await ingest_config(cfg, corpus_docs, client)
         eval_stats: dict = {}
-        for cfg in c7.CONFIGS:
+        for cfg in configs:
             eval_stats[cfg.key] = await evaluate_config(
                 cfg, queries, qrels, client, args.rerank_pool,
                 args.retrieve_pool, reranker
@@ -552,6 +563,10 @@ def parse_args(argv=None):
                    "the rerank pool so recall@100 can reach 100 unique docs")
     p.add_argument("--query-limit", type=int, default=0,
                    help="cap #test queries (0 = all)")
+    p.add_argument("--configs", default=None,
+                   help="comma-separated subset of chunk configs to run (default: all "
+                        "7-way configs). fixed_tok512 (the stats reference) is always "
+                        "included. e.g. semantic_pooled,semantic_tokcap")
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None,

@@ -75,6 +75,12 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
         "batch_retries": 0,
+        # Semantic breakpoint / segmentation-cache / concurrency knobs (match main()'s
+        # argparse defaults so production code uses plain attribute access).
+        "breakpoint_embedding_api": None, "breakpoint_embedding_url": None,
+        "breakpoint_embedding_model": None, "breakpoint_embedding_max_concurrency": None,
+        "breakpoint_embedding_api_key": None, "breakpoint_max_tokens": None,
+        "segmentation_cache": None, "chunk_concurrency": 1,
     }
     base.update(over)
     return argparse.Namespace(**base)
@@ -276,6 +282,46 @@ async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
     await ingest_jsonl.run(_args(corpus, chunk_method="fixed", checkpoint=tmp_path / "f.ckpt"))
     assert calls["method"] == "fixed"
     assert calls["embed_fn"] is None
+
+    # semantic_pooled also gets a bridge (embed_fn), routed via make_chunker.
+    await ingest_jsonl.run(_args(corpus, chunk_method="semantic_pooled",
+                                 checkpoint=tmp_path / "sp.ckpt"))
+    assert calls["method"] == "semantic_pooled"
+    assert calls["embed_fn"] is not None
+
+
+def test_build_breakpoint_embedder_falls_back_and_overrides(monkeypatch):
+    """The breakpoint embedder reuses the main --embedding-* backend by default, and
+    switches to --breakpoint-embedding-* when set (so boundary detection can run on
+    a separate cheap model while stored chunks stay on the main model)."""
+    seen: dict = {}
+    monkeypatch.setattr(ingest_jsonl, "make_embedder",
+                        lambda **kw: seen.setdefault("single", kw))
+    monkeypatch.setattr(ingest_jsonl, "make_pooled_embedder",
+                        lambda **kw: seen.setdefault("pooled", kw))
+
+    # No --breakpoint-embedding-url → falls back to the main single endpoint.
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN"), http=None)
+    assert seen["single"]["base_url"] == "http://main:1" and seen["single"]["model"] == "MAIN"
+
+    # Override with a separate breakpoint endpoint + model (single).
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN",
+              breakpoint_embedding_url=["http://bge:9101"],
+              breakpoint_embedding_model="BAAI/bge-base-en-v1.5",
+              breakpoint_embedding_api="openai"), http=None)
+    assert seen["single"]["base_url"] == "http://bge:9101"
+    assert seen["single"]["model"] == "BAAI/bge-base-en-v1.5"
+
+    # Multiple breakpoint URLs → pooled fan-out.
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN",
+              breakpoint_embedding_url=["http://bge:9101", "http://bge:9102"]), http=None)
+    assert seen["pooled"]["base_urls"] == ["http://bge:9101", "http://bge:9102"]
 
 
 class _RecordingEmbedder:
@@ -729,3 +775,103 @@ async def test_batch_retries_converge_on_wrapped_pool_failure(tmp_path, monkeypa
     assert emb.calls == 3, "wrapped-pool-failure batch should retry until success"
     assert ingest_jsonl._read_checkpoint(ckpt)["line"] == 5
     assert len({c.doc_id for c in store.points.values()}) == 5
+
+
+# --------------------------------------------------------------------------- #
+# --chunk-concurrency (issue #66 phase 2): concurrent chunking, file-order folds.
+# --------------------------------------------------------------------------- #
+
+async def _run_and_capture(tmp_path, monkeypatch, chunk_concurrency):
+    """Ingest a fixed corpus at a given --chunk-concurrency; return (chunk-id set,
+    checkpoint line, catalog text). Deterministic chunker (fixed), so any two runs
+    must agree — that is the file-order invariant the pipeline must preserve."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+    corpus = tmp_path / f"c{chunk_concurrency}.jsonl"
+    # articles (kept) interleaved with front-matter (filtered) to exercise skips.
+    _write_records(corpus, [_article(1), _front_matter(2), _article(3), _article(4),
+                            _front_matter(5), _article(6), _article(7)])
+    cat = tmp_path / f"cat{chunk_concurrency}.jsonl"
+    ckpt = tmp_path / f"c{chunk_concurrency}.ckpt"
+    await ingest_jsonl.run(_args(
+        corpus, chunk_method="fixed", chunk_size=200, chunk_overlap=20,
+        batch_size=2, concurrency=2, doc_types=["article"],
+        catalog_out=cat, checkpoint=ckpt, chunk_concurrency=chunk_concurrency,
+    ))
+    ids = frozenset(store.points)
+    line = ingest_jsonl._read_checkpoint(ckpt)["line"]
+    return ids, line, cat.read_text()
+
+
+@pytest.mark.asyncio
+async def test_chunk_concurrency_matches_serial(tmp_path, monkeypatch):
+    """--chunk-concurrency>1 must produce byte-identical results to serial: same
+    chunk ids, same checkpoint line, same catalog (rows in the same file order).
+    This is the #65 invariant — concurrent chunking, strictly file-ordered folds."""
+    ids1, line1, cat1 = await _run_and_capture(tmp_path, monkeypatch, 1)
+    ids4, line4, cat4 = await _run_and_capture(tmp_path, monkeypatch, 4)
+    assert ids1 == ids4 and len(ids1) > 0
+    assert line1 == line4 == 7  # checkpoint advances over the filtered tail equally
+    assert cat1 == cat4  # catalog rows identical AND in the same order
+
+
+@pytest.mark.asyncio
+async def test_chunk_concurrency_actually_overlaps(tmp_path, monkeypatch):
+    """With --chunk-concurrency>1 several documents are chunked at once."""
+    import threading
+    import time as _time
+
+    from ragstack.models import Chunk
+
+    class _SlowChunker:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self._lock = threading.Lock()
+
+        def chunk(self, doc):
+            with self._lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            _time.sleep(0.03)  # hold the slot so overlap is observable
+            with self._lock:
+                self.active -= 1
+            return [Chunk(id=f"{doc.id}:0:1", doc_id=doc.id, content=doc.content[:1],
+                          metadata=dict(doc.metadata), start_char=0, end_char=1)]
+
+    chunker = _SlowChunker()
+    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: chunker)
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(i) for i in range(1, 9)])
+    await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
+                                 concurrency=2, checkpoint=tmp_path / "c.ckpt",
+                                 chunk_concurrency=4))
+    assert chunker.max_active >= 2, "expected concurrent chunk() calls with cc=4"
+
+
+@pytest.mark.asyncio
+async def test_chunk_failure_propagates_without_hang(tmp_path, monkeypatch):
+    """A chunker.chunk() exception must propagate out of run() (not be swallowed)
+    AND run() must still return — the producer's finally drains sentinels + gathers
+    the workers, so a chunk failure can't hang or orphan the pipeline."""
+    class _BoomChunker:
+        def chunk(self, doc):
+            raise RuntimeError("chunk boom")
+
+    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: _BoomChunker())
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2), _article(3)])
+    with pytest.raises(RuntimeError, match="chunk boom"):
+        await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
+                                     concurrency=2, chunk_concurrency=3,
+                                     checkpoint=tmp_path / "c.ckpt"))
