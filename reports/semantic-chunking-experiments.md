@@ -304,6 +304,56 @@ point count flat, so a **drift in point count reveals non-reproducible blocks**.
 
 ---
 
+## Experiment 6 — two-model: `semantic_pooled` + BGE-on-GPU breakpoints (the win)
+
+**Rationale.** Combine the enablers: run the breakpoint pass on **BGE co-located on
+a GPU** (via `--breakpoint-embedding-*`) with `semantic_pooled`, leaving SFR to embed
+only the stored chunks. This is where the ~7× per-embed BGE advantage (Exp. 4)
+actually lands on wall-clock.
+
+**Setup.** BGE-base served on one H200 via `vllm serve BAAI/bge-base-en-v1.5 --runner
+pooling --port 9101 --gpu-memory-utilization 0.10 --max-model-len 512` (co-located
+with an SFR replica; ~0.1 GPU, no new hardware). Same 150-doc bounded run;
+`--breakpoint-embedding-url http://localhost:9101 --breakpoint-embedding-model
+BAAI/bge-base-en-v1.5`, stored chunks on the SFR fleet.
+
+**Results.**
+
+| Run (150 docs) | Wall | Chunks | Points after | vs SFR-only semantic |
+|---|---:|---:|---:|---:|
+| `semantic` (SFR-only) | 338 s | 2244 | 2244 | 1× |
+| `semantic_pooled` (SFR-only) | 299 s | 1944 | 1944 | 1.1× |
+| **`semantic_pooled` + BGE-breakpoint** | **82 s** | 1894 | 1894 | **~4.1×** |
+| same, run 2 (idempotency) | 83 s | 1894 | **1894** | — |
+
+**Interpretation.**
+- **~4.1× throughput** (338→82 s) — the actual win, from offloading the
+  ~374-buffers/doc breakpoint embed to the fast co-located BGE. On 150 docs this
+  still carries fixed overhead (model load, dim probe, collection setup ~10–20 s),
+  so at corpus scale the ratio is higher.
+- **Reproducible here: 1894→1894** (idempotent re-ingest, no drift) — vs SFR's
+  1944→1946. **BGE (a BERT encoder) is more numerically stable on vLLM** than SFR (a
+  7B decoder); with `distance_round=6` the blocks were bit-identical across runs on
+  this sample. Not a *guarantee* (still one backend, one sample) — segmentation
+  caching remains the belt-and-suspenders path — but a strong signal that a small
+  encoder is the better segmentation backend for reproducibility *and* speed.
+
+**Gotcha found + fixed.** The breakpoint inputs must be capped with the **breakpoint
+model's own tokenizer**: a Mistral-BPE stored counter undercounts vs BGE's wordpiece,
+so a long sentence bounded only to the stored budget overflowed BGE's 512 context
+(HTTP 400). Added `breakpoint_max_tokens` + `breakpoint_token_counter` to
+`SemanticChunker`; ingest builds the breakpoint model's hf tokenizer and caps to its
+window. (A residual harmless `734 > 512` HF *count*-time warning remains; the input is
+then split to budget before embedding.)
+
+> **Conclusion:** the recommended fast path for semantic is **`semantic_pooled` +
+> a small breakpoint model (BGE) co-located on GPU** — ~4× on this sample, more at
+> scale, and reproducible in test. Add **segmentation caching** for a hard
+> reproducibility guarantee; `fixed_tok512` remains the zero-breakpoint alternative
+> the evals call retrieval-equivalent.
+
+---
+
 ## Reproducibility
 
 Both harnesses run against the live coconut layout (read-only on the corpus; the
@@ -363,12 +413,14 @@ their tables to stdout and are cheap to re-run.
   If semantic must stay, serve **BGE on a GPU** (1 co-located instance ≈ 7×, ~3 ≈ 20×;
   one GPU beats ~85 CPU workers) — the CPU-scaling path only reaches break-even at
   ~12 workers and isn't worth it given idle GPU headroom.
-- **`semantic_pooled`** (branch `feat/semantic-pooled-segmentation`) — embed-once +
-  mean-pool + optional `--breakpoint-embedding-*` for a separate cheap model. Exp. 5:
-  ~1.1× alone on SFR (SFR is request-bound), so it's an **enabler for the BGE-on-GPU
-  path**, not a standalone win; and blocks are **~99.9% but not bit-reproducible** on
-  vLLM. For guaranteed reproducible blocks, add **segmentation caching** (segment
-  once → persist spans → reuse) on top — the next step for the reproducible-blocks goal.
+- **`semantic_pooled` + BGE-on-GPU breakpoints** (branch `feat/semantic-pooled-segmentation`,
+  PR #76) — the recommended fast path. Exp. 6: **~4.1× on 150 docs** (82 s vs 338 s),
+  more at scale, and **reproducible in test** (1894→1894 idempotent; BGE is more
+  vLLM-stable than SFR). Pooling alone on SFR is only ~1.1× (Exp. 5, SFR is
+  request-bound) — the win comes from the co-located cheap model. Needs the
+  breakpoint model's own tokenizer for the input cap (fixed). For a *hard*
+  reproducibility guarantee, add **segmentation caching** (segment once → persist
+  spans → reuse) on top; `fixed_tok512` stays the zero-breakpoint alternative.
 
 ## References
 
