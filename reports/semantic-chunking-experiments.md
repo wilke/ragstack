@@ -354,6 +354,39 @@ then split to budget before embedding.)
 
 ---
 
+## Experiment 7 — retrieval-equivalence gate: `semantic_pooled` on SciFact
+
+**Rationale.** Confirm the embed-once + mean-pool segmentation doesn't degrade
+retrieval quality before recommending it. The deciding metric (per the plan) is a
+real IR benchmark, not boundary agreement.
+
+**Algorithm.** `scifact_chunk_eval.py --configs semantic_pooled,semantic_tokcap`
+(the `fixed_tok512` reference is auto-included). SciFact (BEIR): 5,183 abstracts,
+300 claim queries, document-level graded qrels. Each config ingested into isolated
+`scifact_m7_*` stores (SFR/4096 embeds, 8 coconut endpoints), retrieved via hybrid
+(dense+BM25→RRF) + cross-encoder rerank, scored at the document level. Paired
+bootstrap (10k iters, seed 0) + Holm-corrected Wilcoxon vs `fixed_tok512`.
+
+**Results.**
+
+| config | nDCG@10 | recall@10 | recall@100 | MAP | ΔnDCG@10 vs ref | Wilcoxon p (Holm) | distinguishable? |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `fixed_tok512` (ref) | 0.744 | 0.860 | 0.973 | 0.708 | — | — | ref |
+| `semantic_tokcap` | 0.739 | 0.848 | 0.963 | 0.705 | −0.005 [−0.019, 0.009] | 0.548 | **no** |
+| `semantic_pooled` | 0.736 | 0.841 | 0.967 | 0.704 | −0.008 [−0.020, 0.004] | 0.548 | **no** |
+
+**Interpretation.** `semantic_pooled` is **statistically indistinguishable** from both
+full `semantic` and `fixed_tok512` on real claim-verification retrieval — the diff-CI
+spans 0 and no Wilcoxon test survives Holm–Bonferroni. So embed-once pooling changes
+the boundaries (Exp. 2 showed low exact-match agreement) but **not retrieval quality**
+— consistent with the evals' standing finding that chunk method is retrieval-invariant.
+
+> **Gate: PASS.** `semantic_pooled` is safe to use. Together with Exp. 6 (~4× via a
+> co-located BGE breakpoint model) and the segmentation cache (reproducible blocks),
+> the fast path is validated end-to-end. Teardown verified: prod SFR stores untouched.
+
+---
+
 ## Reproducibility
 
 Both harnesses run against the live coconut layout (read-only on the corpus; the
@@ -386,6 +419,19 @@ PYTHONPATH=<checkout>/python /rag/envs/ragstack/bin/python \
   --embedding-api openai --embedding-model Salesforce/SFR-Embedding-Mistral \
   --embedding-api-key <key> --embedding-url http://localhost:9001 ... http://localhost:9008 \
   --text-backend none --collection scratch_pool --checkpoint /tmp/pool.ckpt --limit 150
+
+# Experiment 6 — two-model (BGE breakpoints on GPU + SFR stored). Serve BGE first:
+#   CUDA_VISIBLE_DEVICES=7 VLLM_CACHE_ROOT=/rag/cache/tmp /rag/envs/vllm/bin/vllm serve \
+#     BAAI/bge-base-en-v1.5 --runner pooling --port 9101 --gpu-memory-utilization 0.10 --max-model-len 512
+# then add to the Exp-5 command:
+#   --breakpoint-embedding-api openai --breakpoint-embedding-url http://localhost:9101 \
+#   --breakpoint-embedding-model BAAI/bge-base-en-v1.5
+
+# Experiment 7 — retrieval-equivalence gate (subset; auto-includes fixed_tok512)
+PYTHONPATH=<checkout>/python /rag/envs/ragstack/bin/python \
+  <checkout>/python/scripts/eval/scifact_chunk_eval.py \
+  --configs semantic_pooled,semantic_tokcap \
+  --endpoints http://localhost:9001,...,http://localhost:9008 --embedding-api-key <key>
 ```
 
 Both are parameterized by env vars (`INPUT`, `N_SAMPLE`, `EMBED_MODEL`/`REF_MODEL`,
@@ -419,8 +465,17 @@ their tables to stdout and are cheap to re-run.
   vLLM-stable than SFR). Pooling alone on SFR is only ~1.1× (Exp. 5, SFR is
   request-bound) — the win comes from the co-located cheap model. Needs the
   breakpoint model's own tokenizer for the input cap (fixed). For a *hard*
-  reproducibility guarantee, add **segmentation caching** (segment once → persist
-  spans → reuse) on top; `fixed_tok512` stays the zero-breakpoint alternative.
+  reproducibility guarantee, **segmentation caching** (`--segmentation-cache`) is
+  implemented; `fixed_tok512` stays the zero-breakpoint alternative.
+- **Retrieval gate: PASS** (Exp. 7) — `semantic_pooled` is statistically
+  indistinguishable from `semantic` and `fixed_tok512` on SciFact nDCG@10
+  (ΔnDCG@10 −0.008 [−0.020, 0.004], Holm-Wilcoxon p=0.548). Pooling changes the
+  boundaries but not retrieval quality — the feature is validated to ship.
+- **Delivered on PR #76:** `semantic_pooled` (embed-once + mean-pool),
+  `--breakpoint-embedding-*` (cheap/GPU breakpoint model, own tokenizer/budget),
+  `--segmentation-cache` (reproducible blocks by construction), and
+  `--chunk-concurrency` (#66 phase-2: concurrent chunking, file-ordered folds — lets
+  multiple BGE replicas be saturated).
 
 ## References
 
