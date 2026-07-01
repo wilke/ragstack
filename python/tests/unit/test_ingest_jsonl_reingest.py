@@ -61,7 +61,8 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
     base = {
         "input": input_path, "tenant": "public", "doc_types": None, "limit": 0,
         "publisher_profile": "asm",
-        "catalog_out": None, "no_index": False, "checkpoint": None, "resume": False,
+        "catalog_out": None, "doc_metrics_out": None, "run_metrics_out": None,
+        "no_index": False, "checkpoint": None, "resume": False,
         "chunk_size": 200, "chunk_overlap": 20, "batch_size": 2, "concurrency": 2,
         "chunk_method": "fixed", "chunk_buffer_size": 3,
         "chunk_breakpoint_percentile": 80.0, "chunk_min_length": 500,
@@ -313,6 +314,94 @@ async def test_oversized_chunk_is_dropped_not_aborting_the_run(tmp_path, monkeyp
 
     # Must not raise SystemExit — the run completes despite the bad chunk.
     await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "a.ckpt"))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+@pytest.mark.asyncio
+async def test_doc_and_run_metrics_written(tmp_path, monkeypatch):
+    """--doc-metrics-out writes one row per document (indexed + skipped), and
+    --run-metrics-out writes one per-file summary row with the right counts."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    # 2 articles (kept, multi-chunk) + 1 short non-article doc that is FILTERED OUT
+    # by the doc_types=["article"] filter → a skipped per-doc row.
+    skip_rec = {"text": "short blurb here", "path": "/corpus/masthead.pdf", "metadata": {}}
+    _write_records(corpus, [_article(1), _article(2), skip_rec])
+    doc_out = tmp_path / "docs.jsonl"
+    run_out = tmp_path / "run.jsonl"
+    await ingest_jsonl.run(_args(
+        corpus, doc_types=["article"], batch_size=1, concurrency=2,
+        doc_metrics_out=doc_out, run_metrics_out=run_out,
+        checkpoint=tmp_path / "c.ckpt",
+    ))
+
+    rows = _read_jsonl(doc_out)
+    assert len(rows) == 3  # one per document seen (2 indexed + 1 skipped)
+    by_skip = {r["skipped"] for r in rows}
+    assert by_skip == {True, False}
+    indexed = [r for r in rows if not r["skipped"]]
+    skipped = [r for r in rows if r["skipped"]]
+    assert len(indexed) == 2 and len(skipped) == 1
+    for r in indexed:
+        assert r["n_chunks"] >= 1
+        assert r["tokens_min"] is not None
+        assert r["tokens_min"] <= r["tokens_median"] <= r["tokens_max"]
+        assert r["chunk_chars_median"] is not None
+        assert r["error"] is None
+        assert r["source_file"].endswith(".pdf")
+    sk = skipped[0]
+    assert sk["n_chunks"] == 0 and sk["tokens_min"] is None and sk["error"] is None
+
+    run_rows = _read_jsonl(run_out)
+    assert len(run_rows) == 1
+    run = run_rows[0]
+    assert run["docs_seen"] == 3
+    assert run["docs_indexed"] == 2
+    assert run["docs_skipped"] == 1
+    assert run["chunks"] == sum(r["n_chunks"] for r in indexed)
+    assert run["failed_batches"] == 0
+    assert run["failed_batch_seqs"] == []
+    assert run["wall_s"] >= 0
+    assert run["file"].endswith("c.jsonl")
+
+
+@pytest.mark.asyncio
+async def test_doc_metrics_record_failed_batch_error(tmp_path, monkeypatch):
+    """A failed batch still emits per-doc rows carrying the error, and the run
+    summary reports the failed batch count/seqs (metrics survive a partial run)."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [_article(1), _article(2, poison=True), _article(3)])
+    doc_out = tmp_path / "docs.jsonl"
+    run_out = tmp_path / "run.jsonl"
+    with pytest.raises(SystemExit):
+        await ingest_jsonl.run(_args(
+            corpus, batch_size=1, concurrency=1,
+            doc_metrics_out=doc_out, run_metrics_out=run_out,
+            checkpoint=tmp_path / "c.ckpt",
+        ))
+
+    rows = _read_jsonl(doc_out)
+    errored = [r for r in rows if r["error"] and "failed" in r["error"]]
+    assert errored, "the poisoned batch's doc should have an error row"
+    assert all(r["n_chunks"] == 0 for r in errored)
+
+    # Metrics are written even though the run exited non-zero.
+    run_rows = _read_jsonl(run_out)
+    assert len(run_rows) == 1
+    assert run_rows[0]["failed_batches"] >= 1
+    assert run_rows[0]["failed_batch_seqs"]
 
     assert store.points, "good chunks should still be stored"
     # The quarantined chunk's text is never indexed.

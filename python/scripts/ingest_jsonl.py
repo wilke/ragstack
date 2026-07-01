@@ -52,7 +52,9 @@ import argparse
 import asyncio
 import json
 import os
+import statistics
 import sys
+import time
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -248,6 +250,101 @@ async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
     return chunks
 
 
+class DocMetricsWriter:
+    """Streaming writer for the per-document metrics JSONL (``--doc-metrics-out``).
+
+    One row per document::
+
+        {doc_id, source_file, n_chunks, tokens_min, tokens_median, tokens_max,
+         chunk_chars_median, skipped, error}
+
+    Token stats are computed from the final (stored) chunks' text via the shared
+    :class:`TokenCounter`; char stats from ``len(chunk.content)``. A skipped or
+    fully-unembeddable document has ``n_chunks == 0`` and null token/char stats.
+
+    Rows are appended as they finalize (skipped docs at the producer; indexed docs
+    right after ``link_neighbors``). Writes go through one handle; the ingest is a
+    single-threaded asyncio loop, but the caller still serialises worker writes
+    under the shared lock so a row is never interleaved with another.
+    """
+
+    def __init__(self, path: Path, token_counter: Any, *, append: bool) -> None:
+        self._fh = open(path, "a" if append else "w", encoding="utf-8")
+        self._token_counter = token_counter
+
+    def emit(
+        self,
+        doc_id: str,
+        source_file: str,
+        chunks: list[Chunk],
+        *,
+        skipped: bool = False,
+        error: str | None = None,
+    ) -> None:
+        if chunks:
+            toks = [self._token_counter.count(c.content) for c in chunks]
+            chars = [len(c.content) for c in chunks]
+            tokens_min: int | None = min(toks)
+            tokens_median: float | None = statistics.median(toks)
+            tokens_max: int | None = max(toks)
+            chunk_chars_median: float | None = statistics.median(chars)
+        else:
+            tokens_min = tokens_median = tokens_max = chunk_chars_median = None
+        row = {
+            "doc_id": doc_id,
+            "source_file": source_file,
+            "n_chunks": len(chunks),
+            "tokens_min": tokens_min,
+            "tokens_median": tokens_median,
+            "tokens_max": tokens_max,
+            "chunk_chars_median": chunk_chars_median,
+            "skipped": skipped,
+            "error": error,
+        }
+        self._fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self._fh.flush()
+
+    def close(self) -> None:
+        self._fh.close()
+
+
+def _write_run_metrics(
+    path: Path,
+    *,
+    input_file: str,
+    stats: dict[str, int],
+    failed_seqs: list[int],
+    wall_s: float,
+    append: bool,
+) -> None:
+    """Append one per-FILE summary row to ``--run-metrics-out`` at end-of-run::
+
+        {file, docs_seen, docs_indexed, docs_skipped, chunks, failed_batches,
+         failed_batch_seqs, wall_s, chunks_per_s}
+
+    ``failed_*`` mirror the ingester's own failed-batch bookkeeping (the seqs whose
+    batch errored and left the checkpoint stalled). ``docs_indexed`` counts docs
+    that produced chunks and were handed to a batch (``stats['docs']``); note a
+    doc in a failed batch still counts here — the per-doc metrics carry the
+    per-document error detail.
+    """
+    wall = round(wall_s, 3)
+    chunks = stats["chunks"]
+    row = {
+        "file": input_file,
+        "docs_seen": stats["seen"],
+        "docs_indexed": stats["docs"],
+        "docs_skipped": stats["skipped"],
+        "chunks": chunks,
+        "failed_batches": len(failed_seqs),
+        "failed_batch_seqs": sorted(failed_seqs),
+        "wall_s": wall,
+        "chunks_per_s": round(chunks / wall, 2) if wall > 0 else None,
+    }
+    with open(path, "a" if append else "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
@@ -320,6 +417,14 @@ async def run(args: argparse.Namespace) -> None:
     ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
     stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
+    # Per-document metrics (optional). Append on resume so a resumed run adds to
+    # the rows already written rather than truncating them.
+    doc_metrics: DocMetricsWriter | None = None
+    if args.doc_metrics_out:
+        doc_metrics = DocMetricsWriter(
+            args.doc_metrics_out, token_counter, append=bool(args.resume and start_line)
+        )
+    run_started = time.monotonic()
 
     if args.no_index:
         await _run_catalog_only(
@@ -332,6 +437,14 @@ async def run(args: argparse.Namespace) -> None:
               f"(saw {stats['seen']} records)", file=sys.stderr)
         if embed_bridge is not None:
             embed_bridge.close()
+        if doc_metrics is not None:
+            doc_metrics.close()  # catalog-only pass emits no per-doc chunk metrics
+        if args.run_metrics_out:
+            _write_run_metrics(
+                args.run_metrics_out, input_file=str(args.input), stats=stats,
+                failed_seqs=[], wall_s=time.monotonic() - run_started,
+                append=bool(args.resume and start_line),
+            )
         return
 
     async with httpx.AsyncClient() as http:
@@ -381,7 +494,7 @@ async def run(args: argparse.Namespace) -> None:
                 try:
                     if item is None:
                         return
-                    seq, end_line, chunks, cat_rows = item
+                    seq, end_line, chunks, cat_rows, doc_info = item
                     try:
                         # Embed; an over-context/bad chunk is dropped (warned) rather
                         # than failing the whole batch (see _embed_drop_bad). A fully
@@ -393,6 +506,24 @@ async def run(args: argparse.Namespace) -> None:
                         # dangle to a quarantined chunk, and a mixed-doc batch never
                         # cross-links one doc's tail to the next doc's head.
                         link_neighbors_by_document(kept)
+                        if doc_metrics is not None:
+                            # One per-doc row right after link_neighbors, over the
+                            # SURVIVING chunks grouped by doc_id. A doc all of whose
+                            # chunks were quarantined leaves no survivors -> emit a
+                            # zero-chunk row with an error so it's not silently lost.
+                            surviving: dict[str, list[Chunk]] = {}
+                            for c in kept:
+                                surviving.setdefault(c.doc_id, []).append(c)
+                            async with lock:
+                                for d_id, src in doc_info.items():
+                                    doc_chunks = surviving.get(d_id, [])
+                                    err = (
+                                        None if doc_chunks
+                                        else "all chunks unembeddable (quarantined)"
+                                    )
+                                    doc_metrics.emit(
+                                        d_id, src, doc_chunks, skipped=False, error=err
+                                    )
                         # Upsert FIRST. Deterministic chunk ids overwrite an
                         # unchanged doc's points in place, so plain upsert is correct
                         # for re-ingest and — critically — a failure here never
@@ -427,6 +558,14 @@ async def run(args: argparse.Namespace) -> None:
                         failed.append(seq)
                         print(f"  batch seq={seq} failed: {type(e).__name__}: {e}; "
                               f"will reprocess on --resume", file=sys.stderr)
+                        if doc_metrics is not None:
+                            # Record every doc in the failed batch with the error;
+                            # a later --resume re-runs the batch and appends fresh
+                            # rows, so the failure is visible without losing the docs.
+                            err = f"batch seq={seq} failed: {type(e).__name__}: {e}"
+                            async with lock:
+                                for d_id, src in doc_info.items():
+                                    doc_metrics.emit(d_id, src, [], skipped=False, error=err)
                         continue
                     async with lock:
                         completed[seq] = (end_line, cat_rows)
@@ -457,6 +596,7 @@ async def run(args: argparse.Namespace) -> None:
         seq = 0
         buf: list[Chunk] = []
         buf_catalog: list[str] = []  # catalog rows for the docs in `buf`
+        buf_doc_info: dict[str, str] = {}  # doc_id -> source_file for docs in `buf`
         buf_end_line = 0
         last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
         with args.input.open(encoding="utf-8") as fh:
@@ -468,6 +608,14 @@ async def run(args: argparse.Namespace) -> None:
                 enriched = enrich(record, profile=profile)
                 if not _kept(enriched, keep_types):
                     stats["skipped"] += 1
+                    if doc_metrics is not None:
+                        # Skipped docs (filtered doc_type / empty) never reach a
+                        # batch; record them here as zero-chunk skipped rows.
+                        d_src = record.get("path", "") or ""
+                        d_id = deterministic_doc_id(
+                            _doc_id_key(record, record.get("text", "") or "")
+                        )
+                        doc_metrics.emit(d_id, d_src, [], skipped=True, error=None)
                     continue
                 # Buffer the catalog row with its batch; the worker writes it in
                 # lockstep with the checkpoint when this batch's seq is folded.
@@ -486,17 +634,19 @@ async def run(args: argparse.Namespace) -> None:
                 for c in chunks:
                     c.metadata["tenant_id"] = args.tenant
                 buf.extend(chunks)
+                buf_doc_info[doc.id] = doc.source
                 buf_end_line = line_no
                 stats["docs"] += 1
                 if len(buf) >= args.batch_size:
-                    await queue.put((seq, buf_end_line, buf, buf_catalog))
+                    await queue.put((seq, buf_end_line, buf, buf_catalog, buf_doc_info))
                     seq += 1
                     buf = []
                     buf_catalog = []
+                    buf_doc_info = {}
                 if args.limit and stats["docs"] >= args.limit:
                     break
         if buf:
-            await queue.put((seq, buf_end_line, buf, buf_catalog))
+            await queue.put((seq, buf_end_line, buf, buf_catalog, buf_doc_info))
             seq += 1
         for _ in workers:  # one sentinel per worker
             await queue.put(None)
@@ -517,6 +667,16 @@ async def run(args: argparse.Namespace) -> None:
         print(f"catalog written to {args.catalog_out}", file=sys.stderr)
     if embed_bridge is not None:
         embed_bridge.close()
+    # Emit the per-file run summary + close the per-doc writer BEFORE the failure
+    # exit below, so a partial (failed-batch) run still leaves its metrics behind.
+    if doc_metrics is not None:
+        doc_metrics.close()
+    if args.run_metrics_out:
+        _write_run_metrics(
+            args.run_metrics_out, input_file=str(args.input), stats=stats,
+            failed_seqs=failed, wall_s=time.monotonic() - run_started,
+            append=bool(args.resume and start_line),
+        )
     if failed:
         # Don't report success when batches errored: the checkpoint stalled at the
         # first gap, so the run is partial. Exit non-zero so the operator notices.
@@ -543,6 +703,17 @@ def main() -> None:
     # outputs
     p.add_argument("--catalog-out", type=Path, default=None,
                    help="write full per-doc enriched metadata (incl. citations) here")
+    p.add_argument("--doc-metrics-out", type=Path, default=None,
+                   help="write ONE JSONL row per DOCUMENT here: "
+                        "{doc_id, source_file, n_chunks, tokens_min, tokens_median, "
+                        "tokens_max, chunk_chars_median, skipped, error}. Token stats "
+                        "come from the same TokenCounter used for token-cap sizing. "
+                        "Appends on --resume. No behaviour change when unset.")
+    p.add_argument("--run-metrics-out", type=Path, default=None,
+                   help="append ONE per-FILE summary row at end-of-run here: "
+                        "{file, docs_seen, docs_indexed, docs_skipped, chunks, "
+                        "failed_batches, failed_batch_seqs, wall_s, chunks_per_s}. "
+                        "No behaviour change when unset.")
     p.add_argument("--no-index", action="store_true",
                    help="skip embedding/upsert; only build the catalog")
     # vector store
