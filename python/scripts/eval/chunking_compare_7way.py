@@ -75,6 +75,9 @@ from pathlib import Path
 
 import httpx
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for the _stats helper
+import _stats  # noqa: E402
+
 from ragstack.embedders import make_embedder
 from ragstack.ingestion.chunkers import make_chunker, split_text_to_token_budget
 from ragstack.ingestion.enrich import ARTICLE, enrich, index_metadata
@@ -449,6 +452,13 @@ def token_window_chunks(
 
     Falls back to a single whole-doc chunk when the counter isn't an HF fast
     tokenizer (no offset mapping); in practice the harness always uses HFTokenCounter.
+
+    The emitted char span is trimmed so that *re-tokenizing the sliced substring*
+    yields <= ``window_tokens`` tokens. Slicing on token-boundary char offsets and
+    re-encoding the substring can add a boundary token (a merge that spanned the
+    cut re-splits), so a naive window of exactly ``window_tokens`` tokens could
+    re-count as N+1. We shrink the window by whole tokens until the re-counted
+    content fits, keeping offsets exact (content is always the source slice).
     """
     text = doc.content
     if not text:
@@ -471,6 +481,15 @@ def token_window_chunks(
         end_tok = min(start_tok + window_tokens, n)
         char_start = offsets[start_tok][0]
         char_end = offsets[end_tok - 1][1]
+        # Trim by whole tokens until the re-tokenized slice is <= window_tokens.
+        # A re-encode of the boundary-cut substring can add one merge token, so
+        # this shrinks end_tok (never below start_tok+1) to honour the budget.
+        while (
+            end_tok - 1 > start_tok
+            and token_counter.count(text[char_start:char_end]) > window_tokens
+        ):
+            end_tok -= 1
+            char_end = offsets[end_tok - 1][1]
         span = (char_start, char_end)
         if char_end > char_start and span not in seen_spans:
             seen_spans.add(span)
@@ -577,9 +596,12 @@ def cap_oversized(chunks: list[Chunk]) -> tuple[list[Chunk], int]:
             continue
         n_oversized += 1
         pieces = split_text_to_token_budget(c.content, HARD_CAP_TOKENS, TOKEN_COUNTER)
-        # Anchor at the parent chunk's source offset (pieces are a lossless split
-        # of c.content) so start/end are honest source spans and the uuid5 ids are
-        # unique across a doc's chunks — matching the doc_id:start:end convention.
+        # Anchor at the parent chunk's source offset (pieces are a lossless split of
+        # c.content) so start/end are honest source spans and the uuid5 ids are
+        # unique across a doc's chunks. A chunk-relative cursor (starting at 0) would
+        # make two equal-length pieces of different source chunks collide on the
+        # uuid5(doc_id:start:end) id — the Qdrant point id / ES _id would overwrite
+        # and silently drop a chunk. Deriving from c.start_char keeps ids unique.
         cursor = c.start_char
         for piece in pieces:
             start, end = cursor, cursor + len(piece)
@@ -838,6 +860,10 @@ async def evaluate_config(
         "mean_rerank_top1": (
             statistics.mean(rer_top1_scores) if rer_top1_scores else float("nan")
         ),
+        # Per-query rank arrays (aligned by query index across configs) for the
+        # Part-2 statistics layer: paired bootstrap CIs + Wilcoxon/Holm tests.
+        "hybrid_ranks": hybrid_ranks,
+        "reranked_ranks": rer_ranks,
     }
 
 
@@ -1066,9 +1092,49 @@ def recommend(ingest_stats: dict, eval_stats: dict) -> str:
     )
 
 
+STATS_REFERENCE = "fixed_tok512"
+
+
+def build_significance_section(eval_stats: dict) -> str:
+    """Part-2 statistics: paired bootstrap CIs + Wilcoxon/Holm vs ``fixed_tok512``.
+
+    Uses the per-query rank arrays retained by ``evaluate_config`` (aligned by
+    query index across all configs) to compute, for each metric, every config's
+    ``mean [lo, hi]`` 95% CI, plus the pairwise difference CI and a Holm-corrected
+    Wilcoxon test on per-query reciprocal-rank deltas vs the reference.
+    """
+    ref = STATS_REFERENCE if STATS_REFERENCE in eval_stats else CONFIG_KEYS[0]
+
+    # Per-query metric arrays, keyed metric -> config -> [per query]. ``_pq`` maps a
+    # per-config rank array (``rank_key``) through a scalar metric ``fn``.
+    def _pq(rank_key: str, fn):
+        return {k: [fn(r) for r in eval_stats[k][rank_key]] for k in CONFIG_KEYS}
+
+    rer_rr = _pq("reranked_ranks", lambda r: _stats.reciprocal_rank(r, cap=10))
+    metrics = {
+        "hybrid MRR@10": _pq("hybrid_ranks", lambda r: _stats.reciprocal_rank(r, cap=10)),
+        "hybrid recall@5": _pq("hybrid_ranks", lambda r: _stats.hit_at_k(r, 5)),
+        "hybrid nDCG@10": _pq("hybrid_ranks", lambda r: _stats.dcg_single(r, 10)),
+        "rerank MRR@10": rer_rr,
+        "rerank recall@5": _pq("reranked_ranks", lambda r: _stats.hit_at_k(r, 5)),
+    }
+    # Primary metric = reranked MRR@10; RR deltas for the Wilcoxon test.
+    table, interp = _stats.build_stats_table(
+        CONFIG_KEYS, ref, metrics, "rerank MRR@10", rer_rr
+    )
+    return (
+        f"Reference config = `{ref}`. 95% CIs are paired bootstraps over the "
+        f"{len(rer_rr[ref])} eval queries (10,000 iters, seed 0). The "
+        f"`Δrerank MRR@10` column is the paired bootstrap difference vs the "
+        f"reference; the Wilcoxon column is a Holm–Bonferroni-corrected signed-rank "
+        f"test on per-query reciprocal-rank deltas.\n\n"
+        f"{table}\n{interp}\n"
+    )
+
+
 def write_report(
     ingest_stats: dict, eval_stats: dict, n_docs: int, n_eval: int,
-    args: argparse.Namespace, live_endpoints: list[str],
+    args: argparse.Namespace, live_endpoints: list[str], sig: str,
 ) -> None:
     struct = build_structure_table(ingest_stats)
     retr = build_retrieval_table(ingest_stats, eval_stats)
@@ -1116,6 +1182,9 @@ Generated by `scripts/eval/chunking_compare_7way.py`. Embedding model
 ## Retrieval quality
 
 {retr}
+## Statistical significance (paired bootstrap CIs + Wilcoxon/Holm)
+
+{sig}
 ## Cost & throughput
 
 chunk(+embed) time and ingest/upsert time are reported separately. docs/s and
@@ -1178,8 +1247,12 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
                 cfg, eval_docs, client, args.top_k, args.rerank_pool, reranker
             )
 
+        # Compute the (expensive 10k-iter bootstrap) significance section once and
+        # reuse it for both the report file and stdout.
+        sig = build_significance_section(eval_stats)
         write_report(
-            ingest_stats, eval_stats, len(docs), len(eval_docs), args, live_endpoints
+            ingest_stats, eval_stats, len(docs), len(eval_docs), args,
+            live_endpoints, sig,
         )
         write_csv(ingest_stats, eval_stats, len(docs))
         print("\n" + "=" * 80)
@@ -1187,6 +1260,7 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
         print("=" * 80)
         print(build_structure_table(ingest_stats))
         print(build_retrieval_table(ingest_stats, eval_stats))
+        print(sig)
         print(build_cost_table(ingest_stats, len(docs)))
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")

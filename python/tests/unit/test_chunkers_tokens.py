@@ -10,6 +10,7 @@ from ragstack.ingestion.chunkers import (
     SemanticChunker,
     SentenceChunker,
     WordChunker,
+    _token_split_span,
     make_chunker,
     split_text_to_token_budget,
 )
@@ -62,6 +63,41 @@ def test_split_helper_makes_progress_on_single_char_budget():
     counter = CharTokenCounter()
     pieces = split_text_to_token_budget("abcd", 1, counter)
     assert pieces == ["a", "b", "c", "d"]
+
+
+# --------------------------------------------------------------------------- #
+# _token_split_span: offsets/ids must be document-ABSOLUTE, not span-relative
+# --------------------------------------------------------------------------- #
+def test_token_split_span_offsets_and_ids_are_document_absolute():
+    # Regression guard for the cap-split id/offset-collision class of bug: when a
+    # span that does NOT start at char 0 is token-split, every piece's
+    # start/end_char and uuid5 id must be derived from the span's ABSOLUTE start,
+    # not a cursor that resets to 0. Two equal-length pieces from spans at
+    # different document offsets must get DIFFERENT ids (else a store point would
+    # silently overwrite another and drop a chunk).
+    counter = CharTokenCounter()  # 1 char == 1 token
+    doc = _doc("x" * 100)
+    # A span [40, 100): 60 chars, budget 10 → 6 pieces, none starting at 0.
+    pieces = _token_split_span(doc, 40, 100, max_tokens=10, token_counter=counter)
+    assert len(pieces) == 6
+    # Offsets are absolute and contiguous from 40 to 100.
+    assert pieces[0].start_char == 40
+    assert pieces[-1].end_char == 100
+    for a, b in zip(pieces[:-1], pieces[1:], strict=True):
+        assert a.end_char == b.start_char  # gapless
+    assert _reconstructs(doc, pieces)
+    # Ids are unique within the span.
+    ids = [c.id for c in pieces]
+    assert len(set(ids)) == len(ids)
+    # The ids are a function of the ABSOLUTE offset: a piece at [40,50) must have a
+    # different id than a same-length piece at [0,10). Under the pre-fix
+    # (span-relative cursor starting at 0) both spans' first pieces would share the
+    # id uuid5("doc1:0:10") and collide. Here they must differ.
+    other = _token_split_span(doc, 0, 60, max_tokens=10, token_counter=counter)
+    assert pieces[0].id != other[0].id  # [40,50) vs [0,10) → different ids
+    # And a truly identical absolute span DOES reproduce the same id (determinism).
+    same = _token_split_span(doc, 40, 100, max_tokens=10, token_counter=counter)
+    assert [c.id for c in same] == ids
 
 
 # --------------------------------------------------------------------------- #
@@ -263,3 +299,51 @@ def test_make_chunker_threads_token_params():
     chunks = chunker.chunk(doc)
     assert all(counter.count(c.content) <= 6 for c in chunks)
     assert _reconstructs(doc, chunks)
+
+
+# --------------------------------------------------------------------------- #
+# cap_oversized (eval harness): the function the token-cap id/offset fix touched
+# --------------------------------------------------------------------------- #
+def test_cap_oversized_ids_and_offsets_are_document_absolute(monkeypatch):
+    """Direct guard for the eval harness's ``cap_oversized`` (the function the PR
+    actually fixed — the package ``_token_split_span`` above is a separate, parallel
+    implementation). When an over-cap chunk is split, each piece's start/end_char and
+    uuid5 id must derive from the PARENT chunk's absolute ``start_char``. With a
+    chunk-relative cursor starting at 0, two equal-length first-pieces of different
+    chunks in the same doc collide on ``uuid5(doc_id:0:len)`` → the Qdrant point id
+    and ES _id overwrite and a chunk is silently dropped.
+    """
+    import sys
+    import uuid
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "eval"))
+    import chunking_compare_7way as c7  # noqa: E402
+
+    from ragstack.models import Chunk
+
+    monkeypatch.setattr(c7, "TOKEN_COUNTER", CharTokenCounter())  # 1 char == 1 token
+    monkeypatch.setattr(c7, "HARD_CAP_TOKENS", 10)
+
+    doc_id = "docA"
+    # Two 20-char chunks from the SAME doc at different document offsets, each over
+    # the 10-"token" cap → each splits into two 10-char pieces.
+    c1 = Chunk(id="c1", doc_id=doc_id, content="a" * 20,
+               metadata={}, start_char=0, end_char=20)
+    c2 = Chunk(id="c2", doc_id=doc_id, content="b" * 20,
+               metadata={}, start_char=100, end_char=120)
+    out, n_oversized = c7.cap_oversized([c1, c2])
+
+    assert n_oversized == 2
+    assert len(out) == 4
+    # Every id is unique across the two source chunks — the collision guard.
+    ids = [c.id for c in out]
+    assert len(set(ids)) == 4
+    # Offsets are document-absolute: c2's pieces live at [100,110),[110,120).
+    c2_pieces = [c for c in out if c.start_char >= 100]
+    assert [(c.start_char, c.end_char) for c in c2_pieces] == [(100, 110), (110, 120)]
+    # Pieces reconstruct the parent content losslessly.
+    assert "".join(c.content for c in out[:2]) == "a" * 20
+    # Ids follow the document-absolute doc_id:start:end scheme (not a 0-based cursor).
+    assert out[0].id == str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:0:10"))
+    assert c2_pieces[0].id == str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:100:110"))
