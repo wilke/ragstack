@@ -25,6 +25,13 @@ Resumable: documents are flushed at document boundaries and the last fully
 indexed line number is checkpointed to ``<input>.ckpt`` (override with
 ``--checkpoint``); re-running skips everything up to the checkpoint. Chunk IDs
 are deterministic, so a resumed run overwrites in place rather than duplicating.
+The checkpoint also records ``done_ranges`` — line intervals of batches that
+completed *out of order above* a stalled frontier (a slow/failed early batch) —
+so a resume skips those too instead of re-embedding work already upserted (#65).
+Resume keys on line number, so it assumes the input file is unchanged across
+restarts; editing it and resuming (without a fresh ``--checkpoint``) treats
+already-passed lines as done regardless of their new content. Use ``--replace``
+(which disables the done_ranges skip and reprocesses) when re-ingesting edits.
 
 Usage::
 
@@ -77,32 +84,111 @@ def _doc_id_key(record: dict[str, Any], text: str) -> str:
     return str(Path(rec_path).resolve()) if rec_path else text
 
 
+def _union_range(ranges: list[list[int]], lo: int, hi: int) -> list[list[int]]:
+    """Insert inclusive ``[lo, hi]`` into a sorted, non-overlapping interval list,
+    coalescing any intervals that overlap or *abut* (a gap of 1 line). Returns a
+    fresh sorted/coalesced list; inputs are not mutated."""
+    out: list[list[int]] = []
+    for r in sorted([list(x) for x in ranges] + [[lo, hi]]):
+        if out and r[0] <= out[-1][1] + 1:
+            out[-1][1] = max(out[-1][1], r[1])
+        else:
+            out.append([r[0], r[1]])
+    return out
+
+
+def _trim_below(ranges: list[list[int]], frontier: int) -> list[list[int]]:
+    """Drop the part of every interval at or below ``frontier`` (now subsumed by
+    the contiguous-prefix frontier). Fully-covered intervals disappear; a straddling
+    one is clipped to ``[frontier+1, hi]``. Keeps ``done_ranges`` small once a gap
+    clears so it can't grow without bound behind a persistently-stuck early batch."""
+    out: list[list[int]] = []
+    for lo, hi in ranges:
+        if hi <= frontier:
+            continue
+        out.append([max(lo, frontier + 1), hi])
+    return out
+
+
+def _line_covered(line_no: int, frontier: int, ranges: list[list[int]]) -> bool:
+    """True if ``line_no`` was already durably indexed: at/below the frontier, or
+    inside a persisted done-range (a batch that completed out of order above the
+    frontier gap)."""
+    if line_no <= frontier:
+        return True
+    for lo, hi in ranges:
+        if lo <= line_no <= hi:
+            return True
+        if lo > line_no:
+            break  # ranges are sorted; no later interval can contain line_no
+    return False
+
+
+def _sanitize_ranges(raw: Any) -> list[list[int]]:
+    """Coerce a persisted ``done_ranges`` value into a sorted, coalesced list of
+    ``[int, int]`` intervals, dropping anything malformed. Any structural problem
+    yields ``[]`` — done_ranges is pure optimization metadata, so discarding a
+    corrupt value only costs redundant work, never correctness."""
+    if not isinstance(raw, list):
+        return []
+    out: list[list[int]] = []
+    try:
+        for item in raw:
+            lo, hi = int(item[0]), int(item[1])
+            if lo <= hi:
+                out = _union_range(out, lo, hi)
+    except (TypeError, ValueError, IndexError, KeyError):
+        return []
+    return out
+
+
 def _read_checkpoint(path: Path) -> dict[str, Any]:
-    """Persisted resume state: ``{"line": int, "doc_types": list[str] | None}``.
+    """Persisted resume state:
+    ``{"line": int, "doc_types": list[str] | None, "done_ranges": list[[int,int]]}``.
+
+    ``done_ranges`` (added for #65) is a sorted, coalesced list of inclusive
+    ``[lo, hi]`` line intervals for batches that COMPLETED out of order *above* the
+    contiguous-prefix frontier ``line``. It is pure resume-optimization metadata so a
+    restart doesn't re-embed work already durably upserted while an early batch is
+    stuck; it never moves the frontier, and if dropped/corrupt it only costs
+    redundant work (never data loss).
 
     Missing/corrupt reads as a zero checkpoint (fresh start). The legacy
-    bare-integer format is still accepted (line only, no filter recorded).
+    bare-integer format is still accepted (line only, no filter/ranges recorded).
     """
+    zero: dict[str, Any] = {"line": 0, "doc_types": None, "done_ranges": []}
     try:
         raw = path.read_text().strip()
     except FileNotFoundError:
-        return {"line": 0, "doc_types": None}
+        return zero
     try:
         data = json.loads(raw)
-        return {"line": int(data.get("line", 0)), "doc_types": data.get("doc_types")}
+        return {
+            "line": int(data.get("line", 0)),
+            "doc_types": data.get("doc_types"),
+            "done_ranges": _sanitize_ranges(data.get("done_ranges")),
+        }
     except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
         try:
-            return {"line": int(raw), "doc_types": None}  # legacy bare-int checkpoint
+            return {"line": int(raw), "doc_types": None, "done_ranges": []}  # legacy bare-int
         except ValueError:
-            return {"line": 0, "doc_types": None}
+            return zero
 
 
-def _write_checkpoint(path: Path, line_no: int, doc_types: list[str] | None) -> None:
+def _write_checkpoint(
+    path: Path,
+    line_no: int,
+    doc_types: list[str] | None,
+    done_ranges: list[list[int]] | None = None,
+) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     # Persist the active doc-type filter alongside the line so a resume with a
     # *different* filter is rejected rather than silently skipping lines the new
-    # filter would now keep.
-    tmp.write_text(json.dumps({"line": line_no, "doc_types": doc_types}))
+    # filter would now keep. done_ranges records out-of-order completions above the
+    # frontier gap (see _read_checkpoint) so a resume skips them; [] on a clean run.
+    tmp.write_text(
+        json.dumps({"line": line_no, "doc_types": doc_types, "done_ranges": done_ranges or []})
+    )
     tmp.replace(path)  # atomic so a crash mid-write can't corrupt the checkpoint
 
 
@@ -129,8 +215,13 @@ def _open_checkpoint_paths(args: argparse.Namespace, current_doc_types: list[str
         ckpt_path = args.checkpoint
     else:
         ckpt_path = src.with_suffix(src.suffix + (".catalog.ckpt" if args.no_index else ".ckpt"))
-    ckpt = _read_checkpoint(ckpt_path) if args.resume else {"line": 0, "doc_types": None}
+    ckpt = (
+        _read_checkpoint(ckpt_path)
+        if args.resume
+        else {"line": 0, "doc_types": None, "done_ranges": []}
+    )
     start_line = ckpt["line"]
+    done_ranges = ckpt["done_ranges"]
     if start_line and ckpt["doc_types"] != current_doc_types:
         # Resume keys only on line number, so a looser filter would silently skip
         # every line the stricter run had filtered out. Fail closed instead.
@@ -141,8 +232,9 @@ def _open_checkpoint_paths(args: argparse.Namespace, current_doc_types: list[str
             "same --doc-types, a fresh --checkpoint, or without --resume."
         )
     if start_line:
-        print(f"resuming after line {start_line} (from {ckpt_path.name})", file=sys.stderr)
-    return ckpt_path, start_line
+        extra = f" (+ {len(done_ranges)} completed range(s) above the gap)" if done_ranges else ""
+        print(f"resuming after line {start_line}{extra} (from {ckpt_path.name})", file=sys.stderr)
+    return ckpt_path, start_line, done_ranges
 
 
 def _open_catalog(args: argparse.Namespace, start_line: int) -> TextIO | None:
@@ -228,6 +320,8 @@ async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
     ingest. Infra failures (5xx / network) still raise and leave the batch for
     ``--resume``. The pooled fan-out has no ``embed_isolated`` and keeps the prior
     all-or-nothing behaviour."""
+    if not chunks:
+        return []  # catalog-only batch (e.g. a #65 resume-skipped doc): nothing to embed
     texts = [c.content for c in chunks]
     if hasattr(embedder, "embed_isolated"):
         vecs, quarantined = await embedder.embed_isolated(texts)
@@ -426,7 +520,7 @@ async def run(args: argparse.Namespace) -> None:
         max_tokens=max_tokens,
         token_counter=token_counter,
     )
-    ckpt_path, start_line = _open_checkpoint_paths(args, current_doc_types)
+    ckpt_path, start_line, resume_done_ranges = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
     stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
     # Per-document metrics (optional). Append on resume so a resumed run adds to
@@ -493,19 +587,31 @@ async def run(args: argparse.Namespace) -> None:
         completed: dict[int, tuple[int, list[str]]] = {}
         failed: list[int] = []  # seqs whose batch errored (checkpoint stalls at the gap)
         next_seq = 0
+        # #65: batches complete out of order; when an early one is slow/failing the
+        # contiguous-prefix frontier can't advance, so WITHOUT this the checkpoint
+        # sticks at the head line and every restart re-embeds all the later batches
+        # that already upserted. `done_ranges` durably records those out-of-order
+        # completions (line intervals ABOVE the frontier) so a resume skips them;
+        # `frontier_line` is the last persisted contiguous-prefix line. done_ranges
+        # is optimization-only — a failed seq is never recorded, so its lines stay
+        # in neither the frontier nor done_ranges and are always re-fed (no data
+        # loss). Disabled under --replace, which must reprocess to prune orphans.
+        done_ranges: list[list[int]] = list(resume_done_ranges)
+        frontier_line = start_line
+        track_done_ranges = not args.replace
         lock = asyncio.Lock()
         # Bound concurrent prune-deletes separately from the embed fan-out so a wide
         # --concurrency doesn't issue a burst of heavy deletes at the store.
         delete_sem = asyncio.Semaphore(max(1, args.delete_concurrency))
 
         async def worker() -> None:
-            nonlocal next_seq
+            nonlocal next_seq, done_ranges, frontier_line
             while True:
                 item = await queue.get()
                 try:
                     if item is None:
                         return
-                    seq, end_line, chunks, cat_rows, doc_info = item
+                    seq, start_ln, end_line, chunks, cat_rows, doc_info = item
                     try:
                         # Embed; an over-context/bad chunk is dropped (warned) rather
                         # than failing the whole batch (see _embed_drop_bad). A fully
@@ -565,15 +671,18 @@ async def run(args: argparse.Namespace) -> None:
                         # this seq out of `completed` so the checkpoint stalls at
                         # the gap and --resume reprocesses from here. Record it so
                         # the run reports failure (non-zero exit) instead of "done".
-                        failed.append(seq)
+                        # NOTE: never union this seq's lines into done_ranges — a
+                        # failed batch's lines must stay in neither the frontier nor
+                        # done_ranges so resume always re-feeds them (no data loss).
                         print(f"  batch seq={seq} failed: {type(e).__name__}: {e}; "
                               f"will reprocess on --resume", file=sys.stderr)
-                        if doc_metrics is not None:
-                            # Record every doc in the failed batch with the error;
-                            # a later --resume re-runs the batch and appends fresh
-                            # rows, so the failure is visible without losing the docs.
-                            err = f"batch seq={seq} failed: {type(e).__name__}: {e}"
-                            async with lock:
+                        err = f"batch seq={seq} failed: {type(e).__name__}: {e}"
+                        async with lock:
+                            failed.append(seq)  # under lock, like completed/next_seq
+                            if doc_metrics is not None:
+                                # Record every doc in the failed batch with the error;
+                                # a later --resume re-runs the batch and appends fresh
+                                # rows, so the failure is visible without losing docs.
                                 for d_id, src in doc_info.items():
                                     doc_metrics.emit(d_id, src, [], skipped=False, error=err)
                         continue
@@ -592,12 +701,34 @@ async def run(args: argparse.Namespace) -> None:
                                 catalog.write("".join(rows_n))
                             advanced = end_line_n
                             next_seq += 1
+                        changed = False
+                        if advanced is not None:
+                            frontier_line = advanced
+                            # The frontier now subsumes these lines: drop them from
+                            # done_ranges so it can't grow unbounded once a gap clears.
+                            trimmed = _trim_below(done_ranges, frontier_line)
+                            if trimmed != done_ranges:
+                                done_ranges = trimmed
+                                changed = True
+                        # If THIS batch finished above the frontier (a gap remains),
+                        # durably record its line interval so a restart skips it
+                        # instead of re-embedding it. Skipped under --replace.
+                        if track_done_ranges and end_line > frontier_line:
+                            unioned = _union_range(done_ranges, start_ln, end_line)
+                            if unioned != done_ranges:
+                                done_ranges = unioned
+                                changed = True
                         if advanced is not None:
                             if catalog is not None:
                                 catalog.flush()
-                            _write_checkpoint(ckpt_path, advanced, current_doc_types)
+                            _write_checkpoint(ckpt_path, frontier_line, current_doc_types, done_ranges)
                             print(f"  indexed {stats['chunks']} chunks / {stats['docs']} docs "
-                                  f"(line {advanced})", file=sys.stderr)
+                                  f"(line {frontier_line})", file=sys.stderr)
+                        elif changed:
+                            # Out-of-order completion above a stuck gap: persist the
+                            # new done_ranges at the unchanged frontier so the progress
+                            # survives a restart (this is the #65 fix — no lost work).
+                            _write_checkpoint(ckpt_path, frontier_line, current_doc_types, done_ranges)
                 finally:
                     queue.task_done()
 
@@ -607,6 +738,7 @@ async def run(args: argparse.Namespace) -> None:
         buf: list[Chunk] = []
         buf_catalog: list[str] = []  # catalog rows for the docs in `buf`
         buf_doc_info: dict[str, str] = {}  # doc_id -> source_file for docs in `buf`
+        buf_start_line = 0  # first record line in the current batch (0 = empty batch)
         buf_end_line = 0
         last_line = 0  # highest processed line (kept or skipped), for the final checkpoint
         with args.input.open(encoding="utf-8") as fh:
@@ -627,8 +759,43 @@ async def run(args: argparse.Namespace) -> None:
                         )
                         doc_metrics.emit(d_id, d_src, [], skipped=True, error=None)
                     continue
+                # #65 resume fast-path: this line was durably upserted in a prior run
+                # (recorded in done_ranges above the frontier gap). Skip the expensive
+                # chunk+embed+upsert, but STILL buffer the cheap catalog row so it folds
+                # in lockstep with the frontier (never lost, never ahead of the resume
+                # point) and emit a per-doc "resumed" metrics row. Disabled under
+                # --replace (track_done_ranges) so a replace always reprocesses.
+                if track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
+                    if catalog is not None:
+                        if buf_start_line == 0:
+                            buf_start_line = line_no
+                        buf_catalog.append(
+                            json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
+                        )
+                        buf_end_line = line_no
+                    if doc_metrics is not None:
+                        d_src = record.get("path", "") or ""
+                        d_id = deterministic_doc_id(
+                            _doc_id_key(record, record.get("text", "") or "")
+                        )
+                        doc_metrics.emit(
+                            d_id, d_src, [], skipped=True, error="resumed (already indexed)"
+                        )
+                    stats["docs"] += 1
+                    # Bound buffered catalog rows when a long done-range run has no
+                    # interspersed fresh docs to trigger the size-based flush below.
+                    if catalog is not None and len(buf_catalog) >= args.batch_size:
+                        await queue.put(
+                            (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+                        )
+                        seq += 1
+                        buf, buf_catalog, buf_doc_info = [], [], {}
+                        buf_start_line = 0
+                    continue
                 # Buffer the catalog row with its batch; the worker writes it in
                 # lockstep with the checkpoint when this batch's seq is folded.
+                if buf_start_line == 0:
+                    buf_start_line = line_no
                 if catalog is not None:
                     buf_catalog.append(
                         json.dumps(enriched.model_dump(), ensure_ascii=False) + "\n"
@@ -658,15 +825,20 @@ async def run(args: argparse.Namespace) -> None:
                 buf_end_line = line_no
                 stats["docs"] += 1
                 if len(buf) >= args.batch_size:
-                    await queue.put((seq, buf_end_line, buf, buf_catalog, buf_doc_info))
+                    await queue.put(
+                        (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+                    )
                     seq += 1
-                    buf = []
-                    buf_catalog = []
-                    buf_doc_info = {}
+                    buf, buf_catalog, buf_doc_info = [], [], {}
+                    buf_start_line = 0
                 if args.limit and stats["docs"] >= args.limit:
                     break
-        if buf:
-            await queue.put((seq, buf_end_line, buf, buf_catalog, buf_doc_info))
+        # Flush a trailing batch — including a catalog-only one (buf empty but
+        # done-range resume rows buffered) so those rows still fold in lockstep.
+        if buf or buf_catalog:
+            await queue.put(
+                (seq, buf_start_line, buf_end_line, buf, buf_catalog, buf_doc_info)
+            )
             seq += 1
         for _ in workers:  # one sentinel per worker
             await queue.put(None)
@@ -676,8 +848,11 @@ async def run(args: argparse.Namespace) -> None:
         # advance the checkpoint over any trailing skipped lines after the last
         # kept doc, so a resume of a finished run doesn't re-scan them. A gap
         # (failed batch) leaves next_seq < seq, so the checkpoint correctly stalls.
+        # A clean finish folds every batch into the frontier, so done_ranges is
+        # empty here (trimmed away); persist it explicitly to clear any stale ranges
+        # left by a prior resumed run.
         if next_seq == seq:
-            _write_checkpoint(ckpt_path, last_line, current_doc_types)
+            _write_checkpoint(ckpt_path, last_line, current_doc_types, _trim_below(done_ranges, last_line))
 
         if text_index is not None and hasattr(text_index, "close"):
             await text_index.close()
