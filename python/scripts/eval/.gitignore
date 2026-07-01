@@ -1,0 +1,4 @@
+# Per-config ingest-stats checkpoints written by the chunking-compare harnesses
+# (resume state, not a deliverable).
+.chunking_compare_ingest_stats.json
+.chunking_compare_7way_ingest_stats.json
