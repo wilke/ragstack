@@ -776,7 +776,8 @@ async def evaluate_config(
     )
     tindex = ElasticsearchTextIndex(url=ES_URL, index=collection)
     embedder = make_embedder(
-        api="openai", http=client, base_url=SFR_ENDPOINTS[0], model=SFR_MODEL
+        api="openai", http=client, base_url=SFR_ENDPOINTS[0], model=SFR_MODEL,
+        api_key=EMBED_API_KEY,
     )
     retriever = HybridRetriever(vstore, tindex, embedder)
     filters = scope_filters({}, TENANT)
