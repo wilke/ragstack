@@ -10,6 +10,19 @@ This bridge owns a dedicated background event loop on its own thread and submits
 the embed coroutine to it with ``run_coroutine_threadsafe``, blocking the caller
 until it returns. That is safe to call from within the main event loop because
 the coroutine runs on a *different* loop/thread — no re-entrancy.
+
+Fan-out: the semantic chunker hands a whole document's sentence buffers to this
+bridge in ONE call. A bare ``embedder.embed(buffers)`` is a *single* coroutine —
+and against a :class:`~ragstack.embed_pool.PooledEmbedder` (least-loaded routing
+across N vLLM replicas) a single call lands on exactly ONE endpoint, so one doc's
+breakpoint embed uses one GPU while the other N-1 sit idle. To saturate the fleet
+we split the buffers into fixed-size sub-batches and dispatch them *concurrently*
+on this loop; the pool then spreads them least-loaded across every endpoint (its
+own ``max_concurrency`` semaphore still caps total in-flight requests). Results
+are re-concatenated IN INPUT ORDER, so the embeddings — and therefore the cosine
+distances, breakpoints, and deterministic chunk ids — are byte-identical to the
+single-call path. With one endpoint configured the vectors are identical too;
+only the number of HTTP requests changes.
 """
 from __future__ import annotations
 
@@ -38,8 +51,16 @@ class SyncEmbedBridge:
     on this background loop; building a dedicated client on this loop avoids that.
     """
 
-    def __init__(self, embedder_factory: EmbedderFactory) -> None:
+    def __init__(
+        self, embedder_factory: EmbedderFactory, *, batch_size: int = 64
+    ) -> None:
         self._factory = embedder_factory
+        # Sub-batch size for the concurrent fan-out: a document's buffers are
+        # embedded as ceil(len/batch_size) concurrent calls, which the pooled
+        # embedder spreads least-loaded across all endpoints. Kept in step with
+        # the ingest --batch-size (one buffer ~= one sentence-window, so 64 is a
+        # sensible request granularity). <=0 disables splitting (one call).
+        self._batch_size = batch_size
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._client: httpx.AsyncClient | None = None
@@ -70,7 +91,24 @@ class SyncEmbedBridge:
         if self._embedder is None:
             self._client = httpx.AsyncClient(timeout=120.0)
             self._embedder = self._factory(self._client)
-        return await self._embedder.embed(texts)
+        # Small buffer lists (or splitting disabled) stay a single call — identical
+        # to the pre-fan-out behaviour, no extra request overhead for tiny docs.
+        n = len(texts)
+        if self._batch_size <= 0 or n <= self._batch_size:
+            return await self._embedder.embed(texts)
+        # Split into fixed-size sub-batches and embed them CONCURRENTLY; the pooled
+        # embedder routes each to the least-loaded endpoint, so one document's
+        # buffers spread across the whole fleet instead of pinning one GPU. gather
+        # preserves order, so the flattened result matches a single embed(texts).
+        bs = self._batch_size
+        embedder = self._embedder
+        results = await asyncio.gather(
+            *(embedder.embed(texts[i : i + bs]) for i in range(0, n, bs))
+        )
+        out: list[list[float]] = []
+        for r in results:
+            out.extend(r)
+        return out
 
     def __call__(self, texts: Sequence[str]) -> list[list[float]]:
         loop = self._ensure_loop()
