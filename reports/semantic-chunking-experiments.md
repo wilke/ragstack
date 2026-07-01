@@ -260,6 +260,50 @@ breakpoint embed and no BGE serving at all**, and the evals find it retrieval-eq
 
 ---
 
+## Experiment 5 — `semantic_pooled` end-to-end (embed-once pooling on SFR)
+
+**Rationale.** `semantic_pooled` embeds each sentence **once** and mean-pools the
+buffer window instead of embedding N overlapping ~7-sentence buffers. Measure the
+real end-to-end effect on SFR, and whether the resulting blocks are reproducible.
+
+**Algorithm.** Bounded end-to-end via `ingest_jsonl.py` (`--chunk-method
+{semantic,semantic_pooled}`), 150 docs, `--concurrency 8 --batch-size 64`, 8-way SFR
+fan-out, scratch Qdrant collections, `--text-backend none`. Repeat the pooled run
+into the *same* collection: with deterministic ids, an idempotent re-ingest keeps the
+point count flat, so a **drift in point count reveals non-reproducible blocks**.
+
+**Results.**
+
+| Run (150 docs) | Wall | Chunks | Points after |
+|---|---:|---:|---:|
+| `semantic` (baseline) | 338 s | 2244 | 2244 |
+| `semantic_pooled` run 1 | 299 s | 1944 | 1944 |
+| `semantic_pooled` run 2 (same collection) | 299 s | 1944 | **1946** |
+
+**Interpretation — two important, sobering findings:**
+1. **Pooling alone on SFR is only ~1.1× (338→299 s), not ~7×.** The breakpoint pass
+   issues the *same number of requests* (N sentences ≈ N buffers); pooling only
+   shortens each input. SFR at these sizes is **request-bound, not token-bound**, so
+   shorter inputs barely help. The token-reduction win is only realized on a
+   **token/compute-bound, fast model** — i.e. it compounds with **BGE-on-GPU**
+   (Exp. 4), where it also shrinks BGE's inputs. Pooling is an *enabler*, not a
+   standalone speedup on SFR.
+2. **Blocks are NOT bit-reproducible on vLLM SFR** — re-ingesting the same 150 docs
+   produced **+2 points** (1946 vs 1944). The chunker is deterministic *given
+   deterministic embeddings* (unit-tested), so this is **vLLM/SFR embedding jitter**
+   (batch-dependent float reductions) nudging ~2/1944 distances across the percentile
+   threshold; `distance_round=6` is too fine to absorb it (~99.9% stable, not exact).
+
+> **Conclusion:** for the user's **reproducible-blocks** requirement, mild distance
+> rounding is insufficient against a nondeterministic embedding backend. True
+> reproducibility needs either a **deterministic segmentation backend** (fixed
+> batch/eager/seed, or CPU) or — cleaner — **caching the segmentation artifact**
+> (segment once → persist block spans → reuse), which also decouples segmentation
+> from embedding and enables divide-and-conquer. The throughput win still routes
+> through **BGE-on-GPU** (Exp. 4), with pooling compounding it.
+
+---
+
 ## Reproducibility
 
 Both harnesses run against the live coconut layout (read-only on the corpus; the
@@ -283,6 +327,15 @@ CHEAP_MAX_TOKENS=512 /rag/envs/ragstack/bin/python \
 
 # Experiment 4 — BGE on a GPU (needs torch+CUDA; use the vllm env)
 CUDA_VISIBLE_DEVICES=6 /rag/envs/vllm/bin/python python/scripts/eval/bge_gpu_bench.py
+
+# Experiment 5 — semantic_pooled end-to-end (needs the semantic_pooled code on the
+# imported ragstack; PYTHONPATH the checkout that has it). Compares wall/points vs
+# semantic into scratch collections; re-run into the same collection to test drift.
+PYTHONPATH=<checkout>/python /rag/envs/ragstack/bin/python \
+  <checkout>/python/scripts/ingest_jsonl.py <corpus>.jsonl --chunk-method semantic_pooled \
+  --embedding-api openai --embedding-model Salesforce/SFR-Embedding-Mistral \
+  --embedding-api-key <key> --embedding-url http://localhost:9001 ... http://localhost:9008 \
+  --text-backend none --collection scratch_pool --checkpoint /tmp/pool.ckpt --limit 150
 ```
 
 Both are parameterized by env vars (`INPUT`, `N_SAMPLE`, `EMBED_MODEL`/`REF_MODEL`,
@@ -310,6 +363,12 @@ their tables to stdout and are cheap to re-run.
   If semantic must stay, serve **BGE on a GPU** (1 co-located instance ≈ 7×, ~3 ≈ 20×;
   one GPU beats ~85 CPU workers) — the CPU-scaling path only reaches break-even at
   ~12 workers and isn't worth it given idle GPU headroom.
+- **`semantic_pooled`** (branch `feat/semantic-pooled-segmentation`) — embed-once +
+  mean-pool + optional `--breakpoint-embedding-*` for a separate cheap model. Exp. 5:
+  ~1.1× alone on SFR (SFR is request-bound), so it's an **enabler for the BGE-on-GPU
+  path**, not a standalone win; and blocks are **~99.9% but not bit-reproducible** on
+  vLLM. For guaranteed reproducible blocks, add **segmentation caching** (segment
+  once → persist spans → reuse) on top — the next step for the reproducible-blocks goal.
 
 ## References
 
