@@ -279,7 +279,8 @@ async def evaluate_config(
     )
     tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=collection)
     embedder = make_embedder(
-        api="openai", http=client, base_url=c7.SFR_ENDPOINTS[0], model=c7.SFR_MODEL
+        api="openai", http=client, base_url=c7.SFR_ENDPOINTS[0], model=c7.SFR_MODEL,
+        api_key=c7.EMBED_API_KEY,
     )
     retriever = HybridRetriever(vstore, tindex, embedder)
     filters = scope_filters({}, c7.TENANT)
@@ -423,9 +424,8 @@ def build_significance_section(eval_stats: dict, keys: list[str], n_q: int) -> s
     )
 
 
-def write_report(eval_stats, ingest_stats, keys, n_docs, n_q, source, live_eps):
+def write_report(eval_stats, ingest_stats, keys, n_docs, n_q, source, live_eps, sig):
     metrics_tbl = build_metrics_table(eval_stats, keys)
-    sig = build_significance_section(eval_stats, keys, n_q)
     struct_rows = ""
     for k in keys:
         s = ingest_stats[k]
@@ -521,11 +521,14 @@ async def amain(args, live_eps) -> int:
                 cfg, queries, qrels, client, args.rerank_pool, reranker
             )
 
+        # Compute the (expensive 10k-iter bootstrap) significance section once and
+        # reuse it for both the report file and stdout.
+        sig = build_significance_section(eval_stats, keys, len(queries))
         write_report(eval_stats, ingest_stats, keys, len(corpus_docs),
-                     len(queries), source, live_eps)
+                     len(queries), source, live_eps, sig)
         print("\n" + "=" * 80 + "\nSCIFACT RESULTS\n" + "=" * 80)
         print(build_metrics_table(eval_stats, keys))
-        print(build_significance_section(eval_stats, keys, len(queries)))
+        print(sig)
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")
 
