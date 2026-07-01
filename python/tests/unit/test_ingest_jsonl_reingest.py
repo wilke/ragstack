@@ -277,6 +277,46 @@ async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
     assert calls["method"] == "fixed"
     assert calls["embed_fn"] is None
 
+    # semantic_pooled also gets a bridge (embed_fn), routed via make_chunker.
+    await ingest_jsonl.run(_args(corpus, chunk_method="semantic_pooled",
+                                 checkpoint=tmp_path / "sp.ckpt"))
+    assert calls["method"] == "semantic_pooled"
+    assert calls["embed_fn"] is not None
+
+
+def test_build_breakpoint_embedder_falls_back_and_overrides(monkeypatch):
+    """The breakpoint embedder reuses the main --embedding-* backend by default, and
+    switches to --breakpoint-embedding-* when set (so boundary detection can run on
+    a separate cheap model while stored chunks stay on the main model)."""
+    seen: dict = {}
+    monkeypatch.setattr(ingest_jsonl, "make_embedder",
+                        lambda **kw: seen.setdefault("single", kw))
+    monkeypatch.setattr(ingest_jsonl, "make_pooled_embedder",
+                        lambda **kw: seen.setdefault("pooled", kw))
+
+    # No --breakpoint-embedding-url → falls back to the main single endpoint.
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN"), http=None)
+    assert seen["single"]["base_url"] == "http://main:1" and seen["single"]["model"] == "MAIN"
+
+    # Override with a separate breakpoint endpoint + model (single).
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN",
+              breakpoint_embedding_url=["http://bge:9101"],
+              breakpoint_embedding_model="BAAI/bge-base-en-v1.5",
+              breakpoint_embedding_api="openai"), http=None)
+    assert seen["single"]["base_url"] == "http://bge:9101"
+    assert seen["single"]["model"] == "BAAI/bge-base-en-v1.5"
+
+    # Multiple breakpoint URLs → pooled fan-out.
+    seen.clear()
+    ingest_jsonl._build_breakpoint_embedder(
+        _args(Path("x"), embedding_url=["http://main:1"], embedding_model="MAIN",
+              breakpoint_embedding_url=["http://bge:9101", "http://bge:9102"]), http=None)
+    assert seen["pooled"]["base_urls"] == ["http://bge:9101", "http://bge:9102"]
+
 
 class _RecordingEmbedder:
     """Records every text it embeds, so a test can assert which docs were (not)

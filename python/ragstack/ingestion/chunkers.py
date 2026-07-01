@@ -707,6 +707,20 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[lo] * (1 - frac) + ordered[hi] * frac
 
 
+def _mean_pool(vectors: Sequence[Sequence[float]]) -> list[float]:
+    """Element-wise mean of a non-empty list of equal-length vectors (pure, exact
+    for a fixed input order → deterministic)."""
+    n = len(vectors)
+    if n == 1:
+        return list(vectors[0])
+    dim = len(vectors[0])
+    acc = [0.0] * dim
+    for v in vectors:
+        for j in range(dim):
+            acc[j] += v[j]
+    return [x / n for x in acc]
+
+
 class SemanticChunker:
     """Split a document at topic boundaries detected via embedding similarity.
 
@@ -736,6 +750,8 @@ class SemanticChunker:
         *,
         max_tokens: int | None = None,
         token_counter: TokenCounter | None = None,
+        pool_sentences: bool = False,
+        distance_round: int | None = None,
     ) -> None:
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
@@ -746,12 +762,64 @@ class SemanticChunker:
         # and guaranteeing no chunk overflows the embedder context.
         self.max_tokens = max_tokens
         self.token_counter = token_counter
+        # pool_sentences: embed each SENTENCE once and mean-pool the
+        # (2*buffer_size+1)-sentence window into each buffer vector, instead of
+        # embedding N overlapping buffer TEXTS. Same breakpoint math downstream,
+        # but ~(2*buffer_size+1)x less embedding token work — each sentence is
+        # embedded once rather than re-embedded inside every overlapping window.
+        self.pool_sentences = pool_sentences
+        # distance_round: round cosine distances to this many decimals before the
+        # percentile threshold. A tiny low-bit float difference (across GPU/kernel
+        # versions) could otherwise flip a distance across the threshold and change
+        # a boundary; rounding makes the block boundaries reproducible cross-host.
+        # None = legacy (no rounding, byte-identical to the pre-pooling path).
+        self.distance_round = distance_round
 
     def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
         """Emit a semantic chunk span, token-splitting it if over budget."""
         if self.max_tokens is None or self.token_counter is None:
             return [_make_chunk(doc, start, end)]
         return _token_split_span(doc, start, end, self.max_tokens, self.token_counter)
+
+    def _cap_tokens(self, s: str) -> str:
+        """Bound ``s`` to the embedder's token budget (first lossless piece) so a
+        long buffer/sentence can't exceed the context window (HTTP 400). Only the
+        similarity input is bounded — never the emitted chunk text. No-op without
+        max_tokens/token_counter, so the legacy behaviour is unchanged."""
+        if self.max_tokens is not None and self.token_counter is not None:
+            if self.token_counter.count(s) > self.max_tokens:
+                return split_text_to_token_budget(s, self.max_tokens, self.token_counter)[0]
+        return s
+
+    def _buffer_embeddings(
+        self, text: str, spans: list[tuple[int, int]]
+    ) -> Sequence[Sequence[float]]:
+        """Per-sentence buffer vectors that drive breakpoint distances.
+
+        Legacy (``pool_sentences=False``): embed each overlapping buffer TEXT (a
+        window of up to ``2*buffer_size+1`` sentences) — byte-identical to the
+        pre-pooling behaviour.
+
+        Pooled (``pool_sentences=True``): embed each SENTENCE once, then mean-pool
+        the same window of adjacent sentence vectors. One embed call either way
+        (the sync bridge fans it out), but the pooled inputs are single sentences —
+        ~(2*buffer_size+1)x fewer tokens embedded, and the pooling is deterministic
+        so the resulting blocks stay reproducible."""
+        n = len(spans)
+        if self.pool_sentences:
+            sent_vecs = self.embed_fn([self._cap_tokens(text[s:e]) for s, e in spans])
+            pooled: list[list[float]] = []
+            for i in range(n):
+                lo = max(0, i - self.buffer_size)
+                hi = min(i + 1 + self.buffer_size, n)
+                pooled.append(_mean_pool(sent_vecs[lo:hi]))
+            return pooled
+        buffers: list[str] = []
+        for i in range(n):
+            lo = max(0, i - self.buffer_size)
+            hi = min(i + 1 + self.buffer_size, n)
+            buffers.append(self._cap_tokens(text[spans[lo][0] : spans[hi - 1][1]]))
+        return self.embed_fn(buffers)
 
     def chunk(self, doc: Document) -> list[Chunk]:
         text = doc.content
@@ -765,32 +833,14 @@ class SemanticChunker:
         if len(spans) == 1:
             return self._emit(doc, 0, len(text))
 
-        # Build overlapping buffers (as text) for similarity comparison.
-        # Buffers span up to (2*buffer_size + 1) sentences, so a dense doc can
-        # produce a buffer longer than the embedder's context window, which the
-        # server rejects (HTTP 400). Buffers only drive breakpoint *distances*,
-        # not the emitted chunk text, so bounding an over-long buffer to the
-        # token budget (first lossless piece) is a valid similarity proxy and
-        # never affects chunk boundaries. With no max_tokens/token_counter the
-        # behaviour is unchanged.
-        buffers: list[str] = []
-        for i in range(len(spans)):
-            lo = max(0, i - self.buffer_size)
-            hi = min(i + 1 + self.buffer_size, len(spans))
-            buf = text[spans[lo][0] : spans[hi - 1][1]]
-            if self.max_tokens is not None and self.token_counter is not None:
-                if self.token_counter.count(buf) > self.max_tokens:
-                    buf = split_text_to_token_budget(
-                        buf, self.max_tokens, self.token_counter
-                    )[0]
-            buffers.append(buf)
-
-        embeddings = self.embed_fn(buffers)
+        embeddings = self._buffer_embeddings(text, spans)
 
         distances = [
             _cosine_distance(embeddings[i], embeddings[i + 1])
             for i in range(len(embeddings) - 1)
         ]
+        if self.distance_round is not None:
+            distances = [round(d, self.distance_round) for d in distances]
 
         # Index groups over sentence indices: [start, end) per chunk.
         groups = self._breakpoint_groups(distances, len(spans))
@@ -845,7 +895,7 @@ class SemanticChunker:
 # Factory
 # --------------------------------------------------------------------------- #
 
-CHUNK_METHODS = ("fixed", "fixed_token", "sentence", "words", "semantic")
+CHUNK_METHODS = ("fixed", "fixed_token", "sentence", "words", "semantic", "semantic_pooled")
 
 
 def make_chunker(
@@ -898,14 +948,19 @@ def make_chunker(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap,
             max_tokens=max_tokens, token_counter=token_counter,
         )
-    if method == "semantic":
+    if method in ("semantic", "semantic_pooled"):
         if embed_fn is None:
-            raise ValueError("chunk_method='semantic' requires an embed_fn")
+            raise ValueError(f"chunk_method={method!r} requires an embed_fn")
+        # semantic_pooled embeds each sentence once + mean-pools (cheaper, GPU-
+        # friendly) and rounds distances so the blocks are reproducible cross-host.
+        pooled = method == "semantic_pooled"
         return SemanticChunker(
             embed_fn=embed_fn,
             buffer_size=buffer_size,
             breakpoint_percentile_threshold=breakpoint_percentile_threshold,
             min_chunk_length=min_chunk_length,
             max_tokens=max_tokens, token_counter=token_counter,
+            pool_sentences=pooled,
+            distance_round=6 if pooled else None,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")

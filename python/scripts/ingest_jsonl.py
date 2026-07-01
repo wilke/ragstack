@@ -291,22 +291,45 @@ async def _run_catalog_only(
         checkpoint(pending)
 
 
+def _make_endpoint_embedder(http, *, api, urls, model, api_key, max_concurrency):
+    """A pooled fan-out when multiple ``urls`` are given, else a single-endpoint
+    embedder. One place for backend selection (api / model / api_key / pooling)."""
+    common = {"api": api, "http": http, "model": model,
+              "api_key": api_key or os.getenv("OPENAI_API_KEY")}
+    if len(urls) > 1:
+        return make_pooled_embedder(base_urls=urls, max_concurrency=max_concurrency, **common)
+    return make_embedder(base_url=urls[0], **common)
+
+
 def _build_embedder(args: argparse.Namespace, http: httpx.AsyncClient):
-    """The embedder for ``args`` against ``http``: a pooled fan-out when multiple
-    --embedding-url are given, else a single-endpoint embedder. Shared by the main
-    ingest path and the semantic chunker's SyncEmbedBridge factory so backend
-    selection (api / model / api_key / pooling) lives in exactly one place."""
-    common = {
-        "api": args.embedding_api, "http": http,
-        "model": args.embedding_model,
-        "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
-    }
-    if len(args.embedding_url) > 1:
-        return make_pooled_embedder(
-            base_urls=args.embedding_url,
-            max_concurrency=args.embedding_max_concurrency, **common,
-        )
-    return make_embedder(base_url=args.embedding_url[0], **common)
+    """The stored-chunk embedder for ``args``. Also the default for the semantic
+    chunker's breakpoint pass (see _build_breakpoint_embedder)."""
+    return _make_endpoint_embedder(
+        http, api=args.embedding_api, urls=args.embedding_url,
+        model=args.embedding_model, api_key=args.embedding_api_key,
+        max_concurrency=args.embedding_max_concurrency,
+    )
+
+
+def _build_breakpoint_embedder(args: argparse.Namespace, http: httpx.AsyncClient):
+    """Embedder for the semantic chunker's BREAKPOINT pass (topic-boundary
+    detection). Defaults to the main --embedding-* backend; when --breakpoint-
+    embedding-url is given, boundary detection runs on a SEPARATE (cheaper, e.g.
+    GPU-served BGE) model while stored chunks keep using the main model. Each
+    --breakpoint-embedding-* field falls back to its --embedding-* counterpart.
+    getattr keeps older Namespaces (e.g. tests) safe → falls back to _build_embedder."""
+    urls = getattr(args, "breakpoint_embedding_url", None)
+    if not urls:
+        return _build_embedder(args, http)
+    return _make_endpoint_embedder(
+        http,
+        api=getattr(args, "breakpoint_embedding_api", None) or args.embedding_api,
+        urls=urls,
+        model=getattr(args, "breakpoint_embedding_model", None) or args.embedding_model,
+        api_key=getattr(args, "breakpoint_embedding_api_key", None) or args.embedding_api_key,
+        max_concurrency=(getattr(args, "breakpoint_embedding_max_concurrency", None)
+                         or args.embedding_max_concurrency),
+    )
 
 
 async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
@@ -510,18 +533,19 @@ async def run(args: argparse.Namespace) -> None:
     # Canonical (sorted) form of the active filter, persisted in the checkpoint so
     # a resume under a different filter is detected.
     current_doc_types = sorted(keep_types) if keep_types else None
-    # Chunker selected by --chunk-method. The semantic chunker needs to embed
-    # sentence buffers; it runs synchronously inside the (async) ingest, so hand it
-    # a SyncEmbedBridge that builds its own embedder against the same --embedding-*
-    # backend on a background loop. Built only for semantic; closed at run() exit.
+    # Chunker selected by --chunk-method. The semantic chunkers need to embed
+    # sentence buffers; they run synchronously inside the (async) ingest, so hand
+    # them a SyncEmbedBridge that builds its own BREAKPOINT embedder on a background
+    # loop. Built only for the semantic methods; closed at run() exit.
     embed_bridge: SyncEmbedBridge | None = None
-    if args.chunk_method == "semantic":
-        # batch_size lets the bridge fan one document's sentence-buffer embed out
-        # into concurrent sub-batch calls, which the pooled embedder spreads across
-        # all --embedding-url endpoints (otherwise the single per-doc call pins one
-        # GPU). Matches the ingest --batch-size for a consistent request granularity.
+    if args.chunk_method in ("semantic", "semantic_pooled"):
+        # The breakpoint embedder defaults to the main --embedding-* backend, but
+        # --breakpoint-embedding-* can route boundary detection to a separate,
+        # cheaper (e.g. GPU-served BGE) model while stored chunks keep the main
+        # model. batch_size lets the bridge fan one document's buffers out into
+        # concurrent sub-batch calls spread across the breakpoint endpoints.
         embed_bridge = SyncEmbedBridge(
-            lambda http: _build_embedder(args, http), batch_size=args.batch_size
+            lambda http: _build_breakpoint_embedder(args, http), batch_size=args.batch_size
         )
     # Token budget: size/cap chunks so none exceeds the embedder's context window.
     # The counter is the embedding model's tokenizer by default (--chunk-token-counter
@@ -1015,15 +1039,35 @@ def main() -> None:
                    help="Bearer token sent as 'Authorization: Bearer <key>' to every "
                         "--embedding-url (keyless endpoints ignore it, so one key is safe "
                         "for a mixed pool). Falls back to $OPENAI_API_KEY.")
+    # Optional SEPARATE backend for the semantic breakpoint pass (topic-boundary
+    # detection), so it can run on a cheaper/GPU model while stored chunks stay on
+    # the main --embedding-* model. Each falls back to its --embedding-* counterpart
+    # when unset; leaving --breakpoint-embedding-url unset = use the main embedder
+    # (no behaviour change). Only used by --chunk-method semantic / semantic_pooled.
+    p.add_argument("--breakpoint-embedding-api", choices=["sidecar", "openai"], default=None,
+                   help="breakpoint embedder API (default: --embedding-api)")
+    p.add_argument("--breakpoint-embedding-url", nargs="+", default=None,
+                   help="breakpoint embedding URL(s); set to route boundary detection to "
+                        "a separate (e.g. GPU-served BGE) model. Default: reuse --embedding-url")
+    p.add_argument("--breakpoint-embedding-model", default=None,
+                   help="breakpoint model name (default: --embedding-model)")
+    p.add_argument("--breakpoint-embedding-max-concurrency", type=int, default=None,
+                   help="breakpoint embedder max concurrency (default: --embedding-max-concurrency)")
+    p.add_argument("--breakpoint-embedding-api-key", default=None,
+                   help="breakpoint embedder Bearer token (default: --embedding-api-key)")
     # chunking
     p.add_argument("--chunk-method",
-                   choices=["fixed", "fixed_token", "sentence", "words", "semantic"],
+                   choices=["fixed", "fixed_token", "sentence", "words", "semantic",
+                            "semantic_pooled"],
                    default="fixed",
                    help="chunking strategy (default: fixed). 'fixed_token' is a "
                         "sliding TOKEN window: --chunk-size/--chunk-overlap are "
                         "interpreted as TOKENS (of the --embedding-model tokenizer), "
-                        "not chars. semantic embeds sentence buffers via the "
-                        "configured --embedding-* backend.")
+                        "not chars. 'semantic' embeds sentence buffers via the "
+                        "configured --embedding-* backend. 'semantic_pooled' embeds "
+                        "each sentence ONCE and mean-pools the buffer window "
+                        "(~buffer-window× less embedding work, deterministic blocks) — "
+                        "pair with --breakpoint-embedding-* to run it on a cheap model.")
     p.add_argument("--chunk-size", type=int, default=512,
                    help="chunk size (chars for fixed/sentence/words; TOKENS for "
                         "fixed_token)")

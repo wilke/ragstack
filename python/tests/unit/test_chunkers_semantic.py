@@ -286,6 +286,101 @@ def test_semantic_chunker_ids_deterministic():
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# SemanticChunker pooled mode (embed-once + mean-pool) — issue: faster segmentation
+# --------------------------------------------------------------------------- #
+
+
+def test_mean_pool_elementwise_mean():
+    from ragstack.ingestion.chunkers import _mean_pool
+
+    assert _mean_pool([[1.0, 2.0, 3.0]]) == [1.0, 2.0, 3.0]  # single passes through
+    assert _mean_pool([[0.0, 0.0], [2.0, 4.0]]) == [1.0, 2.0]
+    assert _mean_pool([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]]) == [2.0, 2.0]
+
+
+def test_semantic_pooled_embeds_each_sentence_once():
+    """Pooled mode embeds SENTENCES (one per span), not overlapping buffer texts —
+    one embed call whose inputs are the individual sentences."""
+    text = (
+        "Cats are wonderful. Cats purr softly. Cats love to nap. "
+        "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls."
+    )
+    doc = _make_doc(text)
+    n_sentences = len(sentence_spans(text))
+    calls: list[list[str]] = []
+
+    def recording(texts):
+        calls.append(list(texts))
+        return _topic_embed_fn(texts)
+
+    chunker = make_chunker(
+        "semantic_pooled", embed_fn=recording, buffer_size=1,
+        breakpoint_percentile_threshold=50.0, min_chunk_length=0,
+    )
+    chunks = chunker.chunk(doc)
+    assert len(calls) == 1, "one embed call per document"
+    assert len(calls[0]) == n_sentences, "inputs are the individual sentences"
+    # each input is a single sentence (matches a span slice), not a multi-sentence buffer
+    for txt, (s, e) in zip(calls[0], sentence_spans(text), strict=True):
+        assert txt == text[s:e]
+    _check(doc, chunks)
+    assert len(chunks) > 1  # cat->dog shift still splits
+    assert chunks[0].start_char == 0 and chunks[-1].end_char == len(text)
+    assert "".join(c.content for c in chunks) == text  # tiles, no text dropped
+
+
+def test_semantic_pooled_ids_stable_under_sub_epsilon_perturbation():
+    """Reproducibility safeguard: distance rounding (distance_round=6, the default
+    for semantic_pooled) makes block boundaries — and thus chunk ids — identical
+    under a sub-6-decimal embedding perturbation (i.e. low-bit float differences
+    across GPU/kernel versions can't flip a boundary)."""
+    text = (
+        "Cats are wonderful. Cats purr softly. Cats love to nap here. "
+        "Dogs are loyal companions. Dogs bark loudly. Dogs fetch the balls."
+    )
+    doc = _make_doc(text)
+
+    def perturbed(texts):
+        return [[x + 1e-9 for x in v] for v in _topic_embed_fn(texts)]
+
+    clean = make_chunker(
+        "semantic_pooled", embed_fn=_topic_embed_fn, buffer_size=1,
+        breakpoint_percentile_threshold=50.0, min_chunk_length=0,
+    ).chunk(doc)
+    noisy = make_chunker(
+        "semantic_pooled", embed_fn=perturbed, buffer_size=1,
+        breakpoint_percentile_threshold=50.0, min_chunk_length=0,
+    ).chunk(doc)
+    assert [c.id for c in clean] == [c.id for c in noisy]
+
+
+def test_semantic_pooled_token_caps_long_sentence():
+    """A sentence over the token budget is bounded before embedding (so it can't
+    overflow the context window), without altering the emitted chunk text."""
+    class _FakeCounter:
+        def count(self, text: str) -> int:
+            return len(text)  # 1 token per char
+
+    long_sentence = "x " * 200  # 400 chars -> over a tiny budget
+    text = long_sentence + ". Short tail sentence here."
+    doc = _make_doc(text)
+    seen: list[str] = []
+
+    def recording(texts):
+        seen.extend(texts)
+        return _topic_embed_fn(texts)
+
+    chunker = SemanticChunker(
+        embed_fn=recording, buffer_size=1, breakpoint_percentile_threshold=50.0,
+        min_chunk_length=0, max_tokens=50, token_counter=_FakeCounter(),
+        pool_sentences=True, distance_round=6,
+    )
+    chunks = chunker.chunk(doc)
+    assert all(len(t) <= 50 for t in seen), "each embedded sentence bounded to budget"
+    _check(doc, chunks)  # emitted chunk offsets still reconstruct the FULL source
+
+
 def test_make_chunker_dispatch():
     from ragstack.ingestion.chunkers import (
         RecursiveCharacterChunker,
@@ -297,6 +392,17 @@ def test_make_chunker_dispatch():
     assert isinstance(
         make_chunker("semantic", embed_fn=_topic_embed_fn), SemanticChunker
     )
+    pooled = make_chunker("semantic_pooled", embed_fn=_topic_embed_fn)
+    assert isinstance(pooled, SemanticChunker)
+    assert pooled.pool_sentences is True and pooled.distance_round == 6
+    # legacy semantic stays non-pooled with no distance rounding
+    legacy = make_chunker("semantic", embed_fn=_topic_embed_fn)
+    assert legacy.pool_sentences is False and legacy.distance_round is None
+
+
+def test_make_chunker_semantic_pooled_requires_embed_fn():
+    with pytest.raises(ValueError, match="embed_fn"):
+        make_chunker("semantic_pooled")
 
 
 def test_make_chunker_semantic_requires_embed_fn():
