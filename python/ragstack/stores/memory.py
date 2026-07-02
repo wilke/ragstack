@@ -86,6 +86,13 @@ class InMemoryVectorStore:
             )
         ]
 
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count chunks owned by any of ``tenants``. Fails closed (0) on empty."""
+        allowed = set(tenants)
+        if not allowed:
+            return 0
+        return sum(1 for c in self._chunks if tenant_of(c) in allowed)
+
 
 class InMemoryTextIndex:
     """Very simple bag-of-words text search for development/testing."""
@@ -147,6 +154,13 @@ class InMemoryTextIndex:
                 and c.id not in keep_chunk_ids
             )
         ]
+
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count chunks owned by any of ``tenants``. Fails closed (0) on empty."""
+        allowed = set(tenants)
+        if not allowed:
+            return 0
+        return sum(1 for c in self._chunks if tenant_of(c) in allowed)
 
 
 class InMemoryGraphStore:
@@ -211,6 +225,17 @@ class InMemoryGraphStore:
             counts[t.object] = counts.get(t.object, 0) + 1
         ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
         return ranked[:limit]
+
+    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+        """(distinct entities, relationship count) the caller may read. Reuses
+        ``_visible`` so tenant scoping (own + public) is applied identically to
+        the other reads."""
+        visible = self._visible(tenant_id)
+        entities: set[str] = set()
+        for t in visible:
+            entities.add(t.subject)
+            entities.add(t.object)
+        return (len(entities), len(visible))
 
     async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
         self._triples = [

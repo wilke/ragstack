@@ -189,6 +189,15 @@ class Settings(BaseSettings):
     # resolve to the "default" tenant. A key mapped to "public" writes into the
     # shared public corpus everyone can read.
     api_key_tenants: dict[str, str] = Field(default_factory=dict)
+    # Maps an API key to its RBAC role (authz for the dashboard/admin surface).
+    # Keys absent from the map (and the keyless dev path) get ``default_role``.
+    # Roles: admin (superuser) | engineer | manager | researcher. Enforced
+    # server-side per endpoint via ``require_role`` — never trusted from the client.
+    api_key_roles: dict[str, str] = Field(default_factory=dict)
+    # Role for an authenticated-but-unmapped key and the keyless dev path. Least
+    # privilege by default: the admin/config/stats surface stays closed unless a
+    # key is explicitly granted a higher role (or this is raised in dev).
+    default_role: str = "researcher"
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # Retrieval defaults

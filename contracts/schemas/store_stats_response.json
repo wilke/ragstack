@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "store_stats_response.json",
+  "title": "StoreStatsResponse",
+  "description": "Per-store counts scoped to the caller's readable tenants (own + the shared public corpus). Never a global store total.",
+  "type": "object",
+  "required": ["tenants", "vector", "text", "graph"],
+  "properties": {
+    "tenants": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The readable tenants the counts are scoped to (own + public)."
+    },
+    "vector": { "$ref": "store_count.json" },
+    "text": { "$ref": "store_count.json" },
+    "graph": { "$ref": "store_count.json" }
+  },
+  "additionalProperties": false
+}

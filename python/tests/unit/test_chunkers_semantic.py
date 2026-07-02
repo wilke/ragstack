@@ -440,3 +440,137 @@ def test_make_chunker_semantic_requires_embed_fn():
 def test_make_chunker_unknown_method():
     with pytest.raises(ValueError, match="unknown chunk_method"):
         make_chunker("nonsense")
+
+
+# --------------------------------------------------------------------------- #
+# Oversized-doc fallback (fix/semantic-oversize-fallback)
+# --------------------------------------------------------------------------- #
+
+import re as _re  # noqa: E402
+
+_WORD_RE = _re.compile(r"\S+")
+
+
+class _FakeFastTokenizer:
+    """Whitespace HF-fast-like tokenizer exposing an offset mapping."""
+
+    def __call__(self, text, return_offsets_mapping=False, add_special_tokens=True):
+        return {"offset_mapping": [(m.start(), m.end()) for m in _WORD_RE.finditer(text)]}
+
+
+class _HFLikeCounter:
+    """Fake HF TokenCounter: token = whitespace-run; exposes ``_tokenizer``."""
+
+    def __init__(self) -> None:
+        self._tok = _FakeFastTokenizer()
+
+    def _tokenizer(self):
+        return self._tok
+
+    def count(self, text: str) -> int:
+        return len(_WORD_RE.findall(text))
+
+
+class _RaisingEmbedFn:
+    """embed_fn that records calls and RAISES if ever called with more than
+    ``limit`` inputs — proving the oversized path never fires a giant embed."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.calls: list[int] = []
+
+    def __call__(self, texts):
+        texts = list(texts)
+        self.calls.append(len(texts))
+        if len(texts) > self.limit:
+            raise AssertionError(
+                f"embed_fn called with {len(texts)} inputs (> {self.limit})"
+            )
+        return _topic_embed_fn(texts)
+
+
+def _many_sentence_doc(n: int) -> Document:
+    # Each "cell." is one sentence span; n of them → n spans.
+    return _make_doc(" ".join("cell." for _ in range(n)), doc_id="monster")
+
+
+def test_oversized_doc_falls_back_no_giant_embed():
+    threshold = 50
+    embed = _RaisingEmbedFn(limit=threshold)
+    doc = _many_sentence_doc(500)
+    n_spans = len(sentence_spans(doc.content))
+    assert n_spans > threshold
+    chunker = SemanticChunker(
+        embed_fn=embed,
+        max_breakpoint_sentences=threshold,
+        max_tokens=10,
+        token_counter=_HFLikeCounter(),
+        chunk_size=10,
+        chunk_overlap=2,
+    )
+    chunks = chunker.chunk(doc)
+    # The breakpoint embed was NEVER called (fell back before segmentation).
+    assert embed.calls == []
+    # Deterministic ids + spans reconstruct source. This is a SLIDING window
+    # (chunk_overlap=2), so chunks overlap; assert full coverage, not edge-to-edge
+    # tiling: every source char lies in some chunk and offsets cover [0, len).
+    _check(doc, chunks)
+    assert chunks[0].start_char == 0
+    assert chunks[-1].end_char == len(doc.content)
+    covered = [False] * len(doc.content)
+    for c in chunks:
+        for i in range(c.start_char, c.end_char):
+            covered[i] = True
+    assert all(covered), "sliding-window fallback must cover all source chars"
+    # Every chunk is within the token budget.
+    counter = _HFLikeCounter()
+    assert all(counter.count(c.content) <= 10 for c in chunks)
+
+
+def test_normal_doc_still_uses_semantic():
+    embed = _RaisingEmbedFn(limit=10_000)
+    text = (
+        "Cats are wonderful. Cats purr softly. Cats love to nap. "
+        "Dogs are loyal companions. Dogs bark loudly. Dogs fetch balls."
+    )
+    doc = _make_doc(text)
+    chunker = SemanticChunker(
+        embed_fn=embed,
+        buffer_size=1,
+        breakpoint_percentile_threshold=50.0,
+        min_chunk_length=0,
+        max_breakpoint_sentences=3000,
+    )
+    chunks = chunker.chunk(doc)
+    # Semantic path ran: embed_fn WAS called, and the topic shift split the doc.
+    assert embed.calls, "embed_fn should be called for a normal doc"
+    assert len(chunks) > 1
+    _check(doc, chunks)
+
+
+def test_fallback_disabled_when_threshold_none():
+    embed = _RaisingEmbedFn(limit=10_000)
+    doc = _many_sentence_doc(200)
+    chunker = SemanticChunker(embed_fn=embed, max_breakpoint_sentences=None)
+    chunker.chunk(doc)
+    # No fallback: the semantic embed ran even for the many-span doc.
+    assert embed.calls
+
+
+def test_fallback_without_hf_counter_degrades_losslessly():
+    # No HF offset tokenizer available → whole-doc token-budget split (or single
+    # chunk without a counter). Still lossless and never embeds.
+    embed = _RaisingEmbedFn(limit=1)
+    doc = _many_sentence_doc(100)
+    chunker = SemanticChunker(embed_fn=embed, max_breakpoint_sentences=10)
+    chunks = chunker.chunk(doc)
+    assert embed.calls == []
+    _check(doc, chunks)
+    assert "".join(c.content for c in chunks) == doc.content
+
+
+def test_make_chunker_threads_max_breakpoint_sentences():
+    ch = make_chunker(
+        "semantic_pooled", embed_fn=_topic_embed_fn, max_breakpoint_sentences=1234
+    )
+    assert ch.max_breakpoint_sentences == 1234

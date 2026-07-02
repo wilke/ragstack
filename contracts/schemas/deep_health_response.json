@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deep_health_response.json",
+  "title": "DeepHealthResponse",
+  "description": "Deep dependency health probe. ADMIN ONLY — check detail strings may carry backend hostnames/versions, so this response is never returned to a non-admin.",
+  "type": "object",
+  "required": ["status", "checks"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "degraded"]
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok"],
+        "properties": {
+          "name": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "detail": { "type": ["string", "null"] },
+          "latency_ms": { "type": ["number", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
