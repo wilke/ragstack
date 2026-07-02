@@ -155,6 +155,19 @@ class ElasticsearchTextIndex:
             )
         return results
 
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count indexed chunks visible to ``tenants`` (own + public) via a
+        terms-filtered ``_count``. Fails closed (returns 0) on an empty list —
+        an unscoped count would total every tenant's chunks, mirroring the
+        non-empty-tenant guard in ``_build_query``."""
+        if not tenants:
+            return 0
+        resp = await self._es.count(
+            index=self._index,
+            query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
+        )
+        return int(resp["count"])
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         filter_clauses: list[dict[str, Any]] = [{"term": {"doc_id": doc_id}}]
         if tenant_id is not None:

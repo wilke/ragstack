@@ -156,6 +156,38 @@ class Neo4jGraphStore:
             records = [record async for record in result]
         return [(str(rec["name"]), int(rec["degree"])) for rec in records]
 
+    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+        """Return ``(entities, relationships)`` visible to the caller.
+
+        Both counts are scoped to the caller's readable tenants (own + public);
+        an unscoped call (``tenant_id=None``, dev/tests) counts everything. The
+        WHERE clauses fail closed on an empty tenant set — Cypher ``x IN []`` is
+        false, so no rows match — rather than counting across tenants.
+        """
+        params: dict[str, Any] = {}
+        ent_clause = ""
+        rel_clause = ""
+        if tenant_id is not None:
+            params["tenants"] = readable_tenants(tenant_id)
+            ent_clause = "WHERE e.tenant_id IN $tenants "
+            rel_clause = "WHERE r.tenant_id IN $tenants "
+        # count(e) with no grouping key yields a single row (entities=0 even over
+        # zero matches). The relationship side is an OPTIONAL MATCH so that row
+        # survives when there are entities but no relationships — a plain MATCH
+        # would drop it and wrongly report (0, 0).
+        query = (
+            "MATCH (e:Entity) " + ent_clause +
+            "WITH count(e) AS entities "
+            "OPTIONAL MATCH ()-[r:REL]->() " + rel_clause +
+            "RETURN entities, count(r) AS relationships"
+        )
+        async with self._session() as session:
+            result = await session.run(query, **params)
+            rec = await result.single()
+        if rec is None:
+            return (0, 0)
+        return (int(rec["entities"]), int(rec["relationships"]))
+
     async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
         """Delete the relationships a document contributed, never crossing tenants.
         Orphaned entities (no remaining edges) are removed too."""

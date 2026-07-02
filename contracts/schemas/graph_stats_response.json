@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "graph_stats_response.json",
+  "title": "GraphStatsResponse",
+  "description": "Knowledge-graph entity/relationship counts scoped to the caller's readable tenants (own + public). Counts are null when no graph store is configured.",
+  "type": "object",
+  "required": ["backend", "available", "entities", "relationships"],
+  "properties": {
+    "backend": { "type": "string" },
+    "available": { "type": "boolean" },
+    "entities": { "type": ["integer", "null"] },
+    "relationships": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": false
+}

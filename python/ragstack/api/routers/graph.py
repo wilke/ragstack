@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from ragstack.api.deps import get_graph_store
 from ragstack.api.security import resolve_tenant
+from ragstack.config import settings
 from ragstack.protocols import GraphStore
 
 router = APIRouter()
@@ -31,6 +32,37 @@ class TripleResponse(BaseModel):
     subject: str
     predicate: str
     object: str
+
+
+class GraphStatsResponse(BaseModel):
+    backend: str
+    available: bool
+    entities: int | None
+    relationships: int | None
+
+
+@router.get("/stats", response_model=GraphStatsResponse)
+async def graph_stats(
+    tenant: str = Depends(resolve_tenant),
+    graph_store: GraphStore | None = Depends(get_graph_store),
+) -> GraphStatsResponse:
+    """Entity/relationship counts scoped to the caller's readable tenants (own +
+    public). Degrades to ``available=false`` with null counts when no graph store
+    is configured or a probe fails (no 500)."""
+    backend = settings.graph_backend
+    if graph_store is None:
+        return GraphStatsResponse(
+            backend=backend, available=False, entities=None, relationships=None
+        )
+    try:
+        entities, relationships = await graph_store.stats(tenant_id=tenant)
+    except Exception:
+        return GraphStatsResponse(
+            backend=backend, available=False, entities=None, relationships=None
+        )
+    return GraphStatsResponse(
+        backend=backend, available=True, entities=entities, relationships=relationships
+    )
 
 
 @router.get("/entities", response_model=list[EntityInfo])
