@@ -9,7 +9,7 @@ import pytest
 from ragstack.api import security
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_RESEARCHER
-from ragstack.models import Chunk
+from ragstack.models import Chunk, Triple
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,7 +77,15 @@ async def test_missing_key_is_401_when_keys_configured(client, monkeypatch):
 
 async def test_graph_count_is_relationship_count(client, monkeypatch):
     _configure_keys(monkeypatch)
-    # graph store is an InMemoryGraphStore in the fixture; no triples → 0, available.
+    # Seed so entities != relationships: acme has 3 entities (A,B,C) across 2
+    # relationships; the count must be the RELATIONSHIP count (2), not entities
+    # (3) — and never the other tenant's edge. This fails if _count_graph ever
+    # returns entities instead of relationships.
+    await app.state.graph_store.add_triples([
+        Triple(subject="A", predicate="rel", object="B", doc_id="d1", tenant_id="acme"),
+        Triple(subject="B", predicate="rel", object="C", doc_id="d1", tenant_id="acme"),
+        Triple(subject="X", predicate="rel", object="Y", doc_id="d2", tenant_id="other"),
+    ])
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
     assert body["graph"]["available"] is True
-    assert body["graph"]["count"] == 0
+    assert body["graph"]["count"] == 2  # relationships, distinct from 3 entities

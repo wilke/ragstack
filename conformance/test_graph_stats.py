@@ -10,6 +10,13 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _python_only(impl: str) -> None:
+    # Python-first in phase 1; the Go scaffold has no route (404, not 501) — skip.
+    if impl != "python":
+        pytest.skip("/v1/graph/stats is python-only in phase 1")
+
+
 def _validate(data, schemas: dict[str, dict], name: str) -> None:
     store = {s.get("$id", n): s for n, s in schemas.items()}
     resolver = jsonschema.RefResolver.from_schema({}, store=store)
@@ -21,8 +28,6 @@ async def test_graph_stats_schema(client: httpx.AsyncClient, schemas: dict[str, 
     if k := (os.environ.get("RAGSTACK_API_KEY") or None):
         headers["X-API-Key"] = k
     resp = await client.get("/v1/graph/stats", headers=headers)
-    if resp.status_code == 501:
-        pytest.skip("graph/stats not implemented by this impl")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, schemas, "graph_stats_response")

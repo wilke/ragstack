@@ -16,6 +16,14 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _python_only(impl: str) -> None:
+    # These read endpoints are Python-first in phase 1; the Go scaffold registers
+    # no route, so it returns 404 (not 501) — skip rather than fail its run.
+    if impl != "python":
+        pytest.skip("/v1/stats/stores is python-only in phase 1")
+
+
 def _build_resolver(schemas: dict[str, dict]) -> jsonschema.RefResolver:
     store = {s.get("$id", name): s for name, s in schemas.items()}
     return jsonschema.RefResolver.from_schema({}, store=store)
@@ -34,8 +42,6 @@ async def test_stats_stores_schema(client: httpx.AsyncClient, schemas: dict[str,
     if (k := _key("RAGSTACK_API_KEY")):
         headers["X-API-Key"] = k
     resp = await client.get("/v1/stats/stores", headers=headers)
-    if resp.status_code == 501:
-        pytest.skip("stats/stores not implemented by this impl")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, schemas["store_stats_response"], schemas)

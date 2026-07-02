@@ -27,6 +27,11 @@ class _FakeResult:
                 yield r
         return gen()
 
+    async def single(self):
+        """Mirror neo4j's ``result.single()`` (used by ``stats``): the first
+        record, or None when the result is empty."""
+        return self._records[0] if self._records else None
+
 
 class _FakeSession:
     def __init__(self, driver: _FakeDriver):
@@ -219,6 +224,32 @@ async def test_ensure_schema_creates_constraint(store):
     query, _ = _driver(store).calls[-1]
     assert "CREATE CONSTRAINT" in query
     assert "(e.name, e.tenant_id) IS UNIQUE" in query
+
+
+async def test_stats_scopes_both_counts_and_reports_n_zero(store):
+    # Entities exist but no relationships: the OPTIONAL MATCH row must survive so
+    # stats reports (5, 0), not (0, 0). Both counts are tenant-scoped.
+    _driver(store).results.append([{"entities": 5, "relationships": 0}])
+    entities, relationships = await store.stats(tenant_id="alice")
+    assert (entities, relationships) == (5, 0)
+    query, params = _driver(store).calls[-1]
+    assert "WHERE e.tenant_id IN $tenants" in query
+    assert "WHERE r.tenant_id IN $tenants" in query
+    assert "OPTIONAL MATCH" in query  # so entities>0 / rels=0 is not dropped to (0,0)
+    assert params["tenants"] == ["alice", PUBLIC_TENANT]
+
+
+async def test_stats_unscoped_omits_tenant_filter(store):
+    _driver(store).results.append([{"entities": 3, "relationships": 2}])
+    assert await store.stats(tenant_id=None) == (3, 2)
+    query, params = _driver(store).calls[-1]
+    assert "$tenants" not in query
+    assert "tenants" not in params
+
+
+async def test_stats_empty_result_is_zero(store):
+    # No queued result → fake single() returns None → (0, 0), never a crash.
+    assert await store.stats(tenant_id="alice") == (0, 0)
 
 
 async def test_close_closes_driver(store):
