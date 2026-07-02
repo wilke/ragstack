@@ -119,6 +119,56 @@ class PooledEmbedder:
                     ep.active -= 1
             raise RuntimeError("all embedding endpoints failed") from last_exc
 
+    async def embed_isolated(
+        self, texts: list[str]
+    ) -> tuple[list[list[float] | None], int]:
+        """Like :meth:`embed` but isolates poison inputs across the fan-out.
+
+        Mirrors ``BatchingEmbedder.embed_isolated`` for the pooled path so the
+        ingest backstop (``scripts/ingest_jsonl.py`` ``_embed_drop_bad``, which
+        prefers ``embed_isolated`` when present) covers multi-endpoint fleets too.
+
+        Returns ``(vectors, quarantined)`` where ``vectors`` is aligned to
+        ``texts`` with ``None`` for each quarantined (genuinely-bad, 4xx) input.
+        A bad input propagates out of :meth:`embed` as an ``HTTPStatusError`` (the
+        pool routes non-retriable 4xx straight through instead of failing over), so
+        we bisect the offending sub-batch to quarantine it. Infrastructure
+        failures — 5xx / network / all-endpoints-down — surface from :meth:`embed`
+        as a ``RuntimeError`` (or a retriable-status error) and PROPAGATE
+        unchanged, so ``--resume`` / ``--batch-retries`` re-feed the batch with no
+        data loss. Order-preserving.
+        """
+        out: list[list[float] | None] = [None] * len(texts)
+        quarantined = await self._embed_isolated_range(
+            texts, list(range(len(texts))), out
+        )
+        return out, quarantined
+
+    async def _embed_isolated_range(
+        self, texts: list[str], indices: list[int], out: list[list[float] | None]
+    ) -> int:
+        try:
+            vecs = await self.embed([texts[i] for i in indices])
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response is not None else None
+            # Only a genuine bad-input 4xx reaches here (the pool fails over on
+            # retriable 4xx / 5xx and raises RuntimeError when exhausted, which we
+            # deliberately do NOT catch). Bisect to quarantine the culprit.
+            if status is None or not 400 <= status < 500:
+                raise
+            if len(indices) == 1:
+                log.warning(
+                    "quarantining unembeddable input #%d (HTTP %d)", indices[0], status
+                )
+                return 1
+            mid = len(indices) // 2
+            left = await self._embed_isolated_range(texts, indices[:mid], out)
+            right = await self._embed_isolated_range(texts, indices[mid:], out)
+            return left + right
+        for i, v in zip(indices, vecs, strict=True):
+            out[i] = v
+        return 0
+
     def _select(self, exclude: set[int]) -> Endpoint | None:
         healthy = [e for e in self._eps if e.healthy and id(e) not in exclude]
         # Fall back to not-yet-tried unhealthy endpoints as a last resort — a stale

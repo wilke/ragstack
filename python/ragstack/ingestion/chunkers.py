@@ -65,6 +65,114 @@ def _make_chunk(doc: Document, start: int, end: int) -> Chunk:
 # or word) so no source text is ever dropped.
 
 
+def _hf_offset_tokenizer(token_counter: TokenCounter):
+    """Return the HF *fast* tokenizer behind an ``HFTokenCounter``, or ``None``.
+
+    ``HFTokenCounter`` (and the fakes in the tests) expose ``_tokenizer`` as a
+    zero-arg callable returning a fast tokenizer that supports
+    ``return_offsets_mapping=True``. Non-HF counters (estimate/endpoint) have no
+    such attribute. Mirrors the guard in :class:`FixedTokenWindowChunker`.
+    """
+    get = getattr(token_counter, "_tokenizer", None)
+    if not callable(get):
+        return None
+    try:
+        return get()
+    except Exception:  # noqa: BLE001 - a tokenizer that won't load → fall back
+        return None
+
+
+def _split_by_offsets(text: str, max_tokens: int, tokenizer) -> list[str] | None:
+    """O(n) token-budget split via the fast tokenizer's offset mapping.
+
+    Tokenize ``text`` ONCE with ``return_offsets_mapping=True`` and slice on token
+    boundaries into runs of <= ``max_tokens`` tokens, each spanning a contiguous
+    char range. Pieces tile ``text`` gaplessly: piece ``k`` runs from the char
+    where its first token starts to the char where its last token ends, and the
+    next piece resumes exactly there — the inter-token gap (if any) rides with the
+    piece before it, so concatenation reproduces ``text`` byte-for-byte.
+
+    Returns ``None`` if the tokenizer can't offset-map (caller falls back). A single
+    linear pass, no per-piece re-tokenization — the whole point of the O(n) rewrite.
+    """
+    try:
+        enc = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+        offsets = enc["offset_mapping"]
+    except Exception:  # noqa: BLE001 - not a fast tokenizer / no offsets → fall back
+        return None
+    n = len(offsets)
+    if n == 0:
+        return [text]
+    # Whole text already fits: one piece, no per-slice work. (The single tokenize
+    # above replaces the caller's separate full count(text) guard.)
+    if n <= max_tokens:
+        return [text]
+
+    # A slice re-tokenized in ISOLATION can gain a leading/merge token vs. its
+    # in-context count, so a naive window of exactly max_tokens tokens could
+    # re-count to max_tokens+1. Carve at `budget = max_tokens - 1` tokens instead,
+    # reserving one token of headroom, so an isolated re-count still fits — a single
+    # linear pass with NO per-piece re-tokenization (that re-count over ~n/budget
+    # pieces was itself another full-text tokenization). budget floors at 1 so a
+    # tiny max_tokens still makes progress; a lone token that alone re-counts over
+    # budget is indivisible and left to the embed-side isolate-and-drop backstop.
+    budget = max(1, max_tokens - 1)
+    pieces: list[str] = []
+    char_start = 0  # start of the current piece; absorbs any leading gap
+    tok_start = 0
+    while tok_start < n:
+        tok_end = min(tok_start + budget, n)
+        # Last piece runs to end-of-text so any trailing gap is preserved.
+        char_end = len(text) if tok_end >= n else offsets[tok_end - 1][1]
+        pieces.append(text[char_start:char_end])
+        char_start = char_end
+        tok_start = tok_end
+    return pieces
+
+
+def _split_by_estimate(
+    text: str, max_tokens: int, token_counter: TokenCounter
+) -> list[str]:
+    """Bounded (non-O(n^2)) token-budget split for counters with no offset map.
+
+    Estimate a chars-per-token ratio from ONE full count of ``text``, seek to the
+    estimated char length for a <= ``max_tokens`` piece, then do a small local
+    linear adjustment (a handful of ``count`` calls on a *bounded* window, not on
+    growing prefixes) to land on the largest fitting boundary. Lossless: pieces
+    tile ``text`` exactly. A 1-char floor guarantees forward progress.
+    """
+    n = len(text)
+    total = token_counter.count(text)
+    # Chars per token from the whole text; clamp so a degenerate ratio can't stall.
+    cpt = max(1.0, n / total) if total > 0 else float(n or 1)
+    pieces: list[str] = []
+    start = 0
+    while start < n:
+        # Initial guess: slightly under budget to bias toward fitting on the first
+        # count, then adjust locally.
+        guess = start + max(1, int(max_tokens * cpt * 0.9))
+        end = min(max(start + 1, guess), n)
+        if token_counter.count(text[start:end]) <= max_tokens:
+            # Grow while it still fits (bounded local steps, ~cpt chars each).
+            step = max(1, int(cpt))
+            while end < n and token_counter.count(text[start : end + step]) <= max_tokens:
+                end += step
+            # Fine-tune the last partial step one char at a time.
+            while end < n and token_counter.count(text[start : end + 1]) <= max_tokens:
+                end += 1
+        else:
+            # Shrink until it fits (bounded local steps back toward ``start``).
+            step = max(1, int(cpt))
+            while end > start + 1 and token_counter.count(text[start:end]) > max_tokens:
+                end = max(start + 1, end - step)
+            # Recover any over-shrink one char at a time.
+            while end < n and token_counter.count(text[start : end + 1]) <= max_tokens:
+                end += 1
+        pieces.append(text[start:end])
+        start = end
+    return pieces
+
+
 def split_text_to_token_budget(
     text: str, max_tokens: int, token_counter: TokenCounter
 ) -> list[str]:
@@ -73,36 +181,32 @@ def split_text_to_token_budget(
     The pieces concatenate back to ``text`` exactly (no characters added or
     dropped), so a caller mapping them onto char spans keeps offsets honest.
 
-    Strategy: if the whole text already fits, return it unchanged. Otherwise grow
-    a candidate prefix by binary search on character length up to the largest
-    prefix that still fits ``max_tokens`` (token boundaries don't line up with
-    char boundaries, so we search in char space and let the counter judge), emit
-    it, and continue from there. A hard 1-char floor guarantees forward progress
-    even for a pathological single character that the counter claims is over
-    budget.
+    Strategy: if the whole text already fits, return it unchanged. Otherwise, when
+    the counter is an HF fast tokenizer, tokenize the whole text ONCE with offset
+    mapping and slice on token boundaries in a single linear pass
+    (:func:`_split_by_offsets`) — O(n), so a multi-million-char blob splits in
+    seconds instead of the old prefix-rescanning O(n^2). For counters without an
+    offset map (estimate/endpoint) fall back to a *bounded* estimate-and-adjust
+    split (:func:`_split_by_estimate`) that never re-tokenizes growing prefixes.
+    Both paths are lossless and guarantee forward progress (a 1-token/1-char floor)
+    even for a pathological indivisible unit.
     """
     if not text or max_tokens <= 0:
         return [text] if text else []
+
+    # HF fast tokenizer: tokenize ONCE with offsets and slice linearly. The single
+    # tokenize also tells us the total token count, so we skip the separate full
+    # count(text) guard the char-space path needs (which on a multi-million-char
+    # blob is itself a full tokenization — doing both doubled the cost).
+    tokenizer = _hf_offset_tokenizer(token_counter)
+    if tokenizer is not None:
+        pieces = _split_by_offsets(text, max_tokens, tokenizer)
+        if pieces is not None:
+            return pieces
+
     if token_counter.count(text) <= max_tokens:
         return [text]
-
-    pieces: list[str] = []
-    start = 0
-    n = len(text)
-    while start < n:
-        # Largest end in (start, n] whose slice fits the budget, by binary search.
-        lo, hi = start + 1, n
-        best = start + 1  # always make progress with at least one char
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            if token_counter.count(text[start:mid]) <= max_tokens:
-                best = mid
-                lo = mid + 1
-            else:
-                hi = mid - 1
-        pieces.append(text[start:best])
-        start = best
-    return pieces
+    return _split_by_estimate(text, max_tokens, token_counter)
 
 
 class RecursiveCharacterChunker:
@@ -241,12 +345,78 @@ def _punkt_sentence_spans(text: str) -> list[tuple[int, int]] | None:
     return spans
 
 
+# A span longer than this (chars) with no sentence break gets sub-split on
+# secondary separators (see :func:`_subsplit_long_span`). Well above any normal
+# prose sentence, so ordinary text is never touched — only no-punctuation blobs
+# (data tables, dumps) that Punkt/regex return as one giant span.
+_LONG_SPAN_CHARS = 2000
+
+# Secondary separators, tried in order of preference: paragraph/line breaks, then
+# tabs, then semicolons, then any run of whitespace. Each keeps its trailing
+# separator run attached to the piece before it so the sub-spans tile losslessly.
+_SEPARATORS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\n+"),
+    re.compile(r"\t+"),
+    re.compile(r";+\s*"),
+    re.compile(r"\s+"),
+)
+
+
+def _subsplit_span(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Break the long span ``text[start:end]`` on the first separator that yields
+    more than one piece, preferring stronger separators (newline > tab > ``;`` >
+    whitespace). Returns sub-spans that tile ``[start, end)`` gaplessly — each ends
+    at (and includes) the separator run that follows it, so concatenation is exact.
+    Returns ``[(start, end)]`` unchanged when no separator splits it."""
+    segment = text[start:end]
+    for sep in _SEPARATORS:
+        cuts = [m.end() for m in sep.finditer(segment)]
+        # A trailing separator at the very end doesn't create a new piece.
+        cuts = [c for c in cuts if c < len(segment)]
+        if not cuts:
+            continue
+        spans: list[tuple[int, int]] = []
+        prev = 0
+        for c in cuts:
+            spans.append((start + prev, start + c))
+            prev = c
+        spans.append((start + prev, end))
+        return spans
+    return [(start, end)]
+
+
+def _subsplit_long_spans(
+    text: str, spans: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Sub-split any span longer than ``_LONG_SPAN_CHARS`` on secondary separators.
+
+    Normal prose (sentences well under the threshold) passes through untouched, so
+    behaviour for ordinary documents is byte-identical. A no-punctuation blob that
+    sentence detection returned as one giant span becomes many separator-delimited
+    units. The result still tiles ``text`` exactly (offsets stay honest for the
+    deterministic chunk ids)."""
+    out: list[tuple[int, int]] = []
+    for start, end in spans:
+        if end - start > _LONG_SPAN_CHARS:
+            out.extend(_subsplit_span(text, start, end))
+        else:
+            out.append((start, end))
+    return out
+
+
 def sentence_spans(text: str) -> list[tuple[int, int]]:
-    """Return gapless sentence spans into ``text`` (NLTK Punkt, else regex)."""
+    """Return gapless sentence spans into ``text`` (NLTK Punkt, else regex).
+
+    After sentence detection, very long spans (a no-punctuation data table that
+    yields one giant span) are sub-split on secondary separators (newline, tab,
+    ``;``, whitespace) via :func:`_subsplit_long_spans` so downstream chunking
+    isn't handed a single multi-million-char unit. Normal prose is unchanged and
+    the spans still tile ``text`` exactly.
+    """
     spans = _punkt_sentence_spans(text)
     if spans is None:
         spans = _fallback_sentence_spans(text)
-    return spans
+    return _subsplit_long_spans(text, spans)
 
 
 class SentenceChunker:

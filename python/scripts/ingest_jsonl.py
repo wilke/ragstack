@@ -343,8 +343,9 @@ async def _embed_drop_bad(embedder: Any, chunks: list[Chunk]) -> list[Chunk]:
     **dropped** with a warning rather than failing the whole batch — so one
     oversized chunk (e.g. an estimate-counter undercount) can't abort a long
     ingest. Infra failures (5xx / network) still raise and leave the batch for
-    ``--resume``. The pooled fan-out has no ``embed_isolated`` and keeps the prior
-    all-or-nothing behaviour."""
+    ``--resume``. Both the single-endpoint ``BatchingEmbedder`` and the multi-
+    endpoint ``PooledEmbedder`` expose ``embed_isolated``, so the pooled fan-out
+    quarantines bad inputs too (5xx / network still propagate for ``--resume``)."""
     if not chunks:
         return []  # catalog-only batch (e.g. a #65 resume-skipped doc): nothing to embed
     texts = [c.content for c in chunks]
