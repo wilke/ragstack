@@ -198,8 +198,113 @@ paths:
                 items:
                   $ref: "#/components/schemas/TripleResponse"
 
+  /v1/config:
+    get:
+      operationId: getConfig
+      summary: Effective operational configuration (admin only)
+      description: >-
+        Allowlisted, non-sensitive runtime config for the sysadmin dashboard.
+        Requires the `admin` role. Secrets (API keys, passwords, DSNs, the
+        api_key_tenants/api_key_roles maps) are never returned.
+      tags: [Admin]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Allowlisted operational config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Authenticated but insufficient role (admin required)
+
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >-
+        Per-caller key mapped server-side to a tenant (data isolation) and an
+        RBAC role (admin | engineer | manager | researcher). Roles are enforced
+        per-endpoint server-side; some routes (e.g. /v1/config, /v1/admin/*)
+        require the admin role and return 403 otherwise.
   schemas:
+    ConfigResponse:
+      type: object
+      description: Allowlisted operational config — no secrets are ever included.
+      required:
+        - vector_backend
+        - text_backend
+        - graph_backend
+        - job_store_backend
+        - require_durable_backends
+        - qdrant_url
+        - qdrant_collection
+        - qdrant_collection_explicit
+        - elasticsearch_url
+        - elasticsearch_index
+        - neo4j_uri
+        - embedding_api
+        - embedding_model
+        - embedding_model_dim
+        - embedding_endpoints
+        - embedding_max_concurrency
+        - chunk_method
+        - chunk_size
+        - chunk_overlap
+        - chunk_max_tokens
+        - chunk_token_counter
+        - top_k
+        - rerank_enabled
+        - rerank_candidates
+        - reranker_model
+        - crossencoder_sidecar_url
+        - kg_extraction_enabled
+        - ingest_concurrency
+        - ingest_shard_size
+        - tenant_max_concurrency
+        - max_document_bytes
+        - log_level
+      properties:
+        vector_backend: { type: string }
+        text_backend: { type: string }
+        graph_backend: { type: string }
+        job_store_backend: { type: string }
+        require_durable_backends: { type: boolean }
+        qdrant_url: { type: string }
+        qdrant_collection: { type: string }
+        qdrant_collection_explicit: { type: string }
+        elasticsearch_url: { type: string }
+        elasticsearch_index: { type: string }
+        neo4j_uri: { type: string }
+        embedding_api: { type: string }
+        embedding_model: { type: string }
+        embedding_model_dim: { type: integer }
+        embedding_endpoints:
+          type: array
+          items: { type: string }
+        embedding_max_concurrency: { type: integer }
+        chunk_method: { type: string }
+        chunk_size: { type: integer }
+        chunk_overlap: { type: integer }
+        chunk_max_tokens: { type: [integer, "null"] }
+        chunk_token_counter: { type: string }
+        top_k: { type: integer }
+        rerank_enabled: { type: boolean }
+        rerank_candidates: { type: integer }
+        reranker_model: { type: string }
+        crossencoder_sidecar_url: { type: string }
+        kg_extraction_enabled: { type: boolean }
+        ingest_concurrency: { type: integer }
+        ingest_shard_size: { type: integer }
+        tenant_max_concurrency: { type: integer }
+        max_document_bytes: { type: integer }
+        log_level: { type: string }
+      additionalProperties: false
     HealthResponse:
       type: object
       required: [status]
