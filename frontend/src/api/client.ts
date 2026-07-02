@@ -5,12 +5,42 @@
 // contracts/openapi.yaml (the source of truth) and migrate these to the
 // generated types as the UI grows.
 
+// Scholarly chunk metadata. Every field is OPTIONAL — it exists only if the
+// ingester stamped it — so the UI reads each defensively. This is a frontend
+// convenience type; the contract keeps `metadata` an open object (source.json),
+// so unknown keys are still allowed via the index signature.
+//
+// NOTE on offsets: `start_char`/`end_char` (when present) are offsets into the
+// ORIGINAL DOCUMENT, not into `content` (the already-sliced passage), so they
+// must NOT be used to slice `content`. Intra-passage highlighting waits on a
+// backend `match_start`/`match_end` that is chunk-relative; until then the whole
+// passage is framed as the match. See lib/highlight.ts.
+export interface SourceMetadata {
+  title?: string;
+  authors?: string | string[];
+  year?: number | string;
+  doi?: string;
+  doc_type?: string;
+  n_citations?: number;
+  chunk_index?: number;
+  prev_chunk_id?: string;
+  next_chunk_id?: string;
+  start_char?: number;
+  end_char?: number;
+  // Chunk-relative match span — not emitted by the API yet (follow-up backend
+  // issue). When present, lib/highlight.ts marks it inside the passage.
+  match_start?: number;
+  match_end?: number;
+  tenant_id?: string;
+  [key: string]: unknown;
+}
+
 export interface Source {
   doc_id: string;
   chunk_id: string;
   content: string;
   score: number;
-  metadata: Record<string, unknown>;
+  metadata: SourceMetadata;
 }
 
 export interface QueryRequest {

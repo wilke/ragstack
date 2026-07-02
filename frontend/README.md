@@ -5,8 +5,23 @@ REST API. Part of the monorepo (`frontend/`, peer to `python/`, `go/`,
 `contracts/`). See the tracking issue and `reports/`/the plan for the full
 persona-driven design (Explore / Eval / Ops / Overview, role-gated).
 
-This is the **Phase-1a scaffold**: a minimal query console against the existing
-`/v1/query`, no new backend required.
+This is the **Phase-1a Explore MVP**: a sources-first query console over the
+existing `/v1/query`, no new backend required. A single request returns the
+answer and its sources atomically; the ranked source list is the trust
+centrepiece (rendered first), with the answer settling in below and the citation
+actions (Copy DOI / Copy citation / Open at resolver) per source. Thumbs feedback
+is **ephemeral** (in-session only — there is no feedback endpoint yet).
+
+**Deliberately deferred** (follow-ups, tracked on #93): true intra-passage
+highlighting (needs a chunk-relative `match_start`/`match_end` from the backend —
+the model's `start_char`/`end_char` are document-absolute and absent from the
+response, so the MVP frames the whole passage as the match), neighbor `±1`
+context (needs a `GET /v1/chunks/{id}` endpoint), the AI-eng debug toggle
+(score / retrieval_method), streaming answers, and SSO.
+
+**XSS:** all chunk content and metadata are untrusted ingested text and are
+rendered as React children (auto-escaped). `dangerouslySetInnerHTML` is banned —
+`npm run guard:xss` fails the build if it reappears.
 
 ## Prerequisites
 - Node 20+ and npm.
@@ -28,6 +43,8 @@ and Search.
 - `npm run build` — type-check + production build to `dist/`.
 - `npm run preview` — serve the production build locally.
 - `npm run typecheck` — TypeScript only.
+- `npm run test` — unit tests (Vitest) for the pure `lib/` modules (highlight, citation).
+- `npm run guard:xss` — fails if `dangerouslySetInnerHTML` appears in `src/`.
 - `npm run gen:api` — regenerate `src/api/schema.d.ts` from the OpenAPI contract.
 
 ## Deployment
