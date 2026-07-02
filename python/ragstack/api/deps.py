@@ -383,6 +383,11 @@ def _validate_production_settings() -> None:
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
     _validate_production_settings()
+    # Fail fast on a misconfigured RBAC setup (unknown default_role / api_key_roles)
+    # rather than silently 403-ing affected callers at runtime.
+    from ragstack.api.security import validate_role_settings
+
+    validate_role_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()

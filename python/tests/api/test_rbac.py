@@ -14,6 +14,8 @@ from ragstack.api.security import (
     ROLE_RESEARCHER,
     Principal,
     _principal_from_key,
+    require_role,
+    validate_role_settings,
 )
 
 # Fields the config endpoint must NEVER expose (names + a substring guard).
@@ -106,3 +108,54 @@ async def test_admin_key_reaches_all_lower_surfaces(client, monkeypatch):
     monkeypatch.setattr(security.settings, "api_keys", ["adm"])
     monkeypatch.setattr(security.settings, "api_key_roles", {"adm": ROLE_ADMIN})
     assert (await client.get("/v1/documents", headers={"X-API-Key": "adm"})).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Fail-fast on misconfiguration (Copilot review of PR #81)
+# --------------------------------------------------------------------------- #
+
+def test_require_role_rejects_unknown_role_at_build_time():
+    # A typo'd role must blow up when the dependency is built (import time), not
+    # silently 403 forever at runtime.
+    with pytest.raises(ValueError, match="unknown role"):
+        require_role("admn")
+    # Valid roles still build fine.
+    assert require_role(ROLE_ADMIN) is not None
+
+
+def test_validate_role_settings_rejects_bad_default_role(monkeypatch):
+    monkeypatch.setattr(security.settings, "default_role", "supervisor")
+    monkeypatch.setattr(security.settings, "api_key_roles", {})
+    with pytest.raises(RuntimeError, match="default_role"):
+        validate_role_settings()
+
+
+def test_validate_role_settings_rejects_bad_mapped_role_without_leaking_key(monkeypatch):
+    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "api_key_roles", {"SECRET-KEY": "wizard"})
+    with pytest.raises(RuntimeError) as exc:
+        validate_role_settings()
+    assert "wizard" in str(exc.value)
+    assert "SECRET-KEY" not in str(exc.value)  # the key itself is never surfaced
+
+
+def test_validate_role_settings_passes_on_valid_config(monkeypatch):
+    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "api_key_roles", {"k": ROLE_ADMIN})
+    validate_role_settings()  # no raise
+
+
+@pytest.mark.asyncio
+async def test_config_redacts_url_credentials(client, monkeypatch):
+    monkeypatch.setattr(security.settings, "api_keys", ["adm"])
+    monkeypatch.setattr(security.settings, "api_key_roles", {"adm": ROLE_ADMIN})
+    # A connection string with inline userinfo must not leak the password.
+    monkeypatch.setattr(security.settings, "neo4j_uri", "bolt://neo4j:SECRET-PW@graph:7687")
+    monkeypatch.setattr(
+        security.settings, "embedding_endpoints", ["http://user:PWD@embed:8000"]
+    )
+
+    body = (await client.get("/v1/config", headers={"X-API-Key": "adm"})).json()
+    assert "SECRET-PW" not in str(body) and "PWD" not in str(body)
+    assert body["neo4j_uri"] == "bolt://graph:7687"  # userinfo stripped, host kept
+    assert body["embedding_endpoints"] == ["http://embed:8000"]

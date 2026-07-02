@@ -13,12 +13,35 @@ leak even as new settings are added.
 """
 from __future__ import annotations
 
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ragstack.config import settings
 
 router = APIRouter()
+
+# Endpoint URLs are operational config, but a URL can carry inline credentials
+# (e.g. ``bolt://neo4j:secret@host:7687``). Redact userinfo from these before
+# returning so the allowlist can't leak a password via the connection string.
+_URL_FIELDS = frozenset(
+    {"qdrant_url", "elasticsearch_url", "neo4j_uri", "crossencoder_sidecar_url"}
+)
+
+
+def _redact_url(value: str) -> str:
+    """Strip any ``user:pass@`` userinfo from a URL, keeping scheme/host/port/path."""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value
+    if not (parts.username or parts.password):
+        return value
+    host = parts.hostname or ""
+    netloc = host if parts.port is None else f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 class ConfigResponse(BaseModel):
@@ -69,7 +92,14 @@ class ConfigResponse(BaseModel):
 
 @router.get("/config", response_model=ConfigResponse)
 async def get_config() -> ConfigResponse:
-    """Effective operational config (admin). Allowlisted — no secrets."""
-    return ConfigResponse(
-        **{name: getattr(settings, name, None) for name in ConfigResponse.model_fields}
-    )
+    """Effective operational config (admin). Allowlisted — no secrets, and any
+    inline credentials in endpoint URLs are redacted."""
+    values: dict[str, Any] = {}
+    for name in ConfigResponse.model_fields:
+        val = getattr(settings, name)
+        if name in _URL_FIELDS and isinstance(val, str):
+            val = _redact_url(val)
+        elif name == "embedding_endpoints" and isinstance(val, list):
+            val = [_redact_url(u) if isinstance(u, str) else u for u in val]
+        values[name] = val
+    return ConfigResponse(**values)
