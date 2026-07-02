@@ -221,6 +221,73 @@ paths:
         "403":
           description: Authenticated but insufficient role (admin required)
 
+  /v1/stats/stores:
+    get:
+      operationId: statsStores
+      summary: Per-store counts, scoped to the caller's readable tenants
+      description: >-
+        Chunk/document counts for the vector, text, and graph stores, each
+        FILTERED to the caller's readable tenants (own + the shared `public`
+        corpus) — never a global store total, so a caller can never learn
+        another tenant's corpus size. A store that is unavailable or errors
+        degrades to `available: false` with a null count (no 500).
+      tags: [Stats]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Per-store tenant-scoped counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoreStatsResponse"
+        "401":
+          description: Missing or invalid API key
+
+  /v1/graph/stats:
+    get:
+      operationId: graphStats
+      summary: Knowledge-graph entity/relationship counts (tenant-scoped)
+      description: >-
+        Entity and relationship counts scoped to the caller's readable tenants
+        (own + `public`). Degrades to `available: false` with null counts when
+        no graph store is configured.
+      tags: [Graph]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Tenant-scoped graph counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphStatsResponse"
+        "401":
+          description: Missing or invalid API key
+
+  /v1/health/deep:
+    get:
+      operationId: healthDeep
+      summary: Deep dependency health probe (admin only)
+      description: >-
+        Liveness of each backing store (vector, text, graph, job store) with
+        per-check latency and backend detail. ADMIN ONLY — the `detail` strings
+        can carry backend hostnames/versions, so a non-admin gets 403.
+      tags: [Health]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Per-dependency health
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeepHealthResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Authenticated but insufficient role (admin required)
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -305,6 +372,66 @@ components:
         max_document_bytes: { type: integer }
         log_level: { type: string }
       additionalProperties: false
+
+    StoreCount:
+      type: object
+      description: A single store's tenant-scoped count.
+      required: [backend, available, count]
+      properties:
+        backend: { type: string }
+        available: { type: boolean }
+        count:
+          type: [integer, "null"]
+          description: Tenant-FILTERED count; null when the store is unavailable.
+      additionalProperties: false
+
+    StoreStatsResponse:
+      type: object
+      description: Per-store counts scoped to the caller's readable tenants.
+      required: [tenants, vector, text, graph]
+      properties:
+        tenants:
+          type: array
+          items: { type: string }
+          description: Readable tenants the counts are scoped to (own + public).
+        vector: { $ref: "#/components/schemas/StoreCount" }
+        text: { $ref: "#/components/schemas/StoreCount" }
+        graph: { $ref: "#/components/schemas/StoreCount" }
+      additionalProperties: false
+
+    GraphStatsResponse:
+      type: object
+      description: Knowledge-graph counts scoped to readable tenants.
+      required: [backend, available, entities, relationships]
+      properties:
+        backend: { type: string }
+        available: { type: boolean }
+        entities: { type: [integer, "null"] }
+        relationships: { type: [integer, "null"] }
+      additionalProperties: false
+
+    DeepHealthResponse:
+      type: object
+      description: >-
+        Deep dependency health (admin only — detail may carry backend info).
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        checks:
+          type: array
+          items:
+            type: object
+            required: [name, ok]
+            properties:
+              name: { type: string }
+              ok: { type: boolean }
+              detail: { type: [string, "null"] }
+              latency_ms: { type: [number, "null"] }
+            additionalProperties: false
+      additionalProperties: false
+
     HealthResponse:
       type: object
       required: [status]
