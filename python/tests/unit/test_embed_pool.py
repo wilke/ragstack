@@ -177,6 +177,73 @@ async def test_recovered_endpoint_rejoins_after_health_probe():
         assert bad.calls == 2
 
 
+class _PerTextEmbedder:
+    """Embeds each text unless it's in ``bad`` (raises 4xx) — models a poison input
+    that fails only when its sub-batch reaches it via bisection."""
+
+    def __init__(self, tag: float, bad: set[str], status: int = 400) -> None:
+        self.tag = tag
+        self.bad = bad
+        self.status = status
+        self.calls = 0
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        for t in texts:
+            if t in self.bad:
+                raise _status_error(self.status)
+        return [[self.tag] for _ in texts]
+
+
+async def test_embed_isolated_quarantines_bad_input(http):
+    # A single genuinely-bad (4xx) input is bisected out; the rest embed, and the
+    # returned vectors align to the inputs with None in the quarantined slot.
+    emb = _PerTextEmbedder(1.0, bad={"bad"})
+    pool = _pool(http, emb)
+    vecs, quarantined = await pool.embed_isolated(["a", "bad", "c"])
+    assert quarantined == 1
+    assert vecs == [[1.0], None, [1.0]]
+
+
+async def test_embed_isolated_no_bad_inputs(http):
+    emb = _PerTextEmbedder(2.0, bad=set())
+    pool = _pool(http, emb)
+    vecs, quarantined = await pool.embed_isolated(["a", "b", "c"])
+    assert quarantined == 0
+    assert vecs == [[2.0], [2.0], [2.0]]
+
+
+async def test_embed_isolated_5xx_propagates(http):
+    # Infra failure (5xx on every endpoint) must PROPAGATE, not quarantine, so
+    # --resume / --batch-retries re-feed the batch (no data loss). The pool raises
+    # RuntimeError once failover is exhausted.
+    bad = _FakeEmbedder(1.0, fail=_status_error(503))
+    pool = _pool(http, bad)
+    with pytest.raises(RuntimeError):
+        await pool.embed_isolated(["x", "y"])
+
+
+async def test_embed_isolated_network_error_propagates(http):
+    bad = _FakeEmbedder(1.0, fail=httpx.ConnectError("down"))
+    pool = _pool(http, bad)
+    with pytest.raises(RuntimeError):
+        await pool.embed_isolated(["x", "y"])
+
+
+async def test_embed_isolated_bad_input_fails_over_then_quarantines(http):
+    # A bad-input 4xx propagates from embed() straight through (no failover), so a
+    # second healthy endpoint is never consulted for the bad text — it's bisected
+    # and quarantined. Good texts still embed on the first endpoint.
+    emb = _PerTextEmbedder(1.0, bad={"poison"})
+    other = _FakeEmbedder(9.0)
+    eps = [Endpoint(emb, "http://a/health"), Endpoint(other, "http://b/health")]
+    pool = PooledEmbedder(eps, http=http)
+    vecs, quarantined = await pool.embed_isolated(["ok1", "poison", "ok2", "ok3"])
+    assert quarantined == 1
+    assert vecs[1] is None
+    assert vecs[0] == [1.0] and vecs[2] == [1.0] and vecs[3] == [1.0]
+
+
 async def test_health_refresh_is_interval_gated(http, monkeypatch):
     pool = _pool(http, _FakeEmbedder(1.0), health_interval=100.0)
     probes = 0
