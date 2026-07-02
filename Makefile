@@ -4,6 +4,7 @@
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
+       frontend-install frontend-dev frontend-build frontend-gen-api \
        test-all
 
 help: ## Show this help
@@ -25,6 +26,22 @@ lint-python: ## Lint Python code
 
 run-python: ## Start Python API server (dev)
 	cd python && uvicorn ragstack.api.main:app --reload --port 8000
+
+# ---------------------------------------------------------------------------
+# Frontend (dashboard & explorer SPA — React + Vite + TS)
+# ---------------------------------------------------------------------------
+
+frontend-install: ## Install frontend deps
+	cd frontend && npm install
+
+frontend-dev: ## Start the Vite dev server (:5173, proxies /v1+/health to the API)
+	cd frontend && npm run dev
+
+frontend-build: ## Type-check + production build to frontend/dist
+	cd frontend && npm run build
+
+frontend-gen-api: ## Regenerate the typed API client from contracts/openapi.yaml
+	cd frontend && npm run gen:api
 
 # ---------------------------------------------------------------------------
 # Go

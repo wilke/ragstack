@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.local
+.env
+# Generated from contracts/openapi.yaml via `npm run gen:api`
+src/api/schema.d.ts
