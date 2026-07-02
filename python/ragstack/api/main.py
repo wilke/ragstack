@@ -14,7 +14,12 @@ from ragstack.api.routers import (
     query,
     stats,
 )
-from ragstack.api.security import ROLE_ADMIN, require_role, resolve_tenant
+from ragstack.api.security import (
+    ROLE_ADMIN,
+    require_role,
+    resolve_principal,
+    resolve_tenant,
+)
 from ragstack.config import settings
 
 app = FastAPI(
@@ -45,7 +50,11 @@ app.include_router(query.router, prefix="/v1", tags=["Query"], dependencies=_sec
 app.include_router(documents.router, prefix="/v1", tags=["Documents"], dependencies=_secured)
 app.include_router(graph.router, prefix="/v1/graph", tags=["Graph"], dependencies=_secured)
 # Stats/aggregation reads: any authenticated caller, tenant-scoped in the handlers.
-app.include_router(stats.router, prefix="/v1", tags=["Stats"], dependencies=_secured)
+# Enforce auth with resolve_principal (not resolve_tenant) so it matches the handler
+# dependency and FastAPI caches it — the API key is verified once, not twice.
+app.include_router(
+    stats.router, prefix="/v1", tags=["Stats"], dependencies=[Depends(resolve_principal)]
+)
 # Admin surface: gated at the router level by the ``admin`` role (require_role also
 # performs auth), so every route under it is admin-only by construction. /v1/health/deep
 # joins this group so its backend-detail responses are admin-only by the same gate.

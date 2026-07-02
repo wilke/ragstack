@@ -8,6 +8,8 @@ no 500s).
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
@@ -15,6 +17,8 @@ from ragstack.api.deps import get_graph_store
 from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
 from ragstack.protocols import GraphStore
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -57,6 +61,9 @@ async def graph_stats(
     try:
         entities, relationships = await graph_store.stats(tenant_id=tenant)
     except Exception:
+        # Degrade to available=false, but log so operators can tell a missing
+        # graph store from a misconfigured/down one when counts come back null.
+        log.warning("graph/stats: %s stats probe failed", backend, exc_info=True)
         return GraphStatsResponse(
             backend=backend, available=False, entities=None, relationships=None
         )

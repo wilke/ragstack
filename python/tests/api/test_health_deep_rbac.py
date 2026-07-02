@@ -9,9 +9,24 @@ import re
 import pytest
 
 from ragstack.api import security
+from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_ENGINEER, ROLE_MANAGER, ROLE_RESEARCHER
 
 pytestmark = pytest.mark.asyncio
+
+
+class _MutationTrapVectorStore:
+    """A vector store whose liveness probe is read-only: healthcheck() is fine,
+    but ensure_collection() (which would provision infra) is a trap."""
+
+    def __init__(self) -> None:
+        self.healthchecked = False
+
+    async def healthcheck(self) -> None:
+        self.healthchecked = True
+
+    async def ensure_collection(self) -> None:  # pragma: no cover - must not run
+        raise AssertionError("health probe must not call ensure_collection (mutates infra)")
 
 # Backend identifiers that must never appear in a non-admin (403) response body.
 _BACKEND_LEAK_RE = re.compile(
@@ -50,3 +65,18 @@ async def test_admin_gets_checks(client, monkeypatch):
     # In-memory doubles are all live → ok.
     assert body["status"] == "ok"
     assert all(c["ok"] for c in body["checks"])
+
+
+async def test_probe_is_read_only_uses_healthcheck_not_ensure(client, monkeypatch):
+    """The vector probe must call the read-only healthcheck(), never
+    ensure_collection() (which would create the collection — provisioning infra
+    from a health check)."""
+    _configure(monkeypatch, {"adm": ROLE_ADMIN})
+    trap = _MutationTrapVectorStore()
+    monkeypatch.setattr(app.state, "vector_store", trap)
+
+    resp = await client.get("/v1/health/deep", headers={"X-API-Key": "adm"})
+    assert resp.status_code == 200
+    assert trap.healthchecked is True  # read-only probe ran
+    vector = next(c for c in resp.json()["checks"] if c["name"] == "vector")
+    assert vector["ok"] is True  # ensure_collection was NOT called (would have raised)

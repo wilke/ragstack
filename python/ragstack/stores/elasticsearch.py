@@ -168,6 +168,13 @@ class ElasticsearchTextIndex:
         )
         return int(resp["count"])
 
+    async def healthcheck(self) -> None:
+        """Read-only liveness probe: cluster info, no mutation. Unlike
+        ``ensure_index`` (which *creates* the index), this only confirms the
+        server is reachable, so a health probe can't provision infrastructure.
+        Raises on an unreachable server."""
+        await self._es.info()
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         filter_clauses: list[dict[str, Any]] = [{"term": {"doc_id": doc_id}}]
         if tenant_id is not None:

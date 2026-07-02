@@ -190,6 +190,14 @@ class QdrantVectorStore:
         )
         return int(resp.count)
 
+    async def healthcheck(self) -> None:
+        """Read-only liveness probe: a connectivity check that never mutates state.
+
+        Uses ``get_collections`` (a plain list) rather than ``ensure_collection``,
+        which would *create* the collection as a side effect — a health probe must
+        not provision infrastructure. Raises on an unreachable server."""
+        await self._client.get_collections()
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         # Tenant-scoped: a caller can only delete its own documents, even if it
         # knows another tenant's doc_id. tenant_id=None deletes across tenants.

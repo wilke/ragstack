@@ -65,14 +65,16 @@ async def health_deep(
     """Per-dependency liveness with latency + backend detail (admin only)."""
 
     async def _vector() -> None:
-        # ensure_collection round-trips to the server (get_collections + verify);
-        # the in-memory store has no such method → trivially live.
-        if hasattr(vector_store, "ensure_collection"):
-            await vector_store.ensure_collection()
+        # Read-only connectivity check. NOT ensure_collection(), which would
+        # *create* the collection — a probe must never provision infra. The
+        # in-memory store has no healthcheck → trivially live.
+        if hasattr(vector_store, "healthcheck"):
+            await vector_store.healthcheck()
 
     async def _text() -> None:
-        if hasattr(text_index, "ensure_index"):
-            await text_index.ensure_index()
+        # Read-only — NOT ensure_index() (which would create the index).
+        if hasattr(text_index, "healthcheck"):
+            await text_index.healthcheck()
 
     async def _graph() -> None:
         # None = graph disabled (optional component) → healthy no-op. Otherwise a

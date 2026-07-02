@@ -8,6 +8,7 @@ than 500-ing (graceful degradation, mirroring the graph endpoints).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -17,6 +18,8 @@ from ragstack.api.deps import get_graph_store, get_text_index, get_vector_store
 from ragstack.api.security import Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.tenancy import readable_tenants
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -43,6 +46,9 @@ async def _count_store(backend: str, store: Any, tenants: list[str]) -> StoreCou
     try:
         n = await store.count_tenants(tenants)
     except Exception:
+        # Degrade to available=false, but leave a server-side trail — an operator
+        # seeing a null count needs to distinguish "down" from "misconfigured".
+        log.warning("stats: %s count_tenants probe failed", backend, exc_info=True)
         return StoreCount(backend=backend, available=False, count=None)
     return StoreCount(backend=backend, available=True, count=int(n))
 
@@ -58,6 +64,7 @@ async def _count_graph(backend: str, store: Any, tenant_id: str) -> StoreCount:
     try:
         _entities, relationships = await store.stats(tenant_id)
     except Exception:
+        log.warning("stats: %s graph stats probe failed", backend, exc_info=True)
         return StoreCount(backend=backend, available=False, count=None)
     return StoreCount(backend=backend, available=True, count=int(relationships))
 
