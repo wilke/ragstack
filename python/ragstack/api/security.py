@@ -70,6 +70,27 @@ def resolve_principal(api_key: str | None = Security(_api_key_header)) -> Princi
     return _principal_from_key(api_key)
 
 
+def validate_role_settings() -> None:
+    """Fail fast on a misconfigured RBAC setup (call at startup).
+
+    An unknown ``default_role``, or a key mapped to an unknown role, would
+    otherwise silently 403 every affected caller — a hard-to-debug runtime
+    failure. Raise a clear error instead. Never logs the keys themselves, only
+    the offending role values.
+    """
+    if settings.default_role not in VALID_ROLES:
+        raise RuntimeError(
+            f"default_role={settings.default_role!r} is not a valid role; "
+            f"valid roles are {sorted(VALID_ROLES)}"
+        )
+    bad_roles = {r for r in settings.api_key_roles.values() if r not in VALID_ROLES}
+    if bad_roles:
+        raise RuntimeError(
+            f"api_key_roles maps key(s) to invalid role(s) {sorted(bad_roles)}; "
+            f"valid roles are {sorted(VALID_ROLES)}"
+        )
+
+
 def resolve_tenant(api_key: str | None = Security(_api_key_header)) -> str:
     """Authenticate the request and return its tenant_id.
 
@@ -89,7 +110,17 @@ def require_role(
     """Build a dependency that authorizes only the given ``roles`` (``admin`` is a
     superuser and always passes). Returns the :class:`Principal` on success, 403s
     otherwise. Use at router-include level to gate a whole surface, or per route.
+
+    Validates ``roles`` against :data:`VALID_ROLES` at build time, so a typo like
+    ``require_role("admn")`` fails loudly at import — not as a silent, permanent
+    403 at runtime.
     """
+    unknown = set(roles) - VALID_ROLES
+    if unknown:
+        raise ValueError(
+            f"require_role got unknown role(s) {sorted(unknown)}; "
+            f"valid roles are {sorted(VALID_ROLES)}"
+        )
     allowed = set(roles)
 
     async def _dependency(
