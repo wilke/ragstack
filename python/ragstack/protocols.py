@@ -49,6 +49,12 @@ class VectorStore(Protocol):
         Call after upserting the kept chunks so a failure here can't lose data."""
         ...
 
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count stored chunks visible to ``tenants`` (own + public), using a
+        FILTERED count — never the global collection total. Must fail closed
+        (return 0) on an empty ``tenants`` list rather than counting everything."""
+        ...
+
 
 @runtime_checkable
 class TextIndex(Protocol):
@@ -72,6 +78,11 @@ class TextIndex(Protocol):
         Call after indexing the kept chunks so a failure here can't lose data."""
         ...
 
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count indexed chunks visible to ``tenants`` (own + public), using a
+        FILTERED count. Must fail closed (return 0) on an empty ``tenants`` list."""
+        ...
+
 
 @runtime_checkable
 class GraphStore(Protocol):
@@ -91,6 +102,12 @@ class GraphStore(Protocol):
     async def list_entities(
         self, tenant_id: str | None = None, limit: int = 100
     ) -> list[tuple[str, int]]: ...
+
+    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+        """Return ``(entities, relationships)`` visible to the caller — scoped to
+        readable tenants (own + public); unscoped (``None``) counts everything
+        (dev/tests)."""
+        ...
 
     async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None: ...
 

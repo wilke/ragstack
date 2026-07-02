@@ -66,6 +66,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "chunk_size": 200, "chunk_overlap": 20, "batch_size": 2, "concurrency": 2,
         "chunk_method": "fixed", "chunk_buffer_size": 3,
         "chunk_breakpoint_percentile": 80.0, "chunk_min_length": 500,
+        "semantic_max_sentences": 3000,
         # Token sizing: 'estimate' is zero-dep (no tokenizer/endpoint) and an
         # explicit budget skips the max_model_len probe, keeping the test offline.
         "chunk_token_counter": "estimate", "chunk_max_tokens": 4096,

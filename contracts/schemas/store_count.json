@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "store_count.json",
+  "title": "StoreCount",
+  "description": "A single store's tenant-scoped count. The count is FILTERED to the caller's readable tenants (own + public), never a global store total; null when the store is unavailable.",
+  "type": "object",
+  "required": ["backend", "available", "count"],
+  "properties": {
+    "backend": {
+      "type": "string",
+      "description": "Configured backend label (e.g. qdrant | memory | elasticsearch | neo4j | disabled)."
+    },
+    "available": {
+      "type": "boolean",
+      "description": "false when the store is absent or a probe failed."
+    },
+    "count": {
+      "type": ["integer", "null"],
+      "description": "Tenant-filtered count; null when unavailable."
+    }
+  },
+  "additionalProperties": false
+}

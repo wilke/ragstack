@@ -170,6 +170,34 @@ class QdrantVectorStore:
             )
         return scored
 
+    async def count_tenants(self, tenants: list[str]) -> int:
+        """Count points visible to ``tenants`` (own + public) via a FILTERED
+        count.
+
+        Uses ``client.count(count_filter=..., exact=True)`` — never
+        ``get_collection().points_count``, which is the *whole shared
+        collection* total and would leak every tenant's chunk count to a
+        non-admin. Fails closed on an empty ``tenants`` list: ``_build_filter``
+        drops an empty multi-value list as "no constraint" (fail-open → a global
+        count), so the guard must happen here, before any filter is built.
+        """
+        if not tenants:
+            return 0
+        resp = await self._client.count(
+            collection_name=self._collection,
+            count_filter=_build_filter({"tenant_id": list(tenants)}),
+            exact=True,
+        )
+        return int(resp.count)
+
+    async def healthcheck(self) -> None:
+        """Read-only liveness probe: a connectivity check that never mutates state.
+
+        Uses ``get_collections`` (a plain list) rather than ``ensure_collection``,
+        which would *create* the collection as a side effect — a health probe must
+        not provision infrastructure. Raises on an unreachable server."""
+        await self._client.get_collections()
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         # Tenant-scoped: a caller can only delete its own documents, even if it
         # knows another tenant's doc_id. tenant_id=None deletes across tenants.
