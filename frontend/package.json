@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "guard:xss": "! grep -rn 'dangerouslySetInnerHTML=' src",
+    "guard:xss": "! grep -rnE 'dangerouslySetInnerHTML[[:space:]]*=' src",
     "gen:api": "openapi-typescript ../contracts/openapi.yaml -o src/api/schema.d.ts"
   },
   "dependencies": {

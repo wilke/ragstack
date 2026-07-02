@@ -3,7 +3,7 @@
 // is a real <a> (Enter + middle-click work) with a validated, encoded DOI URL and
 // rel="noopener noreferrer". Clipboard is feature-detected (secure-context only).
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SourceMetadata } from "../api/client";
 import {
   clipboardAvailable,
@@ -21,6 +21,11 @@ export function CitationActions({
   fallbackTitle: string;
 }) {
   const [status, setStatus] = useState("");
+  // Hold the "Copied" reset timer so it can be cancelled — otherwise it can fire
+  // after the card unmounts (a new search re-renders the list) and set state on
+  // an unmounted component.
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
   const canCopy = clipboardAvailable();
   const doi = metadata.doi;
   const url = doiUrl(doi);
@@ -28,7 +33,8 @@ export function CitationActions({
   const copy = async (text: string, label: string) => {
     const ok = await copyToClipboard(text);
     setStatus(ok ? `${label} copied` : "Copy unavailable");
-    window.setTimeout(() => setStatus(""), 2000);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setStatus(""), 2000);
   };
 
   return (

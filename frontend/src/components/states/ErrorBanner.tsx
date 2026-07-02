@@ -4,10 +4,17 @@
 import { ApiError } from "../../api/client";
 
 function messageFor(error: Error): string {
+  // Never echo error.message by default — for an ApiError it's the raw response
+  // body (api/client.ts), which can carry internal server detail/stack traces.
+  // Map to status-specific, user-safe copy instead.
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403) return "Check your API key.";
     if (error.status === 422) return "That query was rejected (validation).";
-    return `Error ${error.status}: ${error.message}`;
+    if (error.status === 429) return "Too many requests — wait a moment and retry.";
+    if (error.status >= 500) {
+      return `The server had a problem (error ${error.status}). Please retry.`;
+    }
+    return `Request failed (error ${error.status}). Please retry.`;
   }
   return "Something went wrong reaching the API. Please retry.";
 }
