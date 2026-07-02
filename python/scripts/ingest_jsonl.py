@@ -633,6 +633,10 @@ async def run(args: argparse.Namespace) -> None:
         token_counter=token_counter,
         breakpoint_max_tokens=breakpoint_max_tokens,
         breakpoint_token_counter=breakpoint_token_counter,
+        # <=0 disables the oversized-doc fallback (None); else the span-count cap.
+        max_breakpoint_sentences=(
+            args.semantic_max_sentences if args.semantic_max_sentences > 0 else None
+        ),
     )
     # Optional segmentation cache: store each doc's chunk spans keyed by
     # content+config, so a re-ingest rebuilds identical blocks from the cache
@@ -648,6 +652,9 @@ async def run(args: argparse.Namespace) -> None:
             max_tokens=max_tokens, bp_max_tokens=breakpoint_max_tokens,
             bp_model=args.breakpoint_embedding_model or args.embedding_model,
             embed_model=args.embedding_model,
+            # Threshold changes which docs fall back to fixed_token, changing spans.
+            max_breakpoint_sentences=args.semantic_max_sentences,
+            chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap,
         )
         seg_cache = SegmentationCache(args.segmentation_cache, fp)
         print(f"segmentation cache {args.segmentation_cache} "
@@ -1192,6 +1199,14 @@ def main() -> None:
                    help="semantic: distance percentile above which a chunk boundary is placed")
     p.add_argument("--chunk-min-length", type=int, default=500,
                    help="semantic: merge chunks shorter than this many chars into a neighbor")
+    p.add_argument("--semantic-max-sentences", type=int, default=3000,
+                   help="semantic: OVERSIZED-DOC FALLBACK. A doc that splits into more "
+                        "than this many sentence spans is chunked with the fixed_token "
+                        "sliding window instead of the per-span breakpoint embed, so a "
+                        "giant data-table doc can't flood the embedding fleet. Default "
+                        "3000 keeps normal/large prose semantic (corpus p99 ~25k tokens "
+                        "is only ~1-2k spans). Pass 0 or a negative value to DISABLE the "
+                        "fallback (always attempt semantic).")
     # Token-based sizing: keep every chunk within the embedder's context window.
     p.add_argument("--chunk-max-tokens", type=int, default=None,
                    help="the embedding model's context window in tokens. The chunker "

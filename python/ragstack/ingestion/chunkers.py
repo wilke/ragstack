@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 import uuid
 from collections.abc import Callable, Sequence
 
@@ -924,6 +925,9 @@ class SemanticChunker:
         distance_round: int | None = None,
         breakpoint_max_tokens: int | None = None,
         breakpoint_token_counter: TokenCounter | None = None,
+        max_breakpoint_sentences: int | None = 3000,
+        chunk_size: int = 512,
+        chunk_overlap: int = 64,
     ) -> None:
         self.embed_fn = embed_fn
         self.buffer_size = buffer_size
@@ -959,6 +963,61 @@ class SemanticChunker:
         # a boundary; rounding makes the block boundaries reproducible cross-host.
         # None = legacy (no rounding, byte-identical to the pre-pooling path).
         self.distance_round = distance_round
+        # max_breakpoint_sentences: OVERSIZED-DOC FALLBACK. Breakpoint detection
+        # embeds one input PER SENTENCE SPAN (see _buffer_embeddings), so its embed
+        # cost scales with the span count. A giant data-table doc can sub-split into
+        # hundreds of thousands of spans (PR #79 made sentence_spans separator-aware),
+        # and embedding all of them saturates the embedding fleet — a single doc can
+        # stall every ingest shard. Semantic breakpoints add no value on such a doc
+        # anyway. When a doc yields MORE than this many spans, skip the segmentation
+        # embed entirely and chunk it with the deterministic fixed_token sliding
+        # window instead (zero per-span embedding → O(n), bounded, fleet-safe).
+        # None disables the fallback (always attempt semantic). Chosen default 3000:
+        # comfortably above the corpus p99 of ~25k tokens (a 25k-token doc is only
+        # ~1–2k sentence spans), so normal and even large prose stays semantic, while
+        # the pathological tables that produce the fleet flood (tens/hundreds of
+        # thousands of spans) fall back.
+        self.max_breakpoint_sentences = max_breakpoint_sentences
+        # Sliding-token-window params for the fallback chunker. The fallback reuses
+        # FixedTokenWindowChunker, built lazily on first use (it requires an HF
+        # TokenCounter with an offset map). If none is available, the fallback
+        # degrades to a token-budget split over the whole doc (still O(n), lossless,
+        # deterministic ids) rather than flooding the fleet.
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self._fallback_chunker: FixedTokenWindowChunker | None = None
+        self._fallback_built = False
+
+    def _oversize_fallback(self, doc: Document, n_spans: int) -> list[Chunk]:
+        """Chunk an oversized doc via the fixed_token machinery — no per-span embed.
+
+        Prefers :class:`FixedTokenWindowChunker` (a real sliding token window with
+        overlap); when no HF offset-tokenizer is available it degrades to a whole-doc
+        token-budget split. Either path does ZERO breakpoint embedding, so cost is
+        O(n) in the doc size and never touches the embedding fleet.
+        """
+        print(
+            f"[semantic] oversized doc {doc.id!r}: {n_spans} spans "
+            f"(> max_breakpoint_sentences={self.max_breakpoint_sentences}), "
+            f"{len(doc.content)} chars — falling back to fixed_token (no breakpoint "
+            f"embed).",
+            file=sys.stderr,
+        )
+        if not self._fallback_built:
+            self._fallback_built = True
+            tok = getattr(self.token_counter, "_tokenizer", None)
+            if self.token_counter is not None and callable(tok):
+                self._fallback_chunker = FixedTokenWindowChunker(
+                    chunk_size=self.chunk_size,
+                    chunk_overlap=self.chunk_overlap,
+                    token_counter=self.token_counter,
+                )
+        if self._fallback_chunker is not None:
+            return self._fallback_chunker.chunk(doc)
+        # No HF offset tokenizer: token-budget split the whole doc (via the same
+        # _token_split_span the other chunkers use). Bounded and lossless; without a
+        # counter at all, _emit yields a single whole-doc chunk.
+        return self._emit(doc, 0, len(doc.content))
 
     def _emit(self, doc: Document, start: int, end: int) -> list[Chunk]:
         """Emit a semantic chunk span, token-splitting it if over budget."""
@@ -1021,6 +1080,16 @@ class SemanticChunker:
         # A single sentence can't have an internal boundary.
         if len(spans) == 1:
             return self._emit(doc, 0, len(text))
+
+        # OVERSIZED-DOC FALLBACK (before the segmentation embed): breakpoint
+        # detection embeds one input per span, so a doc that sub-split into a huge
+        # number of spans would trigger an embed burst that saturates the fleet.
+        # Fall back to fixed_token instead — no per-span embedding at all.
+        if (
+            self.max_breakpoint_sentences is not None
+            and len(spans) > self.max_breakpoint_sentences
+        ):
+            return self._oversize_fallback(doc, len(spans))
 
         embeddings = self._buffer_embeddings(text, spans)
 
@@ -1100,6 +1169,7 @@ def make_chunker(
     token_counter: TokenCounter | None = None,
     breakpoint_max_tokens: int | None = None,
     breakpoint_token_counter: TokenCounter | None = None,
+    max_breakpoint_sentences: int | None = 3000,
 ):
     """Build the chunker named by ``method``.
 
@@ -1114,6 +1184,11 @@ def make_chunker(
     When ``max_tokens`` + ``token_counter`` are passed, every method sizes/caps by
     tokens so no emitted chunk exceeds the embedder context. With them None the
     char-budget behaviour is unchanged (back-compat).
+
+    ``max_breakpoint_sentences`` (semantic only): oversized-doc fallback threshold —
+    a doc that sub-splits into more than this many sentence spans is chunked with the
+    fixed_token sliding window instead of the (per-span) breakpoint embed, keeping
+    ingest cost independent of document size. ``None`` disables the fallback.
     """
     if method == "fixed":
         return RecursiveCharacterChunker(
@@ -1155,5 +1230,8 @@ def make_chunker(
             distance_round=6 if pooled else None,
             breakpoint_max_tokens=breakpoint_max_tokens,
             breakpoint_token_counter=breakpoint_token_counter,
+            max_breakpoint_sentences=max_breakpoint_sentences,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
     raise ValueError(f"unknown chunk_method {method!r}; valid: {', '.join(CHUNK_METHODS)}")
