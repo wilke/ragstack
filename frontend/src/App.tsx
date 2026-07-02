@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { type FormEvent, useState } from "react";
 import { ApiError, queryRag, type QueryResponse, type Source } from "./api/client";
 
 // Phase-1a scaffold: a minimal query console against the existing /v1/query.
@@ -15,7 +15,7 @@ export function App() {
     mutationFn: (q) => queryRag({ query: q, top_k: 5 }, apiKey || undefined),
   });
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (query.trim()) run.mutate(query.trim());
   };

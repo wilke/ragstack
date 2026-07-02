@@ -2,5 +2,7 @@ node_modules/
 dist/
 *.local
 .env
+# TypeScript incremental build artifacts (per-machine state, must not be committed)
+*.tsbuildinfo
 # Generated from contracts/openapi.yaml via `npm run gen:api`
 src/api/schema.d.ts
