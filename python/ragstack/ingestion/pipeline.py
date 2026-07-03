@@ -122,9 +122,19 @@ class IngestionPipeline:
         # chunks here would drop good data with no replacement — the per-document
         # form of the empty-ingest data loss the ``EmptyIngestError`` guard prevents
         # at the whole-source level. Such a document keeps its prior data intact
-        # (the quarantine is surfaced by the warning above); removing a document is
+        # (the quarantine is surfaced by the warning below); removing a document is
         # the explicit ``DELETE`` endpoint's job, not a side effect of a re-ingest
         # whose new content failed to embed.
+        #
+        # Trade-off: if the skipped document's *content changed*, the retained prior
+        # chunks are now STALE — retrieval serves the outdated passages under that
+        # doc_id until a later successful re-ingest (or an explicit delete) replaces
+        # them. Serving stale data is the accepted lesser evil vs. silently losing it.
+        #
+        # Predicate correctness rests on ``chunk.doc_id == doc.id``: every chunker
+        # builds chunks through ``chunkers._make_chunk``, which sets ``doc_id=doc.id``
+        # (there is no other ``Chunk(...)`` construction), so a doc with survivors is
+        # always present in ``docs_with_chunks`` and one without is always absent.
         docs_with_chunks = {c.doc_id for c in all_chunks}
         skipped = [d.id for d in documents if d.id not in docs_with_chunks]
         if skipped:

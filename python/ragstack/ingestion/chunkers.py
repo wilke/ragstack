@@ -45,6 +45,10 @@ def _make_chunk(doc: Document, start: int, end: int) -> Chunk:
 
     Content is sliced from the span (never re-found) so ``start_char``/
     ``end_char`` always reconstruct the source exactly.
+
+    Invariant: this is the ONLY place a ``Chunk`` is constructed, and it sets
+    ``doc_id=doc.id``. Keep it that way — ``IngestionPipeline.ingest`` relies on
+    ``chunk.doc_id == doc.id`` to decide which docs' prior chunks to replace.
     """
     return Chunk(
         id=_chunk_id(doc.id, start, end),
