@@ -1,0 +1,15 @@
+# Example inputs for ingest-bulk.cwl.
+shards:
+  - {class: File, path: /rag/cache/load12/shards/tok256/example.s0.jsonl}
+  - {class: File, path: /rag/cache/load12/shards/tok256/example.s1.jsonl}
+collection: ragstack_sfr_tok256
+tenant: public
+chunk_method: fixed_token
+chunk_size: 256
+chunk_overlap: 32
+embedding_model: Salesforce/SFR-Embedding-Mistral
+embedding_url:
+  - http://localhost:9001
+  - http://localhost:9002
+# Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
+embedding_api_key: BRCMistral
