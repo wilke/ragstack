@@ -3,14 +3,18 @@
 Closes the #88 gap — the core data ops (``/v1/query``, ``/v1/retrieve``,
 ``/v1/ingest``, ``/v1/documents``) had **zero** authz conformance assertions,
 while only three read endpoints (stats/stores, graph/stats, health/deep) were
-covered. Black-box over HTTP; no imports from the implementations.
+covered. The #88 continuation extends this to the remaining tenant-scoped ops:
+the graph reads (``/v1/graph/entities``, ``/v1/graph/neighbors/{entity}``) and
+the explicit ``DELETE /v1/documents/{id}``. Black-box over HTTP; no imports from
+the implementations.
 
 The contract these assert (see ``api/main.py`` router wiring):
 
-* **Core ops** are secured by ``resolve_tenant`` — a valid API key is required
-  (**401** when the server is key-protected) but **no role** is: any
-  authenticated caller may use them, so a valid non-admin key must **not** get
-  **403** (guards against accidental over-restriction / admin-gating a data op).
+* **Core + tenant-scoped ops** (the four core ops, the graph reads, and
+  ``DELETE /v1/documents/{id}``) are secured by ``resolve_tenant`` — a valid API
+  key is required (**401** when the server is key-protected) but **no role** is:
+  any authenticated caller may use them, so a valid non-admin key must **not**
+  get **403** (guards against accidental over-restriction / admin-gating a data op).
 * **Admin ops** (``GET /v1/config``) are gated by ``require_role("admin")`` —
   **401** without a key, **403** for a valid non-admin key, **200** for admin.
 
@@ -101,6 +105,86 @@ async def test_core_op_not_admin_gated(
     assert resp.status_code not in (401, 403), (
         f"{label}: a valid non-admin key was rejected with {resp.status_code} "
         f"(core ops require auth but not a role): {resp.text}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Additional tenant-scoped ops (#88 continuation): the graph reads and the
+# explicit DELETE /v1/documents/{id}. Same gate as the core ops — resolve_tenant:
+# a valid key is required (401) but no role is (never 403). A synthetic probe
+# id/entity is used so the not-admin-gated DELETE reaches the real handler yet is
+# a guaranteed no-op (no document under any tenant has that id). The graph authz
+# probes are python-only: the Go phase-1 scaffold has no auth middleware — its
+# /v1/graph handlers are unauthenticated 200 stubs — so a 401 assertion can't
+# hold there (the routes exist; they just don't authenticate). The documents
+# surface exists on both impls.
+#
+# Not covered here: GET /v1/ingest/{job_id}. It is NOT unauthenticated — the
+# documents router include carries the resolve_tenant gate, so a keyless-off
+# server returns 401 without a key. But the handler takes no tenant argument and
+# job_store.get(job_id) is not tenant-scoped, so any *authenticated* caller can
+# read another tenant's job status + chunk_ids: an authenticated-but-not-tenant-
+# scoped cross-tenant IDOR. Asserting it needs a two-tenant fixture; the fix
+# (tenant-stamping jobs) is tracked under #100.
+# --------------------------------------------------------------------------- #
+_PROBE = "___conformance_authz_probe___"
+EXTRA_TENANT_OPS = [
+    ("graph_entities", "GET", "/v1/graph/entities", None),
+    ("graph_neighbors", "GET", f"/v1/graph/neighbors/{_PROBE}", None),
+    ("documents_delete", "DELETE", f"/v1/documents/{_PROBE}", None),
+]
+
+
+def _skip_go_graph(label: str, impl: str) -> None:
+    if label.startswith("graph_") and impl != "python":
+        pytest.skip("graph surface is python-only in phase 1")
+
+
+@pytest.mark.parametrize("label,method,path,body", EXTRA_TENANT_OPS, ids=[op[0] for op in EXTRA_TENANT_OPS])
+async def test_extra_tenant_op_requires_key_when_configured(
+    client: httpx.AsyncClient, impl: str, label: str, method: str, path: str, body: dict | None,
+) -> None:
+    """A key-protected server rejects an unauthenticated graph-read / delete with 401."""
+    _skip_go_graph(label, impl)
+    if not _key("RAGSTACK_API_KEY"):
+        pytest.skip("server is keyless; nothing to enforce")
+    resp = await _call(client, method, path, body=body)
+    assert resp.status_code == 401, f"{label}: expected 401 unauthenticated, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.parametrize("label,method,path,body", EXTRA_TENANT_OPS, ids=[op[0] for op in EXTRA_TENANT_OPS])
+async def test_extra_tenant_op_rejects_invalid_key(
+    client: httpx.AsyncClient, impl: str, label: str, method: str, path: str, body: dict | None,
+) -> None:
+    """A syntactically-present but unknown key is rejected with 401 (not 200/500)."""
+    _skip_go_graph(label, impl)
+    if not _key("RAGSTACK_API_KEY"):
+        pytest.skip("server is keyless; an unknown key maps to the default identity")
+    resp = await _call(client, method, path, key="conformance-invalid-key-nomatch", body=body)
+    assert resp.status_code == 401, f"{label}: expected 401 for invalid key, got {resp.status_code}: {resp.text}"
+
+
+@pytest.mark.parametrize("label,method,path,body", EXTRA_TENANT_OPS, ids=[op[0] for op in EXTRA_TENANT_OPS])
+async def test_extra_tenant_op_not_admin_gated(
+    client: httpx.AsyncClient, impl: str, label: str, method: str, path: str, body: dict | None,
+) -> None:
+    """A valid non-admin key must reach these ops with a real success, never
+    401/403 (nor a 500 masking a broken gate).
+
+    Unlike the core-op counterpart — which sends an empty body and tolerates a
+    422 validation failure, so it can only assert ``not in (401, 403)`` — these
+    ops have unambiguous success codes: the graph reads return 200 and the DELETE
+    (a scoped no-op on the synthetic id) returns 204. Asserting the exact set
+    catches a gate that 500s or otherwise misbehaves, not just one that rejects.
+    """
+    _skip_go_graph(label, impl)
+    key = _key("RAGSTACK_API_KEY_NONADMIN")
+    if not key:
+        pytest.skip("needs a valid non-admin key (RAGSTACK_API_KEY_NONADMIN)")
+    resp = await _call(client, method, path, key=key, body=body)
+    assert resp.status_code in (200, 204), (
+        f"{label}: a valid non-admin key expected a 200/204 success, got "
+        f"{resp.status_code} (these ops require auth but not a role): {resp.text}"
     )
 
 
