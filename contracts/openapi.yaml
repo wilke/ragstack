@@ -120,17 +120,48 @@ paths:
   /v1/documents:
     get:
       operationId: listDocuments
-      summary: List all indexed documents
+      summary: List indexed documents visible to the caller (own tenant + public)
+      description: >-
+        Documents are aggregated from the served text index by doc_id (not the
+        job registry, so bulk/CLI-ingested corpora are included), scoped to the
+        caller's readable tenants. Paginate with `limit` and the opaque `cursor`
+        echoed from the prior response's `X-Next-Cursor` header.
       tags: [Documents]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Maximum documents per page (1–1000).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination token from a prior response's X-Next-Cursor header.
+          schema:
+            type: string
       responses:
         "200":
           description: List of documents
+          headers:
+            X-Next-Cursor:
+              description: >-
+                Opaque cursor for the next page; present only when more documents
+                remain. Pass it back as the `cursor` query parameter.
+              required: false
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/DocumentInfo"
+        "400":
+          description: Malformed pagination cursor
 
   /v1/documents/{doc_id}:
     delete:

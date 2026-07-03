@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
+from ragstack.documents import DocumentSummary
 from ragstack.models import Chunk, Document, ScoredChunk, Triple
 
 
@@ -81,6 +82,19 @@ class TextIndex(Protocol):
     async def count_tenants(self, tenants: list[str]) -> int:
         """Count indexed chunks visible to ``tenants`` (own + public), using a
         FILTERED count. Must fail closed (return 0) on an empty ``tenants`` list."""
+        ...
+
+    async def list_documents(
+        self, tenants: list[str], limit: int = 100, cursor: str | None = None
+    ) -> tuple[list[DocumentSummary], str | None]:
+        """Distinct documents visible to ``tenants`` (own + public), aggregated up
+        from indexed chunks by ``doc_id`` and paginated by an opaque ``cursor``.
+
+        Returns ``(documents, next_cursor)`` ordered by ``doc_id``; ``next_cursor``
+        is ``None`` on the last page. Must fail closed (return ``([], None)``) on an
+        empty ``tenants`` list — an unscoped listing would leak documents across
+        tenants. Backs ``GET /v1/documents`` (#86); the list comes from the served
+        index, not the job registry, so CLI-built corpora are visible."""
         ...
 
 
