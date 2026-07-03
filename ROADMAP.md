@@ -52,7 +52,7 @@ Status: ✅ done · 🟡 partial · ⛔ not started. "Blocked by" names the hard
 | #112 per-tenant compute/token quotas | ⛔ | | — |
 | #113 structured errors + feedback + explain | ⛔ | | — |
 | #91 BV-BRC SSO + CSRF | ⛔ | greenfield | RBAC spine (done) |
-| #123 config-hardening | ⛔ | weighted RRF, threshold, timeouts, runtime-config docs | PR #120 lands first |
+| #123 config-hardening | ⛔ | weighted RRF, threshold, timeouts, runtime-config docs | — (PR #120 merged; unblocked) |
 
 ### M7 — Observability
 | Issue | What | Status | Blocked by |
