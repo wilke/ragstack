@@ -121,6 +121,65 @@ async def test_reingest_with_all_chunks_quarantined_preserves_prior_data():
     assert {c.id for c in text_index._chunks} == seeded
 
 
+class _MultiDocLoader:
+    """Load several documents with stable ids — models a multi-doc source (a JSONL
+    shard) re-ingested after some documents' content changed."""
+
+    def __init__(self, docs: list[tuple[str, str]]) -> None:
+        self._docs = docs
+
+    def load(self, source: str) -> list[Document]:
+        return [Document(id=i, content=c, source=source) for i, c in self._docs]
+
+
+class _PoisonEmbedder:
+    """Embeds normally, but quarantines any chunk whose content contains ``poison``
+    — models one document becoming fully unembeddable on a re-run."""
+
+    def __init__(self, poison: str | None = None) -> None:
+        self.poison = poison
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[float(len(t)), 1.0] for t in texts]
+
+    async def embed_isolated(self, texts: list[str]):
+        out = [None if (self.poison and self.poison in t) else [float(len(t)), 1.0]
+               for t in texts]
+        return out, sum(v is None for v in out)
+
+
+@pytest.mark.asyncio
+async def test_reingest_partial_quarantine_preserves_untouched_docs():
+    """#134: in a MULTI-document source, a document whose chunks all quarantine on
+    a re-run must keep its prior data — only documents with surviving chunks are
+    replaced (regression: delete-prior looped over every loaded doc, so a
+    fully-quarantined doc's prior chunks were dropped with no replacement)."""
+    vector_store = InMemoryVectorStore()
+    text_index = InMemoryTextIndex()
+    docs = [("doc-A", "a" * 32), ("doc-B", "b" * 32)]  # distinct char per doc
+    chunker = RecursiveCharacterChunker(chunk_size=8, chunk_overlap=0)
+
+    v1 = IngestionPipeline(loader=_MultiDocLoader(docs), chunker=chunker,
+                           embedder=_PoisonEmbedder(), vector_store=vector_store,
+                           text_index=text_index)
+    await v1.ingest("shard.jsonl")
+    b_before = {c.id for c in vector_store._chunks if c.doc_id == "doc-B"}
+    assert b_before  # doc-B was seeded
+
+    # v2: doc-B is now fully unembeddable (every 'b' chunk poisoned); doc-A embeds.
+    v2 = IngestionPipeline(loader=_MultiDocLoader(docs), chunker=chunker,
+                           embedder=_PoisonEmbedder(poison="b"), vector_store=vector_store,
+                           text_index=text_index)
+    ids2 = await v2.ingest("shard.jsonl")  # must NOT raise — doc-A survives
+
+    stored = {c.doc_id for c in vector_store._chunks}
+    assert "doc-B" in stored, "doc-B's prior data must survive its full-quarantine re-run"
+    # doc-B's prior chunks are unchanged (not deleted), doc-A's are re-ingested.
+    assert {c.id for c in vector_store._chunks if c.doc_id == "doc-B"} == b_before
+    assert all(cid in {c.id for c in vector_store._chunks} for cid in ids2)
+    assert "doc-B" in {c.doc_id for c in text_index._chunks}  # text index preserved too
+
+
 class _StubExtractor:
     """KGExtractor double: emits a fixed triple per ingest, doc_id from the chunk,
     tenant_id left empty (the pipeline must stamp it)."""
