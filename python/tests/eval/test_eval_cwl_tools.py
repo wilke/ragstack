@@ -23,19 +23,23 @@ import chunk_one  # noqa: E402
 _METRICS = ("ndcg@10", "map", "recall@10", "recall@20", "recall@100")
 
 
-def _metrics_payload(config: str, base: float, n: int = 12) -> dict:
+def _metrics_payload(config: str, base: float, n: int = 12,
+                     query_ids: list[str] | None = None) -> dict:
     # Deterministic per-query arrays; slight per-config offset so the diff CIs and
     # the signed-rank test have a non-degenerate (but tiny) signal to chew on.
     per_query = {m: [round(base + 0.01 * ((i + j) % 5), 4) for i in range(n)]
                  for j, m in enumerate(_METRICS)}
     means = {m: sum(v) / len(v) for m, v in per_query.items()}
     return {"config": config, "source": "test:synthetic", "n_queries": n,
+            "query_ids": query_ids if query_ids is not None else [str(i) for i in range(n)],
             "means": means, "per_query": per_query}
 
 
-def _write(tmp_path: Path, config: str, base: float, n: int = 12) -> str:
+def _write(tmp_path: Path, config: str, base: float, n: int = 12,
+           query_ids: list[str] | None = None) -> str:
     p = tmp_path / f"{config}.json"
-    p.write_text(json.dumps(_metrics_payload(config, base, n)), encoding="utf-8")
+    p.write_text(json.dumps(_metrics_payload(config, base, n, query_ids)),
+                 encoding="utf-8")
     return str(p)
 
 
@@ -80,10 +84,29 @@ def test_aggregate_rejects_missing_metric(tmp_path: Path) -> None:
         aggregate_stats.load_metrics([str(bad)])
 
 
+def test_aggregate_rejects_missing_means(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    payload = _metrics_payload("fixed_tok512", 0.70)
+    del payload["means"]["recall@20"]
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(SystemExit, match="means missing"):
+        aggregate_stats.load_metrics([str(bad)])
+
+
+def test_aggregate_rejects_misaligned_query_ids(tmp_path: Path) -> None:
+    # Same length, but different query sets -> the length check would miss it;
+    # the query_ids cross-check catches the unpaired data.
+    files = [_write(tmp_path, "fixed_tok512", 0.70, n=12),
+             _write(tmp_path, "fixed_tok256", 0.71, n=12,
+                    query_ids=[str(100 + i) for i in range(12)])]
+    with pytest.raises(SystemExit, match="DIFFERENT queries"):
+        aggregate_stats.load_metrics(files)
+
+
 def test_aggregate_rejects_unequal_query_counts(tmp_path: Path) -> None:
     files = [_write(tmp_path, "fixed_tok512", 0.70, n=12),
              _write(tmp_path, "fixed_tok256", 0.71, n=10)]  # misaligned
-    with pytest.raises(SystemExit, match="differ in length"):
+    with pytest.raises(SystemExit, match="DIFFERENT queries"):
         aggregate_stats.load_metrics(files)
 
 
@@ -93,13 +116,22 @@ def test_aggregate_rejects_unequal_query_counts(tmp_path: Path) -> None:
 def test_chunk_one_payload_shape() -> None:
     stats = {"means": dict.fromkeys(_METRICS, 0.5),
              "per_query": {m: [0.4, 0.5, 0.6] for m in _METRICS}}
-    payload = chunk_one.build_metrics_payload("fixed_tok512", "test:src", stats)
+    payload = chunk_one.build_metrics_payload("fixed_tok512", "test:src", stats,
+                                              ["q0", "q1", "q2"])
     assert payload["config"] == "fixed_tok512"
     assert payload["source"] == "test:src"
-    assert payload["n_queries"] == 3  # inferred from per_query length
+    assert payload["n_queries"] == 3
+    assert payload["query_ids"] == ["q0", "q1", "q2"]
     assert payload["means"] == stats["means"]
     # aggregate_stats can consume what chunk_one emits (round-trip contract).
     assert all(m in payload["per_query"] for m in aggregate_stats._REQUIRED_PQ)
+
+
+def test_chunk_one_payload_rejects_qid_misalignment() -> None:
+    stats = {"means": dict.fromkeys(_METRICS, 0.5),
+             "per_query": {m: [0.4, 0.5, 0.6] for m in _METRICS}}
+    with pytest.raises(ValueError, match="misaligned"):
+        chunk_one.build_metrics_payload("fixed_tok512", "s", stats, ["q0", "q1"])
 
 
 def test_chunk_one_rejects_unknown_config() -> None:

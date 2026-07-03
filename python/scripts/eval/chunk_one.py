@@ -42,17 +42,31 @@ import chunking_compare_7way as c7  # noqa: E402
 import scifact_chunk_eval as sc  # noqa: E402
 
 
-def build_metrics_payload(config: str, source: str, stats: dict) -> dict:
+def _ordered_qids(queries: dict) -> list[str]:
+    """The query id order evaluate_config scores in (numeric-aware sort), so the
+    recorded query_ids line up 1:1 with the per_query arrays."""
+    return sorted(queries, key=lambda q: int(q) if q.isdigit() else q)
+
+
+def build_metrics_payload(config: str, source: str, stats: dict, query_ids: list[str]) -> dict:
     """Assemble the metrics.json payload from evaluate_config's return.
 
     Deterministic (no timestamp) so a re-run against an unchanged store diffs
     clean; the shape is exactly what aggregate_stats.load_metrics consumes.
+    ``query_ids`` (aligned with the per_query arrays) let the gather step verify
+    that every config was scored over the SAME queries before pairing them.
     """
     per_query = stats["per_query"]
+    if len(query_ids) != len(per_query["ndcg@10"]):
+        raise ValueError(
+            f"query_ids ({len(query_ids)}) misaligned with per_query "
+            f"({len(per_query['ndcg@10'])})"
+        )
     return {
         "config": config,
         "source": source,
-        "n_queries": len(per_query["ndcg@10"]),
+        "n_queries": len(query_ids),
+        "query_ids": list(query_ids),
         "means": stats["means"],
         "per_query": per_query,
     }
@@ -79,7 +93,7 @@ async def amain(args, cfg) -> int:
         if args.teardown:
             await sc.teardown(client, [cfg.key])
 
-    payload = build_metrics_payload(cfg.key, source, stats)
+    payload = build_metrics_payload(cfg.key, source, stats, _ordered_qids(queries))
     Path(args.out).write_text(json.dumps(payload, indent=2, sort_keys=True),
                               encoding="utf-8")
     m = stats["means"]

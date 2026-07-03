@@ -49,14 +49,19 @@ def load_metrics(paths: list[str]) -> tuple[dict, list[str], str, int]:
 
     Ordering: the stats reference config (``fixed_tok512``) is placed first when
     present so it reads as the baseline column (``build_significance_section``
-    independently picks it as the reference); the rest keep input order. Fails
-    loudly on a duplicate config, a missing metric key, or per-query arrays of
-    unequal length (the paired tests require aligned per-query vectors).
+    independently picks it as the reference); the rest keep input order.
+
+    Fails loudly (``SystemExit``) on a duplicate config, a missing ``per_query``
+    or ``means`` metric, or **misaligned queries**. The paired diff-CI / Wilcoxon
+    tests are only valid over the SAME queries in the SAME order for every config;
+    when the files carry ``query_ids`` (chunk_one always writes them) that is
+    checked exactly, and a length-only fallback covers legacy files without ids.
     """
     eval_stats: dict = {}
     order: list[str] = []
     sources: set[str] = set()
     lengths: set[int] = set()
+    qid_lists: dict[str, tuple] = {}
     for p in paths:
         data = json.loads(Path(p).read_text(encoding="utf-8"))
         key = data.get("config")
@@ -65,19 +70,37 @@ def load_metrics(paths: list[str]) -> tuple[dict, list[str], str, int]:
         if key in eval_stats:
             raise SystemExit(f"duplicate config '{key}' (from {p})")
         pq = data.get("per_query") or {}
-        missing = [m for m in _REQUIRED_PQ if m not in pq]
-        if missing:
-            raise SystemExit(f"{p}: per_query missing {missing}")
+        missing_pq = [m for m in _REQUIRED_PQ if m not in pq]
+        if missing_pq:
+            raise SystemExit(f"{p}: per_query missing {missing_pq}")
+        means = data.get("means") or {}
+        missing_means = [m for m in _REQUIRED_PQ if m not in means]
+        if missing_means:
+            raise SystemExit(f"{p}: means missing {missing_means}")
         lengths.add(len(pq["ndcg@10"]))
         sources.add(str(data.get("source", "?")))
-        eval_stats[key] = {"key": key, "means": data["means"], "per_query": pq}
+        if data.get("query_ids") is not None:
+            qid_lists[key] = tuple(data["query_ids"])
+        eval_stats[key] = {"key": key, "means": means, "per_query": pq}
         order.append(key)
-    if len(lengths) != 1:
+    # Alignment: exact query-id match when every file recorded ids (the real
+    # paired guarantee); else fall back to a length check and flag that order is
+    # unverified — length equality is necessary but NOT sufficient for pairing.
+    if len(qid_lists) == len(order):
+        if len(set(qid_lists.values())) != 1:
+            raise SystemExit(
+                "configs were scored over DIFFERENT queries (query_ids mismatch); "
+                "the paired diff-CI / Wilcoxon tests require the SAME queries in "
+                "the same order for every config"
+            )
+    elif len(lengths) != 1:
         raise SystemExit(
             f"per-query arrays differ in length across configs ({sorted(lengths)}); "
-            "the paired diff-CI / Wilcoxon tests require the SAME queries in the "
-            "same order for every config"
+            "the paired tests require the same queries for every config"
         )
+    elif qid_lists:
+        print("WARNING: some metrics files lack query_ids; per-query alignment is "
+              "assumed from equal length but not verified.", file=sys.stderr)
     if len(sources) > 1:
         print(f"WARNING: configs report different data sources {sorted(sources)}; "
               "a cross-source comparison is not apples-to-apples.", file=sys.stderr)
