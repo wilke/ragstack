@@ -35,8 +35,19 @@ Bulk ingestion, the eval/benchmark harnesses, and maintenance/migration jobs are
 ### 2. Online / latency plane → **Go for network orchestration**
 The API gateway (routing, API-key auth, tenancy scoping, per-tenant quota), the hybrid-retrieval fan-in + RRF, and — highest value — the **multi-endpoint embedder pool**, extracted as a standalone **Go embedding-router sidecar** in front of the vLLM fleet. Gated by the conformance suite.
 
+The router sidecar should expose **two logical pools — an ingest pool and a query pool** — as a **bulkhead**: the ingest pool is batch-optimized and scale-to-zero, the query pool is warm and low-latency. Today a single `PooledEmbedder` serves both paths, so a bulk re-embed can contend with live query embedding; splitting them at the router is the concrete fix. (Independently arrived at by the HA design study, [docs/design/ha-rag-reference-design.md](../design/ha-rag-reference-design.md) §5.4.)
+
 ### 3. ML / scientific core → **stays Python, behind HTTP**
 Model sidecars (embedding BGE, cross-encoder), semantic chunking's embedding, the HF tokenizer, PDF loading, enrichment, and (near-term) the LLM answer-gen / rewriters / KG extractor. Never ported to Go; reached over HTTP from either plane.
+
+### Ingest modalities: batch workflow vs streaming queue
+
+The offline plane admits **two ingest modalities**, selected by the workload — do not build both preemptively:
+
+- **Batch (default here) → GoWe/CWL workflow.** RAGStack's real ingest is corpus-shaped: large JSONL dumps and eval sweeps, i.e. scatter-gather over a bounded work-list. The workflow DAG owns scatter/retry/checkpoint/resume. This is the modality this ADR adopts.
+- **Streaming / continuous → durable queue + KEDA workers.** If a continuous or CDC-driven ingestion requirement appears (freshness SLOs on a live-changing corpus), the right substrate is a durable queue with queue-depth (KEDA) autoscaling and a dead-letter queue — *not* a workflow engine. The [HA design study](../design/ha-rag-reference-design.md) §3 uses this modality.
+
+Both share the same **atomic per-shard Python tool** (`IngestionPipeline`) and the same idempotent-upsert + `done_ranges` correctness core; only the orchestrator differs. The trigger to add the streaming modality is a measured continuous-ingest need, not a hypothetical one.
 
 ### Component ownership
 
@@ -116,6 +127,8 @@ flowchart TB
 - Evals gain reproducibility (the DAG + inputs are captured) and free cross-GPU parallelism.
 - The embedder pool and gateway get a runtime (Go) suited to their I/O-orchestration shape; better p99 and concurrency density on the query path.
 - ML stays where the ecosystem is; the HTTP sidecar boundary is unchanged.
+- **Ingest/query embedding-pool bulkhead** (the router's two pools) prevents a bulk re-embed from starving live query embedding — a system-level bulkhead.
+- **Independent validation:** a clean-room HA design study ([docs/design/ha-rag-reference-design.md](../design/ha-rag-reference-design.md)), reached from web research rather than this codebase, converged on the same two-plane split and the same embedding-pool bulkhead — see the [review & contrast](../design/ha-rag-review-and-contrast.md) Part E.
 
 **Negative / costs**
 - A second execution substrate (GoWe/CWL) to operate, plus CWL's file-in/file-out model vs. DB-side-effect steps (mitigated by emitting **receipt files** as step outputs — see Appendix B).
