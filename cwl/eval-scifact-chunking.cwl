@@ -10,7 +10,7 @@
 # reliance on PATH or a particular working directory. The tools still need the
 # ragstack package importable in the runtime env (installed, or in the run SIF).
 #
-#   cd python && cwltool ../cwl/eval-scifact-7way.cwl ../cwl/eval-scifact-7way.inputs.yml
+#   cwltool cwl/eval-scifact-chunking.cwl cwl/eval-scifact-chunking.inputs.yml
 #
 # NOTE: `chunk_one` needs the live SFR embedding fleet + Qdrant + ES (it ingests
 # into isolated scifact_m7_<config> stores and tears them down); it is not a CI

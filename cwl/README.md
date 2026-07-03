@@ -10,8 +10,8 @@ outputs, no service to break).
 
 | File | Role |
 |---|---|
-| `eval-scifact-7way.cwl` | Scatter/gather workflow: ingest+score each chunking config independently, then aggregate the stats. |
-| `eval-scifact-7way.inputs.yml` | Example inputs (the configs to compare + the embedding key). |
+| `eval-scifact-chunking.cwl` | Scatter/gather workflow: ingest+score each chunking config independently, then aggregate the stats. |
+| `eval-scifact-chunking.inputs.yml` | Example inputs (the configs to compare + the embedding key). |
 
 The two step tools live in the ragstack package's script tree:
 
@@ -32,7 +32,7 @@ across CWL runners — no PATH or working-directory assumptions:
 
 ```bash
 . /rag/bin/activate            # ragstack env + endpoints on PATH
-cwltool cwl/eval-scifact-7way.cwl cwl/eval-scifact-7way.inputs.yml
+cwltool cwl/eval-scifact-chunking.cwl cwl/eval-scifact-chunking.inputs.yml
 ```
 
 On GoWe, submit the same document (local or Apptainer backend). GoWe owns scatter,
