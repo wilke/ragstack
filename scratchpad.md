@@ -261,3 +261,24 @@ Restructured repo for Go + Python parallel development:
 - Elasticsearch BM25 store adapter + `TextIndex` impl
 - Add a `--embedding-api` autodetect (HEAD probe?) so users don't have to remember the flag
 - Bring vLLM up properly (SFR-Embedding-Mistral on H200) and benchmark vs BGE for the workload
+
+---
+
+## 2026-07-03 — STATUS refresh + benchmarks as eval/regression
+
+Refreshed STATUS.md to `main @ 3a95050` (was stale at v0.15.0 / 2026-07-01):
+- Recorded the post-v0.15.0 M6 merges from parallel sessions — RBAC spine + `/v1/config` (#84/PR #81), tenant-scoped read endpoints (#85/PR #98), dashboard SPA scaffold + Explore console (#92/#93, PRs #83/#99), config quality-knobs wired (PR #120), `sentence-transformers<4` (PR #119), new ROADMAP.md. M6 flipped "not started" → in progress.
+- Recorded this session's chunking size-independence PRs #78/#79/#80 and corrected the root cause (the "lambda flakiness" was our O(n²) split + giant-doc segmentation-embed flood, not the endpoints; lambda13 stable with the fix).
+- Rewrote the stale #71 "prod action" note (it told the operator to restart a single lambda job on pre-#70 code) → now points at the 12-GPU sharded loader; marked bounded look-ahead low-urgency.
+- Logged the operational 3-corpus A/B (`ragstack_sfr_{tok256,tok512,semantic}`) and the eval-home gap.
+
+### Benchmarks as eval + regression (design note)
+The 3-corpus A/B (`tok256` vs `tok512` vs `semantic_pooled`, all SFR/4096, same query space) has **no committed way to be scored** once built: `scifact_chunk_eval.py` and `chunking_compare_7way.py` ingest their *own* isolated `chunkcmp_*` stores; they can't point at an externally-built collection.
+
+Plan (fits the roadmap, doesn't invent a parallel track):
+1. **Add an external-store mode** to the eval harnesses: `--collection`/`--es-index`/`--tenant` to score a *pre-built* corpus instead of ingesting a throwaway subset. This is the missing seam that lets an operational corpus be evaluated at all.
+2. **Fold into the ablation-harness (#122).** #122 already exists to "isolate embedding/BM25/RRF-k/rewriting/graph/answer-quality — today only chunking is isolated," and PR #120 made the quality knobs config-driven (its precondition). The 3-corpus A/B is the *chunking axis* of #122 run against real built corpora rather than a 1500-doc subset. So: chunking-strategy becomes one configured axis of #122, scored by SciFact (graded qrels) + the known-item harness.
+3. **SciFact + more than one benchmark.** SciFact (300 claim queries, graded qrels, bootstrap CIs + Holm–Wilcoxon) is the primary hypothesis test — it already showed chunking is retrieval-invariant (no config distinguishable from `fixed_tok512`). To *show improvement* (not just non-inferiority) we need a benchmark where chunking/retrieval choices actually move the needle: add **BioASQ** (#56, domain-matched to the scientific corpus) and a second BEIR task (e.g. NFCorpus — biomedical) so a win isn't SciFact-specific. Report per-benchmark nDCG@10 / recall@{10,20,100} / MAP with CIs; a real improvement should hold on ≥2.
+4. **Regression tests — yes.** Once a corpus + benchmark pair has a recorded baseline score, the harness doubles as a **retrieval-quality regression gate**: pin the baseline (JSON of metric + CI), re-run on PRs that touch chunking/retrieval/RRF/rerank, and **fail if nDCG@10 drops below `baseline_lower_CI − ε`**. Distinguish two tiers: (a) fast **deterministic** gates (chunk counts, token-overflow==0, id determinism, index-parity Qdrant⇄ES) run every CI; (b) slower **quality** gates (SciFact/BioASQ nDCG) run nightly or on retrieval-path labels, since they need the GPU embed fleet. This is the natural home for the ablation-harness output: baseline once, then guard against silent regressions.
+
+Action: file one issue "external-store eval mode + wire 3-corpus A/B into #122; add BioASQ/NFCorpus; promote to nightly regression gate" and link it under M7/eval in ROADMAP.md.

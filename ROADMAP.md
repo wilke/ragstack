@@ -52,7 +52,7 @@ Status: ✅ done · 🟡 partial · ⛔ not started. "Blocked by" names the hard
 | #112 per-tenant compute/token quotas | ⛔ | | — |
 | #113 structured errors + feedback + explain | ⛔ | | — |
 | #91 BV-BRC SSO + CSRF | ⛔ | greenfield | RBAC spine (done) |
-| #123 config-hardening | ⛔ | weighted RRF, threshold, timeouts, runtime-config docs | PR #120 lands first |
+| #123 config-hardening | ⛔ | weighted RRF, threshold, timeouts, runtime-config docs | — (PR #120 merged; unblocked) |
 
 ### M7 — Observability
 | Issue | What | Status | Blocked by |
@@ -60,6 +60,7 @@ Status: ✅ done · 🟡 partial · ⛔ not started. "Blocked by" names the hard
 | #89 `/metrics` + OTEL + Prometheus/Grafana | ⛔ | concrete impl | — |
 | #114 OTel across planes + RED/USE + burn-rate SLOs | ⛔ | design framing (dedupe w/ #89) | — |
 | #90 usage log + `/v1/stats/usage` + per-stage timings | ⛔ | | overlaps #89 |
+| #125 external-store eval + 3-corpus A/B + regression gate | 🟡 | seam landed (PR #126); → fold into #122 | #122, PR #120 |
 
 ### M8 — Production
 | Issue | What | Status | Blocked by |
@@ -77,6 +78,7 @@ Backend it waits on: #86 (→#94), #100 (→#95), #89 (→#95), #90 (→#96), #8
 ### Ingestion & eval (ADR-0001 execution topology)
 - **ADR-0001 migration:** accept ADR → build `GoWeBackend` (per-shard Python tool) → **subsumes** #71 (look-ahead), #25 (script/pipeline dup), #63 (metrics observer). Also #62 (collection agreement → receipts), #64 (token cache), #77 (gap tracker).
 - **Per-component benchmarking:** ablation-harness (**#122**) — the missing ability to isolate embedding/BM25/RRF-k/rewriting/graph/answer-quality; today only chunking is isolated. Depends on PR #120 (quality knobs now config-driven).
+- **Eval on built corpora + regression gates (#125):** external-store eval mode (score a *pre-built* collection; PR #126 landed the seam in `scifact_chunk_eval.py`) so the operational 3-corpus A/B (`ragstack_sfr_{tok256,tok512,semantic}`) becomes the **chunking axis of #122**. SciFact only proves *non-inferiority* — add **BioASQ (#56)** + NFCorpus to demonstrate *improvement*. Pin per-query metric baselines (`--metrics-out`) as a two-tier regression gate (deterministic checks every CI; nDCG@10 vs baseline nightly / on retrieval-path labels).
 - **Eval experiments (low priority):** #46/#47 cross-system chunking, #55 localization metric, #56 BioASQ.
 - **Refactor/duplication:** #103 (bisect isolation), #104 (OpenAILLM→SidecarClient), #105 (`_ChunkListStore`), #106 (argparse defaults), #107 (store id helpers).
 
