@@ -80,7 +80,7 @@ User Query
 3. RERANK ───── Cross-encoder rescores 40 → top 5 (neural precision)
   │
   ▼
-4. CHECK ────── Score too low? → "I don't have enough info" (hallucination guard)
+4. DEGRADE ──── Any stage fails? → return sources, never a 500 (graceful degradation)
   │
   ▼
 5. ASSEMBLE ─── Select chunks within token budget, order by position
@@ -119,14 +119,14 @@ Query ──┬── Vector search (semantic) ──┐
         └── BM25 search (keyword) ────┘
 ```
 
-**Measured impact:**
+**Illustrative impact** *(literature ranges, not RAGStack benchmarks)*:
 
 | Metric | Vector only | + Hybrid search |
 |--------|------------|-----------------|
 | Keyword query recall | ~40% | ~90% |
 | Overall nDCG@5 | ~0.55 | ~0.65 |
 
-**Added cost:** One BM25 index (Postgres tsvector or Elasticsearch). Searches run in parallel — minimal latency impact.
+**Added cost:** One BM25 index (Elasticsearch). Searches run in parallel — minimal latency impact.
 
 ---
 
@@ -136,12 +136,12 @@ Initial retrieval returns 40 candidates — many partially relevant. Vector simi
 
 **Fix:** A **cross-encoder** reads each (query, document) pair and produces a precise relevance score. Rescores 40 candidates → top 5.
 
-**Query rewriting** casts a wider retrieval net:
+**Query rewriting** casts a wider retrieval net (implemented: multi-query, HyDE):
 - **Multi-query** — LLM paraphrases the question 3 ways
 - **HyDE** — LLM writes a hypothetical answer, embeds that instead
-- **Step-back** — LLM generalizes the query for broader context
+- **Step-back** *(planned)* — LLM generalizes the query for broader context
 
-**Measured impact:**
+**Illustrative impact** *(literature ranges, not RAGStack benchmarks)*:
 
 | Metric | Hybrid only | + Reranking |
 |--------|------------|-------------|
@@ -166,7 +166,7 @@ Docs → LLM extracts triples → Neo4j
 Query → entity recognition → graph neighborhood → RRF
 ```
 
-**Measured impact:**
+**Illustrative impact** *(literature ranges, not RAGStack benchmarks)*:
 
 | Metric | Without graph | + Knowledge graph |
 |--------|--------------|-------------------|
@@ -186,7 +186,7 @@ The pipeline works — but will it **keep working** as data changes and users sc
 | Concern | Mechanism |
 |---------|-----------|
 | Regressions | Nightly eval against gold set; CI fails if nDCG drops |
-| Hallucination | Confidence threshold — refuse to answer when retrieval is poor |
+| Hallucination | Graceful degradation today (sources + note on LLM failure); confidence-gate refusal planned |
 | Data leaks | Row-Level Security + collection-per-tenant |
 | Audit | Every query and admin action logged |
 | Outages | Graceful degradation — components fall back, not fail |
@@ -199,28 +199,31 @@ The pipeline works — but will it **keep working** as data changes and users sc
 ## RagStack Architecture
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │            Go API Server                  │
-                    │  ┌────────┐ ┌─────────┐ ┌────────────┐  │
-  Client ────────→  │  │Rewrite │→│Retrieve │→│  Generate   │  │
-                    │  └────────┘ └─────────┘ └────────────┘  │
-                    └──────┬──────────┬──────────┬─────────────┘
-                           │          │          │
-              ┌────────────┤   ┌──────┤   ┌──────┤
-              ▼            ▼   ▼      ▼   ▼      ▼
-         ┌────────┐  ┌───────┐ ┌────┐ ┌─────┐ ┌──────┐
-         │Qdrant  │  │Postgres│ │Neo4j│ │Redis│ │vLLM  │
-         │vectors │  │BM25+RLS│ │graph│ │cache│ │(GPU) │
-         └────────┘  └───────┘ └────┘ └─────┘ └──────┘
-                                                   │
-                        Python Sidecars            │
-              ┌──────────────┬──────────────┐      │
-              ▼              ▼              ▼      ▼
+              ┌──────────────────────────────────────────────────┐
+              │  API Server   (Python = complete impl,            │
+              │                Go = Phase-1 scaffold / stubs)      │
+              │  ┌────────┐ ┌─────────┐ ┌────────────┐            │
+  Client ──→  │  │Rewrite │→│Retrieve │→│  Generate   │           │
+              │  └────────┘ └─────────┘ └────────────┘            │
+              │  auth · tenant-scope (metadata filter) · RBAC · quota│
+              └──┬───────┬───────┬────────┬───────┬───────┬────────┘
+                 │       │       │        │       │       │
+                 ▼       ▼       ▼        ▼       ▼       ▼
+            ┌────────┐┌────────────┐┌─────┐┌────────┐┌─────┐┌──────┐
+            │Qdrant  ││Elasticsearch││Neo4j││Postgres││Redis││vLLM  │
+            │vectors ││ BM25 text  ││graph││  jobs  ││cache││(GPU) │
+            └────────┘└────────────┘└─────┘└────────┘└─────┘└──────┘
+                                                                │
+                        Python Sidecars                         │
+              ┌──────────────┬──────────────┐                   │
+              ▼              ▼              ▼                    ▼
          ┌─────────┐  ┌───────────┐  ┌──────────────┐
          │Embedding│  │CrossEncode│  │ FAISS legacy  │
          │ sidecar │  │ sidecar   │  │   sidecar     │
          └─────────┘  └───────────┘  └──────────────┘
 ```
+
+> Tenant isolation is enforced by a server-derived `tenant_id` **metadata filter** on every Qdrant/Elasticsearch/Neo4j read (own + shared `public`) — not Postgres RLS. Postgres is the durable **job store**; Redis (cache/rate-limit) is provisioned but not yet load-bearing.
 
 ---
 
@@ -230,10 +233,10 @@ All model inference runs on your infrastructure. No data leaves your network.
 
 | Component | Model | Hardware | Latency |
 |-----------|-------|----------|---------|
-| **Embeddings** | BAAI/bge-base-en-v1.5 (768d) | A10G or CPU | ~50ms/batch |
-| **Generation** | Llama Scout 17B via vLLM | A100 (80GB) | ~300ms TTFT |
+| **Embeddings** | BAAI/bge-base-en-v1.5 (768d); SFR-Mistral via vLLM for scale | A10G or CPU | ~50ms/batch |
+| **Generation** | Any OpenAI-compatible LLM via vLLM (config-driven, opt-in) | A100 (80GB) | ~300ms TTFT |
 | **Reranking** | bge-reranker-v2-m3 | CPU sufficient | ~200ms |
-| **KG extraction** | Llama-3.1-8B via vLLM | Shared GPU | ~500ms/chunk |
+| **KG extraction** | Any instruct LLM via vLLM (opt-in) | Shared GPU | ~500ms/chunk |
 
 **Why self-host?**
 - Data stays internal (HIPAA, ITAR, institutional policy)
@@ -251,21 +254,23 @@ The same container images run everywhere — only the runtime differs.
 |-------------|---------|---------------|
 | **Laptop / dev** | Docker Compose | `make up-go` or `make up-python` |
 | **HPC / bare-metal** | Apptainer | Shell scripts (dev) / systemd (prod) |
-| **Cloud / enterprise** | Kubernetes | Helm chart with HPA |
+| **Cloud / enterprise** | Kubernetes | Helm chart *(planned — M8)* |
 
-**Deployment profiles** control which services start:
+**Layered compose files** control which services start (stacked with multiple `-f` flags):
 
-| Profile | Services | Use case |
+| Layer | Services | Use case |
 |---------|----------|----------|
-| Minimal (3) | Postgres + Qdrant + Redis | Dev / single-tenant |
-| Standard (7) | + Neo4j, MinIO, OTel | Production without legacy |
-| Full (10) | + MongoDB, FAISS, cross-encoder | Legacy compatibility |
+| Vector-only | Qdrant + Postgres + embedding sidecar | Dev / dense-only retrieval |
+| Hybrid | + Elasticsearch (BM25), Redis | Production hybrid retrieval |
+| Full | + Neo4j (graph), cross-encoder + FAISS sidecars | KG + reranking + legacy |
 
 ---
 
 ## Dual Implementation: Go + Python
 
-Both implementations share the same architecture, API contract, and conformance tests.
+Both implementations share the same API contract and conformance tests.
+
+> **Current status:** Python is the complete reference implementation; the Go side is a Phase-1 scaffold whose handlers return stubs. The shared contract + conformance suite make the Go build-out low-risk when prioritized.
 
 ```
 contracts/          ← OpenAPI spec + JSON schemas (single source of truth)
@@ -288,21 +293,23 @@ conformance/        ← HTTP black-box tests run against either implementation
 
 ## Current Status
 
-### What's done (PR #2)
+### Shipped — as of v0.15.0 (mid-2026)
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| **Monorepo structure** | Done | `python/`, `go/`, `sidecars/`, `contracts/`, `conformance/`, `deploy/` |
-| **Go scaffold** | Done | Chi router, 9 endpoints, 8 unit tests passing |
-| **Python scaffold** | Done | FastAPI, Protocol interfaces, in-memory stores |
-| **API contracts** | Done | OpenAPI 3.1 + 11 JSON schemas |
-| **Conformance tests** | Done | 17 HTTP black-box tests + schema validation |
-| **ML sidecars** | Done | Cross-encoder, embedding, FAISS |
-| **Docker Compose** | Done | Split: infra, go, python, sidecars |
-| **Design document** | Done | plan-c5.md: 19 phases, 4 decision points, 5 maturity levels |
+| Area | Status | Details |
+|------|--------|---------|
+| **Ingestion** | Done | PDF/text/JSONL loaders · 6 chunkers (semantic + token-budget) · scholarly enrichment · resumable bulk ingest (1→500k docs) |
+| **Retrieval** | Done | Hybrid dense (Qdrant) + BM25 (Elasticsearch) fused via RRF, tenant-scoped |
+| **Intelligence** | Done | Query rewriting (multi-query, HyDE) · cross-encoder reranking · grounded LLM answers |
+| **Knowledge graph** | Done | LLM triple extraction → Neo4j · tenant-scoped graph endpoints + retrieval fusion (opt-in) |
+| **Multi-tenancy + RBAC** | Done | Server-derived tenant · own+public scoping · 4 roles · admin config/health surfaces |
+| **Scale + resilience** | Done | Multi-endpoint embedder pool · per-tenant quota · poison isolation · graceful degradation |
+| **Chunking eval** | Done | 7-way + SciFact (BEIR) harness with bootstrap CIs — `fixed_tok512` is retrieval-indistinguishable |
+| **Python API** | Done | FastAPI · all endpoints wired to durable backends |
+| **Go API** | Scaffold | Chi router + contract; handlers return stubs |
+| **Deployment** | Done | Docker Compose + Apptainer rootless; Helm/K8s planned (M8) |
 
 ### What's next
-Phase 2: Database + storage layer → embedding integration → vector store → retrieval engine
+Go parity for KG extraction (#41) · dashboard/explorer build-out · `GET /v1/documents` metadata store · observability (M7) · production hardening (M8)
 
 ---
 
@@ -379,8 +386,8 @@ Total:      ~2000ms
 | **Passthrough** | No rewriting — use the query as-is. | Clear, specific queries. Zero latency cost. |
 | **Multi-query** | LLM generates 3-5 paraphrases of the query. All variants are searched and results merged. | Ambiguous queries where different phrasings retrieve different relevant docs. |
 | **HyDE** | **Hypothetical Document Embedding** — LLM writes a hypothetical answer, then embeds *that* answer as the search query instead of the original question. | Queries phrased as questions when the corpus contains declarative statements. The hypothetical answer is closer in vector space to real answers than the question is. |
-| **Step-back** | LLM generalizes the query to a broader concept, then searches for both the original and the generalized version. | Overly specific queries that miss relevant context. "What is the half-life of caffeine?" → also searches "caffeine metabolism pharmacokinetics". |
-| **Entity expansion** | Extract entities from the query, look up related entities in the knowledge graph, add them to the search. | Domain-specific queries where synonyms or related concepts exist in the KG. "BRCA1" → also finds "DNA repair", "breast cancer", "TP53". |
+| **Step-back** *(planned)* | LLM generalizes the query to a broader concept, then searches for both the original and the generalized version. | Overly specific queries that miss relevant context. "What is the half-life of caffeine?" → also searches "caffeine metabolism pharmacokinetics". |
+| **Entity expansion** *(planned)* | Extract entities from the query, look up related entities in the knowledge graph, add them to the search. | Domain-specific queries where synonyms or related concepts exist in the KG. "BRCA1" → also finds "DNA repair", "breast cancer", "TP53". |
 
 ---
 
