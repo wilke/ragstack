@@ -262,9 +262,20 @@ don't "understand") and **canary with automated analysis for the query API**; Ia
 (Terraform); multi-AZ for all stateful stores, multi-region only if the availability
 target demands it; 12-factor config, secrets injected.
 
+> ⚠️ **Aspirational — not a provisioning spec.** This section (and the HA SLOs in §7)
+> names deployment *patterns*, not concrete infrastructure setup: there is no reference
+> topology, capacity/sizing, resource limits, IaC modules, or backup/restore runbook
+> here. The SLOs below are only achievable once that infrastructure actually exists —
+> do not read them as "already provided." Concrete production infra (Helm/K8s, IaC,
+> sizing, monitoring stack, backup/restore) is a separate deliverable; for how RAGStack
+> is deployed **today** (single-node dev/test via Docker Compose or Apptainer) see
+> [docs/DEPLOYMENT.md](../DEPLOYMENT.md).
+
 ---
 
 ## 7. SLOs
+
+*Targets, not current state — see the §6.5 guardrail. These are achievable only once the HA infrastructure (replicas, multi-AZ, autoscaling, monitoring) is provisioned.*
 
 | Plane | SLI | SLO |
 |---|---|---|
