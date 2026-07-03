@@ -41,10 +41,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 
@@ -194,6 +196,28 @@ def _store_name(key: str) -> str:
     return f"{SCIFACT_PREFIX}_{key}"
 
 
+def _write_metrics_json(path, eval_stats, source, n_q, *, collection=None, tenant=None):
+    """Persist per-query metric arrays + means as a pinnable regression baseline.
+
+    Deterministic (no timestamp) so a re-run against an unchanged corpus diffs clean;
+    a regression gate loads this, re-runs, and fails if nDCG@10 drops below the
+    recorded mean's lower bound minus a tolerance.
+    """
+    payload = {
+        "source": source,
+        "n_queries": n_q,
+        "collection": collection,
+        "tenant": tenant,
+        "configs": {
+            k: {"means": v["means"], "per_query": v["per_query"]}
+            for k, v in eval_stats.items()
+        },
+    }
+    Path(path).write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Ingest one config into scifact_m7_<key> stores
 # --------------------------------------------------------------------------- #
@@ -254,6 +278,7 @@ async def evaluate_config(
     rerank_pool: int,
     retrieve_pool: int,
     reranker: SidecarReranker,
+    store: tuple[str, str, str] | None = None,
 ) -> dict:
     """Retrieve chunks, map to docs, score vs qrels. Returns per-query metric arrays.
 
@@ -270,18 +295,23 @@ async def evaluate_config(
     key = cfg.key
     qids = sorted(queries, key=lambda q: int(q) if q.isdigit() else q)
     print(f"\n[{key}] evaluating {len(qids)} SciFact claim queries ...", flush=True)
-    collection = _store_name(key)
+    # External-store mode (store given) scores a pre-built collection/index under an
+    # explicit tenant; default mode targets this config's own scifact_m7_<key> store.
+    collection, es_index, tenant = (
+        store if store is not None
+        else (_store_name(key), _store_name(key), c7.TENANT)
+    )
     vstore = QdrantVectorStore(
         url=c7.QDRANT_URL, collection=collection,
         vector_size=c7.VECTOR_SIZE, timeout=120,
     )
-    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=collection)
+    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=es_index)
     embedder = make_embedder(
         api="openai", http=client, base_url=c7.SFR_ENDPOINTS[0], model=c7.SFR_MODEL,
         api_key=c7.EMBED_API_KEY,
     )
     retriever = HybridRetriever(vstore, tindex, embedder)
-    filters = scope_filters({}, c7.TENANT)
+    filters = scope_filters({}, tenant)
     sem = asyncio.Semaphore(c7.EVAL_CONCURRENCY)
 
     async def _rerank(query: str, chunks):
@@ -304,7 +334,7 @@ async def evaluate_config(
         async with sem:
             pool = await retriever.retrieve(
                 query, top_k=retrieve_pool, filters=filters,
-                use_graph=False, tenant_id=c7.TENANT,
+                use_graph=False, tenant_id=tenant,
             )
             if not pool:
                 return {"ndcg": 0.0, "ap": 0.0,
@@ -507,6 +537,36 @@ async def amain(args, live_eps) -> int:
         qrels = {q: qrels[q] for q in keep}
         print(f"[data] limited to {len(queries)} queries (--query-limit).", flush=True)
 
+    # ---- External-store mode: score a pre-built collection, no ingest/teardown ----
+    if getattr(args, "collection", None):
+        label = args.label or args.collection
+        cfg = SimpleNamespace(key=label, label=label)
+        es_index = args.es_index or args.collection
+        tenant = args.tenant or c7.TENANT
+        print(f"[external] scoring pre-built store: collection={args.collection} "
+              f"es_index={es_index} tenant={tenant} (no ingest, no teardown)",
+              flush=True)
+        timeout = httpx.Timeout(300.0, connect=30.0)
+        limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            reranker = SidecarReranker(c7.RERANKER_URL, http=client)
+            stats = await evaluate_config(
+                cfg, queries, qrels, client, args.rerank_pool,
+                args.retrieve_pool, reranker,
+                store=(args.collection, es_index, tenant),
+            )
+        print("\n" + "=" * 80 + "\nSCIFACT RESULTS (external store)\n" + "=" * 80)
+        print(build_metrics_table({label: stats}, [label]))
+        if args.metrics_out:
+            _write_metrics_json(args.metrics_out, {label: stats}, source,
+                                len(queries), collection=args.collection,
+                                tenant=tenant)
+            print(f"Per-query metrics written to {args.metrics_out}")
+        print("[significance] skipped — single external corpus. For pairwise diff "
+              "CIs, build each chunking variant into its own store and score them "
+              "with a shared baseline.")
+        return 0
+
     # Optional subset (default: all). The stats reference config (fixed_tok512) is
     # force-included so the significance section still has its baseline.
     configs = list(c7.CONFIGS)
@@ -543,6 +603,9 @@ async def amain(args, live_eps) -> int:
         print(sig)
         print(f"Report written to {REPORT_PATH}")
         print(f"CSV written to {CSV_PATH}")
+        if args.metrics_out:
+            _write_metrics_json(args.metrics_out, eval_stats, source, len(queries))
+            print(f"Per-query metrics written to {args.metrics_out}")
 
         if args.teardown:
             gone = await teardown(client, keys)
@@ -575,6 +638,22 @@ def parse_args(argv=None):
     p.add_argument("--no-teardown", dest="teardown", action="store_false",
                    help="keep scifact_m7_* stores (default: tear down)")
     p.set_defaults(teardown=True)
+    p.add_argument("--collection", default=None,
+                   help="EXTERNAL-STORE MODE: score this pre-built Qdrant collection "
+                        "instead of ingesting the SciFact corpus (skips ingest + "
+                        "teardown). The corpus MUST be built from the SciFact documents "
+                        "(chunk doc_ids must match the qrels) or the scores are "
+                        "meaningless. Turns the harness into a regression gate.")
+    p.add_argument("--es-index", default=None,
+                   help="ES index for --collection mode (default: same as --collection)")
+    p.add_argument("--tenant", default=None,
+                   help="tenant to scope retrieval in --collection mode "
+                        "(default: the harness tenant 'public')")
+    p.add_argument("--label", default=None,
+                   help="report label for --collection mode (default: the collection name)")
+    p.add_argument("--metrics-out", default=None,
+                   help="write per-query metric arrays + means as JSON — a pinnable "
+                        "regression baseline (works in either mode)")
     return p.parse_args(argv)
 
 
