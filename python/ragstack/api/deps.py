@@ -36,7 +36,7 @@ from ragstack.rewriting.rewriters import (
     MultiQueryRewriter,
     PassthroughRewriter,
 )
-from ragstack.scoring.scorers import SidecarReranker
+from ragstack.scoring.scorers import RRFScorer, SidecarReranker
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 
@@ -253,7 +253,7 @@ def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
     available; the LLM-backed strategies only when an LLM is configured."""
     rewriters: dict[str, QueryRewriter] = {"passthrough": PassthroughRewriter()}
     if llm is not None:
-        rewriters["multiquery"] = MultiQueryRewriter(llm)
+        rewriters["multiquery"] = MultiQueryRewriter(llm, n=settings.multiquery_n)
         rewriters["hyde"] = HyDERewriter(llm)
     return rewriters
 
@@ -495,7 +495,16 @@ async def lifespan(app: FastAPI):
     # via RRF. With the in-memory text index the BM25 leg still works (Jaccard),
     # but it's the Elasticsearch backend that makes it real; the graph leg is
     # active only when a graph store is configured.
-    retriever = HybridRetriever(vector_store, text_index, embedder, graph_store=graph_store)
+    retriever = HybridRetriever(
+        vector_store,
+        text_index,
+        embedder,
+        graph_store=graph_store,
+        rrf_scorer=RRFScorer(k=settings.rrf_k),
+        candidate_multiplier=settings.retrieval_candidate_multiplier,
+        graph_context_score=settings.graph_context_score,
+        graph_context_depth=settings.graph_context_depth,
+    )
 
     app.state.http_client = http_client
     app.state.embedder = embedder
@@ -507,7 +516,11 @@ async def lifespan(app: FastAPI):
     app.state.embed_bridge = embed_bridge
     app.state.job_store = job_store
     app.state.ingestor = ingestor
-    app.state.generator = RagGenerator(llm) if llm is not None else None
+    app.state.generator = (
+        RagGenerator(llm, max_context_chars=settings.llm_max_context_chars)
+        if llm is not None
+        else None
+    )
     app.state.tenant_quota = tenant_quota
     app.state.retriever = retriever
     app.state.rewriters = _build_rewriters(llm)

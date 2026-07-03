@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 # Stateless RRF fusion for combining per-rewrite ranked lists.
-_RRF = RRFScorer()
+_RRF = RRFScorer(k=settings.rrf_k)
 
 
 async def _expand_query(
