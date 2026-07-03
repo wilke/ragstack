@@ -200,8 +200,20 @@ async def list_documents(
         docs, next_cursor = await text_index.list_documents(
             readable_tenants(tenant), limit=limit, cursor=cursor
         )
-    except ValueError as e:  # malformed cursor
-        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        # Malformed cursor. Keep the client-facing detail generic — don't reflect
+        # the attacker-supplied cursor into the response body; the specifics
+        # (repr-escaped, so log-injection-safe) go to the log only.
+        log.info("list_documents rejected a malformed cursor: %s", e)
+        raise HTTPException(status_code=400, detail="malformed pagination cursor") from e
+    except Exception:
+        # Degrade to empty on a backend fault (ES unreachable / index missing),
+        # matching the graceful degradation of the other tenant-scoped read probes
+        # (graph/stats, stats/stores) rather than surfacing a 500.
+        log.warning(
+            "list_documents: backend listing failed; degrading to empty", exc_info=True
+        )
+        return []
     if next_cursor:
         response.headers["X-Next-Cursor"] = next_cursor
     return [

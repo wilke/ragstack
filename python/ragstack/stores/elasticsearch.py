@@ -209,23 +209,33 @@ class ElasticsearchTextIndex:
                 }
             },
         )
-        agg = resp["aggregations"]["docs"]
-        buckets = agg["buckets"]
-        docs = [
-            document_from_chunk_metadata(
-                b["key"]["doc_id"],
-                int(b["doc_count"]),
-                dict(b["exemplar"]["hits"]["hits"][0]["_source"].get("metadata") or {}),
+        agg = resp.get("aggregations", {}).get("docs", {})
+        buckets = agg.get("buckets", [])
+        docs = []
+        for b in buckets:
+            # A top_hits sub-agg can momentarily return zero hits when a bucket's
+            # only chunk is deleted mid-aggregation (a concurrent delete_by_query);
+            # skip that bucket rather than IndexError on hits[0]. Pagination is
+            # unaffected — the cursor is driven by the raw bucket count / after_key.
+            hits = b["exemplar"]["hits"]["hits"]
+            if not hits:
+                continue
+            docs.append(
+                document_from_chunk_metadata(
+                    b["key"]["doc_id"],
+                    int(b["doc_count"]),
+                    dict(hits[0]["_source"].get("metadata") or {}),
+                )
             )
-            for b in buckets
-        ]
         # Composite returns an after_key whenever it emitted buckets, including on
         # the final full page; only advance the cursor when the page was full, so
         # a short page terminates. (A total that's an exact multiple of ``limit``
         # yields one final empty page — standard composite-pagination behaviour.)
         after_key = agg.get("after_key")
         next_cursor = (
-            encode_cursor(after_key["doc_id"])
+            # doc_id is keyword-typed so ES returns a string; str() guards a
+            # non-string after_key rather than letting encode_cursor AttributeError.
+            encode_cursor(str(after_key["doc_id"]))
             if after_key and len(buckets) == limit
             else None
         )
