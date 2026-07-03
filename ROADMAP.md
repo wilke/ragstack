@@ -52,7 +52,7 @@ Status: ✅ done · 🟡 partial · ⛔ not started. "Blocked by" names the hard
 | #112 per-tenant compute/token quotas | ⛔ | | — |
 | #113 structured errors + feedback + explain | ⛔ | | — |
 | #91 BV-BRC SSO + CSRF | ⛔ | greenfield | RBAC spine (done) |
-| config-hardening | ⛔ | (weighted RRF, threshold, timeouts, runtime-config docs) | PR #120 lands first |
+| #123 config-hardening | ⛔ | weighted RRF, threshold, timeouts, runtime-config docs | PR #120 lands first |
 
 ### M7 — Observability
 | Issue | What | Status | Blocked by |
@@ -76,7 +76,7 @@ Backend it waits on: #86 (→#94), #100 (→#95), #89 (→#95), #90 (→#96), #8
 
 ### Ingestion & eval (ADR-0001 execution topology)
 - **ADR-0001 migration:** accept ADR → build `GoWeBackend` (per-shard Python tool) → **subsumes** #71 (look-ahead), #25 (script/pipeline dup), #63 (metrics observer). Also #62 (collection agreement → receipts), #64 (token cache), #77 (gap tracker).
-- **Per-component benchmarking:** ablation-harness (new) — the missing ability to isolate embedding/BM25/RRF-k/rewriting/graph/answer-quality; today only chunking is isolated. Depends on PR #120 (quality knobs now config-driven).
+- **Per-component benchmarking:** ablation-harness (**#122**) — the missing ability to isolate embedding/BM25/RRF-k/rewriting/graph/answer-quality; today only chunking is isolated. Depends on PR #120 (quality knobs now config-driven).
 - **Eval experiments (low priority):** #46/#47 cross-system chunking, #55 localization metric, #56 BioASQ.
 - **Refactor/duplication:** #103 (bisect isolation), #104 (OpenAILLM→SidecarClient), #105 (`_ChunkListStore`), #106 (argparse defaults), #107 (store id helpers).
 
@@ -103,8 +103,8 @@ flowchart TD
   USAGE["#90 usage log"] --> EVALMOD
   METRICS -. dedupe .- OBSDESIGN["#114 obs design"]
 
-  CFG["PR #120 config knobs ✅"] --> CFGHARD["config-hardening"]
-  CFG --> ABLATE["ablation-harness"]
+  CFG["PR #120 config knobs ✅"] --> CFGHARD["#123 config-hardening"]
+  CFG --> ABLATE["#122 ablation-harness"]
   CFGHARD --> ABLATE
 
   ADR["ADR 0001 accept"] --> GOWE["GoWeBackend"]
@@ -138,7 +138,7 @@ Ordered by leverage (unblocks the most, cheapest first):
 4. **#100 `GET /v1/jobs`** — unblocks the Ops module (#95).
 5. **#89 / #114 observability** (consolidated) — unblocks #95/#96 and is M7 outright.
 6. **#111 answer-surface trust** (streaming/citations/confidence/visible-degradation) + **#29** — the biggest UX lift; the frontend was built to light up when these land.
-7. **ablation-harness** — now possible post-#120; make retrieval quality measurable per component.
+7. **ablation-harness (#122)** — now possible post-#120; make retrieval quality measurable per component.
 8. **ADR 0001 accept → `GoWeBackend`** — retires the ingest-script debt (#71/#25/#63).
 9. **M8 infra** (#118 → #115/#116) — only when moving past single-node; don't advertise HA SLOs until it exists.
 
