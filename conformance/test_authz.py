@@ -113,13 +113,19 @@ async def test_core_op_not_admin_gated(
 # explicit DELETE /v1/documents/{id}. Same gate as the core ops — resolve_tenant:
 # a valid key is required (401) but no role is (never 403). A synthetic probe
 # id/entity is used so the not-admin-gated DELETE reaches the real handler yet is
-# a guaranteed no-op (no document under any tenant has that id). Graph ops are
-# python-only (the Go phase-1 scaffold registers no /v1/graph route → 404); the
-# documents surface exists on both.
+# a guaranteed no-op (no document under any tenant has that id). The graph authz
+# probes are python-only: the Go phase-1 scaffold has no auth middleware — its
+# /v1/graph handlers are unauthenticated 200 stubs — so a 401 assertion can't
+# hold there (the routes exist; they just don't authenticate). The documents
+# surface exists on both impls.
 #
-# Not covered here: GET /v1/ingest/{job_id} depends only on the job store (no
-# resolve_tenant), so it is intentionally unauthenticated — asserting 401 would
-# fail. Tenant-stamping jobs is tracked under #100.
+# Not covered here: GET /v1/ingest/{job_id}. It is NOT unauthenticated — the
+# documents router include carries the resolve_tenant gate, so a keyless-off
+# server returns 401 without a key. But the handler takes no tenant argument and
+# job_store.get(job_id) is not tenant-scoped, so any *authenticated* caller can
+# read another tenant's job status + chunk_ids: an authenticated-but-not-tenant-
+# scoped cross-tenant IDOR. Asserting it needs a two-tenant fixture; the fix
+# (tenant-stamping jobs) is tracked under #100.
 # --------------------------------------------------------------------------- #
 _PROBE = "___conformance_authz_probe___"
 EXTRA_TENANT_OPS = [
@@ -162,20 +168,23 @@ async def test_extra_tenant_op_rejects_invalid_key(
 async def test_extra_tenant_op_not_admin_gated(
     client: httpx.AsyncClient, impl: str, label: str, method: str, path: str, body: dict | None,
 ) -> None:
-    """A valid non-admin key must reach these ops — never 401, never 403.
+    """A valid non-admin key must reach these ops with a real success, never
+    401/403 (nor a 500 masking a broken gate).
 
-    The DELETE reaches the real handler with a synthetic id, so it is a scoped
-    no-op (nothing matches that id under any tenant); the graph reads return 200.
-    Either way the op is neither unauthenticated-rejected nor admin-gated.
+    Unlike the core-op counterpart — which sends an empty body and tolerates a
+    422 validation failure, so it can only assert ``not in (401, 403)`` — these
+    ops have unambiguous success codes: the graph reads return 200 and the DELETE
+    (a scoped no-op on the synthetic id) returns 204. Asserting the exact set
+    catches a gate that 500s or otherwise misbehaves, not just one that rejects.
     """
     _skip_go_graph(label, impl)
     key = _key("RAGSTACK_API_KEY_NONADMIN")
     if not key:
         pytest.skip("needs a valid non-admin key (RAGSTACK_API_KEY_NONADMIN)")
     resp = await _call(client, method, path, key=key, body=body)
-    assert resp.status_code not in (401, 403), (
-        f"{label}: a valid non-admin key was rejected with {resp.status_code} "
-        f"(these ops require auth but not a role): {resp.text}"
+    assert resp.status_code in (200, 204), (
+        f"{label}: a valid non-admin key expected a 200/204 success, got "
+        f"{resp.status_code} (these ops require auth but not a role): {resp.text}"
     )
 
 
