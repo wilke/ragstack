@@ -195,7 +195,7 @@ flowchart TD
     E -->|no| FR[empty<br/>source=empty]
 ```
 
-Files analyzed: `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/loaders.py`, `/Users/me/Development/dxkb/ragstack/python/ragstack/ingestion/enrich.py`.
+Files analyzed: `python/ragstack/ingestion/loaders.py`, `python/ragstack/ingestion/enrich.py`.
 
 ---
 
