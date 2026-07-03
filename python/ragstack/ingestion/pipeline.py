@@ -115,7 +115,27 @@ class IngestionPipeline:
         # Delete each document's prior chunks first. Done here, after a
         # successful embed (a transient embed failure raises before this point),
         # so old data is never destroyed before its replacement exists.
+        #
+        # Delete-prior ONLY for documents that produced a surviving chunk this run.
+        # In a multi-document source, a document whose chunks were *all* quarantined
+        # (unembeddable) contributes nothing to ``all_chunks``; deleting its prior
+        # chunks here would drop good data with no replacement — the per-document
+        # form of the empty-ingest data loss the ``EmptyIngestError`` guard prevents
+        # at the whole-source level. Such a document keeps its prior data intact
+        # (the quarantine is surfaced by the warning above); removing a document is
+        # the explicit ``DELETE`` endpoint's job, not a side effect of a re-ingest
+        # whose new content failed to embed.
+        docs_with_chunks = {c.doc_id for c in all_chunks}
+        skipped = [d.id for d in documents if d.id not in docs_with_chunks]
+        if skipped:
+            log.warning(
+                "ingest %r: kept prior data for %d document(s) with no surviving "
+                "chunks this run (empty or all-quarantined): %s",
+                source, len(skipped), skipped,
+            )
         for doc in documents:
+            if doc.id not in docs_with_chunks:
+                continue
             await self.vector_store.delete(doc.id, tenant_id=tenant_id)
             await self.text_index.delete(doc.id, tenant_id=tenant_id)
             if self.graph_store is not None:
