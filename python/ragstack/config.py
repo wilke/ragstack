@@ -202,6 +202,16 @@ class Settings(BaseSettings):
 
     # Retrieval defaults
     top_k: int = 5
+    # Fusion + per-leg depth (hybrid retrieval). Defaults preserve the prior
+    # hardcoded behaviour; exposed so retrieval quality can be tuned/benchmarked
+    # without editing code (see the phantom-knob fix + ablation-harness work).
+    retrieval_candidate_multiplier: int = 2   # per-leg fetch = top_k * this, before RRF
+    rrf_k: int = 60                            # Reciprocal Rank Fusion constant
+    multiquery_n: int = 3                      # paraphrases per multi-query rewrite
+    graph_context_score: float = 0.5           # RRF score for graph-triple pseudo-chunks
+    graph_context_depth: int = 1               # graph neighbourhood hop depth
+    # Answer generation
+    llm_max_context_chars: int = 8000          # context budget packed into the LLM prompt
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Cross-encoder reranking (final stage over the fused candidate pool).

@@ -21,12 +21,20 @@ class HybridRetriever:
         embedder: object,
         graph_store: GraphStore | None = None,
         rrf_scorer: RRFScorer | None = None,
+        candidate_multiplier: int = 2,
+        graph_context_score: float = 0.5,
+        graph_context_depth: int = 1,
     ) -> None:
         self.vector_store = vector_store
         self.text_index = text_index
         self.embedder = embedder
         self.graph_store = graph_store
         self.rrf = rrf_scorer or RRFScorer()
+        # Per-leg candidate depth (top_k * multiplier) and graph-leg tuning; defaults
+        # match the prior hardcoded values, overridden from Settings in deps.py.
+        self.candidate_multiplier = candidate_multiplier
+        self.graph_context_score = graph_context_score
+        self.graph_context_depth = graph_context_depth
 
     async def retrieve(
         self,
@@ -38,12 +46,13 @@ class HybridRetriever:
     ) -> list[ScoredChunk]:
         # Dense retrieval
         query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
+        depth = top_k * self.candidate_multiplier
         vector_results = await self.vector_store.search(
-            query_vectors[0], top_k=top_k * 2, filters=filters
+            query_vectors[0], top_k=depth, filters=filters
         )
 
         # Sparse / BM25 retrieval
-        bm25_results = await self.text_index.search(query, top_k=top_k * 2, filters=filters)
+        bm25_results = await self.text_index.search(query, top_k=depth, filters=filters)
 
         ranked_lists = [vector_results, bm25_results]
 
@@ -68,7 +77,7 @@ class HybridRetriever:
         from ragstack.models import Chunk
 
         triples = await self.graph_store.query_neighborhood(  # type: ignore[union-attr]
-            query, depth=1, tenant_id=tenant_id
+            query, depth=self.graph_context_depth, tenant_id=tenant_id
         )
         chunks = []
         for triple in triples[:top_k]:
@@ -80,7 +89,7 @@ class HybridRetriever:
                         doc_id=triple.doc_id,
                         content=content,
                     ),
-                    score=0.5,
+                    score=self.graph_context_score,
                     retrieval_method="graph",
                 )
             )
