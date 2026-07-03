@@ -741,18 +741,18 @@ sequenceDiagram
   participant P as Producer<br/>stream+enrich
   participant CT as chunk tasks<br/>Semaphore chunk_concurrency
   participant F as Coordinator _fold<br/>file-order, assigns seq
-  participant Q as Queue<br/>maxsize concurrency*2
+  participant Q as Queue<br/>maxsize concurrency x2
   participant W as Workers xN<br/>embed+upsert
   participant CK as Checkpoint<br/>frontier+done_ranges
   P->>CT: create_task chunk doc
   P->>F: fold oldest-first when window full
-  F->>Q: put seq,start,end,buf,rows
+  F->>Q: put seq start end buf rows
   Q->>W: get batch
   W->>W: retry transient, upsert-first idempotent
-  W->>CK: lock: completed[seq]; drain contiguous prefix
-  CK->>CK: advance frontier_line; trim_below
-  CK->>CK: if above gap: union_range into done_ranges
-  W-->>CK: on fail: append failed, NOT completed -> frontier stalls
+  W->>CK: lock, record completed seq, drain contiguous prefix
+  CK->>CK: advance frontier_line then trim_below
+  CK->>CK: if above gap union_range into done_ranges
+  W-->>CK: on fail append failed not completed so frontier stalls
 ```
 
 **Diagram — #65 done_ranges resume-skip:**
