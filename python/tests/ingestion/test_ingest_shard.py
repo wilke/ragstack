@@ -20,8 +20,9 @@ from ragstack.ingestion.receipts import COMPLETED, FAILED, DocRow, ShardReceipt,
 from ragstack.ingestion.shard import run_shard
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 
-# merge_receipts CLI lives under python/scripts.
+# merge_receipts + ingest_shard CLIs live under python/scripts.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+import ingest_shard  # noqa: E402
 import merge_receipts  # noqa: E402
 
 
@@ -119,6 +120,38 @@ def test_merge_summary_surfaces_failed_shards() -> None:
     assert s["n_shards"] == 3 and s["n_shards_failed"] == 1
     assert s["n_docs"] == 7 and s["n_chunks"] == 15
     assert s["failed_shards"] == ["s2"] and s["errors"] == {"s2": "boom"}
+
+
+def test_receipt_load_malformed_is_clean_error(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"tenant": "public"}', encoding="utf-8")  # no shard_id/status
+    with pytest.raises(ValueError, match="invalid receipt"):
+        ShardReceipt.load(bad)
+
+
+# --------------------------------------------------------------------------- #
+# CLI wiring (offline): the _build_pipeline path the unit test above bypassed —
+# where the #133 fixed_token blocker lived.
+# --------------------------------------------------------------------------- #
+def test_build_chunker_fixed_offline() -> None:
+    args = ingest_shard.parse_args(["x.jsonl", "--chunk-method", "fixed",
+                                    "--embedding-model", ""])
+    assert ingest_shard._build_chunker(args) is not None  # no crash, no network
+
+
+def test_build_chunker_rejects_semantic() -> None:
+    args = ingest_shard.parse_args(["x.jsonl", "--chunk-method", "semantic_pooled"])
+    with pytest.raises(SystemExit, match="not yet wired"):
+        ingest_shard._build_chunker(args)
+
+
+@pytest.mark.asyncio
+async def test_build_pipeline_rejects_mixed_backends() -> None:
+    # split-brain guard fires before any I/O, so http can be None
+    args = ingest_shard.parse_args(["x.jsonl", "--vector-backend", "memory",
+                                    "--text-backend", "elasticsearch"])
+    with pytest.raises(SystemExit, match="consistent"):
+        await ingest_shard._build_pipeline(args, None)
 
 
 def test_merge_receipts_cli(tmp_path: Path) -> None:

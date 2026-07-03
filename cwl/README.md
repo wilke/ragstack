@@ -30,7 +30,24 @@ tool + receipts).
   surfaced, not silently under-ingested). Pure computation. `--fail-on-shard-error`
   makes it a gate. Verified end-to-end under `cwltool`.
 - Receipt contract: `ragstack.ingestion.receipts` (`ShardReceipt`/`DocRow`) — the
-  step's file output; the Qdrant/ES upsert is the side effect (#62).
+  step's file output; the Qdrant/ES upsert is the side effect (#62). `DocRow.metadata`
+  is the light `index_metadata` catalog subset (title/doc_type/doi/authors/year/…);
+  it does **not** carry `ingest_jsonl.py --catalog-out`'s full enriched dump
+  (citations/abstract are dropped).
+
+### Runtime requirement (real GoWe workers)
+
+Both steps stage `python/` and set `PYTHONPATH` so the staged `ragstack` imports —
+this is what makes them run on a GoWe worker (default-executor `worker` →
+apptainer), not only under cwltool. Verified: the **merge step runs end-to-end
+with no external `PYTHONPATH`** (it needs only stdlib + pure-python `ragstack`).
+
+**`ingest_shard` additionally needs `ragstack`'s dependencies** (qdrant-client,
+httpx, elasticsearch, the tokenizer stack) in the worker's container — staging the
+source is necessary but not sufficient. So the `ingest_shard` step requires a
+**ragstack-provisioned worker image**; on a stock container it will
+`ModuleNotFoundError` on those deps. Provisioning that image (or a `DockerRequirement`
+hint) is the deployment follow-up — see the issue linked from the PR.
 
 **Still to come (step 2b):** a `GoWeBackend` implementing the in-process
 `IngestBackend` seam (so the API's `ShardedIngestor` submits to GoWe) — a distinct

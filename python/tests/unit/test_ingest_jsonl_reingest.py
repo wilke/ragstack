@@ -254,21 +254,23 @@ async def test_prune_failure_after_upsert_preserves_data(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chunk_method_routes_through_make_chunker(tmp_path, monkeypatch):
-    """--chunk-method selects the chunker via make_chunker; semantic gets a
-    (non-None) embed_fn bridge, fixed does not."""
+async def test_chunk_method_routes_through_build_chunker(tmp_path, monkeypatch):
+    """--chunk-method selects the chunker via build_chunker; semantic gets a
+    (non-None) embed_fn bridge, fixed does not. build_chunker returns
+    (chunker, token_counter, max_tokens)."""
     from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 
     calls: dict = {}
 
-    def fake_make_chunker(method, **kw):
+    def fake_build_chunker(method, **kw):
         calls["method"] = method
         calls["embed_fn"] = kw.get("embed_fn")
-        return RecursiveCharacterChunker(
+        chunker = RecursiveCharacterChunker(
             chunk_size=kw.get("chunk_size", 512), chunk_overlap=kw.get("chunk_overlap", 64)
         )
+        return chunker, None, 4096
 
-    monkeypatch.setattr(ingest_jsonl, "make_chunker", fake_make_chunker)
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", fake_build_chunker)
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
@@ -843,7 +845,7 @@ async def test_chunk_concurrency_actually_overlaps(tmp_path, monkeypatch):
                           metadata=dict(doc.metadata), start_char=0, end_char=1)]
 
     chunker = _SlowChunker()
-    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: chunker)
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", lambda *a, **kw: (chunker, None, 4096))
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
@@ -865,7 +867,7 @@ async def test_chunk_failure_propagates_without_hang(tmp_path, monkeypatch):
         def chunk(self, doc):
             raise RuntimeError("chunk boom")
 
-    monkeypatch.setattr(ingest_jsonl, "make_chunker", lambda *a, **kw: _BoomChunker())
+    monkeypatch.setattr(ingest_jsonl, "build_chunker", lambda *a, **kw: (_BoomChunker(), None, 4096))
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: _FakeStore())
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")

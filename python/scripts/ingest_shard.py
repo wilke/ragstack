@@ -35,14 +35,14 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import run_shard
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
-from ragstack.stores.qdrant import QdrantVectorStore, collection_name
+from ragstack.stores.qdrant import QdrantVectorStore
 
 
 def _build_embedder(args, http: httpx.AsyncClient):
@@ -54,23 +54,58 @@ def _build_embedder(args, http: httpx.AsyncClient):
     return make_embedder(base_url=args.embedding_url[0], **common)
 
 
+def _build_chunker(args):
+    """Chunker via the shared factory (fixed_token token-window included).
+
+    Semantic methods need the breakpoint embed-bridge (not wired here), so reject
+    them with a clear message rather than the raw make_chunker error — the bulk
+    corpus uses fixed_token; semantic bulk stays on ingest_jsonl.py for now.
+    """
+    if args.chunk_method.startswith("semantic"):
+        raise SystemExit(
+            f"--chunk-method {args.chunk_method} is not yet wired in ingest_shard "
+            "(it needs the breakpoint embed bridge); use fixed/fixed_token/sentence/"
+            "words here, or ingest_jsonl.py for semantic."
+        )
+    chunker, _counter, _max_tokens = build_chunker(
+        args.chunk_method,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        model=args.embedding_model,
+        token_backend=args.chunk_token_counter,
+        max_tokens=args.chunk_max_tokens,
+        base_url=args.embedding_url[0] if args.embedding_url else None,
+        api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
+    )
+    return chunker
+
+
 async def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
+    # Guard the half-ingest footgun: a qdrant vector store with an in-memory text
+    # index (or vice versa) would silently write only one leg. Require both real
+    # or both in-memory.
+    if (args.vector_backend == "qdrant") != (args.text_backend == "elasticsearch"):
+        raise SystemExit(
+            "vector-backend and text-backend must be consistent (both durable or "
+            f"both in-memory); got vector={args.vector_backend} text={args.text_backend}"
+        )
+    chunker = _build_chunker(args)  # fail fast on a bad chunk config, before any I/O
     embedder = _build_embedder(args, http)
     if args.vector_backend == "memory":
         vstore = InMemoryVectorStore()
+        tindex = InMemoryTextIndex()
     else:
+        if not args.collection:
+            # Auto-name from (model, dim) only when explicitly allowed; otherwise a
+            # typo'd/empty collection silently writes to an auto-named store.
+            raise SystemExit("--collection is required for --vector-backend qdrant")
+        es_index = args.es_index or args.collection
         dim = len((await embedder.embed(["dimension probe"]))[0])
-        coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
-        vstore = QdrantVectorStore(url=args.qdrant_url, collection=coll,
+        vstore = QdrantVectorStore(url=args.qdrant_url, collection=args.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout)
         await vstore.ensure_collection()
-    if args.text_backend == "elasticsearch":
-        tindex = ElasticsearchTextIndex(url=args.es_url, index=args.es_index or args.collection)
+        tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
         await tindex.ensure_index()
-    else:
-        tindex = InMemoryTextIndex()
-    chunker = make_chunker(method=args.chunk_method, chunk_size=args.chunk_size,
-                           chunk_overlap=args.chunk_overlap)
     return IngestionPipeline(loader=JsonlLoader(), chunker=chunker, embedder=embedder,
                              vector_store=vstore, text_index=tindex)
 
@@ -99,6 +134,10 @@ def parse_args(argv=None):
     p.add_argument("--chunk-method", default="fixed_token")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)
+    p.add_argument("--chunk-token-counter", choices=["hf", "endpoint", "estimate"],
+                   default="hf", help="token counter backend (fixed_token forces hf)")
+    p.add_argument("--chunk-max-tokens", type=int, default=None,
+                   help="per-chunk token budget (model window); default auto-detect")
     p.add_argument("--vector-backend", choices=["qdrant", "memory"], default="qdrant")
     p.add_argument("--collection", default=None)
     p.add_argument("--qdrant-url", default="http://localhost:6333")

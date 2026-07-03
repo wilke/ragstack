@@ -66,7 +66,16 @@ class ShardReceipt:
 
     @classmethod
     def from_dict(cls, d: dict) -> ShardReceipt:
-        docs = [DocRow(**r) for r in d.get("docs", [])]
+        missing = [k for k in ("shard_id", "status") if k not in d]
+        if missing:
+            raise ValueError(f"receipt missing required field(s): {missing}")
+        # Tolerate unexpected/missing DocRow keys (forward/back-compat) rather than
+        # TypeError/KeyError on a hand-edited catalog row.
+        docs = [
+            DocRow(doc_id=r.get("doc_id", ""), source=r.get("source", ""),
+                   metadata=r.get("metadata", {}) or {})
+            for r in d.get("docs", [])
+        ]
         return cls(
             shard_id=d["shard_id"],
             tenant=d.get("tenant", ""),
@@ -80,7 +89,13 @@ class ShardReceipt:
 
     @classmethod
     def load(cls, path: str | Path) -> ShardReceipt:
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        """Load + validate a receipt, attributing any error to the file (so the
+        gather step reports ``<path>: invalid receipt`` cleanly, not a raw
+        traceback on one corrupt file)."""
+        try:
+            return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            raise ValueError(f"{path}: invalid receipt: {e}") from e
 
 
 def merge_summary(receipts: list[ShardReceipt]) -> dict:

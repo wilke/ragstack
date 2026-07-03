@@ -7,16 +7,21 @@
 # ingest_jsonl.py (#71); each shard task is idempotent (deterministic uuid5 ids +
 # upsert-only), so a retry is safe.
 #
-# Each step stages python/scripts/ into its job sandbox (InitialWorkDirRequirement)
-# so the workflow is CWD-independent; the ragstack package must be importable in
-# the runtime env. `ingest_shard` needs the live embedding fleet + Qdrant/ES (it's
-# the write path — not a CI step); `merge_receipts` is pure computation.
+# Each step stages python/ (the ragstack package + scripts) into its job sandbox
+# (InitialWorkDirRequirement) and puts it on PYTHONPATH (EnvVarRequirement) so the
+# staged `ragstack` is importable and the CWL is CWD-independent — this is what
+# lets it run on a GoWe worker (default-executor=worker → apptainer container),
+# not only under cwltool. IMPORTANT: the runtime env must still provide ragstack's
+# dependencies — `merge_receipts` needs only stdlib+ragstack (pure python, runs
+# anywhere), but `ingest_shard` imports qdrant-client/httpx/elasticsearch/etc., so
+# its worker container must be a ragstack-provisioned image. See cwl/README.md and
+# the step-2b deployment follow-up.
 #
 #   cwltool cwl/ingest-bulk.cwl cwl/ingest-bulk.inputs.yml
 #
-# NOTE: the atomic per-shard tool ingests a JSONL shard. Pinning shards to
-# specific embedding endpoints (the current bash k%N scheme) becomes GoWe's
-# per-task endpoint assignment; here every shard is handed the same endpoint list.
+# NOTE: pinning shards to specific embedding endpoints (the current bash k%N
+# scheme) becomes GoWe's per-task endpoint assignment; here every shard is handed
+# the same endpoint list.
 cwlVersion: v1.2
 class: Workflow
 
@@ -56,12 +61,15 @@ steps:
       requirements:
         InitialWorkDirRequirement:
           listing:
-            - $(inputs.scriptsdir)
+            - $(inputs.pkgdir)
+        EnvVarRequirement:
+          envDef:
+            PYTHONPATH: $(inputs.pkgdir.path)
       baseCommand: [python]
       inputs:
-        scriptsdir:
+        pkgdir:
           type: Directory
-          default: {class: Directory, location: ../python/scripts}
+          default: {class: Directory, location: ../python}
         shard: {type: File, inputBinding: {position: 2}}
         collection: {type: string, inputBinding: {prefix: --collection, position: 3}}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 4}}
@@ -71,10 +79,10 @@ steps:
         embedding_model: {type: string, inputBinding: {prefix: --embedding-model, position: 8}}
         embedding_api_key: {type: string?, inputBinding: {prefix: --embedding-api-key, position: 9}}
         embedding_url:
-          type: string[]
+          type: "string[]"
           inputBinding: {prefix: --embedding-url, position: 10}
       arguments:
-        - {position: 1, valueFrom: $(inputs.scriptsdir.basename)/ingest_shard.py}
+        - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/ingest_shard.py}
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: receipt.json}
       outputs:
@@ -90,15 +98,18 @@ steps:
       requirements:
         InitialWorkDirRequirement:
           listing:
-            - $(inputs.scriptsdir)
+            - $(inputs.pkgdir)
+        EnvVarRequirement:
+          envDef:
+            PYTHONPATH: $(inputs.pkgdir.path)
       baseCommand: [python]
       inputs:
-        scriptsdir:
+        pkgdir:
           type: Directory
-          default: {class: Directory, location: ../python/scripts}
+          default: {class: Directory, location: ../python}
         receipts: {type: "File[]", inputBinding: {position: 2}}
       arguments:
-        - {position: 1, valueFrom: $(inputs.scriptsdir.basename)/merge_receipts.py}
+        - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/merge_receipts.py}
         - {position: 3, prefix: --out, valueFrom: summary.json}
       outputs:
         summary: {type: File, outputBinding: {glob: summary.json}}

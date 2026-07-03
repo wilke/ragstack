@@ -70,7 +70,8 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
-from ragstack.ingestion.chunkers import link_neighbors_by_document, make_chunker
+from ragstack.ingestion.chunker_config import build_chunker
+from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
@@ -556,44 +557,9 @@ async def run(args: argparse.Namespace) -> None:
     # --chunk-max-tokens overrides it. Cheap/lazy, so build it for every method.
     embed_base_url = args.embedding_url[0] if args.embedding_url else None
     embed_api_key = args.embedding_api_key or os.getenv("OPENAI_API_KEY")
-    # The 'hf' and 'endpoint' backends need a model name (the embedding model's
-    # tokenizer). When none is configured (e.g. the BGE sidecar path doesn't pass
-    # --embedding-model), fall back to the zero-dep estimator so sizing still works.
-    token_backend = args.chunk_token_counter
-    if args.chunk_method == "fixed_token":
-        # The sliding token window needs the HF fast tokenizer's offset mapping
-        # (only HFTokenCounter exposes it); an estimate/endpoint counter would make
-        # the chunker degrade to a single whole-doc chunk. Force 'hf' + require a
-        # model so --chunk-size/--chunk-overlap are honoured as real token windows.
-        if not args.embedding_model:
-            raise SystemExit(
-                "--chunk-method fixed_token requires --embedding-model (its sliding "
-                "token window is built from that model's HF tokenizer)."
-            )
-        if token_backend != "hf":
-            print(
-                f"[ingest] --chunk-method fixed_token needs the HF tokenizer; "
-                f"overriding --chunk-token-counter {token_backend!r} -> 'hf'.",
-                file=sys.stderr,
-            )
-            token_backend = "hf"
-    if token_backend in ("hf", "endpoint") and not args.embedding_model:
-        print(
-            f"[ingest] --chunk-token-counter {token_backend} needs --embedding-model; "
-            "falling back to 'estimate'.",
-            file=sys.stderr,
-        )
-        token_backend = "estimate"
-    token_counter = make_token_counter(
-        token_backend,
-        model=args.embedding_model,
-        base_url=embed_base_url,
-        api_key=embed_api_key,
-    )
-    max_tokens = resolve_max_tokens(
-        args.chunk_max_tokens, base_url=embed_base_url, api_key=embed_api_key
-    )
-    # Separate budget + tokenizer for the breakpoint-embed inputs when a distinct
+    # Main chunker token counter + budget are built by the shared factory
+    # (build_chunker) below; here we only resolve the SEPARATE breakpoint-embed
+    # budget + tokenizer when a distinct breakpoint endpoint is configured
     # breakpoint endpoint is configured (e.g. BGE-512 detecting boundaries while
     # SFR-4096 stores chunks). Count with the breakpoint model's OWN tokenizer when
     # its model name is known — a BPE stored counter (Mistral) undercounts vs a
@@ -621,16 +587,22 @@ async def run(args: argparse.Namespace) -> None:
             # Exact when counting with the bp tokenizer; otherwise pad hard for the
             # cross-tokenizer undercount.
             breakpoint_max_tokens = bp_window if breakpoint_token_counter else int(bp_window * 0.5)
-    chunker = make_chunker(
+    # Shared factory: resolves the main token counter + budget (fixed_token forces
+    # hf; no-model falls back to estimate) and builds the chunker. Returns the
+    # counter + budget for reuse below (doc-metrics writer, seg-cache fingerprint).
+    chunker, token_counter, max_tokens = build_chunker(
         args.chunk_method,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
+        model=args.embedding_model,
+        token_backend=args.chunk_token_counter,
+        max_tokens=args.chunk_max_tokens,
+        base_url=embed_base_url,
+        api_key=embed_api_key,
         embed_fn=embed_bridge,
         buffer_size=args.chunk_buffer_size,
-        breakpoint_percentile_threshold=args.chunk_breakpoint_percentile,
+        breakpoint_percentile=args.chunk_breakpoint_percentile,
         min_chunk_length=args.chunk_min_length,
-        max_tokens=max_tokens,
-        token_counter=token_counter,
         breakpoint_max_tokens=breakpoint_max_tokens,
         breakpoint_token_counter=breakpoint_token_counter,
         # <=0 disables the oversized-doc fallback (None); else the span-count cap.
