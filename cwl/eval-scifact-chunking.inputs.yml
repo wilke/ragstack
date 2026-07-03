@@ -1,0 +1,13 @@
+# Example inputs for eval-scifact-chunking.cwl.
+# configs must be members of chunking_compare_7way.CONFIG_KEYS.
+configs:
+  - fixed_char512
+  - fixed_char2048
+  - fixed_tok256
+  - fixed_tok512        # the stats reference config
+  - sentence_tok512
+  - words_tok512
+  - semantic_tokcap
+  - semantic_pooled
+# Bearer token for keyed embedding endpoints (e.g. lambda13); drop for keyless.
+embedding_api_key: BRCMistral
