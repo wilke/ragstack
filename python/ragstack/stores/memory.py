@@ -2,8 +2,15 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from typing import Any
 
+from ragstack.documents import (
+    DocumentSummary,
+    decode_cursor,
+    document_from_chunk_metadata,
+    encode_cursor,
+)
 from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.tenancy import readable_tenants, tenant_of
 
@@ -161,6 +168,34 @@ class InMemoryTextIndex:
         if not allowed:
             return 0
         return sum(1 for c in self._chunks if tenant_of(c) in allowed)
+
+    async def list_documents(
+        self, tenants: list[str], limit: int = 100, cursor: str | None = None
+    ) -> tuple[list[DocumentSummary], str | None]:
+        """Distinct visible documents, deduped by ``doc_id`` and paginated by a
+        ``doc_id`` anchor — the in-memory mirror of the ES composite aggregation
+        (same doc_id ordering and cursor semantics). Fails closed on empty."""
+        allowed = set(tenants)
+        if not allowed:
+            return [], None
+        counts: dict[str, int] = {}
+        exemplar: dict[str, Chunk] = {}
+        for c in self._chunks:
+            if tenant_of(c) not in allowed:
+                continue
+            counts[c.doc_id] = counts.get(c.doc_id, 0) + 1
+            exemplar.setdefault(c.doc_id, c)
+        doc_ids = sorted(exemplar)
+        start = bisect_right(doc_ids, decode_cursor(cursor)) if cursor else 0
+        page = doc_ids[start : start + limit]
+        docs = [
+            document_from_chunk_metadata(did, counts[did], dict(exemplar[did].metadata))
+            for did in page
+        ]
+        next_cursor = (
+            encode_cursor(page[-1]) if page and start + limit < len(doc_ids) else None
+        )
+        return docs, next_cursor
 
 
 class InMemoryGraphStore:

@@ -10,6 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from ragstack.documents import (
+    DocumentSummary,
+    decode_cursor,
+    document_from_chunk_metadata,
+    encode_cursor,
+)
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.tenancy import DEFAULT_TENANT
 
@@ -167,6 +173,63 @@ class ElasticsearchTextIndex:
             query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
         )
         return int(resp["count"])
+
+    async def list_documents(
+        self, tenants: list[str], limit: int = 100, cursor: str | None = None
+    ) -> tuple[list[DocumentSummary], str | None]:
+        """Distinct documents visible to ``tenants``, via a composite terms
+        aggregation on the ``doc_id`` keyword (O(#docs), not O(#chunks) — the
+        reason listing goes through the text index rather than scrolling Qdrant).
+        A ``top_hits`` sub-agg pulls one chunk per bucket for the document-level
+        metadata. Fails closed on an empty ``tenants`` list."""
+        if not tenants:
+            return [], None
+        composite: dict[str, Any] = {
+            "size": limit,
+            "sources": [{"doc_id": {"terms": {"field": "doc_id"}}}],
+        }
+        if cursor:
+            composite["after"] = {"doc_id": decode_cursor(cursor)}
+        resp = await self._es.search(
+            index=self._index,
+            size=0,
+            track_total_hits=False,
+            query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
+            aggs={
+                "docs": {
+                    "composite": composite,
+                    "aggs": {
+                        "exemplar": {
+                            "top_hits": {
+                                "size": 1,
+                                "_source": {"includes": ["doc_id", "metadata"]},
+                            }
+                        }
+                    },
+                }
+            },
+        )
+        agg = resp["aggregations"]["docs"]
+        buckets = agg["buckets"]
+        docs = [
+            document_from_chunk_metadata(
+                b["key"]["doc_id"],
+                int(b["doc_count"]),
+                dict(b["exemplar"]["hits"]["hits"][0]["_source"].get("metadata") or {}),
+            )
+            for b in buckets
+        ]
+        # Composite returns an after_key whenever it emitted buckets, including on
+        # the final full page; only advance the cursor when the page was full, so
+        # a short page terminates. (A total that's an exact multiple of ``limit``
+        # yields one final empty page — standard composite-pagination behaviour.)
+        after_key = agg.get("after_key")
+        next_cursor = (
+            encode_cursor(after_key["doc_id"])
+            if after_key and len(buckets) == limit
+            else None
+        )
+        return docs, next_cursor
 
     async def healthcheck(self) -> None:
         """Read-only liveness probe: cluster info, no mutation. Unlike
