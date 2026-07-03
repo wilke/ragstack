@@ -28,9 +28,15 @@ def impl() -> str:
     return os.environ.get("RAGSTACK_IMPL", "unknown")
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture
 async def client(base_url: str) -> AsyncGenerator[httpx.AsyncClient, None]:
-    """Async HTTP client pre-configured with the server base URL."""
+    """Async HTTP client pre-configured with the server base URL.
+
+    Function-scoped: a session-scoped AsyncClient binds its transport to the
+    first test's event loop, so under pytest-asyncio's per-test loops the reused
+    client raises "Event loop is closed" on the second test. A fresh client per
+    test is cheap for black-box HTTP and avoids the cross-loop teardown crash.
+    """
     async with httpx.AsyncClient(base_url=base_url, timeout=30.0) as c:
         yield c
 
