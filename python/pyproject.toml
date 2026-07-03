@@ -39,7 +39,10 @@ graph = [
 ]
 embeddings = [
     "openai>=1.30",
-    "sentence-transformers>=3.0",
+    # Upper bound: the crossencoder sidecar's fp16 path calls the private attr
+    # `_model.model.half()`, whose internal layout is not part of the public API.
+    # sentence-transformers 4.x may relocate it → AttributeError at boot. See #53.
+    "sentence-transformers>=3.0,<4",
 ]
 chunking = [
     # NLTK Punkt sentence tokenizer, used by the sentence/semantic chunkers for
