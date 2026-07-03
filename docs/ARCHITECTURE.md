@@ -279,9 +279,7 @@ tenant + the shared `public` corpus; the tenant is never read from the request b
 - `docker-compose.python.yml` / `docker-compose.go.yml` — the API (+ Celery worker on Python)
 
 **Apptainer (rootless)** — preferred on no-Docker / HPC hosts (`apptainer/up.sh`,
-`apptainer/sidecars-up.sh`); every writable container path is bind-mounted to a
-persistent host dir under `apptainer/data/<service>/`. The canonical deployed stack
-lives under `/rag/` on host `coconut` (see [STATUS.md](../STATUS.md#production-layout-rag)).
+persistent host dir under `apptainer/data/<service>/`. The canonical deployed stack lives under `/rag/` (see [STATUS.md](../STATUS.md#production-layout-rag)).
 
 ---
 
