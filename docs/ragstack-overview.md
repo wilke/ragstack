@@ -187,7 +187,7 @@ The pipeline works — but will it **keep working** as data changes and users sc
 |---------|-----------|
 | Regressions | Nightly eval against gold set; CI fails if nDCG drops |
 | Hallucination | Graceful degradation today (sources + note on LLM failure); confidence-gate refusal planned |
-| Data leaks | Row-Level Security + collection-per-tenant |
+| Data leaks | Server-derived `tenant_id` metadata filters (own + `public`) + per-tenant IDs in Qdrant/Elasticsearch/Neo4j |
 | Audit | Every query and admin action logged |
 | Outages | Graceful degradation — components fall back, not fail |
 | Stale data | Advisory when sources span multiple years |
