@@ -2,16 +2,39 @@
 
 Scaffold for the **offline / throughput plane** of [ADR-0001](../docs/adr/0001-execution-topology.md):
 bulk ingestion and the eval/benchmark harnesses expressed as CWL DAGs, executed by
-[GoWe](../../GoWe) (or any CWL v1.2 runner). This directory is **step 1** of the
-ADR rollout — the eval harness — the lowest-risk entry point (pure batch, file
-outputs, no service to break).
+[GoWe](../../GoWe) (or any CWL v1.2 runner). Covers **step 1** (the eval harness —
+the lowest-risk entry point) and **step 2** (bulk ingest — the atomic per-shard
+tool + receipts).
 
 ## What's here
 
 | File | Role |
 |---|---|
-| `eval-scifact-chunking.cwl` | Scatter/gather workflow: ingest+score each chunking config independently, then aggregate the stats. |
+| `eval-scifact-chunking.cwl` | **Step 1.** Scatter/gather: ingest+score each chunking config independently, then aggregate the stats. |
 | `eval-scifact-chunking.inputs.yml` | Example inputs (the configs to compare + the embedding key). |
+| `ingest-bulk.cwl` | **Step 2.** Scatter/gather: ingest each JSONL shard independently → receipt, then merge receipts into a run summary. |
+| `ingest-bulk.inputs.yml` | Example inputs (shard files + collection + embedding endpoints). |
+
+### Step 2 tools (bulk ingest)
+
+- **`python/scripts/ingest_shard.py`** — scatter step. Ingests **one** JSONL shard
+  → `receipt.json` (chunk ids + per-doc catalog), reusing `IngestionPipeline`
+  (chunk→embed→quarantine→delete-prior→upsert→neighbor-link). **Stateless +
+  idempotent**: no checkpoint/resume — the engine owns scatter/retry/resume, and a
+  re-run overwrites in place (deterministic uuid5 ids + upsert), so a GoWe retry is
+  safe. This is what retires `ingest_jsonl.py`'s bespoke machinery (#71) without
+  forking the pipeline (#25). Needs live infra — not a CI step. The reusable core
+  is `ragstack.ingestion.shard.run_shard` (offline-tested with in-memory stores).
+- **`python/scripts/merge_receipts.py`** — gather step. Folds the per-shard
+  receipts into a run summary (totals + **failed-shard ids**, so partial failure is
+  surfaced, not silently under-ingested). Pure computation. `--fail-on-shard-error`
+  makes it a gate. Verified end-to-end under `cwltool`.
+- Receipt contract: `ragstack.ingestion.receipts` (`ShardReceipt`/`DocRow`) — the
+  step's file output; the Qdrant/ES upsert is the side effect (#62).
+
+**Still to come (step 2b):** a `GoWeBackend` implementing the in-process
+`IngestBackend` seam (so the API's `ShardedIngestor` submits to GoWe) — a distinct
+manifest-of-files model that needs a running GoWe to integration-test.
 
 The two step tools live in the ragstack package's script tree:
 
