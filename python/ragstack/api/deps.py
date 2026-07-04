@@ -18,7 +18,7 @@ from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
-from ragstack.ingestion.backends import LocalAsyncIORunner
+from ragstack.ingestion.backends import make_ingest_backend
 from ragstack.ingestion.chunkers import make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
@@ -483,9 +483,13 @@ async def lifespan(app: FastAPI):
             settings.tenant_max_concurrency,
             settings.embedding_max_concurrency,
         )
+    # Select the distribution backend by config: in-process (local) or GoWe.
+    # The GoWe client shares the app's http_client (deps owns its lifecycle).
+    ingest_backend = make_ingest_backend(settings, http=http_client)
+    log.info("ingest backend: %s", type(ingest_backend).__name__)
     ingestor = ShardedIngestor(
         pipeline,
-        LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency),
+        ingest_backend,
         shard_size=settings.ingest_shard_size,
         job_store=job_store,
         quota=tenant_quota,

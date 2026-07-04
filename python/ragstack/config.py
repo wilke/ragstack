@@ -135,6 +135,30 @@ class Settings(BaseSettings):
     ingest_concurrency: int = 4
     ingest_shard_size: int = 64
 
+    # Ingest distribution backend (ADR-0001 offline plane). "local" runs shards
+    # in-process (LocalAsyncIORunner); "gowe" submits them to the GoWe CWL engine
+    # as a scatter workflow (GoWeBackend). See make_ingest_backend.
+    #
+    # IMPORTANT — in "gowe" mode each manifest item's ``source`` is a **shard file**
+    # the GoWe workers read (a JSONL shard fed to ingest_shard.py), NOT an arbitrary
+    # document: the workflow, not the in-process pipeline, does the loading. Build
+    # the manifest from pre-sharded JSONL files. (Transparently sharding arbitrary
+    # /v1/ingest documents to GoWe is a separate follow-up.)
+    ingest_backend: str = "local"           # local | gowe
+    # GoWe engine connection + workflow (used only when ingest_backend=gowe).
+    gowe_url: str = "http://localhost:8091"
+    gowe_token: str = ""                     # empty → GoWeClient loads a BV-BRC token file
+    gowe_workflow_cwl: str = ""              # ABSOLUTE path to the scatter CWL (a relative
+    #                                          path is resolved against the process CWD)
+    gowe_workflow_name: str = "ragstack-bulk-ingest"
+    # Static (non-shards) CWL inputs as a JSON object — collection, embedding
+    # endpoints, chunk config, … matching the workflow's inputs. The collection
+    # MUST match the served collection or ingest writes where the API can't read.
+    gowe_workflow_inputs_json: str = "{}"
+    gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
+    gowe_poll_interval: float = 5.0
+    gowe_timeout: float = 7200.0
+
     # Per-tenant concurrency cap (fairness on the shared embedding fleet): the
     # max in-flight ingest items + queries one tenant may have at once. 0 =
     # unlimited. For real isolation set this below embedding_max_concurrency —

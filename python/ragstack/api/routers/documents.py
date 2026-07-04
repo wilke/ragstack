@@ -131,6 +131,23 @@ async def ingest(
     run resumable at the ingestor level, but the public API does not yet accept a
     job_id to resume a specific prior run; that wiring is tracked for M2.
     """
+    # /v1/ingest ingests DOCUMENTS: each manifest item's source is a document the
+    # in-process pipeline loads. The GoWe backend instead treats each source as a
+    # pre-built shard FILE its workers load — so a document manifest would be
+    # submitted as shard files and fail wholesale. Reject clearly rather than
+    # returning an all-failed job. (A pre-sharded ingest entry point for the gowe
+    # backend is a separate follow-up; the offline plane uses the embed/load CWL
+    # workflows directly.)
+    if settings.ingest_backend != "local":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"document ingestion via /v1/ingest is not supported with "
+                f"ingest_backend={settings.ingest_backend!r} (it expects pre-sharded "
+                f"inputs); use ingest_backend=local, or the offline embed/load "
+                f"workflows for bulk ingest"
+            ),
+        )
     job = await job_store.create(source=request.source)
     background_tasks.add_task(
         _run_ingest,
