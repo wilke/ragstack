@@ -105,6 +105,19 @@ async def test_resume_continues_after_existing_shards_no_overwrite(tmp_path: Pat
     assert len(all_ids) == 5
 
 
+async def test_iter_tolerates_truncated_shard(tmp_path: Path):
+    # A writer killed mid-write leaves a partial gzip member; the reader must yield
+    # the readable prefix and stop, not raise EOFError (which would abort a drain).
+    sink = FileSink(tmp_path, "run", shard_size=1000, compress=True, meta={"dim": 4})
+    await sink.write(_chunks(50))
+    await sink.aclose()
+    shard = list_shards(tmp_path)[0]
+    data = shard.read_bytes()
+    shard.write_bytes(data[: len(data) // 2])  # chop it mid-stream
+    recs = list(iter_embedded_records(shard))  # must not raise
+    assert len(recs) < 50  # a prefix at most; the torn tail is skipped
+
+
 async def test_no_compress_writes_plain_jsonl(tmp_path: Path):
     sink = FileSink(tmp_path, "run", shard_size=10, compress=False, meta={"dim": 4})
     await sink.write(_chunks(3))

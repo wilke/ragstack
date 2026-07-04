@@ -29,6 +29,7 @@ import asyncio
 import gzip
 import json
 import re
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -241,14 +242,23 @@ def iter_embedded_records(path: Path) -> Iterator[Chunk]:
     path = Path(path)
     opener = gzip.open if path.name.endswith(".gz") else open
     with opener(path, "rt", encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                yield Chunk.model_validate(json.loads(raw))
-            except (json.JSONDecodeError, ValueError):
-                continue
+        try:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    yield Chunk.model_validate(json.loads(raw))
+                except (json.JSONDecodeError, ValueError):
+                    continue
+        except (EOFError, OSError) as e:
+            # Truncated shard: a writer killed mid-write leaves a partial final gzip
+            # member (EOFError) or a torn line. Yield what was readable and stop —
+            # deterministic uuid5 ids + upsert-only + the resume-reembed mean the lost
+            # tail reappears in a later shard, so no data is corrupted or double-counted.
+            print(f"  warn: truncated shard {path.name} ({type(e).__name__}); "
+                  "drained readable prefix", file=sys.stderr)
+            return
 
 
 def list_shards(embed_dir: Path) -> list[Path]:
