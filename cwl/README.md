@@ -43,11 +43,11 @@ apptainer), not only under cwltool. Verified: the **merge step runs end-to-end
 with no external `PYTHONPATH`** (it needs only stdlib + pure-python `ragstack`).
 
 **`ingest_shard` additionally needs `ragstack`'s dependencies** (qdrant-client,
-httpx, elasticsearch, the tokenizer stack) in the worker's container — staging the
-source is necessary but not sufficient. So the `ingest_shard` step requires a
-**ragstack-provisioned worker image**; on a stock container it will
-`ModuleNotFoundError` on those deps. Provisioning that image (or a `DockerRequirement`
-hint) is the deployment follow-up — see the issue linked from the PR.
+httpx, elasticsearch, the tokenizer stack) in the worker's runtime — staging the
+source is necessary but not sufficient. Two ways to provide them (a dedicated
+`--runtime none` worker in the ragstack env, or a ragstack SIF) are covered in the
+**dedicated-worker path** below; on a stock container the step
+`ModuleNotFoundError`s on those deps.
 
 ### Step 2b — submitting to a live GoWe engine
 
@@ -62,14 +62,46 @@ hint) is the deployment follow-up — see the issue linked from the PR.
 - **`ragstack.ingestion.gowe_backend.GoWeBackend`** — satisfies the in-process
   `IngestBackend` protocol: `run_shards` submits the shards' source files as a
   scatter workflow (this `ingest-bulk.cwl`, whose `receipts` output it collects),
-  waits, downloads the per-shard receipts, and maps them to `ItemResult`s. Each
-  `WorkItem.source` is a shard file GoWe's workers can read.
+  waits, downloads the per-shard receipts, and maps them to `ItemResult`s
+  (positionally — CWL scatter preserves order). Pass `worker_group=` to route the
+  run to a dedicated worker (below); each `WorkItem.source` is a shard file GoWe's
+  workers can read.
 
-**Still gated:** actually *running ingest* end-to-end on GoWe needs the
-ragstack-provisioned worker image (#135) — the merge/receipt plumbing is proven,
-but `ingest_shard` `ModuleNotFound`s ragstack's deps in a stock worker container.
-Wiring `GoWeBackend` into the API's `ShardedIngestor` (config `INGEST_BACKEND=gowe`)
-is the remaining seam work.
+### Running `ingest_shard` on GoWe — the dedicated-worker path (#135)
+
+`ingest_shard` needs ragstack's *dependencies* (qdrant-client/httpx/elasticsearch/
+tokenizers), which a stock apptainer worker container lacks. Two ways to provide
+them:
+
+- **(A, validated) A `--runtime none` worker in the ragstack conda env.** Start a
+  dedicated worker whose `python` is the ragstack env's, in its own group, and
+  route ingest tasks to it. No image to build; deps come from the env, ragstack
+  code from the CWL's staged `python/` (`PYTHONPATH`). **Proven end-to-end**: an
+  `ingest_shard` task ran on such a worker (deps + ragstack resolved, embedded via
+  the BGE sidecar, wrote a receipt).
+
+  ```bash
+  # `python` on the worker's PATH must be the ragstack env's (deps live there);
+  # --runtime none runs the tool directly on the host (no container).
+  PATH="/rag/envs/ragstack/bin:$PATH" gowe-worker \
+      --server http://localhost:8091 --runtime none \
+      --name ragstack-cpu-1 --group ragstack-cpu \
+      --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
+  ```
+  Route to it with `GoWeBackend(..., worker_group="ragstack-cpu")` (sends a
+  submission `worker_group` label) or a `gowe:Execution.worker_group` CWL hint.
+  Gotchas with `--runtime none`: the tool runs with `HOME`=task workdir and a
+  per-task `TMPDIR`, so avoid `$HOME`-relative caches — use
+  `--chunk-token-counter estimate` (or set a shared `HF_HOME`) to skip HF tokenizer
+  downloads; input/output files must live under the server's `--upload-download-dirs`.
+
+- **(B, follow-up) A ragstack-provisioned worker SIF.** A pinned apptainer image
+  with ragstack + deps, referenced via `DockerRequirement`/`gowe:Execution.docker_image`
+  — the reproducible/portable production path (multi-host). Heavier (torch/tokenizer
+  stack). Tracked in #135.
+
+**Remaining seam:** wiring `GoWeBackend` into the API's `ShardedIngestor` (config
+`INGEST_BACKEND=gowe`) so an API ingest can fan out to GoWe.
 
 The two step tools live in the ragstack package's script tree:
 
