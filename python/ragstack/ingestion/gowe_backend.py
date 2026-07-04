@@ -56,8 +56,10 @@ class GoWeBackend:
         # Route tasks to a specific GoWe worker group via a submission label (GoWe
         # reads submission Labels["worker_group"]). Lets ingest land on a dedicated
         # ragstack worker — a `--runtime none` worker in the ragstack env — without
-        # a group hint baked into the CWL. See cwl/README.md.
-        self.worker_group = worker_group
+        # a group hint baked into the CWL. See cwl/README.md. Normalize to None so
+        # None/""/whitespace all mean "no routing" (a whitespace group would label a
+        # group no worker has → every shard fails preflight).
+        self.worker_group = (worker_group or "").strip() or None
         self.poll_interval = poll_interval
         self.timeout = timeout
 

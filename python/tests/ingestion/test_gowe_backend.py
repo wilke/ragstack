@@ -94,6 +94,19 @@ async def test_no_worker_group_sends_no_label() -> None:
     assert client.submitted_labels is None
 
 
+@pytest.mark.parametrize("group", ["", "   "])
+@pytest.mark.asyncio
+async def test_blank_worker_group_normalised_to_no_label(group) -> None:
+    # "" / whitespace must NOT label a nonexistent group (which would fail every
+    # shard at preflight) — normalized to None.
+    client = _FakeClient({})
+    backend = GoWeBackend(client, "cwlVersion: v1.2", worker_group=group,
+                          poll_interval=0, timeout=1)
+    assert backend.worker_group is None
+    await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert client.submitted_labels is None
+
+
 @pytest.mark.asyncio
 async def test_failed_submission_marks_all_items_failed() -> None:
     backend = _backend(_FakeClient({}, state="FAILED"))

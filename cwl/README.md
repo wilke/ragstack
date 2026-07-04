@@ -82,18 +82,30 @@ them:
 
   ```bash
   # `python` on the worker's PATH must be the ragstack env's (deps live there);
-  # --runtime none runs the tool directly on the host (no container).
-  PATH="/rag/envs/ragstack/bin:$PATH" gowe-worker \
+  # --runtime none runs the tool directly on the host (no container). HF_HOME points
+  # the tokenizer cache at a SHARED persistent dir — see the gotcha below.
+  PATH="/rag/envs/ragstack/bin:$PATH" HF_HOME=/rag/cache gowe-worker \
       --server http://localhost:8091 --runtime none \
       --name ragstack-cpu-1 --group ragstack-cpu \
       --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
   ```
   Route to it with `GoWeBackend(..., worker_group="ragstack-cpu")` (sends a
-  submission `worker_group` label) or a `gowe:Execution.worker_group` CWL hint.
-  Gotchas with `--runtime none`: the tool runs with `HOME`=task workdir and a
-  per-task `TMPDIR`, so avoid `$HOME`-relative caches — use
-  `--chunk-token-counter estimate` (or set a shared `HF_HOME`) to skip HF tokenizer
-  downloads; input/output files must live under the server's `--upload-download-dirs`.
+  submission `worker_group` label — it propagates to every scatter + merge task) or
+  a `gowe:Execution.worker_group` CWL hint (which wins over the label). **The label
+  selects the *group*, not the *executor*** — it assumes the server runs
+  `--default-executor worker`; on a `--default-executor local` server the group is
+  ignored and the tool runs on the *server* host instead.
+
+  Gotchas with `--runtime none`: the tool runs with **`HOME`=the task workdir** (an
+  ephemeral per-task dir) and a per-task `TMPDIR`. That matters for the tokenizer:
+  the default chunk method `fixed_token` **requires** the HF offset tokenizer
+  (`--chunk-token-counter estimate` is force-reverted to `hf` for token-window
+  chunking, so it does *not* skip the download), and the default HF cache is
+  `$HOME/.cache/huggingface` — so with `HOME`=workdir the model tokenizer would
+  re-download **every task**. Set a shared **`HF_HOME`** (as above) so it's fetched
+  once and reused. (`estimate` only helps the char/word/sentence methods, and isn't
+  even wired through `ingest-bulk.cwl`.) Input/output files must live under the
+  server's `--upload-download-dirs`.
 
 - **(B, follow-up) A ragstack-provisioned worker SIF.** A pinned apptainer image
   with ragstack + deps, referenced via `DockerRequirement`/`gowe:Execution.docker_image`
