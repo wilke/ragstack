@@ -77,6 +77,34 @@ async def test_manifest_records_meta_and_shards(tmp_path: Path):
     assert len(m["shards"]) == 2  # 3 records / 2 = shards 000, 001
 
 
+async def test_resume_continues_after_existing_shards_no_overwrite(tmp_path: Path):
+    # First pass: 3 chunks, shard_size 2 -> run-000 (2), run-001 (1).
+    s1 = FileSink(tmp_path, "run", shard_size=2, compress=True, meta={"dim": 4})
+    await s1.write(_chunks(3))
+    await s1.aclose()
+    first_shards = [p.name for p in list_shards(tmp_path)]
+    first_ids = {c.id for p in list_shards(tmp_path) for c in iter_embedded_records(p)}
+    assert first_shards == ["run-000.jsonl.gz", "run-001.jsonl.gz"]
+
+    # Resume: a NEW FileSink, same run_id + dir (mimics --resume after a crash).
+    more = [
+        Chunk(id=f"r-{i}", doc_id="d", content=f"m{i}", embedding=[float(i)] * 4,
+              metadata={"tenant_id": "public"})
+        for i in range(2)
+    ]
+    s2 = FileSink(tmp_path, "run", shard_size=2, compress=True, meta={"dim": 4})
+    await s2.write(more)
+    await s2.aclose()
+
+    all_shards = [p.name for p in list_shards(tmp_path)]
+    # Old shards preserved; the new one is appended past the highest index.
+    assert all_shards == ["run-000.jsonl.gz", "run-001.jsonl.gz", "run-002.jsonl.gz"]
+    all_ids = {c.id for p in list_shards(tmp_path) for c in iter_embedded_records(p)}
+    # Nothing overwritten/lost: original 3 + new 2 all present.
+    assert all_ids == first_ids | {"r-0", "r-1"}
+    assert len(all_ids) == 5
+
+
 async def test_no_compress_writes_plain_jsonl(tmp_path: Path):
     sink = FileSink(tmp_path, "run", shard_size=10, compress=False, meta={"dim": 4})
     await sink.write(_chunks(3))

@@ -152,6 +152,32 @@ class FileSink:
         self._total = 0
         self._shards: list[str] = []
         self._fh: Any | None = None
+        self._resume_existing()
+
+    def _resume_existing(self) -> None:
+        """Continue AFTER any shards this run already wrote, never overwriting them.
+
+        A resumed embed (`ingest_jsonl.py --resume` after a crash) skips the docs
+        already past its line checkpoint, so their chunks live only in the existing
+        shards. If FileSink restarted numbering at -000 it would truncate shard -000
+        and silently lose those records. So seed shard state from what's on disk:
+        adopt the existing shard list, jump the index past the highest one, and seed
+        the running total from the manifest so record_count stays accurate."""
+        existing = sorted(
+            p.name for p in self._dir.glob(f"{self._run_id}-*{self.suffix}")
+        )
+        if not existing:
+            return
+        self._shards = existing
+        pat = re.compile(rf"{re.escape(self._run_id)}-(\d+){re.escape(self.suffix)}$")
+        idxs = [int(m.group(1)) for n in existing if (m := pat.search(n))]
+        self._shard_idx = max(idxs) if idxs else -1
+        mf = self._dir / f"manifest-{self._run_id}.json"
+        if mf.exists():
+            try:
+                self._total = int(json.loads(mf.read_text()).get("record_count", 0))
+            except (json.JSONDecodeError, OSError, TypeError, ValueError):
+                pass
 
     @property
     def suffix(self) -> str:

@@ -641,7 +641,17 @@ async def run(args: argparse.Namespace) -> None:
             )
         return
 
-    async with httpx.AsyncClient() as http:
+    # httpx defaults (5s timeout, keep-alive connection reuse) are wrong for a
+    # saturated embedding fleet: a slow batch on a busy vLLM endpoint exceeds 5s,
+    # and reused keep-alive connections the server has since closed surface as
+    # httpx.ReadError mid-request — which on the semantic breakpoint-embed path
+    # (inside chunking, outside --batch-retries) crashes the run. Give requests a
+    # generous window and force a fresh connection per request so a stale-keepalive
+    # drop can't poison an in-flight embed.
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(float(getattr(args, "embedding_timeout", 300.0)), connect=30.0),
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as http:
         embedder = _build_embedder(args, http)
         if len(args.embedding_url) > 1:
             print(f"embedding fan-out across {len(args.embedding_url)} endpoints",
@@ -1119,6 +1129,10 @@ def main() -> None:
     p.add_argument("--embedding-model", default=None,
                    help="model name (required for --embedding-api openai; used to name the collection)")
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--embedding-timeout", type=float, default=300.0,
+                   help="per-request embedding HTTP timeout in seconds (default: "
+                        "%(default)s). The httpx default (5s) is too tight for a "
+                        "saturated SFR fleet and surfaces as ReadError crashes.")
     p.add_argument("--embedding-api-key", default=None,
                    help="Bearer token sent as 'Authorization: Bearer <key>' to every "
                         "--embedding-url (keyless endpoints ignore it, so one key is safe "
