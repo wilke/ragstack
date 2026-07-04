@@ -43,6 +43,16 @@ from ragstack.stores.errors import VectorDimMismatch
 log = logging.getLogger(__name__)
 
 
+def _qdrant_url_for(collection: str) -> str:
+    """The Qdrant base URL serving ``collection``.
+
+    An alternate instance when the collection is routed via
+    ``qdrant_collection_routes`` (its own vm.max_map_count budget — see the config
+    field), else the default ``qdrant_url``. Keeps single-instance deployments
+    byte-for-byte unchanged (empty routes → always ``qdrant_url``)."""
+    return (settings.qdrant_collection_routes or {}).get(collection, settings.qdrant_url)
+
+
 def _build_vector_store():
     """Return the configured VectorStore.
 
@@ -74,8 +84,13 @@ def _build_vector_store():
             settings.embedding_model,
             settings.embedding_model_dim,
         )
+        # Route this collection to its Qdrant instance (a second process for a
+        # VMA-heavy collection like semantic), defaulting to qdrant_url.
+        url = _qdrant_url_for(collection)
+        if url != settings.qdrant_url:
+            log.info("qdrant: collection %r routed to instance %s", collection, url)
         return QdrantVectorStore(
-            url=settings.qdrant_url,
+            url=url,
             collection=collection,
             vector_size=settings.embedding_model_dim,
             api_key=settings.qdrant_api_key or None,

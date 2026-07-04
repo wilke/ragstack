@@ -92,6 +92,52 @@ def test_qdrant_collection_explicit_override(monkeypatch):
     assert store._collection == "ragstack_sfr_tok256"
 
 
+def test_qdrant_url_for_routes_configured_collection(monkeypatch):
+    # A routed collection resolves to its instance URL; others fall back to qdrant_url.
+    monkeypatch.setattr(deps.settings, "qdrant_url", "http://localhost:6333")
+    monkeypatch.setattr(
+        deps.settings, "qdrant_collection_routes",
+        {"ragstack_sfr_semantic": "http://localhost:6343"},
+    )
+    assert deps._qdrant_url_for("ragstack_sfr_semantic") == "http://localhost:6343"
+    assert deps._qdrant_url_for("ragstack_sfr_tok256") == "http://localhost:6333"
+
+
+def test_qdrant_url_for_default_when_no_routes(monkeypatch):
+    # Empty routes → every collection uses qdrant_url (single-instance, unchanged).
+    monkeypatch.setattr(deps.settings, "qdrant_url", "http://localhost:6333")
+    monkeypatch.setattr(deps.settings, "qdrant_collection_routes", {})
+    assert deps._qdrant_url_for("anything") == "http://localhost:6333"
+
+
+def test_build_vector_store_uses_routed_url(monkeypatch):
+    # The routed instance URL reaches the store, not the default qdrant_url.
+    import ragstack.stores.qdrant as qmod
+
+    captured: dict = {}
+
+    class _Stub:
+        def __init__(self, url, collection, vector_size, api_key=None, **kw):
+            captured["url"] = url
+            captured["collection"] = collection
+
+    monkeypatch.setattr(qmod, "QdrantVectorStore", _Stub)
+    monkeypatch.setattr(deps.settings, "vector_backend", "qdrant")
+    monkeypatch.setattr(
+        deps.settings, "qdrant_collection_explicit", "ragstack_sfr_semantic"
+    )
+    monkeypatch.setattr(deps.settings, "qdrant_url", "http://localhost:6333")
+    monkeypatch.setattr(
+        deps.settings, "qdrant_collection_routes",
+        {"ragstack_sfr_semantic": "http://localhost:6343"},
+    )
+    monkeypatch.setattr(deps.settings, "embedding_model_dim", 4096)
+
+    deps._build_vector_store()
+    assert captured["url"] == "http://localhost:6343"
+    assert captured["collection"] == "ragstack_sfr_semantic"
+
+
 def test_es_index_follows_explicit_collection_when_default(monkeypatch):
     # With the explicit override set and elasticsearch_index left at its default,
     # the BM25 leg follows the pinned collection so hybrid reads one corpus.
