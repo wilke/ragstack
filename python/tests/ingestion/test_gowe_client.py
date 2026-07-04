@@ -61,6 +61,17 @@ async def test_register_submit_wait_download_roundtrip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_download_empty_body_returns_empty_not_local_read() -> None:
+    # A 200 with an empty body must yield b"" — never a local-filesystem read of
+    # the server-side path (the removed footgun).
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"")
+    c = _client(handler)
+    assert await c.download("file:///etc/passwd") == b""
+    await c.close()
+
+
+@pytest.mark.asyncio
 async def test_dry_run_sets_query() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         assert req.url.query == b"dry_run=true"

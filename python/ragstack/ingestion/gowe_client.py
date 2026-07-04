@@ -144,12 +144,13 @@ class GoWeClient:
 
     async def download(self, location: str) -> bytes:
         """Download an output file by its ``file://…`` location (must be under the
-        server's allowed download dirs)."""
-        loc = location.removeprefix("file://") if location.startswith("file://") else location
+        server's allowed download dirs). Returns the response bytes verbatim — an
+        empty body yields ``b""`` (we never read a server-side path off the local
+        filesystem, which would be a footgun on a remote/containerized worker)."""
         resp = await self._request(
             "GET", "/api/v1/files/download", params={"location": location}
         )
-        return resp.content if resp.content else Path(loc).read_bytes()
+        return resp.content
 
     async def upload(self, path: str | Path) -> str:
         """Upload a local file; returns its server ``location`` for use in inputs."""

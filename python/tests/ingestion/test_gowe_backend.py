@@ -97,10 +97,82 @@ async def test_missing_receipt_marks_item_failed() -> None:
     # completed submission but no receipt for the shard -> that item fails
     backend = _backend(_FakeClient({}))  # empty receipts
     results = await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
-    assert results[0].status == "failed" and "no receipt" in results[0].error
+    assert results[0].status == "failed" and "no readable receipt" in results[0].error
+
+
+@pytest.mark.asyncio
+async def test_same_basename_shards_dont_collide() -> None:
+    # Two shards with the SAME basename in different dirs. The old basename-keyed
+    # mapping collapsed them (one result lost); positional mapping keeps them
+    # distinct — both receipts have shard_id "s0.jsonl" yet map to the right item.
+    receipts = {
+        "file:///a/s0.r": ShardReceipt("s0.jsonl", "public", COMPLETED,
+                                       n_chunks=1, chunk_ids=["A"]),
+        "file:///b/s0.r": ShardReceipt("s0.jsonl", "public", FAILED, error="B-failed"),
+    }
+    backend = _backend(_FakeClient(receipts))
+    items = [_wi("iA", "/a/s0.jsonl"), _wi("iB", "/b/s0.jsonl")]
+    results = await backend.run_shards([items], shard_fn=None)
+    by_item = {r.item_id: r for r in results}
+    assert by_item["iA"].status == "completed" and by_item["iA"].chunk_ids == ["A"]
+    assert by_item["iB"].status == "failed" and by_item["iB"].error == "B-failed"
 
 
 @pytest.mark.asyncio
 async def test_empty_shards_returns_empty() -> None:
     backend = _backend(_FakeClient({}))
     assert await backend.run_shards([], shard_fn=None) == []
+
+
+class _BadReceiptClient(_FakeClient):
+    """Submission COMPLETED, but the receipt download errors — run_shards must NOT
+    raise (the item degrades to failed)."""
+
+    async def wait(self, sub_id, **kw):
+        return {"id": sub_id, "state": "COMPLETED",
+                "outputs": {"receipts": [{"class": "File", "location": "file:///d/x.r"}]}}
+
+    async def download(self, location) -> bytes:
+        raise GoWeError("download 404")
+
+
+@pytest.mark.asyncio
+async def test_unreadable_receipt_degrades_not_raises() -> None:
+    backend = _backend(_BadReceiptClient({}))
+    results = await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert results[0].status == "failed" and "no readable receipt" in results[0].error
+
+
+class _MalformedReceiptClient(_FakeClient):
+    async def wait(self, sub_id, **kw):
+        return {"id": sub_id, "state": "COMPLETED",
+                "outputs": {"receipts": [{"class": "File", "location": "file:///d/x.r"}]}}
+
+    async def download(self, location) -> bytes:
+        return b"{not valid json"
+
+
+@pytest.mark.asyncio
+async def test_malformed_receipt_degrades_not_raises() -> None:
+    backend = _backend(_MalformedReceiptClient({}))
+    results = await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert results[0].status == "failed"  # bad JSON skipped → no receipt → failed
+
+
+class _SingleFileReceiptClient(_FakeClient):
+    """A non-scattered workflow can return `receipts` as a single File dict, not a
+    list — the backend must normalise it."""
+
+    async def wait(self, sub_id, **kw):
+        (loc, _r) = next(iter(self._receipts.items()))
+        return {"id": sub_id, "state": "COMPLETED",
+                "outputs": {"receipts": {"class": "File", "location": loc}}}
+
+
+@pytest.mark.asyncio
+async def test_single_file_receipts_output_normalised() -> None:
+    receipts = {"file:///d/s0.r": ShardReceipt("s0.jsonl", "public", COMPLETED,
+                                               n_docs=1, n_chunks=1, chunk_ids=["a"])}
+    backend = _backend(_SingleFileReceiptClient(receipts))
+    results = await backend.run_shards([[_wi("i0", "/data/s0.jsonl")]], shard_fn=None)
+    assert results[0].status == "completed" and results[0].chunk_ids == ["a"]

@@ -14,6 +14,7 @@ for the run and supplied as ``static_inputs`` at construction.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -22,6 +23,8 @@ from ragstack.ingestion.manifest import ItemResult, WorkItem
 from ragstack.ingestion.receipts import COMPLETED, ShardReceipt
 from ragstack.jobstore import COMPLETED as JOB_COMPLETED
 from ragstack.jobstore import FAILED as JOB_FAILED
+
+log = logging.getLogger(__name__)
 
 
 def _receipt_status_to_job(status: str) -> str:
@@ -85,37 +88,30 @@ class GoWeBackend:
             reason = f"gowe submission {final.get('state')}"
             return [self._failed(wi, reason) for wi in items]
 
-        receipts = await self._download_receipts(final)
-        return self._map_results(items, receipts)
+        return await self._map_outputs(items, final)
 
-    async def _download_receipts(self, submission: dict[str, Any]) -> list[ShardReceipt]:
-        out = (submission.get("outputs") or {}).get(self.receipts_output_key)
-        if out is None:
-            return []
-        # A scatter File[] output is a list of {class:File, location}; a single File
-        # is one dict. Normalise to a list.
-        entries = out if isinstance(out, list) else [out]
-        receipts: list[ShardReceipt] = []
-        for entry in entries:
-            loc = entry.get("location") if isinstance(entry, dict) else None
-            if not loc:
-                continue
-            raw = await self.client.download(loc)
-            receipts.append(ShardReceipt.from_dict(json.loads(raw)))
-        return receipts
-
-    def _map_results(
-        self, items: list[WorkItem], receipts: list[ShardReceipt]
+    async def _map_outputs(
+        self, items: list[WorkItem], submission: dict[str, Any]
     ) -> list[ItemResult]:
-        # Match a shard receipt to its work item by shard_id == the source's
-        # basename (what ingest_shard defaults the shard_id to). An item with no
-        # receipt (the engine dropped/never ran it) is reported failed.
-        by_id = {r.shard_id: r for r in receipts}
+        """Map the workflow's ``receipts`` output back to per-item results
+        **positionally**. CWL scatter preserves order, so the i-th receipt is the
+        i-th submitted shard — matching by position (not by shard_id/basename)
+        avoids corruption when two shards share a filename, and works regardless of
+        ingest_shard's ``--shard-id``. An unreadable/corrupt receipt (or a length
+        mismatch) fails just that item; the run is never aborted."""
+        out = (submission.get("outputs") or {}).get(self.receipts_output_key)
+        # A scatter File[] output is a list of {class:File, location}; a single File
+        # is one dict; absent is None.
+        entries: list[Any] = [] if out is None else (out if isinstance(out, list) else [out])
+        if len(entries) != len(items):
+            log.warning("gowe: %d receipt outputs for %d work items; mapping the "
+                        "overlap positionally, the remainder fail",
+                        len(entries), len(items))
         results: list[ItemResult] = []
-        for wi in items:
-            r = by_id.get(os.path.basename(wi.source)) or by_id.get(wi.item_id)
+        for i, wi in enumerate(items):
+            r = await self._load_receipt(entries[i] if i < len(entries) else None)
             if r is None:
-                results.append(self._failed(wi, "no receipt returned for shard"))
+                results.append(self._failed(wi, "no readable receipt for shard"))
             else:
                 results.append(ItemResult(
                     item_id=wi.item_id, source=wi.source,
@@ -123,6 +119,19 @@ class GoWeBackend:
                     chunk_ids=list(r.chunk_ids), error=r.error,
                 ))
         return results
+
+    async def _load_receipt(self, entry: Any) -> ShardReceipt | None:
+        """Download + parse one receipt File entry; None on missing/unreadable so
+        the caller fails just that item (never raises — the protocol contract)."""
+        loc = entry.get("location") if isinstance(entry, dict) else None
+        if not loc:
+            return None
+        try:
+            raw = await self.client.download(loc)
+            return ShardReceipt.from_dict(json.loads(raw))
+        except (GoWeError, ValueError, json.JSONDecodeError) as e:
+            log.warning("gowe: unreadable receipt %s: %s", loc, e)
+            return None
 
     @staticmethod
     def _failed(wi: WorkItem, error: str) -> ItemResult:
