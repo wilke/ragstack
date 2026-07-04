@@ -74,7 +74,9 @@ from ragstack.ingestion.chunkers import link_neighbors_by_document, make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
+from ragstack.ingestion.sinks import BatchSink, FileSink, QdrantSink
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -471,61 +473,9 @@ def _write_run_metrics(
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-# Transient-error classification for --batch-retries. A flapping endpoint (a
-# remote vLLM replica dropping a connection, a store 5xx/timeout) raises these and
-# can self-heal on a retry; a 4xx / bad-input is NOT transient and must surface so
-# the batch fails and --resume re-feeds it rather than silently spinning.
-_TRANSIENT_ERROR_NAMES = frozenset({
-    "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
-    "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
-    "ConnectionError", "ConnectionResetError", "ConnectionTimeout",
-    "ResponseHandlingException", "UnexpectedResponse", "ServiceException",
-    "TimeoutError",
-})
-_TRANSIENT_ERROR_SUBSTRINGS = (
-    "disconnect", "timed out", "timeout", "connection reset",
-    "connection refused", "temporarily unavailable", "broken pipe",
-    "server disconnected", "502", "503", "504",
-    # PooledEmbedder raises this when every endpoint is momentarily down; it
-    # chains the real (transient) fault as __cause__, which the walk below also
-    # catches — the phrase is an explicit backstop.
-    "all embedding endpoints failed",
-)
-
-
-def _is_transient_error(exc: BaseException) -> bool:
-    """True if ``exc`` (or a chained cause) looks like a transient network/store
-    blip worth retrying.
-
-    Walks ``__cause__``/``__context__`` because a fanned-out embed wraps the real
-    fault: ``PooledEmbedder`` raises ``RuntimeError('all embedding endpoints
-    failed') from last_exc``, so the retriable httpx/timeout error is one level
-    down. Inspecting only the top exception would miss the multi-endpoint flap
-    this feature exists to survive."""
-
-    def _one(e: BaseException) -> bool:
-        if isinstance(e, (TimeoutError, ConnectionError)):
-            return True
-        if type(e).__name__ in _TRANSIENT_ERROR_NAMES:
-            return True
-        status = getattr(getattr(e, "response", None), "status_code", None)
-        if isinstance(status, int) and 500 <= status < 600:
-            return True
-        return any(s in str(e).lower() for s in _TRANSIENT_ERROR_SUBSTRINGS)
-
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if _one(cur):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
-
-def _retry_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:
-    """Exponential backoff for --batch-retries; ``attempt`` is 1-based (1,2,4,…)."""
-    return min(base * (2.0 ** (attempt - 1)), cap)
+# Transient-error classification + backoff for --batch-retries live in
+# ragstack.ingestion.retry (is_transient_error / retry_delay), shared with the
+# decoupled ingest agent (scripts/qdrant_ingest_agent.py).
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -697,20 +647,50 @@ async def run(args: argparse.Namespace) -> None:
             print(f"embedding fan-out across {len(args.embedding_url)} endpoints",
                   file=sys.stderr)
 
-        # Size the collection to the model's vector dim via a one-text probe, so
-        # the store exists before the concurrent workers start.
+        # Size the vectors to the model's dim via a one-text probe (also names the
+        # collection). Needed by both sinks — the embed-file manifest records dim.
         dim = len((await embedder.embed(["dimension probe"]))[0])
         coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
-        store = QdrantVectorStore(
-            url=args.qdrant_url, collection=coll, vector_size=dim, timeout=args.qdrant_timeout
-        )
-        await store.ensure_collection()
-        print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
-        text_index = None
-        if args.text_backend == "elasticsearch":
-            text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
-            await text_index.ensure_index()
-            print(f"elasticsearch index {args.es_index!r} ready", file=sys.stderr)
+
+        # getattr keeps a hand-built Namespace (older callers / unit tests) safe —
+        # the embed-to-file flags default off, matching the batch_retries pattern.
+        embed_out = getattr(args, "embed_out", None)
+        sink: BatchSink
+        if embed_out:
+            # Embed-to-file stage (#141): write vectors to sharded JSONL instead of
+            # upserting, so the GPU fleet never blocks on the capped Qdrant. A
+            # separate agent (scripts/qdrant_ingest_agent.py) drains the shards with
+            # backpressure. No collection is created here — the target name + dim are
+            # recorded in the manifest for the agent to default from.
+            run_id = getattr(args, "embed_run_id", None) or f"{args.input.stem}-{args.chunk_method}"
+            sink = FileSink(
+                embed_out, run_id,
+                shard_size=getattr(args, "embed_shard_size", 500_000),
+                compress=not getattr(args, "no_compress", False),
+                meta={
+                    "model": args.embedding_model, "dim": dim,
+                    "chunk_method": args.chunk_method, "collection": coll,
+                    "tenant": args.tenant, "source": str(args.input),
+                },
+            )
+            print(f"embed-to-file: {embed_out} (run {run_id!r}, dim={dim}, "
+                  f"target collection {coll!r})", file=sys.stderr)
+        else:
+            store = QdrantVectorStore(
+                url=args.qdrant_url, collection=coll, vector_size=dim,
+                timeout=args.qdrant_timeout,
+            )
+            await store.ensure_collection()
+            print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
+            text_index = None
+            if args.text_backend == "elasticsearch":
+                text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
+                await text_index.ensure_index()
+                print(f"elasticsearch index {args.es_index!r} ready", file=sys.stderr)
+            sink = QdrantSink(
+                store, text_index, args.tenant,
+                replace=args.replace, delete_concurrency=args.delete_concurrency,
+            )
 
         # Concurrent pipeline: a producer streams fixed-size chunk batches onto a
         # bounded queue (constant memory on huge inputs); `concurrency` workers
@@ -742,42 +722,20 @@ async def run(args: argparse.Namespace) -> None:
         frontier_line = start_line
         track_done_ranges = not args.replace
         lock = asyncio.Lock()
-        # Bound concurrent prune-deletes separately from the embed fan-out so a wide
-        # --concurrency doesn't issue a burst of heavy deletes at the store.
-        delete_sem = asyncio.Semaphore(max(1, args.delete_concurrency))
 
         async def _store_batch(chunks):
-            """Embed + upsert (+ optional --replace prune) one batch, returning
-            (kept, surviving-by-doc). Idempotent — upsert-first, deterministic
-            uuid5 ids, no delete-before-upsert — so --batch-retries can re-run it
-            after a transient failure without duplicating or losing data."""
+            """Embed + link-neighbors + write one batch via the configured sink,
+            returning (kept, surviving-by-doc). Idempotent — the sink upserts-first
+            with deterministic uuid5 ids (QdrantSink) or appends to an embed file
+            (FileSink) — so --batch-retries can re-run it after a transient failure
+            without duplicating or losing data."""
             kept = await _embed_drop_bad(embedder, chunks)
             # Stamp prev/next/chunk_index per document on the SURVIVING chunks so
             # neighbor links never dangle to a quarantined chunk and a mixed-doc
-            # batch never cross-links one doc's tail to the next doc's head.
+            # batch never cross-links one doc's tail to the next doc's head. This
+            # mutates `kept` in place, so the links travel with it into the sink.
             surviving = link_neighbors_by_document(kept)
-            # Upsert FIRST. Deterministic chunk ids overwrite an unchanged doc's
-            # points in place; a failure here never deletes anything (a prior
-            # delete-before-upsert ordering lost data when a filtered delete on a
-            # large collection timed out mid-batch: the delete landed, upsert didn't).
-            if kept:
-                await store.upsert(kept)
-                if text_index is not None:
-                    await text_index.index(kept)
-            # Only an EDITED doc (shifted offsets → new chunk ids) leaves orphans;
-            # prune only when asked (--replace) and only AFTER the upsert, by id,
-            # with bounded concurrency so a wide fan-out can't burst heavy deletes.
-            if args.replace and kept:
-                by_doc: dict[str, set[str]] = {}
-                for c in kept:
-                    by_doc.setdefault(c.doc_id, set()).add(c.id)
-                for doc_id, keep in by_doc.items():
-                    async with delete_sem:
-                        await store.delete_except(doc_id, keep, tenant_id=args.tenant)
-                        if text_index is not None:
-                            await text_index.delete_except(
-                                doc_id, keep, tenant_id=args.tenant
-                            )
+            await sink.write(kept)
             return kept, surviving
 
         async def worker() -> None:
@@ -801,9 +759,9 @@ async def run(args: argparse.Namespace) -> None:
                                 kept, surviving = await _store_batch(chunks)
                                 break
                             except Exception as e:
-                                if attempt < batch_retries and _is_transient_error(e):
+                                if attempt < batch_retries and is_transient_error(e):
                                     attempt += 1
-                                    delay = _retry_delay(attempt)
+                                    delay = retry_delay(attempt)
                                     print(f"  batch seq={seq} transient "
                                           f"{type(e).__name__} (retry {attempt}/"
                                           f"{batch_retries} in {delay:.1f}s): {e}",
@@ -1060,8 +1018,7 @@ async def run(args: argparse.Namespace) -> None:
         if next_seq == seq:
             _write_checkpoint(ckpt_path, last_line, current_doc_types, _trim_below(done_ranges, last_line))
 
-        if text_index is not None and hasattr(text_index, "close"):
-            await text_index.close()
+        await sink.aclose()
 
     if catalog is not None:
         catalog.close()
@@ -1120,6 +1077,25 @@ def main() -> None:
                         "No behaviour change when unset.")
     p.add_argument("--no-index", action="store_true",
                    help="skip embedding/upsert; only build the catalog")
+    # embed-to-file stage (#141): decouple embedding from the Qdrant write. Instead
+    # of upserting, embed + write vectors to sharded JSONL so the GPU fleet runs at
+    # full speed and never blocks on the capped Qdrant; a separate agent
+    # (scripts/qdrant_ingest_agent.py) drains the shards into Qdrant with backpressure.
+    p.add_argument("--embed-out", type=Path, default=None,
+                   help="embed to sharded JSONL under this DIR instead of upserting "
+                        "to Qdrant (issue #141). Writes {run}-NNN.jsonl.gz + a "
+                        "manifest; drain later with scripts/qdrant_ingest_agent.py. "
+                        "Incompatible with --replace.")
+    p.add_argument("--embed-shard-size", type=int, default=500_000,
+                   help="records per embed-file shard before rolling to the next "
+                        "(default: %(default)s). Only used with --embed-out.")
+    p.add_argument("--embed-run-id", default=None,
+                   help="unique id for this embed-file run (shard/manifest prefix). "
+                        "MUST differ per concurrent embed shard so parallel loaders "
+                        "don't clobber each other. Default: <input-stem>-<chunk-method>.")
+    p.add_argument("--no-compress", action="store_true",
+                   help="write plain .jsonl embed shards instead of gzip .jsonl.gz "
+                        "(faster, ~3x larger). Only used with --embed-out.")
     # vector store
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--qdrant-timeout", type=int, default=120,
@@ -1244,6 +1220,12 @@ def main() -> None:
     p.add_argument("--checkpoint", type=Path, default=None,
                    help="checkpoint file (default: <input>.ckpt)")
     args = p.parse_args()
+    if args.embed_out and args.replace:
+        p.error(
+            "--embed-out and --replace are incompatible: orphan pruning is a "
+            "Qdrant operation, meaningless for the embed-to-file stage. Prune at "
+            "drain time or re-embed the edited docs."
+        )
     asyncio.run(run(args))
 
 

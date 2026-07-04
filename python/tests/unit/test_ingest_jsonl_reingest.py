@@ -645,10 +645,10 @@ class _FlakyEmbedder:
 
 
 def test_is_transient_error_classification():
-    assert ingest_jsonl._is_transient_error(ConnectionError("x"))
-    assert ingest_jsonl._is_transient_error(TimeoutError("x"))
-    assert ingest_jsonl._is_transient_error(RuntimeError("Server disconnected mid-stream"))
-    assert ingest_jsonl._is_transient_error(RuntimeError("Connection timed out"))
+    assert ingest_jsonl.is_transient_error(ConnectionError("x"))
+    assert ingest_jsonl.is_transient_error(TimeoutError("x"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("Server disconnected mid-stream"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("Connection timed out"))
 
     class _Resp:
         status_code = 503
@@ -656,30 +656,30 @@ def test_is_transient_error_classification():
     class _HTTPish(Exception):
         response = _Resp()
 
-    assert ingest_jsonl._is_transient_error(_HTTPish("bad gateway"))
+    assert ingest_jsonl.is_transient_error(_HTTPish("bad gateway"))
     # A genuine bad-input / 4xx must NOT be treated as transient.
-    assert not ingest_jsonl._is_transient_error(ValueError("bad input"))
-    assert not ingest_jsonl._is_transient_error(RuntimeError("dimension mismatch"))
+    assert not ingest_jsonl.is_transient_error(ValueError("bad input"))
+    assert not ingest_jsonl.is_transient_error(RuntimeError("dimension mismatch"))
 
     # Chained cause: PooledEmbedder raises RuntimeError('all embedding endpoints
     # failed') from the real transient fault — the walk must see through it, so a
     # multi-endpoint fan-out flap is retried, not misread as a hard failure.
     wrapped = RuntimeError("all embedding endpoints failed")
     wrapped.__cause__ = ConnectionError("Server disconnected without sending a response")
-    assert ingest_jsonl._is_transient_error(wrapped)
+    assert ingest_jsonl.is_transient_error(wrapped)
     # The aggregate message alone is enough (explicit backstop), even with no cause.
-    assert ingest_jsonl._is_transient_error(RuntimeError("all embedding endpoints failed"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("all embedding endpoints failed"))
     # But a wrapper over a genuine bad-input cause stays non-transient.
     hard = RuntimeError("batch failed")
     hard.__cause__ = ValueError("dimension mismatch")
-    assert not ingest_jsonl._is_transient_error(hard)
+    assert not ingest_jsonl.is_transient_error(hard)
 
 
 def test_retry_delay_is_capped_exponential():
-    assert ingest_jsonl._retry_delay(1) == 1.0
-    assert ingest_jsonl._retry_delay(2) == 2.0
-    assert ingest_jsonl._retry_delay(3) == 4.0
-    assert ingest_jsonl._retry_delay(99) == 30.0  # capped
+    assert ingest_jsonl.retry_delay(1) == 1.0
+    assert ingest_jsonl.retry_delay(2) == 2.0
+    assert ingest_jsonl.retry_delay(3) == 4.0
+    assert ingest_jsonl.retry_delay(99) == 30.0  # capped
 
 
 @pytest.mark.asyncio
@@ -691,7 +691,7 @@ async def test_batch_retries_lets_transient_flap_converge(tmp_path, monkeypatch)
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)  # no real sleeps
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)  # no real sleeps
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
@@ -717,7 +717,7 @@ async def test_batch_retries_exhausted_still_stalls(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
@@ -738,7 +738,7 @@ async def test_non_transient_error_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True)])
@@ -765,7 +765,7 @@ async def test_batch_retries_converge_on_wrapped_pool_failure(tmp_path, monkeypa
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),

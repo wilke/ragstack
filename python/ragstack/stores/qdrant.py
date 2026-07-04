@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -23,9 +24,39 @@ from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
 from ragstack.tenancy import DEFAULT_TENANT, tenant_of
 
-__all__ = ["QdrantVectorStore", "VectorDimMismatch", "collection_name"]
+__all__ = [
+    "QdrantVectorStore",
+    "VectorDimMismatch",
+    "collection_name",
+    "CollectionHealth",
+]
 
 _PAYLOAD_RESERVED = {"chunk_id", "doc_id", "content", "start_char", "end_char"}
+
+
+@dataclass(frozen=True)
+class CollectionHealth:
+    """Read-only backpressure signals for a Qdrant collection.
+
+    Consumed by the decoupled ingest agent (``scripts/qdrant_ingest_agent.py``)
+    to throttle upserts on the capped Qdrant (``OPTIMIZER_CPU_BUDGET=12``) so
+    sustained writes don't hit the ``ResponseHandlingException`` connection
+    drops that collapsed the semantic ingest (#77/#141). NOT a per-tenant view —
+    ``points_count`` is the whole-collection total (exactly what we want for
+    backpressure, but see ``count_tenants`` for why it must never be a read ACL).
+    """
+
+    status: str  # "green" | "yellow" | "red" | "grey"
+    optimizer_ok: bool  # optimizer_status == "ok" (else it's optimizing / errored)
+    points_count: int
+    indexed_vectors_count: int
+    segments_count: int
+
+    @property
+    def unindexed(self) -> int:
+        """Vectors accepted but not yet HNSW-indexed — the incremental-index
+        backlog. A large/growing value signals the optimizer is behind."""
+        return max(0, self.points_count - self.indexed_vectors_count)
 
 
 def collection_name(base: str, model: str | None, dim: int) -> str:
@@ -198,6 +229,30 @@ class QdrantVectorStore:
         not provision infrastructure. Raises on an unreachable server."""
         await self._client.get_collections()
 
+    async def collection_health(self) -> CollectionHealth:
+        """Read Qdrant's status/optimizer/segment counters for backpressure.
+
+        ``get_collection`` returns a ``CollectionInfo`` whose ``status`` and
+        ``optimizer_status`` are enums/unions and whose counts are nullable, so
+        every field is extracted defensively (mirror ``_existing_vector_size``):
+        an unexpected shape yields a conservative value rather than raising, so a
+        transient odd read can't crash the drain loop. ``optimizer_status`` is
+        the string ``"ok"`` when healthy, or an object describing the error/ongoing
+        optimization otherwise."""
+        info = await self._client.get_collection(self._collection)
+        raw_status = getattr(info, "status", None)
+        status = str(getattr(raw_status, "value", raw_status) or "grey").lower()
+        raw_opt = getattr(info, "optimizer_status", None)
+        opt = getattr(raw_opt, "value", raw_opt)
+        optimizer_ok = str(opt).lower() == "ok"
+        return CollectionHealth(
+            status=status,
+            optimizer_ok=optimizer_ok,
+            points_count=_as_int(getattr(info, "points_count", 0)),
+            indexed_vectors_count=_as_int(getattr(info, "indexed_vectors_count", 0)),
+            segments_count=_as_int(getattr(info, "segments_count", 0)),
+        )
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         # Tenant-scoped: a caller can only delete its own documents, even if it
         # knows another tenant's doc_id. tenant_id=None deletes across tenants.
@@ -245,6 +300,14 @@ class QdrantVectorStore:
                 collection_name=self._collection,
                 points_selector=PointIdsList(points=stale),  # type: ignore[arg-type]
             )
+
+
+def _as_int(value: Any) -> int:
+    """Best-effort int for nullable Qdrant counters; None/garbage -> 0."""
+    try:
+        return int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
