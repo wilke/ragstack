@@ -282,3 +282,53 @@ Plan (fits the roadmap, doesn't invent a parallel track):
 4. **Regression tests — yes.** Once a corpus + benchmark pair has a recorded baseline score, the harness doubles as a **retrieval-quality regression gate**: pin the baseline (JSON of metric + CI), re-run on PRs that touch chunking/retrieval/RRF/rerank, and **fail if nDCG@10 drops below `baseline_lower_CI − ε`**. Distinguish two tiers: (a) fast **deterministic** gates (chunk counts, token-overflow==0, id determinism, index-parity Qdrant⇄ES) run every CI; (b) slower **quality** gates (SciFact/BioASQ nDCG) run nightly or on retrieval-path labels, since they need the GPU embed fleet. This is the natural home for the ablation-harness output: baseline once, then guard against silent regressions.
 
 Action: file one issue "external-store eval mode + wire 3-corpus A/B into #122; add BioASQ/NFCorpus; promote to nightly regression gate" and link it under M7/eval in ROADMAP.md.
+
+---
+
+## 2026-07-04 — #141 decoupled embed-to-file + backpressured ingest (feature+tests+smoke)
+
+Built the near-term path to finish ingests while Qdrant is capped (`OPTIMIZER_CPU_BUDGET=12`,
+`vm.max_map_count` blocked ~7 days, #140). The coupled embed→upsert pipeline collapses on the
+capped Qdrant (sustained upsert drops, #77 — killed 15/16 semantic shards @ ~8.6%). Fix = split
+vector generation from the DB write.
+
+Landed (not committed — pending operator review):
+- `ragstack/ingestion/retry.py` — promoted `is_transient_error` / `retry_delay` (shared by the
+  ingester + the new agent). `ResponseHandlingException` is already in the transient set.
+- `ragstack/stores/qdrant.py` — `CollectionHealth` dataclass + `collection_health()` (via
+  `get_collection`: status / optimizer_ok / points_count / indexed_vectors_count / segments_count;
+  `.unindexed` = points − indexed). Defensive getattr, mirrors `_existing_vector_size`.
+- `ragstack/ingestion/sinks.py` — `BatchSink` protocol; `QdrantSink` (verbatim coupled
+  upsert+ES+`--replace` prune); `FileSink` (sharded streaming gzip-JSONL, one `Chunk.model_dump()`
+  per line, rolls every `--embed-shard-size`, writes `manifest-<run>.json`); `iter_embedded_records`
+  streaming reader + `list_shards`/`read_manifests`.
+- `scripts/ingest_jsonl.py` — extracted `_store_batch`'s terminal write behind the sink; `--embed-out`
+  selects `FileSink`, else `QdrantSink` (default unchanged). New flags: `--embed-out`,
+  `--embed-shard-size` (500k), `--embed-run-id`, `--no-compress`. `--embed-out`+`--replace` rejected.
+  New flags read via getattr so hand-built Namespaces in unit tests stay valid.
+- `scripts/qdrant_ingest_agent.py` — single backpressure-gated writer. `HealthGate` polls
+  `collection_health` (cached TTL = `--poll-interval`), blocks while status≠green / optimizer busy /
+  `unindexed > --max-unindexed` / `segments > --max-segments`; `--max-inflight` semaphore; contiguous
+  `seq`-frontier checkpoint (completed shards + partial offset), `--resume`, `--delete-shards`,
+  `--batch-retries`. Hard-fails on dim mismatch (ensure_collection) BEFORE any upsert. **Never touches
+  `indexing_threshold` / never triggers a bulk rebuild** — that deferred uncapped build is the #140
+  crash; this fixes upserts only.
+
+Tests: 18 new (test_file_sink / test_sink_parity / test_ingest_agent_backpressure /
+test_ingest_agent_roundtrip). Fixed the pre-existing `test_ingest_jsonl_reingest.py` refs to the moved
+retry helpers (`ingest_jsonl.is_transient_error` / `retry_delay`). Full unit suite 435 pass / 1 skip;
+`ruff check ragstack/ scripts/ tests/` clean.
+
+Live smoke (coconut, capped Qdrant, SFR :9001): 5-doc slice of
+`/rag/ingest/inputs/09320c55….jsonl` → `ingest_jsonl.py --embed-out` = 162 chunks × 4096-d, one shard
++ manifest (tenant + neighbor links preserved). `qdrant_ingest_agent.py` drained it into a throwaway
+`ragstack_smoke_141`: status green, points=162, **VMA delta +92** (55,375→55,467, ~14k headroom intact).
+Idempotent re-drain kept points=162. Dropped the collection (VMAs back to ~55,385).
+
+Gotcha noted: for a small/new collection Qdrant leaves `indexed_vectors_count=0` until its
+`indexing_threshold` is reached, so `unindexed ≈ points_count` even when perfectly healthy — set
+`--max-unindexed` comfortably ABOVE the collection's `indexing_threshold` (default 100k is safe here)
+or the gate false-throttles forever.
+
+NEXT (operator): run the embed stage over the remaining ~91% of semantic → drain with the agent to
+finish `ragstack_sfr_semantic` on the capped Qdrant (the #141 acceptance criterion).
