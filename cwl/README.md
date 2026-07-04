@@ -151,8 +151,14 @@ them:
   — the reproducible/portable production path (multi-host). Heavier (torch/tokenizer
   stack). Tracked in #135.
 
-**Remaining seam:** wiring `GoWeBackend` into the API's `ShardedIngestor` (config
-`INGEST_BACKEND=gowe`) so an API ingest can fan out to GoWe.
+**Wired in:** `ragstack.ingestion.backends.make_ingest_backend` selects the
+`ShardedIngestor`'s backend from config — `INGEST_BACKEND=local` (default,
+in-process) or `INGEST_BACKEND=gowe`, which builds a `GoWeBackend` from
+`GOWE_URL` / `GOWE_TOKEN` / `GOWE_WORKFLOW_CWL` / `GOWE_WORKFLOW_INPUTS_JSON` /
+`GOWE_WORKER_GROUP`. In `gowe` mode each manifest item's `source` is a **shard
+file** the workers read (a JSONL shard for `ingest_shard.py`), not an arbitrary
+document — build the manifest from pre-sharded files. (Transparently sharding
+arbitrary `/v1/ingest` documents to GoWe is a separate follow-up.)
 
 The two step tools live in the ragstack package's script tree:
 

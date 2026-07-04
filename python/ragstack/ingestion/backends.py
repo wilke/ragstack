@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ragstack.ingestion.manifest import ItemResult, WorkItem
 from ragstack.jobstore import FAILED
+
+if TYPE_CHECKING:
+    import httpx
+
+    from ragstack.config import Settings
 
 # A shard processor: given a shard (list of work items), return one result each.
 ShardFn = Callable[[list[WorkItem]], Awaitable[list[ItemResult]]]
@@ -74,3 +79,67 @@ class LocalAsyncIORunner:
             else:
                 out.extend(res)
         return out
+
+
+def make_ingest_backend(
+    settings: Settings, *, http: httpx.AsyncClient | None = None
+) -> IngestBackend:
+    """Build the configured ``IngestBackend`` (the composition-root seam).
+
+    ``ingest_backend="local"`` → :class:`LocalAsyncIORunner` (in-process, the
+    default). ``"gowe"`` → a :class:`~ragstack.ingestion.gowe_backend.GoWeBackend`
+    that submits each run's shards to the GoWe CWL engine. The GoWe stack is
+    imported lazily so the default local path never pulls in the httpx workflow
+    client. Raises ``ValueError`` with an actionable message on an unknown backend
+    or missing/invalid GoWe config, so a misconfiguration fails fast at startup
+    rather than on the first ingest.
+    """
+    backend = (settings.ingest_backend or "local").strip().lower()
+    if backend == "local":
+        return LocalAsyncIORunner(max_concurrency=settings.ingest_concurrency)
+    if backend == "gowe":
+        return _make_gowe_backend(settings, http)
+    raise ValueError(
+        f"unknown ingest_backend {settings.ingest_backend!r} (use 'local' or 'gowe')"
+    )
+
+
+def _make_gowe_backend(
+    settings: Settings, http: httpx.AsyncClient | None
+) -> IngestBackend:
+    import json
+    from pathlib import Path
+
+    # Lazy: keep the httpx/workflow client out of the default local path.
+    from ragstack.ingestion.gowe_backend import GoWeBackend
+    from ragstack.ingestion.gowe_client import GoWeClient
+
+    if not settings.gowe_workflow_cwl:
+        raise ValueError(
+            "ingest_backend=gowe requires gowe_workflow_cwl (path to the scatter CWL)"
+        )
+    try:
+        cwl = Path(settings.gowe_workflow_cwl).read_text(encoding="utf-8")
+    except OSError as e:
+        raise ValueError(
+            f"gowe_workflow_cwl {settings.gowe_workflow_cwl!r} is unreadable: {e}"
+        ) from e
+    try:
+        static_inputs = json.loads(settings.gowe_workflow_inputs_json or "{}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"gowe_workflow_inputs_json is not valid JSON: {e}") from e
+    if not isinstance(static_inputs, dict):
+        raise ValueError("gowe_workflow_inputs_json must be a JSON object")
+
+    client = GoWeClient(
+        base_url=settings.gowe_url, token=settings.gowe_token or None, http=http
+    )
+    return GoWeBackend(
+        client,
+        cwl,
+        workflow_name=settings.gowe_workflow_name,
+        static_inputs=static_inputs,
+        worker_group=settings.gowe_worker_group or None,
+        poll_interval=settings.gowe_poll_interval,
+        timeout=settings.gowe_timeout,
+    )
