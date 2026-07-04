@@ -49,6 +49,17 @@ async def run_load_file(
 
     tenant = tenant or header.get("tenant", "") or ""
     n_docs = len({c.doc_id for c in chunks})
+    # Re-stamp the resolved tenant onto every chunk before indexing. index_chunks
+    # scopes its delete-prior by ``tenant_id=tenant``, but the upsert/index scope
+    # each point/doc by ``chunk.metadata["tenant_id"]`` (via ``tenant_of``). For an
+    # explicit ``--tenant`` override that differs from the embed-time tenant baked
+    # into the file, those would disagree — the delete would clear the override
+    # tenant (a no-op) while the write landed under the old tenant, orphaning prior
+    # data and mis-scoping the load. Stamping here (as embed_source does) keeps
+    # delete, upsert, and point-id tenant consistent. A no-op when tenant already
+    # matches the header (the default, non-override path).
+    for c in chunks:
+        c.metadata["tenant_id"] = tenant
     try:
         chunk_ids = await pipeline.index_chunks(chunks, tenant_id=tenant)
     except Exception as e:  # noqa: BLE001 — isolate the file; the engine retries

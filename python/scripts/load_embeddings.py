@@ -64,7 +64,12 @@ async def _build_pipeline(args) -> IngestionPipeline:
         # Dim comes from the embedding files themselves (their header), and every
         # file must agree — a wrong-dim file (e.g. 768-d BGE into a 4096-d SFR
         # collection) is caught here, before the collection is created/written.
-        dims = {read_header(f)["dim"] for f in args.embeddings}
+        dims = set()
+        for f in args.embeddings:
+            d = read_header(f).get("dim")
+            if not d:
+                raise SystemExit(f"{f}: embedding file header missing/zero 'dim'")
+            dims.add(int(d))
         if len(dims) > 1:
             raise SystemExit(f"embedding files disagree on dim: {sorted(dims)}")
         dim = next(iter(dims))

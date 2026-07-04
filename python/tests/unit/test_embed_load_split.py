@@ -188,3 +188,131 @@ async def test_load_file_missing_file_fails_soft(tmp_path):
     )
     receipt = await run_load_file(load_pipeline, tmp_path / "nope.jsonl", file_id="s0")
     assert receipt.status == FAILED and "read:" in receipt.error
+
+
+# --- tenant override (regression: #143 review) ------------------------------- #
+
+class _MultiDocLoader:
+    def load(self, source):
+        return [
+            Document(id="d1", content="abcdefghijklmnopqrst", source=source),
+            Document(id="d2", content="0123456789abcdefghij", source=source),
+        ]
+
+
+class _QuarantineFirstEmbedder:
+    """Embeds every chunk, but the isolating path drops the first one (poison)."""
+
+    async def embed(self, texts):
+        return [[1.0, 1.0, 1.0] for _ in texts]
+
+    async def embed_isolated(self, texts):
+        vecs = [None if i == 0 else [float(i), 1.0, 2.0] for i in range(len(texts))]
+        return vecs, sum(1 for v in vecs if v is None)
+
+
+async def _load_pipeline(vs, ti):
+    return IngestionPipeline(
+        loader=_FixedDocLoader("unused", "unused"), chunker=RecursiveCharacterChunker(),
+        embedder=_FakeEmbedder(), vector_store=vs, text_index=ti,
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_defaults_to_header_tenant(tmp_path):
+    from ragstack.tenancy import tenant_of
+    emb = tmp_path / "s.emb.jsonl"
+    await run_embed_shard(_embed_pipeline(), "file.txt", "public", "s0", emb)
+    vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
+    await run_load_file(await _load_pipeline(vs, ti), emb, file_id="s0")  # no override
+    assert vs._chunks and all(tenant_of(c) == "public" for c in vs._chunks)
+    assert all(tenant_of(c) == "public" for c in ti._chunks)
+
+
+@pytest.mark.asyncio
+async def test_load_tenant_override_restamps_delete_and_upsert(tmp_path):
+    """--tenant override must scope BOTH the delete-prior and the upsert to the
+    override tenant — not delete under the override while writing under the
+    embed-time tenant (the #143-review data-orphaning bug)."""
+    from ragstack.tenancy import tenant_of
+    emb = tmp_path / "s.emb.jsonl"
+    await run_embed_shard(_embed_pipeline(), "file.txt", "public", "s0", emb)
+
+    vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
+    receipt = await run_load_file(await _load_pipeline(vs, ti), emb, file_id="s0",
+                                  tenant="acme")
+    assert receipt.status == COMPLETED and receipt.tenant == "acme"
+    # Everything landed under 'acme' — nothing stranded under 'public'.
+    assert vs._chunks and all(tenant_of(c) == "acme" for c in vs._chunks)
+    assert all(tenant_of(c) == "acme" for c in ti._chunks)
+
+    # Re-loading under 'acme' replaces in place (idempotent), doesn't accumulate.
+    n_before = len(vs._chunks)
+    await run_load_file(await _load_pipeline(vs, ti), emb, file_id="s0", tenant="acme")
+    assert len(vs._chunks) == n_before
+
+
+# --- multi-doc + quarantine embed gaps (#143 review) ------------------------- #
+
+@pytest.mark.asyncio
+async def test_embed_shard_multi_doc(tmp_path):
+    pipeline = IngestionPipeline(
+        loader=_MultiDocLoader(),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+    )
+    out = tmp_path / "s.emb.jsonl"
+    receipt = await run_embed_shard(pipeline, "file.txt", "public", "s0", out)
+    assert receipt.status == COMPLETED and receipt.n_docs == 2
+    chunks, _ = read_embedding_file(out)
+    assert {c.doc_id for c in chunks} == {"d1", "d2"}
+    # Neighbor chain never crosses documents: each doc's first chunk has no prev.
+    for doc_id in ("d1", "d2"):
+        first = [c for c in chunks if c.doc_id == doc_id][0]
+        assert first.metadata.get("prev_chunk_id") is None
+
+
+@pytest.mark.asyncio
+async def test_embed_shard_quarantines_poison_and_writes_clean_file(tmp_path):
+    pipeline = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnopqrst"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_QuarantineFirstEmbedder(),
+        vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+    )
+    out = tmp_path / "s.emb.jsonl"
+    receipt = await run_embed_shard(pipeline, "file.txt", "public", "s0", out)
+    assert receipt.status == COMPLETED
+    chunks, header = read_embedding_file(out)
+    # The poison (first) chunk is dropped; the file is complete + uniform-dim.
+    assert len(chunks) == receipt.n_chunks and header["count"] == len(chunks)
+    assert all(c.embedding is not None for c in chunks)
+
+
+# --- header robustness + make_embedder_auto (#143 review) -------------------- #
+
+def test_read_embedding_file_tolerates_missing_count(tmp_path):
+    p = tmp_path / "e.jsonl"
+    lines = [
+        json.dumps({"schema": SCHEMA, "tenant": "", "dim": 3}),  # no 'count'
+        json.dumps({"id": "a", "doc_id": "d", "content": "x", "embedding": [1.0, 2.0, 3.0]}),
+    ]
+    p.write_text("\n".join(lines) + "\n")
+    chunks, _ = read_embedding_file(p)
+    assert len(chunks) == 1  # guard skipped, not a spurious mismatch
+
+
+@pytest.mark.asyncio
+async def test_make_embedder_auto_picks_single_vs_pooled():
+    import httpx
+
+    from ragstack.embed_pool import PooledEmbedder, make_embedder_auto
+    from ragstack.embedders import OpenAIEmbedder
+    async with httpx.AsyncClient() as http:
+        one = make_embedder_auto(api="openai", http=http, base_urls=["http://a"],
+                                 model="m")
+        many = make_embedder_auto(api="openai", http=http,
+                                  base_urls=["http://a", "http://b"], model="m")
+    assert isinstance(one, OpenAIEmbedder)
+    assert isinstance(many, PooledEmbedder)

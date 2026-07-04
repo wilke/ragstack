@@ -105,9 +105,13 @@ def read_embedding_file(path: str | Path) -> tuple[list[Chunk], dict]:
                     f"{p}:{lineno}: embedding dim {len(chunk.embedding)} != header {dim}"
                 )
             chunks.append(chunk)
-    if len(chunks) != int(header.get("count", len(chunks))):
+    # Only enforce the count when the header actually declares one — defaulting the
+    # expected count to the observed length would make the check a tautology and
+    # silently disable the truncation guard for a header that omits ``count``.
+    expected = header.get("count")
+    if expected is not None and len(chunks) != int(expected):
         raise EmbeddingFileError(
-            f"{p}: count mismatch — header says {header.get('count')}, "
+            f"{p}: count mismatch — header says {expected}, "
             f"file has {len(chunks)} chunk(s)"
         )
     return chunks, header
