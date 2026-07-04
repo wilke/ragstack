@@ -56,6 +56,10 @@ async def _build_pipeline(args) -> IngestionPipeline:
             "vector-backend and text-backend must be consistent (both durable or "
             f"both in-memory); got vector={args.vector_backend} text={args.text_backend}"
         )
+    if args.backpressure and args.backpressure_poll <= 0:
+        # A zero/negative poll would busy-loop get_collection at full request rate
+        # while the collection is not green — throttle, don't hammer.
+        raise SystemExit("--backpressure-poll must be > 0")
     if args.vector_backend == "memory":
         vstore = InMemoryVectorStore()
         tindex = InMemoryTextIndex()
@@ -119,8 +123,9 @@ def parse_args(argv=None):
                    help="override tenant (default: each file's header tenant)")
     p.add_argument("--fail-on-error", action="store_true",
                    help="exit non-zero if any file failed to load")
-    p.add_argument("--backpressure", action="store_true",
-                   help="hold each upsert until the Qdrant collection is green (#141)")
+    p.add_argument("--backpressure", action=argparse.BooleanOptionalAction, default=True,
+                   help="hold each upsert until the Qdrant collection is green (#141); "
+                        "on by default, --no-backpressure to disable")
     p.add_argument("--backpressure-poll", type=float, default=2.0,
                    help="seconds between health polls while holding (default 2.0)")
     p.add_argument("--backpressure-max-wait", type=float, default=None,

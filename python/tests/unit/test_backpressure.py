@@ -150,3 +150,118 @@ async def test_getattr_delegates_and_uses_inner_health_by_default():
     assert store.custom == "inner-attr"  # __getattr__ delegates unknown attrs
     await store.upsert(["c1"])
     assert inner.upserts == [["c1"]]
+
+
+class _HealthPairs:
+    """Yields (status, optimizer_ok) pairs in order, holding the last."""
+
+    def __init__(self, pairs):
+        self.pairs = list(pairs)
+        self.calls = 0
+
+    async def __call__(self):
+        status, ok = self.pairs[min(self.calls, len(self.pairs) - 1)]
+        self.calls += 1
+        return types.SimpleNamespace(status=status, optimizer_ok=ok, segments_count=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked", ["grey", "red", "yellow"])
+async def test_gate_holds_on_non_green_status(blocked):
+    inner = _RecordingInner()
+    health = _Health([blocked, "green"])
+    store = BackpressuredVectorStore(inner, poll_interval=0, health=health)
+    await store.upsert(["c1"])
+    assert health.calls == 2  # held on the non-green status, proceeded on green
+    assert inner.upserts == [["c1"]]
+
+
+@pytest.mark.asyncio
+async def test_gate_holds_on_optimizer_error_even_when_green():
+    """status can read green while the optimizer has failed — hold on that too."""
+    inner = _RecordingInner()
+    health = _HealthPairs([("green", False), ("green", True)])
+    store = BackpressuredVectorStore(inner, poll_interval=0, health=health)
+    await store.upsert(["c1"])
+    assert health.calls == 2  # held while optimizer_ok=False despite green status
+    assert inner.upserts == [["c1"]]
+
+
+@pytest.mark.asyncio
+async def test_upsert_happens_after_the_green_poll():
+    """Ordering: the upsert fires strictly after the poll that returned ready —
+    not before or independently of it."""
+    events = []
+
+    class _LoggingHealth:
+        def __init__(self, statuses):
+            self.statuses = list(statuses)
+            self.calls = 0
+
+        async def __call__(self):
+            s = self.statuses[min(self.calls, len(self.statuses) - 1)]
+            self.calls += 1
+            events.append(("poll", s))
+            return types.SimpleNamespace(status=s, optimizer_ok=s == "green", segments_count=1)
+
+    class _LoggingInner:
+        async def upsert(self, chunks):
+            events.append(("upsert", chunks))
+
+    store = BackpressuredVectorStore(_LoggingInner(), poll_interval=0,
+                                     health=_LoggingHealth(["yellow", "green"]))
+    await store.upsert(["c1"])
+    assert events == [("poll", "yellow"), ("poll", "green"), ("upsert", ["c1"])]
+
+
+@pytest.mark.asyncio
+async def test_max_in_flight_bounds_concurrent_upserts():
+    """max_in_flight caps concurrent inner.upsert calls (the #141 in-flight window)."""
+    import asyncio
+
+    class _ConcurrencyInner:
+        def __init__(self):
+            self.current = 0
+            self.peak = 0
+
+        async def upsert(self, chunks):
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+            await asyncio.sleep(0)  # yield so overlap can happen
+            await asyncio.sleep(0)
+            self.current -= 1
+
+    async def _green():
+        return types.SimpleNamespace(status="green", optimizer_ok=True, segments_count=1)
+
+    inner = _ConcurrencyInner()
+    store = BackpressuredVectorStore(inner, poll_interval=0, max_in_flight=2, health=_green)
+    await asyncio.gather(*(store.upsert([f"c{i}"]) for i in range(6)))
+    assert inner.peak <= 2  # never more than 2 upserts in flight at once
+
+
+@pytest.mark.asyncio
+async def test_no_max_in_flight_allows_full_overlap():
+    """Without max_in_flight the decorator does not bound concurrency (baseline
+    that proves the previous test's cap is real, not an artifact of scheduling)."""
+    import asyncio
+
+    class _ConcurrencyInner:
+        def __init__(self):
+            self.current = 0
+            self.peak = 0
+
+        async def upsert(self, chunks):
+            self.current += 1
+            self.peak = max(self.peak, self.current)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            self.current -= 1
+
+    async def _green():
+        return types.SimpleNamespace(status="green", optimizer_ok=True, segments_count=1)
+
+    inner = _ConcurrencyInner()
+    store = BackpressuredVectorStore(inner, poll_interval=0, health=_green)  # no cap
+    await asyncio.gather(*(store.upsert([f"c{i}"]) for i in range(6)))
+    assert inner.peak >= 3  # unbounded overlap

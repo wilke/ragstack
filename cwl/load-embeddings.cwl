@@ -7,10 +7,10 @@
 # Deliberately a SINGLE task, not a scatter: the load is where Qdrant backpressure
 # belongs (throttle upserts on live collection health — #141's must-have), which
 # is a stateful control loop, not a dataflow fan-out. Backpressure is implemented
-# as a `BackpressuredVectorStore` decorator inside `load_embeddings.py`; enable it
-# with `backpressure: true` (default), which holds each upsert until the
-# collection is green so a bulk load never piles unindexed vectors onto an
-# optimizing Qdrant.
+# as a `BackpressuredVectorStore` decorator inside `load_embeddings.py`; it is ON
+# by default (holds each upsert until the collection is green so a bulk load never
+# piles unindexed vectors onto an optimizing Qdrant). Set `disable_backpressure:
+# true` to turn it off (e.g. a known-uncapped fast load).
 #
 #   cwltool cwl/load-embeddings.cwl cwl/load-embeddings.inputs.yml
 #
@@ -42,10 +42,11 @@ inputs:
   fail_on_error:
     type: boolean
     default: true
-  backpressure:
+  disable_backpressure:
     type: boolean
-    default: true
-    doc: "Hold each upsert until the collection is green (#141)."
+    default: false
+    doc: "Disable upsert backpressure (#141). Leave false to keep it on (the safe
+      default) — holds each upsert until the collection is green."
 
 steps:
   load:
@@ -58,7 +59,7 @@ steps:
       qdrant_url: qdrant_url
       es_url: es_url
       fail_on_error: fail_on_error
-      backpressure: backpressure
+      disable_backpressure: disable_backpressure
     out: [summary]
     run:
       class: CommandLineTool
@@ -110,10 +111,10 @@ steps:
           inputBinding:
             prefix: --fail-on-error
             position: 8
-        backpressure:
+        disable_backpressure:
           type: boolean
           inputBinding:
-            prefix: --backpressure
+            prefix: --no-backpressure
             position: 9
       arguments:
         - position: 1

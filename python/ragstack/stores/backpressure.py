@@ -20,10 +20,13 @@ until green — bounding the accumulated-unindexed-vectors burst that drives the
 VMA-exhaustion crash. Only ``upsert`` is gated; reads, deletes, and counts pass
 through (a delete-prior is a cheap point op that doesn't trigger an index build).
 
-Not a full flow-controller: this is *admission* backpressure (hold the next
-upsert until healthy), not an in-flight window. That is sufficient for the
-serial per-file load stage; a concurrent loader that wants N-in-flight would add
-a semaphore on top.
+In-flight window: the default is pure *admission* backpressure (hold the next
+upsert until healthy), which is all the serial per-file load stage needs. Pass
+``max_in_flight=N`` to also bound concurrent ``inner.upsert`` calls with a
+semaphore — the "keep up to N batches in flight" half of #141 — so a future
+concurrent loader can overlap uploads without a thundering herd (all tasks seeing
+green at once and firing together). Left ``None`` (unbounded), it's inert, so the
+current serial loader is unaffected.
 """
 from __future__ import annotations
 
@@ -51,6 +54,10 @@ class BackpressuredVectorStore:
     (used in tests). If neither is available (e.g. an in-memory store with no
     health signal), backpressure is a no-op and every call passes straight
     through — so wrapping such a store is harmless.
+
+    The collection is "ready" when ``status == ready_status`` (default ``green``)
+    **and** the optimizer reports healthy (``optimizer_ok``). ``max_in_flight``,
+    if set, bounds concurrent ``inner.upsert`` calls (see the module docstring).
     """
 
     def __init__(
@@ -60,12 +67,14 @@ class BackpressuredVectorStore:
         poll_interval: float = 2.0,
         max_wait: float | None = None,
         ready_status: str = "green",
+        max_in_flight: int | None = None,
         health: HealthFn | None = None,
     ) -> None:
         self._inner = inner
         self._poll_interval = poll_interval
         self._max_wait = max_wait
         self._ready_status = ready_status
+        self._sem = asyncio.Semaphore(max_in_flight) if max_in_flight else None
         self._health: HealthFn | None = (
             health if health is not None else getattr(inner, "collection_health", None)
         )
@@ -78,25 +87,46 @@ class BackpressuredVectorStore:
         while True:
             h = await self._health()
             status = getattr(h, "status", self._ready_status)
-            if status == self._ready_status:
+            # Hold on an optimizer error too, not only on a non-green status: the
+            # field exists precisely to catch a collection that reports ready while
+            # its optimizer has failed. Absent (health object without the field) is
+            # treated as healthy.
+            optimizer_ok = getattr(h, "optimizer_ok", True)
+            if status == self._ready_status and optimizer_ok:
                 if held:
-                    log.info("qdrant %s (segments=%s) — resuming upserts",
+                    log.info("qdrant ready (status=%s, segments=%s) — resuming upserts",
                              status, getattr(h, "segments_count", "?"))
                 return
-            if self._max_wait is not None and waited >= self._max_wait:
-                raise BackpressureTimeout(
-                    f"collection not {self._ready_status!r} after {waited:.0f}s "
-                    f"(status={status!r})"
-                )
             held = True
-            log.info("qdrant status=%s (segments=%s) — holding upsert, re-poll in %.1fs",
-                     status, getattr(h, "segments_count", "?"), self._poll_interval)
-            await asyncio.sleep(self._poll_interval)
-            waited += self._poll_interval
+            # Compute the next sleep so total wait never exceeds max_wait, and the
+            # timeout is reported accurately (the old code slept first and could
+            # overshoot the budget by a whole poll_interval).
+            if self._max_wait is None:
+                delay = self._poll_interval
+            else:
+                remaining = self._max_wait - waited
+                if remaining <= 0:
+                    raise BackpressureTimeout(
+                        f"collection not ready (status={status!r}, "
+                        f"optimizer_ok={optimizer_ok}) after {waited:.1f}s"
+                    )
+                # A non-positive poll_interval would otherwise never advance
+                # ``waited`` toward the deadline; fall back to the remaining budget.
+                delay = min(self._poll_interval, remaining) if self._poll_interval > 0 \
+                    else remaining
+            log.info("qdrant status=%s optimizer_ok=%s (segments=%s) — holding upsert %.2fs",
+                     status, optimizer_ok, getattr(h, "segments_count", "?"), delay)
+            await asyncio.sleep(delay)
+            waited += delay
 
     async def upsert(self, chunks: list[Chunk]) -> None:
         await self._await_ready()
-        await self._inner.upsert(chunks)
+        if self._sem is None:
+            await self._inner.upsert(chunks)
+        else:
+            # Bound concurrent DB writes to max_in_flight (inert for a serial caller).
+            async with self._sem:
+                await self._inner.upsert(chunks)
 
     # --- the rest of the VectorStore protocol: pass straight through --------- #
     async def search(self, *args: Any, **kwargs: Any) -> Any:
