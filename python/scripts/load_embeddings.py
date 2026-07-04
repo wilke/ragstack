@@ -36,6 +36,7 @@ from ragstack.ingestion.load_embeddings import run_load_file
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import merge_summary
+from ragstack.stores.backpressure import BackpressuredVectorStore
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.qdrant import QdrantVectorStore
@@ -77,6 +78,14 @@ async def _build_pipeline(args) -> IngestionPipeline:
         vstore = QdrantVectorStore(url=args.qdrant_url, collection=args.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout)
         await vstore.ensure_collection()
+        if args.backpressure:
+            # #141: hold each upsert until the collection is green, so a bulk load
+            # never piles unindexed vectors onto a Qdrant that is optimizing (the
+            # VMA-exhaustion driver). Transparent to index_chunks/the pipeline.
+            vstore = BackpressuredVectorStore(
+                vstore, poll_interval=args.backpressure_poll,
+                max_wait=args.backpressure_max_wait,
+            )
         tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
@@ -110,6 +119,13 @@ def parse_args(argv=None):
                    help="override tenant (default: each file's header tenant)")
     p.add_argument("--fail-on-error", action="store_true",
                    help="exit non-zero if any file failed to load")
+    p.add_argument("--backpressure", action="store_true",
+                   help="hold each upsert until the Qdrant collection is green (#141)")
+    p.add_argument("--backpressure-poll", type=float, default=2.0,
+                   help="seconds between health polls while holding (default 2.0)")
+    p.add_argument("--backpressure-max-wait", type=float, default=None,
+                   help="give up (error) if not green after this many seconds; "
+                        "default None = wait indefinitely")
     p.add_argument("--vector-backend", choices=["qdrant", "memory"], default="qdrant")
     p.add_argument("--collection", default=None)
     p.add_argument("--qdrant-url", default="http://localhost:6333")

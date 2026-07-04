@@ -9,3 +9,6 @@ tenant: public
 qdrant_url: http://localhost:6333
 es_url: http://localhost:9200
 fail_on_error: true
+# Hold each upsert until the collection is green (#141). Recommended while Qdrant
+# runs in the capped/degraded mode; safe to leave on for an uncapped Qdrant too.
+backpressure: true
