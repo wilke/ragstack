@@ -9,3 +9,7 @@ tenant: public
 qdrant_url: http://localhost:6333
 es_url: http://localhost:9200
 fail_on_error: true
+# Upsert backpressure (#141) is ON by default — holds each upsert until the
+# collection is green. Recommended while Qdrant runs capped/degraded; safe to
+# leave on for an uncapped Qdrant too. Set disable_backpressure: true to turn off.
+disable_backpressure: false

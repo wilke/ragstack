@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
@@ -23,9 +24,28 @@ from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
 from ragstack.tenancy import DEFAULT_TENANT, tenant_of
 
-__all__ = ["QdrantVectorStore", "VectorDimMismatch", "collection_name"]
+__all__ = [
+    "QdrantVectorStore",
+    "VectorDimMismatch",
+    "collection_name",
+    "CollectionHealth",
+]
 
 _PAYLOAD_RESERVED = {"chunk_id", "doc_id", "content", "start_char", "end_char"}
+
+
+@dataclass(frozen=True)
+class CollectionHealth:
+    """A point-in-time read of a Qdrant collection's optimizer state, for
+    backpressure (#141). ``status`` is Qdrant's collection status
+    (``green`` = idle/indexed, ``yellow`` = optimizing, ``grey`` = pending,
+    ``red`` = error); ``optimizer_ok`` is False when the optimizer reports an
+    error; ``segments_count`` is the current segment count (a coarse progress
+    signal). See :class:`ragstack.stores.backpressure.BackpressuredVectorStore`."""
+
+    status: str
+    optimizer_ok: bool
+    segments_count: int
 
 
 def collection_name(base: str, model: str | None, dim: int) -> str:
@@ -197,6 +217,26 @@ class QdrantVectorStore:
         which would *create* the collection as a side effect — a health probe must
         not provision infrastructure. Raises on an unreachable server."""
         await self._client.get_collections()
+
+    async def collection_health(self) -> CollectionHealth:
+        """Read this collection's optimizer state for backpressure (#141).
+
+        Wraps ``get_collection`` and normalizes the two shapes qdrant-client
+        returns for status/optimizer across versions (enum vs. bare string;
+        ``optimizer_status == "ok"`` vs. an object with an ``error``). Read-only —
+        never provisions or mutates."""
+        info = await self._client.get_collection(self._collection)
+        # status may be a CollectionStatus enum ("CollectionStatus.GREEN" → "green")
+        # or already a bare string; normalize to a lowercase name either way.
+        raw_status = getattr(info, "status", "green")
+        status = str(getattr(raw_status, "value", raw_status)).lower()
+        # optimizer_status is "ok" (string/enum) when healthy, or an object with a
+        # truthy ``error`` when it has failed.
+        opt = getattr(info, "optimizer_status", "ok")
+        optimizer_ok = not bool(getattr(opt, "error", None))
+        segments = int(getattr(info, "segments_count", 0) or 0)
+        return CollectionHealth(status=status, optimizer_ok=optimizer_ok,
+                                segments_count=segments)
 
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         # Tenant-scoped: a caller can only delete its own documents, even if it
