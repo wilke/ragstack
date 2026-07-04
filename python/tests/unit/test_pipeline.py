@@ -232,3 +232,101 @@ async def test_reingest_empty_document_preserves_prior_data():
 
     assert {c.id for c in vector_store._chunks} == seeded
     assert {c.id for c in text_index._chunks} == seeded
+
+
+class _ExplodingStore:
+    """A vector/text store whose every store-mutating call fails the test — proves
+    embed_source never contacts the stores (the ADR-0001 / #141 decoupling)."""
+
+    async def delete(self, *a, **k):  # noqa: D401
+        raise AssertionError("embed_source must not touch the store (delete)")
+
+    async def upsert(self, *a, **k):
+        raise AssertionError("embed_source must not touch the store (upsert)")
+
+    async def index(self, *a, **k):
+        raise AssertionError("embed_source must not touch the store (index)")
+
+
+@pytest.mark.asyncio
+async def test_embed_source_does_not_touch_stores():
+    """embed_source is GPU-bound only: it returns embedded chunks without any
+    vector/text store call (would raise via _ExplodingStore otherwise)."""
+    pipeline = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnopqrst"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=_ExplodingStore(),
+        text_index=_ExplodingStore(),
+    )
+    chunks = await pipeline.embed_source("file.txt")
+    assert chunks, "expected surviving embedded chunks"
+    assert all(c.embedding is not None for c in chunks)
+    assert all(c.metadata.get("tenant_id") for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_ingest_equals_embed_then_index():
+    """ingest() is a literal composition: embed_source → index_chunks produces the
+    same chunk ids and the same store state as the coupled ingest()."""
+    coupled_vs, coupled_ti = InMemoryVectorStore(), InMemoryTextIndex()
+    coupled = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnopqrst"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=coupled_vs, text_index=coupled_ti,
+    )
+    coupled_ids = await coupled.ingest("file.txt")
+
+    split_vs, split_ti = InMemoryVectorStore(), InMemoryTextIndex()
+    split = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnopqrst"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=split_vs, text_index=split_ti,
+    )
+    chunks = await split.embed_source("file.txt")
+    split_ids = await split.index_chunks(chunks)
+
+    assert split_ids == coupled_ids
+    assert {c.id for c in split_vs._chunks} == {c.id for c in coupled_vs._chunks}
+    assert {c.id for c in split_ti._chunks} == {c.id for c in coupled_ti._chunks}
+
+
+@pytest.mark.asyncio
+async def test_index_chunks_is_self_contained_from_chunks():
+    """index_chunks needs only the chunks — no Document list. Chunks embedded by
+    one pipeline load cleanly into a second pipeline's fresh stores (models the
+    offline embed-to-file → separate load stage of #141)."""
+    embed_only = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", "abcdefghijklmnopqrst"),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+    )
+    chunks = await embed_only.embed_source("file.txt")
+
+    vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
+    loader_pipeline = IngestionPipeline(
+        loader=_FixedDocLoader("unused", "unused"),  # never called by index_chunks
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=vs, text_index=ti,
+    )
+    ids = await loader_pipeline.index_chunks(chunks)
+    assert set(ids) == {c.id for c in chunks}
+    assert {c.id for c in vs._chunks} == set(ids)
+
+
+@pytest.mark.asyncio
+async def test_embed_source_raises_on_empty_without_store_contact():
+    """An empty source raises EmptyIngestError inside embed_source — before any
+    store mutation — so the store-mutating half is never reached."""
+    pipeline = IngestionPipeline(
+        loader=_FixedDocLoader("doc-1", ""),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+    )
+    with pytest.raises(EmptyIngestError):
+        await pipeline.embed_source("file.txt")
