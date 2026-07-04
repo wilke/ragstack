@@ -43,6 +43,7 @@ class GoWeBackend:
         static_inputs: dict[str, Any] | None = None,
         shards_input_key: str = "shards",
         receipts_output_key: str = "receipts",
+        worker_group: str | None = None,
         poll_interval: float = 5.0,
         timeout: float = 7200.0,
     ) -> None:
@@ -52,6 +53,13 @@ class GoWeBackend:
         self.static_inputs = static_inputs or {}
         self.shards_input_key = shards_input_key
         self.receipts_output_key = receipts_output_key
+        # Route tasks to a specific GoWe worker group via a submission label (GoWe
+        # reads submission Labels["worker_group"]). Lets ingest land on a dedicated
+        # ragstack worker — a `--runtime none` worker in the ragstack env — without
+        # a group hint baked into the CWL. See cwl/README.md. Normalize to None so
+        # None/""/whitespace all mean "no routing" (a whitespace group would label a
+        # group no worker has → every shard fails preflight).
+        self.worker_group = (worker_group or "").strip() or None
         self.poll_interval = poll_interval
         self.timeout = timeout
 
@@ -77,7 +85,8 @@ class GoWeBackend:
         }
         try:
             wf_id = await self.client.register_workflow(self.workflow_name, self.workflow_cwl)
-            sub = await self.client.submit(wf_id, inputs)
+            labels = {"worker_group": self.worker_group} if self.worker_group else None
+            sub = await self.client.submit(wf_id, inputs, labels=labels)
             final = await self.client.wait(
                 sub["id"], poll_interval=self.poll_interval, timeout=self.timeout
             )

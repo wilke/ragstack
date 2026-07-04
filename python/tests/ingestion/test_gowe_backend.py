@@ -27,14 +27,16 @@ class _FakeClient:
         self._state = state
         self._raise = raise_on_submit
         self.submitted_inputs = None
+        self.submitted_labels = None
 
     async def register_workflow(self, name, cwl, labels=None) -> str:
         return "wf_fake"
 
-    async def submit(self, wf_id, inputs, **kw):
+    async def submit(self, wf_id, inputs, *, labels=None, **kw):
         if self._raise:
             raise GoWeError("submit blew up")
         self.submitted_inputs = inputs
+        self.submitted_labels = labels
         return {"id": "sub_fake", "state": "PENDING"}
 
     async def wait(self, sub_id, **kw):
@@ -74,6 +76,35 @@ async def test_submits_shard_files_as_file_inputs() -> None:
     await backend.run_shards([[_wi("i0", "/data/s0.jsonl")]], shard_fn=None)
     shards = client.submitted_inputs["shards"]
     assert shards == [{"class": "File", "location": "file:///data/s0.jsonl"}]
+
+
+@pytest.mark.asyncio
+async def test_worker_group_routed_via_submission_label() -> None:
+    client = _FakeClient({})
+    backend = GoWeBackend(client, "cwlVersion: v1.2", worker_group="ragstack-cpu",
+                          poll_interval=0, timeout=1)
+    await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert client.submitted_labels == {"worker_group": "ragstack-cpu"}
+
+
+@pytest.mark.asyncio
+async def test_no_worker_group_sends_no_label() -> None:
+    client = _FakeClient({})
+    await _backend(client).run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert client.submitted_labels is None
+
+
+@pytest.mark.parametrize("group", ["", "   "])
+@pytest.mark.asyncio
+async def test_blank_worker_group_normalised_to_no_label(group) -> None:
+    # "" / whitespace must NOT label a nonexistent group (which would fail every
+    # shard at preflight) — normalized to None.
+    client = _FakeClient({})
+    backend = GoWeBackend(client, "cwlVersion: v1.2", worker_group=group,
+                          poll_interval=0, timeout=1)
+    assert backend.worker_group is None
+    await backend.run_shards([[_wi("i0", "/d/s0.jsonl")]], shard_fn=None)
+    assert client.submitted_labels is None
 
 
 @pytest.mark.asyncio
