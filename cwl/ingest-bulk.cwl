@@ -118,3 +118,8 @@ outputs:
   summary:
     type: File
     outputSource: merge/summary
+  # The per-shard receipts are surfaced as a workflow output too, so a driver
+  # (GoWeBackend) can download each and map it back to an ItemResult.
+  receipts:
+    type: File[]
+    outputSource: ingest_shard/receipt

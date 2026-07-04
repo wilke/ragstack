@@ -49,9 +49,27 @@ source is necessary but not sufficient. So the `ingest_shard` step requires a
 `ModuleNotFoundError` on those deps. Provisioning that image (or a `DockerRequirement`
 hint) is the deployment follow-up — see the issue linked from the PR.
 
-**Still to come (step 2b):** a `GoWeBackend` implementing the in-process
-`IngestBackend` seam (so the API's `ShardedIngestor` submits to GoWe) — a distinct
-manifest-of-files model that needs a running GoWe to integration-test.
+### Step 2b — submitting to a live GoWe engine
+
+- **`ragstack.ingestion.gowe_client.GoWeClient`** — async REST wrapper over the
+  GoWe API: `register_workflow` → `submit` → `wait` → `download`. **Auth is a
+  BV-BRC token** (anonymous submission is disabled on the deployed server); it's
+  loaded from `$GOWE_TOKEN`/`$BVBRC_TOKEN` or the standard token files
+  (`~/.gowe/credentials.json`, `~/.patric_token`, …) and sent verbatim in the
+  `Authorization` header. Validated end-to-end against the live server (register a
+  workflow, submit with the token, poll to COMPLETED on a worker, download the
+  output) — see the `GOWE_LIVE=1` round-trip test.
+- **`ragstack.ingestion.gowe_backend.GoWeBackend`** — satisfies the in-process
+  `IngestBackend` protocol: `run_shards` submits the shards' source files as a
+  scatter workflow (this `ingest-bulk.cwl`, whose `receipts` output it collects),
+  waits, downloads the per-shard receipts, and maps them to `ItemResult`s. Each
+  `WorkItem.source` is a shard file GoWe's workers can read.
+
+**Still gated:** actually *running ingest* end-to-end on GoWe needs the
+ragstack-provisioned worker image (#135) — the merge/receipt plumbing is proven,
+but `ingest_shard` `ModuleNotFound`s ragstack's deps in a stock worker container.
+Wiring `GoWeBackend` into the API's `ShardedIngestor` (config `INGEST_BACKEND=gowe`)
+is the remaining seam work.
 
 The two step tools live in the ragstack package's script tree:
 
