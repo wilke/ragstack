@@ -102,3 +102,15 @@ def test_line_covered_frontier_or_range():
     assert ingest_jsonl._line_covered(7, 5, [[6, 9]]) is True  # in a range
     assert ingest_jsonl._line_covered(10, 5, [[6, 9]]) is False  # gap above ranges
     assert ingest_jsonl._line_covered(6, 5, [[8, 9]]) is False  # between frontier and range
+
+
+def test_embedding_timeout_flag_present(capsys, monkeypatch):
+    """--embedding-timeout (salvaged from #144) guards the coupled embed path from
+    httpx's too-tight 5s default; verify it's wired into the CLI (default 300s)."""
+    import sys
+
+    monkeypatch.setattr(sys, "argv", ["ingest_jsonl", "--help"])
+    with pytest.raises(SystemExit):
+        ingest_jsonl.main()
+    out = capsys.readouterr().out
+    assert "--embedding-timeout" in out and "300" in out
