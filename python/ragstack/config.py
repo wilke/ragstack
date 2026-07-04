@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     # is left at its default, so hybrid retrieval's two legs read the same corpus;
     # set elasticsearch_index explicitly to override that.
     qdrant_collection_explicit: str = ""
+    # Multi-instance Qdrant routing: map a collection name to an alternate Qdrant
+    # base URL, so that collection is served from a SEPARATE Qdrant process with its
+    # own ``vm.max_map_count`` (VMA) budget. The VMA limit is per-process, and Qdrant
+    # memory-maps every indexed segment's vectors — so a large collection
+    # (e.g. ragstack_sfr_semantic, ~38k VMAs) can't always coexist with others under
+    # one process's 65,530 ceiling. Routing it to a second instance sidesteps that.
+    # A collection not listed here uses ``qdrant_url`` (single-instance, unchanged).
+    # JSON env, e.g.
+    #   QDRANT_COLLECTION_ROUTES='{"ragstack_sfr_semantic":"http://localhost:6343"}'
+    # This is also the migration seam onto a sharded cluster: point a collection's
+    # route at the cluster URL to cut it over independently of the others.
+    qdrant_collection_routes: dict[str, str] = {}
 
     # Embedding backend (used at both ingest and query time)
     embedding_api: str = "sidecar"          # sidecar | openai
