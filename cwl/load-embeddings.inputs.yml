@@ -1,0 +1,11 @@
+# Example inputs for load-embeddings.cwl (the load half — upserts to Qdrant/ES).
+# The embedding files are the `embeddings` output of embed-bulk.cwl.
+embeddings:
+  - {class: File, path: /rag/cache/load12/embeddings/tok256/example.s0.emb.jsonl}
+  - {class: File, path: /rag/cache/load12/embeddings/tok256/example.s1.emb.jsonl}
+collection: ragstack_sfr_tok256
+es_index: ragstack_sfr_tok256
+tenant: public
+qdrant_url: http://localhost:6333
+es_url: http://localhost:9200
+fail_on_error: true
