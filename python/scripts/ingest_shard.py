@@ -33,8 +33,7 @@ import sys
 
 import httpx
 
-from ragstack.embed_pool import make_pooled_embedder
-from ragstack.embedders import make_embedder
+from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -46,12 +45,12 @@ from ragstack.stores.qdrant import QdrantVectorStore
 
 
 def _build_embedder(args, http: httpx.AsyncClient):
-    common = {"api": args.embedding_api, "http": http, "model": args.embedding_model,
-              "api_key": args.embedding_api_key or os.getenv("OPENAI_API_KEY")}
-    if len(args.embedding_url) > 1:
-        return make_pooled_embedder(base_urls=args.embedding_url,
-                                    max_concurrency=args.embedding_max_concurrency, **common)
-    return make_embedder(base_url=args.embedding_url[0], **common)
+    return make_embedder_auto(
+        api=args.embedding_api, http=http, base_urls=args.embedding_url,
+        model=args.embedding_model,
+        api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
+        max_concurrency=args.embedding_max_concurrency,
+    )
 
 
 def _build_chunker(args):

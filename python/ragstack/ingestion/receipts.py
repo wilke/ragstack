@@ -54,6 +54,10 @@ class ShardReceipt:
     n_chunks: int = 0
     chunk_ids: list[str] = field(default_factory=list)
     docs: list[DocRow] = field(default_factory=list)
+    # Set by the embed stage (ADR-0001 offline plane, #141): the JSONL embedding
+    # file this shard produced, for the downstream load stage. Empty for the
+    # coupled ingest_shard path (which upserts directly).
+    embedding_file: str = ""
     error: str = ""
 
     def to_json(self) -> str:
@@ -84,6 +88,7 @@ class ShardReceipt:
             n_chunks=int(d.get("n_chunks", 0)),
             chunk_ids=list(d.get("chunk_ids", [])),
             docs=docs,
+            embedding_file=d.get("embedding_file", ""),
             error=d.get("error", ""),
         )
 

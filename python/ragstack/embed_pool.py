@@ -225,3 +225,24 @@ def make_pooled_embedder(
         for url in base_urls
     ]
     return PooledEmbedder(endpoints, http=http, max_concurrency=max_concurrency)
+
+
+def make_embedder_auto(
+    api: str,
+    http: httpx.AsyncClient,
+    base_urls: list[str],
+    model: str | None = None,
+    api_key: str | None = None,
+    max_concurrency: int = 8,
+):
+    """Pick the single- vs multi-endpoint embedder by URL count.
+
+    One URL → :func:`ragstack.embedders.make_embedder`; several →
+    :func:`make_pooled_embedder`. Shared by the CLI tools (``ingest_shard`` and
+    ``embed_shard``) so the "one url or many" branch lives in exactly one place.
+    """
+    if len(base_urls) > 1:
+        return make_pooled_embedder(api=api, http=http, base_urls=base_urls, model=model,
+                                    api_key=api_key, max_concurrency=max_concurrency)
+    return make_embedder(api=api, http=http, base_url=base_urls[0], model=model,
+                         api_key=api_key)

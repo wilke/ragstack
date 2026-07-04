@@ -15,8 +15,11 @@ tool + receipts).
 |---|---|
 | `eval-scifact-chunking.cwl` | **Step 1.** Scatter/gather: ingest+score each chunking config independently, then aggregate the stats. |
 | `eval-scifact-chunking.inputs.yml` | Example inputs (the configs to compare + the embedding key). |
-| `ingest-bulk.cwl` | **Step 2.** Scatter/gather: ingest each JSONL shard independently → receipt, then merge receipts into a run summary. |
+| `ingest-bulk.cwl` | **Step 2 (coupled).** Scatter/gather: ingest each JSONL shard independently → receipt, then merge receipts into a run summary. Chunk→embed→upsert inline. |
 | `ingest-bulk.inputs.yml` | Example inputs (shard files + collection + embedding endpoints). |
+| `embed-bulk.cwl` | **Step 2 (decoupled embed half, #141).** Scatter `embed_shard` → one JSONL **embedding file** per shard (no store contact), gather receipts. |
+| `load-embeddings.cwl` | **Step 2 (decoupled load half, #141).** Single task: upsert the embedding files into Qdrant/ES (`index_chunks`), where backpressure will live. |
+| `embed-bulk.inputs.yml` / `load-embeddings.inputs.yml` | Example inputs for the two halves. |
 
 ### Step 2 tools (bulk ingest)
 
@@ -51,6 +54,39 @@ source is necessary but not sufficient. Two ways to provide them (a dedicated
 `--runtime none` worker in the ragstack env, or a ragstack SIF) are covered in the
 **dedicated-worker path** below; on a stock container the step
 `ModuleNotFoundError`s on those deps.
+
+### Decoupled embed/load (#141) — the capped-Qdrant path
+
+`ingest-bulk.cwl` couples embed and upsert in one per-shard task. Under a
+**capped Qdrant** (VMA-exhaustion workaround; see the incident doc), sustained
+inline upserts drop connections and a Qdrant stall back-pressures onto the GPU
+embedding. #141 splits the two so the GPU fleet is never blocked by the DB:
+
+- **`embed-bulk.cwl` → `python/scripts/embed_shard.py`** — scatter step. Embeds
+  **one** shard via `IngestionPipeline.embed_source` (load→chunk→embed→link) and
+  writes a JSONL **embedding file** (`<shard>.emb.jsonl`). **No Qdrant/ES** — only
+  the embedding fleet + tokenizer; the pipeline's stores are unused placeholders.
+  Stateless + idempotent (deterministic ids, re-run overwrites the file).
+- **`load-embeddings.cwl` → `python/scripts/load_embeddings.py`** — a **single**
+  task (not a scatter) that reads the embedding files and upserts them via
+  `IngestionPipeline.index_chunks` — the *same* delete-prior→upsert→index logic as
+  the coupled pipeline, **no fork**. The collection dim is read from the embedding
+  file **header** (a wrong-dim file — e.g. 768-d BGE into a 4096-d SFR collection —
+  is rejected before any write). Load is a single task because **Qdrant
+  backpressure belongs here** (throttle on live collection health), which is a
+  stateful control loop, not a dataflow fan-out.
+- **File contract:** `ragstack.ingestion.embedding_file` (`ragstack.embedding_file/v1`)
+  — a versioned JSONL header + one embedded `Chunk` per line. This is the seam a
+  future non-Python (Go) loader would depend on, not on the Python code.
+
+**Backpressure is a follow-up, not in this scaffold.** #141's must-have — halting
+upserts while Qdrant optimizes — lands as a `BackpressuredVectorStore` decorator
+wrapping the pipeline's `vector_store`; `index_chunks` and `load_embeddings.py`
+are unchanged when it arrives. Until then the load runs at full rate (safe on an
+uncapped Qdrant). Like the other step tools, a real run needs live infra — the
+`run_embed_shard`/`run_load_file` cores are unit-tested offline with a fake
+embedder + in-memory stores (an end-to-end embed→file→load round-trip that
+reconstructs the same store state as the coupled `ingest()`).
 
 ### Step 2b — submitting to a live GoWe engine
 
