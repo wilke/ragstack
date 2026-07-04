@@ -148,7 +148,8 @@ class Settings(BaseSettings):
     # GoWe engine connection + workflow (used only when ingest_backend=gowe).
     gowe_url: str = "http://localhost:8091"
     gowe_token: str = ""                     # empty → GoWeClient loads a BV-BRC token file
-    gowe_workflow_cwl: str = ""              # path to the scatter CWL (e.g. cwl/ingest-bulk.cwl)
+    gowe_workflow_cwl: str = ""              # ABSOLUTE path to the scatter CWL (a relative
+    #                                          path is resolved against the process CWD)
     gowe_workflow_name: str = "ragstack-bulk-ingest"
     # Static (non-shards) CWL inputs as a JSON object — collection, embedding
     # endpoints, chunk config, … matching the workflow's inputs. The collection

@@ -140,3 +140,65 @@ async def test_sharded_ingestor_over_gowe_backend(tmp_path):
     assert [r.item_id for r in results] == ["s0", "s1"]
     assert results[0].status == JOB_COMPLETED and results[0].chunk_ids == ["a", "b"]
     assert results[1].status == JOB_FAILED and results[1].error == "boom"
+
+
+# --- field-contract against the REAL Settings (guards future drift) ---------- #
+
+def test_real_settings_builds_local():
+    from ragstack.config import Settings
+
+    b = make_ingest_backend(Settings(ingest_backend="local", ingest_concurrency=4))
+    assert isinstance(b, LocalAsyncIORunner) and b._max == 4
+
+
+def test_real_settings_builds_gowe(tmp_path):
+    from ragstack.config import Settings
+
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text("cwlVersion: v1.2\n")
+    b = make_ingest_backend(Settings(
+        ingest_backend="gowe", gowe_workflow_cwl=str(cwl),
+        gowe_workflow_inputs_json='{"collection": "c"}',
+    ))
+    assert isinstance(b, GoWeBackend) and b.static_inputs == {"collection": "c"}
+
+
+def test_local_wires_concurrency_from_settings():
+    b = make_ingest_backend(_settings(ingest_concurrency=7))
+    assert b._max == 7  # not a hardcoded default
+
+
+def test_gowe_carries_poll_and_timeout(tmp_path):
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text("cwlVersion: v1.2\n")
+    b = make_ingest_backend(_settings(
+        ingest_backend="gowe", gowe_workflow_cwl=str(cwl),
+        gowe_poll_interval=1.5, gowe_timeout=99.0,
+    ))
+    assert b.poll_interval == 1.5 and b.timeout == 99.0
+
+
+def test_gowe_unset_worker_group_is_none(tmp_path):
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text("cwlVersion: v1.2\n")
+    b = make_ingest_backend(_settings(ingest_backend="gowe", gowe_workflow_cwl=str(cwl)))
+    assert b.worker_group is None  # "" normalized to None (no phantom label)
+
+
+# --- /v1/ingest guard in a non-local backend --------------------------------- #
+
+@pytest.mark.asyncio
+async def test_ingest_endpoint_rejects_gowe_backend(monkeypatch):
+    from fastapi import HTTPException
+
+    from ragstack.api.routers import documents as docs
+
+    monkeypatch.setattr(docs.settings, "ingest_backend", "gowe")
+    with pytest.raises(HTTPException) as ei:
+        await docs.ingest(
+            request=SimpleNamespace(source="/data/doc.pdf"),
+            background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+            tenant="public", ingestor=object(), job_store=object(),
+        )
+    assert ei.value.status_code == 501
+    assert "not supported" in ei.value.detail

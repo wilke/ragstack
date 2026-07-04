@@ -486,7 +486,7 @@ async def lifespan(app: FastAPI):
     # Select the distribution backend by config: in-process (local) or GoWe.
     # The GoWe client shares the app's http_client (deps owns its lifecycle).
     ingest_backend = make_ingest_backend(settings, http=http_client)
-    log.info("ingest backend: %s", settings.ingest_backend)
+    log.info("ingest backend: %s", type(ingest_backend).__name__)
     ingestor = ShardedIngestor(
         pipeline,
         ingest_backend,

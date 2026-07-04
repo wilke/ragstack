@@ -118,12 +118,14 @@ def _make_gowe_backend(
         raise ValueError(
             "ingest_backend=gowe requires gowe_workflow_cwl (path to the scatter CWL)"
         )
+    # Resolve to an absolute path so a relative value doesn't silently depend on
+    # the process CWD (which differs between `make run-python` and the deployed
+    # unit); the error names the resolved path so a miss is diagnosable.
+    cwl_path = Path(settings.gowe_workflow_cwl).expanduser().resolve()
     try:
-        cwl = Path(settings.gowe_workflow_cwl).read_text(encoding="utf-8")
+        cwl = cwl_path.read_text(encoding="utf-8")
     except OSError as e:
-        raise ValueError(
-            f"gowe_workflow_cwl {settings.gowe_workflow_cwl!r} is unreadable: {e}"
-        ) from e
+        raise ValueError(f"gowe_workflow_cwl {str(cwl_path)!r} is unreadable: {e}") from e
     try:
         static_inputs = json.loads(settings.gowe_workflow_inputs_json or "{}")
     except json.JSONDecodeError as e:
