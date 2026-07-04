@@ -37,9 +37,13 @@ inputs:
   chunk_method: {type: string, default: "fixed_token"}
   chunk_size: {type: int, default: 256}
   chunk_overlap: {type: int, default: 32}
-  embedding_url: {type: "string[]", doc: "SFR embedding endpoint base URLs."}
+  embedding_url:
+    type: string[]
+    doc: "SFR embedding endpoint base URLs."
   embedding_model: {type: string, default: "Salesforce/SFR-Embedding-Mistral"}
-  embedding_api_key: {type: string?, doc: "Bearer token for keyed endpoints."}
+  embedding_api_key:
+    type: ["null", string]
+    doc: "Bearer token for keyed endpoints."
 
 steps:
   ingest_shard:
@@ -77,9 +81,11 @@ steps:
         chunk_size: {type: int, inputBinding: {prefix: --chunk-size, position: 6}}
         chunk_overlap: {type: int, inputBinding: {prefix: --chunk-overlap, position: 7}}
         embedding_model: {type: string, inputBinding: {prefix: --embedding-model, position: 8}}
-        embedding_api_key: {type: string?, inputBinding: {prefix: --embedding-api-key, position: 9}}
+        embedding_api_key:
+          type: ["null", string]
+          inputBinding: {prefix: --embedding-api-key, position: 9}
         embedding_url:
-          type: "string[]"
+          type: string[]
           inputBinding: {prefix: --embedding-url, position: 10}
       arguments:
         - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/ingest_shard.py}
@@ -107,7 +113,9 @@ steps:
         pkgdir:
           type: Directory
           default: {class: Directory, location: ../python}
-        receipts: {type: "File[]", inputBinding: {position: 2}}
+        receipts:
+          type: File[]
+          inputBinding: {position: 2}
       arguments:
         - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/merge_receipts.py}
         - {position: 3, prefix: --out, valueFrom: summary.json}

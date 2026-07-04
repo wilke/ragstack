@@ -1,5 +1,8 @@
 # CWL workflows (ADR-0001 offline plane)
 
+> Integration reference + performance evaluation: [`docs/gowe-integration.md`](../docs/gowe-integration.md).
+
+
 Scaffold for the **offline / throughput plane** of [ADR-0001](../docs/adr/0001-execution-topology.md):
 bulk ingestion and the eval/benchmark harnesses expressed as CWL DAGs, executed by
 [GoWe](../../GoWe) (or any CWL v1.2 runner). Covers **step 1** (the eval harness —
