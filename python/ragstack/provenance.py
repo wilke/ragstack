@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+from datetime import UTC
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -81,7 +82,7 @@ def make_ingest_manifest(
     current time and the build spec's content hash. The single constructor shared
     by the API ingest hook and the CLI ingest scripts, so both record provenance
     identically."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     desc = chunk_descriptor(chunk_method, chunk_size, chunk_overlap, chunk_params)
     return CollectionManifest(
@@ -97,7 +98,7 @@ def make_ingest_manifest(
         spec_hash=spec_hash(model or "", dim, desc),
         corpus=corpus,
         chunk_count=chunk_count,
-        ingested_at=datetime.now(timezone.utc).isoformat(),
+        ingested_at=datetime.now(UTC).isoformat(),
         ragstack_version=ragstack_version,
         source=source,
     )
