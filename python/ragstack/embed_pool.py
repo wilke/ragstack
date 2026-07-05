@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 
 import httpx
@@ -205,13 +206,20 @@ class PooledEmbedder:
         if not pool:
             return None
         # Prefer endpoints under the waiting ceiling (server queue not backed up); if
-        # every candidate is swamped, fall through to the least-queued of them rather
-        # than stranding the request.
+        # every candidate is swamped, fall through to all of them rather than
+        # stranding the request.
         under = [e for e in pool if e.waiting <= self._max_waiting]
         chosen = under or pool
-        # Route by server-side queue depth first (globally aware — avoids piling onto
-        # a backed-up endpoint), tiebreak by local in-flight so ties still spread.
-        return min(chosen, key=lambda e: (e.waiting, e.active))
+        if len(chosen) == 1:
+            return chosen[0]
+        # WEIGHTED-RANDOM by inverse load, NOT deterministic argmin. Many independent
+        # embed processes each poll /metrics on their own ~5s cycle, so a strict
+        # "pick the least-queued" makes them all choose the SAME momentary minimum in
+        # lockstep and flood it (the 148k-on-one-endpoint herd). Weighting by
+        # 1/(waiting+active+1) still strongly prefers empty endpoints but spreads the
+        # herd across them proportionally, so no single endpoint gets swamped.
+        weights = [1.0 / (e.waiting + e.active + 1) for e in chosen]
+        return random.choices(chosen, weights=weights, k=1)[0]
 
     async def _maybe_refresh_metrics(self) -> None:
         if time.monotonic() - self._last_metrics < self._metrics_interval:

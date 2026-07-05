@@ -39,12 +39,24 @@ def _pool(http, *embedders, **kw):
     return PooledEmbedder(eps, http=http, **kw)
 
 
+@pytest.fixture
+def det(monkeypatch):
+    """Make weighted-random endpoint selection deterministic (first candidate), so
+    failover-SEMANTICS tests can rely on a specific endpoint being tried first.
+    Routing-DISTRIBUTION tests deliberately omit this to exercise the randomness."""
+    import ragstack.embed_pool as _ep
+
+    monkeypatch.setattr(
+        _ep.random, "choices", lambda population, weights=None, k=1: [population[0]]
+    )
+
+
 async def test_routes_to_an_endpoint(http):
     pool = _pool(http, _FakeEmbedder(1.0))
     assert await pool.embed(["a", "b"]) == [[1.0], [1.0]]
 
 
-async def test_failover_on_network_error(http):
+async def test_failover_on_network_error(http, det):
     bad = _FakeEmbedder(1.0, fail=httpx.ConnectError("down"))
     good = _FakeEmbedder(2.0)
     pool = _pool(http, bad, good)
@@ -53,7 +65,7 @@ async def test_failover_on_network_error(http):
     assert good.calls == 1
 
 
-async def test_failover_marks_endpoint_unhealthy(http):
+async def test_failover_marks_endpoint_unhealthy(http, det):
     bad = _FakeEmbedder(1.0, fail=httpx.ConnectError("down"))
     good = _FakeEmbedder(2.0)
     eps = [Endpoint(bad, "http://bad/health"), Endpoint(good, "http://good/health")]
@@ -73,7 +85,7 @@ async def test_all_endpoints_fail_raises(http):
         await pool.embed(["x"])
 
 
-async def test_4xx_propagates_without_failover(http):
+async def test_4xx_propagates_without_failover(http, det):
     # A bad-input 4xx (400) must propagate (so BatchingEmbedder can quarantine the
     # input) rather than trigger failover, and not demote the endpoint.
     bad_input = _FakeEmbedder(1.0, fail=_status_error(400))
@@ -86,14 +98,14 @@ async def test_4xx_propagates_without_failover(http):
     assert other.calls == 0  # no failover attempted
 
 
-async def test_5xx_fails_over(http):
+async def test_5xx_fails_over(http, det):
     bad = _FakeEmbedder(1.0, fail=_status_error(503))
     good = _FakeEmbedder(2.0)
     pool = _pool(http, bad, good)
     assert await pool.embed(["x"]) == [[2.0]]
 
 
-async def test_retriable_4xx_fails_over_without_demotion(http):
+async def test_retriable_4xx_fails_over_without_demotion(http, det):
     # A 429 (rate-limited / busy) is NOT bad input: it must fail over to another
     # endpoint rather than propagate (which would make BatchingEmbedder quarantine
     # good chunks), and the busy endpoint must NOT be demoted.
@@ -138,10 +150,11 @@ async def test_least_loaded_distributes_across_endpoints(http):
 
     a, b = _Slow(1.0), _Slow(2.0)
     eps = [Endpoint(a, "http://a/health"), Endpoint(b, "http://b/health")]
-    pool = PooledEmbedder(eps, http=http, max_concurrency=4)
-    await asyncio.gather(*(pool.embed(["x"]) for _ in range(4)))
-    assert a.calls >= 1 and b.calls >= 1  # not all funnelled to one endpoint
-    assert abs(a.calls - b.calls) <= 1  # balanced by in-flight load
+    pool = PooledEmbedder(eps, http=http, max_concurrency=8)
+    await asyncio.gather(*(pool.embed(["x"]) for _ in range(20)))
+    # Weighted-random by inverse in-flight load: both endpoints get a meaningful
+    # share (spread, not funnelled), balanced by `active` during concurrency.
+    assert a.calls >= 3 and b.calls >= 3
 
 
 async def test_check_health_updates_flags():
@@ -167,14 +180,19 @@ async def test_recovered_endpoint_rejoins_after_health_probe():
     ) as http:
         eps = [Endpoint(bad, "http://bad/health"), Endpoint(good, "http://good/health")]
         pool = PooledEmbedder(eps, http=http)  # default 30s interval: no auto-probe
-        await pool.embed(["x"])  # bad fails over to good, bad demoted
+        for _ in range(30):  # drive until `bad` is picked, fails over, and is demoted
+            await pool.embed(["x"])
+            if not eps[0].healthy:
+                break
         assert eps[0].healthy is False
+        before = bad.calls
         bad.fail = None  # backend recovers
         await pool.check_health()  # re-probe restores the flag
         assert eps[0].healthy is True
-        # Least-loaded ties go to the first endpoint, so the recovered one is reused.
-        assert await pool.embed(["y"]) == [[1.0]]
-        assert bad.calls == 2
+        # The recovered endpoint rejoins the rotation (weighted-random picks it again).
+        for _ in range(20):
+            await pool.embed(["y"])
+        assert bad.calls > before
 
 
 class _PerTextEmbedder:
@@ -231,17 +249,18 @@ async def test_embed_isolated_network_error_propagates(http):
 
 
 async def test_embed_isolated_bad_input_fails_over_then_quarantines(http):
-    # A bad-input 4xx propagates from embed() straight through (no failover), so a
-    # second healthy endpoint is never consulted for the bad text — it's bisected
-    # and quarantined. Good texts still embed on the first endpoint.
+    # A bad-input 4xx propagates from embed() straight through (no failover); it's
+    # bisected and quarantined while good texts still embed. Bad input is bad on
+    # EVERY replica of the same model, so this holds whichever endpoint the router
+    # (weighted-random) picks — hence both endpoints reject "poison".
     emb = _PerTextEmbedder(1.0, bad={"poison"})
-    other = _FakeEmbedder(9.0)
+    other = _PerTextEmbedder(9.0, bad={"poison"})
     eps = [Endpoint(emb, "http://a/health"), Endpoint(other, "http://b/health")]
     pool = PooledEmbedder(eps, http=http)
     vecs, quarantined = await pool.embed_isolated(["ok1", "poison", "ok2", "ok3"])
     assert quarantined == 1
     assert vecs[1] is None
-    assert vecs[0] == [1.0] and vecs[2] == [1.0] and vecs[3] == [1.0]
+    assert vecs[0] is not None and vecs[2] is not None and vecs[3] is not None
 
 
 async def test_health_refresh_is_interval_gated(http, monkeypatch):
@@ -275,18 +294,29 @@ def test_parse_waiting_extracts_metric():
     assert _parse_waiting("no vllm metrics here") == 0  # non-vLLM backend -> 0
 
 
-async def test_select_prefers_least_server_queued(http):
+async def test_select_prefers_least_queued_but_spreads(http):
+    # Weighted-random: least-queued wins the strong majority, swamped is essentially
+    # never chosen — but NOT deterministic argmin (that herds independent processes).
+    from collections import Counter
+
     pool = _pool(http, _FakeEmbedder(0), _FakeEmbedder(1), _FakeEmbedder(2))
-    pool._eps[0].waiting, pool._eps[1].waiting, pool._eps[2].waiting = 5000, 3, 400
-    # Route by server queue, not local load: endpoint 1 (waiting=3) wins.
-    assert pool._select(set()) is pool._eps[1]
+    pool._eps[0].waiting, pool._eps[1].waiting, pool._eps[2].waiting = 5000, 0, 50
+    c = Counter(id(pool._select(set())) for _ in range(300))
+    assert c[id(pool._eps[1])] > 200   # least-queued wins the majority
+    assert c[id(pool._eps[0])] < 30     # swamped weighted-away
 
 
-async def test_select_skips_swamped_but_falls_back_if_all_over(http):
+async def test_select_spreads_across_equal_endpoints(http):
+    # Anti-herd: equal (empty) endpoints -> selection spreads across ALL of them
+    # rather than piling onto a single "minimum".
+    pool = _pool(http, _FakeEmbedder(0), _FakeEmbedder(1), _FakeEmbedder(2), _FakeEmbedder(3))
+    picks = {id(pool._select(set())) for _ in range(200)}
+    assert len(picks) == 4
+
+
+async def test_select_skips_swamped(http):
+    # Only one endpoint under the ceiling -> deterministically chosen (no herd risk).
     pool = _pool(http, _FakeEmbedder(0), _FakeEmbedder(1), max_waiting=512)
-    pool._eps[0].waiting = 16000   # swamped (over ceiling) — the 16k-backlog case
+    pool._eps[0].waiting = 16000   # swamped (over ceiling)
     pool._eps[1].waiting = 100     # under ceiling
-    assert pool._select(set()) is pool._eps[1]
-    # If every endpoint is over the ceiling, don't strand — pick the least-queued.
-    pool._eps[1].waiting = 20000
-    assert pool._select(set()) is pool._eps[0]  # 16000 < 20000
+    assert all(pool._select(set()) is pool._eps[1] for _ in range(20))
