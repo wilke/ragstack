@@ -451,6 +451,7 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
     queryKey: ["stats-stores", apiKey],
     queryFn: () => getStoreStats(apiKey || undefined),
     refetchInterval: 5000,
+    retry: false,  // fail fast on 401/403 like the sibling queries — no retry storm
   });
 
   const health = useQuery({

@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getCollections, queryRag, type QueryResponse } from "../api/client";
 import { ResultsPanel } from "./ResultsPanel";
 import { SearchForm } from "./SearchForm";
@@ -27,6 +27,15 @@ export function ExploreView({
     retry: false,
   });
   const opts = collections.data?.collections ?? [];
+
+  // Reset a stale selection when the registry changes (apiKey/tenant switch): a
+  // collection no longer offered would be submitted as a phantom id (backend 404),
+  // and the picker hides once only the default remains — leaving it un-clearable.
+  useEffect(() => {
+    if (opts.length === 0) return;
+    const valid = new Set(opts.map((c) => (c.default ? "" : c.id)));
+    if (!valid.has(collection)) setCollection("");
+  }, [opts, collection]);
 
   const run = useMutation<QueryResponse, Error, string>({
     mutationFn: (q) =>
