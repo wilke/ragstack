@@ -497,8 +497,19 @@ async def run(args: argparse.Namespace) -> None:
         # cheaper (e.g. GPU-served BGE) model while stored chunks keep the main
         # model. batch_size lets the bridge fan one document's buffers out into
         # concurrent sub-batch calls spread across the breakpoint endpoints.
+        # Bound the per-document fan-out so a heavy doc's thousands of sentence
+        # buffers can't fire hundreds of concurrent requests and drown the
+        # breakpoint service (esp. a single-endpoint BGE sidecar, which has no
+        # pool semaphore of its own). Reuse the breakpoint (or main) concurrency.
+        bp_inflight = (
+            args.breakpoint_embedding_max_concurrency
+            or args.embedding_max_concurrency
+            or 8
+        )
         embed_bridge = SyncEmbedBridge(
-            lambda http: _build_breakpoint_embedder(args, http), batch_size=args.batch_size
+            lambda http: _build_breakpoint_embedder(args, http),
+            batch_size=args.batch_size,
+            max_inflight=bp_inflight,
         )
     # Token budget: size/cap chunks so none exceeds the embedder's context window.
     # The counter is the embedding model's tokenizer by default (--chunk-token-counter

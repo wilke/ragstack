@@ -90,6 +90,31 @@ async def test_fanout_splits_into_concurrent_subbatches_preserving_order():
 
 
 @pytest.mark.asyncio
+async def test_fanout_concurrency_is_bounded_by_max_inflight():
+    # Regression: a heavy document fans into hundreds of sub-batches. Without a
+    # bound the bridge gathered them ALL at once, drowning a single-endpoint
+    # breakpoint service (BGE sidecar) -> wedged -> ingest stall. The bridge must
+    # cap concurrent sub-batch calls at max_inflight regardless of the embedder.
+    made = {}
+
+    def factory(http):
+        made["e"] = _CountingOrderedEmbedder(http)
+        return made["e"]
+
+    bridge = SyncEmbedBridge(factory, batch_size=1, max_inflight=3)
+    try:
+        texts = [str(i) for i in range(60)]  # 60 sub-batches, fan-out of 60
+        out = await asyncio.to_thread(bridge, texts)
+    finally:
+        bridge.close()
+    e = made["e"]
+    assert out == [[float(i)] for i in range(60)]  # order still preserved
+    assert e.calls == 60  # every sub-batch dispatched
+    assert e.max_concurrent <= 3  # NEVER more than max_inflight in flight at once
+    assert e.max_concurrent == 3  # and it does run concurrently up to the bound
+
+
+@pytest.mark.asyncio
 async def test_fanout_single_call_for_small_lists():
     made = {}
 
