@@ -78,6 +78,7 @@ from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
+from ragstack.provenance import make_ingest_manifest, write_manifest
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.qdrant import QdrantVectorStore, collection_name
 
@@ -1072,6 +1073,35 @@ async def run(args: argparse.Namespace) -> None:
               f"checkpoint stalled at the first gap — re-run with --resume to retry.",
               file=sys.stderr)
         raise SystemExit(1)
+    # Verified provenance for this collection — same module the API + the
+    # per-chunk ingester use, so a bulk-, script-, or API-built collection is
+    # described identically. Skipped for catalog-only (--no-index) runs.
+    manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
+    if manifest_dir and not args.no_index:
+        params: dict[str, Any] = {}
+        if args.chunk_method in ("semantic", "semantic_pooled"):
+            params = {
+                "breakpoint_percentile": args.chunk_breakpoint_percentile,
+                "buffer_size": args.chunk_buffer_size,
+                "min_chunk_length": args.chunk_min_length,
+            }
+        manifest = make_ingest_manifest(
+            collection=coll,
+            model=args.embedding_model or "",
+            dim=dim,
+            embedding_api=args.embedding_api,
+            embedding_endpoints=list(args.embedding_url),
+            chunk_method=args.chunk_method,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            chunk_params=params,
+            corpus=str(args.input),
+            chunk_count=stats["chunks"],
+        )
+        write_manifest(manifest_dir, manifest)
+        print(f"wrote provenance manifest ({manifest.spec_hash}) to {manifest_dir}",
+              file=sys.stderr)
+
     print(f"done: {stats['docs']} docs indexed, {stats['skipped']} skipped, "
           f"{stats['chunks']} chunks (saw {stats['seen']} records)", file=sys.stderr)
 
@@ -1227,6 +1257,10 @@ def main() -> None:
                         "folds results in strict file order so the resume checkpoint is "
                         "unaffected. Set >1 to saturate a breakpoint-model fleet (e.g. "
                         "several BGE replicas). Default 1.")
+    p.add_argument("--manifest-dir", default="",
+                   help="write a provenance manifest for the collection here "
+                        "(defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set "
+                        "or under --no-index)")
     # resume
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,
