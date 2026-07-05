@@ -1085,6 +1085,14 @@ async def run(args: argparse.Namespace) -> None:
                 "buffer_size": args.chunk_buffer_size,
                 "min_chunk_length": args.chunk_min_length,
             }
+        # chunk_count is the WHOLE collection's chunk count for this tenant — a
+        # resumed run's stats["chunks"] counts only the segment it processed, so
+        # querying the store gives the true total (falls back to the run tally).
+        total_chunks = stats["chunks"]
+        try:
+            total_chunks = await store.count_tenants([args.tenant])
+        except Exception:  # noqa: BLE001 — provenance count is best-effort
+            pass
         manifest = make_ingest_manifest(
             collection=coll,
             model=args.embedding_model or "",
@@ -1096,7 +1104,7 @@ async def run(args: argparse.Namespace) -> None:
             chunk_overlap=args.chunk_overlap,
             chunk_params=params,
             corpus=str(args.input),
-            chunk_count=stats["chunks"],
+            chunk_count=total_chunks,
         )
         write_manifest(manifest_dir, manifest)
         print(f"wrote provenance manifest ({manifest.spec_hash}) to {manifest_dir}",
