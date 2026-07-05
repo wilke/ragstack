@@ -15,6 +15,11 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.config import settings
+from ragstack.api.collections import (
+    CollectionEntry,
+    CollectionRegistry,
+    load_collection_specs,
+)
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
@@ -111,15 +116,13 @@ class _CommonEmbedderKwargs(TypedDict):
     api_key: str | None
 
 
-def _build_embedder(http: httpx.AsyncClient):
-    """Build the embedder (single endpoint or a load-balanced pool), wrapped in
-    BatchingEmbedder. Multiple ``embedding_endpoints`` → a PooledEmbedder with
-    failover + backpressure; otherwise the single ``embedding_sidecar_url``."""
-    urls = settings.embedding_endpoints or [settings.embedding_sidecar_url]
+def _make_embedder(http: httpx.AsyncClient, *, api: str, model: str, urls: list[str]):
+    """Build a BatchingEmbedder over ``urls`` for the given api/model — the shared
+    core of both the default embedder and each registry collection's embedder."""
     common: _CommonEmbedderKwargs = {
-        "api": settings.embedding_api,
+        "api": api,
         "http": http,
-        "model": settings.embedding_model or None,
+        "model": model or None,
         "api_key": settings.openai_api_key or None,
     }
     if len(urls) > 1:
@@ -140,6 +143,115 @@ def _build_embedder(http: httpx.AsyncClient):
     )
 
 
+def _build_embedder(http: httpx.AsyncClient):
+    """The default embedder from top-level settings (single-collection path)."""
+    urls = settings.embedding_endpoints or [settings.embedding_sidecar_url]
+    return _make_embedder(http, api=settings.embedding_api, model=settings.embedding_model, urls=urls)
+
+
+def _default_emb_signature() -> tuple:
+    eps = tuple(sorted(settings.embedding_endpoints)) or (settings.embedding_sidecar_url,)
+    return (settings.embedding_api, settings.embedding_model, eps, str(settings.embedding_model_dim))
+
+
+async def _build_collection_registry(
+    http: httpx.AsyncClient,
+    *,
+    graph_store: Any,
+    default_embedder: Any,
+    default_vector_store: Any,
+    default_text_index: Any,
+    default_retriever: Any,
+    default_collection: str,
+) -> CollectionRegistry:
+    """Build the collection registry. The top-level pinned/derived collection is
+    the ``default`` entry (reusing the already-built objects); each spec in
+    ``collections_file``/``_json`` adds a self-contained entry with its own
+    Qdrant collection + ES index + embedder (shared by signature). Empty specs →
+    a one-entry registry equal to the default, so single-collection mode is
+    unchanged."""
+    from ragstack.retrieval.retriever import HybridRetriever
+    from ragstack.scoring.scorers import RRFScorer
+
+    def _retriever(vs: Any, ti: Any, emb: Any) -> Any:
+        return HybridRetriever(
+            vs, ti, emb,
+            graph_store=graph_store,
+            rrf_scorer=RRFScorer(k=settings.rrf_k),
+            candidate_multiplier=settings.retrieval_candidate_multiplier,
+            graph_context_score=settings.graph_context_score,
+            graph_context_depth=settings.graph_context_depth,
+        )
+
+    entries: list[CollectionEntry] = [
+        CollectionEntry(
+            id="default",
+            label=f"default · {default_collection}",
+            collection=default_collection,
+            model=settings.embedding_model,
+            dim=settings.embedding_model_dim,
+            chunk_method=settings.chunk_method,
+            chunk_size=settings.chunk_size,
+            is_default=True,
+            retriever=default_retriever,
+            vector_store=default_vector_store,
+            text_index=default_text_index,
+        )
+    ]
+
+    specs = load_collection_specs(settings)
+    if not specs:
+        return CollectionRegistry(entries, default_id="default")
+
+    from ragstack.stores.qdrant import QdrantVectorStore
+
+    # Reuse the default embedder for specs that share its backend signature.
+    emb_cache: dict[tuple, Any] = {_default_emb_signature(): default_embedder}
+
+    for spec in specs:
+        sig = spec.emb_signature()
+        emb = emb_cache.get(sig)
+        if emb is None:
+            urls = spec.embedding_endpoints or [spec.embedding_sidecar_url or settings.embedding_sidecar_url]
+            emb = _make_embedder(http, api=spec.embedding_api, model=spec.embedding_model, urls=urls)
+            emb_cache[sig] = emb
+
+        vs = QdrantVectorStore(
+            url=_qdrant_url_for(spec.collection),
+            collection=spec.collection,
+            vector_size=spec.embedding_model_dim,
+            api_key=settings.qdrant_api_key or None,
+        )
+        ti = _build_text_index_for(spec.es_index())
+        # Best-effort readiness — a registry collection that isn't reachable yet
+        # shouldn't abort startup (the default collection already gated that).
+        for store, op in ((vs, "ensure_collection"), (ti, "ensure_index")):
+            fn = getattr(store, op, None)
+            if fn is not None:
+                try:
+                    await fn()
+                except Exception as e:  # noqa: BLE001 — non-fatal for a registry entry
+                    log.warning("collection %r: %s failed: %s", spec.id, op, e)
+
+        entries.append(CollectionEntry(
+            id=spec.id,
+            label=spec.label or spec.id,
+            collection=spec.collection,
+            model=spec.embedding_model,
+            dim=spec.embedding_model_dim,
+            chunk_method=spec.chunk_method,
+            chunk_size=spec.chunk_size,
+            is_default=False,
+            retriever=_retriever(vs, ti, emb),
+            vector_store=vs,
+            text_index=ti,
+        ))
+
+    log.info("collection registry: %d collections (%s)", len(entries),
+             ", ".join(e.id for e in entries))
+    return CollectionRegistry(entries, default_id="default")
+
+
 def _es_index_name() -> str:
     """The Elasticsearch (BM25) index the API serves.
 
@@ -156,10 +268,9 @@ def _es_index_name() -> str:
     return es_index
 
 
-def _build_text_index():
-    """Return the text index. ``text_backend=elasticsearch`` is the durable BM25
-    backend used for hybrid retrieval; otherwise the in-memory Jaccard placeholder
-    (non-durable — warned under require_durable_backends)."""
+def _build_text_index_for(index: str):
+    """The text index bound to a specific ES index name — the shared core of the
+    default builder and each registry collection's BM25 leg."""
     if settings.text_backend == "elasticsearch":
         try:
             from ragstack.stores.elasticsearch import ElasticsearchTextIndex
@@ -173,7 +284,7 @@ def _build_text_index():
             return InMemoryTextIndex()
         return ElasticsearchTextIndex(
             settings.elasticsearch_url,
-            _es_index_name(),
+            index,
             settings.elasticsearch_api_key or None,
         )
 
@@ -183,6 +294,11 @@ def _build_text_index():
             "text_backend=elasticsearch for durable BM25 + hybrid retrieval"
         )
     return InMemoryTextIndex()
+
+
+def _build_text_index():
+    """The default text index (top-level ES index name)."""
+    return _build_text_index_for(_es_index_name())
 
 
 def _build_graph_store():
@@ -545,6 +661,24 @@ async def lifespan(app: FastAPI):
     app.state.rewriters = _build_rewriters(llm)
     app.state.reranker = _build_reranker(http_client)
 
+    # Multi-collection registry: the pinned/derived collection is the "default"
+    # entry; collections_file/_json add cross-model / per-chunker entries. With no
+    # config this is a one-entry registry equal to the default (unchanged).
+    from ragstack.stores.qdrant import collection_name as _cname
+
+    default_collection = settings.qdrant_collection_explicit or _cname(
+        settings.qdrant_collection, settings.embedding_model, settings.embedding_model_dim
+    )
+    app.state.collections = await _build_collection_registry(
+        http_client,
+        graph_store=graph_store,
+        default_embedder=embedder,
+        default_vector_store=vector_store,
+        default_text_index=text_index,
+        default_retriever=retriever,
+        default_collection=default_collection,
+    )
+
     # Best-effort: the sidecar picks its own model from MODEL_NAME, so a mismatched
     # deploy would silently rerank with a different model than config advertises.
     # Probe /health at startup and warn loudly on a mismatch (don't fail — the
@@ -617,6 +751,10 @@ def get_generator(request: Request):
 
 def get_retriever(request: Request):
     return request.app.state.retriever
+
+
+def get_collections(request: Request) -> CollectionRegistry:
+    return request.app.state.collections
 
 
 def get_rewriters(request: Request):

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collections_response.json",
+  "title": "CollectionsResponse",
+  "description": "Registry collections selectable via the `collection` field on /query and /retrieve.",
+  "type": "object",
+  "required": ["collections", "default"],
+  "properties": {
+    "collections": {
+      "type": "array",
+      "items": { "$ref": "collection_info.json" }
+    },
+    "default": {
+      "description": "The id served when a request omits `collection`.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

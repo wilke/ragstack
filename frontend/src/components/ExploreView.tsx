@@ -1,6 +1,6 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { queryRag, type QueryResponse } from "../api/client";
+import { getCollections, queryRag, type QueryResponse } from "../api/client";
 import { ResultsPanel } from "./ResultsPanel";
 import { SearchForm } from "./SearchForm";
 import { EmptyState } from "./states/EmptyState";
@@ -17,9 +17,20 @@ export function ExploreView({
   setApiKey: (v: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [collection, setCollection] = useState(""); // "" → default collection
+
+  // Populate the collection picker. Any authenticated caller can read this;
+  // failure (e.g. 401 before a key is set) just hides the picker.
+  const collections = useQuery({
+    queryKey: ["collections", apiKey],
+    queryFn: () => getCollections(apiKey || undefined),
+    retry: false,
+  });
+  const opts = collections.data?.collections ?? [];
 
   const run = useMutation<QueryResponse, Error, string>({
-    mutationFn: (q) => queryRag({ query: q, top_k: 5 }, apiKey || undefined),
+    mutationFn: (q) =>
+      queryRag({ query: q, top_k: 5, collection: collection || undefined }, apiKey || undefined),
   });
 
   const submit = () => {
@@ -31,6 +42,31 @@ export function ExploreView({
 
   return (
     <>
+      {opts.length > 1 ? (
+        <div className="mb-3 flex items-center gap-2">
+          <label htmlFor="collection" className="text-xs font-medium text-gray-500">
+            Collection
+          </label>
+          <select
+            id="collection"
+            value={collection}
+            onChange={(e) => setCollection(e.target.value)}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm"
+          >
+            {opts.map((c) => (
+              <option key={c.id} value={c.default ? "" : c.id}>
+                {c.label}
+                {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
+                {c.chunk_method ? ` · ${c.chunk_method}${c.chunk_size ? "/" + c.chunk_size : ""}` : ""}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-gray-400">
+            {(opts.find((c) => (c.default ? "" : c.id) === collection) ?? opts[0])?.model}
+          </span>
+        </div>
+      ) : null}
+
       <SearchForm
         apiKey={apiKey}
         setApiKey={setApiKey}

@@ -6,13 +6,14 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ragstack.api.collections import CollectionRegistry
 from ragstack.api.deps import (
+    get_collections,
     get_generator,
     get_reranker,
-    get_retriever,
     get_rewriters,
     get_tenant_quota,
 )
@@ -75,6 +76,9 @@ class QueryRequest(BaseModel):
     # Override for the candidate-pool depth fed to the reranker. ``None`` uses
     # the server default (``max(top_k, settings.rerank_candidates)``).
     rerank_candidates: int | None = Field(default=None, ge=1)
+    # Which registry collection to query. ``None`` uses the default collection.
+    # An unknown id is a 404 (explicit selection fails loudly). See GET /v1/collections.
+    collection: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -91,6 +95,8 @@ class RetrieveRequest(BaseModel):
     # See QueryRequest for semantics — same per-request rerank control.
     rerank: bool | None = None
     rerank_candidates: int | None = Field(default=None, ge=1)
+    # See QueryRequest — which registry collection to retrieve from.
+    collection: str | None = None
 
 
 class RetrieveResponse(BaseModel):
@@ -203,16 +209,30 @@ async def tenant_slot(
         yield tenant
 
 
+def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
+    """The retriever for the selected registry collection (default when None).
+    An unknown id is a 404 — explicit selection fails loudly rather than serving
+    the wrong corpus."""
+    try:
+        return registry.resolve(collection).retriever
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown collection {collection!r}; see GET /v1/collections",
+        ) from None
+
+
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     request: RetrieveRequest,
     tenant: str = Depends(tenant_slot),
-    retriever=Depends(get_retriever),
+    registry: CollectionRegistry = Depends(get_collections),
     reranker=Depends(get_reranker),
 ) -> RetrieveResponse:
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
+    retriever = _resolve_retriever(registry, request.collection)
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -243,7 +263,7 @@ def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str
 async def query(
     request: QueryRequest,
     tenant: str = Depends(tenant_slot),
-    retriever=Depends(get_retriever),
+    registry: CollectionRegistry = Depends(get_collections),
     generator=Depends(get_generator),
     rewriters=Depends(get_rewriters),
     reranker=Depends(get_reranker),
@@ -253,6 +273,7 @@ async def query(
     optionally cross-encoder rerank, and generate a grounded answer. When no LLM
     endpoint is configured the answer is a retrieval-only placeholder.
     """
+    retriever = _resolve_retriever(registry, request.collection)
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(

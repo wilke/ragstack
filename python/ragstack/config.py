@@ -49,6 +49,22 @@ class Settings(BaseSettings):
     # This is also the migration seam onto a sharded cluster: point a collection's
     # route at the cluster URL to cut it over independently of the others.
     qdrant_collection_routes: dict[str, str] = {}
+    # Multi-collection registry. Each entry is a self-contained corpus the query
+    # API can serve — its own Qdrant collection + ES index, its own embedding
+    # model/dim/endpoints, and a chunk-strategy label — selectable per request via
+    # the `collection` field on /query and /retrieve. Empty (default) = single-
+    # collection mode: the pinned/derived collection is the sole "default" entry
+    # and behaviour is byte-for-byte unchanged.
+    #
+    # ``collections_file`` points at a JSON file (a list of specs); ``collections_json``
+    # is the same content inline. The file wins if both are set. Each spec:
+    #   {"id": "sfr-512", "label": "SFR · fixed_token/512",
+    #    "collection": "ragstack_sfr_tok512", "text_index": "",
+    #    "embedding_api": "openai", "embedding_model": "Salesforce/SFR-Embedding-Mistral",
+    #    "embedding_model_dim": 4096, "embedding_endpoints": ["http://localhost:9001"],
+    #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
+    collections_file: str = ""
+    collections_json: str = ""
 
     # Embedding backend (used at both ingest and query time)
     embedding_api: str = "sidecar"          # sidecar | openai

@@ -50,6 +50,7 @@ export interface QueryRequest {
   filters?: Record<string, unknown>;
   use_graph?: boolean;
   rerank?: boolean | null;
+  collection?: string; // registry collection id; omit for the default
 }
 
 export interface QueryResponse {
@@ -243,4 +244,26 @@ export interface JobsResponse {
 
 export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
   return get<JobsResponse>(`/v1/jobs?limit=${limit}`, apiKey);
+}
+
+// --- Collections registry (query-time selection) ---
+
+export interface CollectionInfo {
+  id: string;
+  label: string;
+  model: string;
+  dim: number;
+  chunk_method?: string | null;
+  chunk_size?: number | null;
+  default: boolean;
+  count?: number | null; // tenant-scoped
+}
+
+export interface CollectionsResponse {
+  collections: CollectionInfo[];
+  default: string;
+}
+
+export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
+  return get<CollectionsResponse>("/v1/collections", apiKey);
 }

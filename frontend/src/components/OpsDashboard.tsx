@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
+  getCollections,
   getConfig,
   getDeepHealth,
   getJobs,
@@ -273,6 +274,68 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
   );
 }
 
+// --- Collections registry -------------------------------------------------
+
+function CollectionsPanel({ apiKey }: { apiKey?: string }) {
+  const cols = useQuery({
+    queryKey: ["collections-ops", apiKey],
+    queryFn: () => getCollections(apiKey || undefined),
+    refetchInterval: 15000,
+    retry: false,
+  });
+  const rows = cols.data?.collections ?? [];
+
+  return (
+    <>
+      <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Collections</h2>
+      {cols.isError ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Unavailable: {(cols.error as Error).message}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+          No collections registered.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">Collection</th>
+                <th className="px-3 py-2 font-medium">Model</th>
+                <th className="px-3 py-2 font-medium">Chunking</th>
+                <th className="px-3 py-2 font-medium">Chunks</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
+                <tr key={c.id} className="border-t border-gray-100">
+                  <td className="px-3 py-2 font-medium text-gray-800">
+                    {c.label}
+                    {c.default ? (
+                      <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
+                    ) : null}
+                  </td>
+                  <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
+                    {c.model}
+                    <span className="text-gray-400"> · {c.dim}d</span>
+                  </td>
+                  <td className="px-3 py-2 text-gray-600">
+                    {c.chunk_method ? `${c.chunk_method}${c.chunk_size ? "/" + c.chunk_size : ""}` : "—"}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums text-gray-600">
+                    {c.count != null ? c.count.toLocaleString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 // --- Ingest jobs (#95) ----------------------------------------------------
 
 function jobStatusClass(status: string): string {
@@ -409,6 +472,8 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
       )}
 
       <ConfigPanel apiKey={apiKey} />
+
+      <CollectionsPanel apiKey={apiKey} />
 
       <ModelsPanel apiKey={apiKey} />
 

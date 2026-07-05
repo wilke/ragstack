@@ -42,6 +42,11 @@
       "type": ["integer", "null"],
       "minimum": 1,
       "default": null
+    },
+    "collection": {
+      "description": "Registry collection id to query. null (default) uses the default collection; an unknown id returns 404. See GET /v1/collections.",
+      "type": ["string", "null"],
+      "default": null
     }
   },
   "additionalProperties": false

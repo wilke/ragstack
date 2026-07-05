@@ -275,6 +275,28 @@ paths:
         "401":
           description: Missing or invalid API key
 
+  /v1/collections:
+    get:
+      operationId: listCollections
+      summary: Registry collections the query API can serve
+      description: >-
+        Lists the collections selectable via the `collection` field on /query
+        and /retrieve — each with its embedding model/dim, chunk-strategy label,
+        default flag, and a tenant-scoped chunk count (own + `public`; null when
+        unavailable). Any authenticated caller.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Available collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionsResponse"
+        "401":
+          description: Missing or invalid API key
+
   /v1/graph/stats:
     get:
       operationId: graphStats
@@ -508,6 +530,12 @@ components:
           type: [integer, "null"]
           minimum: 1
           default: null
+        collection:
+          description: >-
+            Registry collection id to query. null (default) uses the default
+            collection; an unknown id returns 404. See GET /v1/collections.
+          type: [string, "null"]
+          default: null
 
     QueryResponse:
       type: object
@@ -554,6 +582,12 @@ components:
           type: [integer, "null"]
           minimum: 1
           default: null
+        collection:
+          description: >-
+            Registry collection id to retrieve from. null (default) uses the
+            default collection; an unknown id returns 404. See GET /v1/collections.
+          type: [string, "null"]
+          default: null
 
     RetrieveResponse:
       type: object
@@ -563,6 +597,35 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Source"
+
+    CollectionInfo:
+      type: object
+      required: [id, label, model, dim, default]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        model: { type: string }
+        dim: { type: integer }
+        chunk_method: { type: [string, "null"] }
+        chunk_size: { type: [integer, "null"] }
+        default: { type: boolean }
+        count:
+          description: Tenant-scoped chunk count (own + public); null when unavailable.
+          type: [integer, "null"]
+      additionalProperties: false
+
+    CollectionsResponse:
+      type: object
+      required: [collections, default]
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionInfo"
+        default:
+          description: The id served when a request omits `collection`.
+          type: string
+      additionalProperties: false
 
     IngestRequest:
       type: object

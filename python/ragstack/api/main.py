@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ragstack.api.deps import lifespan
 from ragstack.api.routers import (
     admin,
+    collections,
     documents,
     graph,
     health,
@@ -56,6 +57,9 @@ app.include_router(graph.router, prefix="/v1/graph", tags=["Graph"], dependencie
 # dependency and FastAPI caches it — the API key is verified once, not twice.
 app.include_router(
     stats.router, prefix="/v1", tags=["Stats"], dependencies=[Depends(resolve_principal)]
+)
+app.include_router(
+    collections.router, prefix="/v1", tags=["Query"], dependencies=[Depends(resolve_principal)]
 )
 # Admin surface: gated at the router level by the ``admin`` role (require_role also
 # performs auth), so every route under it is admin-only by construction. /v1/health/deep
