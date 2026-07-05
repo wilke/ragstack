@@ -135,3 +135,50 @@ export function getStoreStats(apiKey?: string): Promise<StoreStats> {
 export function getDeepHealth(apiKey?: string): Promise<DeepHealth> {
   return get<DeepHealth>("/v1/health/deep", apiKey);
 }
+
+// --- Model status + throughput (#85, admin-only) ---
+
+export interface EndpointStatus {
+  url: string;
+  reachable: boolean;
+  latency_ms?: number | null;
+  detail?: string | null;
+}
+
+export interface ModelStatus {
+  role: string; // "embedding" | "llm" | "reranker"
+  model: string;
+  backend?: string | null;
+  dim?: number | null;
+  endpoints: EndpointStatus[];
+  reachable: boolean;
+  note?: string | null; // "not configured" | "disabled" | null
+}
+
+export interface ModelsStatus {
+  models: ModelStatus[];
+}
+
+export interface BenchResult {
+  model: string;
+  ok: boolean;
+  seconds?: number | null;
+  items?: number | null;
+  items_per_sec?: number | null;
+  tokens_per_sec?: number | null;
+  detail?: string | null;
+}
+
+export interface BenchmarkResult {
+  embedding: BenchResult;
+  llm: BenchResult;
+}
+
+export function getModelsStatus(apiKey?: string): Promise<ModelsStatus> {
+  return get<ModelsStatus>("/v1/stats/models", apiKey);
+}
+
+// Runs a small real workload on the serving fleet — call on demand, not on a poll.
+export function runModelBenchmark(apiKey?: string): Promise<BenchmarkResult> {
+  return post<BenchmarkResult>("/v1/stats/models/benchmark", {}, apiKey);
+}
