@@ -1076,7 +1076,9 @@ async def run(args: argparse.Namespace) -> None:
     # Verified provenance for this collection — same module the API + the
     # per-chunk ingester use, so a bulk-, script-, or API-built collection is
     # described identically. Skipped for catalog-only (--no-index) runs.
-    manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
+    # getattr default so a hand-built Namespace (the reingest tests, embedded
+    # callers) that predates --manifest-dir still works.
+    manifest_dir = getattr(args, "manifest_dir", "") or os.getenv("COLLECTION_MANIFEST_DIR", "")
     if manifest_dir and not args.no_index:
         params: dict[str, Any] = {}
         if args.chunk_method in ("semantic", "semantic_pooled"):
