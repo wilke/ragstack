@@ -101,6 +101,19 @@ export function CompareView({
     }
   }, [opts, lanes.length]);
 
+  // Reconcile lanes when the registry changes (apiKey/tenant switch): a lane
+  // pointing at a collection no longer offered would submit a phantom id (backend
+  // 404) and render a <select> with no matching <option> — reset it to default.
+  useEffect(() => {
+    if (opts.length === 0) return;
+    const valid = new Set(opts.map((c) => (c.default ? "" : c.id)));
+    setLanes((ls) =>
+      ls.every((l) => valid.has(l.collection))
+        ? ls
+        : ls.map((l) => (valid.has(l.collection) ? l : { ...l, collection: "" })),
+    );
+  }, [opts]);
+
   const collOf = (collection: string): CollectionInfo | undefined =>
     opts.find((o) => (o.default ? "" : o.id) === collection);
   const collLabel = (collection: string): string =>
@@ -224,7 +237,22 @@ export function CompareView({
                 <div className="flex items-center gap-2">
                   <select
                     value={lane.collection}
-                    onChange={(e) => setLane(lane.key, { collection: e.target.value })}
+                    onChange={(e) => {
+                      // Changing a lane's collection invalidates its prior answer +
+                      // rating — clear them so they aren't re-attributed to the new
+                      // collection (this is an A/B *attribution* tool).
+                      setLane(lane.key, { collection: e.target.value });
+                      setResults((r) => {
+                        const n = { ...r };
+                        delete n[lane.key];
+                        return n;
+                      });
+                      setRatings((r) => {
+                        const n = { ...r };
+                        delete n[lane.key];
+                        return n;
+                      });
+                    }}
                     className="min-w-0 flex-1 rounded-md border border-gray-300 px-2 py-1 text-sm"
                   >
                     {opts.map((c) => (
