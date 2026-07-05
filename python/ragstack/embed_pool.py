@@ -1,16 +1,48 @@
 """Multi-endpoint embedder pool.
 
 Fans embedding requests across several backend endpoints (e.g. vLLM replicas on
-the H200s) with least-loaded selection, a global concurrency cap (backpressure),
-health tracking, and failover. ``PooledEmbedder`` satisfies the Embedder
-protocol, so it drops in behind ``BatchingEmbedder`` exactly like a single
-embedder; with one endpoint configured the plain single-endpoint embedder is
-used instead.
+the H200s) with **admission-control routing** — round-robin with skip-if-high
+and backpressure driven by each endpoint's server-side queue depth — plus a
+global concurrency cap, health tracking, and failover. ``PooledEmbedder``
+satisfies the Embedder protocol, so it drops in behind ``BatchingEmbedder``
+exactly like a single embedder; with one endpoint configured the plain
+single-endpoint embedder is used instead.
+
+**Why admission control (and not least-loaded / weighted-random).** ~16
+INDEPENDENT OS processes each build their own pool over the SAME small set of
+throughput-limited vLLM endpoints (~1 in-flight request per endpoint, large
+64x4080-token batches). Any routing that ranks by a ~seconds-stale global
+minimum makes all 16 processes pick the SAME endpoint in lockstep and flood it
+to 100k+ queued while the rest sit idle (the "herd"). The fix is per-process,
+coordinated only through the shared SERVER signal ``vllm:num_requests_waiting``:
+
+1. **Round-robin** with a per-process START OFFSET (from ``os.getpid()``), so N
+   processes don't all begin at endpoint 0.
+2. **Skip-if-high:** scan in round-robin order and skip any endpoint whose
+   *load* (server ``waiting`` + this process's local in-flight ``active``, so a
+   burst doesn't pile onto an endpoint it just fed before the next poll) exceeds
+   ``max_waiting``; take the first acceptable one.
+3. **Soft backpressure, then degrade — never livelock.** If EVERY endpoint is
+   over the ceiling, take ONE short *jittered* breather and re-poll to let a
+   queue drain and de-sync the herd. If they're still all over, DEGRADE to the
+   least-loaded endpoint and submit anyway. A hard "wait until one is under the
+   ceiling" is WRONG here: on a FLOPS-bound fleet the queues are permanently
+   non-empty, so that condition may never occur — every worker would block, the
+   whole fleet would stall, and ``--batch-retries`` would resubmit in lockstep
+   (a thundering retry herd). That exact failure stalled 15/16 shards last run.
+4. **Genuine-unavailability signal:** :class:`EmbedStalled` is raised only when
+   NO endpoint is healthy (fleet down), not when they're merely busy — so
+   ``--batch-retries`` backs off on a real outage while a saturated-but-up fleet
+   keeps draining at its least-loaded endpoint.
+
+Backends without /metrics keep ``waiting == 0`` forever, so skip-high never
+fires and this degrades to plain round-robin (+ local ``active``).
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import time
 
@@ -25,6 +57,19 @@ log = logging.getLogger(__name__)
 # input's fault (it fails the same way on every endpoint) and must propagate so
 # BatchingEmbedder can quarantine it instead of pointlessly failing over.
 _RETRIABLE_STATUS = frozenset({408, 425, 429})
+
+
+class EmbedStalled(RuntimeError):
+    """No endpoint is healthy AND none can be admitted — the fleet is *down*, not
+    merely busy.
+
+    Raised only for genuine unavailability: a saturated-but-up fleet is NOT a
+    stall (the pool degrades to its least-loaded endpoint and keeps draining).
+    A subclass of ``RuntimeError`` so existing ``except RuntimeError`` callers
+    (and ``retry.is_transient_error``, which matches the "temporarily
+    unavailable" message) treat it as transient/retriable: a whole-fleet outage
+    is not the input's fault, so ``--batch-retries`` should back off and re-feed
+    rather than quarantine."""
 
 
 class Endpoint:
@@ -56,12 +101,16 @@ def _parse_waiting(metrics_text: str) -> int:
 
 
 class PooledEmbedder:
-    """Route ``embed`` across endpoints with backpressure, failover, and health.
+    """Route ``embed`` across endpoints with admission control, failover, health.
 
-    - **Backpressure:** a global semaphore caps total in-flight requests, so a
-      large ingest can't open unbounded concurrent calls across the fleet.
-    - **Least-loaded:** each request goes to the healthy endpoint with the fewest
-      in-flight requests.
+    - **Admission-control routing:** round-robin (per-process random offset) that
+      skips any endpoint whose *load* — server queue ``vllm:num_requests_waiting``
+      plus this process's local in-flight ``active`` — is over ``max_waiting``.
+      When EVERY endpoint is over, it takes one short jittered breather + re-poll
+      and then DEGRADES to the least-loaded endpoint rather than blocking (a hard
+      wait livelocks a permanently-queued fleet). See the module docstring.
+    - **Backpressure:** a global semaphore also caps total in-flight requests, so
+      a large ingest can't open unbounded concurrent calls across the fleet.
     - **Failover:** a 5xx / network failure demotes the endpoint and retries on
       another. A retriable 4xx (429/408/425 — busy or rate-limited) also fails
       over but does *not* demote, so a momentarily busy replica isn't sidelined.
@@ -79,8 +128,8 @@ class PooledEmbedder:
         http: httpx.AsyncClient,
         max_concurrency: int = 8,
         health_interval: float = 30.0,
-        metrics_interval: float = 5.0,
-        max_waiting: int = 512,
+        metrics_interval: float = 1.0,
+        max_waiting: int = 64,
     ) -> None:
         if not endpoints:
             raise ValueError("PooledEmbedder requires at least one endpoint")
@@ -88,13 +137,25 @@ class PooledEmbedder:
         self._http = http
         self._sem = asyncio.Semaphore(max(1, max_concurrency))
         self._health_interval = health_interval
-        # Server-queue-aware routing: poll each endpoint's vllm:num_requests_waiting
-        # every `metrics_interval`s and prefer endpoints with fewer queued requests,
-        # skipping any above `max_waiting`. This is globally aware (the server queue),
-        # unlike least-local-load which is blind to other processes and clusters all
-        # of them onto one endpoint (the 16k-on-one-endpoint failure mode).
+        # Admission control polls each endpoint's vllm:num_requests_waiting every
+        # `metrics_interval`s (short — ~1s — so decisions ride a fresh-ish signal but
+        # never block the hot path on a GET) and skips any endpoint whose load
+        # (server `waiting` + local `active`) is over `max_waiting`. The ceiling is
+        # a *soft* preference: skip a hot endpoint while any peer has slack, but
+        # under universal load degrade to least-loaded rather than refuse. It sits
+        # ABOVE natural steady-state queue depth (with ~16 procs over 8 endpoints a
+        # busy endpoint legitimately parks tens of requests) so it flags the lopsided
+        # 100k-herd outlier, not normal operation — 16 was below steady state and
+        # fired constantly, which is what drove the stall collapse.
         self._metrics_interval = metrics_interval
         self._max_waiting = max_waiting
+        # Per-PROCESS RNG seeded by pid: decorrelates the ~16 independent ingest
+        # processes even when their pids are near-consecutive (pid % n clusters;
+        # Random(pid).randrange hashes evenly). Drives both the round-robin START
+        # offset (so they don't all begin at endpoint 0) and the breather jitter (so
+        # a shared saturation moment doesn't re-sync their re-polls).
+        self._rng = random.Random(os.getpid())
+        self._rr = self._rng.randrange(len(endpoints))
         # Start the clock now so the first probe waits a full interval rather than
         # firing on the first request.
         self._last_health = time.monotonic()
@@ -111,7 +172,13 @@ class PooledEmbedder:
             tried: set[int] = set()
             last_exc: Exception | None = None
             for _ in range(len(self._eps)):
-                ep = self._select(tried)
+                # Admission control: round-robin to the first endpoint under the
+                # load ceiling; if all are over, one jittered breather then degrade
+                # to least-loaded (never blocks a busy-but-up fleet). Raises
+                # EmbedStalled only when NO endpoint is healthy; returns None only
+                # when every endpoint has already been tried this call (failover
+                # exhausted) so the loop falls through to the real error below.
+                ep = await self._admit(tried)
                 if ep is None:
                     break
                 ep.active += 1
@@ -198,28 +265,97 @@ class PooledEmbedder:
             out[i] = v
         return 0
 
-    def _select(self, exclude: set[int]) -> Endpoint | None:
+    @staticmethod
+    def _load(ep: Endpoint) -> int:
+        """Effective queue depth this process should attribute to ``ep``: the
+        server-reported ``waiting`` plus our own in-flight ``active``.
+
+        Counting ``active`` closes the burst blind spot — the semantic breakpoint
+        pass fans one doc into many concurrent ``embed`` calls that all read the
+        SAME ~1s-stale ``waiting`` snapshot before vLLM has moved any into its
+        queue. Adding ``active`` makes the 2nd..Nth picks in a burst see the load
+        the 1st just placed, so they spread instead of dogpiling one endpoint."""
+        return ep.waiting + ep.active
+
+    def _candidates(self, exclude: set[int]) -> list[Endpoint]:
+        """Endpoints still in play this call: healthy-and-not-excluded, or — as a
+        last resort when none look healthy — any not-excluded (a stale health flag
+        shouldn't strand a request if the endpoint is actually up)."""
         healthy = [e for e in self._eps if e.healthy and id(e) not in exclude]
-        # Fall back to not-yet-tried unhealthy endpoints as a last resort — a stale
-        # health flag shouldn't strand a request if an endpoint is actually up.
-        pool = healthy or [e for e in self._eps if id(e) not in exclude]
+        return healthy or [e for e in self._eps if id(e) not in exclude]
+
+    async def _admit(self, exclude: set[int]) -> Endpoint | None:
+        """Round-robin to an admissible endpoint; degrade to least-loaded under
+        universal load; never hard-block a busy fleet.
+
+        Order of preference:
+        1. First endpoint in round-robin order whose load is <= ``max_waiting``.
+        2. If all are over: ONE short jittered breather + re-poll (lets a queue
+           drain and de-syncs the herd), then retry (1).
+        3. Still all over, but some are healthy → DEGRADE to the least-loaded
+           healthy endpoint and submit anyway (keep the pipe full — refusing
+           forever is the livelock that collapsed the last run).
+        4. No candidates left (failover exhausted this call) → ``None`` so
+           :meth:`embed` raises its real underlying error.
+        5. No *healthy* endpoint at all (fleet down) → :class:`EmbedStalled`."""
+        if not self._candidates(exclude):
+            return None  # failover exhausted — let embed() raise the real error
+        ep = self._select(exclude)
+        if ep is not None:
+            return ep
+        # Every candidate is over the ceiling. Take one bounded, jittered breather
+        # and re-poll — NOT a wait-until-under-ceiling loop, which would livelock on
+        # a permanently-queued fleet.
+        await asyncio.sleep(self._metrics_interval * (0.5 + self._rng.random()))
+        await self._refresh_waiting()
+        if not self._candidates(exclude):
+            return None
+        ep = self._select(exclude)
+        if ep is not None:
+            return ep
+        # Still universally over the ceiling. If nothing is healthy, the fleet is
+        # down — surface a retriable stall. Otherwise degrade to least-loaded.
+        healthy = [e for e in self._eps if e.healthy and id(e) not in exclude]
+        if not healthy:
+            raise EmbedStalled(
+                "embedding fleet unavailable: no healthy endpoint and all over "
+                f"max_waiting={self._max_waiting} (temporarily unavailable)"
+            )
+        log.warning(
+            "embedding fleet busy: all %d endpoints over max_waiting=%d; "
+            "degrading to least-loaded",
+            len(healthy),
+            self._max_waiting,
+        )
+        ep = min(healthy, key=self._load)
+        self._rr = (self._eps.index(ep) + 1) % len(self._eps)
+        return ep
+
+    def _select(self, exclude: set[int]) -> Endpoint | None:
+        """First endpoint (round-robin order) whose load is under the ceiling, or
+        ``None``.
+
+        ``None`` means "nothing under the ceiling right now" — either failover has
+        excluded everything, or every remaining endpoint is over ``max_waiting``.
+        :meth:`_admit` disambiguates (breather → degrade → stall); ``_select``
+        itself is pure (no waiting) so distribution tests can call it directly."""
+        pool = self._candidates(exclude)
         if not pool:
             return None
-        # Prefer endpoints under the waiting ceiling (server queue not backed up); if
-        # every candidate is swamped, fall through to all of them rather than
-        # stranding the request.
-        under = [e for e in pool if e.waiting <= self._max_waiting]
-        chosen = under or pool
-        if len(chosen) == 1:
-            return chosen[0]
-        # WEIGHTED-RANDOM by inverse load, NOT deterministic argmin. Many independent
-        # embed processes each poll /metrics on their own ~5s cycle, so a strict
-        # "pick the least-queued" makes them all choose the SAME momentary minimum in
-        # lockstep and flood it (the 148k-on-one-endpoint herd). Weighting by
-        # 1/(waiting+active+1) still strongly prefers empty endpoints but spreads the
-        # herd across them proportionally, so no single endpoint gets swamped.
-        weights = [1.0 / (e.waiting + e.active + 1) for e in chosen]
-        return random.choices(chosen, weights=weights, k=1)[0]
+        # Round-robin scan from the shared cursor, skipping any endpoint whose load
+        # (server queue + local in-flight) is over the ceiling. Advancing `self._rr`
+        # PAST the chosen endpoint (not just to it) means the NEXT call starts one
+        # further along, so a single process spreads its own requests evenly instead
+        # of re-picking the same head.
+        n = len(self._eps)
+        for step in range(n):
+            ep = self._eps[(self._rr + step) % n]
+            if ep in pool and self._load(ep) <= self._max_waiting:
+                self._rr = (self._eps.index(ep) + 1) % n
+                return ep
+        # Every candidate is over the ceiling — signal "swamped". _admit takes a
+        # breather then degrades; distribution/skip tests read None as "all swamped".
+        return None
 
     async def _maybe_refresh_metrics(self) -> None:
         if time.monotonic() - self._last_metrics < self._metrics_interval:
@@ -276,7 +412,8 @@ def make_pooled_embedder(
     max_concurrency: int = 8,
     health_path: str = "/health",
     metrics_path: str = "/metrics",
-    max_waiting: int = 512,
+    max_waiting: int = 64,
+    metrics_interval: float = 1.0,
 ) -> PooledEmbedder:
     """Build a PooledEmbedder over ``base_urls`` using the same per-endpoint
     embedder as the single-endpoint path (``make_embedder``).
@@ -287,9 +424,12 @@ def make_pooled_embedder(
     health route would otherwise read as permanently unhealthy).
 
     ``metrics_path`` (default vLLM's ``/metrics``) exposes ``num_requests_waiting``
-    for server-queue-aware routing; a backend without it just routes by local load.
-    ``max_waiting`` is the per-endpoint queue ceiling above which an endpoint is
-    skipped (unless all are over it)."""
+    for admission-control routing; a backend without it stays at waiting=0 and just
+    round-robins. ``max_waiting`` is the per-endpoint load ceiling (server queue +
+    local in-flight) above which an endpoint is skipped; when EVERY endpoint is
+    over it, ``embed`` takes one jittered breather and then degrades to the
+    least-loaded endpoint (raising :class:`EmbedStalled` only if nothing is
+    healthy)."""
     suffix = health_path.lstrip("/")
     msuffix = metrics_path.lstrip("/")
     endpoints = [
@@ -301,5 +441,9 @@ def make_pooled_embedder(
         for url in base_urls
     ]
     return PooledEmbedder(
-        endpoints, http=http, max_concurrency=max_concurrency, max_waiting=max_waiting
+        endpoints,
+        http=http,
+        max_concurrency=max_concurrency,
+        max_waiting=max_waiting,
+        metrics_interval=metrics_interval,
     )

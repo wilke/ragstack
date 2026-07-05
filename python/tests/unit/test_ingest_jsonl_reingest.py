@@ -676,10 +676,20 @@ def test_is_transient_error_classification():
 
 
 def test_retry_delay_is_capped_exponential():
-    assert ingest_jsonl.retry_delay(1) == 1.0
-    assert ingest_jsonl.retry_delay(2) == 2.0
-    assert ingest_jsonl.retry_delay(3) == 4.0
-    assert ingest_jsonl.retry_delay(99) == 30.0  # capped
+    # jitter=0 restores the deterministic capped-exponential schedule.
+    assert ingest_jsonl.retry_delay(1, jitter=0) == 1.0
+    assert ingest_jsonl.retry_delay(2, jitter=0) == 2.0
+    assert ingest_jsonl.retry_delay(3, jitter=0) == 4.0
+    assert ingest_jsonl.retry_delay(99, jitter=0) == 30.0  # capped
+
+
+def test_retry_delay_jitter_stays_in_band():
+    # Default jitter spreads retries so processes that failed together don't re-collide;
+    # each delay stays within +/-25% of the base schedule (and under the cap+band).
+    for attempt, base in [(1, 1.0), (2, 2.0), (3, 4.0), (99, 30.0)]:
+        for _ in range(50):
+            d = ingest_jsonl.retry_delay(attempt)
+            assert 0.75 * base <= d <= 1.25 * base
 
 
 @pytest.mark.asyncio
