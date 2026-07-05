@@ -671,7 +671,9 @@ async def run(args: argparse.Namespace) -> None:
     # connection per request so a stale-keepalive drop can't poison an in-flight
     # embed. (Salvaged from PR #144's hardening of the coupled ingest path.)
     async with httpx.AsyncClient(
-        timeout=httpx.Timeout(args.embedding_timeout, connect=30.0),
+        # getattr default so a hand-built Namespace (tests, embedded callers) that
+        # predates the --embedding-timeout flag still works.
+        timeout=httpx.Timeout(getattr(args, "embedding_timeout", 300.0), connect=30.0),
         limits=httpx.Limits(max_keepalive_connections=0),
     ) as http:
         embedder = _build_embedder(args, http)
