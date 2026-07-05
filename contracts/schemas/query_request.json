@@ -47,6 +47,12 @@
       "description": "Registry collection id to query. null (default) uses the default collection; an unknown id returns 404. See GET /v1/collections.",
       "type": ["string", "null"],
       "default": null
+    },
+    "retrieval_mode": {
+      "description": "Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or bm25 (sparse only). The graph leg is orthogonal (use_graph).",
+      "type": "string",
+      "enum": ["hybrid", "vector", "bm25"],
+      "default": "hybrid"
     }
   },
   "additionalProperties": false

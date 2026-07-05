@@ -15,6 +15,8 @@ type QueryRequest struct {
 	Filters           map[string]any `json:"filters,omitempty"`
 	UseGraph          *bool          `json:"use_graph,omitempty"`
 	Stream            *bool          `json:"stream,omitempty"`
+	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
+	RetrievalMode     *string        `json:"retrieval_mode,omitempty"`
 }
 
 // RetrieveRequest is the request body for POST /v1/retrieve.
@@ -26,6 +28,8 @@ type RetrieveRequest struct {
 	TopK     int            `json:"top_k,omitempty"`
 	Filters  map[string]any `json:"filters,omitempty"`
 	UseGraph *bool          `json:"use_graph,omitempty"`
+	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
+	RetrievalMode *string   `json:"retrieval_mode,omitempty"`
 }
 
 // IngestRequest is the request body for POST /v1/ingest.

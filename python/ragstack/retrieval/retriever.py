@@ -43,20 +43,27 @@ class HybridRetriever:
         filters: dict[str, Any] | None = None,
         use_graph: bool = True,
         tenant_id: str | None = None,
+        mode: str = "hybrid",
     ) -> list[ScoredChunk]:
-        # Dense retrieval
-        query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
+        """Retrieve ``top_k`` chunks. ``mode`` selects the retrieval legs:
+        ``hybrid`` (dense + BM25, RRF-fused — default), ``vector`` (dense only),
+        or ``bm25`` (sparse only). The graph leg is orthogonal — ``use_graph``
+        adds it under any mode. An unknown mode falls back to hybrid (both legs)."""
         depth = top_k * self.candidate_multiplier
-        vector_results = await self.vector_store.search(
-            query_vectors[0], top_k=depth, filters=filters
-        )
+        ranked_lists = []
 
-        # Sparse / BM25 retrieval
-        bm25_results = await self.text_index.search(query, top_k=depth, filters=filters)
+        # Dense retrieval — unless BM25-only. (Skips the query embed for bm25 mode.)
+        if mode != "bm25":
+            query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
+            ranked_lists.append(
+                await self.vector_store.search(query_vectors[0], top_k=depth, filters=filters)
+            )
 
-        ranked_lists = [vector_results, bm25_results]
+        # Sparse / BM25 retrieval — unless vector-only.
+        if mode != "vector":
+            ranked_lists.append(await self.text_index.search(query, top_k=depth, filters=filters))
 
-        # Optional graph-augmented context
+        # Optional graph-augmented context (independent of mode).
         if use_graph and self.graph_store:
             graph_chunks = await self._graph_context(query, top_k, tenant_id)
             if graph_chunks:
