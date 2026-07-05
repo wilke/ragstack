@@ -1,0 +1,31 @@
+[
+  {
+    "id": "bge",
+    "label": "BGE base · fixed/512",
+    "collection": "ragstack_baai_bge_base_en_v1_5_768_0896d168",
+    "text_index": "",
+    "embedding_api": "sidecar",
+    "embedding_model": "BAAI/bge-base-en-v1.5",
+    "embedding_model_dim": 768,
+    "embedding_sidecar_url": "http://localhost:50053",
+    "chunk_method": "fixed",
+    "chunk_size": 512
+  },
+  {
+    "id": "sfr-semantic",
+    "label": "SFR · semantic",
+    "collection": "ragstack_sfr_semantic",
+    "text_index": "",
+    "embedding_api": "openai",
+    "embedding_model": "Salesforce/SFR-Embedding-Mistral",
+    "embedding_model_dim": 4096,
+    "embedding_endpoints": [
+      "http://localhost:9001",
+      "http://localhost:9002",
+      "http://localhost:9003",
+      "http://localhost:9004"
+    ],
+    "chunk_method": "semantic",
+    "chunk_size": null
+  }
+]

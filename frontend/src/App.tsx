@@ -1,58 +1,65 @@
-import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
-import { queryRag, type QueryResponse } from "./api/client";
-import { ResultsPanel } from "./components/ResultsPanel";
-import { SearchForm } from "./components/SearchForm";
-import { EmptyState } from "./components/states/EmptyState";
+import { CompareView } from "./components/CompareView";
+import { ExploreView } from "./components/ExploreView";
+import { OpsDashboard } from "./components/OpsDashboard";
 
-// Phase-1a Explore MVP: a sources-first query console over the existing
-// /v1/query. Single request → answer + sources return atomically; the source
-// list is the trust centrepiece (rendered first), the answer settles in below.
-// No backend changes. Deferred to follow-ups (see #93): true intra-passage
-// highlighting (needs chunk-relative match offsets), neighbor context (needs a
-// chunk-by-id endpoint), an AI-eng debug toggle, streaming, and SSO.
+// SPA shell: Explore (query console, #93) + Compare (multi-collection/tenant A/B
+// eval) + Ops (store stats / deep health, a slice of #95). A lightweight state
+// toggle rather than a router keeps the scaffold minimal. The in-memory API key
+// is shared across modules.
+
+type View = "explore" | "compare" | "ops";
+
+const TABS: { id: View; label: string }[] = [
+  { id: "explore", label: "Explore" },
+  { id: "compare", label: "Compare" },
+  { id: "ops", label: "Ops" },
+];
+
+const SUBTITLE: Record<View, string> = {
+  explore: "Explore — ask the corpus, verify the sources",
+  compare: "Compare — same query across collections, ranked side by side",
+  ops: "Ops — stores, counts, and dependency health",
+};
 
 export function App() {
   const [apiKey, setApiKey] = useState("");
-  const [query, setQuery] = useState("");
+  const [view, setView] = useState<View>("explore");
 
-  const run = useMutation<QueryResponse, Error, string>({
-    mutationFn: (q) => queryRag({ query: q, top_k: 5 }, apiKey || undefined),
-  });
-
-  const submit = () => {
-    const q = query.trim();
-    if (q) run.mutate(q);
-  };
-
-  const status = run.isPending ? "pending" : run.isError ? "error" : "success";
+  // Compare needs width for side-by-side columns; the others read best narrow.
+  const wide = view === "compare";
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8">
+    <div className={`mx-auto px-4 py-8 ${wide ? "max-w-none" : "max-w-3xl"}`}>
       <header className="mb-6">
         <h1 className="text-2xl font-semibold">RAGStack Explorer</h1>
-        <p className="text-sm text-gray-500">Explore — ask the corpus, verify the sources</p>
+        <p className="text-sm text-gray-500">{SUBTITLE[view]}</p>
+
+        <nav className="mt-4 flex gap-1 border-b border-gray-200" aria-label="Modules">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setView(t.id)}
+              aria-current={view === t.id ? "page" : undefined}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
+                view === t.id
+                  ? "border-gray-900 text-gray-900"
+                  : "border-transparent text-gray-500 hover:text-gray-800"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
       </header>
 
-      <SearchForm
-        apiKey={apiKey}
-        setApiKey={setApiKey}
-        query={query}
-        setQuery={setQuery}
-        onSubmit={submit}
-        pending={run.isPending}
-      />
-
-      {run.isIdle ? (
-        <EmptyState />
+      {view === "explore" ? (
+        <ExploreView apiKey={apiKey} setApiKey={setApiKey} />
+      ) : view === "compare" ? (
+        <CompareView apiKey={apiKey} setApiKey={setApiKey} />
       ) : (
-        <ResultsPanel
-          status={status}
-          query={run.variables ?? query}
-          data={run.data}
-          error={run.error}
-          onRetry={() => run.variables && run.mutate(run.variables)}
-        />
+        <OpsDashboard apiKey={apiKey} />
       )}
     </div>
   );

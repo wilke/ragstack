@@ -14,7 +14,12 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from ragstack.api.deps import get_graph_store, get_text_index, get_vector_store
+from ragstack.api.deps import (
+    get_graph_store,
+    get_text_index,
+    get_vector_store,
+    probe_tenant_count,
+)
 from ragstack.api.security import Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.tenancy import readable_tenants
@@ -40,17 +45,13 @@ class StoreStatsResponse(BaseModel):
 
 
 async def _count_store(backend: str, store: Any, tenants: list[str]) -> StoreCount:
-    """Probe a vector/text store's tenant-filtered count, degrading gracefully."""
-    if store is None or not hasattr(store, "count_tenants"):
-        return StoreCount(backend=backend, available=False, count=None)
-    try:
-        n = await store.count_tenants(tenants)
-    except Exception:
-        # Degrade to available=false, but leave a server-side trail — an operator
-        # seeing a null count needs to distinguish "down" from "misconfigured".
-        log.warning("stats: %s count_tenants probe failed", backend, exc_info=True)
-        return StoreCount(backend=backend, available=False, count=None)
-    return StoreCount(backend=backend, available=True, count=int(n))
+    """Probe a vector/text store's tenant-filtered count, degrading gracefully.
+
+    Shares the probe with /v1/collections via ``deps.probe_tenant_count`` (which
+    logs a server-side trail on failure); ``available`` is False whenever the count
+    couldn't be obtained (store missing, no method, or the probe errored)."""
+    n = await probe_tenant_count(store, tenants)
+    return StoreCount(backend=backend, available=n is not None, count=n)
 
 
 async def _count_graph(backend: str, store: Any, tenant_id: str) -> StoreCount:

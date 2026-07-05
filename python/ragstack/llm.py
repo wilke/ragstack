@@ -91,6 +91,11 @@ class RagGenerator:
         self._llm = llm
         self._max_context_chars = max_context_chars
 
+    @property
+    def llm(self) -> OpenAILLM:
+        """The underlying chat client — used by the models benchmark probe."""
+        return self._llm
+
     def _format_context(self, sources: list[Source]) -> str:
         parts: list[str] = []
         used = 0

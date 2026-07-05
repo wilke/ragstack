@@ -50,6 +50,7 @@ export interface QueryRequest {
   filters?: Record<string, unknown>;
   use_graph?: boolean;
   rerank?: boolean | null;
+  collection?: string; // registry collection id; omit for the default
 }
 
 export interface QueryResponse {
@@ -88,4 +89,194 @@ async function post<T>(path: string, body: unknown, apiKey?: string): Promise<T>
 
 export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryResponse> {
   return post<QueryResponse>("/v1/query", req, apiKey);
+}
+
+// --- Ops dashboard read endpoints (#85) ---
+
+async function get<T>(path: string, apiKey?: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(path, { headers });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail || res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
+export interface StoreStat {
+  backend: string;
+  available: boolean;
+  count: number | null;
+}
+
+export interface StoreStats {
+  tenants: string[];
+  vector: StoreStat;
+  text: StoreStat;
+  graph: StoreStat;
+}
+
+export interface DeepCheck {
+  name: string;
+  ok: boolean;
+  detail?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface DeepHealth {
+  status: string;
+  checks: DeepCheck[];
+}
+
+export function getStoreStats(apiKey?: string): Promise<StoreStats> {
+  return get<StoreStats>("/v1/stats/stores", apiKey);
+}
+
+export function getDeepHealth(apiKey?: string): Promise<DeepHealth> {
+  return get<DeepHealth>("/v1/health/deep", apiKey);
+}
+
+// --- Model status + throughput (#85, admin-only) ---
+
+export interface EndpointStatus {
+  url: string;
+  reachable: boolean;
+  latency_ms?: number | null;
+  detail?: string | null;
+  in_flight?: number | null; // live pool view (fan-out embedding only)
+  pool_healthy?: boolean | null;
+}
+
+export interface ModelStatus {
+  role: string; // "embedding" | "llm" | "reranker"
+  model: string;
+  backend?: string | null;
+  dim?: number | null;
+  endpoints: EndpointStatus[];
+  reachable: boolean;
+  note?: string | null; // "not configured" | "disabled" | null
+}
+
+export interface ModelsStatus {
+  models: ModelStatus[];
+}
+
+export interface BenchResult {
+  model: string;
+  ok: boolean;
+  seconds?: number | null;
+  items?: number | null;
+  items_per_sec?: number | null;
+  tokens_per_sec?: number | null;
+  detail?: string | null;
+}
+
+export interface BenchmarkResult {
+  embedding: BenchResult;
+  llm: BenchResult;
+}
+
+export function getModelsStatus(apiKey?: string): Promise<ModelsStatus> {
+  return get<ModelsStatus>("/v1/stats/models", apiKey);
+}
+
+// Runs a small real workload on the serving fleet — call on demand, not on a poll.
+export function runModelBenchmark(apiKey?: string): Promise<BenchmarkResult> {
+  return post<BenchmarkResult>("/v1/stats/models/benchmark", {}, apiKey);
+}
+
+// --- Effective config (#95 config viewer, admin-only) ---
+
+// Flat snapshot from GET /v1/config. Typed loosely (index signature) since the
+// backend may add fields; the dashboard renders a curated subset in groups.
+export interface AppConfig {
+  vector_backend?: string;
+  text_backend?: string;
+  graph_backend?: string;
+  job_store_backend?: string;
+  qdrant_collection_explicit?: string | null;
+  qdrant_collection?: string;
+  elasticsearch_index?: string;
+  embedding_api?: string;
+  embedding_model?: string;
+  embedding_model_dim?: number;
+  embedding_endpoints?: string[];
+  embedding_max_concurrency?: number;
+  chunk_method?: string;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  top_k?: number;
+  rerank_enabled?: boolean;
+  rerank_candidates?: number;
+  reranker_model?: string;
+  kg_extraction_enabled?: boolean;
+  ingest_concurrency?: number;
+  tenant_max_concurrency?: number;
+  log_level?: string;
+  [key: string]: unknown;
+}
+
+export function getConfig(apiKey?: string): Promise<AppConfig> {
+  return get<AppConfig>("/v1/config", apiKey);
+}
+
+// --- Ingest jobs (#95, admin-only) ---
+
+export interface JobItemCounts {
+  pending: number;
+  completed: number;
+  failed: number;
+}
+
+export interface JobSummary {
+  job_id: string;
+  status: string;
+  source: string;
+  error: string;
+  chunks: number;
+  items: JobItemCounts;
+}
+
+export interface JobsResponse {
+  jobs: JobSummary[];
+}
+
+export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
+  return get<JobsResponse>(`/v1/jobs?limit=${limit}`, apiKey);
+}
+
+// --- Collections registry (query-time selection) ---
+
+export interface Provenance {
+  chunk_method?: string | null;
+  chunk_size?: number | null;
+  chunk_overlap?: number | null;
+  chunk_params?: Record<string, unknown>;
+  spec_hash?: string;
+  corpus?: string;
+  chunk_count?: number | null;
+  ingested_at?: string;
+  source?: string; // "ingest" (verified) | "config"
+}
+
+export interface CollectionInfo {
+  id: string;
+  label: string;
+  model: string;
+  dim: number;
+  chunk_method?: string | null;
+  chunk_size?: number | null;
+  default: boolean;
+  count?: number | null; // tenant-scoped
+  provenance?: Provenance | null; // verified lineage from the manifest
+}
+
+export interface CollectionsResponse {
+  collections: CollectionInfo[];
+  default: string;
+}
+
+export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
+  return get<CollectionsResponse>("/v1/collections", apiKey);
 }

@@ -275,6 +275,28 @@ paths:
         "401":
           description: Missing or invalid API key
 
+  /v1/collections:
+    get:
+      operationId: listCollections
+      summary: Registry collections the query API can serve
+      description: >-
+        Lists the collections selectable via the `collection` field on /query
+        and /retrieve — each with its embedding model/dim, chunk-strategy label,
+        default flag, and a tenant-scoped chunk count (own + `public`; null when
+        unavailable). Any authenticated caller.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Available collections
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionsResponse"
+        "401":
+          description: Missing or invalid API key
+
   /v1/graph/stats:
     get:
       operationId: graphStats
@@ -314,6 +336,86 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeepHealthResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Authenticated but insufficient role (admin required)
+
+  /v1/jobs:
+    get:
+      operationId: listJobs
+      summary: Recent ingest jobs (admin only)
+      description: >-
+        Recent ingest jobs for the Ops dashboard, most-recent-activity first.
+        ADMIN ONLY — a job's `source` can carry a filesystem path, so a non-admin
+        gets 403.
+      tags: [Jobs]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+      responses:
+        "200":
+          description: Recent ingest jobs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobsResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Authenticated but insufficient role (admin required)
+
+  /v1/stats/models:
+    get:
+      operationId: statsModels
+      summary: Model endpoint status (admin only)
+      description: >-
+        Per-role (embedding / llm / reranker) model status with per-endpoint
+        reachability, latency, and pool health. ADMIN ONLY — `url`/`detail` can
+        carry backend hostnames, so a non-admin gets 403.
+      tags: [Stats]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Per-model endpoint status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelsStatusResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Authenticated but insufficient role (admin required)
+
+  /v1/stats/models/benchmark:
+    post:
+      operationId: benchmarkModels
+      summary: Short embedding/LLM throughput benchmark (admin only)
+      description: >-
+        Runs a small, bounded embedding + LLM throughput probe and returns
+        per-model timings. ADMIN ONLY. The request bounds keep it from being
+        coaxed into a load test.
+      tags: [Stats]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BenchmarkRequest"
+      responses:
+        "200":
+          description: Per-model benchmark result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BenchmarkResponse"
         "401":
           description: Missing or invalid API key
         "403":
@@ -508,6 +610,12 @@ components:
           type: [integer, "null"]
           minimum: 1
           default: null
+        collection:
+          description: >-
+            Registry collection id to query. null (default) uses the default
+            collection; an unknown id returns 404. See GET /v1/collections.
+          type: [string, "null"]
+          default: null
 
     QueryResponse:
       type: object
@@ -554,6 +662,12 @@ components:
           type: [integer, "null"]
           minimum: 1
           default: null
+        collection:
+          description: >-
+            Registry collection id to retrieve from. null (default) uses the
+            default collection; an unknown id returns 404. See GET /v1/collections.
+          type: [string, "null"]
+          default: null
 
     RetrieveResponse:
       type: object
@@ -563,6 +677,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Source"
+
+    CollectionInfo:
+      type: object
+      required: [id, label, model, dim, default]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        model: { type: string }
+        dim: { type: integer }
+        chunk_method: { type: [string, "null"] }
+        chunk_size: { type: [integer, "null"] }
+        default: { type: boolean }
+        count:
+          description: Tenant-scoped chunk count (own + public); null when unavailable.
+          type: [integer, "null"]
+        provenance:
+          description: Verified build lineage from the collection's manifest; null when none.
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            chunk_method: { type: [string, "null"] }
+            chunk_size: { type: [integer, "null"] }
+            chunk_overlap: { type: [integer, "null"] }
+            chunk_params: { type: object }
+            spec_hash: { type: string }
+            corpus: { type: string }
+            chunk_count: { type: [integer, "null"] }
+            ingested_at: { type: string }
+            source: { type: string }
+      additionalProperties: false
+
+    CollectionsResponse:
+      type: object
+      required: [collections, default]
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionInfo"
+        default:
+          description: The id served when a request omits `collection`.
+          type: string
+      additionalProperties: false
 
     IngestRequest:
       type: object
@@ -648,3 +805,115 @@ components:
         metadata:
           type: object
           default: {}
+
+    JobItemCounts:
+      type: object
+      description: Per-item status counts for a resumable manifest run (zeros otherwise).
+      required: [pending, completed, failed]
+      properties:
+        pending: { type: integer }
+        completed: { type: integer }
+        failed: { type: integer }
+      additionalProperties: false
+
+    JobSummary:
+      type: object
+      description: One ingest job's tracked state (admin view).
+      required: [job_id, status, source, error, chunks, items]
+      properties:
+        job_id: { type: string }
+        status: { type: string }
+        source: { type: string }
+        error:
+          type: string
+          description: Caller-safe error label (exception class only, never raw messages).
+        chunks:
+          type: integer
+          description: Count of chunk_ids stamped on the job record (single-doc runs).
+        items: { $ref: "#/components/schemas/JobItemCounts" }
+      additionalProperties: false
+
+    JobsResponse:
+      type: object
+      required: [jobs]
+      properties:
+        jobs:
+          type: array
+          items: { $ref: "#/components/schemas/JobSummary" }
+      additionalProperties: false
+
+    EndpointStatus:
+      type: object
+      description: Reachability of one model-serving endpoint.
+      required: [url, reachable, latency_ms, detail, in_flight, pool_healthy]
+      properties:
+        url: { type: string }
+        reachable: { type: boolean }
+        latency_ms: { type: [number, "null"] }
+        detail: { type: [string, "null"] }
+        in_flight:
+          type: [integer, "null"]
+          description: In-flight requests (pooled embedder only; null otherwise).
+        pool_healthy: { type: [boolean, "null"] }
+      additionalProperties: false
+
+    ModelStatus:
+      type: object
+      description: Status of one model role across its endpoints.
+      required: [role, model, backend, dim, endpoints, reachable, note]
+      properties:
+        role:
+          type: string
+          description: '"embedding" | "llm" | "reranker".'
+        model: { type: string }
+        backend: { type: [string, "null"] }
+        dim: { type: [integer, "null"] }
+        endpoints:
+          type: array
+          items: { $ref: "#/components/schemas/EndpointStatus" }
+        reachable:
+          type: boolean
+          description: True if any endpoint is up.
+        note:
+          type: [string, "null"]
+          description: '"not configured" | "disabled" | null.'
+      additionalProperties: false
+
+    ModelsStatusResponse:
+      type: object
+      required: [models]
+      properties:
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ModelStatus" }
+      additionalProperties: false
+
+    BenchmarkRequest:
+      type: object
+      description: Bounds keep the probe from becoming a load test.
+      properties:
+        embed_batch: { type: integer, minimum: 1, maximum: 128, default: 32 }
+        llm_tokens: { type: integer, minimum: 16, maximum: 512, default: 128 }
+      additionalProperties: false
+
+    BenchResult:
+      type: object
+      description: One model's benchmark timing.
+      required: [model, ok, seconds, items, items_per_sec, tokens_per_sec, detail]
+      properties:
+        model: { type: string }
+        ok: { type: boolean }
+        seconds: { type: [number, "null"] }
+        items: { type: [integer, "null"] }
+        items_per_sec: { type: [number, "null"] }
+        tokens_per_sec: { type: [number, "null"] }
+        detail: { type: [string, "null"] }
+      additionalProperties: false
+
+    BenchmarkResponse:
+      type: object
+      required: [embedding, llm]
+      properties:
+        embedding: { $ref: "#/components/schemas/BenchResult" }
+        llm: { $ref: "#/components/schemas/BenchResult" }
+      additionalProperties: false

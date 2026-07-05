@@ -199,6 +199,15 @@ class PooledEmbedder:
 
         await asyncio.gather(*(probe(e) for e in self._eps))
 
+    def endpoint_load(self) -> list[tuple[str, int, bool]]:
+        """Live per-endpoint ``(base_url, in_flight, healthy)`` for the Ops
+        dashboard — the pool's own view (in-flight count + last-probe health),
+        distinct from a fresh reachability GET."""
+        return [
+            (ep.embedder.base_url.rstrip("/"), ep.active, ep.healthy)
+            for ep in self._eps
+        ]
+
 
 def make_pooled_embedder(
     api: str,

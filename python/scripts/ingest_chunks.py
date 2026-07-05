@@ -76,6 +76,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.models import Chunk
+from ragstack.provenance import make_ingest_manifest, write_manifest
 from ragstack.stores.qdrant import QdrantVectorStore
 
 
@@ -171,6 +172,28 @@ async def run(args: argparse.Namespace) -> None:
             done += len(batch)
             print(f"  upserted {done}/{len(chunks)}", file=sys.stderr)
 
+    # Record verified provenance for this collection — same module the API uses,
+    # so a script-built and an API-built collection are described identically.
+    manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
+    if manifest_dir:
+        manifest = make_ingest_manifest(
+            collection=args.collection,
+            model=args.embedding_model or "",
+            dim=dim,
+            embedding_api=args.embedding_api,
+            embedding_endpoints=list(args.embedding_url),
+            chunk_method=args.chunk_method or "",
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            corpus=str(args.input),
+            chunk_count=len(chunks),
+        )
+        write_manifest(manifest_dir, manifest)
+        print(
+            f"wrote provenance manifest ({manifest.spec_hash}) to {manifest_dir}",
+            file=sys.stderr,
+        )
+
     print("done", file=sys.stderr)
 
 
@@ -214,6 +237,21 @@ def main() -> None:
         help="max in-flight embedding requests when fanning out across URLs",
     )
     p.add_argument("--batch-size", type=int, default=64)
+    # Provenance: record how this corpus was chunked. The script ingests
+    # pre-chunked JSON, so the chunk strategy is whatever produced the JSON —
+    # pass it here to stamp a verified manifest (same module the API uses).
+    p.add_argument(
+        "--chunk-method",
+        default="",
+        help="chunk strategy label for the provenance manifest (e.g. fixed_token, sentence, semantic)",
+    )
+    p.add_argument("--chunk-size", type=int, default=None, help="chunk size for the manifest")
+    p.add_argument("--chunk-overlap", type=int, default=None, help="chunk overlap for the manifest")
+    p.add_argument(
+        "--manifest-dir",
+        default="",
+        help="write a provenance manifest here (defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set)",
+    )
     args = p.parse_args()
     asyncio.run(run(args))
 

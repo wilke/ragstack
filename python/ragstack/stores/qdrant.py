@@ -49,18 +49,33 @@ class CollectionHealth:
     segments_count: int
 
 
-def collection_name(base: str, model: str | None, dim: int) -> str:
-    """Derive a collection name scoped to ``(model, dim)``.
+def _slug(s: str, n: int = 40) -> str:
+    return re.sub(r"[^a-zA-Z0-9]+", "_", s or "").strip("_").lower()[:n]
 
-    Testing different embedding models is a primary goal, and models of
-    different dimensions are physically incompatible in one collection. Scoping
-    the name keeps experiments isolated and makes a dimension change route to a
-    fresh collection instead of corrupting an existing one. A short hash of the
-    full model name disambiguates names that slugify to the same string.
+
+def collection_name(
+    base: str, model: str | None, dim: int, *, chunk: str | None = None
+) -> str:
+    """Derive a collection name scoped to the corpus's build spec.
+
+    Models of different dimensions are physically incompatible in one collection,
+    so the name is scoped to ``(model, dim)`` and a short hash disambiguates
+    models that slugify to the same string.
+
+    ``chunk`` is a *canonical chunk descriptor* (e.g. ``"fixed_token/512/64"``).
+    When given, the collection is **content-addressed over the full build spec**:
+    the name gains a chunk slug and the hash covers ``model|dim|chunk`` — so the
+    SAME spec always maps to the SAME collection (idempotent) and DIFFERENT
+    chunkers on the same model get DIFFERENT collections instead of silently
+    overwriting each other. ``chunk=None`` keeps the legacy ``(model, dim)``-only
+    name byte-for-byte unchanged (back-compat for callers that don't opt in).
     """
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", model or "default").strip("_").lower()[:40]
-    digest = hashlib.sha1((model or "").encode()).hexdigest()[:8]
-    return f"{base}_{slug}_{dim}_{digest}"
+    slug = _slug(model or "default")
+    if chunk is None:
+        digest = hashlib.sha1((model or "").encode()).hexdigest()[:8]
+        return f"{base}_{slug}_{dim}_{digest}"
+    digest = hashlib.sha1(f"{model or ''}|{dim}|{chunk}".encode()).hexdigest()[:8]
+    return f"{base}_{slug}_{dim}_{_slug(chunk, 24)}_{digest}"
 
 
 def _existing_vector_size(info: Any) -> int | None:
