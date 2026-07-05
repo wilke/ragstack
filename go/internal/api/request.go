@@ -15,6 +15,8 @@ type QueryRequest struct {
 	Filters           map[string]any `json:"filters,omitempty"`
 	UseGraph          *bool          `json:"use_graph,omitempty"`
 	Stream            *bool          `json:"stream,omitempty"`
+	// Collection selects which registry collection to query; nil = default.
+	Collection        *string        `json:"collection,omitempty"`
 }
 
 // RetrieveRequest is the request body for POST /v1/retrieve.
@@ -26,6 +28,8 @@ type RetrieveRequest struct {
 	TopK     int            `json:"top_k,omitempty"`
 	Filters  map[string]any `json:"filters,omitempty"`
 	UseGraph *bool          `json:"use_graph,omitempty"`
+	// Collection selects which registry collection to retrieve from; nil = default.
+	Collection *string      `json:"collection,omitempty"`
 }
 
 // IngestRequest is the request body for POST /v1/ingest.

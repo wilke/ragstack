@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jobs_response.json",
+  "title": "JobsResponse",
+  "description": "Most-recent ingest jobs with progress counts (admin view).",
+  "type": "object",
+  "required": ["jobs"],
+  "properties": {
+    "jobs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/JobSummary" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "JobItemCounts": {
+      "type": "object",
+      "required": ["pending", "completed", "failed"],
+      "properties": {
+        "pending": { "type": "integer" },
+        "completed": { "type": "integer" },
+        "failed": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "JobSummary": {
+      "type": "object",
+      "required": ["job_id", "status", "source", "error", "chunks", "items"],
+      "properties": {
+        "job_id": { "type": "string" },
+        "status": { "type": "string" },
+        "source": { "type": "string" },
+        "error": { "type": "string" },
+        "chunks": { "type": "integer" },
+        "items": { "$ref": "#/$defs/JobItemCounts" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
