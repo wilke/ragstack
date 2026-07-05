@@ -7,6 +7,7 @@ never a global store total.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ragstack.api.collections import CollectionRegistry
-from ragstack.api.deps import get_collections
+from ragstack.api.deps import get_collections, probe_tenant_count
 from ragstack.api.security import Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.provenance import read_manifest
@@ -57,16 +58,6 @@ class CollectionsResponse(BaseModel):
     default: str
 
 
-async def _count(vs: Any, tenants: list[str]) -> int | None:
-    if vs is None or not hasattr(vs, "count_tenants"):
-        return None
-    try:
-        return int(await vs.count_tenants(tenants))
-    except Exception:
-        log.warning("collections: count probe failed", exc_info=True)
-        return None
-
-
 @router.get("/collections", response_model=CollectionsResponse)
 async def list_collections(
     principal: Principal = Depends(resolve_principal),
@@ -74,8 +65,15 @@ async def list_collections(
 ) -> CollectionsResponse:
     """Registry collections with tenant-scoped counts and chunk-strategy labels."""
     tenants = readable_tenants(principal.tenant)
+    entries = list(registry.entries())
+    # The per-collection counts are independent Qdrant round-trips — gather them
+    # concurrently so latency is one round-trip, not N (the ops dashboard polls
+    # this, and Explore/Compare call it on load). probe_tenant_count never raises.
+    counts = await asyncio.gather(
+        *(probe_tenant_count(e.vector_store, tenants) for e in entries)
+    )
     infos: list[CollectionInfo] = []
-    for e in registry.entries():
+    for e, count in zip(entries, counts, strict=True):
         m = read_manifest(settings.collection_manifest_dir, e.collection)
         prov = (
             Provenance(
@@ -100,7 +98,7 @@ async def list_collections(
             chunk_method=e.chunk_method or None,
             chunk_size=e.chunk_size,
             default=e.is_default,
-            count=await _count(e.vector_store, tenants),
+            count=count,
             provenance=prov,
         ))
     return CollectionsResponse(collections=infos, default=registry.default_id)

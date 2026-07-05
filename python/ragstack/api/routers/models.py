@@ -26,6 +26,7 @@ import httpx
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
+from ragstack.api.deps import embedding_urls
 from ragstack.config import settings
 
 log = logging.getLogger(__name__)
@@ -97,8 +98,9 @@ async def _probe(http: httpx.AsyncClient, base: str, path: str) -> EndpointStatu
 
 
 def _embedding_urls() -> list[str]:
-    # Mirror _build_embedder: fan-out endpoints override the single sidecar URL.
-    return settings.embedding_endpoints or [settings.embedding_sidecar_url]
+    # Single source of truth in deps, so the status probe can't drift from the
+    # embedder the app actually built.
+    return embedding_urls()
 
 
 def _pool_load(embedder: Any) -> dict[str, tuple[int, bool]]:

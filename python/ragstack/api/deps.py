@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import httpx
 from fastapi import FastAPI, Request
 
-from ragstack.config import settings
 from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
     load_collection_specs,
 )
+from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
@@ -186,10 +186,30 @@ def _make_embedder(http: httpx.AsyncClient, *, api: str, model: str, urls: list[
     )
 
 
+def embedding_urls() -> list[str]:
+    """The configured embedding endpoint URLs — fan-out ``embedding_endpoints``
+    override the single ``embedding_sidecar_url``. Single source of truth for both
+    the embedder build and the /v1/stats/models status probe, so they can't drift."""
+    return settings.embedding_endpoints or [settings.embedding_sidecar_url]
+
+
+async def probe_tenant_count(store: Any, tenants: list[str]) -> int | None:
+    """Tenant-FILTERED chunk count for a store, degrading to ``None`` (never
+    raising). Shared by /v1/collections and /v1/stats/stores so a store that is
+    missing the method or errors degrades identically in both."""
+    if store is None or not hasattr(store, "count_tenants"):
+        return None
+    try:
+        return int(await store.count_tenants(tenants))
+    except Exception:
+        log.warning("count_tenants probe failed", exc_info=True)
+        return None
+
+
 def _build_embedder(http: httpx.AsyncClient):
     """The default embedder from top-level settings (single-collection path)."""
-    urls = settings.embedding_endpoints or [settings.embedding_sidecar_url]
-    return _make_embedder(http, api=settings.embedding_api, model=settings.embedding_model, urls=urls)
+    return _make_embedder(http, api=settings.embedding_api,
+                          model=settings.embedding_model, urls=embedding_urls())
 
 
 def _default_emb_signature() -> tuple:
