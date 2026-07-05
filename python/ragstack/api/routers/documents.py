@@ -81,6 +81,12 @@ async def _run_ingest(
         fields["chunk_ids"] = results[0].chunk_ids
     await job_store.update(job_id, **fields)
 
+    # Record verified provenance for the collection this ingest wrote into.
+    from ragstack.api.deps import write_ingest_manifest
+
+    chunks = sum(len(r.chunk_ids or []) for r in results)
+    write_ingest_manifest(source=source, chunk_count=chunks or None)
+
 
 class IngestRequest(BaseModel):
     source: str

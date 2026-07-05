@@ -304,30 +304,54 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 <th className="px-3 py-2 font-medium">Collection</th>
                 <th className="px-3 py-2 font-medium">Model</th>
                 <th className="px-3 py-2 font-medium">Chunking</th>
+                <th className="px-3 py-2 font-medium">Provenance</th>
                 <th className="px-3 py-2 font-medium">Chunks</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((c) => (
-                <tr key={c.id} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-medium text-gray-800">
-                    {c.label}
-                    {c.default ? (
-                      <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
-                    ) : null}
-                  </td>
-                  <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
-                    {c.model}
-                    <span className="text-gray-400"> · {c.dim}d</span>
-                  </td>
-                  <td className="px-3 py-2 text-gray-600">
-                    {c.chunk_method ? `${c.chunk_method}${c.chunk_size ? "/" + c.chunk_size : ""}` : "—"}
-                  </td>
-                  <td className="px-3 py-2 tabular-nums text-gray-600">
-                    {c.count != null ? c.count.toLocaleString() : "—"}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((c) => {
+                const p = c.provenance;
+                // Prefer verified manifest values over the operator-asserted label.
+                const method = p?.chunk_method ?? c.chunk_method;
+                const size = p?.chunk_size ?? c.chunk_size;
+                const chunking = method
+                  ? `${method}${size ? "/" + size : ""}${p?.chunk_overlap != null ? " · ov " + p.chunk_overlap : ""}`
+                  : "—";
+                return (
+                  <tr key={c.id} className="border-t border-gray-100">
+                    <td className="px-3 py-2 font-medium text-gray-800">
+                      {c.label}
+                      {c.default ? (
+                        <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
+                      ) : null}
+                    </td>
+                    <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
+                      {c.model}
+                      <span className="text-gray-400"> · {c.dim}d</span>
+                    </td>
+                    <td className="px-3 py-2 text-gray-600">{chunking}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {p ? (
+                        <span title={`${p.spec_hash ? "spec " + p.spec_hash : ""}${p.ingested_at ? " · " + p.ingested_at : ""}${p.corpus ? " · " + p.corpus : ""}`}>
+                          <span
+                            className={`rounded px-1 ${p.source === "ingest" ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}
+                          >
+                            {p.source === "ingest" ? "verified" : "config"}
+                          </span>
+                          {p.ingested_at ? (
+                            <span className="ml-1 text-gray-400">{p.ingested_at.slice(0, 10)}</span>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">none</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-gray-600">
+                      {c.count != null ? c.count.toLocaleString() : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

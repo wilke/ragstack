@@ -101,10 +101,10 @@ export function CompareView({
     }
   }, [opts, lanes.length]);
 
-  const collLabel = (collection: string): string => {
-    const c = opts.find((o) => (o.default ? "" : o.id) === collection);
-    return c?.label ?? (collection || "default");
-  };
+  const collOf = (collection: string): CollectionInfo | undefined =>
+    opts.find((o) => (o.default ? "" : o.id) === collection);
+  const collLabel = (collection: string): string =>
+    collOf(collection)?.label ?? (collection || "default");
 
   const run = () => {
     const q = query.trim();
@@ -242,6 +242,24 @@ export function CompareView({
                     ✕
                   </button>
                 </div>
+                {(() => {
+                  const c = collOf(lane.collection);
+                  const p = c?.provenance;
+                  const method = p?.chunk_method ?? c?.chunk_method;
+                  return c ? (
+                    <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
+                      <span>{c.model.split("/").pop()} · {c.dim}d</span>
+                      {method ? (
+                        <span>· {method}{p?.chunk_size ? "/" + p.chunk_size : ""}</span>
+                      ) : null}
+                      {p ? (
+                        <span className={p.source === "ingest" ? "text-green-600" : "text-gray-400"}>
+                          · {p.source === "ingest" ? "verified" : "config"}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null;
+                })()}
                 <input
                   type="password"
                   value={lane.apiKey}

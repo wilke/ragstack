@@ -58,6 +58,64 @@ def _qdrant_url_for(collection: str) -> str:
     return (settings.qdrant_collection_routes or {}).get(collection, settings.qdrant_url)
 
 
+def _derived_collection_name() -> str:
+    """The collection the API serves: the explicit override if set, else derived
+    from the build spec. Content-addressed over (model, dim, chunk) when
+    collection_name_include_chunk is on, so a re-ingest with a different chunker
+    routes to a new collection instead of overwriting the old one."""
+    from ragstack.provenance import chunk_descriptor
+    from ragstack.stores.qdrant import collection_name
+
+    if settings.qdrant_collection_explicit:
+        return settings.qdrant_collection_explicit
+    chunk = (
+        chunk_descriptor(settings.chunk_method, settings.chunk_size, settings.chunk_overlap)
+        if settings.collection_name_include_chunk
+        else None
+    )
+    return collection_name(
+        settings.qdrant_collection,
+        settings.embedding_model,
+        settings.embedding_model_dim,
+        chunk=chunk,
+    )
+
+
+def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> None:
+    """Write a verified (source='ingest') provenance manifest for the served
+    collection after an ingest, overwriting any earlier config-materialized one.
+    No-op when manifests are disabled. Best-effort — never raises into the caller."""
+    if not settings.collection_manifest_dir:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from ragstack.provenance import (
+            CollectionManifest,
+            chunk_descriptor,
+            spec_hash,
+            write_manifest,
+        )
+
+        desc = chunk_descriptor(settings.chunk_method, settings.chunk_size, settings.chunk_overlap)
+        eps = settings.embedding_endpoints or (
+            [settings.embedding_sidecar_url] if settings.embedding_sidecar_url else []
+        )
+        write_manifest(settings.collection_manifest_dir, CollectionManifest(
+            collection=_derived_collection_name(),
+            model=settings.embedding_model, dim=settings.embedding_model_dim,
+            embedding_api=settings.embedding_api, embedding_endpoints=eps,
+            chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            spec_hash=spec_hash(settings.embedding_model or "", settings.embedding_model_dim, desc),
+            corpus=source, chunk_count=chunk_count,
+            ingested_at=datetime.now(timezone.utc).isoformat(),
+            source="ingest",
+        ))
+    except Exception:  # noqa: BLE001 — provenance must never fail an ingest
+        log.warning("provenance: ingest manifest write failed", exc_info=True)
+
+
 def _build_vector_store():
     """Return the configured VectorStore.
 
@@ -68,7 +126,7 @@ def _build_vector_store():
     """
     if settings.vector_backend == "qdrant":
         try:
-            from ragstack.stores.qdrant import QdrantVectorStore, collection_name
+            from ragstack.stores.qdrant import QdrantVectorStore
         except ImportError as e:
             if settings.require_durable_backends:
                 raise RuntimeError(
@@ -81,14 +139,9 @@ def _build_vector_store():
             )
             return InMemoryVectorStore()
         # An explicit override serves that literal collection verbatim; otherwise
-        # scope the collection to (model, dim) so swapping embedding models keeps
-        # experiments isolated and a dimension change can't land in an incompatible
-        # collection.
-        collection = settings.qdrant_collection_explicit or collection_name(
-            settings.qdrant_collection,
-            settings.embedding_model,
-            settings.embedding_model_dim,
-        )
+        # derive the name (content-addressed over the build spec when
+        # collection_name_include_chunk is on — see _derived_collection_name).
+        collection = _derived_collection_name()
         # Route this collection to its Qdrant instance (a second process for a
         # VMA-heavy collection like semantic), defaulting to qdrant_url.
         url = _qdrant_url_for(collection)
@@ -154,6 +207,34 @@ def _default_emb_signature() -> tuple:
     return (settings.embedding_api, settings.embedding_model, eps, str(settings.embedding_model_dim))
 
 
+def _materialize_config_manifest(
+    collection: str, *, model: str, dim: int, api: str, endpoints: list[str],
+    chunk_method: str, chunk_size: int | None, chunk_overlap: int | None,
+) -> None:
+    """Write a source='config' manifest for a registry collection that has none,
+    so pre-existing corpora (ingested before manifests, or out-of-band) still
+    report provenance. Never clobbers a source='ingest' (verified) manifest."""
+    if not settings.collection_manifest_dir:
+        return
+    from ragstack.provenance import (
+        CollectionManifest,
+        chunk_descriptor,
+        read_manifest,
+        spec_hash,
+        write_manifest,
+    )
+
+    if read_manifest(settings.collection_manifest_dir, collection) is not None:
+        return
+    desc = chunk_descriptor(chunk_method, chunk_size, chunk_overlap)
+    write_manifest(settings.collection_manifest_dir, CollectionManifest(
+        collection=collection, model=model, dim=dim, embedding_api=api,
+        embedding_endpoints=endpoints, chunk_method=chunk_method, chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap, spec_hash=spec_hash(model or "", dim, desc),
+        source="config",
+    ))
+
+
 async def _build_collection_registry(
     http: httpx.AsyncClient,
     *,
@@ -198,6 +279,12 @@ async def _build_collection_registry(
             text_index=default_text_index,
         )
     ]
+    _materialize_config_manifest(
+        default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
+        api=settings.embedding_api, endpoints=settings.embedding_endpoints,
+        chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+        chunk_overlap=settings.chunk_overlap,
+    )
 
     specs = load_collection_specs(settings)
     if not specs:
@@ -246,6 +333,12 @@ async def _build_collection_registry(
             vector_store=vs,
             text_index=ti,
         ))
+        _materialize_config_manifest(
+            spec.collection, model=spec.embedding_model, dim=spec.embedding_model_dim,
+            api=spec.embedding_api,
+            endpoints=spec.embedding_endpoints or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else []),
+            chunk_method=spec.chunk_method, chunk_size=spec.chunk_size, chunk_overlap=None,
+        )
 
     log.info("collection registry: %d collections (%s)", len(entries),
              ", ".join(e.id for e in entries))
@@ -664,11 +757,7 @@ async def lifespan(app: FastAPI):
     # Multi-collection registry: the pinned/derived collection is the "default"
     # entry; collections_file/_json add cross-model / per-chunker entries. With no
     # config this is a one-entry registry equal to the default (unchanged).
-    from ragstack.stores.qdrant import collection_name as _cname
-
-    default_collection = settings.qdrant_collection_explicit or _cname(
-        settings.qdrant_collection, settings.embedding_model, settings.embedding_model_dim
-    )
+    default_collection = _derived_collection_name()
     app.state.collections = await _build_collection_registry(
         http_client,
         graph_store=graph_store,

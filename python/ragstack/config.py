@@ -65,6 +65,19 @@ class Settings(BaseSettings):
     #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
     collections_file: str = ""
     collections_json: str = ""
+    # Content-address DERIVED collection names over the full build spec (model +
+    # dim + chunk descriptor) instead of (model, dim) only. Off by default so
+    # existing derived names are byte-for-byte unchanged; turn on so that
+    # re-ingesting the same model with a different chunker routes to a NEW
+    # collection instead of silently overwriting the old one. Explicit/registry
+    # names bypass derivation and are unaffected either way.
+    collection_name_include_chunk: bool = False
+    # Provenance manifests: one JSON file per collection recording its full build
+    # spec (model, dim, embedding endpoints, chunk method/params, ingest time,
+    # count). Empty (default) disables them (no read/write — unchanged). When set,
+    # the ingest path writes a verified manifest and GET /v1/collections reports
+    # it instead of trusting the registry's operator-asserted labels.
+    collection_manifest_dir: str = ""
 
     # Embedding backend (used at both ingest and query time)
     embedding_api: str = "sidecar"          # sidecar | openai

@@ -248,6 +248,18 @@ export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
 
 // --- Collections registry (query-time selection) ---
 
+export interface Provenance {
+  chunk_method?: string | null;
+  chunk_size?: number | null;
+  chunk_overlap?: number | null;
+  chunk_params?: Record<string, unknown>;
+  spec_hash?: string;
+  corpus?: string;
+  chunk_count?: number | null;
+  ingested_at?: string;
+  source?: string; // "ingest" (verified) | "config"
+}
+
 export interface CollectionInfo {
   id: string;
   label: string;
@@ -257,6 +269,7 @@ export interface CollectionInfo {
   chunk_size?: number | null;
   default: boolean;
   count?: number | null; // tenant-scoped
+  provenance?: Provenance | null; // verified lineage from the manifest
 }
 
 export interface CollectionsResponse {

@@ -612,6 +612,20 @@ components:
         count:
           description: Tenant-scoped chunk count (own + public); null when unavailable.
           type: [integer, "null"]
+        provenance:
+          description: Verified build lineage from the collection's manifest; null when none.
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            chunk_method: { type: [string, "null"] }
+            chunk_size: { type: [integer, "null"] }
+            chunk_overlap: { type: [integer, "null"] }
+            chunk_params: { type: object }
+            spec_hash: { type: string }
+            corpus: { type: string }
+            chunk_count: { type: [integer, "null"] }
+            ingested_at: { type: string }
+            source: { type: string }
       additionalProperties: false
 
     CollectionsResponse:
