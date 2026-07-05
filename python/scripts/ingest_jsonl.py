@@ -663,7 +663,17 @@ async def run(args: argparse.Namespace) -> None:
             )
         return
 
-    async with httpx.AsyncClient() as http:
+    # A saturated SFR fleet is slow, and httpx's 5 s default read timeout drops a
+    # request mid-flight — surfacing as httpx.ReadError. That name IS in the
+    # transient-retry set, but the semantic breakpoint-embed path runs inside
+    # chunking, OUTSIDE --batch-retries, so a ReadError there crashes the whole run
+    # rather than retrying. Give requests a generous window and force a fresh
+    # connection per request so a stale-keepalive drop can't poison an in-flight
+    # embed. (Salvaged from PR #144's hardening of the coupled ingest path.)
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(args.embedding_timeout, connect=30.0),
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as http:
         embedder = _build_embedder(args, http)
         if len(args.embedding_url) > 1:
             print(f"embedding fan-out across {len(args.embedding_url)} endpoints",
@@ -1115,6 +1125,10 @@ def main() -> None:
     p.add_argument("--embedding-model", default=None,
                    help="model name (required for --embedding-api openai; used to name the collection)")
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--embedding-timeout", type=float, default=300.0,
+                   help="per-request embedding HTTP timeout in seconds (default: "
+                        "%(default)s). The httpx default (5s) is too tight for a "
+                        "saturated SFR fleet and surfaces as ReadError crashes.")
     p.add_argument("--embedding-api-key", default=None,
                    help="Bearer token sent as 'Authorization: Bearer <key>' to every "
                         "--embedding-url (keyless endpoints ignore it, so one key is safe "
