@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "models_status_response.json",
+  "title": "ModelsStatusResponse",
+  "description": "Per-model endpoint liveness + latency (admin view).",
+  "type": "object",
+  "required": ["models"],
+  "properties": {
+    "models": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ModelStatus" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "EndpointStatus": {
+      "type": "object",
+      "required": ["url", "reachable", "latency_ms", "detail", "in_flight", "pool_healthy"],
+      "properties": {
+        "url": { "type": "string" },
+        "reachable": { "type": "boolean" },
+        "latency_ms": { "type": ["number", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "in_flight": { "type": ["integer", "null"] },
+        "pool_healthy": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "ModelStatus": {
+      "type": "object",
+      "required": ["role", "model", "backend", "dim", "endpoints", "reachable", "note"],
+      "properties": {
+        "role": { "type": "string" },
+        "model": { "type": "string" },
+        "backend": { "type": ["string", "null"] },
+        "dim": { "type": ["integer", "null"] },
+        "endpoints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/EndpointStatus" }
+        },
+        "reachable": { "type": "boolean" },
+        "note": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}
