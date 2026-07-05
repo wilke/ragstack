@@ -57,6 +57,10 @@ class EndpointStatus(BaseModel):
     reachable: bool
     latency_ms: float | None = None
     detail: str | None = None
+    # Live pool view (fan-out embedding only): in-flight requests + the pool's
+    # own last-probe health flag. None for single endpoints / non-pool backends.
+    in_flight: int | None = None
+    pool_healthy: bool | None = None
 
 
 class ModelStatus(BaseModel):
@@ -97,6 +101,17 @@ def _embedding_urls() -> list[str]:
     return settings.embedding_endpoints or [settings.embedding_sidecar_url]
 
 
+def _pool_load(embedder: Any) -> dict[str, tuple[int, bool]]:
+    """``{base_url: (in_flight, healthy)}`` from the live PooledEmbedder, if the
+    embedder is a pool. The state embedder is a BatchingEmbedder wrapping either a
+    pool or a single client — only the pool exposes per-endpoint load."""
+    inner = getattr(embedder, "base", embedder)
+    load = getattr(inner, "endpoint_load", None)
+    if load is None:
+        return {}
+    return {url: (active, healthy) for url, active, healthy in load()}
+
+
 @router.get("/stats/models", response_model=ModelsStatusResponse)
 async def stats_models(request: Request) -> ModelsStatusResponse:
     """Per-model endpoint liveness + latency (admin only). Cheap; safe to poll."""
@@ -105,9 +120,14 @@ async def stats_models(request: Request) -> ModelsStatusResponse:
 
     # Embedding — one probe per fan-out endpoint, in parallel.
     emb_urls = _embedding_urls()
-    emb_probes = await asyncio.gather(
+    emb_probes = list(await asyncio.gather(
         *(_probe(http, u, settings.embedding_health_path) for u in emb_urls)
-    )
+    ))
+    # Overlay the pool's live in-flight/health view onto each probed endpoint.
+    load = _pool_load(request.app.state.embedder)
+    for ep in emb_probes:
+        if ep.url.rstrip("/") in load:
+            ep.in_flight, ep.pool_healthy = load[ep.url.rstrip("/")]
     out.append(ModelStatus(
         role="embedding",
         model=settings.embedding_model,

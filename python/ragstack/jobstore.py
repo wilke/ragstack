@@ -119,6 +119,12 @@ class JobStore(Protocol):
 
     async def get(self, job_id: str) -> IngestJob | None: ...
 
+    async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
+        """Most-recent-first job list, capped at ``limit``. Powers the admin Ops
+        jobs panel. Not tenant-scoped — jobs aren't tenant-stamped yet, so the
+        endpoint is admin-only (an admin may see all runs)."""
+        ...
+
     async def update(self, job_id: str, **fields: object) -> None: ...
 
     async def fail_interrupted(self) -> int: ...
@@ -167,6 +173,12 @@ class InMemoryJobStore:
         async with self._lock:
             job = self._jobs.get(job_id)
             return job.model_copy() if job is not None else None
+
+    async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
+        async with self._lock:
+            # Dict preserves insertion order; newest-first, capped.
+            jobs = list(self._jobs.values())[-limit:]
+            return [j.model_copy() for j in reversed(jobs)]
 
     async def update(self, job_id: str, **fields: object) -> None:
         async with self._lock:
@@ -297,6 +309,20 @@ class SqliteJobStore:
 
     async def get(self, job_id: str) -> IngestJob | None:
         return await asyncio.to_thread(self._get_sync, job_id)
+
+    def _list_jobs_sync(self, limit: int) -> list[IngestJob]:
+        # Implicit rowid ascends with insertion; DESC gives newest-first.
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT job_id, status, source, chunk_ids, error FROM jobs"
+                " ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [self._row_to_job(r) for r in rows]
+
+    async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
+        return await asyncio.to_thread(self._list_jobs_sync, limit)
 
     async def update(self, job_id: str, **fields: object) -> None:
         await asyncio.to_thread(self._update_sync, job_id, fields)

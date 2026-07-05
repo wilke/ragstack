@@ -118,6 +118,12 @@ class BatchingEmbedder:
         self._max_tokens = max(1, max_batch_tokens)
         self._chars_per_token = max(1, chars_per_token)
 
+    @property
+    def base(self):
+        """The wrapped embedder (single client or PooledEmbedder) — used by the
+        Ops model-status probe to read live per-endpoint load."""
+        return self._base
+
     def _est_tokens(self, text: str) -> int:
         return len(text) // self._chars_per_token + 1
 

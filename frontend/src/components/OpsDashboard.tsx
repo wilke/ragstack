@@ -1,11 +1,15 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ApiError,
+  getConfig,
   getDeepHealth,
+  getJobs,
   getModelsStatus,
   getStoreStats,
   runModelBenchmark,
+  type AppConfig,
   type BenchmarkResult,
+  type JobSummary,
   type ModelStatus,
   type StoreStat,
 } from "../api/client";
@@ -59,7 +63,10 @@ function endpointSummary(m: ModelStatus): string {
     .filter((x): x is number => x != null);
   const fastest = lats.length ? `${Math.min(...lats).toFixed(0)} ms` : "";
   const count = m.endpoints.length > 1 ? `${up}/${m.endpoints.length} up` : "";
-  return [count, fastest].filter(Boolean).join(" · ") || "reachable";
+  // Live in-flight requests across the fan-out pool (embedding only).
+  const flight = m.endpoints.reduce((n, e) => n + (e.in_flight ?? 0), 0);
+  const load = m.endpoints.some((e) => e.in_flight != null) ? `${flight} in-flight` : "";
+  return [count, fastest, load].filter(Boolean).join(" · ") || "reachable";
 }
 
 // Pull the throughput cell for a role out of a completed benchmark run.
@@ -162,6 +169,196 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
   );
 }
 
+// --- Config viewer (#95) --------------------------------------------------
+
+function Row({ k, v }: { k: string; v: unknown }) {
+  const val = Array.isArray(v) ? v.join(", ") : v == null || v === "" ? "—" : String(v);
+  return (
+    <div className="flex justify-between gap-3 py-1">
+      <dt className="shrink-0 text-gray-500">{k}</dt>
+      <dd className="truncate text-right font-mono text-xs text-gray-800" title={val}>
+        {val}
+      </dd>
+    </div>
+  );
+}
+
+function ConfigGroup({ title, rows }: { title: string; rows: [string, unknown][] }) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-3">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">{title}</div>
+      <dl className="text-sm">
+        {rows.map(([k, v]) => (
+          <Row key={k} k={k} v={v} />
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+function ConfigPanel({ apiKey }: { apiKey?: string }) {
+  const cfg = useQuery({
+    queryKey: ["config", apiKey],
+    queryFn: () => getConfig(apiKey || undefined),
+    refetchInterval: 30000,
+    retry: false,
+  });
+  const err = cfg.error as ApiError | undefined;
+  const c: AppConfig = cfg.data ?? {};
+
+  return (
+    <>
+      <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Config</h2>
+      {cfg.isError ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          {err?.status === 403
+            ? "Config is admin-only. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
+            : `Unavailable: ${(cfg.error as Error).message}`}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ConfigGroup
+            title="Collection"
+            rows={[
+              ["active", c.qdrant_collection_explicit || c.qdrant_collection],
+              ["es index", c.elasticsearch_index],
+            ]}
+          />
+          <ConfigGroup
+            title="Backends"
+            rows={[
+              ["vector", c.vector_backend],
+              ["text", c.text_backend],
+              ["graph", c.graph_backend],
+              ["jobs", c.job_store_backend],
+            ]}
+          />
+          <ConfigGroup
+            title="Embedding"
+            rows={[
+              ["api", c.embedding_api],
+              ["model", c.embedding_model],
+              ["dim", c.embedding_model_dim],
+              ["endpoints", c.embedding_endpoints?.length],
+            ]}
+          />
+          <ConfigGroup
+            title="Retrieval"
+            rows={[
+              ["top_k", c.top_k],
+              ["rerank", c.rerank_enabled ? `on (${c.rerank_candidates})` : "off"],
+              ["reranker", c.reranker_model],
+              ["kg extract", c.kg_extraction_enabled ? "on" : "off"],
+            ]}
+          />
+          <ConfigGroup
+            title="Chunking"
+            rows={[
+              ["method", c.chunk_method],
+              ["size", c.chunk_size],
+              ["overlap", c.chunk_overlap],
+            ]}
+          />
+          <ConfigGroup
+            title="Ingest / limits"
+            rows={[
+              ["ingest conc.", c.ingest_concurrency],
+              ["tenant conc.", c.tenant_max_concurrency || "unbounded"],
+              ["log level", c.log_level],
+            ]}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+// --- Ingest jobs (#95) ----------------------------------------------------
+
+function jobStatusClass(status: string): string {
+  if (status === "completed") return "text-green-600";
+  if (status === "failed") return "text-red-600";
+  if (status === "running" || status === "accepted") return "text-blue-600";
+  return "text-gray-500";
+}
+
+function jobProgress(j: JobSummary): string {
+  const { pending, completed, failed } = j.items;
+  const tracked = pending + completed + failed;
+  if (tracked > 0) {
+    const total = tracked;
+    const parts = [`${completed}/${total} done`];
+    if (failed) parts.push(`${failed} failed`);
+    if (pending) parts.push(`${pending} pending`);
+    return parts.join(" · ");
+  }
+  // Single-doc runs don't register per-item rows — fall back to chunk count.
+  return j.chunks ? `${j.chunks} chunks` : "—";
+}
+
+function JobsPanel({ apiKey }: { apiKey?: string }) {
+  const jobs = useQuery({
+    queryKey: ["jobs", apiKey],
+    queryFn: () => getJobs(25, apiKey || undefined),
+    refetchInterval: 5000,
+    retry: false,
+  });
+  const err = jobs.error as ApiError | undefined;
+  const rows = jobs.data?.jobs ?? [];
+
+  return (
+    <>
+      <div className="mb-2 mt-8 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-gray-700">Ingest jobs</h2>
+        {jobs.isFetching && !jobs.isError ? (
+          <span className="text-xs text-gray-400">refreshing…</span>
+        ) : null}
+      </div>
+      {jobs.isError ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          {err?.status === 403
+            ? "Ingest jobs are admin-only. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
+            : `Unavailable: ${(jobs.error as Error).message}`}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+          No ingest jobs yet. Run one via <code className="font-mono">POST /v1/ingest</code>.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">Job</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Progress</th>
+                <th className="px-3 py-2 font-medium">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((j) => (
+                <tr key={j.job_id} className="border-t border-gray-100">
+                  <td className="px-3 py-2 font-mono text-xs text-gray-600" title={j.job_id}>
+                    {j.job_id.slice(0, 8)}
+                  </td>
+                  <td className={`px-3 py-2 font-medium ${jobStatusClass(j.status)}`}>
+                    {j.status}
+                    {j.error ? <span className="ml-1 text-xs text-red-400">({j.error})</span> : null}
+                  </td>
+                  <td className="px-3 py-2 tabular-nums text-gray-600">{jobProgress(j)}</td>
+                  <td className="max-w-xs truncate px-3 py-2 text-gray-500" title={j.source}>
+                    {j.source || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 export function OpsDashboard({ apiKey }: { apiKey?: string }) {
   const stats = useQuery({
     queryKey: ["stats-stores", apiKey],
@@ -211,7 +408,11 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
         </>
       )}
 
+      <ConfigPanel apiKey={apiKey} />
+
       <ModelsPanel apiKey={apiKey} />
+
+      <JobsPanel apiKey={apiKey} />
 
       <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Deep health</h2>
       {health.isError ? (

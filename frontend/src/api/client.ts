@@ -143,6 +143,8 @@ export interface EndpointStatus {
   reachable: boolean;
   latency_ms?: number | null;
   detail?: string | null;
+  in_flight?: number | null; // live pool view (fan-out embedding only)
+  pool_healthy?: boolean | null;
 }
 
 export interface ModelStatus {
@@ -181,4 +183,64 @@ export function getModelsStatus(apiKey?: string): Promise<ModelsStatus> {
 // Runs a small real workload on the serving fleet — call on demand, not on a poll.
 export function runModelBenchmark(apiKey?: string): Promise<BenchmarkResult> {
   return post<BenchmarkResult>("/v1/stats/models/benchmark", {}, apiKey);
+}
+
+// --- Effective config (#95 config viewer, admin-only) ---
+
+// Flat snapshot from GET /v1/config. Typed loosely (index signature) since the
+// backend may add fields; the dashboard renders a curated subset in groups.
+export interface AppConfig {
+  vector_backend?: string;
+  text_backend?: string;
+  graph_backend?: string;
+  job_store_backend?: string;
+  qdrant_collection_explicit?: string | null;
+  qdrant_collection?: string;
+  elasticsearch_index?: string;
+  embedding_api?: string;
+  embedding_model?: string;
+  embedding_model_dim?: number;
+  embedding_endpoints?: string[];
+  embedding_max_concurrency?: number;
+  chunk_method?: string;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  top_k?: number;
+  rerank_enabled?: boolean;
+  rerank_candidates?: number;
+  reranker_model?: string;
+  kg_extraction_enabled?: boolean;
+  ingest_concurrency?: number;
+  tenant_max_concurrency?: number;
+  log_level?: string;
+  [key: string]: unknown;
+}
+
+export function getConfig(apiKey?: string): Promise<AppConfig> {
+  return get<AppConfig>("/v1/config", apiKey);
+}
+
+// --- Ingest jobs (#95, admin-only) ---
+
+export interface JobItemCounts {
+  pending: number;
+  completed: number;
+  failed: number;
+}
+
+export interface JobSummary {
+  job_id: string;
+  status: string;
+  source: string;
+  error: string;
+  chunks: number;
+  items: JobItemCounts;
+}
+
+export interface JobsResponse {
+  jobs: JobSummary[];
+}
+
+export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
+  return get<JobsResponse>(`/v1/jobs?limit=${limit}`, apiKey);
 }
