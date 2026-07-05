@@ -133,8 +133,64 @@ git worktree add ~/Development/worktrees/bench-main main
 
 ## Results
 
-_To be appended after the run: per-stage timing table (A vs B, medians),
-throughput, parity check, the capped-Qdrant backpressure table (drops, peak
-VMA/segments), resumability outcome, and a written verdict on which method is
-faster and why, plus whether A's backlog ceilings are worth porting into
-`BackpressuredVectorStore`._
+**Run 1 (2026-07-04).** Corpus: 3000 synthetic docs → **6000 chunks**, `fixed_token
+256/32`, **SFR 4096-d via lambda13** (`:9990–9997`, key `BRCMistral`; ~330
+texts/s/endpoint). Throwaway Qdrant `:6353` (healthy, uncapped). Single run
+(medians pending). Tests 1–2 completed; tests 3–4 (capped backpressure,
+resumability) deferred — see below.
+
+### Per-stage timing (same corpus, embedder, Qdrant)
+
+| Stage | A — #144 (`ingest_jsonl --embed-out` + `qdrant_ingest_agent`) | B — main (`embed_shard` + load) |
+|---|---|---|
+| **Embed → file** | **46.5 s**, peak RSS **213 MB**, output **76 MB** (gzip shard) | **74.2 s**, peak RSS **2.35 GB**, output **98 MB** (plain JSONL) |
+| **Load** (batch 64, healthy) | **17.4 s → 345 upserts/s** (`--max-inflight 4`) | **22.0 s → 272 upserts/s** (serial `BackpressuredVectorStore`) |
+| **Load, as-shipped** | works (batched) | **FAILS** — one unbatched `upsert(6000×4096-d ≈ 98 MB)` → `ResponseHandlingException` |
+| **Parity** | 6000 points, green | 6000 points, green — **identical set** (deterministic uuid5 ids) |
+
+### Which is faster, and why
+
+- **Embed — A is ~1.6× faster and ~11× leaner in RAM.** A (`ingest_jsonl`) *streams*
+  document-by-document and *pipelines* chunk+embed with doc-level concurrency, so
+  it overlaps CPU chunking with the lambda13 round-trips and never holds the whole
+  corpus in memory (213 MB). B (`embed_shard`→`embed_source`) is **chunk-all-then-
+  embed-all**: it materializes every `Chunk` (+ its 4096-d vector) in memory before
+  writing (2.35 GB peak) and embeds in one late phase, so it overlaps less and pays
+  a large memory peak. A also gzip-compresses (76 vs 98 MB) at a small CPU cost.
+- **Load — A is ~27 % faster** on a healthy Qdrant because A keeps **4 upserts
+  in-flight** while B's `BackpressuredVectorStore` is **serial by default**
+  (`max_in_flight=None` → one upsert at a time, each awaiting a health poll). This
+  is exactly the speed-vs-safety trade the decorator was designed around — and B's
+  own `max_in_flight` semaphore (added in #145) closes the gap when set > 1.
+- **Robustness — A degrades gracefully to large shards, B does not.** main's load
+  path (`index_chunks` → a single `vector_store.upsert(all_chunks)`) has **no
+  internal batching**, so a large shard exceeds what the Qdrant client will accept
+  in one request. A's drain batches (default 64) and survives. main is only safe
+  when shards are pre-sized small (as the CWL scatter does).
+
+### Actionable improvements to `main` (evidence-backed)
+
+1. **Batch the upsert in the load path** (`index_chunks` or `load_embeddings`) —
+   the highest-value fix; removes the large-shard failure and matches A's
+   robustness. Directly related to #77.
+2. **Default `max_in_flight > 1`** in the load stage (the #145 semaphore) to
+   recover A's pipelining throughput.
+3. **Stream in `embed_source`** rather than materialize the full chunk list —
+   bounds memory on big shards (lower priority; the CWL model keeps shards small).
+
+### Caveats
+
+- B is *designed* for small pre-sharded inputs (CWL scatter); the single-file
+  failure reflects a large shard, not its intended per-shard usage — but the
+  graceful-degradation difference is real and operationally relevant.
+- Single run, one scale (6000 chunks). Absolute rates include the coconut→lambda13
+  network hop and run alongside the live build; the **A-vs-B direction** is the
+  robust signal, not the exact seconds.
+
+### Deferred (follow-up run)
+
+- **Test 3 — backpressure under a *capped* Qdrant** (the decisive VMA test) and
+  **Test 4 — resumability** were not run in this pass (the runtime + robustness
+  findings above were the priority, per the runtime-performance question). They
+  need a larger corpus to build real VMA/segment pressure and a capped instance;
+  tracked as the next run.
