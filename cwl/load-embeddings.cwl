@@ -5,12 +5,12 @@
 # (reusing `IngestionPipeline.index_chunks`). No embedding fleet needed.
 #
 # Deliberately a SINGLE task, not a scatter: the load is where Qdrant backpressure
-# belongs (throttle upserts on live collection health — #141's must-have), which
-# is a stateful control loop, not a dataflow fan-out. Backpressure is implemented
-# as a `BackpressuredVectorStore` decorator inside `load_embeddings.py`; it is ON
-# by default (holds each upsert until the collection is green so a bulk load never
-# piles unindexed vectors onto an optimizing Qdrant). Set `disable_backpressure:
-# true` to turn it off (e.g. a known-uncapped fast load).
+# belongs (throttle upserts on live collection health), a stateful control loop,
+# not a dataflow fan-out. Backpressure is a `BackpressuredVectorStore` decorator in
+# `load_embeddings.py`, OFF by default — the capped-Qdrant A/B benchmark found it
+# adds latency without preventing drops below crash-scale (millions of vectors +
+# deferred indexing). Set `backpressure: true` for a very large corpus on a capped
+# Qdrant.
 #
 #   cwltool cwl/load-embeddings.cwl cwl/load-embeddings.inputs.yml
 #
@@ -42,11 +42,11 @@ inputs:
   fail_on_error:
     type: boolean
     default: true
-  disable_backpressure:
+  backpressure:
     type: boolean
     default: false
-    doc: "Disable upsert backpressure (#141). Leave false to keep it on (the safe
-      default) — holds each upsert until the collection is green."
+    doc: "Hold each upsert until the collection is green (#141). OFF by default;
+      set true for a very large corpus on a capped Qdrant."
 
 steps:
   load:
@@ -59,7 +59,7 @@ steps:
       qdrant_url: qdrant_url
       es_url: es_url
       fail_on_error: fail_on_error
-      disable_backpressure: disable_backpressure
+      backpressure: backpressure
     out: [summary]
     run:
       class: CommandLineTool
@@ -111,10 +111,10 @@ steps:
           inputBinding:
             prefix: --fail-on-error
             position: 8
-        disable_backpressure:
+        backpressure:
           type: boolean
           inputBinding:
-            prefix: --no-backpressure
+            prefix: --backpressure
             position: 9
       arguments:
         - position: 1

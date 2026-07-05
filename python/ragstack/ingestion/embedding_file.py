@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TextIO
 
 from ragstack.models import Chunk
 
@@ -115,3 +116,51 @@ def read_embedding_file(path: str | Path) -> tuple[list[Chunk], dict]:
             f"file has {len(chunks)} chunk(s)"
         )
     return chunks, header
+
+
+class EmbeddingFileWriter:
+    """Streaming writer for the embedding-file format — append embedded chunks one
+    at a time without holding them all in memory (the large-shard path used by
+    ``run_embed_shard``).
+
+    The header's ``dim`` is taken from the first chunk written; ``count`` is
+    **omitted** (it isn't known until the end, and ``read_embedding_file``
+    tolerates a missing count — the shard receipt records the authoritative
+    n_chunks). The file is created lazily on the first ``write``, so a writer that
+    is never written to leaves no file behind. Use as a context manager or call
+    :meth:`close`. Not concurrency-safe: drive it from a single task.
+    """
+
+    def __init__(self, path: str | Path, *, tenant: str = "") -> None:
+        self._path = Path(path)
+        self._tenant = tenant
+        self._fh: TextIO | None = None
+        self._dim: int | None = None
+        self.count = 0
+
+    def write(self, chunk: Chunk) -> None:
+        if chunk.embedding is None:
+            raise EmbeddingFileError(f"{self._path}: chunk {chunk.id!r} has no embedding")
+        if self._fh is None:
+            self._dim = len(chunk.embedding)
+            self._fh = self._path.open("w", encoding="utf-8")
+            header = {"schema": SCHEMA, "tenant": self._tenant, "dim": self._dim}
+            self._fh.write(json.dumps(header, sort_keys=True) + "\n")
+        elif len(chunk.embedding) != self._dim:
+            raise EmbeddingFileError(
+                f"{self._path}: non-uniform embedding dim "
+                f"{len(chunk.embedding)} != {self._dim}"
+            )
+        self._fh.write(json.dumps(chunk.model_dump(), sort_keys=True) + "\n")
+        self.count += 1
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
+
+    def __enter__(self) -> EmbeddingFileWriter:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
