@@ -43,6 +43,7 @@ class IngestionPipeline:
         text_index: TextIndex,
         graph_store: GraphStore | None = None,
         kg_extractor: KGExtractor | None = None,
+        delete_concurrency: int = 8,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -51,6 +52,10 @@ class IngestionPipeline:
         self.text_index = text_index
         self.graph_store = graph_store
         self.kg_extractor = kg_extractor
+        # Delete-prior is one delete per replaced doc_id across vector+text(+graph);
+        # run serially it is ~6000 round-trips for a 3000-doc shard and dominates
+        # the load (the #144 A/B benchmark). Bound-concurrent it instead.
+        self._delete_concurrency = max(1, delete_concurrency)
 
     async def ingest(self, source: str, tenant_id: str = DEFAULT_TENANT) -> list[str]:
         """Ingest a source and return the list of chunk IDs created.
@@ -186,12 +191,20 @@ class IngestionPipeline:
         (there is no other ``Chunk(...)`` construction), so the set of doc_ids to
         replace is exactly the doc_ids present on the surviving chunks.
         """
+        # Delete-prior, bound-concurrent across the replaced doc_ids (deletes are
+        # independent + idempotent per doc_id, so order doesn't matter). Serial,
+        # this was the load's dominant cost for a many-doc shard.
         docs_with_chunks = {c.doc_id for c in chunks}
-        for doc_id in docs_with_chunks:
-            await self.vector_store.delete(doc_id, tenant_id=tenant_id)
-            await self.text_index.delete(doc_id, tenant_id=tenant_id)
-            if self.graph_store is not None:
-                await self.graph_store.delete_by_doc(doc_id, tenant_id=tenant_id)
+        sem = asyncio.Semaphore(self._delete_concurrency)
+
+        async def _delete_prior(doc_id: str) -> None:
+            async with sem:
+                await self.vector_store.delete(doc_id, tenant_id=tenant_id)
+                await self.text_index.delete(doc_id, tenant_id=tenant_id)
+                if self.graph_store is not None:
+                    await self.graph_store.delete_by_doc(doc_id, tenant_id=tenant_id)
+
+        await asyncio.gather(*(_delete_prior(d) for d in docs_with_chunks))
 
         # Index
         await self.vector_store.upsert(chunks)
