@@ -470,6 +470,30 @@ class PostgresJobStore:
             error=row["error"],
         )
 
+    async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
+        # The shared jobs schema has no monotonic created_at column, so order by
+        # ``ctid DESC`` — most-recently-written tuple first (an UPDATE rewrites the
+        # row under MVCC), which surfaces recently-active jobs for the ops view.
+        # Best-effort recency, not strict insertion order like sqlite's rowid; add
+        # a created_at column if strict creation order is ever needed.
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT job_id, status, source, chunk_ids, error FROM jobs"
+                " ORDER BY ctid DESC LIMIT $1",
+                limit,
+            )
+        return [
+            IngestJob(
+                job_id=r["job_id"],
+                status=r["status"],
+                source=r["source"],
+                chunk_ids=json.loads(r["chunk_ids"]),
+                error=r["error"],
+            )
+            for r in rows
+        ]
+
     async def update(self, job_id: str, **fields: object) -> None:
         sets = _prepare_job_update(fields)
         if not sets:

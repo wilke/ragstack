@@ -81,11 +81,15 @@ async def _run_ingest(
         fields["chunk_ids"] = results[0].chunk_ids
     await job_store.update(job_id, **fields)
 
-    # Record verified provenance for the collection this ingest wrote into.
-    from ragstack.api.deps import write_ingest_manifest
+    # Record verified provenance ONLY when the run actually landed data. On an
+    # all-items-failed run (final == FAILED) skip it: a source=ingest manifest with
+    # a null count would falsely mark the collection "verified" and clobber a prior
+    # good/config manifest for the derived collection.
+    if final == COMPLETED:
+        from ragstack.api.deps import write_ingest_manifest
 
-    chunks = sum(len(r.chunk_ids or []) for r in results)
-    write_ingest_manifest(source=source, chunk_count=chunks or None)
+        chunks = sum(len(r.chunk_ids or []) for r in results)
+        write_ingest_manifest(source=source, chunk_count=chunks or None)
 
 
 class IngestRequest(BaseModel):
