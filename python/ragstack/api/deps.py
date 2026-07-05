@@ -94,6 +94,8 @@ def _build_vector_store():
             collection=collection,
             vector_size=settings.embedding_model_dim,
             api_key=settings.qdrant_api_key or None,
+            upsert_batch_size=settings.qdrant_upsert_batch_size,
+            upsert_concurrency=settings.qdrant_upsert_concurrency,
         )
 
     if settings.require_durable_backends:

@@ -80,7 +80,9 @@ async def _build_pipeline(args) -> IngestionPipeline:
         dim = next(iter(dims))
         es_index = args.es_index or args.collection
         vstore = QdrantVectorStore(url=args.qdrant_url, collection=args.collection,
-                                   vector_size=dim, timeout=args.qdrant_timeout)
+                                   vector_size=dim, timeout=args.qdrant_timeout,
+                                   upsert_batch_size=args.upsert_batch_size,
+                                   upsert_concurrency=args.upsert_concurrency)
         await vstore.ensure_collection()
         if args.backpressure:
             # #141: hold each upsert until the collection is green, so a bulk load
@@ -135,6 +137,11 @@ def parse_args(argv=None):
     p.add_argument("--collection", default=None)
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--qdrant-timeout", type=int, default=120)
+    p.add_argument("--upsert-batch-size", type=int, default=256,
+                   help="points per Qdrant upsert request (bounds payload size)")
+    p.add_argument("--upsert-concurrency", type=int, default=4,
+                   help="concurrent upsert batches (pipelines the load; default 4). "
+                        "1 = serial, safest under a capped/optimizing collection")
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
     p.add_argument("--es-url", default="http://localhost:9200")
     p.add_argument("--es-index", default=None)

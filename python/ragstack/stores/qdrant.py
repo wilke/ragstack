@@ -1,6 +1,7 @@
 """Qdrant-backed VectorStore adapter."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import uuid
@@ -98,6 +99,8 @@ class QdrantVectorStore:
         distance: Distance = Distance.COSINE,
         api_key: str | None = None,
         timeout: int | None = None,
+        upsert_batch_size: int = 256,
+        upsert_concurrency: int = 1,
     ) -> None:
         # `timeout` (seconds) bounds each request; raise it for heavy ops (large
         # filtered deletes) so they fail fast/explicitly instead of hanging.
@@ -105,6 +108,14 @@ class QdrantVectorStore:
         self._collection = collection
         self._vector_size = vector_size
         self._distance = distance
+        # Upserts are chunked so a single request never carries the whole shard:
+        # one all-at-once upsert of a large shard (e.g. 6000×4096-d ≈ 98 MB) makes
+        # the Qdrant client raise ResponseHandlingException (see the #144 A/B
+        # benchmark). ``upsert_concurrency`` > 1 pipelines the batches (bounded) to
+        # recover throughput on a healthy collection; the default 1 is serial (safe
+        # under a capped/optimizing collection).
+        self._upsert_batch_size = max(1, upsert_batch_size)
+        self._upsert_concurrency = max(1, upsert_concurrency)
 
     async def ensure_collection(self) -> None:
         """Create the collection if absent; if present, verify its vector size
@@ -157,7 +168,25 @@ class QdrantVectorStore:
                     payload=payload,
                 )
             )
-        await self._client.upsert(collection_name=self._collection, points=points)
+        await self._upsert_points(points)
+
+    async def _upsert_points(self, points: list[PointStruct]) -> None:
+        """Upsert in bounded batches so one request never carries an oversized
+        payload; pipeline the batches when ``upsert_concurrency`` > 1. Idempotent
+        (deterministic point ids), so batch order and partial retries are safe."""
+        bs = self._upsert_batch_size
+        batches = [points[i : i + bs] for i in range(0, len(points), bs)]
+        if len(batches) <= 1 or self._upsert_concurrency == 1:
+            for batch in batches:
+                await self._client.upsert(collection_name=self._collection, points=batch)
+            return
+        sem = asyncio.Semaphore(self._upsert_concurrency)
+
+        async def _one(batch: list[PointStruct]) -> None:
+            async with sem:
+                await self._client.upsert(collection_name=self._collection, points=batch)
+
+        await asyncio.gather(*(_one(b) for b in batches))
 
     async def search(
         self,

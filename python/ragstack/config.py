@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"
+    # Upsert batching: chunk each upsert so one request never carries an oversized
+    # payload (a single large-shard upsert makes the client raise
+    # ResponseHandlingException). qdrant_upsert_concurrency > 1 pipelines the
+    # batches for throughput; 1 (default, API serving) is serial and safest under
+    # a capped/optimizing collection. The bulk load path raises concurrency itself.
+    qdrant_upsert_batch_size: int = 256
+    qdrant_upsert_concurrency: int = 1
     # Explicit Qdrant collection override. When set (env QDRANT_COLLECTION_EXPLICIT),
     # the API serves this literal collection name verbatim instead of deriving one
     # from (qdrant_collection, embedding_model, embedding_model_dim) via
