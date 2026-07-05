@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ragstack.ingestion.embedding_file import write_embedding_file
-from ragstack.ingestion.pipeline import EmptyIngestError, IngestionPipeline
+from ragstack.ingestion.embedding_file import EmbeddingFileWriter
+from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt
 
 
@@ -36,21 +36,33 @@ async def run_embed_shard(
     The receipt's ``embedding_file`` names the file the load stage consumes;
     ``n_chunks``/``chunk_ids`` describe what it contains. ``n_docs`` is the count
     of distinct documents that contributed a surviving chunk.
+
+    Streams: chunks are embedded in document groups (:meth:`iter_embed_source`)
+    and written to the file one at a time, so peak memory is bounded to a group
+    rather than the whole shard — a 500k-doc shard would OOM if materialized
+    (the #144 benchmark measured 2.35 GB for just 3k docs). A partial file from a
+    mid-shard failure is unlinked so a retry starts clean.
     """
+    out = Path(out_path)
+    writer = EmbeddingFileWriter(out, tenant=tenant)
+    chunk_ids: list[str] = []
+    doc_ids: set[str] = set()
     try:
-        chunks = await pipeline.embed_source(shard_path, tenant_id=tenant)
-    except EmptyIngestError as e:
-        return ShardReceipt(shard_id, tenant, FAILED, error=f"empty: {e}")
+        async for group in pipeline.iter_embed_source(shard_path, tenant_id=tenant):
+            for chunk in group:
+                writer.write(chunk)
+                chunk_ids.append(chunk.id)
+                doc_ids.add(chunk.doc_id)
     except Exception as e:  # noqa: BLE001 — isolate the shard; the engine retries
+        writer.close()
+        out.unlink(missing_ok=True)
         return ShardReceipt(shard_id, tenant, FAILED, error=f"{type(e).__name__}: {e}")
+    writer.close()
 
-    n_docs = len({c.doc_id for c in chunks})
-    try:
-        write_embedding_file(out_path, chunks, tenant=tenant)
-    except Exception as e:  # noqa: BLE001 — a write/serialization fault fails the shard
-        return ShardReceipt(shard_id, tenant, FAILED, n_docs=n_docs,
-                            n_chunks=len(chunks), error=f"write: {type(e).__name__}: {e}")
-
-    return ShardReceipt(shard_id, tenant, COMPLETED, n_docs=n_docs,
-                        n_chunks=len(chunks), chunk_ids=[c.id for c in chunks],
-                        embedding_file=str(out_path))
+    if writer.count == 0:
+        out.unlink(missing_ok=True)
+        return ShardReceipt(shard_id, tenant, FAILED,
+                            error="empty: no embeddable chunks for source")
+    return ShardReceipt(shard_id, tenant, COMPLETED, n_docs=len(doc_ids),
+                        n_chunks=writer.count, chunk_ids=chunk_ids,
+                        embedding_file=str(out))

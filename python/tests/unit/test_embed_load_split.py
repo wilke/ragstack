@@ -285,8 +285,9 @@ async def test_embed_shard_quarantines_poison_and_writes_clean_file(tmp_path):
     receipt = await run_embed_shard(pipeline, "file.txt", "public", "s0", out)
     assert receipt.status == COMPLETED
     chunks, header = read_embedding_file(out)
-    # The poison (first) chunk is dropped; the file is complete + uniform-dim.
-    assert len(chunks) == receipt.n_chunks and header["count"] == len(chunks)
+    # The poison (first) chunk is dropped; the streamed file is complete + uniform-dim.
+    # Streamed files omit the header count — receipt.n_chunks is authoritative.
+    assert len(chunks) == receipt.n_chunks and "count" not in header
     assert all(c.embedding is not None for c in chunks)
 
 
@@ -316,3 +317,68 @@ async def test_make_embedder_auto_picks_single_vs_pooled():
                                   base_urls=["http://a", "http://b"], model="m")
     assert isinstance(one, OpenAIEmbedder)
     assert isinstance(many, PooledEmbedder)
+
+
+# --- streaming embed (memory-bounded large shards) --------------------------- #
+
+@pytest.mark.asyncio
+async def test_iter_embed_source_matches_embed_source():
+    """The streaming iterator yields the same surviving chunks (ids + order) as the
+    materialized embed_source — grouping is transparent to the result."""
+    def _mk():
+        return IngestionPipeline(
+            loader=_MultiDocLoader(),
+            chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+            embedder=_FakeEmbedder(),
+            vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+        )
+    materialized = await _mk().embed_source("file.txt", tenant_id="public")
+    streamed = []
+    async for group in _mk().iter_embed_source("file.txt", tenant_id="public", group_size=1):
+        streamed.extend(group)
+    assert [c.id for c in streamed] == [c.id for c in materialized]
+    assert all(c.embedding is not None for c in streamed)
+    # group_size=1 → one group per document (whole docs never split)
+    assert {c.doc_id for c in streamed} == {"d1", "d2"}
+
+
+@pytest.mark.asyncio
+async def test_iter_embed_source_neighbor_links_within_group():
+    """Each document's chunks are neighbor-linked even when streamed one doc/group:
+    the first chunk of each doc has no prev link."""
+    pipeline = IngestionPipeline(
+        loader=_MultiDocLoader(),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=_ExplodingStore(), text_index=_ExplodingStore(),
+    )
+    chunks = []
+    async for group in pipeline.iter_embed_source("file.txt", tenant_id="public", group_size=1):
+        chunks.extend(group)
+    for doc_id in ("d1", "d2"):
+        first = [c for c in chunks if c.doc_id == doc_id][0]
+        assert first.metadata.get("prev_chunk_id") is None
+
+
+def test_embedding_file_writer_roundtrip(tmp_path):
+    from ragstack.ingestion.embedding_file import EmbeddingFileWriter
+    path = tmp_path / "w.jsonl"
+    chunks = [
+        Chunk(id="a", doc_id="d", content="x", embedding=[1.0, 2.0, 3.0], metadata={"k": 1}),
+        Chunk(id="b", doc_id="d", content="y", embedding=[4.0, 5.0, 6.0]),
+    ]
+    with EmbeddingFileWriter(path, tenant="public") as w:
+        for c in chunks:
+            w.write(c)
+    assert w.count == 2
+    loaded, header = read_embedding_file(path)
+    assert [c.id for c in loaded] == ["a", "b"] and header["dim"] == 3
+    assert header["tenant"] == "public" and "count" not in header  # streamed: no count
+
+
+def test_embedding_file_writer_no_write_no_file(tmp_path):
+    from ragstack.ingestion.embedding_file import EmbeddingFileWriter
+    path = tmp_path / "empty.jsonl"
+    with EmbeddingFileWriter(path) as w:
+        pass
+    assert w.count == 0 and not path.exists()  # lazily created only on first write

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.models import Chunk, Document
@@ -96,36 +97,13 @@ class IngestionPipeline:
             # SemanticChunker blocks on a (bridged) embed round-trip, which would
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
-        for chunk in all_chunks:
-            chunk.metadata["tenant_id"] = tenant_id
         produced = len(all_chunks)
 
-        # Embed. Prefer the poison-isolating path when the embedder supports it
-        # (bounded batching wrapper): a single unembeddable chunk is quarantined
-        # rather than failing the whole document.
-        texts = [c.content for c in all_chunks]
-        embed_isolated = getattr(self.embedder, "embed_isolated", None)
-        if embed_isolated is not None:
-            vectors, quarantined = await embed_isolated(texts)
-        else:
-            vectors, quarantined = await self.embedder.embed(texts), 0
-
-        kept: list[Chunk] = []
-        for chunk, vector in zip(all_chunks, vectors, strict=True):
-            if vector is None:
-                continue
-            chunk.embedding = vector
-            kept.append(chunk)
+        kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
         if quarantined:
             log.warning(
                 "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
             )
-        all_chunks = kept
-
-        # Stamp prev/next/chunk_index on the SURVIVING chunks (per document, after
-        # the embed drop above) so both the Qdrant payload and the ES document carry
-        # a neighbor chain that never dangles to a quarantined chunk.
-        link_neighbors_by_document(all_chunks)
 
         # Never delete prior data without a replacement. If the source produced
         # no chunks (empty content) or every chunk was quarantined, the replace
@@ -134,7 +112,7 @@ class IngestionPipeline:
         # instead: the prior corpus stays intact and _run_ingest records a failed
         # job. Raising here (before any store mutation) is what makes the two-stage
         # split safe — a failed embed can never reach the store-mutating half.
-        if not all_chunks:
+        if not kept:
             raise EmptyIngestError(
                 f"no embeddable chunks for source "
                 f"(produced {produced}, quarantined {quarantined})"
@@ -144,7 +122,7 @@ class IngestionPipeline:
         # (empty or all-quarantined). index_chunks will keep their prior data
         # intact (it only delete-priors docs that have a survivor); surface that
         # here, where we still have the loaded `documents` to name them.
-        docs_with_chunks = {c.doc_id for c in all_chunks}
+        docs_with_chunks = {c.doc_id for c in kept}
         skipped = [d.id for d in documents if d.id not in docs_with_chunks]
         if skipped:
             log.warning(
@@ -152,7 +130,69 @@ class IngestionPipeline:
                 "chunks this run (empty or all-quarantined): %s",
                 source, len(skipped), skipped,
             )
-        return all_chunks
+        return kept
+
+    async def _embed_and_link(
+        self, all_chunks: list[Chunk], tenant_id: str
+    ) -> tuple[list[Chunk], int]:
+        """Stamp tenant, embed (poison-isolating when the embedder supports it),
+        drop unembeddable chunks, and neighbor-link the survivors per document.
+
+        Shared by the materialized :meth:`embed_source` and the streaming
+        :meth:`iter_embed_source`, so the embed/quarantine/link logic lives in one
+        place. Neighbor linking groups by ``doc_id``, so a per-group call is
+        correct as long as a document's chunks aren't split across groups (the
+        streaming path groups whole documents). Returns (survivors, quarantined)."""
+        for chunk in all_chunks:
+            chunk.metadata["tenant_id"] = tenant_id
+        texts = [c.content for c in all_chunks]
+        embed_isolated = getattr(self.embedder, "embed_isolated", None)
+        if embed_isolated is not None:
+            vectors, quarantined = await embed_isolated(texts)
+        else:
+            vectors, quarantined = await self.embedder.embed(texts), 0
+        kept: list[Chunk] = []
+        for chunk, vector in zip(all_chunks, vectors, strict=True):
+            if vector is None:
+                continue
+            chunk.embedding = vector
+            kept.append(chunk)
+        link_neighbors_by_document(kept)
+        return kept, quarantined
+
+    async def iter_embed_source(
+        self, source: str, tenant_id: str = DEFAULT_TENANT, group_size: int = 64
+    ) -> AsyncIterator[list[Chunk]]:
+        """Streaming counterpart to :meth:`embed_source`: load → chunk → embed in
+        groups of ``group_size`` documents, yielding each group's surviving
+        embedded chunks.
+
+        Bounds peak memory to one group's chunks+vectors. The materialized path
+        holds the WHOLE shard's chunks and 4096-d vectors at once (2.35 GB for a
+        3k-doc shard in the #144 benchmark), which does not scale to the offline
+        plane's large shards (e.g. 500k docs); this is the path ``run_embed_shard``
+        uses. Whole documents stay within a group, so per-group neighbor linking
+        equals per-document linking. Yields nothing for an empty source — the file
+        sink treats zero chunks as a failed shard, which is the streaming analogue
+        of :meth:`embed_source`'s ``EmptyIngestError`` (no store is touched here, so
+        there is no prior data to protect)."""
+        documents: list[Document] = self.loader.load(source)
+        step = max(1, group_size)
+        for start in range(0, len(documents), step):
+            group = documents[start : start + step]
+            all_chunks: list[Chunk] = []
+            for doc in group:
+                all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+            if not all_chunks:
+                continue
+            kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
+            if quarantined:
+                log.warning(
+                    "embed %r: quarantined %d unembeddable chunk(s) in group",
+                    source, quarantined,
+                )
+            if kept:
+                yield kept
 
     async def index_chunks(
         self, chunks: list[Chunk], tenant_id: str = DEFAULT_TENANT

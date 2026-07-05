@@ -125,9 +125,12 @@ def parse_args(argv=None):
                    help="override tenant (default: each file's header tenant)")
     p.add_argument("--fail-on-error", action="store_true",
                    help="exit non-zero if any file failed to load")
-    p.add_argument("--backpressure", action=argparse.BooleanOptionalAction, default=True,
-                   help="hold each upsert until the Qdrant collection is green (#141); "
-                        "on by default, --no-backpressure to disable")
+    p.add_argument("--backpressure", action="store_true",
+                   help="hold each upsert until the Qdrant collection is green (#141). "
+                        "OFF by default: the capped-Qdrant A/B benchmark showed it adds "
+                        "latency without preventing drops below crash-scale (millions of "
+                        "vectors + deferred indexing). Enable for a very large corpus on a "
+                        "capped Qdrant")
     p.add_argument("--backpressure-poll", type=float, default=2.0,
                    help="seconds between health polls while holding (default 2.0)")
     p.add_argument("--backpressure-max-wait", type=float, default=None,
