@@ -88,30 +88,20 @@ def write_ingest_manifest(*, source: str, chunk_count: int | None = None) -> Non
     if not settings.collection_manifest_dir:
         return
     try:
-        from datetime import datetime, timezone
+        from ragstack.provenance import make_ingest_manifest, write_manifest
 
-        from ragstack.provenance import (
-            CollectionManifest,
-            chunk_descriptor,
-            spec_hash,
-            write_manifest,
-        )
-
-        desc = chunk_descriptor(settings.chunk_method, settings.chunk_size, settings.chunk_overlap)
         eps = settings.embedding_endpoints or (
             [settings.embedding_sidecar_url] if settings.embedding_sidecar_url else []
         )
-        write_manifest(settings.collection_manifest_dir, CollectionManifest(
+        manifest = make_ingest_manifest(
             collection=_derived_collection_name(),
             model=settings.embedding_model, dim=settings.embedding_model_dim,
             embedding_api=settings.embedding_api, embedding_endpoints=eps,
             chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
-            spec_hash=spec_hash(settings.embedding_model or "", settings.embedding_model_dim, desc),
             corpus=source, chunk_count=chunk_count,
-            ingested_at=datetime.now(timezone.utc).isoformat(),
-            source="ingest",
-        ))
+        )
+        write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
         log.warning("provenance: ingest manifest write failed", exc_info=True)
 

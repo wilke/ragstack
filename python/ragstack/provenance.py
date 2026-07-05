@@ -61,6 +61,48 @@ class CollectionManifest(BaseModel):
     source: str = "ingest"  # "ingest" (verified) | "config" (materialized from registry)
 
 
+def make_ingest_manifest(
+    *,
+    collection: str,
+    model: str,
+    dim: int,
+    embedding_api: str = "",
+    embedding_endpoints: list[str] | None = None,
+    chunk_method: str = "",
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    chunk_params: dict[str, Any] | None = None,
+    corpus: str = "",
+    chunk_count: int | None = None,
+    ragstack_version: str = "",
+    source: str = "ingest",
+) -> CollectionManifest:
+    """Build a verified manifest for a just-ingested collection, stamped with the
+    current time and the build spec's content hash. The single constructor shared
+    by the API ingest hook and the CLI ingest scripts, so both record provenance
+    identically."""
+    from datetime import datetime, timezone
+
+    desc = chunk_descriptor(chunk_method, chunk_size, chunk_overlap, chunk_params)
+    return CollectionManifest(
+        collection=collection,
+        model=model or "",
+        dim=dim,
+        embedding_api=embedding_api,
+        embedding_endpoints=list(embedding_endpoints or []),
+        chunk_method=chunk_method or "",
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        chunk_params=dict(chunk_params or {}),
+        spec_hash=spec_hash(model or "", dim, desc),
+        corpus=corpus,
+        chunk_count=chunk_count,
+        ingested_at=datetime.now(timezone.utc).isoformat(),
+        ragstack_version=ragstack_version,
+        source=source,
+    )
+
+
 def _safe_name(collection: str) -> str:
     """A filesystem-safe basename for a collection (defensive — collection names
     are already slug-like, but never let one escape the manifest dir)."""
