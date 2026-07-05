@@ -7,6 +7,8 @@
 # For fast local dev you can instead run only the deps here and the API on the host:
 #   docker compose -f deploy/docker-compose.local.yml up -d --build qdrant embedding-sidecar
 #   (then run the host API from python/.venv against localhost URLs)
+# On the host, the LLM tunnel is plain localhost — set LLM_ENDPOINT=http://localhost:9005
+# (the container path below uses host.docker.internal for the same tunnel).
 name: ragstack-local
 
 services:
@@ -45,9 +47,22 @@ services:
       EMBEDDING_SIDECAR_URL: http://embedding-sidecar:50053
       EMBEDDING_MODEL: BAAI/bge-base-en-v1.5
       EMBEDDING_MODEL_DIM: "768"
-      # No LLM wired → /v1/query returns retrieval-only sources (fine for UI).
+      # Answer generation via an OpenAI-compatible /v1/chat/completions endpoint.
+      # Here: a vLLM serving Llama-4-Scout on a GPU box, reached through a host-side
+      # SSH tunnel to localhost:9005 (see the local-demo runbook). From inside the
+      # container that host port is host.docker.internal:9005 (needs the
+      # extra_hosts mapping below on Linux; it's built in on Docker Desktop).
+      # Active only while the tunnel is up — if it's down, /v1/query degrades to
+      # retrieval-only sources (the router catches the error), so this stays a
+      # safe default. Comment out the two LLM_ lines for a pure retrieval demo.
+      LLM_ENDPOINT: http://host.docker.internal:9005
+      LLM_MODEL: RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic
       # Keyless mode (no API_KEYS) → caller defaults to the 'default' tenant.
       LOG_LEVEL: INFO
+    extra_hosts:
+      # Resolve host.docker.internal on Linux (no-op on Docker Desktop) so the
+      # container can reach the host's tunnelled LLM port.
+      - "host.docker.internal:host-gateway"
     depends_on:
       - qdrant
       - embedding-sidecar
