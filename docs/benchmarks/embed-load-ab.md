@@ -194,3 +194,68 @@ resumability) deferred — see below.
   findings above were the priority, per the runtime-performance question). They
   need a larger corpus to build real VMA/segment pressure and a capped instance;
   tracked as the next run.
+
+## Run 2 (2026-07-04) — capped backpressure, chunk parity, streaming embed
+
+### Capped-Qdrant backpressure (Test 3)
+
+Throwaway Qdrant `:6363` capped (`OPTIMIZER_CPU_BUDGET=1`, `MAX_OPTIMIZATION_THREADS=1`),
+collection `indexing_threshold=200` to force frequent optimizing; 6000×4096-d
+loaded per-batch (256), status sampled every 0.25 s.
+
+| Variant | wall | drops | peak segments | % non-green |
+|---|---|---|---|---|
+| Hammer (no backpressure) | **14.4 s** | **0** | 9 | 8% |
+| Backpressure (poll 0.5 s) | 27.0 s | 0 | 9 | 33% |
+
+**At this scale neither dropped, and backpressure was 1.9× slower** — it *held*
+during every yellow window while preventing nothing. The earlier large-shard
+failure was a **payload-size** problem (one 98 MB request), fixed by batching, not
+a backpressure problem. Backpressure's payoff is the **crash-scale** regime (the
+9.27 M-vector deferred-indexing incident), which can't be reproduced quickly/safely;
+at moderate scale with *incremental* indexing (ragstack's default) the hammer is
+fine. **Decision: backpressure OFF by default** in the load path (PR #153); enable
+it explicitly for a very large corpus on a capped Qdrant. Also confirmed: the
+health poll costs **~0 on a green collection** (polls once, proceeds) — `poll=1.0`
+≈ `poll=0.1` ≈ no-backpressure; the cadence only matters while *holding* (yellow)
+or in GoWe's submission polling.
+
+### Chunking — identical, not a differentiator
+
+A and B produce the **exact same 6000 chunk ids** (0 differences) with the same
+per-record schema (`id, doc_id, content, embedding, start_char, end_char,
+metadata`); they use the same `build_chunker`. Chunk-only cost is tiny: **2.71 s /
+6000 chunks (2211 chunks/s), 140 MB**. So the whole embed-stage difference is
+embedding orchestration, not chunking.
+
+### Embedding — memory was the real gap; now fixed
+
+Since chunking is 2.7 s and identical, B's 74 s embed was **~71.5 s of embedding**
+at **2.35 GB RSS** vs A's ~44 s at **213 MB**. Cause: B's `embed_source`
+materialized the **whole shard** (all chunks + 4096-d vectors) before writing —
+which **won't scale** to the live build's 500k-doc shards. PR #153 adds streaming
+`iter_embed_source` (embed in document groups, write incrementally):
+
+| B embed | before (materialized) | after (streaming, PR #153) |
+|---|---|---|
+| Peak RSS (3k-doc shard) | **2.35 GB** | **198 MB** (~12×) |
+
+Now on par with A's memory profile, and able to run the large offline-plane shards.
+
+### Load path — improved to parity (PR #152)
+
+Beyond the batching fix, delete-prior was serialized (~6000 round-trips ≈ half the
+load). Parallelizing it (`delete_concurrency`) + pipelined batched upsert:
+full `run_load_file` **25.5 s → 17.5 s (1.46×), 236 → 343 upserts/s — on par with
+A's drain (345)**. Isolated upsert concurrency: 395 (serial) → 537 (c4) → 570 (c8)
+upserts/s.
+
+### Net verdict
+
+The production workflow (A, #144) was faster/leaner because it **streams** and
+**batches**; B (main) matched both after PRs #152 (batch + parallel delete) and
+#153 (streaming embed). Backpressure is a **crash-scale-only** tool, now off by
+default. **Chunking is equivalent.** Remaining nuance: per-batch backpressure and
+GoWe submission-poll latency are separate follow-ups; the capped VMA *crash* itself
+(millions of vectors) remains validated only by the incident doc, not reproduced
+here.
