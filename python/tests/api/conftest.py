@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
@@ -28,6 +29,16 @@ class _FakeEmbedder:
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+
+class _StateRetriever:
+    """The default collection entry's retriever, proxied to the CURRENT
+    ``app.state.retriever``. The query path resolves through the registry
+    (``registry.resolve(...).retriever``), so tests that swap ``app.state.retriever``
+    (e.g. the reranking tests) keep working without also rebuilding the registry."""
+
+    async def retrieve(self, *args: object, **kwargs: object) -> object:
+        return await app.state.retriever.retrieve(*args, **kwargs)
 
 
 @pytest_asyncio.fixture
@@ -65,6 +76,21 @@ async def client():
     app.state.retriever = HybridRetriever(vector_store, text_index, embedder)
     app.state.rewriters = {"passthrough": PassthroughRewriter()}  # no LLM in tests
     app.state.reranker = None  # rerank off by default → fused order
+    # The lifespan builds app.state.collections (the multi-collection registry the
+    # query/retrieve/collections routers resolve through); ASGITransport skips the
+    # lifespan, so build a one-entry registry over the in-memory doubles here — the
+    # single-collection default path.
+    app.state.collections = CollectionRegistry(
+        [
+            CollectionEntry(
+                id="default", label="default", collection="ragstack",
+                model="test-model", dim=4, chunk_method="fixed", chunk_size=None,
+                is_default=True, retriever=_StateRetriever(),
+                vector_store=vector_store, text_index=text_index,
+            )
+        ],
+        default_id="default",
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
