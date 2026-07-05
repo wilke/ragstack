@@ -1,0 +1,70 @@
+name: CI
+
+# Lint + type-check + test on every PR and push to main. Catches the class of
+# slips that have reached main without CI (a unit-test AttributeError, a ruff
+# UP017, an untypechecked frontend change). Infra-dependent suites (tests/api,
+# tests/integration, tests/eval) and the conformance suite need live Qdrant/ES/
+# Neo4j/Postgres + sidecars and are out of scope for this lightweight CI — add a
+# separate job with service containers when that coverage is wanted.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python (ruff · mypy · pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"        # pyproject: requires-python >= 3.12
+          cache: pip
+          cache-dependency-path: python/pyproject.toml
+      - name: Install (editable, all extras + dev)
+        run: pip install -e ".[all,dev]"   # matches `make install-python`
+      - name: ruff
+        run: ruff check .
+      - name: mypy
+        run: mypy ragstack/
+      - name: pytest (offline suites)
+        # unit + ingestion + the registry test run without infra (in-memory
+        # stores / fakes). api/integration/eval need live backends — excluded.
+        run: pytest tests/unit tests/ingestion tests/test_document_registry.py -q
+
+  frontend:
+    name: frontend (typecheck · test · build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      - name: xss guard
+        run: npm run guard:xss
+      - name: test
+        run: npm test
+      - name: build
+        run: npm run build
