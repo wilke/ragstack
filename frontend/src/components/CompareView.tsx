@@ -26,42 +26,52 @@ type Mode = "hybrid" | "vector" | "bm25";
 type Rerank = "default" | "on" | "off"; // → server default | force on | force off
 type Rewrite = "none" | "multiquery" | "hyde";
 
-interface Lane {
-  key: string;
-  collection: string; // "" → default collection
-  apiKey: string; // "" → inherit the shared key (same tenant)
-  // Per-lane pipeline levers — each maps to a /v1/query field so a single
-  // question can be compared across retrieval strategies, not just corpora.
+// The pipeline levers — each maps to a /v1/query field so a single question can
+// be compared across retrieval *strategies*, not just corpora. Held both as a
+// global template (shared by every lane) and, when overrides are on, per-lane.
+interface Levers {
   mode: Mode; // retrieval_mode
   rerank: Rerank; // rerank: null | true | false
   useGraph: boolean; // use_graph
   rewrite: Rewrite; // rewrite_strategies
-  topK: number | null; // per-lane top_k override; null → inherit the global
+  topK: number | null; // top_k; null → inherit the global default
 }
 
-let _seq = 0;
-const newLane = (collection = "", apiKey = ""): Lane => ({
-  key: `lane-${_seq++}`,
-  collection,
-  apiKey,
+const DEFAULT_LEVERS: Levers = {
   mode: "hybrid",
   rerank: "default",
   useGraph: true,
   rewrite: "none",
   topK: null,
+};
+
+interface Lane {
+  key: string;
+  collection: string; // "" → default collection
+  apiKey: string; // "" → inherit the shared key (same tenant)
+  levers: Levers; // used only when per-lane overrides are on
+}
+
+let _seq = 0;
+const newLane = (collection = "", apiKey = "", levers = DEFAULT_LEVERS): Lane => ({
+  key: `lane-${_seq++}`,
+  collection,
+  apiKey,
+  levers: { ...levers },
 });
 
 const MAX_LANES = 6;
+const GLOBAL_DEFAULT_TOPK = 5;
 
-// The non-default levers of a lane, as short chips — so two lanes on the same
-// collection but different pipelines are distinguishable in the header/leaderboard.
-const laneTags = (l: Lane): string[] => {
+// The non-default levers, as short chips — so two lanes on the same collection
+// but different pipelines are distinguishable in the header/leaderboard.
+const leverTags = (v: Levers): string[] => {
   const t: string[] = [];
-  if (l.mode !== "hybrid") t.push(l.mode);
-  if (l.rewrite !== "none") t.push(l.rewrite);
-  if (l.rerank !== "default") t.push(`rerank:${l.rerank}`);
-  if (!l.useGraph) t.push("no-graph");
-  if (l.topK != null) t.push(`k=${l.topK}`);
+  if (v.mode !== "hybrid") t.push(v.mode);
+  if (v.rewrite !== "none") t.push(v.rewrite);
+  if (v.rerank !== "default") t.push(`rerank:${v.rerank}`);
+  if (!v.useGraph) t.push("no-graph");
+  if (v.topK != null) t.push(`k=${v.topK}`);
   return t;
 };
 
@@ -70,6 +80,84 @@ const rewriteStrategies = (r: Rewrite): string[] =>
 
 const rerankValue = (r: Rerank): boolean | null =>
   r === "default" ? null : r === "on";
+
+// One control cluster for the levers — reused by the global panel and, when
+// overrides are on, by each lane. ``topKPlaceholder`` shows the inherited
+// default when the field is left blank.
+function LeverControls({
+  value,
+  onChange,
+  topKPlaceholder,
+}: {
+  value: Levers;
+  onChange: (patch: Partial<Levers>) => void;
+  topKPlaceholder: string;
+}) {
+  const sel = "min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5";
+  return (
+    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
+      <label className="flex items-center gap-1">
+        <span className="w-9 shrink-0 text-gray-400">mode</span>
+        <select
+          value={value.mode}
+          onChange={(e) => onChange({ mode: e.target.value as Mode })}
+          className={sel}
+        >
+          <option value="hybrid">hybrid</option>
+          <option value="vector">vector</option>
+          <option value="bm25">bm25</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-1">
+        <span className="w-12 shrink-0 text-gray-400">rewrite</span>
+        <select
+          value={value.rewrite}
+          onChange={(e) => onChange({ rewrite: e.target.value as Rewrite })}
+          className={sel}
+        >
+          <option value="none">none</option>
+          <option value="multiquery">multiquery</option>
+          <option value="hyde">hyde</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-1">
+        <span className="w-9 shrink-0 text-gray-400">rerank</span>
+        <select
+          value={value.rerank}
+          onChange={(e) => onChange({ rerank: e.target.value as Rerank })}
+          className={sel}
+        >
+          <option value="default">default</option>
+          <option value="on">on</option>
+          <option value="off">off</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-1">
+        <span className="w-12 shrink-0 text-gray-400">top_k</span>
+        <input
+          type="number"
+          min={1}
+          max={20}
+          value={value.topK ?? ""}
+          placeholder={topKPlaceholder}
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            onChange({ topK: v === "" ? null : Math.max(1, Math.min(20, Number(v) || 1)) });
+          }}
+          className={`${sel} tabular-nums`}
+        />
+      </label>
+      <label className="col-span-2 flex items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={value.useGraph}
+          onChange={(e) => onChange({ useGraph: e.target.checked })}
+        />
+        <span className="text-gray-400">use knowledge graph</span>
+      </label>
+    </div>
+  );
+}
 
 function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
@@ -122,11 +210,19 @@ export function CompareView({
   const opts: CollectionInfo[] = collections.data?.collections ?? [];
 
   const [query, setQuery] = useState("");
-  const [topK, setTopK] = useState(5);
+  // Global pipeline template shared by every lane. topK carries the global
+  // default (a concrete number); lanes may leave their own topK null to inherit.
+  const [glob, setGlob] = useState<Levers>({ ...DEFAULT_LEVERS, topK: GLOBAL_DEFAULT_TOPK });
+  // When false (default) all lanes share `glob` — one setting, consistent
+  // everywhere. When true, each lane's own `levers` take over and its controls
+  // appear in the card.
+  const [perLane, setPerLane] = useState(false);
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [results, setResults] = useState<Record<string, LaneResult>>({});
   const [ratings, setRatings] = useState<Record<string, number>>({});
   const [ran, setRan] = useState(false);
+
+  const globalTopK = glob.topK ?? GLOBAL_DEFAULT_TOPK;
 
   // Seed one lane per collection once the registry loads.
   useEffect(() => {
@@ -160,15 +256,18 @@ export function CompareView({
     setResults(Object.fromEntries(lanes.map((l) => [l.key, { status: "pending" as const }])));
     for (const lane of lanes) {
       const t0 = performance.now();
+      // Global mode → every lane runs the shared template; per-lane mode → the
+      // lane's own levers, still inheriting the global top_k when blank.
+      const eff = perLane ? lane.levers : glob;
       queryRag(
         {
           query: q,
-          top_k: lane.topK ?? topK,
+          top_k: eff.topK ?? globalTopK,
           collection: lane.collection || undefined,
-          retrieval_mode: lane.mode,
-          rerank: rerankValue(lane.rerank),
-          use_graph: lane.useGraph,
-          rewrite_strategies: rewriteStrategies(lane.rewrite),
+          retrieval_mode: eff.mode,
+          rerank: rerankValue(eff.rerank),
+          use_graph: eff.useGraph,
+          rewrite_strategies: rewriteStrategies(eff.rewrite),
         },
         lane.apiKey || apiKey || undefined,
       )
@@ -207,8 +306,35 @@ export function CompareView({
     setLane(key, patch);
     resetLane(key);
   };
+  // Per-lane lever edit (only reachable when overrides are on).
+  const tuneLevers = (key: string, patch: Partial<Levers>) => {
+    setLanes((ls) =>
+      ls.map((l) => (l.key === key ? { ...l, levers: { ...l.levers, ...patch } } : l)),
+    );
+    resetLane(key);
+  };
+  const resetAll = () => {
+    setResults({});
+    setRatings({});
+  };
+  // A global lever change updates the template and mirrors into every lane, so
+  // flipping overrides on later starts from the current global — and so the
+  // global controls double as a "set all" even while overrides are on.
+  const setGlobalLevers = (patch: Partial<Levers>) => {
+    setGlob((g) => ({ ...g, ...patch }));
+    setLanes((ls) => ls.map((l) => ({ ...l, levers: { ...l.levers, ...patch } })));
+    resetAll();
+  };
+  const togglePerLane = (v: boolean) => {
+    // Seed each lane from the current global on enabling, so overrides begin
+    // consistent rather than from a stale per-lane state.
+    if (v) setLanes((ls) => ls.map((l) => ({ ...l, levers: { ...glob } })));
+    setPerLane(v);
+    resetAll();
+  };
   const removeLane = (key: string) => setLanes((ls) => ls.filter((l) => l.key !== key));
-  const addLane = () => setLanes((ls) => (ls.length < MAX_LANES ? [...ls, newLane()] : ls));
+  const addLane = () =>
+    setLanes((ls) => (ls.length < MAX_LANES ? [...ls, newLane("", "", glob)] : ls));
 
   // Leaderboard: lanes with a rating, best first.
   const ranked = lanes
@@ -229,17 +355,6 @@ export function CompareView({
             placeholder="Ask one question, compare across collections…"
             className="min-w-64 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm"
           />
-          <label className="flex items-center gap-1 text-xs text-gray-500">
-            top_k
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={topK}
-              onChange={(e) => setTopK(Math.max(1, Math.min(20, Number(e.target.value) || 5)))}
-              className="w-14 rounded-md border border-gray-300 px-2 py-1 text-sm tabular-nums"
-            />
-          </label>
           <button
             type="button"
             onClick={run}
@@ -276,16 +391,41 @@ export function CompareView({
               >
                 {i === 0 ? "🥇 " : `${i + 1}. `}
                 {collLabel(l.collection)}
-                {laneTags(l).length ? ` · ${laneTags(l).join(" ")}` : ""} · {ratings[l.key]}★
+                {perLane && leverTags(l.levers).length
+                  ? ` · ${leverTags(l.levers).join(" ")}`
+                  : ""}{" "}
+                · {ratings[l.key]}★
               </span>
             ))}
           </div>
         ) : null}
       </div>
 
-      {/* Lanes */}
-      <div className="flex gap-4 overflow-x-auto pb-4">
-        {lanes.map((lane) => {
+      {/* Global pipeline panel + lanes */}
+      <div className="flex gap-4">
+        <aside className="sticky top-4 w-52 shrink-0 self-start space-y-3 rounded-lg border border-gray-200 bg-white p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            Pipeline
+          </div>
+          <label className="flex cursor-pointer items-center justify-between gap-2">
+            <span className="text-xs font-medium text-gray-600">Per-lane overrides</span>
+            <input
+              type="checkbox"
+              checked={perLane}
+              onChange={(e) => togglePerLane(e.target.checked)}
+            />
+          </label>
+          <LeverControls value={glob} onChange={setGlobalLevers} topKPlaceholder="5" />
+          <p className="text-[11px] leading-snug text-gray-400">
+            {perLane
+              ? "Each lane below can differ. Changing a control here applies it to every lane."
+              : "All lanes share these settings."}
+          </p>
+        </aside>
+
+        {/* Lanes */}
+        <div className="flex gap-4 overflow-x-auto pb-4">
+          {lanes.map((lane) => {
           const res = results[lane.key];
           const isTop = lane.key === topKey;
           return (
@@ -335,70 +475,15 @@ export function CompareView({
                   ) : null;
                 })()}
 
-                {/* Per-lane pipeline levers — each maps to a /v1/query field. */}
-                <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
-                  <label className="flex items-center gap-1">
-                    <span className="w-9 shrink-0 text-gray-400">mode</span>
-                    <select
-                      value={lane.mode}
-                      onChange={(e) => tuneLane(lane.key, { mode: e.target.value as Mode })}
-                      className="min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5"
-                    >
-                      <option value="hybrid">hybrid</option>
-                      <option value="vector">vector</option>
-                      <option value="bm25">bm25</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <span className="w-12 shrink-0 text-gray-400">rewrite</span>
-                    <select
-                      value={lane.rewrite}
-                      onChange={(e) => tuneLane(lane.key, { rewrite: e.target.value as Rewrite })}
-                      className="min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5"
-                    >
-                      <option value="none">none</option>
-                      <option value="multiquery">multiquery</option>
-                      <option value="hyde">hyde</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <span className="w-9 shrink-0 text-gray-400">rerank</span>
-                    <select
-                      value={lane.rerank}
-                      onChange={(e) => tuneLane(lane.key, { rerank: e.target.value as Rerank })}
-                      className="min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5"
-                    >
-                      <option value="default">default</option>
-                      <option value="on">on</option>
-                      <option value="off">off</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-1">
-                    <span className="w-12 shrink-0 text-gray-400">top_k</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={lane.topK ?? ""}
-                      placeholder={String(topK)}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        tuneLane(lane.key, {
-                          topK: v === "" ? null : Math.max(1, Math.min(20, Number(v) || topK)),
-                        });
-                      }}
-                      className="min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5 tabular-nums"
-                    />
-                  </label>
-                  <label className="col-span-2 flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={lane.useGraph}
-                      onChange={(e) => tuneLane(lane.key, { useGraph: e.target.checked })}
-                    />
-                    <span className="text-gray-400">use knowledge graph</span>
-                  </label>
-                </div>
+                {/* Per-lane levers appear only when overrides are enabled;
+                    otherwise every lane follows the global panel. */}
+                {perLane ? (
+                  <LeverControls
+                    value={lane.levers}
+                    onChange={(p) => tuneLevers(lane.key, p)}
+                    topKPlaceholder={String(globalTopK)}
+                  />
+                ) : null}
 
                 <input
                   type="password"
@@ -453,11 +538,12 @@ export function CompareView({
           );
         })}
 
-        {lanes.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            No collections available. Configure the registry to compare.
-          </p>
-        ) : null}
+          {lanes.length === 0 ? (
+            <p className="text-sm text-gray-400">
+              No collections available. Configure the registry to compare.
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   );
