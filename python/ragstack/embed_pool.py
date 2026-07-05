@@ -27,15 +27,31 @@ _RETRIABLE_STATUS = frozenset({408, 425, 429})
 
 
 class Endpoint:
-    """One backend endpoint: its embedder, health URL, and live load."""
+    """One backend endpoint: its embedder, health/metrics URLs, and live load."""
 
-    __slots__ = ("embedder", "health_url", "healthy", "active")
+    __slots__ = ("embedder", "health_url", "metrics_url", "healthy", "active", "waiting")
 
-    def __init__(self, embedder, health_url: str) -> None:
+    def __init__(self, embedder, health_url: str, metrics_url: str | None = None) -> None:
         self.embedder = embedder
         self.health_url = health_url
+        self.metrics_url = metrics_url
         self.healthy = True  # optimistic; demoted on failure, restored by health checks
-        self.active = 0
+        self.active = 0  # local in-flight requests from this process
+        self.waiting = 0  # server-side queue depth (vllm:num_requests_waiting); 0 = unknown
+
+
+def _parse_waiting(metrics_text: str) -> int:
+    """Extract ``vllm:num_requests_waiting`` from Prometheus /metrics text.
+
+    Returns 0 when the metric is absent (non-vLLM backend, e.g. the BGE sidecar),
+    so routing transparently falls back to least-local-load for those."""
+    for line in metrics_text.splitlines():
+        if line.startswith("vllm:num_requests_waiting{"):
+            try:
+                return int(float(line.rsplit(" ", 1)[1]))
+            except (ValueError, IndexError):
+                return 0
+    return 0
 
 
 class PooledEmbedder:
@@ -62,6 +78,8 @@ class PooledEmbedder:
         http: httpx.AsyncClient,
         max_concurrency: int = 8,
         health_interval: float = 30.0,
+        metrics_interval: float = 5.0,
+        max_waiting: int = 512,
     ) -> None:
         if not endpoints:
             raise ValueError("PooledEmbedder requires at least one endpoint")
@@ -69,15 +87,25 @@ class PooledEmbedder:
         self._http = http
         self._sem = asyncio.Semaphore(max(1, max_concurrency))
         self._health_interval = health_interval
+        # Server-queue-aware routing: poll each endpoint's vllm:num_requests_waiting
+        # every `metrics_interval`s and prefer endpoints with fewer queued requests,
+        # skipping any above `max_waiting`. This is globally aware (the server queue),
+        # unlike least-local-load which is blind to other processes and clusters all
+        # of them onto one endpoint (the 16k-on-one-endpoint failure mode).
+        self._metrics_interval = metrics_interval
+        self._max_waiting = max_waiting
         # Start the clock now so the first probe waits a full interval rather than
         # firing on the first request.
         self._last_health = time.monotonic()
         self._health_lock = asyncio.Lock()
+        self._last_metrics = time.monotonic()
+        self._metrics_lock = asyncio.Lock()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        # Refresh health *outside* the semaphore: a slow probe round must not hold
-        # a backpressure permit hostage while it waits on /health GETs.
+        # Refresh health + server-queue metrics *outside* the semaphore: a slow probe
+        # round must not hold a backpressure permit hostage while it waits on GETs.
         await self._maybe_refresh_health()
+        await self._maybe_refresh_metrics()
         async with self._sem:
             tried: set[int] = set()
             last_exc: Exception | None = None
@@ -176,7 +204,38 @@ class PooledEmbedder:
         pool = healthy or [e for e in self._eps if id(e) not in exclude]
         if not pool:
             return None
-        return min(pool, key=lambda e: e.active)
+        # Prefer endpoints under the waiting ceiling (server queue not backed up); if
+        # every candidate is swamped, fall through to the least-queued of them rather
+        # than stranding the request.
+        under = [e for e in pool if e.waiting <= self._max_waiting]
+        chosen = under or pool
+        # Route by server-side queue depth first (globally aware — avoids piling onto
+        # a backed-up endpoint), tiebreak by local in-flight so ties still spread.
+        return min(chosen, key=lambda e: (e.waiting, e.active))
+
+    async def _maybe_refresh_metrics(self) -> None:
+        if time.monotonic() - self._last_metrics < self._metrics_interval:
+            return
+        async with self._metrics_lock:
+            if time.monotonic() - self._last_metrics < self._metrics_interval:
+                return
+            await self._refresh_waiting()
+            self._last_metrics = time.monotonic()
+
+    async def _refresh_waiting(self) -> None:
+        """Poll each endpoint's /metrics for its server-side queue depth."""
+
+        async def probe(ep: Endpoint) -> None:
+            if not ep.metrics_url:
+                return
+            try:
+                r = await self._http.get(ep.metrics_url, timeout=4.0)
+                if r.status_code == 200:
+                    ep.waiting = _parse_waiting(r.text)
+            except (httpx.HTTPError, OSError):
+                pass  # keep the last reading; a transient metrics blip shouldn't swing routing
+
+        await asyncio.gather(*(probe(e) for e in self._eps))
 
     async def _maybe_refresh_health(self) -> None:
         if time.monotonic() - self._last_health < self._health_interval:
@@ -208,6 +267,8 @@ def make_pooled_embedder(
     api_key: str | None = None,
     max_concurrency: int = 8,
     health_path: str = "/health",
+    metrics_path: str = "/metrics",
+    max_waiting: int = 512,
 ) -> PooledEmbedder:
     """Build a PooledEmbedder over ``base_urls`` using the same per-endpoint
     embedder as the single-endpoint path (``make_embedder``).
@@ -215,13 +276,22 @@ def make_pooled_embedder(
     ``health_path`` is the probe path appended to each base URL. The default
     ``/health`` suits the sidecar and vLLM's OpenAI server; point it elsewhere
     for backends that expose readiness under a different path (a backend with no
-    health route would otherwise read as permanently unhealthy)."""
+    health route would otherwise read as permanently unhealthy).
+
+    ``metrics_path`` (default vLLM's ``/metrics``) exposes ``num_requests_waiting``
+    for server-queue-aware routing; a backend without it just routes by local load.
+    ``max_waiting`` is the per-endpoint queue ceiling above which an endpoint is
+    skipped (unless all are over it)."""
     suffix = health_path.lstrip("/")
+    msuffix = metrics_path.lstrip("/")
     endpoints = [
         Endpoint(
             make_embedder(api=api, http=http, base_url=url, model=model, api_key=api_key),
             health_url=f"{url.rstrip('/')}/{suffix}",
+            metrics_url=f"{url.rstrip('/')}/{msuffix}",
         )
         for url in base_urls
     ]
-    return PooledEmbedder(endpoints, http=http, max_concurrency=max_concurrency)
+    return PooledEmbedder(
+        endpoints, http=http, max_concurrency=max_concurrency, max_waiting=max_waiting
+    )

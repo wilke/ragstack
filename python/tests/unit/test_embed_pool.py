@@ -260,3 +260,33 @@ async def test_health_refresh_is_interval_gated(http, monkeypatch):
     assert probes == 1
     await pool._maybe_refresh_health()  # gate closes again immediately after
     assert probes == 1
+
+
+# --- server-queue-aware routing (vllm:num_requests_waiting) ------------------
+
+def test_parse_waiting_extracts_metric():
+    from ragstack.embed_pool import _parse_waiting
+
+    txt = (
+        'vllm:num_requests_running{engine="0",model_name="x"} 1.0\n'
+        'vllm:num_requests_waiting{engine="0",model_name="x"} 16373.0\n'
+    )
+    assert _parse_waiting(txt) == 16373
+    assert _parse_waiting("no vllm metrics here") == 0  # non-vLLM backend -> 0
+
+
+async def test_select_prefers_least_server_queued(http):
+    pool = _pool(http, _FakeEmbedder(0), _FakeEmbedder(1), _FakeEmbedder(2))
+    pool._eps[0].waiting, pool._eps[1].waiting, pool._eps[2].waiting = 5000, 3, 400
+    # Route by server queue, not local load: endpoint 1 (waiting=3) wins.
+    assert pool._select(set()) is pool._eps[1]
+
+
+async def test_select_skips_swamped_but_falls_back_if_all_over(http):
+    pool = _pool(http, _FakeEmbedder(0), _FakeEmbedder(1), max_waiting=512)
+    pool._eps[0].waiting = 16000   # swamped (over ceiling) — the 16k-backlog case
+    pool._eps[1].waiting = 100     # under ceiling
+    assert pool._select(set()) is pool._eps[1]
+    # If every endpoint is over the ceiling, don't strand — pick the least-queued.
+    pool._eps[1].waiting = 20000
+    assert pool._select(set()) is pool._eps[0]  # 16000 < 20000
