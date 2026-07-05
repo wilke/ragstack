@@ -52,3 +52,22 @@ type TripleResponse struct {
 	Predicate string `json:"predicate"`
 	Object    string `json:"object"`
 }
+
+// CollectionInfo describes one registry collection the query API can serve.
+type CollectionInfo struct {
+	ID          string      `json:"id"`
+	Label       string      `json:"label"`
+	Model       string      `json:"model"`
+	Dim         int         `json:"dim"`
+	ChunkMethod *string     `json:"chunk_method,omitempty"`
+	ChunkSize   *int        `json:"chunk_size,omitempty"`
+	Default     bool        `json:"default"`
+	Count       *int        `json:"count,omitempty"`
+	Provenance  interface{} `json:"provenance,omitempty"`
+}
+
+// CollectionsResponse is the body for GET /v1/collections.
+type CollectionsResponse struct {
+	Collections []CollectionInfo `json:"collections"`
+	Default     string           `json:"default"`
+}
