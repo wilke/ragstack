@@ -89,3 +89,49 @@ async function post<T>(path: string, body: unknown, apiKey?: string): Promise<T>
 export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryResponse> {
   return post<QueryResponse>("/v1/query", req, apiKey);
 }
+
+// --- Ops dashboard read endpoints (#85) ---
+
+async function get<T>(path: string, apiKey?: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(path, { headers });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail || res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
+export interface StoreStat {
+  backend: string;
+  available: boolean;
+  count: number | null;
+}
+
+export interface StoreStats {
+  tenants: string[];
+  vector: StoreStat;
+  text: StoreStat;
+  graph: StoreStat;
+}
+
+export interface DeepCheck {
+  name: string;
+  ok: boolean;
+  detail?: string | null;
+  latency_ms?: number | null;
+}
+
+export interface DeepHealth {
+  status: string;
+  checks: DeepCheck[];
+}
+
+export function getStoreStats(apiKey?: string): Promise<StoreStats> {
+  return get<StoreStats>("/v1/stats/stores", apiKey);
+}
+
+export function getDeepHealth(apiKey?: string): Promise<DeepHealth> {
+  return get<DeepHealth>("/v1/health/deep", apiKey);
+}
