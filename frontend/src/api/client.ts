@@ -51,6 +51,7 @@ export interface QueryRequest {
   use_graph?: boolean;
   rerank?: boolean | null;
   collection?: string; // registry collection id; omit for the default
+  retrieval_mode?: "hybrid" | "vector" | "bm25"; // which retrieval legs run; omit for hybrid
 }
 
 export interface QueryResponse {

@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -79,6 +79,9 @@ class QueryRequest(BaseModel):
     # Which registry collection to query. ``None`` uses the default collection.
     # An unknown id is a 404 (explicit selection fails loudly). See GET /v1/collections.
     collection: str | None = None
+    # Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or
+    # bm25 (sparse only). The graph leg is orthogonal (see use_graph).
+    retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
 
 
 class QueryResponse(BaseModel):
@@ -97,6 +100,8 @@ class RetrieveRequest(BaseModel):
     rerank_candidates: int | None = Field(default=None, ge=1)
     # See QueryRequest — which registry collection to retrieve from.
     collection: str | None = None
+    # See QueryRequest — hybrid | vector | bm25.
+    retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
 
 
 class RetrieveResponse(BaseModel):
@@ -143,6 +148,7 @@ async def _retrieve_fused(
     rerank: bool | None = None,
     rerank_candidates: int | None = None,
     tenant_id: str | None = None,
+    mode: str = "hybrid",
 ) -> list[ScoredChunk]:
     """Hybrid-retrieve each query variant, RRF-fuse, optionally rerank, truncate.
 
@@ -167,7 +173,7 @@ async def _retrieve_fused(
     if len(variants) == 1:
         scored = await retriever.retrieve(
             variants[0], top_k=depth, filters=filters, use_graph=use_graph,
-            tenant_id=tenant_id,
+            tenant_id=tenant_id, mode=mode,
         )
     else:
         # Independent retrievals run concurrently — latency is one retrieve, not N.
@@ -175,7 +181,7 @@ async def _retrieve_fused(
             *(
                 retriever.retrieve(
                     v, top_k=depth, filters=filters, use_graph=use_graph,
-                    tenant_id=tenant_id,
+                    tenant_id=tenant_id, mode=mode,
                 )
                 for v in variants
             )
@@ -244,6 +250,7 @@ async def retrieve(
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
         tenant_id=tenant,
+        mode=request.retrieval_mode,
     )
     return RetrieveResponse(sources=_to_sources(scored))
 
@@ -287,6 +294,7 @@ async def query(
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
         tenant_id=tenant,
+        mode=request.retrieval_mode,
     )
 
     sources = _to_sources(scored)
