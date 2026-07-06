@@ -19,7 +19,7 @@ from ragstack.api.collections import (
     CollectionRegistry,
     load_collection_specs,
 )
-from ragstack.api.model_registry import ModelRegistry
+from ragstack.api.model_registry import ModelEntry, ModelRegistry
 from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
@@ -507,7 +507,7 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
-def apply_assignment(app: Any, task: str, entry: Any) -> None:
+def apply_assignment(app: Any, task: str, entry: ModelEntry | None) -> None:
     """Rebuild and atomically swap the ``app.state`` singleton for a hot-swappable
     task (llm / reranker). ``entry`` is a ``ModelEntry`` to apply, or ``None`` to
     revert the task to its settings-configured default (which may itself be None →
@@ -520,7 +520,7 @@ def apply_assignment(app: Any, task: str, entry: Any) -> None:
     task belongs in the Go embedding-router sidecar (ADR-0001), not a hand-rolled
     pool here — so extra ``base_urls`` are ignored for now and we warn rather than
     pretend to use them."""
-    if entry is not None and len(getattr(entry, "base_urls", []) or []) > 1:
+    if entry is not None and len(entry.base_urls) > 1:
         log.warning(
             "model %r registers %d base_urls but the %s hot-swap uses only the first (%s); "
             "multi-endpoint fan-out is deferred to the Go router (ADR-0001)",

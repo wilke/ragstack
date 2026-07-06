@@ -43,7 +43,15 @@ class ModelEntry(BaseModel):
 
 
 class RegistryError(ValueError):
-    """Invalid registry operation (bad task/provider, unknown id, SSRF, dup, in-use)."""
+    """Invalid registry operation (bad task/provider, unknown id, SSRF, dup, in-use).
+
+    Carries the HTTP status the router should surface, so the taxonomy lives with
+    the registry that owns it rather than being re-derived by string-matching the
+    message in the router. Defaults to 400 (bad request)."""
+
+    def __init__(self, message: str, *, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ModelRegistry:
@@ -122,7 +130,7 @@ class ModelRegistry:
 
     def update(self, model_id: str, entry: ModelEntry) -> ModelEntry:
         if model_id not in self._models:
-            raise RegistryError(f"unknown model {model_id!r}")
+            raise RegistryError(f"unknown model {model_id!r}", status_code=404)
         entry = entry.model_copy(update={"id": model_id})  # id is the path, immutable
         self._validate(entry)
         self._models[model_id] = entry
@@ -130,10 +138,12 @@ class ModelRegistry:
 
     def delete(self, model_id: str) -> None:
         if model_id not in self._models:
-            raise RegistryError(f"unknown model {model_id!r}")
+            raise RegistryError(f"unknown model {model_id!r}", status_code=404)
         bound = [t for t, mid in self.assignments.items() if mid == model_id]
         if bound:
-            raise RegistryError(f"model {model_id!r} is assigned to {bound}; unassign first")
+            raise RegistryError(
+                f"model {model_id!r} is assigned to {bound}; unassign first", status_code=409
+            )
         del self._models[model_id]
 
     # --- assignments (state only; applying is deps.apply_assignment) ------- #
@@ -150,7 +160,7 @@ class ModelRegistry:
             return None
         entry = self.get(model_id)
         if entry is None:
-            raise RegistryError(f"unknown model {model_id!r}")
+            raise RegistryError(f"unknown model {model_id!r}", status_code=404)
         if entry.task != task:
             raise RegistryError(f"model {model_id!r} serves task {entry.task!r}, not {task!r}")
         return entry

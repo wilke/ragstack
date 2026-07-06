@@ -18,7 +18,7 @@ from ragstack.config import settings
 router = APIRouter()
 
 
-class RegistryResponse(BaseModel):
+class ModelsRegistryResponse(BaseModel):
     models: list[ModelEntry]
     assignments: dict[str, str]
 
@@ -31,21 +31,18 @@ class AssignmentsPatch(BaseModel):
     reranker: str | None = None
 
 
-def _snapshot(reg: ModelRegistry) -> RegistryResponse:
-    return RegistryResponse(models=reg.entries(), assignments=reg.assignments)
+def _snapshot(reg: ModelRegistry) -> ModelsRegistryResponse:
+    return ModelsRegistryResponse(models=reg.entries(), assignments=reg.assignments)
 
 
 def _http_error(e: RegistryError) -> HTTPException:
-    msg = str(e)
-    if "unknown model" in msg:
-        return HTTPException(status_code=404, detail=msg)
-    if "is assigned to" in msg:  # delete of an in-use model
-        return HTTPException(status_code=409, detail=msg)
-    return HTTPException(status_code=400, detail=msg)
+    # RegistryError carries the status the registry chose (404/409/400); the
+    # router stays thin and doesn't re-derive it from the message text.
+    return HTTPException(status_code=e.status_code, detail=str(e))
 
 
-@router.get("/models/registry", response_model=RegistryResponse)
-async def list_models(reg: ModelRegistry = Depends(get_model_registry)) -> RegistryResponse:
+@router.get("/models/registry", response_model=ModelsRegistryResponse)
+async def list_models(reg: ModelRegistry = Depends(get_model_registry)) -> ModelsRegistryResponse:
     """The registered models and the current hot-swappable assignments."""
     return _snapshot(reg)
 
@@ -96,12 +93,12 @@ async def delete_model(model_id: str, reg: ModelRegistry = Depends(get_model_reg
     reg.save(settings.models_registry_file)
 
 
-@router.patch("/config/assignments", response_model=RegistryResponse)
+@router.patch("/config/assignments", response_model=ModelsRegistryResponse)
 async def patch_assignments(
     body: AssignmentsPatch,
     request: Request,
     reg: ModelRegistry = Depends(get_model_registry),
-) -> RegistryResponse:
+) -> ModelsRegistryResponse:
     """Assign registered models to hot-swappable tasks and apply live. Only the
     fields present in the body are changed; a field set to ``null`` reverts that
     task to its settings default. Each applied task rebuilds its app.state client.
