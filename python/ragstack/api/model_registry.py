@@ -83,7 +83,7 @@ class ModelRegistry:
             raise RegistryError("embedding models require a positive 'dim'")
 
     # --- CRUD ------------------------------------------------------------- #
-    def list(self) -> list[ModelEntry]:
+    def entries(self) -> list[ModelEntry]:
         return list(self._models.values())
 
     def get(self, model_id: str) -> ModelEntry | None:

@@ -32,7 +32,7 @@ class AssignmentsPatch(BaseModel):
 
 
 def _snapshot(reg: ModelRegistry) -> RegistryResponse:
-    return RegistryResponse(models=reg.list(), assignments=reg.assignments)
+    return RegistryResponse(models=reg.entries(), assignments=reg.assignments)
 
 
 def _http_error(e: RegistryError) -> HTTPException:
