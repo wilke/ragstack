@@ -507,6 +507,19 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
+def _llm_from_entry(entry: Any, http: httpx.AsyncClient) -> OpenAILLM:
+    return OpenAILLM(
+        base_url=entry.base_urls[0],
+        model=entry.model,
+        http=http,
+        api_key=settings.openai_api_key or None,
+    )
+
+
+def _reranker_from_entry(entry: Any, http: httpx.AsyncClient) -> SidecarReranker:
+    return SidecarReranker(base_url=entry.base_urls[0], http=http)
+
+
 def apply_assignment(app: Any, task: str, entry: Any) -> None:
     """Rebuild and atomically swap the ``app.state`` singleton for a hot-swappable
     task (llm / reranker). ``entry`` is a ``ModelEntry`` to apply, or ``None`` to
@@ -516,15 +529,7 @@ def apply_assignment(app: Any, task: str, entry: Any) -> None:
     lock."""
     http = app.state.http_client
     if task == "llm":
-        if entry is None:
-            llm = _build_llm(http)
-        else:
-            llm = OpenAILLM(
-                base_url=entry.base_urls[0],
-                model=entry.model,
-                http=http,
-                api_key=settings.openai_api_key or None,
-            )
+        llm = _llm_from_entry(entry, http) if entry is not None else _build_llm(http)
         # The LLM feeds both answer generation and the LLM-backed rewriters, so a
         # swap rebuilds both from the same client.
         app.state.generator = (
@@ -535,12 +540,35 @@ def apply_assignment(app: Any, task: str, entry: Any) -> None:
         app.state.rewriters = _build_rewriters(llm)
     elif task == "reranker":
         app.state.reranker = (
-            _build_reranker(http)
-            if entry is None
-            else SidecarReranker(base_url=entry.base_urls[0], http=http)
+            _build_reranker(http) if entry is None else _reranker_from_entry(entry, http)
         )
     else:  # pragma: no cover - guarded by the registry (HOT_SWAPPABLE) upstream
         raise ValueError(f"task {task!r} is not hot-swappable")
+
+
+def build_generator_for(registry: Any, http: httpx.AsyncClient, model_id: str) -> RagGenerator:
+    """A one-off generator for a per-request ``llm`` override — resolve the model
+    ref from the registry and build an ephemeral RagGenerator (construction is
+    cheap: it just wraps the shared http client). Does NOT touch app.state or the
+    rewriters, so the override affects only this request's answer generation.
+    Raises KeyError (unknown id) / ValueError (not an llm model)."""
+    entry = registry.get(model_id)
+    if entry is None:
+        raise KeyError(model_id)
+    if entry.task != "llm":
+        raise ValueError(f"model {model_id!r} serves task {entry.task!r}, not 'llm'")
+    return RagGenerator(_llm_from_entry(entry, http), max_context_chars=settings.llm_max_context_chars)
+
+
+def build_reranker_for(registry: Any, http: httpx.AsyncClient, model_id: str) -> SidecarReranker:
+    """A one-off reranker for a per-request ``reranker`` override. Raises KeyError
+    (unknown id) / ValueError (not a reranker model)."""
+    entry = registry.get(model_id)
+    if entry is None:
+        raise KeyError(model_id)
+    if entry.task != "reranker":
+        raise ValueError(f"model {model_id!r} serves task {entry.task!r}, not 'reranker'")
+    return _reranker_from_entry(entry, http)
 
 
 def _build_chunker():
@@ -913,6 +941,10 @@ def get_collections(request: Request) -> CollectionRegistry:
 
 def get_model_registry(request: Request) -> ModelRegistry:
     return request.app.state.model_registry
+
+
+def get_http_client(request: Request) -> httpx.AsyncClient:
+    return request.app.state.http_client
 
 
 def get_rewriters(request: Request):

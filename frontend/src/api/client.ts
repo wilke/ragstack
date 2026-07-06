@@ -52,6 +52,8 @@ export interface QueryRequest {
   rerank?: boolean | null;
   collection?: string; // registry collection id; omit for the default
   retrieval_mode?: "hybrid" | "vector" | "bm25"; // which retrieval legs run; omit for hybrid
+  llm?: string; // registered model id to generate with (this request only); omit for default
+  reranker?: string; // registered model id to rerank with (this request only); omit for default
 }
 
 export interface QueryResponse {
@@ -280,6 +282,24 @@ export interface CollectionsResponse {
 
 export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
   return get<CollectionsResponse>("/v1/collections", apiKey);
+}
+
+// A registered model assignable per-request to a hot-swappable task (llm/reranker).
+export interface AvailableModel {
+  id: string;
+  task: "llm" | "reranker";
+  label: string;
+  model: string;
+  provider: string;
+}
+
+export interface AvailableModelsResponse {
+  models: AvailableModel[];
+}
+
+// Models the Compare per-lane pickers can select (base_urls are not exposed).
+export function getAvailableModels(apiKey?: string): Promise<AvailableModelsResponse> {
+  return get<AvailableModelsResponse>("/v1/models/available", apiKey);
 }
 
 // A chunk fetched by id (no retrieval score) — used to expand a source's
