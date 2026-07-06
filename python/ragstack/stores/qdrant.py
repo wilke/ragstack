@@ -254,6 +254,46 @@ class QdrantVectorStore:
         )
         return int(resp.count)
 
+    async def get_chunks(
+        self, chunk_ids: list[str], filters: dict[str, Any] | None = None
+    ) -> list[Chunk]:
+        """Fetch chunks by id via a filtered scroll on the ``chunk_id`` payload —
+        the point id is tenant-scoped (see ``_point_id``), so filtering on the
+        stored ``chunk_id`` (plus the caller's ``tenant_id`` read scope) is the
+        tenant-safe way to resolve ids we didn't mint. Preserves request order;
+        missing/invisible ids are omitted."""
+        ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
+        if not ids:
+            return []
+        scroll_filter = _build_filter({**(filters or {}), "chunk_id": ids})
+        found: dict[str, Chunk] = {}
+        offset: Any = None
+        while True:
+            points, offset = await self._client.scroll(
+                collection_name=self._collection,
+                scroll_filter=scroll_filter,
+                with_payload=True,
+                with_vectors=False,
+                limit=max(len(ids), 16),
+                offset=offset,
+            )
+            for p in points:
+                payload = dict(p.payload or {})
+                cid = str(payload.pop("chunk_id", p.id))
+                if cid in found:
+                    continue
+                found[cid] = Chunk(
+                    id=cid,
+                    doc_id=str(payload.pop("doc_id", "")),
+                    content=str(payload.pop("content", "")),
+                    start_char=int(payload.pop("start_char", 0) or 0),
+                    end_char=int(payload.pop("end_char", 0) or 0),
+                    metadata=payload,
+                )
+            if offset is None or len(found) >= len(ids):
+                break
+        return [found[c] for c in ids if c in found]
+
     async def healthcheck(self) -> None:
         """Read-only liveness probe: a connectivity check that never mutates state.
 

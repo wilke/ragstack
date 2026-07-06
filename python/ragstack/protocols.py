@@ -56,6 +56,15 @@ class VectorStore(Protocol):
         (return 0) on an empty ``tenants`` list rather than counting everything."""
         ...
 
+    async def get_chunks(
+        self, chunk_ids: list[str], filters: dict[str, Any] | None = None
+    ) -> list[Chunk]:
+        """Fetch chunks by id, tenant-scoped via ``filters`` (same ``tenant_id``
+        read scope as ``search``). Preserves the requested id order; ids not found
+        or not visible are omitted. Used to resolve a chunk's neighbours
+        (``prev_chunk_id`` / ``next_chunk_id``) for context expansion."""
+        ...
+
 
 @runtime_checkable
 class TextIndex(Protocol):

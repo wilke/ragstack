@@ -100,6 +100,22 @@ class InMemoryVectorStore:
             return 0
         return sum(1 for c in self._chunks if tenant_of(c) in allowed)
 
+    async def get_chunks(
+        self, chunk_ids: list[str], filters: dict[str, Any] | None = None
+    ) -> list[Chunk]:
+        """Fetch chunks by id, tenant-scoped via ``filters``; request order kept,
+        missing/invisible ids omitted."""
+        ids = list(dict.fromkeys(chunk_ids))
+        if not ids:
+            return []
+        wanted = set(ids)
+        by_id = {
+            c.id: c
+            for c in self._chunks
+            if c.id in wanted and (not filters or _matches(c, filters))
+        }
+        return [by_id[c] for c in ids if c in by_id]
+
 
 class InMemoryTextIndex:
     """Very simple bag-of-words text search for development/testing."""

@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
+  fetchChunks,
   getCollections,
   queryRag,
+  type ChunkOut,
   type CollectionInfo,
   type QueryResponse,
   type Source,
@@ -262,19 +264,125 @@ function Stars({ value, onChange }: { value: number; onChange: (v: number) => vo
   );
 }
 
-function CompareSource({ rank, source }: { rank: number; source: Source }) {
+// A neighbouring chunk (prev/next), rendered above/below the matched passage.
+function ContextChunk({ chunk, position }: { chunk: ChunkOut; position: "prev" | "next" }) {
+  const idx =
+    typeof chunk.metadata.chunk_index === "number" ? chunk.metadata.chunk_index : undefined;
+  return (
+    <div className="my-1 border-l-2 border-gray-200 bg-gray-50 py-1 pl-2">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+        {position === "prev" ? "◀ previous chunk" : "next chunk ▶"}
+        {idx !== undefined ? ` · #${idx}` : ""}
+      </div>
+      <p className="whitespace-pre-wrap text-[11px] leading-snug text-gray-500">{chunk.content}</p>
+    </div>
+  );
+}
+
+type Ctx = {
+  loading: boolean;
+  error?: string;
+  prev?: ChunkOut | null; // undefined = no prev id; null = id had no visible chunk
+  next?: ChunkOut | null;
+};
+
+function CompareSource({
+  rank,
+  source,
+  collection,
+  apiKey,
+}: {
+  rank: number;
+  source: Source;
+  collection: string;
+  apiKey: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [ctx, setCtx] = useState<Ctx | null>(null);
   const title = (source.metadata.title && String(source.metadata.title)) || source.doc_id;
+  const m = source.metadata;
+  const prevId = m.prev_chunk_id || undefined;
+  const nextId = m.next_chunk_id || undefined;
+  const hasNbr = Boolean(prevId || nextId);
+  const idx = typeof m.chunk_index === "number" ? m.chunk_index : undefined;
+
+  const loadContext = async () => {
+    if (ctx?.loading) return;
+    // Toggle off if already loaded.
+    if (ctx && !ctx.error) {
+      setCtx(null);
+      return;
+    }
+    setCtx({ loading: true });
+    const ids = [prevId, nextId].filter(Boolean) as string[];
+    try {
+      const r = await fetchChunks(ids, collection || undefined, apiKey || undefined);
+      const byId = new Map(r.chunks.map((c) => [c.chunk_id, c]));
+      setCtx({
+        loading: false,
+        prev: prevId ? byId.get(prevId) ?? null : undefined,
+        next: nextId ? byId.get(nextId) ?? null : undefined,
+      });
+    } catch (e) {
+      setCtx({ loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
   return (
     <li className="border-t border-gray-100 py-1.5">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-medium text-gray-700" title={title}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="min-w-0 flex-1 truncate text-left text-xs font-medium text-gray-700"
+          title={title}
+        >
           <span className="text-gray-400">{rank}.</span> {title}
-        </span>
+        </button>
         <span className="shrink-0 tabular-nums text-[11px] text-gray-400">
           {source.score.toFixed(4)}
         </span>
       </div>
-      <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{source.content}</p>
+
+      {ctx && !ctx.loading && !ctx.error && ctx.prev ? (
+        <ContextChunk chunk={ctx.prev} position="prev" />
+      ) : null}
+
+      <p
+        onClick={() => setOpen((o) => !o)}
+        title={source.content}
+        className={`mt-0.5 cursor-pointer whitespace-pre-wrap text-xs text-gray-500 ${open ? "" : "line-clamp-2"}`}
+      >
+        {source.content}
+      </p>
+
+      {ctx && !ctx.loading && !ctx.error && ctx.next ? (
+        <ContextChunk chunk={ctx.next} position="next" />
+      ) : null}
+
+      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-gray-400">
+        <button type="button" onClick={() => setOpen((o) => !o)} className="hover:text-gray-600">
+          {open ? "▴ collapse" : "▾ full text"}
+        </button>
+        {idx !== undefined ? <span>· chunk #{idx}</span> : null}
+        {hasNbr ? (
+          <button
+            type="button"
+            onClick={loadContext}
+            disabled={ctx?.loading}
+            className="text-blue-600 hover:underline disabled:opacity-50"
+          >
+            {ctx?.loading
+              ? "· loading…"
+              : ctx && !ctx.error
+                ? "· hide context"
+                : "· ± parent/child"}
+          </button>
+        ) : (
+          <span className="text-gray-300">· no neighbours</span>
+        )}
+      </div>
+      {ctx?.error ? <p className="text-[10px] text-red-500">context: {ctx.error}</p> : null}
     </li>
   );
 }
@@ -910,7 +1018,13 @@ export function CompareView({
                       </div>
                       <ul>
                         {res.data.sources.map((s, i) => (
-                          <CompareSource key={s.chunk_id} rank={i + 1} source={s} />
+                          <CompareSource
+                            key={s.chunk_id}
+                            rank={i + 1}
+                            source={s}
+                            collection={lane.collection}
+                            apiKey={lane.apiKey || apiKey}
+                          />
                         ))}
                       </ul>
                     </div>

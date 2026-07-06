@@ -71,3 +71,16 @@ type CollectionsResponse struct {
 	Collections []CollectionInfo `json:"collections"`
 	Default     string           `json:"default"`
 }
+
+// ChunkOut is a chunk fetched by id (no retrieval score), for context expansion.
+type ChunkOut struct {
+	DocID    string         `json:"doc_id"`
+	ChunkID  string         `json:"chunk_id"`
+	Content  string         `json:"content"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// ChunksResponse is the body for GET /v1/chunks.
+type ChunksResponse struct {
+	Chunks []ChunkOut `json:"chunks"`
+}

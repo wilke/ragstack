@@ -297,6 +297,42 @@ paths:
         "401":
           description: Missing or invalid API key
 
+  /v1/chunks:
+    get:
+      operationId: getChunks
+      summary: Fetch chunks by id (context expansion)
+      description: >-
+        Fetch chunks by id from a collection's vector store, tenant-scoped (own +
+        `public`). `ids` is a comma-separated list — typically the
+        `prev_chunk_id` / `next_chunk_id` carried in a Source's metadata — so a
+        client can expand a retrieved chunk's neighbouring context. Unknown or
+        out-of-scope ids are silently omitted; order follows the request.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: ids
+          in: query
+          required: false
+          description: Comma-separated chunk ids (capped at 20).
+          schema: { type: string }
+        - name: collection
+          in: query
+          required: false
+          description: Registry collection to read from; the default when omitted.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The requested chunks that exist and are visible.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChunksResponse"
+        "401":
+          description: Missing or invalid API key
+        "404":
+          description: Unknown collection
+
   /v1/graph/stats:
     get:
       operationId: graphStats
@@ -732,6 +768,27 @@ components:
         default:
           description: The id served when a request omits `collection`.
           type: string
+
+    ChunkOut:
+      type: object
+      required: [doc_id, chunk_id, content]
+      properties:
+        doc_id: { type: string }
+        chunk_id: { type: string }
+        content: { type: string }
+        metadata:
+          type: object
+          default: {}
+      additionalProperties: false
+
+    ChunksResponse:
+      type: object
+      required: [chunks]
+      properties:
+        chunks:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChunkOut"
       additionalProperties: false
 
     IngestRequest:
