@@ -81,6 +81,80 @@ const rewriteStrategies = (r: Rewrite): string[] =>
 const rerankValue = (r: Rerank): boolean | null =>
   r === "default" ? null : r === "on";
 
+// Hover copy for the lever labels (native title tooltips). The Glossary below
+// carries the per-term detail.
+const LABEL_TIP: Record<string, string> = {
+  mode: "Which retrieval legs run. hybrid = dense vectors + BM25 keyword (fused); vector = dense only; bm25 = keyword only.",
+  rewrite:
+    "Expand the query before retrieving. none = as-is; multiquery = LLM paraphrases; hyde = retrieve on a hypothetical answer.",
+  rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force for this lane.",
+  top_k: "How many results to return per lane.",
+  graph: "Also retrieve from the knowledge graph (entities & relations) as an extra leg.",
+};
+
+// Grouped definitions rendered by <Glossary/> at the foot of the page.
+const GLOSSARY: { group: string; items: { term: string; def: string }[] }[] = [
+  {
+    group: "Retrieval mode",
+    items: [
+      { term: "hybrid", def: "Both retrieval legs — dense vectors + BM25 keyword — fused with RRF. The default; best recall." },
+      { term: "vector", def: "Dense-embedding (semantic) retrieval only. Finds meaning-similar text even without shared words." },
+      { term: "bm25", def: "Keyword / lexical retrieval only (Elasticsearch BM25). Fast, needs no embedding; rewards exact term matches." },
+    ],
+  },
+  {
+    group: "Query rewriting",
+    items: [
+      { term: "none", def: "No rewriting — the query is sent unchanged (passthrough only)." },
+      { term: "passthrough", def: "The original query, unmodified. Always included even when another strategy runs." },
+      { term: "multiquery", def: "The LLM generates several paraphrases of your question; each one retrieves and the lists are fused — widens recall." },
+      { term: "hyde", def: "Hypothetical Document Embeddings: the LLM drafts a fake answer, then retrieves documents similar to that draft. Helps vague queries." },
+    ],
+  },
+  {
+    group: "Reranking",
+    items: [
+      { term: "rerank: default", def: "Use the server default — rerank only if a cross-encoder is wired." },
+      { term: "rerank: on / off", def: "Force reranking on or off for this lane, overriding the server default." },
+      { term: "cross-encoder", def: "A model that re-scores candidates by reading query + document together — more accurate ordering than first-stage retrieval." },
+    ],
+  },
+  {
+    group: "Lane levers",
+    items: [
+      { term: "top_k", def: "Number of results returned per lane." },
+      { term: "knowledge graph", def: "An extra retrieval leg over an entity/relationship graph, added on top of the chosen mode." },
+      { term: "collection", def: "One indexed corpus — a fixed build of (embedding model + chunking strategy). The main axis you compare." },
+      { term: "tenant", def: "Data-isolation scope derived from the API key. A lane can supply its own key to compare tenants." },
+    ],
+  },
+  {
+    group: "Fusion & scoring",
+    items: [
+      { term: "RRF", def: "Reciprocal Rank Fusion — merges multiple ranked lists by rank position (k=60), not by raw scores, so different scales combine safely." },
+      { term: "score", def: "A lane's relevance score. Not comparable across lanes (different models/fusions), which is why agreement is measured on rank." },
+    ],
+  },
+  {
+    group: "Agreement metrics",
+    items: [
+      { term: "Jaccard (overlap)", def: "Shared docs ÷ union of docs between two lanes. 100% = identical result sets, 0% = no docs in common." },
+      { term: "Kendall τ (order)", def: "Rank-order agreement over the docs two lanes share. +1 = identical order, 0 = unrelated, −1 = reversed." },
+      { term: "agreement index", def: "Mean Jaccard overlap across every lane pair — one number for 'how much do all lanes agree?'" },
+      { term: "consensus (×)", def: "How many lanes retrieved a given document. Docs found by all lanes are strong consensus." },
+    ],
+  },
+  {
+    group: "Chunking (in collection names)",
+    items: [
+      { term: "fixed_token", def: "Fixed-size windows measured in model tokens (e.g. 256 / 512), with overlap. Sizes are consistent for the embedder." },
+      { term: "fixed (char)", def: "Fixed-size windows measured in characters. Simpler, but token counts vary by text." },
+      { term: "semantic", def: "Splits where the topic shifts, detected by embedding successive buffers and cutting at similarity drops." },
+      { term: "semantic_pooled", def: "Embeds each sentence once and mean-pools — a cheaper, reproducible variant of semantic chunking." },
+    ],
+  },
+];
+
 // One control cluster for the levers — reused by the global panel and, when
 // overrides are on, by each lane. ``topKPlaceholder`` shows the inherited
 // default when the field is left blank.
@@ -96,8 +170,10 @@ function LeverControls({
   const sel = "min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5";
   return (
     <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
-      <label className="flex items-center gap-1">
-        <span className="w-9 shrink-0 text-gray-400">mode</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.mode}>
+        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          mode
+        </span>
         <select
           value={value.mode}
           onChange={(e) => onChange({ mode: e.target.value as Mode })}
@@ -108,8 +184,10 @@ function LeverControls({
           <option value="bm25">bm25</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-12 shrink-0 text-gray-400">rewrite</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.rewrite}>
+        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          rewrite
+        </span>
         <select
           value={value.rewrite}
           onChange={(e) => onChange({ rewrite: e.target.value as Rewrite })}
@@ -120,8 +198,10 @@ function LeverControls({
           <option value="hyde">hyde</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-9 shrink-0 text-gray-400">rerank</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.rerank}>
+        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          rerank
+        </span>
         <select
           value={value.rerank}
           onChange={(e) => onChange({ rerank: e.target.value as Rerank })}
@@ -132,8 +212,10 @@ function LeverControls({
           <option value="off">off</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-12 shrink-0 text-gray-400">top_k</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.top_k}>
+        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          top_k
+        </span>
         <input
           type="number"
           min={1}
@@ -147,13 +229,15 @@ function LeverControls({
           className={`${sel} tabular-nums`}
         />
       </label>
-      <label className="col-span-2 flex items-center gap-1.5">
+      <label className="col-span-2 flex items-center gap-1.5" title={LABEL_TIP.graph}>
         <input
           type="checkbox"
           checked={value.useGraph}
           onChange={(e) => onChange({ useGraph: e.target.checked })}
         />
-        <span className="text-gray-400">use knowledge graph</span>
+        <span className="cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          use knowledge graph
+        </span>
       </label>
     </div>
   );
@@ -192,6 +276,290 @@ function CompareSource({ rank, source }: { rank: number; source: Source }) {
       </div>
       <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{source.content}</p>
     </li>
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Agreement analysis — how much do the lanes actually converge?
+//
+// Lanes are joined by `doc_id` (stable across chunkers/models, unlike chunk_id),
+// so this works whether lanes vary by corpus, model, or pipeline. Each lane's
+// sources are de-duplicated to unique docs in retrieval order; comparisons are
+// rank-based because raw scores aren't commensurable across different embedding
+// models / fusions.
+// --------------------------------------------------------------------------- //
+
+interface LaneEntry {
+  key: string;
+  label: string;
+  sources: Source[];
+}
+
+// Unique docs for a lane, in retrieval order (first occurrence wins → best rank).
+function laneDocRanks(
+  sources: Source[],
+): { doc_id: string; rank: number; score: number; title: string }[] {
+  const seen = new Set<string>();
+  const out: { doc_id: string; rank: number; score: number; title: string }[] = [];
+  for (const s of sources) {
+    if (seen.has(s.doc_id)) continue;
+    seen.add(s.doc_id);
+    out.push({
+      doc_id: s.doc_id,
+      rank: out.length + 1,
+      score: s.score,
+      title: (s.metadata.title && String(s.metadata.title)) || s.doc_id,
+    });
+  }
+  return out;
+}
+
+// Kendall's τ-b-ish rank correlation over the docs two lanes have in common.
+// +1 identical order, −1 reversed, 0 none; null when fewer than 2 shared docs.
+function kendallTau(a: Map<string, number>, b: Map<string, number>): number | null {
+  const common = [...a.keys()].filter((k) => b.has(k));
+  const n = common.length;
+  if (n < 2) return null;
+  let concordant = 0;
+  let discordant = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const s =
+        Math.sign(a.get(common[i])! - a.get(common[j])!) *
+        Math.sign(b.get(common[i])! - b.get(common[j])!);
+      if (s > 0) concordant++;
+      else if (s < 0) discordant++;
+    }
+  }
+  const total = (n * (n - 1)) / 2;
+  return total ? (concordant - discordant) / total : null;
+}
+
+// Rank → badge colour: best ranks are strongest, tapering to grey.
+function rankClass(rank: number): string {
+  if (rank <= 1) return "bg-emerald-600 text-white";
+  if (rank <= 3) return "bg-emerald-300 text-emerald-900";
+  if (rank <= 5) return "bg-emerald-100 text-emerald-800";
+  return "bg-gray-100 text-gray-500";
+}
+
+function jaccardClass(j: number): string {
+  if (j >= 0.8) return "bg-emerald-600 text-white";
+  if (j >= 0.5) return "bg-emerald-300 text-emerald-900";
+  if (j >= 0.25) return "bg-emerald-100 text-emerald-800";
+  if (j > 0) return "bg-gray-100 text-gray-500";
+  return "bg-gray-50 text-gray-300";
+}
+
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
+  const lanes = entries.map((e) => ({ ...e, docs: laneDocRanks(e.sources) }));
+  const n = lanes.length;
+  const sets = lanes.map((l) => new Set(l.docs.map((d) => d.doc_id)));
+  const rankMaps = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.rank])));
+
+  // Union of docs, with per-lane rank + consensus count.
+  const titleOf = new Map<string, string>();
+  for (const l of lanes) for (const d of l.docs) if (!titleOf.has(d.doc_id)) titleOf.set(d.doc_id, d.title);
+  const rows = [...titleOf.keys()].map((doc) => {
+    const ranks = rankMaps.map((m) => m.get(doc));
+    const present = ranks.filter((r): r is number => r !== undefined);
+    const count = present.length;
+    const avgRank = present.reduce((a, b) => a + b, 0) / (present.length || 1);
+    return { doc, title: titleOf.get(doc)!, ranks, count, avgRank };
+  });
+  rows.sort((a, b) => b.count - a.count || a.avgRank - b.avgRank);
+
+  const full = rows.filter((r) => r.count === n).length;
+  const shared = rows.filter((r) => r.count >= 2).length;
+  const unique = rows.filter((r) => r.count === 1).length;
+
+  // Pairwise set overlap (Jaccard) and order agreement (Kendall τ).
+  const jaccard = (i: number, j: number) => {
+    let inter = 0;
+    sets[i].forEach((x) => {
+      if (sets[j].has(x)) inter++;
+    });
+    const uni = sets[i].size + sets[j].size - inter;
+    return uni ? inter / uni : 0;
+  };
+  let jSum = 0;
+  let jCount = 0;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      jSum += jaccard(i, j);
+      jCount++;
+    }
+  const meanJaccard = jCount ? jSum / jCount : 0;
+  const short = (s: string) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
+
+  return (
+    <details open className="mt-6 rounded-lg border border-gray-200 bg-white">
+      <summary className="cursor-pointer list-none px-4 py-3">
+        <span className="text-sm font-semibold text-gray-700">Agreement</span>
+        <span className="ml-2 text-xs text-gray-400">
+          how much the {n} lanes converge — same docs, same order
+        </span>
+      </summary>
+
+      <div className="space-y-5 border-t border-gray-100 p-4">
+        {/* Summary */}
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-800">
+            {full} in all {n} lanes
+          </span>
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">
+            {shared} shared by ≥2
+          </span>
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{unique} unique to one</span>
+          <span
+            className="cursor-help rounded-full bg-gray-900 px-2.5 py-1 font-medium text-white"
+            title="Mean Jaccard overlap across every lane pair — one number for how much all lanes agree."
+          >
+            agreement index {pct(meanJaccard)}
+          </span>
+        </div>
+
+        {/* Pairwise overlap / order grid */}
+        <div>
+          <div
+            className="mb-1.5 cursor-help text-[11px] font-semibold uppercase tracking-wide text-gray-400"
+            title="Each cell: set overlap (Jaccard %) with order agreement (Kendall τ) beneath, for that pair of lanes."
+          >
+            Pairwise · set overlap (Jaccard) / order (τ)
+          </div>
+          <div className="overflow-x-auto">
+            <table className="border-collapse text-[11px]">
+              <thead>
+                <tr>
+                  <th className="p-1"></th>
+                  {lanes.map((l) => (
+                    <th key={l.key} className="max-w-24 truncate p-1 text-left font-medium text-gray-500" title={l.label}>
+                      {short(l.label)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {lanes.map((row, i) => (
+                  <tr key={row.key}>
+                    <td className="max-w-24 truncate p-1 pr-2 font-medium text-gray-500" title={row.label}>
+                      {short(row.label)}
+                    </td>
+                    {lanes.map((_, j) => {
+                      if (i === j)
+                        return (
+                          <td key={j} className="p-0.5">
+                            <div className="flex h-9 w-16 items-center justify-center rounded bg-gray-50 text-gray-300">
+                              —
+                            </div>
+                          </td>
+                        );
+                      const j2 = jaccard(i, j);
+                      const t = kendallTau(rankMaps[i], rankMaps[j]);
+                      return (
+                        <td key={j} className="p-0.5">
+                          <div
+                            className={`flex h-9 w-16 flex-col items-center justify-center rounded tabular-nums ${jaccardClass(j2)}`}
+                            title={`overlap ${pct(j2)} · order τ ${t === null ? "n/a" : t.toFixed(2)}`}
+                          >
+                            <span className="font-semibold leading-none">{pct(j2)}</span>
+                            <span className="mt-0.5 text-[10px] leading-none opacity-80">
+                              τ {t === null ? "–" : t.toFixed(2)}
+                            </span>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Consensus table: doc × lane, cell = rank in that lane */}
+        <div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            Per-document rank by lane · sorted by consensus
+          </div>
+          <div className="max-h-96 overflow-auto rounded border border-gray-100">
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 bg-gray-50">
+                <tr>
+                  <th className="p-2 text-left font-medium text-gray-500">Document</th>
+                  <th className="p-2 text-center font-medium text-gray-500" title="lanes that retrieved this doc">
+                    ×
+                  </th>
+                  {lanes.map((l) => (
+                    <th key={l.key} className="max-w-28 truncate p-2 text-center font-medium text-gray-500" title={l.label}>
+                      {short(l.label)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.doc} className="border-t border-gray-100">
+                    <td className="max-w-xs truncate p-2 text-gray-700" title={r.title}>
+                      {r.title}
+                    </td>
+                    <td className="p-2 text-center tabular-nums text-gray-400">{r.count}</td>
+                    {r.ranks.map((rank, k) => (
+                      <td key={k} className="p-1 text-center">
+                        {rank === undefined ? (
+                          <span className="text-gray-200">·</span>
+                        ) : (
+                          <span
+                            className={`inline-block min-w-6 rounded px-1.5 py-0.5 font-medium tabular-nums ${rankClass(rank)}`}
+                          >
+                            {rank}
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px] leading-snug text-gray-400">
+            Cells show each doc's rank within a lane (1 = top). Aligned rows across columns = the
+            lanes agree; scattered ranks or gaps = they disagree. Scores aren't compared directly —
+            they aren't commensurable across different models/fusions, so agreement is rank-based.
+          </p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function Glossary() {
+  return (
+    <details className="mt-6 rounded-lg border border-gray-200 bg-white">
+      <summary className="cursor-pointer list-none px-4 py-3">
+        <span className="text-sm font-semibold text-gray-700">Glossary</span>
+        <span className="ml-2 text-xs text-gray-400">what the terms on this page mean</span>
+      </summary>
+      <div className="grid gap-x-6 gap-y-5 border-t border-gray-100 p-4 sm:grid-cols-2 lg:grid-cols-3">
+        {GLOSSARY.map((g) => (
+          <div key={g.group}>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              {g.group}
+            </div>
+            <dl className="space-y-1.5">
+              {g.items.map((i) => (
+                <div key={i.term}>
+                  <dt className="text-xs font-medium text-gray-700">{i.term}</dt>
+                  <dd className="text-xs leading-snug text-gray-500">{i.def}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -341,6 +709,21 @@ export function CompareView({
     .filter((l) => (ratings[l.key] ?? 0) > 0)
     .sort((a, b) => (ratings[b.key] ?? 0) - (ratings[a.key] ?? 0));
   const topKey = ranked[0]?.key;
+
+  // Successful lanes, labelled (collection + non-default levers), for the
+  // agreement analysis below.
+  const successEntries: LaneEntry[] = lanes
+    .map((l) => ({ lane: l, res: results[l.key] }))
+    .filter((x) => x.res?.status === "success" && x.res.data)
+    .map((x) => ({
+      key: x.lane.key,
+      label:
+        collLabel(x.lane.collection) +
+        (perLane && leverTags(x.lane.levers).length
+          ? ` · ${leverTags(x.lane.levers).join(" ")}`
+          : ""),
+      sources: x.res!.data!.sources,
+    }));
 
   return (
     <div>
@@ -545,6 +928,12 @@ export function CompareView({
           ) : null}
         </div>
       </div>
+
+      {/* Agreement analysis across the lanes' results. */}
+      {ran && successEntries.length >= 2 ? <AgreementPanel entries={successEntries} /> : null}
+
+      {/* Glossary of the levers + metrics used on this page. */}
+      <Glossary />
     </div>
   );
 }
