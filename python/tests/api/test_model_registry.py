@@ -59,6 +59,22 @@ async def test_register_ssrf_rejected(client):
     assert "allowlist" in resp.text
 
 
+async def test_register_ssrf_prefix_lookalike_rejected(client):
+    # A host that merely *starts with* an allowed prefix must not slip through —
+    # host is matched on the parsed authority, not a raw string prefix.
+    for host in ("http://localhost.evil.com", "http://127.0.0.1.evil.com:9005"):
+        bad = {**LLM, "base_urls": [host]}
+        resp = await client.post("/v1/admin/models/registry", json=bad)
+        assert resp.status_code == 400, host
+        assert "allowlist" in resp.text
+
+
+async def test_register_allows_any_port_on_allowed_host(client):
+    # An allowlist entry with no explicit port permits any port on that host.
+    ok = {**LLM, "base_urls": ["http://localhost:12345"]}
+    assert (await client.post("/v1/admin/models/registry", json=ok)).status_code == 201
+
+
 async def test_embedding_requires_dim(client):
     emb = {"id": "e", "task": "embedding", "base_urls": ["http://localhost:1"], "model": "m"}
     resp = await client.post("/v1/admin/models/registry", json=emb)
@@ -106,6 +122,34 @@ async def test_assign_reranker_hot_swaps(client):
     assert resp.status_code == 200
     assert app.state.reranker is not None
     assert app.state.reranker.base_url.startswith("http://localhost:9998")
+
+
+async def test_update_assigned_model_rebuilds_live_client(client):
+    # Assign a reranker, then PUT a new base_url for it → the live client must
+    # follow the update, not keep serving the old endpoint.
+    await client.post("/v1/admin/models/registry", json=RR)
+    await client.patch("/v1/admin/config/assignments", json={"reranker": "local-rr"})
+    assert app.state.reranker.base_url.startswith("http://localhost:9998")
+    resp = await client.put(
+        "/v1/admin/models/registry/local-rr", json={**RR, "base_urls": ["http://localhost:9000"]}
+    )
+    assert resp.status_code == 200
+    assert app.state.reranker.base_url.startswith("http://localhost:9000")
+
+
+async def test_patch_all_or_nothing_on_invalid_task(client):
+    # A multi-field patch where the second task is invalid must apply neither —
+    # no half-swapped, unpersisted state.
+    await client.post("/v1/admin/models/registry", json=LLM)
+    assert app.state.generator is None
+    resp = await client.patch(
+        "/v1/admin/config/assignments", json={"llm": "local-llm", "reranker": "ghost"}
+    )
+    assert resp.status_code == 404
+    # llm must NOT have been applied despite being valid and listed first.
+    assert app.state.generator is None
+    body = (await client.get("/v1/admin/models/registry")).json()
+    assert body["assignments"] == {}
 
 
 async def test_unassign_reverts(client):

@@ -16,6 +16,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field
 
@@ -64,7 +65,30 @@ class ModelRegistry:
     def _url_allowed(self, url: str) -> bool:
         # Fail closed: with no allowlist configured, nothing is permitted — the
         # server would otherwise call an operator-supplied URL unchecked (SSRF).
-        return any(url.startswith(p) for p in self._allowlist) if self._allowlist else False
+        #
+        # Match on parsed (scheme, host[, port]) rather than a raw string prefix:
+        # a prefix check lets ``http://localhost.evil.com`` slip past an allowed
+        # ``http://localhost`` prefix. An allowlist entry with no explicit port
+        # permits any port on that host (so ``http://localhost`` allows
+        # ``http://localhost:9005``); an entry that pins a port requires a match.
+        if not self._allowlist:
+            return False
+        try:
+            u = urlsplit(url)
+            if not u.scheme or not u.hostname:
+                return False
+            u_port = u.port
+            for prefix in self._allowlist:
+                p = urlsplit(prefix)
+                if u.scheme != p.scheme or u.hostname != p.hostname:
+                    continue
+                if p.port is not None and u_port != p.port:
+                    continue
+                return True
+        except ValueError:
+            # Malformed URL / out-of-range port → reject.
+            return False
+        return False
 
     def _validate(self, entry: ModelEntry) -> None:
         if entry.task not in TASKS:
@@ -113,23 +137,33 @@ class ModelRegistry:
         del self._models[model_id]
 
     # --- assignments (state only; applying is deps.apply_assignment) ------- #
-    def set_assignment(self, task: str, model_id: str | None) -> ModelEntry | None:
-        """Record ``task -> model_id`` (or clear it with None). Returns the entry
-        to apply (None = revert task to its settings default). Validates the
-        model exists and serves the right task; the caller applies + persists."""
+    def resolve_assignment(self, task: str, model_id: str | None) -> ModelEntry | None:
+        """Validate ``task -> model_id`` and return the entry to apply (None =
+        revert to the settings default) **without mutating** the registry. Lets a
+        caller check every field of a multi-task patch before applying any, so a
+        later invalid task can't leave an earlier one half-applied."""
         if task not in HOT_SWAPPABLE:
             raise RegistryError(
                 f"task {task!r} is not hot-swappable; embedding/chunking changes build a new collection"
             )
         if model_id is None:
-            self.assignments.pop(task, None)
             return None
         entry = self.get(model_id)
         if entry is None:
             raise RegistryError(f"unknown model {model_id!r}")
         if entry.task != task:
             raise RegistryError(f"model {model_id!r} serves task {entry.task!r}, not {task!r}")
-        self.assignments[task] = model_id
+        return entry
+
+    def set_assignment(self, task: str, model_id: str | None) -> ModelEntry | None:
+        """Record ``task -> model_id`` (or clear it with None) and return the entry
+        to apply. Validates via :meth:`resolve_assignment`; the caller applies +
+        persists."""
+        entry = self.resolve_assignment(task, model_id)
+        if model_id is None:
+            self.assignments.pop(task, None)
+        else:
+            self.assignments[task] = model_id
         return entry
 
     # --- persistence ------------------------------------------------------ #

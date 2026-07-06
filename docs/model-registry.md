@@ -81,6 +81,8 @@ Every route requires the **admin** role (`require_role(ROLE_ADMIN)`), like `GET 
 
 **Apply semantics** (`deps.apply_assignment`): for `llm`, rebuild `OpenAILLM(base_url, model, http, api_key)` → set `app.state.generator = RagGenerator(llm)` and `app.state.rewriters = _build_rewriters(llm)`. For `reranker`, set `app.state.reranker = SidecarReranker(base_url, http)`. A `null` value reverts the task to its settings-configured default (which may itself be `None` → task disabled). Attribute assignment is atomic in CPython and in-flight requests already captured the prior object via `Depends`, so no lock is needed.
 
+> ⚠️ **Single-endpoint in Phase 1.** `ModelEntry.base_urls` is a list, but the hot-swap clients (`OpenAILLM`, `SidecarReranker`) are single-endpoint, so `apply_assignment` uses **`base_urls[0]` only** — extra endpoints are ignored (and logged as a warning). Multi-endpoint fan-out / failover for a task is **not** a hand-rolled pool here; it belongs in the **Go embedding-router sidecar** ([ADR-0001](adr/0001-execution-topology.md)) — the registry stays the control plane (it holds `base_urls`), the router becomes the data plane that consumes them. Registering extra URLs today is forward-compatible config, not live fan-out. (The existing `PooledEmbedder` fans out only for the build-time **embedding** task, which is not registry-driven.)
+
 ### 4.3 Example flow
 
 ```bash
@@ -101,7 +103,7 @@ curl -X PATCH localhost:8000/v1/admin/config/assignments -H 'content-type: appli
 
 - **Persistence:** `settings.models_registry_file` (`MODELS_REGISTRY_FILE`) — a `models.json` write-through file (`{"models": [...], "assignments": {...}}`). Loaded in the lifespan; persisted assignments are **re-applied** over the settings defaults on startup, so a change survives restart. Empty path → in-memory only.
   - ⚠️ **Single-worker assumption.** A file does not share live `app.state` swaps across processes. With multiple uvicorn workers this must move to a shared store (Postgres is already in the stack). Start single-worker; migrate if/when multi-worker is real.
-- **SSRF gate:** `settings.model_url_allowlist` (`MODEL_URL_ALLOWLIST`, comma or JSON) — every `base_url` must start with an allowlisted prefix; **fails closed** (nothing allowed if unset). The server *calls* these URLs, so this is a required control. Default: `http://localhost`, `http://127.0.0.1`.
+- **SSRF gate:** `settings.model_url_allowlist` (`MODEL_URL_ALLOWLIST`, comma or JSON) — every `base_url` is matched on its parsed **(scheme, host[, port])** against an allowlist entry; **fails closed** (nothing allowed if unset). An entry with no explicit port allows any port on that host (`http://localhost` → `http://localhost:9005`); an entry that pins a port requires it. Matching the parsed authority (not a raw string prefix) is deliberate — a prefix check would let `http://localhost.evil.com` past an allowed `http://localhost`. The server *calls* these URLs, so this is a required control. Default: `http://localhost`, `http://127.0.0.1`.
 - **Admin only.** All routes gated by the admin role.
 - **No secrets in payloads.** API keys are never accepted in a `ModelEntry`; the LLM key comes from `settings.openai_api_key` (referenced, not stored in the registry). A future enhancement can reference a named secret per entry.
 

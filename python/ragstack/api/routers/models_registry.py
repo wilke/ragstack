@@ -66,13 +66,22 @@ async def register_model(
 
 @router.put("/models/registry/{model_id}", response_model=ModelEntry)
 async def update_model(
-    model_id: str, entry: ModelEntry, reg: ModelRegistry = Depends(get_model_registry)
+    model_id: str,
+    entry: ModelEntry,
+    request: Request,
+    reg: ModelRegistry = Depends(get_model_registry),
 ) -> ModelEntry:
-    """Replace a registered model (id is taken from the path, immutable)."""
+    """Replace a registered model (id is taken from the path, immutable). If the
+    model is currently assigned to a live task, rebuild that task's app.state
+    client from the new entry — otherwise the running server keeps serving the
+    old endpoint/model behind an updated registry until the next restart."""
     try:
         updated = reg.update(model_id, entry)
     except RegistryError as e:
         raise _http_error(e) from None
+    for task, assigned_id in reg.assignments.items():
+        if assigned_id == model_id:
+            apply_assignment(request.app, task, updated)
     reg.save(settings.models_registry_file)
     return updated
 
@@ -95,13 +104,19 @@ async def patch_assignments(
 ) -> RegistryResponse:
     """Assign registered models to hot-swappable tasks and apply live. Only the
     fields present in the body are changed; a field set to ``null`` reverts that
-    task to its settings default. Each applied task rebuilds its app.state client."""
-    for task in body.model_fields_set:  # only what the client actually sent
-        model_id = getattr(body, task)
-        try:
-            entry = reg.set_assignment(task, model_id)
-        except RegistryError as e:
-            raise _http_error(e) from None
+    task to its settings default. Each applied task rebuilds its app.state client.
+
+    Every requested task is validated **before** any live swap, so an invalid
+    task in a multi-field patch can't leave an earlier task half-applied and
+    unpersisted."""
+    requested = {task: getattr(body, task) for task in body.model_fields_set}
+    try:
+        for task, model_id in requested.items():
+            reg.resolve_assignment(task, model_id)
+    except RegistryError as e:
+        raise _http_error(e) from None
+    for task, model_id in requested.items():
+        entry = reg.set_assignment(task, model_id)
         apply_assignment(request.app, task, entry)
     reg.save(settings.models_registry_file)
     return _snapshot(reg)

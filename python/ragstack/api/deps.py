@@ -513,7 +513,22 @@ def apply_assignment(app: Any, task: str, entry: Any) -> None:
     revert the task to its settings-configured default (which may itself be None →
     the task disabled). Attribute assignment is atomic in CPython; in-flight
     requests already captured the prior object via Depends, so the swap needs no
-    lock."""
+    lock.
+
+    Phase 1 uses only ``base_urls[0]``: the hot-swappable clients (OpenAILLM,
+    SidecarReranker) are single-endpoint. Multi-endpoint fan-out/failover for a
+    task belongs in the Go embedding-router sidecar (ADR-0001), not a hand-rolled
+    pool here — so extra ``base_urls`` are ignored for now and we warn rather than
+    pretend to use them."""
+    if entry is not None and len(getattr(entry, "base_urls", []) or []) > 1:
+        log.warning(
+            "model %r registers %d base_urls but the %s hot-swap uses only the first (%s); "
+            "multi-endpoint fan-out is deferred to the Go router (ADR-0001)",
+            entry.id,
+            len(entry.base_urls),
+            task,
+            entry.base_urls[0],
+        )
     http = app.state.http_client
     if task == "llm":
         if entry is None:
