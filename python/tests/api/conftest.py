@@ -7,11 +7,13 @@ exercised without standing up any services.
 """
 from __future__ import annotations
 
+import httpx
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
+from ragstack.api.model_registry import ModelRegistry
 from ragstack.ingestion.backends import LocalAsyncIORunner
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.loaders import default_loader_registry
@@ -91,6 +93,14 @@ async def client():
         ],
         default_id="default",
     )
+    # Model registry (Phase 1) + a real http client for apply_assignment to hand
+    # to any swapped OpenAILLM/SidecarReranker (construction only — no network).
+    state_http = httpx.AsyncClient()
+    app.state.http_client = state_http
+    app.state.model_registry = ModelRegistry(
+        [], {}, allowlist=["http://localhost", "http://127.0.0.1"]
+    )
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    await state_http.aclose()

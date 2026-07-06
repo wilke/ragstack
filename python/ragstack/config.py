@@ -72,6 +72,29 @@ class Settings(BaseSettings):
     #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
     collections_file: str = ""
     collections_json: str = ""
+    # Runtime model registry (Phase 1): a JSON file persisting registered models
+    # and hot-swappable task assignments (llm / reranker). Empty → in-memory only
+    # (CRUD works, but nothing is persisted across restarts).
+    models_registry_file: str = ""
+    # SSRF gate for model registration: a registered model's base_urls must each
+    # start with one of these prefixes (the server *calls* those URLs). Defaults
+    # to loopback only; widen explicitly for real backends. Accepts a comma list
+    # or a JSON array from the environment (like embedding_endpoints).
+    model_url_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost", "http://127.0.0.1"]
+    )
+
+    @field_validator("model_url_allowlist", mode="before")
+    @classmethod
+    def _split_model_url_allowlist(cls, value: object) -> object:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                return json.loads(value)
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
     # Content-address DERIVED collection names over the full build spec (model +
     # dim + chunk descriptor) instead of (model, dim) only. Off by default so
     # existing derived names are byte-for-byte unchanged; turn on so that

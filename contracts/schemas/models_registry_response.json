@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "models_registry_response.json",
+  "title": "ModelsRegistryResponse",
+  "description": "Registered models and the current hot-swappable task assignments.",
+  "type": "object",
+  "required": ["models", "assignments"],
+  "properties": {
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "task"],
+        "properties": {
+          "id": { "type": "string" },
+          "task": { "type": "string", "enum": ["embedding", "tokenizer", "llm", "reranker"] },
+          "provider": { "type": "string", "enum": ["sidecar", "openai", "vllm"] },
+          "base_urls": { "type": "array", "items": { "type": "string" } },
+          "model": { "type": "string" },
+          "dim": { "type": ["integer", "null"] },
+          "params": { "type": "object" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "assignments": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

@@ -19,6 +19,7 @@ from ragstack.api.collections import (
     CollectionRegistry,
     load_collection_specs,
 )
+from ragstack.api.model_registry import ModelRegistry
 from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
@@ -506,6 +507,42 @@ def _build_reranker(http: httpx.AsyncClient) -> SidecarReranker | None:
     return SidecarReranker(base_url=settings.crossencoder_sidecar_url, http=http)
 
 
+def apply_assignment(app: Any, task: str, entry: Any) -> None:
+    """Rebuild and atomically swap the ``app.state`` singleton for a hot-swappable
+    task (llm / reranker). ``entry`` is a ``ModelEntry`` to apply, or ``None`` to
+    revert the task to its settings-configured default (which may itself be None →
+    the task disabled). Attribute assignment is atomic in CPython; in-flight
+    requests already captured the prior object via Depends, so the swap needs no
+    lock."""
+    http = app.state.http_client
+    if task == "llm":
+        if entry is None:
+            llm = _build_llm(http)
+        else:
+            llm = OpenAILLM(
+                base_url=entry.base_urls[0],
+                model=entry.model,
+                http=http,
+                api_key=settings.openai_api_key or None,
+            )
+        # The LLM feeds both answer generation and the LLM-backed rewriters, so a
+        # swap rebuilds both from the same client.
+        app.state.generator = (
+            RagGenerator(llm, max_context_chars=settings.llm_max_context_chars)
+            if llm is not None
+            else None
+        )
+        app.state.rewriters = _build_rewriters(llm)
+    elif task == "reranker":
+        app.state.reranker = (
+            _build_reranker(http)
+            if entry is None
+            else SidecarReranker(base_url=entry.base_urls[0], http=http)
+        )
+    else:  # pragma: no cover - guarded by the registry (HOT_SWAPPABLE) upstream
+        raise ValueError(f"task {task!r} is not hot-swappable")
+
+
 def _build_chunker():
     """Build the configured chunker.
 
@@ -780,6 +817,22 @@ async def lifespan(app: FastAPI):
         default_collection=default_collection,
     )
 
+    # Runtime model registry (Phase 1): load persisted models + assignments, then
+    # apply the hot-swappable assignments over the settings-built defaults so a
+    # prior /v1/admin/config/assignments survives restart.
+    app.state.model_registry = ModelRegistry.load(
+        settings.models_registry_file, allowlist=settings.model_url_allowlist
+    )
+    for task, model_id in list(app.state.model_registry.assignments.items()):
+        entry = app.state.model_registry.get(model_id)
+        if entry is None:
+            continue
+        try:
+            apply_assignment(app, task, entry)
+            log.info("applied persisted assignment %s -> %s", task, model_id)
+        except Exception:
+            log.warning("failed to apply assignment %s -> %s", task, model_id, exc_info=True)
+
     # Best-effort: the sidecar picks its own model from MODEL_NAME, so a mismatched
     # deploy would silently rerank with a different model than config advertises.
     # Probe /health at startup and warn loudly on a mismatch (don't fail — the
@@ -856,6 +909,10 @@ def get_retriever(request: Request):
 
 def get_collections(request: Request) -> CollectionRegistry:
     return request.app.state.collections
+
+
+def get_model_registry(request: Request) -> ModelRegistry:
+    return request.app.state.model_registry
 
 
 def get_rewriters(request: Request):

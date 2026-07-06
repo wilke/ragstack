@@ -252,6 +252,107 @@ paths:
         "403":
           description: Authenticated but insufficient role (admin required)
 
+  /v1/admin/models/registry:
+    get:
+      operationId: listRegisteredModels
+      summary: Registered models + hot-swappable assignments (admin only)
+      description: >-
+        The runtime model registry: models registered for the pipeline's tasks
+        (embedding, tokenizer, llm, reranker) plus the current hot-swappable
+        assignments (llm / reranker). Admin only.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: Registry snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelsRegistryResponse" }
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+    post:
+      operationId: registerModel
+      summary: Register a model (admin only)
+      description: >-
+        Register a model for a task. `base_urls` must pass the server's SSRF
+        allowlist. A duplicate id is a 400 (use PUT to update).
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelEntry" }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelEntry" }
+        "400": { description: Invalid entry (bad task/provider, SSRF, duplicate id) }
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+
+  /v1/admin/models/registry/{model_id}:
+    put:
+      operationId: updateRegisteredModel
+      summary: Replace a registered model (admin only)
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: model_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelEntry" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelEntry" }
+        "400": { description: Invalid entry }
+        "404": { description: Unknown model }
+    delete:
+      operationId: deleteRegisteredModel
+      summary: Remove a registered model (admin only)
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: model_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed }
+        "404": { description: Unknown model }
+        "409": { description: Model is assigned to a task; unassign first }
+
+  /v1/admin/config/assignments:
+    patch:
+      operationId: patchModelAssignments
+      summary: Assign registered models to hot-swappable tasks (admin only)
+      description: >-
+        Bind registered models to hot-swappable tasks (llm / reranker) and apply
+        live — the affected client is rebuilt and atomically swapped, no restart.
+        Only the fields present are changed; a field set to `null` reverts that
+        task to its settings default. Build-time tasks (embedding/chunking) are
+        rejected (422) — those changes build a new collection.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssignmentsPatch" }
+      responses:
+        "200":
+          description: Applied; returns the registry snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelsRegistryResponse" }
+        "400": { description: Unknown model or wrong task for the model }
+        "404": { description: Unknown model }
+        "422": { description: A non-hot-swappable task was named }
+
   /v1/stats/stores:
     get:
       operationId: statsStores
@@ -779,6 +880,46 @@ components:
         metadata:
           type: object
           default: {}
+      additionalProperties: false
+
+    ModelEntry:
+      type: object
+      required: [id, task]
+      properties:
+        id: { type: string }
+        task:
+          type: string
+          enum: [embedding, tokenizer, llm, reranker]
+        provider:
+          type: string
+          enum: [sidecar, openai, vllm]
+          default: openai
+        base_urls:
+          type: array
+          items: { type: string }
+        model: { type: string }
+        dim: { type: [integer, "null"] }
+        params: { type: object, default: {} }
+      additionalProperties: false
+
+    ModelsRegistryResponse:
+      type: object
+      required: [models, assignments]
+      properties:
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ModelEntry" }
+        assignments:
+          description: task -> model id, for the hot-swappable tasks (llm / reranker).
+          type: object
+          additionalProperties: { type: string }
+
+    AssignmentsPatch:
+      type: object
+      description: Only the fields present are changed; null reverts to the default.
+      properties:
+        llm: { type: [string, "null"] }
+        reranker: { type: [string, "null"] }
       additionalProperties: false
 
     ChunksResponse:
