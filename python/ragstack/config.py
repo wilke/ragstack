@@ -8,6 +8,20 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
+def _split_list_env(value: object) -> object:
+    """Parse a ``list[str]`` env var from either a JSON array or a bare
+    comma-separated string (pydantic-settings parses list envs as JSON, so a bare
+    comma list would otherwise raise). Non-strings pass through unchanged."""
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return []
+        if value.startswith("["):
+            return json.loads(value)
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return value
+
+
 class Settings(BaseSettings):
     # LLM / Embeddings
     openai_api_key: str = ""
@@ -72,6 +86,22 @@ class Settings(BaseSettings):
     #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
     collections_file: str = ""
     collections_json: str = ""
+    # Runtime model registry (Phase 1): a JSON file persisting registered models
+    # and hot-swappable task assignments (llm / reranker). Empty → in-memory only
+    # (CRUD works, but nothing is persisted across restarts).
+    models_registry_file: str = ""
+    # SSRF gate for model registration: a registered model's base_urls must each
+    # start with one of these prefixes (the server *calls* those URLs). Defaults
+    # to loopback only; widen explicitly for real backends. Accepts a comma list
+    # or a JSON array from the environment (like embedding_endpoints).
+    model_url_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["http://localhost", "http://127.0.0.1"]
+    )
+
+    @field_validator("model_url_allowlist", mode="before")
+    @classmethod
+    def _split_model_url_allowlist(cls, value: object) -> object:
+        return _split_list_env(value)
     # Content-address DERIVED collection names over the full build spec (model +
     # dim + chunk descriptor) instead of (model, dim) only. Off by default so
     # existing derived names are byte-for-byte unchanged; turn on so that
@@ -109,16 +139,7 @@ class Settings(BaseSettings):
     @field_validator("embedding_endpoints", mode="before")
     @classmethod
     def _split_embedding_endpoints(cls, value: object) -> object:
-        # pydantic-settings parses list[str] env vars as JSON, so a bare
-        # comma-separated operator input would otherwise raise. Accept both forms.
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                return []
-            if value.startswith("["):
-                return json.loads(value)
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
+        return _split_list_env(value)
     # embedding_model_dim is the vector dimension; defaults to BGE-base.
     # When embedding_api == "openai", set embedding_model to the OpenAI/vLLM model name.
     embedding_model_dim: int = 768

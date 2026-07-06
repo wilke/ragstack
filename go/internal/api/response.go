@@ -84,3 +84,20 @@ type ChunkOut struct {
 type ChunksResponse struct {
 	Chunks []ChunkOut `json:"chunks"`
 }
+
+// ModelEntry is a registered model (which task it serves + how to reach it).
+type ModelEntry struct {
+	ID       string         `json:"id"`
+	Task     string         `json:"task"`
+	Provider string         `json:"provider,omitempty"`
+	BaseURLs []string       `json:"base_urls,omitempty"`
+	Model    string         `json:"model,omitempty"`
+	Dim      *int           `json:"dim,omitempty"`
+	Params   map[string]any `json:"params,omitempty"`
+}
+
+// ModelsRegistryResponse is the body for GET /v1/admin/models/registry.
+type ModelsRegistryResponse struct {
+	Models      []ModelEntry      `json:"models"`
+	Assignments map[string]string `json:"assignments"`
+}

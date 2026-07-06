@@ -14,6 +14,7 @@ from ragstack.api.routers import (
     health_deep,
     jobs,
     models,
+    models_registry,
     query,
     stats,
 )
@@ -69,3 +70,6 @@ app.include_router(admin.router, prefix="/v1", tags=["Admin"], dependencies=_adm
 app.include_router(health_deep.router, prefix="/v1", tags=["Health"], dependencies=_admin)
 app.include_router(models.router, prefix="/v1", tags=["Stats"], dependencies=_admin)
 app.include_router(jobs.router, prefix="/v1", tags=["Stats"], dependencies=_admin)
+app.include_router(
+    models_registry.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
+)

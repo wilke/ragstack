@@ -33,6 +33,7 @@ Persistent status across sessions and machines. Read this first to pick up where
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Current single-node deployment (what is actually provisioned today). |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [ARCHITECTURE-DEEP-DIVE.md](docs/ARCHITECTURE-DEEP-DIVE.md) | System architecture overview + algorithm/duplication deep-dive. |
 | [docs/design/ha-rag-reference-design.md](docs/design/ha-rag-reference-design.md) | Aspirational HA reference design + tri-perspective review (NOT provisioned — see §M8). |
+| [docs/model-registry.md](docs/model-registry.md) | Dynamic model registry + task assignment + config-page plan. **Phase 1 shipped** (runtime registry + hot-swap, PR #166); Phases 2–4 planned. |
 | [docs/adr/0001-execution-topology.md](docs/adr/0001-execution-topology.md) | ADR-0001 execution topology (GoWe/CWL, Go/Python ownership) — Status: Proposed. |
 | [scratchpad.md](scratchpad.md) | Append-only per-session notes — what changed, decisions, rationale. |
 
