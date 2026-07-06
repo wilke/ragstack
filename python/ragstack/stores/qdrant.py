@@ -257,16 +257,35 @@ class QdrantVectorStore:
     async def get_chunks(
         self, chunk_ids: list[str], filters: dict[str, Any] | None = None
     ) -> list[Chunk]:
-        """Fetch chunks by id via a filtered scroll on the ``chunk_id`` payload —
-        the point id is tenant-scoped (see ``_point_id``), so filtering on the
-        stored ``chunk_id`` (plus the caller's ``tenant_id`` read scope) is the
-        tenant-safe way to resolve ids we didn't mint. Preserves request order;
-        missing/invisible ids are omitted."""
+        """Fetch chunks by id, tenant-scoped via ``filters`` (the ``tenant_id``
+        read scope). Preserves request order; missing/invisible ids are omitted.
+
+        Point ids are deterministic (``_point_id(chunk_id, tenant)``), so when the
+        readable tenants are known this resolves by point id — an O(1) lookup per
+        ``(id, tenant)`` — rather than a filtered scroll, which would scan the
+        collection (``chunk_id`` is not a payload index). Only ids under a
+        readable tenant are ever computed, so the id lookup stays tenant-scoped.
+        Falls back to a filtered scroll when no tenant scope is supplied."""
         ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
         if not ids:
             return []
-        scroll_filter = _build_filter({**(filters or {}), "chunk_id": ids})
         found: dict[str, Chunk] = {}
+        tenants = (filters or {}).get("tenant_id")
+        if isinstance(tenants, (list, tuple, set)) and tenants:
+            candidates = [_point_id(cid, str(t)) for cid in ids for t in tenants]
+            records = await self._client.retrieve(
+                collection_name=self._collection,
+                ids=candidates,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for r in records:
+                ch = _chunk_from_payload(r.payload, r.id)
+                found.setdefault(ch.id, ch)
+            return [found[c] for c in ids if c in found]
+
+        # No tenant scope given (unscoped internal call) → filtered scroll.
+        scroll_filter = _build_filter({**(filters or {}), "chunk_id": ids})
         offset: Any = None
         while True:
             points, offset = await self._client.scroll(
@@ -278,18 +297,8 @@ class QdrantVectorStore:
                 offset=offset,
             )
             for p in points:
-                payload = dict(p.payload or {})
-                cid = str(payload.pop("chunk_id", p.id))
-                if cid in found:
-                    continue
-                found[cid] = Chunk(
-                    id=cid,
-                    doc_id=str(payload.pop("doc_id", "")),
-                    content=str(payload.pop("content", "")),
-                    start_char=int(payload.pop("start_char", 0) or 0),
-                    end_char=int(payload.pop("end_char", 0) or 0),
-                    metadata=payload,
-                )
+                ch = _chunk_from_payload(p.payload, p.id)
+                found.setdefault(ch.id, ch)
             if offset is None or len(found) >= len(ids):
                 break
         return [found[c] for c in ids if c in found]
@@ -375,6 +384,20 @@ def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
     """Deterministic UUID point id, scoped by tenant so the same chunk under two
     tenants maps to two distinct points."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{chunk_id}"))
+
+
+def _chunk_from_payload(payload: Any, fallback_id: Any) -> Chunk:
+    """Reconstruct a Chunk from a Qdrant point payload (reserved keys back into
+    their fields, the remainder as metadata)."""
+    p = dict(payload or {})
+    return Chunk(
+        id=str(p.pop("chunk_id", fallback_id)),
+        doc_id=str(p.pop("doc_id", "")),
+        content=str(p.pop("content", "")),
+        start_char=int(p.pop("start_char", 0) or 0),
+        end_char=int(p.pop("end_char", 0) or 0),
+        metadata=p,
+    )
 
 
 def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
