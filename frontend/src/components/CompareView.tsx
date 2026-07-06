@@ -195,6 +195,256 @@ function CompareSource({ rank, source }: { rank: number; source: Source }) {
   );
 }
 
+// --------------------------------------------------------------------------- //
+// Agreement analysis — how much do the lanes actually converge?
+//
+// Lanes are joined by `doc_id` (stable across chunkers/models, unlike chunk_id),
+// so this works whether lanes vary by corpus, model, or pipeline. Each lane's
+// sources are de-duplicated to unique docs in retrieval order; comparisons are
+// rank-based because raw scores aren't commensurable across different embedding
+// models / fusions.
+// --------------------------------------------------------------------------- //
+
+interface LaneEntry {
+  key: string;
+  label: string;
+  sources: Source[];
+}
+
+// Unique docs for a lane, in retrieval order (first occurrence wins → best rank).
+function laneDocRanks(
+  sources: Source[],
+): { doc_id: string; rank: number; score: number; title: string }[] {
+  const seen = new Set<string>();
+  const out: { doc_id: string; rank: number; score: number; title: string }[] = [];
+  for (const s of sources) {
+    if (seen.has(s.doc_id)) continue;
+    seen.add(s.doc_id);
+    out.push({
+      doc_id: s.doc_id,
+      rank: out.length + 1,
+      score: s.score,
+      title: (s.metadata.title && String(s.metadata.title)) || s.doc_id,
+    });
+  }
+  return out;
+}
+
+// Kendall's τ-b-ish rank correlation over the docs two lanes have in common.
+// +1 identical order, −1 reversed, 0 none; null when fewer than 2 shared docs.
+function kendallTau(a: Map<string, number>, b: Map<string, number>): number | null {
+  const common = [...a.keys()].filter((k) => b.has(k));
+  const n = common.length;
+  if (n < 2) return null;
+  let concordant = 0;
+  let discordant = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const s =
+        Math.sign(a.get(common[i])! - a.get(common[j])!) *
+        Math.sign(b.get(common[i])! - b.get(common[j])!);
+      if (s > 0) concordant++;
+      else if (s < 0) discordant++;
+    }
+  }
+  const total = (n * (n - 1)) / 2;
+  return total ? (concordant - discordant) / total : null;
+}
+
+// Rank → badge colour: best ranks are strongest, tapering to grey.
+function rankClass(rank: number): string {
+  if (rank <= 1) return "bg-emerald-600 text-white";
+  if (rank <= 3) return "bg-emerald-300 text-emerald-900";
+  if (rank <= 5) return "bg-emerald-100 text-emerald-800";
+  return "bg-gray-100 text-gray-500";
+}
+
+function jaccardClass(j: number): string {
+  if (j >= 0.8) return "bg-emerald-600 text-white";
+  if (j >= 0.5) return "bg-emerald-300 text-emerald-900";
+  if (j >= 0.25) return "bg-emerald-100 text-emerald-800";
+  if (j > 0) return "bg-gray-100 text-gray-500";
+  return "bg-gray-50 text-gray-300";
+}
+
+const pct = (x: number) => `${Math.round(x * 100)}%`;
+
+function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
+  const lanes = entries.map((e) => ({ ...e, docs: laneDocRanks(e.sources) }));
+  const n = lanes.length;
+  const sets = lanes.map((l) => new Set(l.docs.map((d) => d.doc_id)));
+  const rankMaps = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.rank])));
+
+  // Union of docs, with per-lane rank + consensus count.
+  const titleOf = new Map<string, string>();
+  for (const l of lanes) for (const d of l.docs) if (!titleOf.has(d.doc_id)) titleOf.set(d.doc_id, d.title);
+  const rows = [...titleOf.keys()].map((doc) => {
+    const ranks = rankMaps.map((m) => m.get(doc));
+    const present = ranks.filter((r): r is number => r !== undefined);
+    const count = present.length;
+    const avgRank = present.reduce((a, b) => a + b, 0) / (present.length || 1);
+    return { doc, title: titleOf.get(doc)!, ranks, count, avgRank };
+  });
+  rows.sort((a, b) => b.count - a.count || a.avgRank - b.avgRank);
+
+  const full = rows.filter((r) => r.count === n).length;
+  const shared = rows.filter((r) => r.count >= 2).length;
+  const unique = rows.filter((r) => r.count === 1).length;
+
+  // Pairwise set overlap (Jaccard) and order agreement (Kendall τ).
+  const jaccard = (i: number, j: number) => {
+    let inter = 0;
+    sets[i].forEach((x) => {
+      if (sets[j].has(x)) inter++;
+    });
+    const uni = sets[i].size + sets[j].size - inter;
+    return uni ? inter / uni : 0;
+  };
+  let jSum = 0;
+  let jCount = 0;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      jSum += jaccard(i, j);
+      jCount++;
+    }
+  const meanJaccard = jCount ? jSum / jCount : 0;
+  const short = (s: string) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
+
+  return (
+    <details open className="mt-6 rounded-lg border border-gray-200 bg-white">
+      <summary className="cursor-pointer list-none px-4 py-3">
+        <span className="text-sm font-semibold text-gray-700">Agreement</span>
+        <span className="ml-2 text-xs text-gray-400">
+          how much the {n} lanes converge — same docs, same order
+        </span>
+      </summary>
+
+      <div className="space-y-5 border-t border-gray-100 p-4">
+        {/* Summary */}
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-800">
+            {full} in all {n} lanes
+          </span>
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">
+            {shared} shared by ≥2
+          </span>
+          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{unique} unique to one</span>
+          <span className="rounded-full bg-gray-900 px-2.5 py-1 font-medium text-white">
+            agreement index {pct(meanJaccard)}
+          </span>
+        </div>
+
+        {/* Pairwise overlap / order grid */}
+        <div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            Pairwise · set overlap (Jaccard) / order (τ)
+          </div>
+          <div className="overflow-x-auto">
+            <table className="border-collapse text-[11px]">
+              <thead>
+                <tr>
+                  <th className="p-1"></th>
+                  {lanes.map((l) => (
+                    <th key={l.key} className="max-w-24 truncate p-1 text-left font-medium text-gray-500" title={l.label}>
+                      {short(l.label)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {lanes.map((row, i) => (
+                  <tr key={row.key}>
+                    <td className="max-w-24 truncate p-1 pr-2 font-medium text-gray-500" title={row.label}>
+                      {short(row.label)}
+                    </td>
+                    {lanes.map((_, j) => {
+                      if (i === j)
+                        return (
+                          <td key={j} className="p-0.5">
+                            <div className="flex h-9 w-16 items-center justify-center rounded bg-gray-50 text-gray-300">
+                              —
+                            </div>
+                          </td>
+                        );
+                      const j2 = jaccard(i, j);
+                      const t = kendallTau(rankMaps[i], rankMaps[j]);
+                      return (
+                        <td key={j} className="p-0.5">
+                          <div
+                            className={`flex h-9 w-16 flex-col items-center justify-center rounded tabular-nums ${jaccardClass(j2)}`}
+                            title={`overlap ${pct(j2)} · order τ ${t === null ? "n/a" : t.toFixed(2)}`}
+                          >
+                            <span className="font-semibold leading-none">{pct(j2)}</span>
+                            <span className="mt-0.5 text-[10px] leading-none opacity-80">
+                              τ {t === null ? "–" : t.toFixed(2)}
+                            </span>
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Consensus table: doc × lane, cell = rank in that lane */}
+        <div>
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            Per-document rank by lane · sorted by consensus
+          </div>
+          <div className="max-h-96 overflow-auto rounded border border-gray-100">
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 bg-gray-50">
+                <tr>
+                  <th className="p-2 text-left font-medium text-gray-500">Document</th>
+                  <th className="p-2 text-center font-medium text-gray-500" title="lanes that retrieved this doc">
+                    ×
+                  </th>
+                  {lanes.map((l) => (
+                    <th key={l.key} className="max-w-28 truncate p-2 text-center font-medium text-gray-500" title={l.label}>
+                      {short(l.label)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.doc} className="border-t border-gray-100">
+                    <td className="max-w-xs truncate p-2 text-gray-700" title={r.title}>
+                      {r.title}
+                    </td>
+                    <td className="p-2 text-center tabular-nums text-gray-400">{r.count}</td>
+                    {r.ranks.map((rank, k) => (
+                      <td key={k} className="p-1 text-center">
+                        {rank === undefined ? (
+                          <span className="text-gray-200">·</span>
+                        ) : (
+                          <span
+                            className={`inline-block min-w-6 rounded px-1.5 py-0.5 font-medium tabular-nums ${rankClass(rank)}`}
+                          >
+                            {rank}
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px] leading-snug text-gray-400">
+            Cells show each doc's rank within a lane (1 = top). Aligned rows across columns = the
+            lanes agree; scattered ranks or gaps = they disagree. Scores aren't compared directly —
+            they aren't commensurable across different models/fusions, so agreement is rank-based.
+          </p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 export function CompareView({
   apiKey,
   setApiKey,
@@ -341,6 +591,21 @@ export function CompareView({
     .filter((l) => (ratings[l.key] ?? 0) > 0)
     .sort((a, b) => (ratings[b.key] ?? 0) - (ratings[a.key] ?? 0));
   const topKey = ranked[0]?.key;
+
+  // Successful lanes, labelled (collection + non-default levers), for the
+  // agreement analysis below.
+  const successEntries: LaneEntry[] = lanes
+    .map((l) => ({ lane: l, res: results[l.key] }))
+    .filter((x) => x.res?.status === "success" && x.res.data)
+    .map((x) => ({
+      key: x.lane.key,
+      label:
+        collLabel(x.lane.collection) +
+        (perLane && leverTags(x.lane.levers).length
+          ? ` · ${leverTags(x.lane.levers).join(" ")}`
+          : ""),
+      sources: x.res!.data!.sources,
+    }));
 
   return (
     <div>
@@ -545,6 +810,9 @@ export function CompareView({
           ) : null}
         </div>
       </div>
+
+      {/* Agreement analysis across the lanes' results. */}
+      {ran && successEntries.length >= 2 ? <AgreementPanel entries={successEntries} /> : null}
     </div>
   );
 }
