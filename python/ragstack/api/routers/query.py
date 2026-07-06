@@ -108,6 +108,24 @@ class RetrieveResponse(BaseModel):
     sources: list[Source]
 
 
+class ChunkOut(BaseModel):
+    """A chunk fetched directly by id (no retrieval score) — used for context
+    expansion around a retrieved source."""
+
+    doc_id: str
+    chunk_id: str
+    content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChunksResponse(BaseModel):
+    chunks: list[ChunkOut]
+
+
+# A context expansion needs only prev+next, but allow a small batch.
+_MAX_CHUNK_IDS = 20
+
+
 async def _maybe_rerank(
     reranker, query: str, scored: list[ScoredChunk], top_k: int
 ) -> list[ScoredChunk]:
@@ -215,17 +233,22 @@ async def tenant_slot(
         yield tenant
 
 
-def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
-    """The retriever for the selected registry collection (default when None).
-    An unknown id is a 404 — explicit selection fails loudly rather than serving
-    the wrong corpus."""
+def _resolve_entry(registry: CollectionRegistry, collection: str | None):
+    """The registry entry for the selected collection (default when None). An
+    unknown id is a 404 — explicit selection fails loudly rather than serving the
+    wrong corpus."""
     try:
-        return registry.resolve(collection).retriever
+        return registry.resolve(collection)
     except KeyError:
         raise HTTPException(
             status_code=404,
             detail=f"unknown collection {collection!r}; see GET /v1/collections",
         ) from None
+
+
+def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
+    """The retriever for the selected registry collection (default when None)."""
+    return _resolve_entry(registry, collection).retriever
 
 
 @router.post("/retrieve", response_model=RetrieveResponse)
@@ -253,6 +276,35 @@ async def retrieve(
         mode=request.retrieval_mode,
     )
     return RetrieveResponse(sources=_to_sources(scored))
+
+
+@router.get("/chunks", response_model=ChunksResponse)
+async def get_chunks(
+    ids: str = "",
+    collection: str | None = None,
+    tenant: str = Depends(tenant_slot),
+    registry: CollectionRegistry = Depends(get_collections),
+) -> ChunksResponse:
+    """Fetch chunks by id from a collection's vector store (tenant-scoped).
+
+    ``ids`` is a comma-separated list — typically the ``prev_chunk_id`` /
+    ``next_chunk_id`` carried in a Source's metadata — so a client can expand a
+    retrieved chunk's neighbouring context. Unknown or out-of-scope ids are
+    silently omitted; order follows the request. ``collection`` selects the
+    registry collection (default when omitted); an unknown id 404s."""
+    id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
+    if not id_list:
+        return ChunksResponse(chunks=[])
+    store = _resolve_entry(registry, collection).vector_store
+    if store is None:  # pragma: no cover - all wired entries carry a store
+        return ChunksResponse(chunks=[])
+    chunks = await store.get_chunks(id_list, scope_filters({}, tenant))
+    return ChunksResponse(
+        chunks=[
+            ChunkOut(doc_id=c.doc_id, chunk_id=c.id, content=c.content, metadata=c.metadata)
+            for c in chunks
+        ]
+    )
 
 
 def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str:

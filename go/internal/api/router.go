@@ -25,6 +25,7 @@ func NewRouter(_ *slog.Logger) http.Handler {
 		r.Get("/ingest/{job_id}", HandleIngestStatus)
 		r.Get("/documents", HandleListDocuments)
 		r.Get("/collections", HandleListCollections)
+		r.Get("/chunks", HandleGetChunks)
 		r.Delete("/documents/{doc_id}", HandleDeleteDocument)
 		r.Get("/graph/entities", HandleListEntities)
 		r.Get("/graph/neighbors/{entity}", HandleGetNeighbors)

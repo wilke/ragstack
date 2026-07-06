@@ -281,3 +281,28 @@ export interface CollectionsResponse {
 export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
   return get<CollectionsResponse>("/v1/collections", apiKey);
 }
+
+// A chunk fetched by id (no retrieval score) — used to expand a source's
+// neighbouring context (its prev_chunk_id / next_chunk_id).
+export interface ChunkOut {
+  doc_id: string;
+  chunk_id: string;
+  content: string;
+  metadata: SourceMetadata;
+}
+
+export interface ChunksResponse {
+  chunks: ChunkOut[];
+}
+
+// Fetch chunks by id from a collection (tenant-scoped by the key). Missing/
+// out-of-scope ids are omitted; order follows the request.
+export function fetchChunks(
+  ids: string[],
+  collection?: string,
+  apiKey?: string,
+): Promise<ChunksResponse> {
+  const params = new URLSearchParams({ ids: ids.join(",") });
+  if (collection) params.set("collection", collection);
+  return get<ChunksResponse>(`/v1/chunks?${params.toString()}`, apiKey);
+}

@@ -218,21 +218,14 @@ class QdrantVectorStore:
             query_filter=q_filter,
             with_payload=True,
         )
-        scored: list[ScoredChunk] = []
-        for r in response.points:
-            payload = dict(r.payload or {})
-            chunk = Chunk(
-                id=str(payload.pop("chunk_id", r.id)),
-                doc_id=str(payload.pop("doc_id", "")),
-                content=str(payload.pop("content", "")),
-                start_char=int(payload.pop("start_char", 0) or 0),
-                end_char=int(payload.pop("end_char", 0) or 0),
-                metadata=payload,
+        return [
+            ScoredChunk(
+                chunk=_chunk_from_payload(r.payload, r.id),
+                score=r.score,
+                retrieval_method="vector",
             )
-            scored.append(
-                ScoredChunk(chunk=chunk, score=r.score, retrieval_method="vector")
-            )
-        return scored
+            for r in response.points
+        ]
 
     async def count_tenants(self, tenants: list[str]) -> int:
         """Count points visible to ``tenants`` (own + public) via a FILTERED
@@ -253,6 +246,35 @@ class QdrantVectorStore:
             exact=True,
         )
         return int(resp.count)
+
+    async def get_chunks(
+        self, chunk_ids: list[str], filters: dict[str, Any] | None = None
+    ) -> list[Chunk]:
+        """Fetch chunks by id, tenant-scoped via ``filters`` (the ``tenant_id``
+        read scope produced by ``scope_filters``, same as ``search``). Preserves
+        request order; missing/invisible ids are omitted.
+
+        Point ids are deterministic (``_point_id(chunk_id, tenant)``), so this
+        resolves by point id — an O(1) ``retrieve`` per ``(id, tenant)`` — rather
+        than filtering the (unindexed) ``chunk_id`` payload, which would scan the
+        collection. Only ids under a readable tenant are ever computed, so the
+        lookup is tenant-scoped by construction; with no readable scope it fails
+        closed (empty), mirroring ``count_tenants``."""
+        ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
+        tenants = (filters or {}).get("tenant_id")
+        if not ids or not isinstance(tenants, (list, tuple, set)) or not tenants:
+            return []
+        records = await self._client.retrieve(
+            collection_name=self._collection,
+            ids=[_point_id(cid, str(t)) for cid in ids for t in tenants],
+            with_payload=True,
+            with_vectors=False,
+        )
+        found: dict[str, Chunk] = {}
+        for r in records:
+            ch = _chunk_from_payload(r.payload, r.id)
+            found.setdefault(ch.id, ch)
+        return [found[c] for c in ids if c in found]
 
     async def healthcheck(self) -> None:
         """Read-only liveness probe: a connectivity check that never mutates state.
@@ -335,6 +357,20 @@ def _point_id(chunk_id: str, tenant_id: str = DEFAULT_TENANT) -> str:
     """Deterministic UUID point id, scoped by tenant so the same chunk under two
     tenants maps to two distinct points."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{chunk_id}"))
+
+
+def _chunk_from_payload(payload: Any, fallback_id: Any) -> Chunk:
+    """Reconstruct a Chunk from a Qdrant point payload (reserved keys back into
+    their fields, the remainder as metadata)."""
+    p = dict(payload or {})
+    return Chunk(
+        id=str(p.pop("chunk_id", fallback_id)),
+        doc_id=str(p.pop("doc_id", "")),
+        content=str(p.pop("content", "")),
+        start_char=int(p.pop("start_char", 0) or 0),
+        end_char=int(p.pop("end_char", 0) or 0),
+        metadata=p,
+    )
 
 
 def _build_filter(filters: dict[str, Any] | None) -> Filter | None:

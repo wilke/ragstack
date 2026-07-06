@@ -141,6 +141,9 @@ class BackpressuredVectorStore:
     async def count_tenants(self, *args: Any, **kwargs: Any) -> int:
         return await self._inner.count_tenants(*args, **kwargs)
 
+    async def get_chunks(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._inner.get_chunks(*args, **kwargs)
+
     def __getattr__(self, name: str) -> Any:
         # Delegate non-protocol attributes (ensure_collection, healthcheck,
         # collection_health, _client, …) to the wrapped store. Guard underscore
