@@ -282,8 +282,8 @@ function ContextChunk({ chunk, position }: { chunk: ChunkOut; position: "prev" |
 type Ctx = {
   loading: boolean;
   error?: string;
-  prev?: ChunkOut | null; // undefined = no prev id; null = id had no visible chunk
-  next?: ChunkOut | null;
+  prev?: ChunkOut; // absent if there's no prev id, or it wasn't found/visible
+  next?: ChunkOut;
 };
 
 function CompareSource({
@@ -320,8 +320,8 @@ function CompareSource({
       const byId = new Map(r.chunks.map((c) => [c.chunk_id, c]));
       setCtx({
         loading: false,
-        prev: prevId ? byId.get(prevId) ?? null : undefined,
-        next: nextId ? byId.get(nextId) ?? null : undefined,
+        prev: prevId ? byId.get(prevId) : undefined,
+        next: nextId ? byId.get(nextId) : undefined,
       });
     } catch (e) {
       setCtx({ loading: false, error: e instanceof Error ? e.message : String(e) });

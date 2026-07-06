@@ -218,21 +218,14 @@ class QdrantVectorStore:
             query_filter=q_filter,
             with_payload=True,
         )
-        scored: list[ScoredChunk] = []
-        for r in response.points:
-            payload = dict(r.payload or {})
-            chunk = Chunk(
-                id=str(payload.pop("chunk_id", r.id)),
-                doc_id=str(payload.pop("doc_id", "")),
-                content=str(payload.pop("content", "")),
-                start_char=int(payload.pop("start_char", 0) or 0),
-                end_char=int(payload.pop("end_char", 0) or 0),
-                metadata=payload,
+        return [
+            ScoredChunk(
+                chunk=_chunk_from_payload(r.payload, r.id),
+                score=r.score,
+                retrieval_method="vector",
             )
-            scored.append(
-                ScoredChunk(chunk=chunk, score=r.score, retrieval_method="vector")
-            )
-        return scored
+            for r in response.points
+        ]
 
     async def count_tenants(self, tenants: list[str]) -> int:
         """Count points visible to ``tenants`` (own + public) via a FILTERED
@@ -258,49 +251,29 @@ class QdrantVectorStore:
         self, chunk_ids: list[str], filters: dict[str, Any] | None = None
     ) -> list[Chunk]:
         """Fetch chunks by id, tenant-scoped via ``filters`` (the ``tenant_id``
-        read scope). Preserves request order; missing/invisible ids are omitted.
+        read scope produced by ``scope_filters``, same as ``search``). Preserves
+        request order; missing/invisible ids are omitted.
 
-        Point ids are deterministic (``_point_id(chunk_id, tenant)``), so when the
-        readable tenants are known this resolves by point id — an O(1) lookup per
-        ``(id, tenant)`` — rather than a filtered scroll, which would scan the
-        collection (``chunk_id`` is not a payload index). Only ids under a
-        readable tenant are ever computed, so the id lookup stays tenant-scoped.
-        Falls back to a filtered scroll when no tenant scope is supplied."""
+        Point ids are deterministic (``_point_id(chunk_id, tenant)``), so this
+        resolves by point id — an O(1) ``retrieve`` per ``(id, tenant)`` — rather
+        than filtering the (unindexed) ``chunk_id`` payload, which would scan the
+        collection. Only ids under a readable tenant are ever computed, so the
+        lookup is tenant-scoped by construction; with no readable scope it fails
+        closed (empty), mirroring ``count_tenants``."""
         ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
-        if not ids:
-            return []
-        found: dict[str, Chunk] = {}
         tenants = (filters or {}).get("tenant_id")
-        if isinstance(tenants, (list, tuple, set)) and tenants:
-            candidates = [_point_id(cid, str(t)) for cid in ids for t in tenants]
-            records = await self._client.retrieve(
-                collection_name=self._collection,
-                ids=candidates,
-                with_payload=True,
-                with_vectors=False,
-            )
-            for r in records:
-                ch = _chunk_from_payload(r.payload, r.id)
-                found.setdefault(ch.id, ch)
-            return [found[c] for c in ids if c in found]
-
-        # No tenant scope given (unscoped internal call) → filtered scroll.
-        scroll_filter = _build_filter({**(filters or {}), "chunk_id": ids})
-        offset: Any = None
-        while True:
-            points, offset = await self._client.scroll(
-                collection_name=self._collection,
-                scroll_filter=scroll_filter,
-                with_payload=True,
-                with_vectors=False,
-                limit=max(len(ids), 16),
-                offset=offset,
-            )
-            for p in points:
-                ch = _chunk_from_payload(p.payload, p.id)
-                found.setdefault(ch.id, ch)
-            if offset is None or len(found) >= len(ids):
-                break
+        if not ids or not isinstance(tenants, (list, tuple, set)) or not tenants:
+            return []
+        records = await self._client.retrieve(
+            collection_name=self._collection,
+            ids=[_point_id(cid, str(t)) for cid in ids for t in tenants],
+            with_payload=True,
+            with_vectors=False,
+        )
+        found: dict[str, Chunk] = {}
+        for r in records:
+            ch = _chunk_from_payload(r.payload, r.id)
+            found.setdefault(ch.id, ch)
         return [found[c] for c in ids if c in found]
 
     async def healthcheck(self) -> None:

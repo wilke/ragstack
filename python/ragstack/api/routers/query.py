@@ -233,17 +233,22 @@ async def tenant_slot(
         yield tenant
 
 
-def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
-    """The retriever for the selected registry collection (default when None).
-    An unknown id is a 404 — explicit selection fails loudly rather than serving
-    the wrong corpus."""
+def _resolve_entry(registry: CollectionRegistry, collection: str | None):
+    """The registry entry for the selected collection (default when None). An
+    unknown id is a 404 — explicit selection fails loudly rather than serving the
+    wrong corpus."""
     try:
-        return registry.resolve(collection).retriever
+        return registry.resolve(collection)
     except KeyError:
         raise HTTPException(
             status_code=404,
             detail=f"unknown collection {collection!r}; see GET /v1/collections",
         ) from None
+
+
+def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
+    """The retriever for the selected registry collection (default when None)."""
+    return _resolve_entry(registry, collection).retriever
 
 
 @router.post("/retrieve", response_model=RetrieveResponse)
@@ -290,14 +295,7 @@ async def get_chunks(
     id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
     if not id_list:
         return ChunksResponse(chunks=[])
-    try:
-        entry = registry.resolve(collection)
-    except KeyError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"unknown collection {collection!r}; see GET /v1/collections",
-        ) from None
-    store = entry.vector_store
+    store = _resolve_entry(registry, collection).vector_store
     if store is None:  # pragma: no cover - all wired entries carry a store
         return ChunksResponse(chunks=[])
     chunks = await store.get_chunks(id_list, scope_filters({}, tenant))
