@@ -130,7 +130,7 @@ curl -X PATCH localhost:8000/v1/admin/config/assignments -H 'content-type: appli
 Phase 1 is standalone and independently mergeable. Later phases each need an explicit go-ahead.
 
 1. **Registry + hot-swap** — ✅ **done** (this doc, PR #166). No re-ingest; live LLM/reranker swap.
-2. **Query-time levers** — per-request `llm` / `reranker` refs on `/v1/query` (+ reranker on `/v1/retrieve`) → new per-lane columns in Compare ("same corpus, compare LLMs / rerankers").
+2. **Query-time levers** — ✅ **done** (PR #167). Per-request `llm` / `reranker` refs on `/v1/query` (+ reranker on `/v1/retrieve`); `GET /v1/models/available` picker; Compare per-lane `llm` / `rr·model` selects. Overrides build an ephemeral client (no `app.state` mutation); unknown → 404, wrong-task → 400.
 3. **Ingest model selection** — `POST /v1/collections` (or extend `/v1/ingest`) accepting `{embedding: <model-ref>, chunk: {...}}` → builds a content-addressed collection via `provenance.make_ingest_manifest`. The build-time path, over HTTP, referencing registered models.
 4. **Config page** — frontend tabs: **Models** (registry CRUD), **Assignments** (live-editable for llm/reranker; build-time shown as "create a collection"), **Workflows** (parameterize the offline CWL embed/load runs by model ref). Built on `GET /v1/config` + the registry endpoints.
 
