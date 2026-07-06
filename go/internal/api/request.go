@@ -21,6 +21,9 @@ type QueryRequest struct {
 	Collection *string `json:"collection,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
+	// LLM / Reranker are per-request model overrides (registered model ids); nil = default.
+	LLM      *string `json:"llm,omitempty"`
+	Reranker *string `json:"reranker,omitempty"`
 }
 
 // RetrieveRequest is the request body for POST /v1/retrieve.
@@ -36,6 +39,8 @@ type RetrieveRequest struct {
 	Collection *string `json:"collection,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
+	// Reranker is a per-request reranker model override (registered id); nil = default.
+	Reranker *string `json:"reranker,omitempty"`
 }
 
 // IngestRequest is the request body for POST /v1/ingest.

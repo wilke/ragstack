@@ -11,12 +11,17 @@ from pydantic import BaseModel, Field
 
 from ragstack.api.collections import CollectionRegistry
 from ragstack.api.deps import (
+    build_generator_for,
+    build_reranker_for,
     get_collections,
     get_generator,
+    get_http_client,
+    get_model_registry,
     get_reranker,
     get_rewriters,
     get_tenant_quota,
 )
+from ragstack.api.model_registry import ModelRegistry, RegistryError
 from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
@@ -82,6 +87,13 @@ class QueryRequest(BaseModel):
     # Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or
     # bm25 (sparse only). The graph leg is orthogonal (see use_graph).
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
+    # Per-request model overrides (Phase 2): a registered model id to use for THIS
+    # request only, without touching the global assignment. ``llm`` overrides the
+    # answer generator (retrieval, incl. rewriting, is unchanged — a clean A/B of
+    # generation); ``reranker`` overrides the cross-encoder. Unknown id → 404;
+    # wrong-task id → 400. See GET /v1/models/available.
+    llm: str | None = None
+    reranker: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -102,6 +114,8 @@ class RetrieveRequest(BaseModel):
     collection: str | None = None
     # See QueryRequest — hybrid | vector | bm25.
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
+    # See QueryRequest — per-request cross-encoder override (no generation here).
+    reranker: str | None = None
 
 
 class RetrieveResponse(BaseModel):
@@ -251,17 +265,37 @@ def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
     return _resolve_entry(registry, collection).retriever
 
 
+def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
+    """Per-request model override: build from the registered ``model_id`` when
+    given (via ``builder`` — build_generator_for / build_reranker_for), else return
+    the server default. Resolution errors carry their HTTP status on the
+    ``RegistryError`` (unknown id → 404, wrong-task model → 400), so the taxonomy
+    stays single-sourced in the registry rather than re-derived here."""
+    if not model_id:
+        return default
+    try:
+        return builder(models, http, model_id)
+    except RegistryError as e:
+        detail = str(e)
+        if e.status_code == 404:
+            detail += "; see GET /v1/models/available"
+        raise HTTPException(status_code=e.status_code, detail=detail) from None
+
+
 @router.post("/retrieve", response_model=RetrieveResponse)
 async def retrieve(
     request: RetrieveRequest,
     tenant: str = Depends(tenant_slot),
     registry: CollectionRegistry = Depends(get_collections),
     reranker=Depends(get_reranker),
+    models: ModelRegistry = Depends(get_model_registry),
+    http=Depends(get_http_client),
 ) -> RetrieveResponse:
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
     retriever = _resolve_retriever(registry, request.collection)
+    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -326,12 +360,20 @@ async def query(
     generator=Depends(get_generator),
     rewriters=Depends(get_rewriters),
     reranker=Depends(get_reranker),
+    models: ModelRegistry = Depends(get_model_registry),
+    http=Depends(get_http_client),
 ) -> QueryResponse:
     """Full RAG flow: optionally rewrite the query (HyDE / multi-query), hybrid-
     retrieve for each variant (caller's tenant + public), fuse with RRF,
     optionally cross-encoder rerank, and generate a grounded answer. When no LLM
     endpoint is configured the answer is a retrieval-only placeholder.
+
+    Per-request ``llm`` / ``reranker`` overrides swap those clients for this
+    request only (the global assignment is untouched) — the corpus and, for the
+    llm override, the retrieval path stay fixed, so it's a clean A/B.
     """
+    generator = _override_model(build_generator_for, models, http, request.llm, generator)
+    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     retriever = _resolve_retriever(registry, request.collection)
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)

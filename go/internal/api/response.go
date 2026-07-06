@@ -101,3 +101,17 @@ type ModelsRegistryResponse struct {
 	Models      []ModelEntry      `json:"models"`
 	Assignments map[string]string `json:"assignments"`
 }
+
+// AvailableModel is a per-request-assignable model (llm / reranker); URLs omitted.
+type AvailableModel struct {
+	ID       string `json:"id"`
+	Task     string `json:"task"`
+	Label    string `json:"label"`
+	Model    string `json:"model"`
+	Provider string `json:"provider"`
+}
+
+// AvailableModelsResponse is the body for GET /v1/models/available.
+type AvailableModelsResponse struct {
+	Models []AvailableModel `json:"models"`
+}

@@ -15,7 +15,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ragstack.api.collections import CollectionRegistry
-from ragstack.api.deps import get_collections, probe_tenant_count
+from ragstack.api.deps import get_collections, get_model_registry, probe_tenant_count
+from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.security import Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.provenance import read_manifest
@@ -102,3 +103,34 @@ async def list_collections(
             provenance=prov,
         ))
     return CollectionsResponse(collections=infos, default=registry.default_id)
+
+
+class AvailableModel(BaseModel):
+    id: str
+    task: str  # llm | reranker
+    label: str
+    model: str
+    provider: str
+
+
+class AvailableModelsResponse(BaseModel):
+    models: list[AvailableModel]
+
+
+@router.get("/models/available", response_model=AvailableModelsResponse)
+async def list_available_models(
+    models: ModelRegistry = Depends(get_model_registry),
+) -> AvailableModelsResponse:
+    """Registered models assignable to a hot-swappable task (llm / reranker), for
+    the Compare per-lane model pickers. Authenticated callers only (the router is
+    mounted with ``resolve_principal``) — but base_urls are NOT exposed
+    (registration is admin-only + SSRF-checked; callers only need to name a
+    curated model)."""
+    out = [
+        AvailableModel(
+            id=e.id, task=e.task, label=e.model or e.id, model=e.model, provider=e.provider
+        )
+        for e in models.entries()
+        if e.task in HOT_SWAPPABLE
+    ]
+    return AvailableModelsResponse(models=out)
