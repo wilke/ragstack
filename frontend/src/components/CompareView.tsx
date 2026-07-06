@@ -81,6 +81,80 @@ const rewriteStrategies = (r: Rewrite): string[] =>
 const rerankValue = (r: Rerank): boolean | null =>
   r === "default" ? null : r === "on";
 
+// Hover copy for the lever labels (native title tooltips). The Glossary below
+// carries the per-term detail.
+const LABEL_TIP: Record<string, string> = {
+  mode: "Which retrieval legs run. hybrid = dense vectors + BM25 keyword (fused); vector = dense only; bm25 = keyword only.",
+  rewrite:
+    "Expand the query before retrieving. none = as-is; multiquery = LLM paraphrases; hyde = retrieve on a hypothetical answer.",
+  rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force for this lane.",
+  top_k: "How many results to return per lane.",
+  graph: "Also retrieve from the knowledge graph (entities & relations) as an extra leg.",
+};
+
+// Grouped definitions rendered by <Glossary/> at the foot of the page.
+const GLOSSARY: { group: string; items: { term: string; def: string }[] }[] = [
+  {
+    group: "Retrieval mode",
+    items: [
+      { term: "hybrid", def: "Both retrieval legs — dense vectors + BM25 keyword — fused with RRF. The default; best recall." },
+      { term: "vector", def: "Dense-embedding (semantic) retrieval only. Finds meaning-similar text even without shared words." },
+      { term: "bm25", def: "Keyword / lexical retrieval only (Elasticsearch BM25). Fast, needs no embedding; rewards exact term matches." },
+    ],
+  },
+  {
+    group: "Query rewriting",
+    items: [
+      { term: "none", def: "No rewriting — the query is sent unchanged (passthrough only)." },
+      { term: "passthrough", def: "The original query, unmodified. Always included even when another strategy runs." },
+      { term: "multiquery", def: "The LLM generates several paraphrases of your question; each one retrieves and the lists are fused — widens recall." },
+      { term: "hyde", def: "Hypothetical Document Embeddings: the LLM drafts a fake answer, then retrieves documents similar to that draft. Helps vague queries." },
+    ],
+  },
+  {
+    group: "Reranking",
+    items: [
+      { term: "rerank: default", def: "Use the server default — rerank only if a cross-encoder is wired." },
+      { term: "rerank: on / off", def: "Force reranking on or off for this lane, overriding the server default." },
+      { term: "cross-encoder", def: "A model that re-scores candidates by reading query + document together — more accurate ordering than first-stage retrieval." },
+    ],
+  },
+  {
+    group: "Lane levers",
+    items: [
+      { term: "top_k", def: "Number of results returned per lane." },
+      { term: "knowledge graph", def: "An extra retrieval leg over an entity/relationship graph, added on top of the chosen mode." },
+      { term: "collection", def: "One indexed corpus — a fixed build of (embedding model + chunking strategy). The main axis you compare." },
+      { term: "tenant", def: "Data-isolation scope derived from the API key. A lane can supply its own key to compare tenants." },
+    ],
+  },
+  {
+    group: "Fusion & scoring",
+    items: [
+      { term: "RRF", def: "Reciprocal Rank Fusion — merges multiple ranked lists by rank position (k=60), not by raw scores, so different scales combine safely." },
+      { term: "score", def: "A lane's relevance score. Not comparable across lanes (different models/fusions), which is why agreement is measured on rank." },
+    ],
+  },
+  {
+    group: "Agreement metrics",
+    items: [
+      { term: "Jaccard (overlap)", def: "Shared docs ÷ union of docs between two lanes. 100% = identical result sets, 0% = no docs in common." },
+      { term: "Kendall τ (order)", def: "Rank-order agreement over the docs two lanes share. +1 = identical order, 0 = unrelated, −1 = reversed." },
+      { term: "agreement index", def: "Mean Jaccard overlap across every lane pair — one number for 'how much do all lanes agree?'" },
+      { term: "consensus (×)", def: "How many lanes retrieved a given document. Docs found by all lanes are strong consensus." },
+    ],
+  },
+  {
+    group: "Chunking (in collection names)",
+    items: [
+      { term: "fixed_token", def: "Fixed-size windows measured in model tokens (e.g. 256 / 512), with overlap. Sizes are consistent for the embedder." },
+      { term: "fixed (char)", def: "Fixed-size windows measured in characters. Simpler, but token counts vary by text." },
+      { term: "semantic", def: "Splits where the topic shifts, detected by embedding successive buffers and cutting at similarity drops." },
+      { term: "semantic_pooled", def: "Embeds each sentence once and mean-pools — a cheaper, reproducible variant of semantic chunking." },
+    ],
+  },
+];
+
 // One control cluster for the levers — reused by the global panel and, when
 // overrides are on, by each lane. ``topKPlaceholder`` shows the inherited
 // default when the field is left blank.
@@ -96,8 +170,10 @@ function LeverControls({
   const sel = "min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5";
   return (
     <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
-      <label className="flex items-center gap-1">
-        <span className="w-9 shrink-0 text-gray-400">mode</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.mode}>
+        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          mode
+        </span>
         <select
           value={value.mode}
           onChange={(e) => onChange({ mode: e.target.value as Mode })}
@@ -108,8 +184,10 @@ function LeverControls({
           <option value="bm25">bm25</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-12 shrink-0 text-gray-400">rewrite</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.rewrite}>
+        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          rewrite
+        </span>
         <select
           value={value.rewrite}
           onChange={(e) => onChange({ rewrite: e.target.value as Rewrite })}
@@ -120,8 +198,10 @@ function LeverControls({
           <option value="hyde">hyde</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-9 shrink-0 text-gray-400">rerank</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.rerank}>
+        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          rerank
+        </span>
         <select
           value={value.rerank}
           onChange={(e) => onChange({ rerank: e.target.value as Rerank })}
@@ -132,8 +212,10 @@ function LeverControls({
           <option value="off">off</option>
         </select>
       </label>
-      <label className="flex items-center gap-1">
-        <span className="w-12 shrink-0 text-gray-400">top_k</span>
+      <label className="flex items-center gap-1" title={LABEL_TIP.top_k}>
+        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          top_k
+        </span>
         <input
           type="number"
           min={1}
@@ -147,13 +229,15 @@ function LeverControls({
           className={`${sel} tabular-nums`}
         />
       </label>
-      <label className="col-span-2 flex items-center gap-1.5">
+      <label className="col-span-2 flex items-center gap-1.5" title={LABEL_TIP.graph}>
         <input
           type="checkbox"
           checked={value.useGraph}
           onChange={(e) => onChange({ useGraph: e.target.checked })}
         />
-        <span className="text-gray-400">use knowledge graph</span>
+        <span className="cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+          use knowledge graph
+        </span>
       </label>
     </div>
   );
@@ -329,14 +413,20 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
             {shared} shared by ≥2
           </span>
           <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{unique} unique to one</span>
-          <span className="rounded-full bg-gray-900 px-2.5 py-1 font-medium text-white">
+          <span
+            className="cursor-help rounded-full bg-gray-900 px-2.5 py-1 font-medium text-white"
+            title="Mean Jaccard overlap across every lane pair — one number for how much all lanes agree."
+          >
             agreement index {pct(meanJaccard)}
           </span>
         </div>
 
         {/* Pairwise overlap / order grid */}
         <div>
-          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          <div
+            className="mb-1.5 cursor-help text-[11px] font-semibold uppercase tracking-wide text-gray-400"
+            title="Each cell: set overlap (Jaccard %) with order agreement (Kendall τ) beneath, for that pair of lanes."
+          >
             Pairwise · set overlap (Jaccard) / order (τ)
           </div>
           <div className="overflow-x-auto">
@@ -440,6 +530,34 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
             they aren't commensurable across different models/fusions, so agreement is rank-based.
           </p>
         </div>
+      </div>
+    </details>
+  );
+}
+
+function Glossary() {
+  return (
+    <details className="mt-6 rounded-lg border border-gray-200 bg-white">
+      <summary className="cursor-pointer list-none px-4 py-3">
+        <span className="text-sm font-semibold text-gray-700">Glossary</span>
+        <span className="ml-2 text-xs text-gray-400">what the terms on this page mean</span>
+      </summary>
+      <div className="grid gap-x-6 gap-y-5 border-t border-gray-100 p-4 sm:grid-cols-2 lg:grid-cols-3">
+        {GLOSSARY.map((g) => (
+          <div key={g.group}>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              {g.group}
+            </div>
+            <dl className="space-y-1.5">
+              {g.items.map((i) => (
+                <div key={i.term}>
+                  <dt className="text-xs font-medium text-gray-700">{i.term}</dt>
+                  <dd className="text-xs leading-snug text-gray-500">{i.def}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        ))}
       </div>
     </details>
   );
@@ -813,6 +931,9 @@ export function CompareView({
 
       {/* Agreement analysis across the lanes' results. */}
       {ran && successEntries.length >= 2 ? <AgreementPanel entries={successEntries} /> : null}
+
+      {/* Glossary of the levers + metrics used on this page. */}
+      <Glossary />
     </div>
   );
 }
