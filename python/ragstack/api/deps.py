@@ -561,28 +561,27 @@ def apply_assignment(app: Any, task: str, entry: ModelEntry | None) -> None:
         raise ValueError(f"task {task!r} is not hot-swappable")
 
 
-def build_generator_for(registry: Any, http: httpx.AsyncClient, model_id: str) -> RagGenerator:
+def build_generator_for(
+    registry: ModelRegistry, http: httpx.AsyncClient, model_id: str
+) -> RagGenerator:
     """A one-off generator for a per-request ``llm`` override — resolve the model
     ref from the registry and build an ephemeral RagGenerator (construction is
     cheap: it just wraps the shared http client). Does NOT touch app.state or the
     rewriters, so the override affects only this request's answer generation.
-    Raises KeyError (unknown id) / ValueError (not an llm model)."""
-    entry = registry.get(model_id)
-    if entry is None:
-        raise KeyError(model_id)
-    if entry.task != "llm":
-        raise ValueError(f"model {model_id!r} serves task {entry.task!r}, not 'llm'")
+    Raises ``RegistryError`` (unknown id → 404, non-llm model → 400) — the registry
+    owns that taxonomy, so the router maps it via its ``status_code``."""
+    entry = registry.resolve_assignment("llm", model_id)
+    assert entry is not None  # non-None model_id → resolve returns the entry or raises
     return RagGenerator(_llm_from_entry(entry, http), max_context_chars=settings.llm_max_context_chars)
 
 
-def build_reranker_for(registry: Any, http: httpx.AsyncClient, model_id: str) -> SidecarReranker:
-    """A one-off reranker for a per-request ``reranker`` override. Raises KeyError
-    (unknown id) / ValueError (not a reranker model)."""
-    entry = registry.get(model_id)
-    if entry is None:
-        raise KeyError(model_id)
-    if entry.task != "reranker":
-        raise ValueError(f"model {model_id!r} serves task {entry.task!r}, not 'reranker'")
+def build_reranker_for(
+    registry: ModelRegistry, http: httpx.AsyncClient, model_id: str
+) -> SidecarReranker:
+    """A one-off reranker for a per-request ``reranker`` override. Raises
+    ``RegistryError`` (unknown id → 404, non-reranker model → 400)."""
+    entry = registry.resolve_assignment("reranker", model_id)
+    assert entry is not None  # non-None model_id → resolve returns the entry or raises
     return _reranker_from_entry(entry, http)
 
 

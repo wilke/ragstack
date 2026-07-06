@@ -21,7 +21,7 @@ from ragstack.api.deps import (
     get_rewriters,
     get_tenant_quota,
 )
-from ragstack.api.model_registry import ModelRegistry
+from ragstack.api.model_registry import ModelRegistry, RegistryError
 from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
@@ -265,34 +265,21 @@ def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
     return _resolve_entry(registry, collection).retriever
 
 
-def _override_reranker(models: ModelRegistry, http, model_id: str | None, default):
-    """Per-request reranker: the registered ``model_id`` when given, else the
-    server default. Unknown id → 404; a non-reranker model → 400."""
+def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
+    """Per-request model override: build from the registered ``model_id`` when
+    given (via ``builder`` — build_generator_for / build_reranker_for), else return
+    the server default. Resolution errors carry their HTTP status on the
+    ``RegistryError`` (unknown id → 404, wrong-task model → 400), so the taxonomy
+    stays single-sourced in the registry rather than re-derived here."""
     if not model_id:
         return default
     try:
-        return build_reranker_for(models, http, model_id)
-    except KeyError:
-        raise HTTPException(
-            status_code=404, detail=f"unknown model {model_id!r}; see GET /v1/models/available"
-        ) from None
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-
-
-def _override_generator(models: ModelRegistry, http, model_id: str | None, default):
-    """Per-request answer generator: the registered ``model_id`` when given, else
-    the server default. Unknown id → 404; a non-llm model → 400."""
-    if not model_id:
-        return default
-    try:
-        return build_generator_for(models, http, model_id)
-    except KeyError:
-        raise HTTPException(
-            status_code=404, detail=f"unknown model {model_id!r}; see GET /v1/models/available"
-        ) from None
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
+        return builder(models, http, model_id)
+    except RegistryError as e:
+        detail = str(e)
+        if e.status_code == 404:
+            detail += "; see GET /v1/models/available"
+        raise HTTPException(status_code=e.status_code, detail=detail) from None
 
 
 @router.post("/retrieve", response_model=RetrieveResponse)
@@ -308,7 +295,7 @@ async def retrieve(
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
     retriever = _resolve_retriever(registry, request.collection)
-    reranker = _override_reranker(models, http, request.reranker, reranker)
+    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -385,8 +372,8 @@ async def query(
     request only (the global assignment is untouched) — the corpus and, for the
     llm override, the retrieval path stay fixed, so it's a clean A/B.
     """
-    generator = _override_generator(models, http, request.llm, generator)
-    reranker = _override_reranker(models, http, request.reranker, reranker)
+    generator = _override_model(build_generator_for, models, http, request.llm, generator)
+    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     retriever = _resolve_retriever(registry, request.collection)
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)

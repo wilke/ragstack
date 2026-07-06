@@ -119,13 +119,13 @@ class AvailableModelsResponse(BaseModel):
 
 @router.get("/models/available", response_model=AvailableModelsResponse)
 async def list_available_models(
-    principal: Principal = Depends(resolve_principal),
     models: ModelRegistry = Depends(get_model_registry),
 ) -> AvailableModelsResponse:
     """Registered models assignable to a hot-swappable task (llm / reranker), for
-    the Compare per-lane model pickers. Any authenticated caller — but base_urls
-    are NOT exposed (registration is admin-only + SSRF-checked; callers only need
-    to name a curated model)."""
+    the Compare per-lane model pickers. Authenticated callers only (the router is
+    mounted with ``resolve_principal``) — but base_urls are NOT exposed
+    (registration is admin-only + SSRF-checked; callers only need to name a
+    curated model)."""
     out = [
         AvailableModel(
             id=e.id, task=e.task, label=e.model or e.id, model=e.model, provider=e.provider

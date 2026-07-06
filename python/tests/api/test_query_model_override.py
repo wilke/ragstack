@@ -12,7 +12,7 @@ import pytest
 
 from ragstack.api import security
 from ragstack.api.deps import build_generator_for, build_reranker_for
-from ragstack.api.model_registry import ModelEntry, ModelRegistry
+from ragstack.api.model_registry import ModelEntry, ModelRegistry, RegistryError
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,11 +53,15 @@ async def test_build_reranker_for_resolves():
 async def test_builders_reject_unknown_and_wrong_task():
     reg = ModelRegistry([ModelEntry(**LLM), ModelEntry(**RR)], allowlist=["http://localhost"])
     async with httpx.AsyncClient() as http:
-        with pytest.raises(KeyError):
+        # Resolution errors are RegistryError carrying the HTTP status the router
+        # surfaces (unknown → 404, wrong-task → 400), single-sourced in the registry.
+        with pytest.raises(RegistryError) as unknown:
             build_generator_for(reg, http, "ghost")
-        with pytest.raises(ValueError):
+        assert unknown.value.status_code == 404
+        with pytest.raises(RegistryError) as wrong_llm:
             build_generator_for(reg, http, "rr-a")  # reranker, not llm
-        with pytest.raises(ValueError):
+        assert wrong_llm.value.status_code == 400
+        with pytest.raises(RegistryError):
             build_reranker_for(reg, http, "llm-a")  # llm, not reranker
 
 
