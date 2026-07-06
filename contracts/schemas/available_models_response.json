@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "available_models_response.json",
+  "title": "AvailableModelsResponse",
+  "description": "Registered models assignable to a hot-swappable task (llm / reranker), for the Compare per-lane pickers. base_urls are not exposed.",
+  "type": "object",
+  "required": ["models"],
+  "properties": {
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "task", "label", "model", "provider"],
+        "properties": {
+          "id": { "type": "string" },
+          "task": { "type": "string", "enum": ["llm", "reranker"] },
+          "label": { "type": "string" },
+          "model": { "type": "string" },
+          "provider": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

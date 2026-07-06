@@ -2,8 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import {
   fetchChunks,
+  getAvailableModels,
   getCollections,
   queryRag,
+  type AvailableModel,
   type ChunkOut,
   type CollectionInfo,
   type QueryResponse,
@@ -37,6 +39,8 @@ interface Levers {
   useGraph: boolean; // use_graph
   rewrite: Rewrite; // rewrite_strategies
   topK: number | null; // top_k; null → inherit the global default
+  llm: string; // registered model id for generation; "" → server default
+  reranker: string; // registered model id for reranking; "" → server default
 }
 
 const DEFAULT_LEVERS: Levers = {
@@ -45,6 +49,8 @@ const DEFAULT_LEVERS: Levers = {
   useGraph: true,
   rewrite: "none",
   topK: null,
+  llm: "",
+  reranker: "",
 };
 
 interface Lane {
@@ -74,6 +80,8 @@ const leverTags = (v: Levers): string[] => {
   if (v.rerank !== "default") t.push(`rerank:${v.rerank}`);
   if (!v.useGraph) t.push("no-graph");
   if (v.topK != null) t.push(`k=${v.topK}`);
+  if (v.llm) t.push(`llm:${v.llm}`);
+  if (v.reranker) t.push(`rr:${v.reranker}`);
   return t;
 };
 
@@ -92,6 +100,8 @@ const LABEL_TIP: Record<string, string> = {
   rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force for this lane.",
   top_k: "How many results to return per lane.",
   graph: "Also retrieve from the knowledge graph (entities & relations) as an extra leg.",
+  llm: "Which registered model generates the answer for this lane. default = the server's assigned LLM. Retrieval is unchanged, so this is a clean A/B of generation.",
+  rerankerModel: "Which registered cross-encoder reranks this lane's results. default = the server's assigned reranker.",
 };
 
 // Grouped definitions rendered by <Glossary/> at the foot of the page.
@@ -131,6 +141,14 @@ const GLOSSARY: { group: string; items: { term: string; def: string }[] }[] = [
     ],
   },
   {
+    group: "Model overrides",
+    items: [
+      { term: "llm", def: "A registered model used to generate the answer for this lane only — the corpus and retrieval stay fixed, so it's a clean A/B of generation. 'default' uses the server's assigned LLM." },
+      { term: "rr·model", def: "A registered cross-encoder used to rerank this lane only. Distinct from the rerank on/off lever, which just gates whether reranking runs." },
+      { term: "registered model", def: "A model (URL + name) an admin has registered for a task (llm/reranker); the pickers list only these, curated and SSRF-checked." },
+    ],
+  },
+  {
     group: "Fusion & scoring",
     items: [
       { term: "RRF", def: "Reciprocal Rank Fusion — merges multiple ranked lists by rank position (k=60), not by raw scores, so different scales combine safely." },
@@ -164,12 +182,16 @@ function LeverControls({
   value,
   onChange,
   topKPlaceholder,
+  models = [],
 }: {
   value: Levers;
   onChange: (patch: Partial<Levers>) => void;
   topKPlaceholder: string;
+  models?: AvailableModel[];
 }) {
   const sel = "min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5";
+  const llmModels = models.filter((m) => m.task === "llm");
+  const rerankerModels = models.filter((m) => m.task === "reranker");
   return (
     <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
       <label className="flex items-center gap-1" title={LABEL_TIP.mode}>
@@ -241,6 +263,44 @@ function LeverControls({
           use knowledge graph
         </span>
       </label>
+      {llmModels.length > 0 ? (
+        <label className="col-span-2 flex items-center gap-1" title={LABEL_TIP.llm}>
+          <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+            llm
+          </span>
+          <select
+            value={value.llm}
+            onChange={(e) => onChange({ llm: e.target.value })}
+            className={sel}
+          >
+            <option value="">default</option>
+            {llmModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {rerankerModels.length > 0 ? (
+        <label className="col-span-2 flex items-center gap-1" title={LABEL_TIP.rerankerModel}>
+          <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
+            rr·model
+          </span>
+          <select
+            value={value.reranker}
+            onChange={(e) => onChange({ reranker: e.target.value })}
+            className={sel}
+          >
+            <option value="">default</option>
+            {rerankerModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
     </div>
   );
 }
@@ -685,6 +745,15 @@ export function CompareView({
   });
   const opts: CollectionInfo[] = collections.data?.collections ?? [];
 
+  // Registered llm/reranker models for the per-lane override pickers. When none
+  // are registered the selects don't render, so Compare is unchanged.
+  const availableModels = useQuery({
+    queryKey: ["available-models", apiKey],
+    queryFn: () => getAvailableModels(apiKey || undefined),
+    retry: false,
+  });
+  const models: AvailableModel[] = availableModels.data?.models ?? [];
+
   const [query, setQuery] = useState("");
   // Global pipeline template shared by every lane. topK carries the global
   // default (a concrete number); lanes may leave their own topK null to inherit.
@@ -744,6 +813,8 @@ export function CompareView({
           rerank: rerankValue(eff.rerank),
           use_graph: eff.useGraph,
           rewrite_strategies: rewriteStrategies(eff.rewrite),
+          llm: eff.llm || undefined,
+          reranker: eff.reranker || undefined,
         },
         lane.apiKey || apiKey || undefined,
       )
@@ -906,7 +977,12 @@ export function CompareView({
               onChange={(e) => togglePerLane(e.target.checked)}
             />
           </label>
-          <LeverControls value={glob} onChange={setGlobalLevers} topKPlaceholder="5" />
+          <LeverControls
+            value={glob}
+            onChange={setGlobalLevers}
+            topKPlaceholder="5"
+            models={models}
+          />
           <p className="text-[11px] leading-snug text-gray-400">
             {perLane
               ? "Each lane below can differ. Changing a control here applies it to every lane."
@@ -973,6 +1049,7 @@ export function CompareView({
                     value={lane.levers}
                     onChange={(p) => tuneLevers(lane.key, p)}
                     topKPlaceholder={String(globalTopK)}
+                    models={models}
                   />
                 ) : null}
 

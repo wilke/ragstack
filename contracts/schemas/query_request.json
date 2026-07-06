@@ -53,6 +53,16 @@
       "type": "string",
       "enum": ["hybrid", "vector", "bm25"],
       "default": "hybrid"
+    },
+    "llm": {
+      "description": "Registered model id to generate the answer with for THIS request only (global assignment untouched; retrieval unchanged). Unknown id 404; non-llm model 400. See GET /v1/models/available.",
+      "type": ["string", "null"],
+      "default": null
+    },
+    "reranker": {
+      "description": "Registered model id to rerank with for THIS request only. Unknown id 404; non-reranker model 400. See GET /v1/models/available.",
+      "type": ["string", "null"],
+      "default": null
     }
   },
   "additionalProperties": false
