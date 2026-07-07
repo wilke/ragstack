@@ -970,6 +970,28 @@ async def run(args: argparse.Namespace) -> None:
                                 _doc_id_key(record, record.get("text", "") or "")
                             )
                         inflight.append(("skip", line_no, d_id, d_src))
+                    elif (_max_doc_chars := getattr(args, "max_doc_chars", 0)) and len(
+                        record.get("text", "") or ""
+                    ) > _max_doc_chars:
+                        # Oversized doc (e.g. a multi-MB data table): skip embedding it.
+                        # Its semantic segmentation fans thousands of span embeds that fail
+                        # on every endpoint and stall the checkpoint, blocking all following
+                        # docs in the file. Treat exactly like a filtered doc — count it and
+                        # let the checkpoint advance past it (a "skip" folds in file order).
+                        stats["skipped"] += 1
+                        n_chars = len(record.get("text", "") or "")
+                        print(
+                            f"  skip oversized doc at line {line_no}: {n_chars:,} chars "
+                            f"> --max-doc-chars={_max_doc_chars:,}",
+                            file=sys.stderr,
+                        )
+                        d_id = d_src = None
+                        if doc_metrics is not None:
+                            d_src = record.get("path", "") or ""
+                            d_id = deterministic_doc_id(
+                                _doc_id_key(record, record.get("text", "") or "")
+                            )
+                        inflight.append(("skip", line_no, d_id, d_src))
                     elif track_done_ranges and _line_covered(line_no, start_line, resume_done_ranges):
                         # #65 resume fast-path: durably upserted in a prior run. Skip the
                         # expensive chunk+embed+upsert, but still buffer the cheap catalog
@@ -1240,6 +1262,13 @@ def main() -> None:
                         "folds results in strict file order so the resume checkpoint is "
                         "unaffected. Set >1 to saturate a breakpoint-model fleet (e.g. "
                         "several BGE replicas). Default 1.")
+    p.add_argument("--max-doc-chars", type=int, default=0,
+                   help="skip (do not embed) any document whose text exceeds this many "
+                        "characters. 0 = no limit (default). Guards against multi-MB "
+                        "data-table docs whose semantic segmentation fans out thousands "
+                        "of embeds, fails on every endpoint, and stalls the checkpoint — "
+                        "blocking all following docs in the file. Skipped docs are counted "
+                        "and the checkpoint advances past them, like a filtered doc.")
     # resume
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,

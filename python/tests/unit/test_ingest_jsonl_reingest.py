@@ -167,6 +167,35 @@ async def test_default_reingest_is_upsert_only_and_idempotent(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_max_doc_chars_skips_oversized_doc_and_advances_checkpoint(tmp_path, monkeypatch):
+    # A multi-MB data-table doc whose semantic segmentation would fan out thousands of
+    # embeds and fail on every endpoint must be SKIPPED (not embedded), and the
+    # checkpoint must advance PAST it — otherwise the file stalls forever on the poison
+    # doc and every following doc goes unembedded.
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [
+        {"text": "alpha beta gamma delta. " * 60, "path": "/c/a.pdf", "metadata": {"title": "A"}},
+        {"text": "TABLECELL " * 300_000, "path": "/c/big.pdf", "metadata": {"title": "BIG"}},  # ~3 MB
+        {"text": "delta epsilon zeta eta. " * 60, "path": "/c/b.pdf", "metadata": {"title": "B"}},
+    ])
+    ckpt = tmp_path / "c.ckpt"
+    await ingest_jsonl.run(_args(corpus, checkpoint=ckpt, max_doc_chars=1_000_000))
+
+    # The oversized doc never reached the store...
+    assert not any("TABLECELL" in c.content for c in store.points.values())
+    # ...but BOTH surrounding normal docs did — the skip didn't halt the file.
+    assert any("alpha beta" in c.content for c in store.points.values())
+    assert any("delta epsilon" in c.content for c in store.points.values())
+    # Checkpoint advanced past all 3 lines (did not stall at the poison doc at line 2).
+    assert json.loads(ckpt.read_text())["line"] == 3
+
+
+@pytest.mark.asyncio
 async def test_catalog_resume_advances_over_skipped_tail(tmp_path):
     # Records end with a run of filtered-out (front-matter) docs. The checkpoint
     # must advance to the last line, not stall at the last *kept* doc — else a
