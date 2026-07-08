@@ -3,13 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RAGStack — Deep-Dive: Algorithms, Scalability &amp; Duplication</title>
-<meta name="description" content="RAGStack architecture deep-dive: algorithms, scalability, and duplication — grounded in file:line references.">
+<title>RAGStack — Deep-Dive: Algorithms, Scalability &amp; Duplication · RAGStack</title>
 <style>
   :root {
     --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
     --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
-    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
     --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
   }
@@ -17,8 +16,8 @@
   html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
   body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
     font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
 
-  /* Header / hero with a faint blueprint grid */
   header.hero { border-bottom:1px solid var(--line);
     background:
       linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
@@ -26,22 +25,29 @@
       repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
       var(--paper);
   }
-  .hero-inner { max-width:1200px; margin:0 auto; padding:3rem 2rem 2.2rem; }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
   .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
     color:var(--accent-2); margin:0 0 .7rem; }
   h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
-    letter-spacing:-.02em; text-wrap:balance; max-width:22ch; }
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
   .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
   .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
   .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
     border:1px solid var(--line); background:var(--panel); color:var(--muted); }
   .chip a { color:var(--accent); text-decoration:none; }
 
-  /* Layout: sticky sidebar + reading column */
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
   .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
     display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
-  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem;
-    font-size:.86rem; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
   nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
     text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
   ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
@@ -52,95 +58,68 @@
   ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
     text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
   nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
-  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent);
-    background:var(--accent-soft); }
-
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
   main { padding:1.6rem 0 5rem; min-width:0; }
   .content { max-width:60rem; }
-
-  /* Typography */
+  .content code { font-size:.85em; }
   h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
     line-height:1.2; scroll-margin-top:1rem; }
   h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
     border-radius:2px; margin-bottom:.9rem; }
-  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; color:var(--ink);
-    scroll-margin-top:1rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
   h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
   p { margin:.7rem 0; }
-  a { color:var(--accent); text-underline-offset:2px; }
   strong { font-weight:650; color:#0d1620; }
   hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
   .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
     opacity:0; font-size:.8em; }
   h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
-
-  /* Inline code + the pervasive file:line refs */
-  code { font-family:var(--mono); font-size:.85em; background:var(--code-bg); color:var(--code-ink);
-    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
   a code { color:var(--accent); background:var(--accent-soft); }
-
-  /* Lists */
   ul, ol { padding-left:1.3rem; margin:.6rem 0; }
   li { margin:.28rem 0; }
   li::marker { color:var(--faint); }
-
-  /* Blockquote / callouts */
   blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
     background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
   blockquote p { margin:.3rem 0; }
-
-  /* Tables — wrapped in .tablewrap so wide ones scroll instead of cramming. */
-  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px;
-    -webkit-overflow-scrolling:touch; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
   .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
   th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
-  /* File:line refs stay on one line (the table scrolls); prose in cells still wraps. */
   td code, th code { white-space:nowrap; }
   thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
     letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
   tbody tr:nth-child(even) { background:#fafbfd; }
-
-  /* Mermaid diagram cards */
   .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
     background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
   .diagram pre.mermaid { margin:0; text-align:center; }
-  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono);
-    font-size:.8rem; }
-
-  footer { border-top:1px solid var(--line); margin-top:3rem; }
-  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
-    font-size:.84rem; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
   .foot-inner code { font-size:.8rem; }
-
   @media (max-width:920px) {
     .wrap { grid-template-columns:1fr; gap:0; }
-    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line);
-      padding:1rem 0; }
-    nav.side details > summary { cursor:pointer; font-family:var(--mono); font-size:.75rem;
-      letter-spacing:.12em; text-transform:uppercase; color:var(--accent-2); }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
     main { padding-top:1rem; }
   }
 </style>
 </head>
 <body>
-<header class="hero">
-  <div class="hero-inner">
-    <p class="kicker">RAGStack · Architecture</p>
-    <h1 class="title">RAGStack — Deep-Dive: Algorithms, Scalability &amp; Duplication</h1>
-    <p class="tagline">A per-capability deep dive — for each capability: the algorithm, the tools &amp; models, inputs&nbsp;&rarr;&nbsp;outputs, whether it scales &amp; parallelizes, single vs bulk, and a diagram. Closes with a cross-cutting duplication audit.</p>
-    <div class="chips">
-      <span class="chip">Python implementation</span>
-      <span class="chip">grounded in <code>file:line</code></span>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">RAGStack — Deep-Dive: Algorithms, Scalability &amp; Duplication</h1>
+  <p class="tagline">Per-capability internals: algorithms, tools &amp; models, scalability, single vs bulk, 33 diagrams, and a duplication audit.</p>
+  <div class="chips">
+      <span class="chip">Deep-Dive</span>
       <span class="chip">33 diagrams</span>
       <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
-    </div>
   </div>
-</header>
+</div></header>
 
 <div class="wrap">
-  <nav class="side" id="side">
-    <div class="side-title">Contents</div>
-    <ul class="toc">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
 <li><a href="#0-single-vs-bulk--the-three-ingest-paths-and-one-query-path">0. Single vs bulk — the three ingest paths and one query path</a>
 </li>
 <li><a href="#1-loading--enrichment">1. Loading &amp; Enrichment</a>
@@ -226,9 +205,8 @@
 </li>
 </ul>
   </nav>
-  <main>
-    <article class="content" id="content">
-      <p>A per-capability deep dive: for each capability, the <strong>algorithm/workflow</strong>, the
+  <main><article class="content" id="content">
+<p>A per-capability deep dive: for each capability, the <strong>algorithm/workflow</strong>, the
 <strong>tools &amp; models</strong> it uses, its <strong>inputs → outputs</strong>, whether it is <strong>scalable and
 parallelizable</strong>, whether it distinguishes <strong>single vs bulk</strong> operation, and a
 <strong>Mermaid diagram</strong> of the algorithm. It closes with a cross-cutting analysis of
@@ -1733,26 +1711,16 @@ real but near-zero drift risk; worth a one-line helper each when convenient.</p>
 - <code>/Users/me/Development/dxkb/ragstack/python/ragstack/config.py</code></p>
 <hr />
 <p><em>Companion to <a href="ARCHITECTURE.md">ARCHITECTURE.md</a>, <a href="../SPEC.md">SPEC.md</a>, and <a href="../STATUS.md">STATUS.md</a>. Duplication findings were adversarially re-verified against the source before inclusion.</em></p>
-    </article>
-  </main>
+  </article></main>
 </div>
 
-<footer>
-  <div class="foot-inner">
-    Generated from <code>docs/ARCHITECTURE-DEEP-DIVE.md</code> via <code>docs/build_arch_html.py</code> ·
-    <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a>
-  </div>
-</footer>
-
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
   mermaid.initialize({
-    startOnLoad: true,
-    securityLevel: "strict",
-    theme: "base",
+    startOnLoad: true, securityLevel: "strict", theme: "base",
     themeVariables: {
-      fontFamily: "ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif",
-      fontSize: "14px",
+      fontFamily: "ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif", fontSize: "14px",
       primaryColor: "#e9f1fb", primaryBorderColor: "#1668b0", primaryTextColor: "#141a22",
       lineColor: "#7d8aa0", secondaryColor: "#f2f5fa", tertiaryColor: "#fafbfd",
     },
@@ -1760,14 +1728,12 @@ real but near-zero drift risk; worth a one-line helper each when convenient.</p>
   });
 </script>
 <script>
-  // Heading anchor links + scroll-spy over the sidebar.
   (function () {
     var content = document.getElementById("content");
     content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
       var a = document.createElement("a");
       a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
-      a.setAttribute("aria-label", "Link to this section");
-      h.appendChild(a);
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
     });
     var links = {};
     document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
@@ -1777,11 +1743,9 @@ real but near-zero drift risk; worth a one-line helper each when convenient.</p>
     var obs = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
         if (!e.isIntersecting) return;
-        var a = links[e.target.id];
-        if (!a || a === current) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
         if (current) current.classList.remove("active");
-        a.classList.add("active"); current = a;
-        a.scrollIntoView({ block: "nearest" });
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
       });
     }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
     content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });

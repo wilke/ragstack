@@ -1,14 +1,16 @@
-name: Publish architecture deep-dive to Pages
+name: Publish docs to Pages
 
-# Renders docs/ARCHITECTURE-DEEP-DIVE.md → a self-contained HTML page and
-# deploys it as the GitHub Pages site (index). Enable once under
+# Renders selected repo docs → a small self-contained HTML site (index + one
+# page per doc) and deploys it to GitHub Pages. Enable once under
 # Settings → Pages → Source: "GitHub Actions".
 on:
   push:
     branches: [main]
     paths:
+      - docs/ARCHITECTURE.md
       - docs/ARCHITECTURE-DEEP-DIVE.md
-      - docs/build_arch_html.py
+      - docs/LOCAL-DEMO.md
+      - docs/build_docs.py
       - .github/workflows/pages.yml
   workflow_dispatch:
 
@@ -33,12 +35,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install markdown
-      - run: python docs/build_arch_html.py
+      - run: python docs/build_docs.py
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp docs/architecture-deep-dive.html _site/index.html
-          cp docs/architecture-deep-dive.html _site/architecture-deep-dive.html
+          cp docs/index.html docs/architecture.html docs/architecture-deep-dive.html docs/cookbook.html _site/
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
