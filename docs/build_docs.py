@@ -34,9 +34,14 @@ PAGES = [
         blurb="Per-capability internals: algorithms, tools & models, scalability, single vs bulk, 33 diagrams, and a duplication audit.",
     ),
     dict(
-        src="LOCAL-DEMO.md", out="cookbook.html", label="Cookbook",
-        card="Cookbook — Local Demo",
-        blurb="Hands-on runbook: spin up the UI + API locally against SciFact data, step by step.",
+        src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
+        card="Cookbook — New-Org Ingest",
+        blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
+    ),
+    dict(
+        src="LOCAL-DEMO.md", out="local-demo.html", label="Runbook",
+        card="Local Demo Runbook",
+        blurb="Spin up the UI + API locally against SciFact data — the fastest way to see RAGStack running.",
     ),
 ]
 
