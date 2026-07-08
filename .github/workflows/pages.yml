@@ -1,8 +1,9 @@
 name: Publish docs to Pages
 
 # Renders selected repo docs → a small self-contained HTML site (index + one
-# page per doc) and deploys it to GitHub Pages. Enable once under
-# Settings → Pages → Source: "GitHub Actions".
+# page per doc) and deploys it to GitHub Pages. The configure-pages step below
+# enables Pages on first run (enablement: true), so no manual repo setting is
+# needed — just merge to main.
 on:
   push:
     branches: [main]
@@ -10,6 +11,7 @@ on:
       - docs/ARCHITECTURE.md
       - docs/ARCHITECTURE-DEEP-DIVE.md
       - docs/LOCAL-DEMO.md
+      - docs/cookbook-new-org-ingest.md
       - docs/build_docs.py
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -31,6 +33,12 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      # Enables GitHub Pages (Actions source) if it isn't already — this is what
+      # was missing, and why the deploy 404'd.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -39,7 +47,12 @@ jobs:
       - name: Assemble site
         run: |
           mkdir -p _site
-          cp docs/index.html docs/architecture.html docs/architecture-deep-dive.html docs/cookbook.html _site/
+          cp docs/index.html \
+             docs/architecture.html \
+             docs/architecture-deep-dive.html \
+             docs/cookbook-new-org-ingest.html \
+             docs/local-demo.html \
+             _site/
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
