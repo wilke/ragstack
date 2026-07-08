@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local demo — run the UI + API on your machine with SciFact data · RAGStack</title>
+<style>
+  :root {
+    --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
+    --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
+
+  header.hero { border-bottom:1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      var(--paper);
+  }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
+  .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent-2); margin:0 0 .7rem; }
+  h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
+  .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .chip a { color:var(--accent); text-decoration:none; }
+
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
+  .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
+    display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
+  nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
+  ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
+  ul.toc > li { margin:.1rem 0; }
+  ul.toc > li > a { display:block; padding:.28rem .6rem; border-radius:6px; color:var(--ink);
+    text-decoration:none; font-weight:550; border-left:2px solid transparent; }
+  ul.toc-sub { margin:.1rem 0 .5rem; }
+  ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
+    text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
+  nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
+  main { padding:1.6rem 0 5rem; min-width:0; }
+  .content { max-width:60rem; }
+  .content code { font-size:.85em; }
+  h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
+    line-height:1.2; scroll-margin-top:1rem; }
+  h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
+    border-radius:2px; margin-bottom:.9rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
+  h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
+  p { margin:.7rem 0; }
+  strong { font-weight:650; color:#0d1620; }
+  hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
+  .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
+    opacity:0; font-size:.8em; }
+  h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
+  a code { color:var(--accent); background:var(--accent-soft); }
+  ul, ol { padding-left:1.3rem; margin:.6rem 0; }
+  li { margin:.28rem 0; }
+  li::marker { color:var(--faint); }
+  blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
+    background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
+  blockquote p { margin:.3rem 0; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
+  .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  td code, th code { white-space:nowrap; }
+  thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
+  .diagram pre.mermaid { margin:0; text-align:center; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
+  .foot-inner code { font-size:.8rem; }
+  @media (max-width:920px) {
+    .wrap { grid-template-columns:1fr; gap:0; }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
+    main { padding-top:1rem; }
+  }
+</style>
+</head>
+<body>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">Local demo — run the UI + API on your machine with SciFact data</h1>
+  <p class="tagline">Hands-on runbook: spin up the UI + API locally against SciFact data, step by step.</p>
+  <div class="chips">
+      <span class="chip">Cookbook</span>
+      <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
+<li><a href="#topology">Topology</a>
+</li>
+<li><a href="#0-prerequisites">0. Prerequisites</a>
+</li>
+<li><a href="#1-infra-qdrant--elasticsearch">1. Infra (Qdrant + Elasticsearch)</a>
+</li>
+<li><a href="#2-get-scifact-5183-abstracts">2. Get SciFact (~5,183 abstracts)</a>
+</li>
+<li><a href="#3-embeddings--pick-one">3. Embeddings — pick one</a>
+<ul class="toc-sub">
+<li><a href="#3a-self-contained-local-bge-768-d--no-network-slower-on-cpu">3A. Self-contained (local BGE, 768-d) — no network, slower on CPU</a></li>
+<li><a href="#3b-fast-remote-gpus-sfr-mistral-4096-d--via-ssh-tunnel">3B. Fast remote GPUs (SFR-Mistral, 4096-d) — via SSH tunnel</a></li>
+</ul>
+</li>
+<li><a href="#4-populate-bm25-without-re-embedding">4. Populate BM25 without re-embedding</a>
+</li>
+<li><a href="#5-run-the-api-host--frontend">5. Run the API (host) + frontend</a>
+</li>
+<li><a href="#6-use-it">6. Use it</a>
+</li>
+<li><a href="#7-stop--clean-up">7. Stop / clean up</a>
+</li>
+<li><a href="#notes--gotchas">Notes &amp; gotchas</a>
+</li>
+</ul>
+  </nav>
+  <main><article class="content" id="content">
+<p>A tested recipe to bring up the <strong>full stack locally</strong> (Explore + Ops UI, hybrid
+retrieval, catalog) seeded with the <strong>SciFact</strong> benchmark corpus. Two embedding
+options: a fully self-contained local model, or fast remote GPUs over an SSH tunnel.</p>
+<blockquote>
+<p>Companion to <a href="DEPLOYMENT.md">DEPLOYMENT.md</a> (which covers the general deploy paths).
+This file is the <em>demo</em> recipe. Verified on macOS/Apple-Silicon.</p>
+</blockquote>
+<hr />
+<h2 id="topology">Topology</h2>
+<p>Qdrant (vectors) + Elasticsearch (BM25) run in Docker; the <strong>API runs on the host</strong>
+(a <code>python/.venv</code>) so it reads <code>localhost</code> URLs directly; the <strong>frontend</strong> is the Vite
+dev server. Embeddings come from <em>either</em> a local BGE sidecar <em>or</em> remote SFR GPUs.</p>
+<pre><code>frontend :5173  →(proxy /v1)→  API :8000 (host venv)
+                                 ├─ Qdrant :6333  (docker)
+                                 ├─ Elasticsearch :9200  (docker)
+                                 └─ embeddings:  BGE sidecar :50053 (docker)  OR  SFR via SSH tunnel :9001-9004
+</code></pre>
+<hr />
+<h2 id="0-prerequisites">0. Prerequisites</h2>
+<pre><code class="language-bash"># Docker running; Node 18+; a Python venv for the API
+cd python &amp;&amp; python3 -m venv .venv &amp;&amp; .venv/bin/pip install -e &quot;.[vector,text]&quot; &quot;uvicorn[standard]&quot; &amp;&amp; cd ..
+make frontend-install          # npm install in frontend/
+</code></pre>
+<h2 id="1-infra-qdrant--elasticsearch">1. Infra (Qdrant + Elasticsearch)</h2>
+<pre><code class="language-bash">docker compose -f deploy/docker-compose.local.yml up -d qdrant   # vectors
+docker compose -f deploy/docker-compose.infra.yml up -d elasticsearch
+</code></pre>
+<p>(<code>docker-compose.local.yml</code> also defines a BGE sidecar + a containerized API — see step 3A.)</p>
+<h2 id="2-get-scifact-5183-abstracts">2. Get SciFact (~5,183 abstracts)</h2>
+<pre><code class="language-bash">mkdir -p .localdata &amp;&amp; cd .localdata
+curl -sSL -o scifact.zip https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip
+unzip -oq scifact.zip
+# corpus.jsonl {_id,title,text} → ingester JSONL {text,path,metadata}
+python3 - &lt;&lt;'PY'
+import json
+with open('scifact/corpus.jsonl') as f, open('scifact_ingest.jsonl','w') as out:
+    for line in f:
+        r = json.loads(line); t = (r.get('title') or '').strip(); x = (r.get('text') or '').strip()
+        if not x: continue
+        out.write(json.dumps({'text': (t+'\n\n'+x) if t else x, 'path': 'scifact/'+str(r['_id']),
+                              'metadata': {'doc_id': str(r['_id']), 'title': t, 'source': 'scifact'}})+'\n')
+PY
+cd ..
+</code></pre>
+<h2 id="3-embeddings--pick-one">3. Embeddings — pick one</h2>
+<h3 id="3a-self-contained-local-bge-768-d--no-network-slower-on-cpu">3A. Self-contained (local BGE, 768-d) — no network, slower on CPU</h3>
+<pre><code class="language-bash">docker compose -f deploy/docker-compose.local.yml up -d --build embedding-sidecar
+cd python &amp;&amp; .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
+  --tenant public --embedding-api sidecar --embedding-url http://localhost:50053 \
+  --embedding-model BAAI/bge-base-en-v1.5 --chunk-method fixed --chunk-size 2000 \
+  --chunk-token-counter estimate --concurrency 2 &amp;&amp; cd ..
+export MODEL=BAAI/bge-base-en-v1.5 DIM=768 EMBAPI=sidecar EMBURL=http://localhost:50053
+</code></pre>
+<blockquote>
+<p>CPU embedding is slow and can time out under load; use <code>--concurrency 1 --batch-retries 3</code> if batches fail, or use 3B.</p>
+</blockquote>
+<h3 id="3b-fast-remote-gpus-sfr-mistral-4096-d--via-ssh-tunnel">3B. Fast remote GPUs (SFR-Mistral, 4096-d) — via SSH tunnel</h3>
+<pre><code class="language-bash"># On your machine: tunnel 4 endpoints (adjust host/ports to yours)
+ssh -N -L 9001:localhost:9001 -L 9002:localhost:9002 \
+       -L 9003:localhost:9003 -L 9004:localhost:9004 USER@your-gpu-host
+# verify: curl http://localhost:9001/v1/models
+
+cd python &amp;&amp; .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
+  --tenant public --embedding-api openai \
+  --embedding-url http://localhost:9001 http://localhost:9002 http://localhost:9003 http://localhost:9004 \
+  --embedding-model Salesforce/SFR-Embedding-Mistral --chunk-method fixed --chunk-size 2000 \
+  --chunk-token-counter estimate --concurrency 4 --batch-retries 3 &amp;&amp; cd ..
+# note the printed collection name, e.g. ragstack_salesforce_sfr_embedding_mistral_4096_&lt;hash&gt;
+export MODEL=Salesforce/SFR-Embedding-Mistral DIM=4096 EMBAPI=openai \
+       EMBURL='http://localhost:9001,http://localhost:9002,http://localhost:9003,http://localhost:9004'
+</code></pre>
+<p>The 4-way fan-out embeds the whole corpus in well under a minute. Add a Bearer token
+with <code>--embedding-api-key &lt;key&gt;</code> / <code>OPENAI_API_KEY=&lt;key&gt;</code> if your endpoint needs one.</p>
+<h2 id="4-populate-bm25-without-re-embedding">4. Populate BM25 without re-embedding</h2>
+<p>The ingest above wrote vectors to Qdrant. BM25 only needs the text, so backfill ES from
+Qdrant (no second embedding pass). Use the collection name the ingester printed:</p>
+<pre><code class="language-bash">cd python &amp;&amp; .venv/bin/python scripts/backfill_es_from_qdrant.py \
+  --collection ragstack_salesforce_sfr_embedding_mistral_4096_&lt;hash&gt; &amp;&amp; cd ..
+</code></pre>
+<h2 id="5-run-the-api-host--frontend">5. Run the API (host) + frontend</h2>
+<pre><code class="language-bash"># API — inline env so it ignores the root .env (Go/compose keys the Python Settings rejects)
+cd python &amp;&amp; \
+QDRANT_COLLECTION_EXPLICIT=&lt;the collection from step 3&gt; \
+VECTOR_BACKEND=qdrant QDRANT_URL=http://localhost:6333 \
+TEXT_BACKEND=elasticsearch ELASTICSEARCH_URL=http://localhost:9200 \
+GRAPH_BACKEND=memory JOB_STORE_BACKEND=memory \
+EMBEDDING_API=$EMBAPI EMBEDDING_ENDPOINTS=$EMBURL \
+EMBEDDING_MODEL=$MODEL EMBEDDING_MODEL_DIM=$DIM \
+REQUIRE_DURABLE_BACKENDS=false DEFAULT_ROLE=admin \
+.venv/bin/uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8000 &amp;
+cd ..
+make frontend-dev     # Vite on :5173, proxies /v1 + /health → :8000
+</code></pre>
+<p><code>DEFAULT_ROLE=admin</code> lets the keyless UI reach the admin-gated <code>/v1/health/deep</code>.</p>
+<h2 id="6-use-it">6. Use it</h2>
+<ul>
+<li><strong>UI:</strong> http://localhost:5173 — <strong>Explore</strong> tab (ask the corpus) and <strong>Ops</strong> tab (store counts + deep health).</li>
+<li><strong>API docs:</strong> http://localhost:8000/docs</li>
+<li>Try: <code>folic acid and vitamin B12 in chronic kidney disease</code>, <code>antibiotic resistance in bacteria</code>.</li>
+</ul>
+<h2 id="7-stop--clean-up">7. Stop / clean up</h2>
+<pre><code class="language-bash">pkill -f &quot;uvicorn ragstack.api.main&quot;; pkill -f vite
+docker compose -f deploy/docker-compose.local.yml down
+docker compose -f deploy/docker-compose.infra.yml down elasticsearch
+# scratch data lives in .localdata/ (gitignored)
+</code></pre>
+<hr />
+<h2 id="notes--gotchas">Notes &amp; gotchas</h2>
+<ul>
+<li><strong>Collection name = <code>f(model, dim)</code></strong>, so BGE (768) and SFR (4096) are <em>different</em> Qdrant collections. Pin the serving API to one via <code>QDRANT_COLLECTION_EXPLICIT</code>; the ES index follows it automatically.</li>
+<li><strong>Run the API from <code>python/</code>, not the repo root</strong> — the root <code>.env</code> carries Go/sidecar keys the Python <code>Settings</code> rejects (<code>extra_forbidden</code>). Inline env vars (as above) are CWD-independent.</li>
+<li><strong>SFR needs the tunnel up for live queries too</strong> — query embedding goes through it, not just ingest.</li>
+<li><strong>ES version:</strong> pin the client to match the server (<code>elasticsearch&gt;=8.13,&lt;9</code> for ES 8.13); a v9 client rejects an 8.x server on the media-type header.</li>
+<li><strong>No LLM wired</strong> → <code>/v1/query</code> returns ranked sources with a "generation unavailable" note (fine for a retrieval demo); set <code>LLM_ENDPOINT</code> to add generated answers.</li>
+</ul>
+  </article></main>
+</div>
+
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
+
+<script>
+  (function () {
+    var content = document.getElementById("content");
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
+      var a = document.createElement("a");
+      a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
+    });
+    var links = {};
+    document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
+      links[a.getAttribute("href").slice(1)] = a;
+    });
+    var current = null;
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
+        if (current) current.classList.remove("active");
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
+      });
+    }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });
+  })();
+</script>
+</body>
+</html>

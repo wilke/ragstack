@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAGStack — Architecture &amp; Capabilities Overview · RAGStack</title>
+<style>
+  :root {
+    --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
+    --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
+
+  header.hero { border-bottom:1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      var(--paper);
+  }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
+  .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent-2); margin:0 0 .7rem; }
+  h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
+  .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .chip a { color:var(--accent); text-decoration:none; }
+
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
+  .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
+    display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
+  nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
+  ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
+  ul.toc > li { margin:.1rem 0; }
+  ul.toc > li > a { display:block; padding:.28rem .6rem; border-radius:6px; color:var(--ink);
+    text-decoration:none; font-weight:550; border-left:2px solid transparent; }
+  ul.toc-sub { margin:.1rem 0 .5rem; }
+  ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
+    text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
+  nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
+  main { padding:1.6rem 0 5rem; min-width:0; }
+  .content { max-width:60rem; }
+  .content code { font-size:.85em; }
+  h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
+    line-height:1.2; scroll-margin-top:1rem; }
+  h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
+    border-radius:2px; margin-bottom:.9rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
+  h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
+  p { margin:.7rem 0; }
+  strong { font-weight:650; color:#0d1620; }
+  hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
+  .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
+    opacity:0; font-size:.8em; }
+  h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
+  a code { color:var(--accent); background:var(--accent-soft); }
+  ul, ol { padding-left:1.3rem; margin:.6rem 0; }
+  li { margin:.28rem 0; }
+  li::marker { color:var(--faint); }
+  blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
+    background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
+  blockquote p { margin:.3rem 0; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
+  .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  td code, th code { white-space:nowrap; }
+  thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
+  .diagram pre.mermaid { margin:0; text-align:center; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
+  .foot-inner code { font-size:.8rem; }
+  @media (max-width:920px) {
+    .wrap { grid-template-columns:1fr; gap:0; }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
+    main { padding-top:1rem; }
+  }
+</style>
+</head>
+<body>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">RAGStack — Architecture &amp; Capabilities Overview</h1>
+  <p class="tagline">A high-level map — capabilities, components, data-flow diagrams, and the full API + service-script surface.</p>
+  <div class="chips">
+      <span class="chip">Overview</span>
+      <span class="chip">3 diagrams</span>
+      <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
+<li><a href="#1-capabilities-overview">1. Capabilities overview</a>
+</li>
+<li><a href="#2-system-components">2. System components</a>
+<ul class="toc-sub">
+<li><a href="#21-api-layer-pythonragstackapi">2.1 API layer (python/ragstack/api/)</a></li>
+<li><a href="#22-ingestion-subsystem-pythonragstackingestion">2.2 Ingestion subsystem (python/ragstack/ingestion/)</a></li>
+<li><a href="#23-retrieval-rewriting-scoring">2.3 Retrieval, rewriting, scoring</a></li>
+<li><a href="#24-storage-adapters-pythonragstackstores">2.4 Storage adapters (python/ragstack/stores/)</a></li>
+<li><a href="#25-embedding--llm">2.5 Embedding &amp; LLM</a></li>
+<li><a href="#26-cross-cutting">2.6 Cross-cutting</a></li>
+<li><a href="#27-model-sidecars-sidecars--independent-fastapi-services">2.7 Model sidecars (sidecars/) — independent FastAPI services</a></li>
+<li><a href="#28-infrastructure-services">2.8 Infrastructure services</a></li>
+</ul>
+</li>
+<li><a href="#3-system-diagram">3. System diagram</a>
+</li>
+<li><a href="#4-data-flow-diagrams">4. Data flow diagrams</a>
+<ul class="toc-sub">
+<li><a href="#41-ingest-path-post-v1ingest--bulk-ingest_jsonlpy">4.1 Ingest path (POST /v1/ingest / bulk ingest_jsonl.py)</a></li>
+<li><a href="#42-query-path-post-v1query">4.2 Query path (POST /v1/query)</a></li>
+</ul>
+</li>
+<li><a href="#5-api-endpoints">5. API endpoints</a>
+</li>
+<li><a href="#6-service-scripts-pythonscripts">6. Service scripts (python/scripts/)</a>
+<ul class="toc-sub">
+<li><a href="#61-ingestion--search-clis">6.1 Ingestion &amp; search CLIs</a></li>
+<li><a href="#62-eval--benchmark-harnesses-pythonscriptseval">6.2 Eval / benchmark harnesses (python/scripts/eval/)</a></li>
+</ul>
+</li>
+<li><a href="#7-deployment-topology">7. Deployment topology</a>
+</li>
+</ul>
+  </nav>
+  <main><article class="content" id="content">
+<p>A high-level map of what RAGStack does, the components that make it work, how data
+flows through the system, and the complete API + service-script surface.</p>
+<blockquote>
+<p>Scope note: this reflects the code on <code>main</code> as of 2026-07-02. The <strong>Python</strong>
+implementation is feature-complete; the <strong>Go</strong> implementation is a Phase-1
+scaffold whose handlers largely return stubs. Where they differ, this document
+describes Python and flags Go status explicitly.</p>
+</blockquote>
+<hr />
+<h2 id="1-capabilities-overview">1. Capabilities overview</h2>
+<p>RAGStack is a <strong>multi-tenant Retrieval-Augmented Generation (RAG) platform</strong> exposed
+as a single HTTP API, with two parallel implementations (Python/FastAPI, Go/Chi)
+conforming to one OpenAPI 3.1 contract.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>What it does</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Scholarly ingestion</strong></td>
+<td>Load PDF / text / Markdown / JSONL, chunk, embed, and index — single file, directory, or multi-hundred-MB JSONL corpus</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Metadata enrichment</strong></td>
+<td>Recover DOI / title / authors / year / citations / doc-type from sparse extraction dumps, via pluggable publisher profiles</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Configurable chunking</strong></td>
+<td>6 strategies — <code>fixed</code>, <code>fixed_token</code>, <code>sentence</code>, <code>words</code>, <code>semantic</code>, <code>semantic_pooled</code> — all with deterministic IDs and token-budget safety</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Hybrid retrieval</strong></td>
+<td>Dense vectors (Qdrant) <strong>+</strong> BM25 (Elasticsearch) <strong>+</strong> optional graph context, fused via Reciprocal Rank Fusion</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Query rewriting</strong></td>
+<td>Expand a query into retrieval variants (<code>passthrough</code>, <code>multiquery</code>, <code>hyde</code>), retrieve each concurrently, RRF-fuse</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Cross-encoder reranking</strong></td>
+<td>Re-score the fused candidate pool with a cross-encoder sidecar, cut to <code>top_k</code></td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Grounded answer generation</strong></td>
+<td>Synthesize a cited answer from retrieved sources via an OpenAI-compatible LLM</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Knowledge graph</strong></td>
+<td>LLM triple extraction → Neo4j; tenant-scoped entity/neighbor queries; graph-augmented retrieval leg</td>
+<td>✅ Python (opt-in)</td>
+</tr>
+<tr>
+<td><strong>Multi-tenancy</strong></td>
+<td>Every chunk carries a <code>tenant_id</code>; reads are scoped to <code>own + public</code>; tenant is derived server-side from the API key and cannot be spoofed</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>RBAC</strong></td>
+<td>Four roles (<code>admin</code>, <code>engineer</code>, <code>manager</code>, <code>researcher</code>); admin-gated config/health surfaces</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Resumable bulk ingest</strong></td>
+<td>Checkpointed, crash-safe, out-of-order-aware ingestion that scales 1 → 500k docs and resumes without re-embedding completed work</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Scale &amp; resilience</strong></td>
+<td>Multi-endpoint embedder pool (least-loaded routing, failover, health re-probe), per-tenant concurrency quota, poison-input isolation, graceful degradation</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Two deployment paths</strong></td>
+<td>Docker Compose (layered) and Apptainer rootless (HPC / no-Docker hosts) with persistent host binds</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Dashboard / Explorer</strong></td>
+<td>React + Vite SPA (sources-first query console) over new read-only stats/health endpoints</td>
+<td>🚧 MVP</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Design principles that recur throughout:</strong> composability via <code>Protocol</code> interfaces
+(every stage is swappable), deterministic <code>uuid5</code> IDs (re-ingest overwrites in place,
+never duplicates), tenancy as a first-class store concern, and graceful degradation
+(a failed stage returns partial results, never a 500).</p>
+<hr />
+<h2 id="2-system-components">2. System components</h2>
+<h3 id="21-api-layer-pythonragstackapi">2.1 API layer (<code>python/ragstack/api/</code>)</h3>
+<p>The FastAPI surface. <code>main.py</code> assembles routers behind CORS + security; <code>deps.py</code>
+is the composition root — its <code>lifespan()</code> builds every backend from config at
+startup and exposes them via <code>Depends()</code> providers. <code>security.py</code> implements
+constant-time API-key auth, server-side tenant resolution, and <code>require_role()</code>
+RBAC gating. Routers: <code>query</code>, <code>documents</code>, <code>graph</code>, <code>stats</code>, <code>admin</code>, <code>health</code>,
+<code>health_deep</code>.</p>
+<h3 id="22-ingestion-subsystem-pythonragstackingestion">2.2 Ingestion subsystem (<code>python/ragstack/ingestion/</code>)</h3>
+<ul>
+<li><strong>loaders.py</strong> — <code>LoaderRegistry</code> dispatches by extension to <code>PdfLoader</code> (PyMuPDF),
+  <code>TextFileLoader</code>, <code>JsonlLoader</code>; enforces <code>ingest_root</code> (LFI guard) + <code>max_bytes</code> (DoS guard).</li>
+<li><strong>chunkers.py</strong> — <code>RecursiveCharacterChunker</code>, <code>SentenceChunker</code>, <code>WordChunker</code>,
+  <code>FixedTokenWindowChunker</code>, <code>SemanticChunker</code> (embedding-driven boundaries + oversize fallback).</li>
+<li><strong>enrich.py</strong> — scholarly metadata recovery; <code>PublisherProfile</code> (ASM default) drives
+  DOI derivation, citation parsing, classification. Pure functions, reused by API + scripts.</li>
+<li><strong>tokenization.py</strong> — <code>HFTokenCounter</code> / <code>EstimatingTokenCounter</code> / <code>EndpointTokenCounter</code>
+  keep chunks under the embedder's context window.</li>
+<li><strong>pipeline.py</strong> — <code>IngestionPipeline</code>: load → chunk → embed → replace-old → index (vector/text/graph).</li>
+<li><strong>manifest.py / backends.py / sharded.py</strong> — resumable batch layer: enumerate work
+  units, partition into shards, run concurrently with per-item failure isolation + checkpointing.</li>
+<li><strong>embed_bridge.py</strong> — <code>SyncEmbedBridge</code> lets synchronous chunkers call the async embedder on a dedicated loop.</li>
+</ul>
+<h3 id="23-retrieval-rewriting-scoring">2.3 Retrieval, rewriting, scoring</h3>
+<ul>
+<li><strong>retrieval/retriever.py</strong> — <code>HybridRetriever</code> runs dense + BM25 (+ optional graph)
+  legs and fuses them with RRF.</li>
+<li><strong>rewriting/rewriters.py</strong> — <code>PassthroughRewriter</code>, <code>MultiQueryRewriter</code>, <code>HyDERewriter</code>.</li>
+<li><strong>scoring/scorers.py</strong> — <code>RRFScorer</code> (rank fusion), <code>CrossEncoderScorer</code> (in-process),
+  <code>SidecarReranker</code> (HTTP cross-encoder).</li>
+</ul>
+<h3 id="24-storage-adapters-pythonragstackstores">2.4 Storage adapters (<code>python/ragstack/stores/</code>)</h3>
+<ul>
+<li><strong>qdrant.py</strong> — <code>QdrantVectorStore</code>; <code>(model, dim)</code>-scoped collections; tenant-filtered search.</li>
+<li><strong>elasticsearch.py</strong> — <code>ElasticsearchTextIndex</code> (BM25); doc id <code>tenant:chunk_id</code>; fail-closed on unscoped reads.</li>
+<li><strong>neo4j.py</strong> — <code>Neo4jGraphStore</code>; entities keyed by <code>(name, tenant_id)</code>; depth-capped traversal.</li>
+<li><strong>memory.py</strong> — in-memory vector/text/graph stores for dev + tests.</li>
+</ul>
+<h3 id="25-embedding--llm">2.5 Embedding &amp; LLM</h3>
+<ul>
+<li><strong>embedders.py</strong> — <code>SidecarEmbedder</code>, <code>OpenAIEmbedder</code>, <code>BatchingEmbedder</code> (bounded + poison-isolating).</li>
+<li><strong>embed_pool.py</strong> — <code>PooledEmbedder</code>: least-loaded routing across endpoints, failover, lazy health re-probe.</li>
+<li><strong>graph/extractor.py</strong> — <code>LLMKGExtractor</code> (strict-JSON triple extraction, per-chunk graceful degrade).</li>
+<li><strong>llm.py</strong> — <code>OpenAILLM</code> + <code>RagGenerator</code> (cited answer synthesis).</li>
+</ul>
+<h3 id="26-cross-cutting">2.6 Cross-cutting</h3>
+<ul>
+<li><strong>config.py</strong> — Pydantic <code>Settings</code>; env-driven backend selection.</li>
+<li><strong>tenancy.py / quota.py</strong> — readable-tenant scoping; per-tenant concurrency semaphore.</li>
+<li><strong>jobstore.py</strong> — <code>InMemory</code> / <code>Sqlite</code> / <code>Postgres</code> job stores for async + resumable ingest.</li>
+<li><strong>sidecar_http.py</strong> — shared <code>SidecarClient</code> JSON-over-HTTP plumbing.</li>
+</ul>
+<h3 id="27-model-sidecars-sidecars--independent-fastapi-services">2.7 Model sidecars (<code>sidecars/</code>) — independent FastAPI services</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Sidecar</th>
+<th>Port</th>
+<th>Model (default)</th>
+<th>Endpoints</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>embedding</strong></td>
+<td>50053</td>
+<td><code>BAAI/bge-base-en-v1.5</code> (768-d)</td>
+<td><code>POST /embed</code>, <code>GET /health</code></td>
+</tr>
+<tr>
+<td><strong>crossencoder</strong></td>
+<td>50052</td>
+<td><code>BAAI/bge-reranker-v2-m3</code></td>
+<td><code>POST /rerank</code>, <code>GET /health</code></td>
+</tr>
+<tr>
+<td><strong>faiss</strong> (legacy/optional)</td>
+<td>50051</td>
+<td>FAISS flat index</td>
+<td><code>POST /search</code>, <code>GET /indices</code>, <code>GET /health</code></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="28-infrastructure-services">2.8 Infrastructure services</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Service</th>
+<th>Port</th>
+<th>Role in RAGStack</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Qdrant</strong></td>
+<td>6333</td>
+<td>Primary vector store</td>
+</tr>
+<tr>
+<td><strong>Elasticsearch</strong></td>
+<td>9200</td>
+<td>BM25 text index (hybrid leg)</td>
+</tr>
+<tr>
+<td><strong>Neo4j</strong></td>
+<td>7687</td>
+<td>Knowledge-graph store (opt-in)</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>5432</td>
+<td>Durable job store / resumable checkpoints</td>
+</tr>
+<tr>
+<td><strong>Redis</strong></td>
+<td>6379</td>
+<td>Cache / rate-limit / Celery broker</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="3-system-diagram">3. System diagram</h2>
+<div class="diagram"><pre class="mermaid">graph TB
+    subgraph clients[&quot;Clients&quot;]
+        SPA[&quot;Dashboard / Explorer SPA&lt;br/&gt;(React + Vite)&quot;]
+        CLI[&quot;CLI scripts&lt;br/&gt;(ingest / search)&quot;]
+        EXT[&quot;External callers&lt;br/&gt;(X-API-Key)&quot;]
+    end
+
+    subgraph api[&quot;RAGStack API — FastAPI :8000 / Go Chi :8080&quot;]
+        SEC[&quot;Security&lt;br/&gt;API-key auth · tenant · RBAC&quot;]
+        RT[&quot;Routers&lt;br/&gt;query · documents · graph&lt;br/&gt;stats · admin · health&quot;]
+        PIPE[&quot;Pipeline &amp;amp; orchestration&lt;br/&gt;IngestionPipeline · HybridRetriever&lt;br/&gt;rewriters · scorers · RagGenerator&quot;]
+        SEC --&gt; RT --&gt; PIPE
+    end
+
+    subgraph sidecars[&quot;Model sidecars (FastAPI)&quot;]
+        EMB[&quot;Embedding :50053&lt;br/&gt;BGE-base&quot;]
+        CE[&quot;Cross-encoder :50052&lt;br/&gt;BGE-reranker&quot;]
+        FA[&quot;FAISS :50051&lt;br/&gt;(legacy)&quot;]
+    end
+
+    subgraph vllm[&quot;Self-hosted LLM/embeds (optional)&quot;]
+        VLLM[&quot;vLLM / OpenAI-compatible&lt;br/&gt;rewrite · HyDE · KG · answer · embeds&quot;]
+    end
+
+    subgraph infra[&quot;Infrastructure&quot;]
+        QD[(&quot;Qdrant&lt;br/&gt;vectors&quot;)]
+        ES[(&quot;Elasticsearch&lt;br/&gt;BM25&quot;)]
+        NEO[(&quot;Neo4j&lt;br/&gt;graph&quot;)]
+        PG[(&quot;PostgreSQL&lt;br/&gt;jobs&quot;)]
+        RD[(&quot;Redis&lt;br/&gt;cache&quot;)]
+    end
+
+    SPA --&gt; SEC
+    CLI --&gt; EMB
+    CLI --&gt; QD
+    EXT --&gt; SEC
+
+    PIPE --&gt; EMB
+    PIPE --&gt; CE
+    PIPE -.legacy.-&gt; FA
+    PIPE --&gt; VLLM
+    PIPE --&gt; QD
+    PIPE --&gt; ES
+    PIPE --&gt; NEO
+    PIPE --&gt; PG
+    PIPE -.-&gt; RD
+    EMB -.pooled fan-out.-&gt; VLLM</pre></div>
+<hr />
+<h2 id="4-data-flow-diagrams">4. Data flow diagrams</h2>
+<h3 id="41-ingest-path-post-v1ingest--bulk-ingest_jsonlpy">4.1 Ingest path (<code>POST /v1/ingest</code> / bulk <code>ingest_jsonl.py</code>)</h3>
+<div class="diagram"><pre class="mermaid">flowchart LR
+    SRC[&quot;Source&lt;br/&gt;PDF · TXT · MD · JSONL&quot;] --&gt; LOAD[&quot;LoaderRegistry&lt;br/&gt;ingest_root + size guards&quot;]
+    LOAD --&gt; ENR[&quot;enrich()&lt;br/&gt;DOI · authors · citations&lt;br/&gt;(JSONL only)&quot;]
+    ENR --&gt; CHK[&quot;Chunker&lt;br/&gt;deterministic uuid5 IDs&lt;br/&gt;+ token-budget cap&quot;]
+    CHK --&gt; EMBED[&quot;Embedder&lt;br/&gt;BatchingEmbedder → pool&lt;br/&gt;poison isolation&quot;]
+    EMBED --&gt; KG{&quot;kg_extraction&lt;br/&gt;enabled?&quot;}
+    KG --&gt;|yes| TRIP[&quot;LLMKGExtractor&lt;br/&gt;→ triples&quot;]
+    KG --&gt;|no| REP
+    TRIP --&gt; REP[&quot;Replace old chunks&lt;br/&gt;(delete-except by doc)&quot;]
+    REP --&gt; VEC[(&quot;Qdrant&lt;br/&gt;upsert vectors&quot;)]
+    REP --&gt; TXT[(&quot;Elasticsearch&lt;br/&gt;index text&quot;)]
+    TRIP --&gt; GR[(&quot;Neo4j&lt;br/&gt;add triples&quot;)]
+    EMBED -.checkpoint.-&gt; JOB[(&quot;JobStore&lt;br/&gt;resumable frontier&quot;)]</pre></div>
+<p>Key properties: deterministic IDs make re-ingest idempotent (overwrite in place);
+upsert-before-prune means a prune timeout leaves harmless duplicates, never data loss;
+the checkpoint frontier (+ out-of-order <code>done_ranges</code>) lets a crashed bulk run resume
+without re-embedding completed work.</p>
+<h3 id="42-query-path-post-v1query">4.2 Query path (<code>POST /v1/query</code>)</h3>
+<div class="diagram"><pre class="mermaid">flowchart TB
+    Q[&quot;Query + X-API-Key&quot;] --&gt; AUTH[&quot;Auth → tenant + role&quot;]
+    AUTH --&gt; RW[&quot;Query rewrite&lt;br/&gt;passthrough · multiquery · hyde&quot;]
+    RW --&gt; FAN[&quot;Per-variant retrieval (concurrent)&quot;]
+
+    subgraph hybrid[&quot;HybridRetriever (per variant, tenant-scoped)&quot;]
+        direction LR
+        DENSE[&quot;Dense&lt;br/&gt;embed → Qdrant&quot;]
+        SPARSE[&quot;Sparse&lt;br/&gt;BM25 → Elasticsearch&quot;]
+        GRAPH[&quot;Graph (optional)&lt;br/&gt;entity neighborhood → Neo4j&quot;]
+    end
+
+    FAN --&gt; DENSE &amp; SPARSE &amp; GRAPH
+    DENSE &amp; SPARSE &amp; GRAPH --&gt; RRF[&quot;RRF fusion&quot;]
+    RRF --&gt; RR{&quot;rerank?&quot;}
+    RR --&gt;|yes| CE[&quot;Cross-encoder sidecar&lt;br/&gt;→ top_k&quot;]
+    RR --&gt;|no| GEN
+    CE --&gt; GEN[&quot;RagGenerator&lt;br/&gt;(LLM, if configured)&quot;]
+    GEN --&gt; RESP[&quot;Answer + cited sources&quot;]</pre></div>
+<p>Every stage degrades gracefully: an unknown rewrite strategy falls back to the plain
+query, a rerank failure falls back to the fused order, and an LLM failure returns
+sources with a note — the call still returns 200.</p>
+<hr />
+<h2 id="5-api-endpoints">5. API endpoints</h2>
+<p>Base URL: Python <code>:8000</code>, Go <code>:8080</code>. Auth header: <code>X-API-Key</code> (maps server-side to
+tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a key when keys are configured.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Purpose</th>
+<th>Auth</th>
+<th>Python</th>
+<th>Go</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/health</code></td>
+<td>Liveness probe</td>
+<td>none</td>
+<td>✅</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/query</code></td>
+<td>Full RAG: rewrite → retrieve → rerank → generate</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/retrieve</code></td>
+<td>Hybrid retrieval, no answer generation</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/ingest</code></td>
+<td>Async ingest of a file or directory → <code>job_id</code></td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/ingest/{job_id}</code></td>
+<td>Poll job status + per-item progress</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/documents</code></td>
+<td>List indexed documents</td>
+<td>key (tenant)</td>
+<td>⚠️ stub <code>[]</code></td>
+<td>⚠️ stub <code>[]</code></td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/documents/{doc_id}</code></td>
+<td>Delete a doc from vector + text legs</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/graph/entities</code></td>
+<td>List graph entities (own + public)</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/graph/neighbors/{entity}</code></td>
+<td>Neighborhood triples (depth 1–5)</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/graph/stats</code></td>
+<td>Entity / relationship counts</td>
+<td>key (tenant)</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/stats/stores</code></td>
+<td>Per-store counts (vector/text/graph)</td>
+<td>key (principal)</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/config</code></td>
+<td>Allowlisted config, secrets redacted</td>
+<td>key (<strong>admin</strong>)</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/health/deep</code></td>
+<td>Deep dependency probe + latencies</td>
+<td>key (<strong>admin</strong>)</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>RBAC roles:</strong> <code>admin</code> (superuser) · <code>engineer</code> (data ops) · <code>manager</code> (dashboard reads)
+· <code>researcher</code> (read-only). <strong>Tenancy:</strong> every data endpoint auto-scopes to the caller's
+tenant + the shared <code>public</code> corpus; the tenant is never read from the request body.</p>
+<blockquote>
+<p>The <code>stream</code> field exists on the query request model but there is <strong>no</strong> separate
+streaming endpoint yet. Go request models still lack <code>rerank</code> / <code>rerank_candidates</code>
+(issue #27).</p>
+</blockquote>
+<hr />
+<h2 id="6-service-scripts-pythonscripts">6. Service scripts (<code>python/scripts/</code>)</h2>
+<h3 id="61-ingestion--search-clis">6.1 Ingestion &amp; search CLIs</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Script</th>
+<th>Purpose</th>
+<th>Key flags</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ingest_jsonl.py</code></td>
+<td>Bulk-ingest a JSONL corpus → Qdrant (+ optional ES); streaming, enriching, resumable, concurrent</td>
+<td><code>--tenant</code>, <code>--doc-types</code>, <code>--publisher-profile</code>, <code>--chunk-method</code>, <code>--chunk-size</code>, <code>--embedding-api {sidecar,openai}</code>, <code>--embedding-url</code> (multi), <code>--concurrency</code>, <code>--chunk-concurrency</code>, <code>--batch-retries</code>, <code>--resume</code>, <code>--checkpoint</code>, <code>--catalog-out</code>, <code>--text-backend</code></td>
+</tr>
+<tr>
+<td><code>ingest_chunks.py</code></td>
+<td>Ingest pre-extracted JSON chunks → Qdrant (no enrichment/chunking)</td>
+<td><code>--collection</code>, <code>--tenant</code>, <code>--embedding-api</code>, <code>--embedding-url</code> (multi), <code>--embedding-model</code>, <code>--batch-size</code></td>
+</tr>
+<tr>
+<td><code>search.py</code></td>
+<td>Embed a query, vector-search Qdrant, optional payload filter; tenant-scoped</td>
+<td><code>--collection</code>, <code>--tenant</code>, <code>--top-k</code>, <code>--filter KEY=VALUE</code>, <code>--embedding-api</code>, <code>--json</code></td>
+</tr>
+<tr>
+<td><code>verify_doi_pubmed.py</code></td>
+<td>Data-QA: validate sampled catalog DOIs/titles against PubMed E-utilities</td>
+<td><code>--sample</code>, <code>--email</code>, <code>--api-key</code>, <code>--min-ratio</code>, <code>--report</code></td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="62-eval--benchmark-harnesses-pythonscriptseval">6.2 Eval / benchmark harnesses (<code>python/scripts/eval/</code>)</h3>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Script</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>chunking_compare_7way.py</code></td>
+<td>Ingest one deterministic subset <strong>7 ways</strong>; report structure, overflow, cost, and known-item retrieval quality (recall/MRR/nDCG, hybrid + rerank)</td>
+</tr>
+<tr>
+<td><code>chunking_compare.py</code></td>
+<td>3-way (fixed/sentence/semantic) variant of the above</td>
+</tr>
+<tr>
+<td><code>scifact_chunk_eval.py</code></td>
+<td>SciFact (BEIR) passage-level benchmark with graded qrels — nDCG@10 / recall@{10,20,100} / MAP + bootstrap CIs</td>
+</tr>
+<tr>
+<td><code>bge_gpu_bench.py</code></td>
+<td>BGE-base GPU throughput benchmark (no HTTP)</td>
+</tr>
+<tr>
+<td><code>embed_speed.py</code></td>
+<td>Embedding throughput of breakpoint-model candidates over real buffers</td>
+</tr>
+<tr>
+<td><code>breakpoint_model_compare.py</code></td>
+<td>Cheap vs expensive breakpoint model — chunk-span Jaccard, boundary F1, Spearman</td>
+</tr>
+<tr>
+<td><code>profile_semantic_cpu.py</code></td>
+<td>Isolate semantic-chunker CPU cost with a mock embedder</td>
+</tr>
+<tr>
+<td><code>_stats.py</code></td>
+<td>Shared stats layer (paired-bootstrap CIs, pairwise diff CIs, Wilcoxon + Holm), no scipy</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="7-deployment-topology">7. Deployment topology</h2>
+<p><strong>Docker Compose</strong> — layered files stacked with multiple <code>-f</code> flags:
+- <code>docker-compose.infra.yml</code> — Qdrant · Elasticsearch · Neo4j · Postgres · Redis
+- <code>docker-compose.sidecars.yml</code> — embedding · crossencoder · faiss
+- <code>docker-compose.python.yml</code> / <code>docker-compose.go.yml</code> — the API (+ Celery worker on Python)</p>
+<p><strong>Apptainer (rootless)</strong> — preferred on no-Docker / HPC hosts (<code>apptainer/up.sh</code>,
+persistent host dir under <code>apptainer/data/&lt;service&gt;/</code>. The canonical deployed stack lives under <code>/rag/</code> (see <a href="../STATUS.md#production-layout-rag">STATUS.md</a>).</p>
+<hr />
+<p><em>Generated from a source sweep of the repo. For design intent see <a href="../SPEC.md">SPEC.md</a>;
+for current state and TODOs see <a href="../STATUS.md">STATUS.md</a>; for the HTTP reference see
+<a href="API.md">docs/API.md</a>.</em></p>
+  </article></main>
+</div>
+
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true, securityLevel: "strict", theme: "base",
+    themeVariables: {
+      fontFamily: "ui-sans-serif, -apple-system, Segoe UI, Roboto, sans-serif", fontSize: "14px",
+      primaryColor: "#e9f1fb", primaryBorderColor: "#1668b0", primaryTextColor: "#141a22",
+      lineColor: "#7d8aa0", secondaryColor: "#f2f5fa", tertiaryColor: "#fafbfd",
+    },
+    flowchart: { curve: "basis", htmlLabels: true },
+  });
+</script>
+<script>
+  (function () {
+    var content = document.getElementById("content");
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
+      var a = document.createElement("a");
+      a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
+    });
+    var links = {};
+    document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
+      links[a.getAttribute("href").slice(1)] = a;
+    });
+    var current = null;
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
+        if (current) current.classList.remove("active");
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
+      });
+    }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });
+  })();
+</script>
+</body>
+</html>
