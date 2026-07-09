@@ -12,6 +12,7 @@ on:
       - docs/ARCHITECTURE-DEEP-DIVE.md
       - docs/LOCAL-DEMO.md
       - docs/cookbook-new-org-ingest.md
+      - docs/model-registry.md
       - docs/build_docs.py
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -52,6 +53,7 @@ jobs:
              docs/architecture-deep-dive.html \
              docs/cookbook-new-org-ingest.html \
              docs/local-demo.html \
+             docs/model-registry.html \
              _site/
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v5

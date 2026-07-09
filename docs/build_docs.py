@@ -34,6 +34,11 @@ PAGES = [
         blurb="Per-capability internals: algorithms, tools & models, scalability, single vs bulk, 33 diagrams, and a duplication audit.",
     ),
     dict(
+        src="model-registry.md", out="model-registry.html", label="Design",
+        card="Model Registry & Dynamic Config",
+        blurb="Register models and assign them to tasks (embedding, LLM, reranker) at runtime — the design, the phased plan, and the as-built API.",
+    ),
+    dict(
         src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
         card="Cookbook — New-Org Ingest",
         blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",
