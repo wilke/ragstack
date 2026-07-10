@@ -37,8 +37,10 @@ class CollectionSpec(BaseModel):
     embedding_model_dim: int
     embedding_endpoints: list[str] = Field(default_factory=list)
     embedding_sidecar_url: str = ""  # single-endpoint fallback when no `endpoints`
-    chunk_method: str = ""  # metadata label only (how the corpus was chunked)
+    chunk_method: str = ""  # how the corpus was chunked (see chunk_overlap/params below)
     chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    chunk_params: dict[str, Any] = Field(default_factory=dict)
 
     def es_index(self) -> str:
         return self.text_index or self.collection
@@ -62,6 +64,8 @@ class CollectionEntry:
     dim: int
     chunk_method: str
     chunk_size: int | None
+    chunk_overlap: int | None
+    chunk_params: dict[str, Any]
     is_default: bool
     retriever: Any
     vector_store: Any

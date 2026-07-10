@@ -286,6 +286,8 @@ async def _build_collection_registry(
             dim=settings.embedding_model_dim,
             chunk_method=settings.chunk_method,
             chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            chunk_params={},
             is_default=True,
             retriever=default_retriever,
             vector_store=default_vector_store,
@@ -341,6 +343,8 @@ async def _build_collection_registry(
             dim=spec.embedding_model_dim,
             chunk_method=spec.chunk_method,
             chunk_size=spec.chunk_size,
+            chunk_overlap=spec.chunk_overlap,
+            chunk_params=spec.chunk_params,
             is_default=False,
             retriever=_retriever(vs, ti, emb),
             vector_store=vs,
@@ -350,7 +354,8 @@ async def _build_collection_registry(
             spec.collection, model=spec.embedding_model, dim=spec.embedding_model_dim,
             api=spec.embedding_api,
             endpoints=spec.embedding_endpoints or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else []),
-            chunk_method=spec.chunk_method, chunk_size=spec.chunk_size, chunk_overlap=None,
+            chunk_method=spec.chunk_method, chunk_size=spec.chunk_size,
+            chunk_overlap=spec.chunk_overlap,
         )
 
     log.info("collection registry: %d collections (%s)", len(entries),

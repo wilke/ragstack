@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collection_create_request.json",
+  "title": "CollectionCreateRequest",
+  "description": "Create a content-addressed collection bound to a registered embedding model and a chunk strategy. Build-time config is collection identity, so this mints a new collection rather than editing one. The collection is created empty; populate it via POST /v1/ingest with the returned collection id.",
+  "type": "object",
+  "required": ["embedding", "chunk"],
+  "properties": {
+    "embedding": {
+      "description": "Id of a registered model whose task is `embedding` (see GET /v1/admin/models/registry). Its base_urls are SSRF-checked at registration; the model must declare a positive `dim`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "chunk": {
+      "type": "object",
+      "required": ["method"],
+      "properties": {
+        "method": {
+          "description": "Chunker method (e.g. fixed_token, fixed, sentence, words, semantic).",
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "type": ["integer", "null"]
+        },
+        "overlap": {
+          "type": ["integer", "null"]
+        },
+        "params": {
+          "description": "Free-form extra chunker parameters.",
+          "type": "object",
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    },
+    "id": {
+      "description": "Optional explicit collection id. Omitted → derived from the content-addressed (model, dim, chunk) signature.",
+      "type": "string"
+    },
+    "label": {
+      "description": "Optional human-readable label for pickers.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

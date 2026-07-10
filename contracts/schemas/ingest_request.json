@@ -12,6 +12,10 @@
     "metadata": {
       "type": "object",
       "default": {}
+    },
+    "collection": {
+      "description": "Target collection id (from GET /v1/collections). Omitted → the server default collection. Documents are indexed with the target collection's bound embedder/chunker; an unknown id returns 404.",
+      "type": ["string", "null"]
     }
   },
   "additionalProperties": false

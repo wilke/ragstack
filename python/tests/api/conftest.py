@@ -87,6 +87,7 @@ async def client():
             CollectionEntry(
                 id="default", label="default", collection="ragstack",
                 model="test-model", dim=4, chunk_method="fixed", chunk_size=None,
+                chunk_overlap=None, chunk_params={},
                 is_default=True, retriever=_StateRetriever(),
                 vector_store=vector_store, text_index=text_index,
             )
