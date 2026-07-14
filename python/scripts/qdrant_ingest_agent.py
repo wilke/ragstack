@@ -278,7 +278,7 @@ async def drain(
     lock = asyncio.Lock()
     completed: dict[int, Batch] = {}
     next_seq = 0
-    stats = {"shards": 0, "batches": 0, "chunks": 0}
+    stats = {"shards": 0, "batches": 0, "chunks": 0, "dropped": 0, "dropped_chunks": 0}
     tasks: set[asyncio.Task] = set()
 
     async def submit(b: Batch) -> None:
@@ -286,7 +286,23 @@ async def drain(
         async with sem:
             await gate.acquire()  # BACKPRESSURE — block until Qdrant can take a batch
             if b.chunks:
-                await _upsert_with_retries(store, text_index, b.chunks, batch_retries)
+                try:
+                    await _upsert_with_retries(store, text_index, b.chunks, batch_retries)
+                except Exception as e:  # noqa: BLE001
+                    # A non-transient error is a real fault — surface it (crash the run).
+                    if not is_transient_error(e):
+                        raise
+                    # Transient fault that exhausted every retry: the batch is LOST. Record
+                    # it instead of letting the task's exception vanish (add_done_callback
+                    # discards the task before _reap sees it → silent exit-0). The frontier
+                    # deliberately does NOT advance past this gap, so the checkpoint stays
+                    # honest and --resume re-drains from here; run_agent exits non-zero.
+                    async with lock:
+                        stats["dropped"] += 1
+                        stats["dropped_chunks"] += len(b.chunks)
+                    print(f"  DROPPED batch {b.shard}@{b.end_offset} ({len(b.chunks)} "
+                          f"chunks) — {batch_retries} retries exhausted: {e}", file=sys.stderr)
+                    return
         async with lock:
             completed[b.seq] = b
             while next_seq in completed:
@@ -385,6 +401,13 @@ async def run_agent(args: argparse.Namespace) -> None:
         await text_index.close()
     print(f"done: drained {stats['shards']} shard(s), {stats['batches']} batch(es), "
           f"{stats['chunks']} chunks into {collection!r}", file=sys.stderr)
+    # Exit code must be an honest completeness signal: a "done" with dropped batches is
+    # an INCOMPLETE index, not a success. Fail loudly so callers/CI don't mistake it.
+    if stats["dropped"]:
+        print(f"INCOMPLETE: {stats['dropped']} batch(es) / {stats['dropped_chunks']} "
+              f"chunks were DROPPED to capped-Qdrant faults. Re-run with --resume to fill "
+              f"the gap, then verify store count == source count.", file=sys.stderr)
+        raise SystemExit(3)
 
 
 def build_parser() -> argparse.ArgumentParser:
