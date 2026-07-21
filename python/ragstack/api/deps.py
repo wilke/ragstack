@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
+    CollectionSpec,
     load_collection_specs,
 )
 from ragstack.api.model_registry import ModelEntry, ModelRegistry
@@ -248,6 +249,81 @@ def _materialize_config_manifest(
     ))
 
 
+def _embedder_for_spec(http: httpx.AsyncClient, spec: CollectionSpec) -> Any:
+    """The embedder a spec needs (fan-out endpoints or the single sidecar URL)."""
+    urls = spec.embedding_endpoints or [spec.embedding_sidecar_url or settings.embedding_sidecar_url]
+    return _make_embedder(http, api=spec.embedding_api, model=spec.embedding_model, urls=urls)
+
+
+def _hybrid_retriever(vs: Any, ti: Any, emb: Any, *, graph_store: Any) -> Any:
+    """A HybridRetriever over one collection's stores — shared by the startup
+    builder and the runtime create path so their retriever wiring can't drift."""
+    return HybridRetriever(
+        vs, ti, emb,
+        graph_store=graph_store,
+        rrf_scorer=RRFScorer(k=settings.rrf_k),
+        candidate_multiplier=settings.retrieval_candidate_multiplier,
+        graph_context_score=settings.graph_context_score,
+        graph_context_depth=settings.graph_context_depth,
+    )
+
+
+async def build_collection_entry(
+    http: httpx.AsyncClient, *, graph_store: Any, spec: CollectionSpec, embedder: Any = None,
+) -> CollectionEntry:
+    """Build one ready-to-serve, non-default ``CollectionEntry`` from a spec:
+    its embedder (unless a shared one is passed), Qdrant store, ES index (both
+    best-effort ensured), and hybrid retriever. Used by the startup loop (with a
+    shared embedder from the cache) and by ``POST /v1/collections`` (fresh)."""
+    from ragstack.stores.qdrant import QdrantVectorStore
+
+    emb = embedder if embedder is not None else _embedder_for_spec(http, spec)
+    vs = QdrantVectorStore(
+        url=_qdrant_url_for(spec.collection),
+        collection=spec.collection,
+        vector_size=spec.embedding_model_dim,
+        api_key=settings.qdrant_api_key or None,
+    )
+    ti = _build_text_index_for(spec.es_index())
+    # Best-effort readiness — a collection that isn't reachable yet shouldn't abort
+    # startup or the create call (the default collection already gated real outages).
+    for store, op in ((vs, "ensure_collection"), (ti, "ensure_index")):
+        fn = getattr(store, op, None)
+        if fn is not None:
+            try:
+                await fn()
+            except Exception as e:  # noqa: BLE001 — non-fatal for a registry entry
+                log.warning("collection %r: %s failed: %s", spec.id, op, e)
+    return CollectionEntry(
+        id=spec.id,
+        label=spec.label or spec.id,
+        collection=spec.collection,
+        model=spec.embedding_model,
+        dim=spec.embedding_model_dim,
+        chunk_method=spec.chunk_method,
+        chunk_size=spec.chunk_size,
+        chunk_overlap=spec.chunk_overlap,
+        chunk_params=spec.chunk_params,
+        is_default=False,
+        retriever=_hybrid_retriever(vs, ti, emb, graph_store=graph_store),
+        vector_store=vs,
+        text_index=ti,
+    )
+
+
+def materialize_config_manifest_for_spec(spec: CollectionSpec) -> None:
+    """Write a source='config' manifest for a spec's collection (public wrapper
+    over ``_materialize_config_manifest`` for the create path)."""
+    _materialize_config_manifest(
+        spec.collection, model=spec.embedding_model, dim=spec.embedding_model_dim,
+        api=spec.embedding_api,
+        endpoints=spec.embedding_endpoints
+        or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else []),
+        chunk_method=spec.chunk_method, chunk_size=spec.chunk_size,
+        chunk_overlap=spec.chunk_overlap,
+    )
+
+
 async def _build_collection_registry(
     http: httpx.AsyncClient,
     *,
@@ -264,19 +340,6 @@ async def _build_collection_registry(
     Qdrant collection + ES index + embedder (shared by signature). Empty specs →
     a one-entry registry equal to the default, so single-collection mode is
     unchanged."""
-    from ragstack.retrieval.retriever import HybridRetriever
-    from ragstack.scoring.scorers import RRFScorer
-
-    def _retriever(vs: Any, ti: Any, emb: Any) -> Any:
-        return HybridRetriever(
-            vs, ti, emb,
-            graph_store=graph_store,
-            rrf_scorer=RRFScorer(k=settings.rrf_k),
-            candidate_multiplier=settings.retrieval_candidate_multiplier,
-            graph_context_score=settings.graph_context_score,
-            graph_context_depth=settings.graph_context_depth,
-        )
-
     entries: list[CollectionEntry] = [
         CollectionEntry(
             id="default",
@@ -305,8 +368,6 @@ async def _build_collection_registry(
     if not specs:
         return CollectionRegistry(entries, default_id="default")
 
-    from ragstack.stores.qdrant import QdrantVectorStore
-
     # Reuse the default embedder for specs that share its backend signature.
     emb_cache: dict[tuple, Any] = {_default_emb_signature(): default_embedder}
 
@@ -314,49 +375,12 @@ async def _build_collection_registry(
         sig = spec.emb_signature()
         emb = emb_cache.get(sig)
         if emb is None:
-            urls = spec.embedding_endpoints or [spec.embedding_sidecar_url or settings.embedding_sidecar_url]
-            emb = _make_embedder(http, api=spec.embedding_api, model=spec.embedding_model, urls=urls)
+            emb = _embedder_for_spec(http, spec)
             emb_cache[sig] = emb
-
-        vs = QdrantVectorStore(
-            url=_qdrant_url_for(spec.collection),
-            collection=spec.collection,
-            vector_size=spec.embedding_model_dim,
-            api_key=settings.qdrant_api_key or None,
+        entries.append(
+            await build_collection_entry(http, graph_store=graph_store, spec=spec, embedder=emb)
         )
-        ti = _build_text_index_for(spec.es_index())
-        # Best-effort readiness — a registry collection that isn't reachable yet
-        # shouldn't abort startup (the default collection already gated that).
-        for store, op in ((vs, "ensure_collection"), (ti, "ensure_index")):
-            fn = getattr(store, op, None)
-            if fn is not None:
-                try:
-                    await fn()
-                except Exception as e:  # noqa: BLE001 — non-fatal for a registry entry
-                    log.warning("collection %r: %s failed: %s", spec.id, op, e)
-
-        entries.append(CollectionEntry(
-            id=spec.id,
-            label=spec.label or spec.id,
-            collection=spec.collection,
-            model=spec.embedding_model,
-            dim=spec.embedding_model_dim,
-            chunk_method=spec.chunk_method,
-            chunk_size=spec.chunk_size,
-            chunk_overlap=spec.chunk_overlap,
-            chunk_params=spec.chunk_params,
-            is_default=False,
-            retriever=_retriever(vs, ti, emb),
-            vector_store=vs,
-            text_index=ti,
-        ))
-        _materialize_config_manifest(
-            spec.collection, model=spec.embedding_model, dim=spec.embedding_model_dim,
-            api=spec.embedding_api,
-            endpoints=spec.embedding_endpoints or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else []),
-            chunk_method=spec.chunk_method, chunk_size=spec.chunk_size,
-            chunk_overlap=spec.chunk_overlap,
-        )
+        materialize_config_manifest_for_spec(spec)
 
     log.info("collection registry: %d collections (%s)", len(entries),
              ", ".join(e.id for e in entries))
