@@ -291,6 +291,14 @@ class Settings(BaseSettings):
     # privilege by default: the admin/config/stats surface stays closed unless a
     # key is explicitly granted a higher role (or this is raised in dev).
     default_role: str = "researcher"
+    # Per-tenant collection allowlist: tenant -> [collection ids] it may read/query
+    # (and ingest into). A tenant ABSENT from the map is UNRESTRICTED — so an
+    # operator/admin tenant sees every collection while specific orgs are confined
+    # to theirs. An empty map (default) disables the feature entirely (all tenants
+    # unrestricted), so single-collection and shared-explorer deployments are
+    # unchanged. Lets one multi-collection API serve several orgs safely instead of
+    # one server per org. env TENANT_COLLECTIONS='{"asm":["asm"],"lucid":["lucid"]}'
+    tenant_collections: dict[str, list[str]] = Field(default_factory=dict)
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # Retrieval defaults
