@@ -942,7 +942,10 @@ components:
         chunk_size: { type: [integer, "null"] }
         default: { type: boolean }
         count:
-          description: Tenant-scoped chunk count (own + public); null when unavailable.
+          description: Vector-store tenant-scoped count (own + public); null when unavailable.
+          type: [integer, "null"]
+        text_count:
+          description: Text-index (BM25) tenant-scoped count; compare with `count` for a vector↔text parity check. Null when unavailable.
           type: [integer, "null"]
         provenance:
           description: Verified build lineage from the collection's manifest; null when none.
