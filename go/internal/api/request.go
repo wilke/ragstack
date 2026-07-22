@@ -45,6 +45,23 @@ type RetrieveRequest struct {
 
 // IngestRequest is the request body for POST /v1/ingest.
 type IngestRequest struct {
-	Source   *string        `json:"source"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Source     *string        `json:"source"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Collection *string        `json:"collection,omitempty"`
+}
+
+// ChunkConfig is the chunk strategy for a new collection (build-time identity).
+type ChunkConfig struct {
+	Method  string         `json:"method"`
+	Size    *int           `json:"size,omitempty"`
+	Overlap *int           `json:"overlap,omitempty"`
+	Params  map[string]any `json:"params,omitempty"`
+}
+
+// CollectionCreateRequest is the request body for POST /v1/collections.
+type CollectionCreateRequest struct {
+	Embedding string      `json:"embedding"`
+	Chunk     ChunkConfig `json:"chunk"`
+	ID        *string     `json:"id,omitempty"`
+	Label     string      `json:"label,omitempty"`
 }

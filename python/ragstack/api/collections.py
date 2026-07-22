@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,8 +38,10 @@ class CollectionSpec(BaseModel):
     embedding_model_dim: int
     embedding_endpoints: list[str] = Field(default_factory=list)
     embedding_sidecar_url: str = ""  # single-endpoint fallback when no `endpoints`
-    chunk_method: str = ""  # metadata label only (how the corpus was chunked)
+    chunk_method: str = ""  # how the corpus was chunked (see chunk_overlap/params below)
     chunk_size: int | None = None
+    chunk_overlap: int | None = None
+    chunk_params: dict[str, Any] = Field(default_factory=dict)
 
     def es_index(self) -> str:
         return self.text_index or self.collection
@@ -62,10 +65,13 @@ class CollectionEntry:
     dim: int
     chunk_method: str
     chunk_size: int | None
+    chunk_overlap: int | None
+    chunk_params: dict[str, Any]
     is_default: bool
     retriever: Any
     vector_store: Any
     text_index: Any
+    embedder: Any = None  # the collection's embedder (matched to its model/dim); for ingest
 
 
 class CollectionRegistry:
@@ -86,6 +92,17 @@ class CollectionRegistry:
 
     def has(self, cid: str) -> bool:
         return cid in self._entries
+
+    def add(self, entry: CollectionEntry) -> None:
+        """Register a runtime-created collection (``POST /v1/collections``).
+        Raises ``KeyError`` on a duplicate id so the router can 409."""
+        if entry.id in self._entries:
+            raise KeyError(entry.id)
+        self._entries[entry.id] = entry
+
+    def remove(self, cid: str) -> bool:
+        """Drop a collection binding. Returns ``False`` if the id is unknown."""
+        return self._entries.pop(cid, None) is not None
 
     def resolve(self, cid: str | None) -> CollectionEntry:
         """Entry for ``cid``, or the default when ``cid`` is None. Raises
@@ -121,3 +138,53 @@ def load_collection_specs(settings: Any) -> list[CollectionSpec]:
     if len(set(ids)) != len(ids):
         raise RuntimeError(f"duplicate collection ids in registry: {ids}")
     return specs
+
+
+def persist_collection_spec(settings: Any, spec: CollectionSpec) -> bool:
+    """Write-through append a newly created spec to ``collections_file`` so it
+    survives restart (the lifespan re-reads that file). Returns ``False`` when no
+    file is configured (in-memory only, lost on restart — same single-worker
+    caveat as the model registry). Atomic via a temp file + ``os.replace``."""
+    path: str = getattr(settings, "collections_file", "") or ""
+    if not path:
+        return False
+    existing: list[Any] = []
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                existing = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"collections_file unreadable for append: {e}") from e
+        if not isinstance(existing, list):
+            raise RuntimeError("collections_file must be a JSON list to append to")
+    existing.append(spec.model_dump())
+    _atomic_write_json(path, existing)
+    return True
+
+
+def forget_collection_spec(settings: Any, cid: str) -> bool:
+    """Write-through remove the spec with id ``cid`` from ``collections_file`` so a
+    delete survives restart. Returns ``False`` when no file is configured or the id
+    isn't present in the file (e.g. an in-memory-only or default entry)."""
+    path: str = getattr(settings, "collections_file", "") or ""
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        raise RuntimeError(f"collections_file unreadable for removal: {e}") from e
+    if not isinstance(existing, list):
+        raise RuntimeError("collections_file must be a JSON list to remove from")
+    kept = [d for d in existing if not (isinstance(d, dict) and d.get("id") == cid)]
+    if len(kept) == len(existing):
+        return False
+    _atomic_write_json(path, kept)
+    return True
+
+
+def _atomic_write_json(path: str, data: Any) -> None:
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)

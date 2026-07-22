@@ -196,9 +196,11 @@ async def test_ingest_endpoint_rejects_gowe_backend(monkeypatch):
     monkeypatch.setattr(docs.settings, "ingest_backend", "gowe")
     with pytest.raises(HTTPException) as ei:
         await docs.ingest(
-            request=SimpleNamespace(source="/data/doc.pdf"),
+            request=SimpleNamespace(source="/data/doc.pdf", collection=None),
+            http_request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
             background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
             tenant="public", ingestor=object(), job_store=object(),
+            collections=object(),
         )
     assert ei.value.status_code == 501
     assert "not supported" in ei.value.detail

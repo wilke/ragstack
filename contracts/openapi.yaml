@@ -397,6 +397,68 @@ paths:
                 $ref: "#/components/schemas/CollectionsResponse"
         "401":
           description: Missing or invalid API key
+    post:
+      operationId: createCollection
+      summary: Create a content-addressed collection (build-time model selection)
+      description: >-
+        Binds a registered embedding model (`embedding` → a model whose task is
+        `embedding`) and a chunk strategy into a new content-addressed
+        collection, returning its `CollectionInfo`. The collection is created
+        empty; populate it via POST /v1/ingest with the returned id. Build-time
+        config is collection identity — this mints a new collection rather than
+        editing an existing one. Admin only.
+      tags: [Documents]
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectionCreateRequest"
+      responses:
+        "201":
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionInfo"
+        "400":
+          description: Referenced model is not an embedding model, or chunk config is invalid
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller is not an admin
+        "404":
+          description: Referenced embedding model is not registered
+        "409":
+          description: A collection with the resolved id already exists
+
+  /v1/collections/{collection_id}:
+    delete:
+      operationId: deleteCollection
+      summary: Delete a collection from the registry
+      description: >-
+        Removes a collection registry entry. Admin only. (Whether the underlying
+        Qdrant collection / ES index is dropped is governed server-side.)
+      tags: [Documents]
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller is not an admin
+        "404":
+          description: Unknown collection id
 
   /v1/models/available:
     get:
@@ -898,6 +960,32 @@ components:
             source: { type: string }
       additionalProperties: false
 
+    CollectionCreateRequest:
+      type: object
+      required: [embedding, chunk]
+      properties:
+        embedding:
+          description: >-
+            Id of a registered model whose task is `embedding`. Its base_urls are
+            SSRF-checked at registration; the model must declare a positive `dim`.
+          type: string
+          minLength: 1
+        chunk:
+          type: object
+          required: [method]
+          properties:
+            method: { type: string, minLength: 1 }
+            size: { type: [integer, "null"] }
+            overlap: { type: [integer, "null"] }
+            params: { type: object, default: {} }
+          additionalProperties: false
+        id:
+          description: Optional explicit id; omitted → derived from the (model, dim, chunk) signature.
+          type: string
+        label:
+          type: string
+      additionalProperties: false
+
     CollectionsResponse:
       type: object
       required: [collections, default]
@@ -1000,6 +1088,12 @@ components:
         metadata:
           type: object
           default: {}
+        collection:
+          description: >-
+            Target collection id (from GET /v1/collections). Omitted → the server
+            default collection. Documents are indexed with the target collection's
+            bound embedder/chunker; an unknown id returns 404.
+          type: [string, "null"]
 
     IngestResponse:
       type: object
