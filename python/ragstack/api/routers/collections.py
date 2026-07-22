@@ -64,7 +64,8 @@ class CollectionInfo(BaseModel):
     chunk_method: str | None = None  # from the registry label (may be operator-asserted)
     chunk_size: int | None = None
     default: bool
-    count: int | None = None  # tenant-filtered; null when unavailable
+    count: int | None = None  # vector-store tenant-filtered count; null when unavailable
+    text_count: int | None = None  # text-index (BM25) tenant-filtered count; for a vector↔text parity check
     provenance: Provenance | None = None  # verified lineage from the manifest
 
 
@@ -73,10 +74,12 @@ class CollectionsResponse(BaseModel):
     default: str
 
 
-def _collection_info(entry: CollectionEntry, count: int | None) -> CollectionInfo:
-    """Assemble a CollectionInfo from a built entry + its (tenant-scoped) count,
-    folding in verified provenance from the manifest when present. Shared by the
-    list and create paths so their shapes can't drift."""
+def _collection_info(
+    entry: CollectionEntry, count: int | None, text_count: int | None = None
+) -> CollectionInfo:
+    """Assemble a CollectionInfo from a built entry + its (tenant-scoped) vector
+    and text counts, folding in verified provenance from the manifest when
+    present. Shared by the list and create paths so their shapes can't drift."""
     m = read_manifest(settings.collection_manifest_dir, entry.collection)
     prov = (
         Provenance(
@@ -102,6 +105,7 @@ def _collection_info(entry: CollectionEntry, count: int | None) -> CollectionInf
         chunk_size=entry.chunk_size,
         default=entry.is_default,
         count=count,
+        text_count=text_count,
         provenance=prov,
     )
 
@@ -123,14 +127,17 @@ async def list_collections(
     entries = [
         e for e in registry.entries() if allowed is None or e.id in allowed
     ]
-    # The per-collection counts are independent Qdrant round-trips — gather them
-    # concurrently so latency is one round-trip, not N (the ops dashboard polls
-    # this, and Explore/Compare call it on load). probe_tenant_count never raises.
-    counts = await asyncio.gather(
-        *(probe_tenant_count(e.vector_store, tenants) for e in entries)
+    # Per-collection vector + text counts are independent store round-trips —
+    # gather them all concurrently so latency is one round-trip, not 2N (the ops
+    # dashboard polls this, and Explore/Compare call it on load). Both probes share
+    # deps.probe_tenant_count, which degrades to None rather than raising.
+    vec_counts, txt_counts = await asyncio.gather(
+        asyncio.gather(*(probe_tenant_count(e.vector_store, tenants) for e in entries)),
+        asyncio.gather(*(probe_tenant_count(e.text_index, tenants) for e in entries)),
     )
     infos = [
-        _collection_info(e, count) for e, count in zip(entries, counts, strict=True)
+        _collection_info(e, vc, tc)
+        for e, vc, tc in zip(entries, vec_counts, txt_counts, strict=True)
     ]
     if allowed is None or registry.default_id in allowed:
         default = registry.default_id
