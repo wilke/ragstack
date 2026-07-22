@@ -346,6 +346,21 @@ type Ctx = {
   next?: ChunkOut;
 };
 
+// A human label for a document. `doc_id` is global across lanes (so it's the
+// right join key), but it's an opaque uuid — and not every PDF had a `title`
+// extracted at ingest. Fall back through filename → source_path basename → doi
+// before showing the raw id, so the Compare rows are identifiable.
+function docLabel(m: Source["metadata"], docId: string): string {
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : "");
+  return (
+    str(m.title) ||
+    str(m.filename) ||
+    (str(m.source_path) ? str(m.source_path).split("/").pop()! : "") ||
+    (str(m.doi) ? `doi:${str(m.doi)}` : "") ||
+    docId
+  );
+}
+
 function CompareSource({
   rank,
   source,
@@ -359,7 +374,7 @@ function CompareSource({
 }) {
   const [open, setOpen] = useState(false);
   const [ctx, setCtx] = useState<Ctx | null>(null);
-  const title = (source.metadata.title && String(source.metadata.title)) || source.doc_id;
+  const title = docLabel(source.metadata, source.doc_id);
   const m = source.metadata;
   const prevId = m.prev_chunk_id || undefined;
   const nextId = m.next_chunk_id || undefined;
@@ -476,7 +491,7 @@ function laneDocRanks(
       doc_id: s.doc_id,
       rank: out.length + 1,
       score: s.score,
-      title: (s.metadata.title && String(s.metadata.title)) || s.doc_id,
+      title: docLabel(s.metadata, s.doc_id),
     });
   }
   return out;
