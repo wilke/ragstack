@@ -25,6 +25,23 @@ def readable_tenants(tenant: str) -> list[str]:
     return [tenant, PUBLIC_TENANT]
 
 
+def allowed_collection_ids(
+    tenant: str, mapping: dict[str, list[str]]
+) -> set[str] | None:
+    """Collection ids a tenant is confined to, or ``None`` when unrestricted.
+
+    ``None`` (unrestricted) when the mapping is empty (feature off) or the tenant
+    isn't listed (operators/admins stay unrestricted). A listed tenant is confined
+    to its set — the isolation boundary that lets one multi-collection API serve
+    several orgs. Applies to reads (query/retrieve/chunks/list) and ingest targets;
+    it does NOT replace the per-chunk ``tenant_id`` filter, which still scopes rows
+    within a collection."""
+    if not mapping:
+        return None
+    listed = mapping.get(tenant)
+    return set(listed) if listed is not None else None
+
+
 def tenant_of(chunk: Chunk) -> str:
     """The tenant that owns a chunk: its stamped ``tenant_id`` (in metadata), or
     the default when unstamped. Single source for the fallback across stores."""

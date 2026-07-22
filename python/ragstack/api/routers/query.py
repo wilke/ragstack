@@ -27,7 +27,7 @@ from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
 from ragstack.scoring.scorers import RRFScorer
-from ragstack.tenancy import scope_filters
+from ragstack.tenancy import allowed_collection_ids, scope_filters
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -247,12 +247,43 @@ async def tenant_slot(
         yield tenant
 
 
-def _resolve_entry(registry: CollectionRegistry, collection: str | None):
-    """The registry entry for the selected collection (default when None). An
-    unknown id is a 404 — explicit selection fails loudly rather than serving the
-    wrong corpus."""
+def _effective_collection(
+    registry: CollectionRegistry, collection: str | None, tenant: str
+) -> str | None:
+    """Apply the per-tenant collection allowlist, returning the id to resolve.
+
+    Unrestricted tenants pass through unchanged. A restricted tenant may only name
+    a collection in its set (else 404 — same as an unknown id, so membership isn't
+    leaked); when it names none, it gets its own default (the registry default if
+    permitted, else its first allowed collection present in the registry)."""
+    allowed = allowed_collection_ids(tenant, settings.tenant_collections)
+    if allowed is None:
+        return collection
+    if collection is not None:
+        if collection not in allowed:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {collection!r}; see GET /v1/collections",
+            )
+        return collection
+    if registry.default_id in allowed:
+        return registry.default_id
+    present = [e.id for e in registry.entries() if e.id in allowed]
+    if not present:
+        raise HTTPException(
+            status_code=404, detail="no collection is accessible to this caller"
+        )
+    return sorted(present)[0]
+
+
+def _resolve_entry(registry: CollectionRegistry, collection: str | None, tenant: str):
+    """The registry entry for the selected collection (the caller's default when
+    None), after applying the per-tenant allowlist. An unknown or out-of-scope id
+    is a 404 — explicit selection fails loudly rather than serving the wrong (or a
+    forbidden) corpus."""
+    effective = _effective_collection(registry, collection, tenant)
     try:
-        return registry.resolve(collection)
+        return registry.resolve(effective)
     except KeyError:
         raise HTTPException(
             status_code=404,
@@ -260,9 +291,9 @@ def _resolve_entry(registry: CollectionRegistry, collection: str | None):
         ) from None
 
 
-def _resolve_retriever(registry: CollectionRegistry, collection: str | None):
-    """The retriever for the selected registry collection (default when None)."""
-    return _resolve_entry(registry, collection).retriever
+def _resolve_retriever(registry: CollectionRegistry, collection: str | None, tenant: str):
+    """The retriever for the selected registry collection (caller's default when None)."""
+    return _resolve_entry(registry, collection, tenant).retriever
 
 
 def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
@@ -294,7 +325,7 @@ async def retrieve(
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
-    retriever = _resolve_retriever(registry, request.collection)
+    retriever = _resolve_retriever(registry, request.collection, tenant)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
@@ -329,7 +360,7 @@ async def get_chunks(
     id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
     if not id_list:
         return ChunksResponse(chunks=[])
-    store = _resolve_entry(registry, collection).vector_store
+    store = _resolve_entry(registry, collection, tenant).vector_store
     if store is None:  # pragma: no cover - all wired entries carry a store
         return ChunksResponse(chunks=[])
     chunks = await store.get_chunks(id_list, scope_filters({}, tenant))
@@ -374,7 +405,7 @@ async def query(
     """
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    retriever = _resolve_retriever(registry, request.collection)
+    retriever = _resolve_retriever(registry, request.collection, tenant)
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(

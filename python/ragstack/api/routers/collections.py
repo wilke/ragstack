@@ -34,7 +34,7 @@ from ragstack.config import settings
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.provenance import chunk_descriptor, read_manifest
 from ragstack.stores.qdrant import collection_name
-from ragstack.tenancy import readable_tenants
+from ragstack.tenancy import allowed_collection_ids, readable_tenants
 
 log = logging.getLogger(__name__)
 
@@ -111,9 +111,18 @@ async def list_collections(
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
 ) -> CollectionsResponse:
-    """Registry collections with tenant-scoped counts and chunk-strategy labels."""
+    """Registry collections with tenant-scoped counts and chunk-strategy labels.
+
+    Restricted to the collections the caller's tenant may access (per the
+    per-tenant allowlist); unrestricted tenants see every registered collection.
+    The reported ``default`` is the caller's effective default (the registry
+    default when permitted, else the caller's first accessible collection) so it
+    is always one of the listed ids."""
     tenants = readable_tenants(principal.tenant)
-    entries = list(registry.entries())
+    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    entries = [
+        e for e in registry.entries() if allowed is None or e.id in allowed
+    ]
     # The per-collection counts are independent Qdrant round-trips — gather them
     # concurrently so latency is one round-trip, not N (the ops dashboard polls
     # this, and Explore/Compare call it on load). probe_tenant_count never raises.
@@ -123,7 +132,11 @@ async def list_collections(
     infos = [
         _collection_info(e, count) for e, count in zip(entries, counts, strict=True)
     ]
-    return CollectionsResponse(collections=infos, default=registry.default_id)
+    if allowed is None or registry.default_id in allowed:
+        default = registry.default_id
+    else:
+        default = infos[0].id if infos else registry.default_id
+    return CollectionsResponse(collections=infos, default=default)
 
 
 class ChunkConfig(BaseModel):
