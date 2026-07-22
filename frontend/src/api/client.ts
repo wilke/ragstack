@@ -273,7 +273,8 @@ export interface CollectionInfo {
   chunk_method?: string | null;
   chunk_size?: number | null;
   default: boolean;
-  count?: number | null; // tenant-scoped
+  count?: number | null; // vector-store tenant-scoped count
+  text_count?: number | null; // text-index (BM25) tenant-scoped count; compare with count for parity
   provenance?: Provenance | null; // verified lineage from the manifest
 }
 
