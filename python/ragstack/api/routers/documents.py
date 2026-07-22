@@ -30,7 +30,7 @@ from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
 from ragstack.ingestion.manifest import build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
-from ragstack.tenancy import readable_tenants
+from ragstack.tenancy import allowed_collection_ids, readable_tenants
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +185,14 @@ async def ingest(
     target: CollectionEntry | None = None
     run_ingestor = ingestor
     if request.collection and request.collection != collections.default_id:
+        # A restricted tenant may only ingest into a collection it's allowed to
+        # access (same allowlist as reads); out-of-scope → 404, not a silent write.
+        allowed = allowed_collection_ids(tenant, settings.tenant_collections)
+        if allowed is not None and request.collection not in allowed:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {request.collection!r}; see GET /v1/collections",
+            )
         try:
             target = collections.resolve(request.collection)
         except KeyError:
