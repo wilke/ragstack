@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { getStoredApiKey, setStoredApiKey } from "./api/config";
+import { BackendSwitcher } from "./components/BackendSwitcher";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
 import { OpsDashboard } from "./components/OpsDashboard";
@@ -23,7 +25,13 @@ const SUBTITLE: Record<View, string> = {
 };
 
 export function App() {
-  const [apiKey, setApiKey] = useState("");
+  // Seed the key from localStorage (set via the backend switcher) so it survives
+  // reloads; persist every change so all tabs share one admin key.
+  const [apiKey, setApiKeyState] = useState(getStoredApiKey);
+  const setApiKey = (v: string) => {
+    setApiKeyState(v);
+    setStoredApiKey(v);
+  };
   const [view, setView] = useState<View>("explore");
 
   // Compare needs width for side-by-side columns; the others read best narrow.
@@ -34,6 +42,8 @@ export function App() {
       <header className="mb-6">
         <h1 className="text-2xl font-semibold">RAGStack Explorer</h1>
         <p className="text-sm text-gray-500">{SUBTITLE[view]}</p>
+
+        <BackendSwitcher apiKey={apiKey} setApiKey={setApiKey} />
 
         <nav className="mt-4 flex gap-1 border-b border-gray-200" aria-label="Modules">
           {TABS.map((t) => (
