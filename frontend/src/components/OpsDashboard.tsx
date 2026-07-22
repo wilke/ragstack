@@ -276,6 +276,40 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
 
 // --- Collections registry -------------------------------------------------
 
+// Vector count vs text (BM25) count for a collection. They should match — both
+// legs index the same chunks — so a drift flags a half-broken ingest (one store
+// missing rows). "~" when a count is approximate (an estimate on a huge
+// collection can differ slightly from the exact other leg); tolerate a small
+// relative delta before crying drift.
+function ParityBadge({ vec, text }: { vec?: number | null; text?: number | null }) {
+  if (vec == null || text == null) {
+    return <span className="text-xs text-gray-300" title="a count is unavailable">—</span>;
+  }
+  const delta = Math.abs(vec - text);
+  const rel = delta / Math.max(vec, text, 1);
+  if (delta === 0) {
+    return <span className="rounded bg-green-50 px-1.5 py-0.5 text-xs text-green-700">✓ match</span>;
+  }
+  if (rel <= 0.02) {
+    return (
+      <span
+        className="rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700"
+        title={`vector and text counts differ by ${delta.toLocaleString()} (~${(rel * 100).toFixed(1)}%) — likely an approximate count on a large collection`}
+      >
+        ≈ close
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-700"
+      title={`vector and text counts differ by ${delta.toLocaleString()} (${(rel * 100).toFixed(1)}%) — one store is missing rows (incomplete ingest?)`}
+    >
+      ⚠ drift {delta.toLocaleString()}
+    </span>
+  );
+}
+
 function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   const cols = useQuery({
     queryKey: ["collections-ops", apiKey],
@@ -305,7 +339,9 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 <th className="px-3 py-2 font-medium">Model</th>
                 <th className="px-3 py-2 font-medium">Chunking</th>
                 <th className="px-3 py-2 font-medium">Provenance</th>
-                <th className="px-3 py-2 font-medium">Chunks</th>
+                <th className="px-3 py-2 text-right font-medium">Vectors</th>
+                <th className="px-3 py-2 text-right font-medium">Text</th>
+                <th className="px-3 py-2 text-center font-medium">Parity</th>
               </tr>
             </thead>
             <tbody>
@@ -346,8 +382,14 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                         <span className="text-gray-300">none</span>
                       )}
                     </td>
-                    <td className="px-3 py-2 tabular-nums text-gray-600">
+                    <td className="px-3 py-2 text-right tabular-nums text-gray-600">
                       {c.count != null ? c.count.toLocaleString() : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-gray-600">
+                      {c.text_count != null ? c.text_count.toLocaleString() : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <ParityBadge vec={c.count} text={c.text_count} />
                     </td>
                   </tr>
                 );
