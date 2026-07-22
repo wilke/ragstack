@@ -308,7 +308,90 @@ async def build_collection_entry(
         retriever=_hybrid_retriever(vs, ti, emb, graph_store=graph_store),
         vector_store=vs,
         text_index=ti,
+        embedder=emb,
     )
+
+
+def _chunker_for(entry: CollectionEntry) -> Any:
+    """Build a chunker from a *target collection's* own chunk config, falling back
+    to the server defaults for any unset field. ``fixed_token`` binds the HF
+    tokenizer of the collection's embedding model (its sliding window is sized in
+    that model's tokens). Semantic methods are rejected here: they need the sync
+    embed bridge wired only into the default pipeline, so a targeted semantic
+    ingest isn't supported yet."""
+    method = entry.chunk_method or settings.chunk_method
+    size = entry.chunk_size if entry.chunk_size is not None else settings.chunk_size
+    overlap = entry.chunk_overlap if entry.chunk_overlap is not None else settings.chunk_overlap
+    if method in ("semantic", "semantic_pooled"):
+        raise ValueError(
+            f"chunk_method={method!r} is not supported for a per-collection ingest "
+            "(semantic chunking runs only through the default pipeline)"
+        )
+    token_counter = None
+    if method == "fixed_token":
+        model = entry.model or settings.embedding_model
+        if not model:
+            raise ValueError(
+                "chunk_method='fixed_token' requires the collection's embedding_model"
+            )
+        token_counter = make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
+    return make_chunker(
+        method, chunk_size=size, chunk_overlap=overlap, token_counter=token_counter
+    )
+
+
+def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngestor:
+    """A ShardedIngestor that writes into ``entry``'s collection using that
+    collection's bound embedder/chunker/stores (so vectors match its model and
+    land in its index), while sharing the app's loader, graph store, KG extractor,
+    job store, and ingest backend. Used when ``/v1/ingest`` targets a non-default
+    ``collection``; the default collection keeps using the prebuilt app ingestor."""
+    pipeline = IngestionPipeline(
+        loader=default_loader_registry(
+            ingest_root=settings.ingest_root or None,
+            max_bytes=settings.max_document_bytes,
+            profile=resolve_profile(settings.publisher_profile),
+        ),
+        chunker=_chunker_for(entry),
+        embedder=entry.embedder,
+        vector_store=entry.vector_store,
+        text_index=entry.text_index,
+        graph_store=app_state.graph_store,
+        kg_extractor=app_state.kg_extractor,
+    )
+    return ShardedIngestor(
+        pipeline,
+        make_ingest_backend(settings, http=app_state.http_client),
+        shard_size=settings.ingest_shard_size,
+        job_store=app_state.job_store,
+        quota=TenantQuota(settings.tenant_max_concurrency),
+    )
+
+
+def write_ingest_manifest_for(
+    entry: CollectionEntry, *, source: str, chunk_count: int | None = None
+) -> None:
+    """Verified (source='ingest') manifest for a *specific* collection after a
+    targeted ingest — the per-collection analogue of ``write_ingest_manifest``
+    (which targets the default derived collection). Best-effort, never raises."""
+    if not settings.collection_manifest_dir:
+        return
+    try:
+        from ragstack.provenance import make_ingest_manifest, write_manifest
+
+        # The built entry doesn't retain its endpoint list; the manifest's identity
+        # is (model, dim, chunk), so an empty endpoints list is fine here.
+        manifest = make_ingest_manifest(
+            collection=entry.collection,
+            model=entry.model, dim=entry.dim,
+            embedding_api=settings.embedding_api, embedding_endpoints=[],
+            chunk_method=entry.chunk_method, chunk_size=entry.chunk_size,
+            chunk_overlap=entry.chunk_overlap,
+            corpus=source, chunk_count=chunk_count,
+        )
+        write_manifest(settings.collection_manifest_dir, manifest)
+    except Exception:  # noqa: BLE001 — provenance must never fail an ingest
+        log.warning("provenance: targeted ingest manifest write failed", exc_info=True)
 
 
 def materialize_config_manifest_for_spec(spec: CollectionSpec) -> None:
@@ -355,6 +438,7 @@ async def _build_collection_registry(
             retriever=default_retriever,
             vector_store=default_vector_store,
             text_index=default_text_index,
+            embedder=default_embedder,
         )
     ]
     _materialize_config_manifest(

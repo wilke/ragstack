@@ -71,6 +71,7 @@ class CollectionEntry:
     retriever: Any
     vector_store: Any
     text_index: Any
+    embedder: Any = None  # the collection's embedder (matched to its model/dim); for ingest
 
 
 class CollectionRegistry:

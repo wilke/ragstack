@@ -2,9 +2,10 @@
 
 **Status:** in progress (branch `feat/model-registry-p3`). Companion to
 [model-registry.md](model-registry.md) §5 (roadmap item 3). Scope locked 2026-07-08.
-**Progress:** Steps 1–3 done (contracts; real chunk config on `CollectionSpec`;
+**Progress:** Steps 1–4 done (contracts; real chunk config on `CollectionSpec`;
 `POST`/`DELETE /v1/collections` handler with content-addressing + write-through
-persistence). Remaining: Step 4 (collection-aware ingest), Step 5 (Go stub), Step 6
+persistence; collection-aware `POST /v1/ingest` that routes documents into a target
+collection's bound embedder/chunker/stores). Remaining: Step 5 (Go stub), Step 6
 (conformance).
 
 Goal: an HTTP front door to the **build-time** path — create a content-addressed

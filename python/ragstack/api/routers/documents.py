@@ -4,10 +4,21 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from pydantic import BaseModel, Field
 
+from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
+    build_ingestor_for,
+    get_collections,
     get_ingestor,
     get_job_store,
     get_text_index,
@@ -47,6 +58,7 @@ async def _run_ingest(
     job_id: str,
     source: str,
     tenant_id: str,
+    target: CollectionEntry | None = None,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -86,15 +98,21 @@ async def _run_ingest(
     # a null count would falsely mark the collection "verified" and clobber a prior
     # good/config manifest for the derived collection.
     if final == COMPLETED:
-        from ragstack.api.deps import write_ingest_manifest
-
         chunks = sum(len(r.chunk_ids or []) for r in results)
-        write_ingest_manifest(source=source, chunk_count=chunks or None)
+        if target is not None:
+            from ragstack.api.deps import write_ingest_manifest_for
+
+            write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+        else:
+            from ragstack.api.deps import write_ingest_manifest
+
+            write_ingest_manifest(source=source, chunk_count=chunks or None)
 
 
 class IngestRequest(BaseModel):
     source: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    collection: str | None = None  # target collection id; None → server default
 
 
 class IngestItemCounts(BaseModel):
@@ -120,10 +138,12 @@ class DocumentInfo(BaseModel):
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(
     request: IngestRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     tenant: str = Depends(resolve_tenant),
     ingestor: ShardedIngestor = Depends(get_ingestor),
     job_store: JobStore = Depends(get_job_store),
+    collections: CollectionRegistry = Depends(get_collections),
 ) -> IngestResponse:
     """Accept a file or directory for ingestion and run it in the background.
 
@@ -158,15 +178,35 @@ async def ingest(
                 f"workflows for bulk ingest"
             ),
         )
+    # Route into a specific collection when asked: documents are indexed with that
+    # collection's bound embedder/chunker/stores (so vectors match its model and
+    # land in its index). Omitted — or the default id — keeps the prebuilt app
+    # ingestor (backward compatible). An unknown id is a 404, not a silent default.
+    target: CollectionEntry | None = None
+    run_ingestor = ingestor
+    if request.collection and request.collection != collections.default_id:
+        try:
+            target = collections.resolve(request.collection)
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {request.collection!r}; see GET /v1/collections",
+            ) from None
+        try:
+            run_ingestor = build_ingestor_for(http_request.app.state, target)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from None
+
     job = await job_store.create(source=request.source)
     background_tasks.add_task(
         _run_ingest,
         job_store,
-        ingestor,
+        run_ingestor,
         settings.ingest_root,
         job.job_id,
         request.source,
         tenant,
+        target,
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 
