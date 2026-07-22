@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from qdrant_client.models import (
     Filter,
     MatchAny,
     MatchValue,
+    PayloadSchemaType,
     PointIdsList,
     PointStruct,
     VectorParams,
@@ -24,6 +26,15 @@ from qdrant_client.models import (
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
 from ragstack.tenancy import DEFAULT_TENANT, tenant_of
+
+log = logging.getLogger(__name__)
+
+# Payload field carrying the tenant on every point. Indexed so tenant-filtered
+# counts and searches use the index instead of scanning the whole collection.
+_TENANT_FIELD = "tenant_id"
+# Upper bound (seconds) on a tenant-filtered count, so an unindexed large
+# collection degrades to "unavailable" fast instead of hanging the read.
+_COUNT_TIMEOUT_S = 5
 
 __all__ = [
     "QdrantVectorStore",
@@ -150,13 +161,31 @@ class QdrantVectorStore:
                     f"but the configured embedding dimension is {self._vector_size}. "
                     f"Use a different collection or embedding model."
                 )
-            return
-        await self._client.create_collection(
-            collection_name=self._collection,
-            vectors_config=VectorParams(
-                size=self._vector_size, distance=self._distance
-            ),
-        )
+        else:
+            await self._client.create_collection(
+                collection_name=self._collection,
+                vectors_config=VectorParams(
+                    size=self._vector_size, distance=self._distance
+                ),
+            )
+        # Index the tenant field so tenant-filtered counts/searches use the index
+        # rather than a full scan. Runs for pre-existing collections too (e.g. one
+        # built before this fix), where it back-fills the missing index.
+        await self._ensure_tenant_index()
+
+    async def _ensure_tenant_index(self) -> None:
+        """Ensure a keyword payload index on the tenant field. Idempotent and
+        best-effort: a pre-existing index (or a transient failure) is non-fatal —
+        counts just fall back to the slow scan path until it's built. On a large
+        collection Qdrant builds the index in the background."""
+        try:
+            await self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name=_TENANT_FIELD,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as e:  # noqa: BLE001 — already-exists / transient; non-fatal
+            log.debug("tenant_id index on %r not (re)created: %s", self._collection, e)
 
     async def upsert(self, chunks: list[Chunk]) -> None:
         if not chunks:
@@ -237,14 +266,34 @@ class QdrantVectorStore:
         non-admin. Fails closed on an empty ``tenants`` list: ``_build_filter``
         drops an empty multi-value list as "no constraint" (fail-open → a global
         count), so the guard must happen here, before any filter is built.
+
+        Exact where affordable, estimate where not. The tenant field is indexed
+        (see ``_ensure_tenant_index``) so *filtering* is fast — but an EXACT count
+        still enumerates every matching point, which on a huge, largely
+        single-tenant collection (e.g. 24.8M points all ``public``) is O(matches)
+        and blows past ``_COUNT_TIMEOUT_S``. On that timeout we fall back to
+        Qdrant's segment-based ESTIMATE (``exact=False``), which is ~instant, so
+        the /collections + /stats reads always return a number (approximate for
+        the giants, exact for everything small enough) instead of hanging or
+        degrading to null.
         """
         if not tenants:
             return 0
-        resp = await self._client.count(
-            collection_name=self._collection,
-            count_filter=_build_filter({"tenant_id": list(tenants)}),
-            exact=True,
-        )
+        count_filter = _build_filter({"tenant_id": list(tenants)})
+        try:
+            resp = await self._client.count(
+                collection_name=self._collection,
+                count_filter=count_filter,
+                exact=True,
+                timeout=_COUNT_TIMEOUT_S,
+            )
+        except Exception as e:  # noqa: BLE001 — exact timed out on a large match set
+            log.debug(
+                "exact tenant count on %r fell back to estimate: %s", self._collection, e
+            )
+            resp = await self._client.count(
+                collection_name=self._collection, count_filter=count_filter, exact=False
+            )
         return int(resp.count)
 
     async def get_chunks(
