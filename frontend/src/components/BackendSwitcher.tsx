@@ -53,7 +53,11 @@ export function BackendSwitcher({
     // apiKey is part of every query key → changing it refetches on its own.
   }
 
-  const effective = base || "same-origin (proxy)";
+  const effective = !base
+    ? "default proxy"
+    : base.startsWith("/be/")
+      ? `proxy → ${base.slice(4)}`
+      : `direct → ${base}`;
 
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs">
@@ -76,7 +80,8 @@ export function BackendSwitcher({
       {selectId === CUSTOM ? (
         <input
           type="url"
-          placeholder="http://host:port"
+          placeholder="http://host:port (direct — local only)"
+          title="Absolute URL, called directly (relies on CORS). Does not traverse a port forward — use a preset for that."
           defaultValue={base}
           aria-label="Custom API URL"
           onBlur={(e) => applyBase(e.target.value)}
