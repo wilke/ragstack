@@ -1,13 +1,16 @@
 # Phase 3 — Ingest model selection (`POST /v1/collections`)
 
-**Status:** in progress (branch `feat/model-registry-p3`). Companion to
+**Status:** implemented (branch `feat/model-registry-p3`). Companion to
 [model-registry.md](model-registry.md) §5 (roadmap item 3). Scope locked 2026-07-08.
-**Progress:** Steps 1–5 done (contracts; real chunk config on `CollectionSpec`;
+**Progress:** Steps 1–6 done — contracts; real chunk config on `CollectionSpec`;
 `POST`/`DELETE /v1/collections` handler with content-addressing + write-through
-persistence; collection-aware `POST /v1/ingest`; Go parity scaffold for
-`POST`/`DELETE /v1/collections`). Remaining: Step 6 (conformance).
+persistence; collection-aware `POST /v1/ingest`; Go parity scaffold; black-box
+conformance (create→list→delete round-trip, unknown-model 404, missing-fields 422,
+Go-scaffold 201 shape). Python suite 678 passing; conformance green against a live
+server.
 > Note: the Go changes are unverified locally — no Go toolchain on the dev host;
-> `make build-go` / `make test-go` on a Go-equipped box or CI must confirm.
+> `make build-go` / `make test-go` and the `RAGSTACK_IMPL=go` conformance run on a
+> Go-equipped box or CI must confirm the scaffold.
 
 Goal: an HTTP front door to the **build-time** path — create a content-addressed
 collection that binds a *registered* embedding model + chunk config, then populate it —

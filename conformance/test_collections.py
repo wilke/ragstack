@@ -82,3 +82,98 @@ async def test_unknown_collection_is_404(client: httpx.AsyncClient, impl: str) -
         "/v1/query", json={"query": "x", "collection": "__no_such_collection__"}, headers=_headers()
     )
     assert resp.status_code == 404, resp.text
+
+
+# --- POST/DELETE /v1/collections (build-time model selection, Phase 3) ------- #
+
+
+def _validate_info(info: dict, schemas: dict[str, dict]) -> None:
+    """Validate one CollectionInfo by wrapping it in the CollectionsResponse shape
+    (there is no standalone CollectionInfo schema; it lives as the array item)."""
+    _validate({"collections": [info], "default": info["id"]}, schemas)
+
+
+async def _register_embedding(client: httpx.AsyncClient, model_id: str) -> int:
+    """Register an embedding model via the admin surface; return the status so the
+    caller can skip when not admin. localhost is in the default SSRF allowlist."""
+    resp = await client.post(
+        "/v1/admin/models/registry",
+        json={
+            "id": model_id, "task": "embedding", "provider": "vllm",
+            "base_urls": ["http://localhost:9100"], "model": "conformance/emb", "dim": 8,
+        },
+        headers=_headers(),
+    )
+    return resp.status_code
+
+
+async def test_create_collection_python(
+    client: httpx.AsyncClient, impl: str, schemas: dict[str, dict]
+) -> None:
+    """Full Python create→list→delete round-trip (real registry + persistence).
+
+    Skips on non-python (the Go scaffold neither resolves the model ref nor
+    persists) and when the caller lacks admin (create/registry are admin-gated)."""
+    if impl != "python":
+        pytest.skip("create/list/delete round-trip is python-authoritative in phase 3")
+    mid = "conf-emb-create"
+    if await _register_embedding(client, mid) in (401, 403):
+        pytest.skip("caller lacks admin access to register a model / create a collection")
+
+    created = await client.post(
+        "/v1/collections",
+        json={"embedding": mid, "chunk": {"method": "fixed", "size": 200, "overlap": 20}},
+        headers=_headers(),
+    )
+    assert created.status_code == 201, created.text
+    info = created.json()
+    _validate_info(info, schemas)
+    assert info["model"] == "conformance/emb" and info["dim"] == 8
+    cid = info["id"]
+
+    listed = (await client.get("/v1/collections", headers=_headers())).json()
+    assert cid in {c["id"] for c in listed["collections"]}
+
+    deleted = await client.delete(f"/v1/collections/{cid}", headers=_headers())
+    assert deleted.status_code == 204, deleted.text
+    after = (await client.get("/v1/collections", headers=_headers())).json()
+    assert cid not in {c["id"] for c in after["collections"]}
+
+
+async def test_create_unknown_model_is_404(client: httpx.AsyncClient, impl: str) -> None:
+    if impl != "python":
+        pytest.skip("unknown-model 404 on create is python-first behavior in phase 3")
+    resp = await client.post(
+        "/v1/collections",
+        json={"embedding": "__no_such_model__", "chunk": {"method": "fixed"}},
+        headers=_headers(),
+    )
+    if resp.status_code in (401, 403):
+        pytest.skip("caller lacks admin access to the create surface")
+    assert resp.status_code == 404, resp.text
+
+
+async def test_create_collection_go_scaffold(
+    client: httpx.AsyncClient, impl: str, schemas: dict[str, dict]
+) -> None:
+    """The Go scaffold serves POST /v1/collections with a schema-valid 201 echo, so
+    the endpoint/contract exists in both impls."""
+    if impl == "python":
+        pytest.skip("covered by the full python round-trip test")
+    resp = await client.post(
+        "/v1/collections",
+        json={"embedding": "any-ref", "chunk": {"method": "fixed"}, "label": "L"},
+        headers=_headers(),
+    )
+    if resp.status_code in (401, 403):
+        pytest.skip("caller lacks admin access to the create surface")
+    assert resp.status_code == 201, resp.text
+    _validate_info(resp.json(), schemas)
+
+
+async def test_create_missing_fields_is_422(client: httpx.AsyncClient) -> None:
+    """Both impls validate the request body (embedding + chunk required)."""
+    resp = await client.post("/v1/collections", json={"chunk": {"method": "fixed"}}, headers=_headers())
+    if resp.status_code in (401, 403):
+        pytest.skip("caller lacks admin access to the create surface")
+    assert resp.status_code == 422, resp.text
