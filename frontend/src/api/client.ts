@@ -15,6 +15,8 @@
 // must NOT be used to slice `content`. Intra-passage highlighting waits on a
 // backend `match_start`/`match_end` that is chunk-relative; until then the whole
 // passage is framed as the match. See lib/highlight.ts.
+import { apiUrl } from "./config";
+
 export interface SourceMetadata {
   title?: string;
   authors?: string | string[];
@@ -78,7 +80,7 @@ export class ApiError extends Error {
 async function post<T>(path: string, body: unknown, apiKey?: string): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-API-Key"] = apiKey;
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -99,7 +101,7 @@ export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryRespo
 async function get<T>(path: string, apiKey?: string): Promise<T> {
   const headers: Record<string, string> = {};
   if (apiKey) headers["X-API-Key"] = apiKey;
-  const res = await fetch(path, { headers });
+  const res = await fetch(apiUrl(path), { headers });
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, detail || res.statusText);
