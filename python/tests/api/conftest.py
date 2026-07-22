@@ -8,6 +8,7 @@ exercised without standing up any services.
 from __future__ import annotations
 
 import httpx
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -41,6 +42,19 @@ class _StateRetriever:
 
     async def retrieve(self, *args: object, **kwargs: object) -> object:
         return await app.state.retriever.retrieve(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_qdrant(monkeypatch):
+    """Never touch a real Qdrant from a test. ``POST /v1/collections`` builds a
+    live ``QdrantVectorStore`` and calls ``ensure_collection`` — with the default
+    ``QDRANT_URL`` (:6333) that would create stray collections on whatever Qdrant
+    is reachable (e.g. a prod instance on the dev host, or CI). Pin it to a dead
+    port so the ensure step fails fast and is swallowed (best-effort), leaving the
+    registry/response assertions intact and nothing created."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "qdrant_url", "http://localhost:6399")
 
 
 @pytest_asyncio.fixture
