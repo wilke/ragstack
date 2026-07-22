@@ -9,6 +9,7 @@ placeholder, so this is opt-in.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import httpx
 
@@ -32,11 +33,17 @@ class OpenAILLM:
         model: str,
         http: httpx.AsyncClient,
         api_key: str | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.http = http
         self.api_key = api_key
+        # Extra top-level fields merged into every chat-completions request, e.g.
+        # a reasoning model's ``{"chat_template_kwargs": {"enable_thinking": false}}``
+        # so it answers into ``content`` instead of a separate reasoning field.
+        # Sourced from a registered model's ``params`` (per-model, via the registry).
+        self.extra_body = extra_body or {}
 
     async def complete(
         self,
@@ -54,6 +61,7 @@ class OpenAILLM:
                 "messages": messages,
                 "max_tokens": max_tokens,
                 "temperature": temperature,
+                **self.extra_body,
             },
             headers=headers,
             timeout=120.0,
