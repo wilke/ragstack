@@ -158,10 +158,12 @@ const GLOSSARY: { group: string; items: { term: string; def: string }[] }[] = [
   {
     group: "Agreement metrics",
     items: [
-      { term: "Jaccard (overlap)", def: "Shared docs ÷ union of docs between two lanes. 100% = identical result sets, 0% = no docs in common." },
-      { term: "Kendall τ (order)", def: "Rank-order agreement over the docs two lanes share. +1 = identical order, 0 = unrelated, −1 = reversed." },
-      { term: "agreement index", def: "Mean Jaccard overlap across every lane pair — one number for 'how much do all lanes agree?'" },
-      { term: "consensus (×)", def: "How many lanes retrieved a given document. Docs found by all lanes are strong consensus." },
+      { term: "chunk overlap", def: "Jaccard on retrieved chunk_ids — used when lanes share a collection (same chunker), so chunks are the same units. The exact retrieval-agreement measure." },
+      { term: "passage-span overlap", def: "Across shared docs, intersection ÷ union of the retrieved char-ranges. Granularity-independent, so it's the honest cross-chunker signal: did the lanes surface the same passage, not just the same document?" },
+      { term: "document overlap", def: "Jaccard on doc_ids. A recall-robustness signal (is this doc found regardless of chunker?), but confounded by chunk granularity — a coarser chunker returns more unique docs per top-k, so cross-chunker doc overlap reads low for reasons unrelated to relevance." },
+      { term: "Kendall τ (order)", def: "Rank-order agreement over the items two lanes share. +1 = identical order, 0 = unrelated, −1 = reversed." },
+      { term: "answer agreement", def: "Bag-of-words overlap of the lanes' generated answers — the outcome retrieval agreement approximates. Lexical, so paraphrases read lower than they truly agree." },
+      { term: "consensus (×) / coverage (×N)", def: "× = how many lanes retrieved a doc (recall). ×N on a rank badge = how many of that lane's chunks came from the doc (why finer chunkers list fewer unique docs)." },
     ],
   },
   {
@@ -475,26 +477,115 @@ function CompareSource({
 interface LaneEntry {
   key: string;
   label: string;
+  collection: string; // which collection the lane queried — same value ⇒ same chunker
+  answer: string; // the lane's generated answer, for answer-agreement
   sources: Source[];
 }
 
-// Unique docs for a lane, in retrieval order (first occurrence wins → best rank).
-function laneDocRanks(
-  sources: Source[],
-): { doc_id: string; rank: number; score: number; title: string }[] {
-  const seen = new Set<string>();
-  const out: { doc_id: string; rank: number; score: number; title: string }[] = [];
-  for (const s of sources) {
-    if (seen.has(s.doc_id)) continue;
-    seen.add(s.doc_id);
-    out.push({
-      doc_id: s.doc_id,
-      rank: out.length + 1,
-      score: s.score,
-      title: docLabel(s.metadata, s.doc_id),
-    });
+// Chunks are the real retrieval unit; chunk_id is comparable only WITHIN a
+// collection (same chunker). Ranked by retrieval order.
+function laneChunks(sources: Source[]): { id: string; rank: number }[] {
+  return sources.map((s, i) => ({ id: s.chunk_id, rank: i + 1 }));
+}
+
+type Span = [number, number];
+interface DocAgg {
+  doc_id: string;
+  rank: number; // by aggregate (max) chunk relevance within the lane
+  chunkCount: number; // how many of the lane's chunks came from this doc (coverage)
+  spans: Span[]; // char ranges into the ORIGINAL doc, for cross-chunker span overlap
+  title: string;
+}
+
+// Collapse a lane's chunks to unique docs, aggregating relevance and coverage.
+// Ranked by best chunk score (== retrieval order for a score-sorted list), but we
+// also keep chunkCount so the granularity confound is visible, and spans so
+// cross-chunker passage overlap is measurable.
+function laneDocs(sources: Source[]): DocAgg[] {
+  const by = new Map<string, DocAgg & { agg: number }>();
+  sources.forEach((s) => {
+    let d = by.get(s.doc_id);
+    if (!d) {
+      d = {
+        doc_id: s.doc_id, rank: 0, chunkCount: 0, spans: [],
+        title: docLabel(s.metadata, s.doc_id), agg: s.score,
+      };
+      by.set(s.doc_id, d);
+    }
+    d.agg = Math.max(d.agg, s.score);
+    d.chunkCount += 1;
+    const st = s.metadata.start_char;
+    const en = s.metadata.end_char;
+    if (typeof st === "number" && typeof en === "number" && en > st) d.spans.push([st, en]);
+  });
+  return [...by.values()]
+    .sort((a, b) => b.agg - a.agg)
+    .map((d, i) => ({ doc_id: d.doc_id, rank: i + 1, chunkCount: d.chunkCount, spans: d.spans, title: d.title }));
+}
+
+function jaccard<T>(a: Set<T>, b: Set<T>): number {
+  if (!a.size && !b.size) return 0;
+  let inter = 0;
+  a.forEach((x) => {
+    if (b.has(x)) inter++;
+  });
+  return inter / (a.size + b.size - inter);
+}
+
+// Total covered length of a set of (possibly overlapping) spans.
+function mergedLength(spans: Span[]): number {
+  if (!spans.length) return 0;
+  const sorted = [...spans].sort((p, q) => p[0] - q[0]);
+  let total = 0;
+  let [cs, ce] = sorted[0];
+  for (let k = 1; k < sorted.length; k++) {
+    const [s, e] = sorted[k];
+    if (s <= ce) ce = Math.max(ce, e);
+    else {
+      total += ce - cs;
+      [cs, ce] = [s, e];
+    }
   }
-  return out;
+  return total + (ce - cs);
+}
+
+// Passage-span overlap between two lanes: over the docs they share, how much of
+// the retrieved source text coincides (intersection ÷ union of char ranges).
+// Granularity-independent — the meaningful cross-chunker signal. null when the
+// shared docs carry no offsets.
+function spanIoU(
+  spansA: Map<string, Span[]>,
+  spansB: Map<string, Span[]>,
+  sharedDocs: string[],
+): number | null {
+  let inter = 0;
+  let union = 0;
+  let sawSpans = false;
+  for (const doc of sharedDocs) {
+    const a = spansA.get(doc) ?? [];
+    const b = spansB.get(doc) ?? [];
+    if (!a.length || !b.length) continue;
+    sawSpans = true;
+    const la = mergedLength(a);
+    const lb = mergedLength(b);
+    const both = mergedLength([...a, ...b]); // union
+    const overlap = la + lb - both; // inclusion-exclusion
+    inter += overlap;
+    union += both;
+  }
+  if (!sawSpans || union === 0) return null;
+  return inter / union;
+}
+
+// Lexical answer similarity: Jaccard over content-word tokens (≥3 chars). A crude
+// but honest proxy for "did the lanes say the same thing" — the outcome retrieval
+// agreement only approximates.
+function answerSim(a: string, b: string): number | null {
+  const tok = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []);
+  const A = tok(a);
+  const B = tok(b);
+  if (!A.size || !B.size) return null;
+  return jaccard(A, B);
 }
 
 // Kendall's τ-b-ish rank correlation over the docs two lanes have in common.
@@ -537,44 +628,64 @@ function jaccardClass(j: number): string {
 const pct = (x: number) => `${Math.round(x * 100)}%`;
 
 function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
-  const lanes = entries.map((e) => ({ ...e, docs: laneDocRanks(e.sources) }));
+  const lanes = entries.map((e) => ({
+    ...e,
+    chunks: laneChunks(e.sources),
+    docs: laneDocs(e.sources),
+  }));
   const n = lanes.length;
-  const sets = lanes.map((l) => new Set(l.docs.map((d) => d.doc_id)));
-  const rankMaps = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.rank])));
 
-  // Union of docs, with per-lane rank + consensus count.
+  const chunkSet = lanes.map((l) => new Set(l.chunks.map((c) => c.id)));
+  const chunkRank = lanes.map((l) => new Map(l.chunks.map((c) => [c.id, c.rank])));
+  const docSet = lanes.map((l) => new Set(l.docs.map((d) => d.doc_id)));
+  const docRank = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.rank])));
+  const docSpans = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.spans])));
+  const coverOf = lanes.map((l) => new Map(l.docs.map((d) => [d.doc_id, d.chunkCount])));
+
+  // Same collection ⇒ same chunker ⇒ chunk_ids are comparable → measure at the
+  // chunk level (the exact unit). Different collection ⇒ chunk_ids don't line up:
+  // fall back to document overlap (recall, granularity-confounded) + passage-span
+  // overlap (precision, granularity-independent).
+  const pair = (i: number, j: number) => {
+    if (lanes[i].collection === lanes[j].collection) {
+      return {
+        mode: "chunk" as const,
+        overlap: jaccard(chunkSet[i], chunkSet[j]),
+        tau: kendallTau(chunkRank[i], chunkRank[j]),
+        span: null as number | null,
+      };
+    }
+    const shared = [...docSet[i]].filter((d) => docSet[j].has(d));
+    return {
+      mode: "doc" as const,
+      overlap: jaccard(docSet[i], docSet[j]),
+      tau: kendallTau(docRank[i], docRank[j]),
+      span: spanIoU(docSpans[i], docSpans[j], shared),
+    };
+  };
+  const allChunkLevel = lanes.every((l) => l.collection === lanes[0].collection);
+
+  // Document recall robustness — union of docs, per-lane rank + coverage + count.
   const titleOf = new Map<string, string>();
   for (const l of lanes) for (const d of l.docs) if (!titleOf.has(d.doc_id)) titleOf.set(d.doc_id, d.title);
   const rows = [...titleOf.keys()].map((doc) => {
-    const ranks = rankMaps.map((m) => m.get(doc));
+    const ranks = docRank.map((m) => m.get(doc));
+    const covers = coverOf.map((m) => m.get(doc));
     const present = ranks.filter((r): r is number => r !== undefined);
-    const count = present.length;
-    const avgRank = present.reduce((a, b) => a + b, 0) / (present.length || 1);
-    return { doc, title: titleOf.get(doc)!, ranks, count, avgRank };
+    return {
+      doc, title: titleOf.get(doc)!, ranks, covers,
+      count: present.length,
+      avgRank: present.reduce((a, b) => a + b, 0) / (present.length || 1),
+    };
   });
   rows.sort((a, b) => b.count - a.count || a.avgRank - b.avgRank);
-
   const full = rows.filter((r) => r.count === n).length;
-  const shared = rows.filter((r) => r.count >= 2).length;
   const unique = rows.filter((r) => r.count === 1).length;
 
-  // Pairwise set overlap (Jaccard) and order agreement (Kendall τ).
-  const jaccard = (i: number, j: number) => {
-    let inter = 0;
-    sets[i].forEach((x) => {
-      if (sets[j].has(x)) inter++;
-    });
-    const uni = sets[i].size + sets[j].size - inter;
-    return uni ? inter / uni : 0;
-  };
-  let jSum = 0;
-  let jCount = 0;
-  for (let i = 0; i < n; i++)
-    for (let j = i + 1; j < n; j++) {
-      jSum += jaccard(i, j);
-      jCount++;
-    }
-  const meanJaccard = jCount ? jSum / jCount : 0;
+  // Answer agreement (lexical) — only when ≥2 lanes actually generated an answer.
+  const answers = lanes.map((l) => l.answer || "");
+  const hasAnswers = answers.filter((a) => a.trim().length > 0).length >= 2;
+
   const short = (s: string) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
 
   return (
@@ -582,35 +693,24 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
       <summary className="cursor-pointer list-none px-4 py-3">
         <span className="text-sm font-semibold text-gray-700">Agreement</span>
         <span className="ml-2 text-xs text-gray-400">
-          how much the {n} lanes converge — same docs, same order
+          how much the {n} lanes converge — evidence and answers
         </span>
       </summary>
 
       <div className="space-y-5 border-t border-gray-100 p-4">
-        {/* Summary */}
-        <div className="flex flex-wrap gap-2 text-xs">
-          <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-800">
-            {full} in all {n} lanes
-          </span>
-          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">
-            {shared} shared by ≥2
-          </span>
-          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{unique} unique to one</span>
-          <span
-            className="cursor-help rounded-full bg-gray-900 px-2.5 py-1 font-medium text-white"
-            title="Mean Jaccard overlap across every lane pair — one number for how much all lanes agree."
-          >
-            agreement index {pct(meanJaccard)}
-          </span>
+        {/* Comparability banner — what unit the agreement can honestly use */}
+        <div
+          className={`rounded-md px-3 py-2 text-xs leading-snug ${allChunkLevel ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}
+        >
+          {allChunkLevel
+            ? "All lanes share a collection → agreement is measured at the chunk level (the exact retrieval unit)."
+            : "Lanes use different chunkers → chunk ids aren't comparable. Document overlap is a recall-robustness signal (confounded by chunk granularity — a coarser chunker surfaces more unique docs per top-k); passage-span overlap is the granularity-independent precision signal."}
         </div>
 
-        {/* Pairwise overlap / order grid */}
+        {/* Retrieval agreement — chunk-level where possible, else doc + span */}
         <div>
-          <div
-            className="mb-1.5 cursor-help text-[11px] font-semibold uppercase tracking-wide text-gray-400"
-            title="Each cell: set overlap (Jaccard %) with order agreement (Kendall τ) beneath, for that pair of lanes."
-          >
-            Pairwise · set overlap (Jaccard) / order (τ)
+          <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+            Retrieval agreement · pairwise
           </div>
           <div className="overflow-x-auto">
             <table className="border-collapse text-[11px]">
@@ -634,22 +734,24 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
                       if (i === j)
                         return (
                           <td key={j} className="p-0.5">
-                            <div className="flex h-9 w-16 items-center justify-center rounded bg-gray-50 text-gray-300">
-                              —
-                            </div>
+                            <div className="flex h-11 w-20 items-center justify-center rounded bg-gray-50 text-gray-300">—</div>
                           </td>
                         );
-                      const j2 = jaccard(i, j);
-                      const t = kendallTau(rankMaps[i], rankMaps[j]);
+                      const p = pair(i, j);
+                      const primary = p.mode === "chunk" ? p.overlap : p.span;
+                      const primaryLabel = p.mode === "chunk" ? "chunk" : "span";
+                      const cls = primary === null ? "bg-gray-100 text-gray-400" : jaccardClass(primary);
+                      const title =
+                        p.mode === "chunk"
+                          ? `chunk overlap ${pct(p.overlap)} · order τ ${p.tau === null ? "n/a" : p.tau.toFixed(2)}`
+                          : `passage-span overlap ${p.span === null ? "n/a" : pct(p.span)} · document overlap ${pct(p.overlap)} · order τ ${p.tau === null ? "n/a" : p.tau.toFixed(2)}`;
                       return (
                         <td key={j} className="p-0.5">
-                          <div
-                            className={`flex h-9 w-16 flex-col items-center justify-center rounded tabular-nums ${jaccardClass(j2)}`}
-                            title={`overlap ${pct(j2)} · order τ ${t === null ? "n/a" : t.toFixed(2)}`}
-                          >
-                            <span className="font-semibold leading-none">{pct(j2)}</span>
+                          <div className={`flex h-11 w-20 flex-col items-center justify-center rounded tabular-nums ${cls}`} title={title}>
+                            <span className="font-semibold leading-none">{primary === null ? "n/a" : pct(primary)}</span>
+                            <span className="mt-0.5 text-[9px] uppercase leading-none opacity-70">{primaryLabel}</span>
                             <span className="mt-0.5 text-[10px] leading-none opacity-80">
-                              τ {t === null ? "–" : t.toFixed(2)}
+                              {p.mode === "chunk" ? `τ ${p.tau === null ? "–" : p.tau.toFixed(2)}` : `doc ${pct(p.overlap)}`}
                             </span>
                           </div>
                         </td>
@@ -660,19 +762,92 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
               </tbody>
             </table>
           </div>
+          <p className="mt-1.5 text-[11px] leading-snug text-gray-400">
+            {allChunkLevel
+              ? "chunk = Jaccard overlap of retrieved chunk_ids; τ = Kendall rank agreement. Same units, so this is exact."
+              : "span = passage overlap (intersection ÷ union of retrieved char-ranges over shared docs) — same evidence, not just same document; doc = document-set Jaccard. n/a span = the corpus carries no char offsets."}
+          </p>
         </div>
 
-        {/* Consensus table: doc × lane, cell = rank in that lane */}
+        {/* Answer agreement — the outcome metric (lexical) */}
+        {hasAnswers ? (
+          <div>
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              Answer agreement · lexical · pairwise
+            </div>
+            <div className="overflow-x-auto">
+              <table className="border-collapse text-[11px]">
+                <thead>
+                  <tr>
+                    <th className="p-1"></th>
+                    {lanes.map((l) => (
+                      <th key={l.key} className="max-w-24 truncate p-1 text-left font-medium text-gray-500" title={l.label}>
+                        {short(l.label)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {lanes.map((row, i) => (
+                    <tr key={row.key}>
+                      <td className="max-w-24 truncate p-1 pr-2 font-medium text-gray-500" title={row.label}>
+                        {short(row.label)}
+                      </td>
+                      {lanes.map((_, j) => {
+                        if (i === j)
+                          return (
+                            <td key={j} className="p-0.5">
+                              <div className="flex h-9 w-16 items-center justify-center rounded bg-gray-50 text-gray-300">—</div>
+                            </td>
+                          );
+                        const sim = answerSim(answers[i], answers[j]);
+                        return (
+                          <td key={j} className="p-0.5">
+                            <div
+                              className={`flex h-9 w-16 items-center justify-center rounded tabular-nums ${sim === null ? "bg-gray-100 text-gray-400" : jaccardClass(sim)}`}
+                              title={sim === null ? "one lane produced no answer" : `lexical answer overlap ${pct(sim)}`}
+                            >
+                              {sim === null ? "n/a" : pct(sim)}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-snug text-gray-400">
+              Bag-of-words overlap of the generated answers — the outcome that retrieval agreement only
+              approximates. Lexical, so genuine paraphrases read lower than they truly agree.
+            </p>
+          </div>
+        ) : null}
+
+        {/* Per-document recall table with coverage */}
         <div>
           <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-            Per-document rank by lane · sorted by consensus
+            Document recall overlap · rank (×chunks) by lane · sorted by consensus
+          </div>
+          <div className="mb-2 flex flex-wrap gap-2 text-xs">
+            <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-800">{full} in all {n}</span>
+            <span className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-600">{unique} unique to one</span>
+            {lanes.map((l, i) => (
+              <span
+                key={l.key}
+                className="rounded-full bg-gray-100 px-2.5 py-1 text-gray-500"
+                title={`${l.label}: ${docSet[i].size} unique docs from ${l.chunks.length} chunks`}
+              >
+                {short(l.label)}: {docSet[i].size} docs
+              </span>
+            ))}
           </div>
           <div className="max-h-96 overflow-auto rounded border border-gray-100">
             <table className="w-full border-collapse text-xs">
               <thead className="sticky top-0 bg-gray-50">
                 <tr>
                   <th className="p-2 text-left font-medium text-gray-500">Document</th>
-                  <th className="p-2 text-center font-medium text-gray-500" title="lanes that retrieved this doc">
+                  <th className="p-2 text-center font-medium text-gray-500" title="lanes that retrieved this doc (recall robustness)">
                     ×
                   </th>
                   {lanes.map((l) => (
@@ -695,9 +870,13 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
                           <span className="text-gray-200">·</span>
                         ) : (
                           <span
-                            className={`inline-block min-w-6 rounded px-1.5 py-0.5 font-medium tabular-nums ${rankClass(rank)}`}
+                            className={`inline-flex items-baseline gap-0.5 rounded px-1.5 py-0.5 font-medium tabular-nums ${rankClass(rank)}`}
+                            title={`rank ${rank} · ${r.covers[k]} chunk${r.covers[k] === 1 ? "" : "s"} retrieved from this doc`}
                           >
                             {rank}
+                            {r.covers[k] && r.covers[k]! > 1 ? (
+                              <span className="text-[9px] font-normal opacity-70">×{r.covers[k]}</span>
+                            ) : null}
                           </span>
                         )}
                       </td>
@@ -708,9 +887,10 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
             </table>
           </div>
           <p className="mt-2 text-[11px] leading-snug text-gray-400">
-            Cells show each doc's rank within a lane (1 = top). Aligned rows across columns = the
-            lanes agree; scattered ranks or gaps = they disagree. Scores aren't compared directly —
-            they aren't commensurable across different models/fusions, so agreement is rank-based.
+            Cell = the doc's rank in that lane (1 = top); ×N = how many of the lane's chunks came from this
+            doc (coverage — a finer chunker packs more chunks per doc, so it lists fewer unique docs). "In
+            all {n}" means every lane surfaced the doc regardless of chunker — a recall signal, not
+            precision. For whether the lanes used the same passages, see span overlap above.
           </p>
         </div>
       </div>
@@ -916,6 +1096,8 @@ export function CompareView({
         (perLane && leverTags(x.lane.levers).length
           ? ` · ${leverTags(x.lane.levers).join(" ")}`
           : ""),
+      collection: x.lane.collection,
+      answer: x.res!.data!.answer ?? "",
       sources: x.res!.data!.sources,
     }));
 
