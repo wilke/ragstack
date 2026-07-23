@@ -83,3 +83,24 @@ async def test_complete_raises_on_null_content():
 async def test_complete_returns_content_on_well_formed_response():
     out = await _complete_against({"choices": [{"message": {"content": "hello"}}]})
     assert out == "hello"
+
+
+@pytest.mark.asyncio
+async def test_extra_body_merged_into_request():
+    # A registered model's params (e.g. a reasoning model's enable_thinking=false)
+    # must reach the chat request as top-level fields, so the model answers into
+    # `content` instead of a separate reasoning field.
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        import json
+
+        seen.update(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    extra = {"chat_template_kwargs": {"enable_thinking": False}}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http, extra_body=extra)
+        await llm.complete([{"role": "user", "content": "hi"}])
+    assert seen["chat_template_kwargs"] == {"enable_thinking": False}
+    assert seen["model"] == "m"  # base fields still present

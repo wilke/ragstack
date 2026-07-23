@@ -626,6 +626,9 @@ def _llm_from_entry(entry: Any, http: httpx.AsyncClient) -> OpenAILLM:
         model=entry.model,
         http=http,
         api_key=settings.openai_api_key or None,
+        # A registered model's free-form params become the chat request's extra_body
+        # (e.g. a reasoning model's chat_template_kwargs to answer into `content`).
+        extra_body=dict(entry.params or {}),
     )
 
 
