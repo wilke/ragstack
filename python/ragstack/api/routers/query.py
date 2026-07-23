@@ -230,10 +230,26 @@ def _to_sources(scored: list[ScoredChunk]) -> list[Source]:
             chunk_id=r.chunk.id,
             content=r.chunk.content,
             score=r.score,
-            metadata=r.chunk.metadata,
+            metadata=_source_metadata(r.chunk),
         )
         for r in scored
     ]
+
+
+def _source_metadata(chunk: Any) -> dict[str, Any]:
+    """The chunk's metadata plus its char offsets into the ORIGINAL document.
+
+    ``start_char``/``end_char`` live as fields on the Chunk (popped out of the
+    stored payload), not in ``metadata`` — but the UI needs them to measure
+    cross-chunker *passage-span overlap* (whether two lanes with different
+    chunkers surfaced the same region of a document, which doc_id matching can't
+    tell). Attach them only when meaningful (``end > start``); chunks/stores
+    without offsets leave them absent."""
+    md = dict(chunk.metadata)
+    if chunk.end_char > chunk.start_char:
+        md.setdefault("start_char", chunk.start_char)
+        md.setdefault("end_char", chunk.end_char)
+    return md
 
 
 async def tenant_slot(
