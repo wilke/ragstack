@@ -138,6 +138,37 @@ export function getStoreStats(apiKey?: string): Promise<StoreStats> {
   return get<StoreStats>("/v1/stats/stores", apiKey);
 }
 
+// --- Tenancy: who we are, what we can reach, and where the data actually sits ---
+// StoreStats collapses the readable tenants into one number per store; this splits
+// that union into a tenant x collection grid.
+
+export interface TenantCollectionCount {
+  collection: string;
+  label: string;
+  vector_count?: number | null;
+  text_count?: number | null;
+}
+
+export interface TenantRow {
+  tenant: string;
+  own: boolean; // our own tenant, vs the shared public corpus we may also read
+  collections: TenantCollectionCount[];
+}
+
+export interface TenantsInfo {
+  tenant: string;
+  role: string;
+  readable: string[];
+  restricted_to?: string[] | null; // collection allowlist; null = unrestricted
+  auth_enabled: boolean;
+  policy?: Record<string, string[]> | null; // admin-only: full TENANT_COLLECTIONS map
+  tenants: TenantRow[];
+}
+
+export function getTenants(apiKey?: string): Promise<TenantsInfo> {
+  return get<TenantsInfo>("/v1/stats/tenants", apiKey);
+}
+
 export function getDeepHealth(apiKey?: string): Promise<DeepHealth> {
   return get<DeepHealth>("/v1/health/deep", apiKey);
 }
@@ -254,6 +285,10 @@ export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
 // --- Collections registry (query-time selection) ---
 
 export interface Provenance {
+  collection?: string; // physical store name the manifest describes
+  model?: string; // embedding model as *built* — compare against the registry label
+  dim?: number | null;
+  embedding_api?: string;
   chunk_method?: string | null;
   chunk_size?: number | null;
   chunk_overlap?: number | null;
@@ -262,7 +297,8 @@ export interface Provenance {
   corpus?: string;
   chunk_count?: number | null;
   ingested_at?: string;
-  source?: string; // "ingest" (verified) | "config"
+  ragstack_version?: string;
+  source?: string; // "ingest" (verified) | "config" (declared from the registry spec)
 }
 
 export interface CollectionInfo {

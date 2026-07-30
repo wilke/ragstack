@@ -43,8 +43,17 @@ router = APIRouter()
 
 class Provenance(BaseModel):
     """Verified build lineage from the collection's manifest (null when no
-    manifest exists — e.g. manifests disabled or an out-of-band collection)."""
+    manifest exists — e.g. ``COLLECTION_MANIFEST_DIR`` unset, or an out-of-band
+    collection that predates manifests).
 
+    Deliberately excludes ``embedding_endpoints``: the manifest records them, but
+    they are internal infra URLs and this endpoint is readable by any principal
+    (same reasoning as /v1/models/available hiding base_urls)."""
+
+    collection: str = ""  # physical store name the manifest describes
+    model: str = ""  # embedding model as *built* — compare against the registry label
+    dim: int | None = None
+    embedding_api: str = ""
     chunk_method: str | None = None
     chunk_size: int | None = None
     chunk_overlap: int | None = None
@@ -53,6 +62,7 @@ class Provenance(BaseModel):
     corpus: str = ""
     chunk_count: int | None = None
     ingested_at: str = ""
+    ragstack_version: str = ""
     source: str = ""  # "ingest" (verified) | "config" (materialized from registry)
 
 
@@ -83,6 +93,10 @@ def _collection_info(
     m = read_manifest(settings.collection_manifest_dir, entry.collection)
     prov = (
         Provenance(
+            collection=m.collection,
+            model=m.model,
+            dim=m.dim,
+            embedding_api=m.embedding_api,
             chunk_method=m.chunk_method or None,
             chunk_size=m.chunk_size,
             chunk_overlap=m.chunk_overlap,
@@ -91,6 +105,7 @@ def _collection_info(
             corpus=m.corpus,
             chunk_count=m.chunk_count,
             ingested_at=m.ingested_at,
+            ragstack_version=m.ragstack_version,
             source=m.source,
         )
         if m is not None

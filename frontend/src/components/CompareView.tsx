@@ -363,6 +363,11 @@ function docLabel(m: Source["metadata"], docId: string): string {
   );
 }
 
+// One shared column template for the sources header and every row, so rank /
+// document / score line up exactly even across side-by-side lanes. The document
+// column is minmax(0,1fr) so long titles truncate instead of widening the grid.
+const SOURCE_GRID = "grid grid-cols-[1.5rem_minmax(0,1fr)_3.25rem] items-baseline gap-x-2";
+
 function CompareSource({
   rank,
   source,
@@ -406,60 +411,63 @@ function CompareSource({
   };
 
   return (
-    <li className="border-t border-gray-100 py-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="min-w-0 flex-1 truncate text-left text-xs font-medium text-gray-700"
-          title={title}
-        >
-          <span className="text-gray-400">{rank}.</span> {title}
-        </button>
-        <span className="shrink-0 tabular-nums text-[11px] text-gray-400">
-          {source.score.toFixed(4)}
-        </span>
-      </div>
-
-      {ctx && !ctx.loading && !ctx.error && ctx.prev ? (
-        <ContextChunk chunk={ctx.prev} position="prev" />
-      ) : null}
-
-      <p
+    // The row IS the grid, so its cells sit in the same columns as the header;
+    // the expanded detail spans the doc+score columns, indented past the rank.
+    <li className={`${SOURCE_GRID} border-t border-gray-100 py-1.5`}>
+      <span className="text-right text-[11px] tabular-nums text-gray-400">{rank}.</span>
+      <button
+        type="button"
         onClick={() => setOpen((o) => !o)}
-        title={source.content}
-        className={`mt-0.5 cursor-pointer whitespace-pre-wrap text-xs text-gray-500 ${open ? "" : "line-clamp-2"}`}
+        className="min-w-0 truncate text-left text-xs font-medium text-gray-700"
+        title={title}
       >
-        {source.content}
-      </p>
+        {title}
+      </button>
+      <span className="text-right tabular-nums text-[11px] text-gray-400">
+        {source.score.toFixed(4)}
+      </span>
 
-      {ctx && !ctx.loading && !ctx.error && ctx.next ? (
-        <ContextChunk chunk={ctx.next} position="next" />
-      ) : null}
+      <div className="col-span-2 col-start-2 min-w-0">
+        {ctx && !ctx.loading && !ctx.error && ctx.prev ? (
+          <ContextChunk chunk={ctx.prev} position="prev" />
+        ) : null}
 
-      <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-gray-400">
-        <button type="button" onClick={() => setOpen((o) => !o)} className="hover:text-gray-600">
-          {open ? "▴ collapse" : "▾ full text"}
-        </button>
-        {idx !== undefined ? <span>· chunk #{idx}</span> : null}
-        {hasNbr ? (
-          <button
-            type="button"
-            onClick={loadContext}
-            disabled={ctx?.loading}
-            className="text-blue-600 hover:underline disabled:opacity-50"
-          >
-            {ctx?.loading
-              ? "· loading…"
-              : ctx && !ctx.error
-                ? "· hide context"
-                : "· ± parent/child"}
+        <p
+          onClick={() => setOpen((o) => !o)}
+          title={source.content}
+          className={`mt-0.5 cursor-pointer whitespace-pre-wrap break-words text-xs text-gray-500 ${open ? "" : "line-clamp-2"}`}
+        >
+          {source.content}
+        </p>
+
+        {ctx && !ctx.loading && !ctx.error && ctx.next ? (
+          <ContextChunk chunk={ctx.next} position="next" />
+        ) : null}
+
+        <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-gray-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} className="hover:text-gray-600">
+            {open ? "▴ collapse" : "▾ full text"}
           </button>
-        ) : (
-          <span className="text-gray-300">· no neighbours</span>
-        )}
+          {idx !== undefined ? <span>· chunk #{idx}</span> : null}
+          {hasNbr ? (
+            <button
+              type="button"
+              onClick={loadContext}
+              disabled={ctx?.loading}
+              className="text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {ctx?.loading
+                ? "· loading…"
+                : ctx && !ctx.error
+                  ? "· hide context"
+                  : "· ± parent/child"}
+            </button>
+          ) : (
+            <span className="text-gray-300">· no neighbours</span>
+          )}
+        </div>
+        {ctx?.error ? <p className="text-[10px] text-red-500">context: {ctx.error}</p> : null}
       </div>
-      {ctx?.error ? <p className="text-[10px] text-red-500">context: {ctx.error}</p> : null}
     </li>
   );
 }
@@ -843,7 +851,16 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
             ))}
           </div>
           <div className="max-h-96 overflow-auto rounded border border-gray-100">
-            <table className="w-full border-collapse text-xs">
+            {/* table-fixed so the Document column can't be widened by a long
+                title — it truncates in place and the lane columns stay aligned. */}
+            <table className="w-full table-fixed border-collapse text-xs">
+              <colgroup>
+                <col />
+                <col className="w-10" />
+                {lanes.map((l) => (
+                  <col key={l.key} className="w-20" />
+                ))}
+              </colgroup>
               <thead className="sticky top-0 bg-gray-50">
                 <tr>
                   <th className="p-2 text-left font-medium text-gray-500">Document</th>
@@ -851,7 +868,7 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
                     ×
                   </th>
                   {lanes.map((l) => (
-                    <th key={l.key} className="max-w-28 truncate p-2 text-center font-medium text-gray-500" title={l.label}>
+                    <th key={l.key} className="truncate p-2 text-center font-medium text-gray-500" title={l.label}>
                       {short(l.label)}
                     </th>
                   ))}
@@ -860,7 +877,7 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.doc} className="border-t border-gray-100">
-                    <td className="max-w-xs truncate p-2 text-gray-700" title={r.title}>
+                    <td className="truncate p-2 text-gray-700" title={r.title}>
                       {r.title}
                     </td>
                     <td className="p-2 text-center tabular-nums text-gray-400">{r.count}</td>
@@ -1283,25 +1300,50 @@ export function CompareView({
                   <p className="text-xs text-red-600">Error: {res.error}</p>
                 ) : res?.data ? (
                   <>
-                    <p className="whitespace-pre-wrap rounded bg-gray-50 p-2 text-sm text-gray-800">
-                      {res.data.answer}
-                    </p>
-                    <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                    <section
+                      aria-label="answer"
+                      className="rounded-md border border-gray-200 bg-gray-50 p-2"
+                    >
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+                        Answer
+                      </div>
+                      {/* content is untrusted → rendered as React text (auto-escaped). */}
+                      <p className="whitespace-pre-wrap break-words text-sm text-gray-800">
+                        {res.data.answer}
+                      </p>
+                    </section>
+
+                    <section aria-label="sources">
+                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
                         Sources ({res.data.sources.length})
                       </div>
-                      <ul>
-                        {res.data.sources.map((s, i) => (
-                          <CompareSource
-                            key={s.chunk_id}
-                            rank={i + 1}
-                            source={s}
-                            collection={lane.collection}
-                            apiKey={lane.apiKey || apiKey}
-                          />
-                        ))}
-                      </ul>
-                    </div>
+                      {res.data.sources.length === 0 ? (
+                        <p className="rounded bg-amber-50 p-2 text-xs text-amber-800">
+                          No sources matched — the answer may be low-confidence.
+                        </p>
+                      ) : (
+                        <>
+                          <div
+                            className={`${SOURCE_GRID} border-b border-gray-200 pb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400`}
+                          >
+                            <span className="text-right">#</span>
+                            <span>Document</span>
+                            <span className="text-right">Score</span>
+                          </div>
+                          <ul>
+                            {res.data.sources.map((s, i) => (
+                              <CompareSource
+                                key={s.chunk_id}
+                                rank={i + 1}
+                                source={s}
+                                collection={lane.collection}
+                                apiKey={lane.apiKey || apiKey}
+                              />
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </section>
                   </>
                 ) : null}
               </div>

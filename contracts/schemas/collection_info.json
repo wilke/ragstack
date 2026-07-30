@@ -14,13 +14,21 @@
     "chunk_size": { "type": ["integer", "null"] },
     "default": { "type": "boolean" },
     "count": {
-      "description": "Tenant-scoped chunk count (own + public); null when unavailable.",
+      "description": "Tenant-scoped vector-store chunk count (own + public); null when unavailable.",
+      "type": ["integer", "null"]
+    },
+    "text_count": {
+      "description": "Tenant-scoped text-index (BM25) chunk count; compare against `count` for a vector<->text parity check. Null when unavailable.",
       "type": ["integer", "null"]
     },
     "provenance": {
-      "description": "Verified build lineage from the collection's manifest; null when no manifest exists.",
+      "description": "Build lineage from the collection's manifest; null when no manifest exists (e.g. COLLECTION_MANIFEST_DIR unset). `source` distinguishes a verified ingest record from lineage declared by the registry. Deliberately omits embedding_endpoints — internal infra URLs are not exposed on this principal-readable endpoint.",
       "type": ["object", "null"],
       "properties": {
+        "collection": { "type": "string" },
+        "model": { "type": "string" },
+        "dim": { "type": ["integer", "null"] },
+        "embedding_api": { "type": "string" },
         "chunk_method": { "type": ["string", "null"] },
         "chunk_size": { "type": ["integer", "null"] },
         "chunk_overlap": { "type": ["integer", "null"] },
@@ -29,7 +37,11 @@
         "corpus": { "type": "string" },
         "chunk_count": { "type": ["integer", "null"] },
         "ingested_at": { "type": "string" },
-        "source": { "type": "string" }
+        "ragstack_version": { "type": "string" },
+        "source": {
+          "description": "\"ingest\" (verified: written by a real ingest run) | \"config\" (declared: materialized from the registry spec).",
+          "type": "string"
+        }
       },
       "additionalProperties": false
     }

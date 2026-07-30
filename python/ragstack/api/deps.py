@@ -224,6 +224,7 @@ def _default_emb_signature() -> tuple:
 def _materialize_config_manifest(
     collection: str, *, model: str, dim: int, api: str, endpoints: list[str],
     chunk_method: str, chunk_size: int | None, chunk_overlap: int | None,
+    chunk_params: dict[str, Any] | None = None,
 ) -> None:
     """Write a source='config' manifest for a registry collection that has none,
     so pre-existing corpora (ingested before manifests, or out-of-band) still
@@ -233,6 +234,7 @@ def _materialize_config_manifest(
     from ragstack.provenance import (
         CollectionManifest,
         chunk_descriptor,
+        ragstack_version,
         read_manifest,
         spec_hash,
         write_manifest,
@@ -240,11 +242,17 @@ def _materialize_config_manifest(
 
     if read_manifest(settings.collection_manifest_dir, collection) is not None:
         return
-    desc = chunk_descriptor(chunk_method, chunk_size, chunk_overlap)
+    # params belong in the descriptor: they are part of the chunk strategy's
+    # identity, so omitting them would hash a config manifest differently from the
+    # ingest manifest of the very same build (a spurious "drift").
+    params = dict(chunk_params or {})
+    desc = chunk_descriptor(chunk_method, chunk_size, chunk_overlap, params or None)
     write_manifest(settings.collection_manifest_dir, CollectionManifest(
         collection=collection, model=model, dim=dim, embedding_api=api,
         embedding_endpoints=endpoints, chunk_method=chunk_method, chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap, spec_hash=spec_hash(model or "", dim, desc),
+        chunk_overlap=chunk_overlap, chunk_params=params,
+        spec_hash=spec_hash(model or "", dim, desc),
+        ragstack_version=ragstack_version(),
         source="config",
     ))
 
@@ -403,7 +411,7 @@ def materialize_config_manifest_for_spec(spec: CollectionSpec) -> None:
         endpoints=spec.embedding_endpoints
         or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else []),
         chunk_method=spec.chunk_method, chunk_size=spec.chunk_size,
-        chunk_overlap=spec.chunk_overlap,
+        chunk_overlap=spec.chunk_overlap, chunk_params=spec.chunk_params,
     )
 
 

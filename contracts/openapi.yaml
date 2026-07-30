@@ -376,6 +376,35 @@ paths:
         "401":
           description: Missing or invalid API key
 
+  /v1/stats/tenants:
+    get:
+      operationId: statsTenants
+      summary: The caller's tenancy — identity, reach, and a per-tenant count breakdown
+      description: >-
+        Where `/v1/stats/stores` collapses the caller's readable tenants into one
+        number per store, this splits that union into a tenant x collection grid,
+        so an operator can see which tenant actually owns a corpus (e.g. data
+        sitting in `public` rather than the org's own tenant) and per collection
+        rather than in aggregate. Also reports the caller's role, its collection
+        allowlist (`restricted_to`; null = unrestricted) and whether API-key auth
+        is enabled at all. The isolation rules are unchanged: rows cover only
+        tenants this caller may already read and columns only collections its
+        allowlist permits, so no other tenant's corpus size is revealed. `policy`
+        (the full tenant->collections map) names other tenants and is admin-only,
+        null otherwise. Each count degrades to null independently.
+      tags: [Stats]
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Tenancy and per-tenant, per-collection counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantsResponse"
+        "401":
+          description: Missing or invalid API key
+
   /v1/collections:
     get:
       operationId: listCollections
@@ -750,6 +779,63 @@ components:
         vector: { $ref: "#/components/schemas/StoreCount" }
         text: { $ref: "#/components/schemas/StoreCount" }
         graph: { $ref: "#/components/schemas/StoreCount" }
+      additionalProperties: false
+
+    TenantCollectionCount:
+      type: object
+      description: One (tenant, collection) cell of the breakdown.
+      required: [collection, label]
+      properties:
+        collection: { type: string }
+        label: { type: string }
+        vector_count: { type: [integer, "null"] }
+        text_count: { type: [integer, "null"] }
+      additionalProperties: false
+
+    TenantRow:
+      type: object
+      required: [tenant, own, collections]
+      properties:
+        tenant: { type: string }
+        own:
+          type: boolean
+          description: The caller's own tenant, vs the shared public corpus it may also read.
+        collections:
+          type: array
+          items: { $ref: "#/components/schemas/TenantCollectionCount" }
+      additionalProperties: false
+
+    TenantsResponse:
+      type: object
+      description: Who the caller is, what it may reach, and where its readable data lives.
+      required: [tenant, role, readable, auth_enabled, tenants]
+      properties:
+        tenant: { type: string }
+        role: { type: string }
+        readable:
+          type: array
+          items: { type: string }
+          description: Own + public — the tenants every read is filtered to.
+        restricted_to:
+          type: [array, "null"]
+          items: { type: string }
+          description: Collection allowlist for this tenant; null = unrestricted.
+        auth_enabled:
+          type: boolean
+          description: >-
+            False on the keyless dev/test path, where every caller is the default
+            tenant. Production startup forbids it.
+        policy:
+          type: [object, "null"]
+          description: >-
+            Admin only: the full tenant -> collections map (TENANT_COLLECTIONS).
+            Null for non-admins, since it names other tenants.
+          additionalProperties:
+            type: array
+            items: { type: string }
+        tenants:
+          type: array
+          items: { $ref: "#/components/schemas/TenantRow" }
       additionalProperties: false
 
     GraphStatsResponse:
