@@ -33,13 +33,13 @@ def manifest_dir(tmp_path, monkeypatch):
 
 
 def _spec(**kw) -> CollectionSpec:
-    base = dict(
-        id="c1", label="C1", collection="phys_c1", text_index="phys_c1",
-        embedding_api="openai", embedding_model="sfr", embedding_model_dim=4096,
-        embedding_endpoints=["http://embed:9998"],
-        chunk_method="semantic", chunk_size=None, chunk_overlap=None,
-        chunk_params={"threshold": 0.7},
-    )
+    base = {
+        "id": "c1", "label": "C1", "collection": "phys_c1", "text_index": "phys_c1",
+        "embedding_api": "openai", "embedding_model": "sfr", "embedding_model_dim": 4096,
+        "embedding_endpoints": ["http://embed:9998"],
+        "chunk_method": "semantic", "chunk_size": None, "chunk_overlap": None,
+        "chunk_params": {"threshold": 0.7},
+    }
     base.update(kw)
     return CollectionSpec(**base)
 
