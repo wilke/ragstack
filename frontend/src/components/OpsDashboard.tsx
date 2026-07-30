@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   ApiError,
   getCollections,
@@ -7,11 +8,13 @@ import {
   getJobs,
   getModelsStatus,
   getStoreStats,
+  getTenants,
   runModelBenchmark,
   type AppConfig,
   type BenchmarkResult,
   type JobSummary,
   type ModelStatus,
+  type Provenance,
   type StoreStat,
 } from "../api/client";
 
@@ -21,6 +24,82 @@ import {
 // a note rather than an error. Counts auto-refresh so an in-progress ingest is visible.
 
 const fmt = (n: number | null | undefined): string => (n == null ? "—" : n.toLocaleString());
+
+// --- Section registry / table of contents ---------------------------------
+
+// One list drives both the TOC and every <h2>: SectionHeading renders its text
+// from here, so a section can't exist without a nav entry (or vice versa).
+// Order matches the render order below.
+const SECTIONS = [
+  { id: "stores", label: "Stores" },
+  { id: "config", label: "Config" },
+  { id: "collections", label: "Collections" },
+  { id: "tenants", label: "Tenants" },
+  { id: "models", label: "Models" },
+  { id: "jobs", label: "Ingest jobs" },
+  { id: "health", label: "Deep health" },
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
+
+const SECTION_LABEL = Object.fromEntries(SECTIONS.map((s) => [s.id, s.label])) as Record<
+  SectionId,
+  string
+>;
+
+// Headings report their own availability upward so the TOC can dim the sections
+// that 403'd (admin-only) or failed, instead of advertising them as live.
+const ReportSection = createContext<(id: SectionId, available: boolean) => void>(() => {});
+
+function SectionHeading({
+  id,
+  unavailable,
+  children,
+}: {
+  id: SectionId;
+  unavailable?: boolean;
+  children?: ReactNode;
+}) {
+  const report = useContext(ReportSection);
+  useEffect(() => report(id, !unavailable), [report, id, unavailable]);
+  return (
+    <div className="mb-2 mt-8 flex items-center justify-between">
+      {/* scroll-mt clears the sticky TOC bar so the heading isn't hidden under it */}
+      <h2 id={id} className="scroll-mt-16 text-sm font-semibold text-gray-700">
+        {SECTION_LABEL[id]}
+      </h2>
+      {children}
+    </div>
+  );
+}
+
+function TableOfContents({ available }: { available: Partial<Record<SectionId, boolean>> }) {
+  return (
+    <nav
+      aria-label="Sections"
+      className="sticky top-0 z-10 -mx-4 flex flex-wrap items-center gap-1.5 border-b border-gray-200 bg-white/90 px-4 py-2 backdrop-blur"
+    >
+      {SECTIONS.map((s) => {
+        const off = available[s.id] === false;
+        return (
+          <a
+            key={s.id}
+            href={`#${s.id}`}
+            title={off ? "unavailable — admin-only or failed to load" : undefined}
+            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+              off
+                ? "border-dashed border-gray-200 text-gray-400 hover:text-gray-600"
+                : "border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+            }`}
+          >
+            {s.label}
+            {off ? <span className="ml-1 text-gray-300">n/a</span> : null}
+          </a>
+        );
+      })}
+    </nav>
+  );
+}
 
 function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -98,8 +177,7 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <div className="mb-2 mt-8 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">Models</h2>
+      <SectionHeading id="models" unavailable={models.isError}>
         {!models.isError && (
           <button
             type="button"
@@ -110,7 +188,7 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
             {bench.isPending ? "measuring…" : "Measure throughput"}
           </button>
         )}
-      </div>
+      </SectionHeading>
 
       {models.isError ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
@@ -209,7 +287,7 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Config</h2>
+      <SectionHeading id="config" unavailable={cfg.isError} />
       {cfg.isError ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           {err?.status === 403
@@ -310,6 +388,29 @@ function ParityBadge({ vec, text }: { vec?: number | null; text?: number | null 
   );
 }
 
+// Hover detail for a collection's manifest. "verified" = written by a real ingest
+// run through this API; "declared" = materialized from the registry spec, so it
+// records what we were *told* the corpus is, not what was observed building it.
+function provenanceDetail(p: Provenance): string {
+  const parts = [
+    p.source === "ingest"
+      ? "verified — recorded by an ingest run"
+      : "declared — materialized from the registry spec, not observed",
+    p.collection ? `store: ${p.collection}` : "",
+    p.model ? `built with: ${p.model}${p.dim ? ` (${p.dim}d)` : ""}` : "",
+    p.embedding_api ? `embedding api: ${p.embedding_api}` : "",
+    p.spec_hash ? `spec: ${p.spec_hash}` : "",
+    p.chunk_params && Object.keys(p.chunk_params).length
+      ? `chunk params: ${JSON.stringify(p.chunk_params)}`
+      : "",
+    p.chunk_count != null ? `chunks at ingest: ${p.chunk_count.toLocaleString()}` : "",
+    p.corpus ? `corpus: ${p.corpus}` : "",
+    p.ingested_at ? `ingested: ${p.ingested_at}` : "",
+    p.ragstack_version ? `ragstack ${p.ragstack_version}` : "",
+  ];
+  return parts.filter(Boolean).join("\n");
+}
+
 function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   const cols = useQuery({
     queryKey: ["collections-ops", apiKey],
@@ -321,7 +422,7 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Collections</h2>
+      <SectionHeading id="collections" unavailable={cols.isError} />
       {cols.isError ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           Unavailable: {(cols.error as Error).message}
@@ -339,8 +440,18 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 <th className="px-3 py-2 font-medium">Model</th>
                 <th className="px-3 py-2 font-medium">Chunking</th>
                 <th className="px-3 py-2 font-medium">Provenance</th>
-                <th className="px-3 py-2 text-right font-medium">Vectors</th>
-                <th className="px-3 py-2 text-right font-medium">Text</th>
+                <th
+                  className="px-3 py-2 text-right font-medium"
+                  title="Chunks in the vector store (Qdrant), tenant-filtered — the dense/embedding leg of hybrid retrieval."
+                >
+                  Vectors
+                </th>
+                <th
+                  className="px-3 py-2 text-right font-medium"
+                  title="Chunks in the text index (Elasticsearch BM25), tenant-filtered — the lexical leg of hybrid retrieval."
+                >
+                  Text
+                </th>
                 <th className="px-3 py-2 text-center font-medium">Parity</th>
               </tr>
             </thead>
@@ -368,18 +479,23 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                     <td className="px-3 py-2 text-gray-600">{chunking}</td>
                     <td className="px-3 py-2 text-xs">
                       {p ? (
-                        <span title={`${p.spec_hash ? "spec " + p.spec_hash : ""}${p.ingested_at ? " · " + p.ingested_at : ""}${p.corpus ? " · " + p.corpus : ""}`}>
+                        <span title={provenanceDetail(p)}>
                           <span
                             className={`rounded px-1 ${p.source === "ingest" ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}
                           >
-                            {p.source === "ingest" ? "verified" : "config"}
+                            {p.source === "ingest" ? "verified" : "declared"}
                           </span>
                           {p.ingested_at ? (
                             <span className="ml-1 text-gray-400">{p.ingested_at.slice(0, 10)}</span>
                           ) : null}
                         </span>
                       ) : (
-                        <span className="text-gray-300">none</span>
+                        <span
+                          className="text-gray-300"
+                          title="No build manifest for this collection — set COLLECTION_MANIFEST_DIR and restart to materialize one from the registry spec (an ingest through this API then upgrades it to a verified record)."
+                        >
+                          none
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-gray-600">
@@ -396,6 +512,157 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+      {rows.length > 0 ? (
+        <p className="mt-2 text-xs text-gray-400">
+          <span className="font-medium text-gray-500">Vectors</span> counts the dense
+          embeddings in Qdrant; <span className="font-medium text-gray-500">Text</span>{" "}
+          counts the BM25 documents in Elasticsearch. Hybrid retrieval queries both legs
+          over the <em>same</em> chunks, so equal numbers are the healthy state — a drift
+          means one store is missing rows (a partial or failed ingest), not extra data.
+          Both are filtered to your readable tenants; very large counts may be
+          approximate.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+// --- Tenancy --------------------------------------------------------------
+
+// /v1/stats/stores reports one number per store for the UNION of readable tenants
+// (own + public). This panel splits that union apart per collection, which is how
+// you spot a corpus sitting entirely in `public` when you expected it under an org's
+// own tenant. Fetched on demand (no refetchInterval): it costs a count per
+// tenant x collection x store.
+function TenantsPanel({ apiKey }: { apiKey?: string }) {
+  const t = useQuery({
+    queryKey: ["tenants", apiKey],
+    queryFn: () => getTenants(apiKey || undefined),
+    retry: false,
+  });
+  const data = t.data;
+  const cols = data?.tenants[0]?.collections ?? [];
+
+  return (
+    <>
+      <SectionHeading id="tenants" unavailable={t.isError} />
+      {t.isError ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          Unavailable: {(t.error as Error).message}
+        </div>
+      ) : !data ? (
+        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+          Loading tenancy…
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <KpiCard label="Tenant" value={data.tenant} sub={`role ${data.role}`} />
+            <KpiCard
+              label="Readable"
+              value={String(data.readable.length)}
+              sub={data.readable.join(" + ")}
+            />
+            <KpiCard
+              label="Collections"
+              value={data.restricted_to ? String(data.restricted_to.length) : "all"}
+              sub={data.restricted_to ? data.restricted_to.join(", ") : "unrestricted"}
+            />
+            <KpiCard
+              label="Auth"
+              value={data.auth_enabled ? "API keys" : "keyless"}
+              sub={data.auth_enabled ? "per-key tenant" : "everyone is `default`"}
+            />
+          </div>
+
+          {!data.auth_enabled ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              Keyless mode — every caller is the <code>default</code> tenant with the
+              server's default role. Fine for dev; production startup forbids it.
+            </div>
+          ) : null}
+
+          {cols.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+              No collections reachable by this tenant.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Tenant</th>
+                    {cols.map((c) => (
+                      <th key={c.collection} className="px-3 py-2 text-right font-medium">
+                        {c.label}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2 text-right font-medium">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.tenants.map((row) => {
+                    const total = row.collections.reduce((n, c) => n + (c.vector_count ?? 0), 0);
+                    return (
+                      <tr key={row.tenant} className="border-t border-gray-100">
+                        <td className="px-3 py-2 font-medium text-gray-800">
+                          {row.tenant}
+                          <span className="ml-1 rounded bg-gray-100 px-1 text-xs font-normal text-gray-500">
+                            {row.own ? "you" : "shared"}
+                          </span>
+                        </td>
+                        {row.collections.map((c) => (
+                          <td
+                            key={c.collection}
+                            className="px-3 py-2 text-right tabular-nums text-gray-600"
+                            title={`text index: ${fmt(c.text_count)}`}
+                          >
+                            {fmt(c.vector_count)}
+                          </td>
+                        ))}
+                        <td className="px-3 py-2 text-right font-medium tabular-nums text-gray-800">
+                          {total.toLocaleString()}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="text-xs text-gray-400">
+            Vector-store chunks owned by each tenant (hover a cell for its text-index
+            count). Rows cover only the tenants you may read — another tenant's corpus
+            size is never shown. Reads are filtered to{" "}
+            <code>{data.readable.join(" + ")}</code>, so a collection that looks empty
+            for your own tenant may still be fully served from <code>public</code>.
+          </p>
+
+          {data.policy ? (
+            <div className="rounded-lg border border-gray-200 p-3">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+                Access policy (admin)
+              </div>
+              {Object.keys(data.policy).length === 0 ? (
+                <p className="text-xs text-gray-400">
+                  <code>TENANT_COLLECTIONS</code> unset — every tenant may reach every
+                  collection.
+                </p>
+              ) : (
+                <ul className="space-y-1 text-xs text-gray-600">
+                  {Object.entries(data.policy).map(([tenant, ids]) => (
+                    <li key={tenant}>
+                      <span className="font-medium text-gray-800">{tenant}</span>
+                      <span className="text-gray-400"> → </span>
+                      <span className="font-mono">{ids.join(", ") || "(none)"}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
     </>
@@ -437,12 +704,11 @@ function JobsPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <div className="mb-2 mt-8 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">Ingest jobs</h2>
+      <SectionHeading id="jobs" unavailable={jobs.isError}>
         {jobs.isFetching && !jobs.isError ? (
           <span className="text-xs text-gray-400">refreshing…</span>
         ) : null}
-      </div>
+      </SectionHeading>
       {jobs.isError ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           {err?.status === 403
@@ -505,86 +771,96 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
 
   const healthErr = health.error as ApiError | undefined;
 
+  const [available, setAvailable] = useState<Partial<Record<SectionId, boolean>>>({});
+  const report = useCallback((id: SectionId, ok: boolean) => {
+    setAvailable((prev) => (prev[id] === ok ? prev : { ...prev, [id]: ok }));
+  }, []);
+
   return (
     <section>
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-700">Stores</h2>
-        {stats.isFetching ? <span className="text-xs text-gray-400">refreshing…</span> : null}
-      </div>
+      <ReportSection.Provider value={report}>
+        <TableOfContents available={available} />
 
-      {stats.isError ? (
-        <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          Failed to load store stats: {(stats.error as Error).message}
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiCard label="Vectors" value={fmt(stats.data?.vector.count)} sub={stats.data?.vector.backend} />
-            <KpiCard label="Text · BM25" value={fmt(stats.data?.text.count)} sub={stats.data?.text.backend} />
-            <KpiCard label="Graph" value={fmt(stats.data?.graph.count)} sub={stats.data?.graph.backend} />
-            <KpiCard
-              label="Tenants"
-              value={fmt(stats.data?.tenants.length)}
-              sub={stats.data?.tenants.join(", ")}
-            />
+        <SectionHeading id="stores" unavailable={stats.isError}>
+          {stats.isFetching ? <span className="text-xs text-gray-400">refreshing…</span> : null}
+        </SectionHeading>
+
+        {stats.isError ? (
+          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            Failed to load store stats: {(stats.error as Error).message}
           </div>
-          {stats.data ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <StorePill label="vector" s={stats.data.vector} />
-              <StorePill label="text" s={stats.data.text} />
-              <StorePill label="graph" s={stats.data.graph} />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <KpiCard label="Vectors" value={fmt(stats.data?.vector.count)} sub={stats.data?.vector.backend} />
+              <KpiCard label="Text · BM25" value={fmt(stats.data?.text.count)} sub={stats.data?.text.backend} />
+              <KpiCard label="Graph" value={fmt(stats.data?.graph.count)} sub={stats.data?.graph.backend} />
+              <KpiCard
+                label="Tenants"
+                value={fmt(stats.data?.tenants.length)}
+                sub={stats.data?.tenants.join(", ")}
+              />
             </div>
-          ) : null}
-        </>
-      )}
+            {stats.data ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <StorePill label="vector" s={stats.data.vector} />
+                <StorePill label="text" s={stats.data.text} />
+                <StorePill label="graph" s={stats.data.graph} />
+              </div>
+            ) : null}
+          </>
+        )}
 
-      <ConfigPanel apiKey={apiKey} />
+        <ConfigPanel apiKey={apiKey} />
 
-      <CollectionsPanel apiKey={apiKey} />
+        <CollectionsPanel apiKey={apiKey} />
 
-      <ModelsPanel apiKey={apiKey} />
+        <TenantsPanel apiKey={apiKey} />
 
-      <JobsPanel apiKey={apiKey} />
+        <ModelsPanel apiKey={apiKey} />
 
-      <h2 className="mb-2 mt-8 text-sm font-semibold text-gray-700">Deep health</h2>
-      {health.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {healthErr?.status === 403
-            ? "Deep health is admin-only. Start the API with DEFAULT_ROLE=admin (keyless callers default to 'researcher'), or enter an admin key above."
-            : `Unavailable: ${(health.error as Error).message}`}
-        </div>
-      ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
-              <tr>
-                <th className="px-3 py-2 font-medium">Check</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Latency</th>
-                <th className="px-3 py-2 font-medium">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(health.data?.checks ?? []).map((c) => (
-                <tr key={c.name} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-medium text-gray-800">{c.name}</td>
-                  <td className="px-3 py-2">
-                    {c.ok ? (
-                      <span className="text-green-600">● ok</span>
-                    ) : (
-                      <span className="text-red-600">● down</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 tabular-nums text-gray-500">
-                    {c.latency_ms != null ? `${c.latency_ms} ms` : "—"}
-                  </td>
-                  <td className="px-3 py-2 text-gray-500">{c.detail ?? ""}</td>
+        <JobsPanel apiKey={apiKey} />
+
+        <SectionHeading id="health" unavailable={health.isError} />
+        {health.isError ? (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+            {healthErr?.status === 403
+              ? "Deep health is admin-only. Start the API with DEFAULT_ROLE=admin (keyless callers default to 'researcher'), or enter an admin key above."
+              : `Unavailable: ${(health.error as Error).message}`}
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+                <tr>
+                  <th className="px-3 py-2 font-medium">Check</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Latency</th>
+                  <th className="px-3 py-2 font-medium">Detail</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {(health.data?.checks ?? []).map((c) => (
+                  <tr key={c.name} className="border-t border-gray-100">
+                    <td className="px-3 py-2 font-medium text-gray-800">{c.name}</td>
+                    <td className="px-3 py-2">
+                      {c.ok ? (
+                        <span className="text-green-600">● ok</span>
+                      ) : (
+                        <span className="text-red-600">● down</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-gray-500">
+                      {c.latency_ms != null ? `${c.latency_ms} ms` : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-gray-500">{c.detail ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ReportSection.Provider>
     </section>
   );
 }

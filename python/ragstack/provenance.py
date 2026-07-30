@@ -36,6 +36,18 @@ def chunk_descriptor(
     return "/".join(parts)
 
 
+def ragstack_version() -> str:
+    """The installed package version, stamped into manifests so a corpus records
+    which build wrote it. Empty when running from a source tree with no install
+    metadata — provenance must never fail on a missing distribution."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("ragstack")
+    except PackageNotFoundError:
+        return ""
+
+
 def spec_hash(model: str, dim: int, chunk: str) -> str:
     """Short content-address of the full build spec (matches the hash embedded in
     a content-addressed collection name)."""
