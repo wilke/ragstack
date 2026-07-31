@@ -73,6 +73,10 @@ async def test_ingest_schema(
 ) -> None:
     """POST /v1/ingest response conforms to ingest_response schema."""
     resp = await client.post("/v1/ingest", json={"source": "/tmp/test.txt"})
+    if resp.status_code == 503:
+        # No INGEST_ROOT on the target server → ingest is disabled by design, so
+        # there is no ingest_response body to validate.
+        pytest.skip("target server has no INGEST_ROOT; /v1/ingest disabled (503)")
     assert resp.status_code == 200
     _validate(resp.json(), schemas["ingest_response"], schemas)
 

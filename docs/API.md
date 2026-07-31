@@ -103,7 +103,10 @@ curl -s http://localhost:8000/v1/retrieve \
 ### POST /v1/ingest
 
 Accepts a file or directory `source` (resolved within `INGEST_ROOT`) and processes
-it in the **background**, returning immediately with a `job_id`. A directory is
+it in the **background**, returning immediately with a `job_id`. **`INGEST_ROOT`
+must be configured**: with it unset the endpoint returns `503` on every request,
+because an unconfined `source` is an arbitrary server-side file read whose text is
+retrievable back through `/v1/retrieve`. A directory is
 ingested recursively (`.pdf`/`.txt`/`.md`/`.jsonl`), one document per item.
 Re-ingesting the same source **replaces** that document's chunks (deterministic
 document id) rather than duplicating; a re-ingest that yields no embeddable chunks
@@ -221,7 +224,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `TEXT_BACKEND`, `ELASTICSEARCH_INDEX` | `elasticsearch` \| `memory` for BM25 |
 | `RERANK_ENABLED`, `RERANK_CANDIDATES`, `CROSSENCODER_SIDECAR_URL` | cross-encoder rerank stage |
 | `LLM_ENDPOINT`, `LLM_MODEL` | OpenAI-compatible chat endpoint for generation (empty → retrieval-only) |
-| `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard |
+| `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard. `INGEST_ROOT` unset → `POST /v1/ingest` returns **503** (an unset root would make it an arbitrary server-side file read); logged as a warning at startup. `INGEST_ROOT=/`, or a path that is not an existing directory, is **refused at startup**. Additionally required non-empty when `REQUIRE_DURABLE_BACKENDS=true` |
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
 

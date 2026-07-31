@@ -64,6 +64,11 @@ def build_manifest(
     top-level source — because ``rglob`` follows symlinks, so a link inside the
     root pointing outside it must not be enumerated. Such files are skipped.
     """
+    # Normalize "" to None up front: the two are the same intent ("no root"), but
+    # an empty string is truthy-different — it skipped confinement here while
+    # still being passed to confine_to_root below, where Path("").resolve() is the
+    # CWD, so every file resolved outside it and the manifest came back empty.
+    ingest_root = ingest_root or None
     path = confine_to_root(source, ingest_root) if ingest_root else Path(source)
     if path.is_dir():
         files = sorted(f for f in path.rglob("*") if f.is_file())

@@ -18,32 +18,34 @@ def test_require_durable_rejects_memory_backend(monkeypatch):
         deps._build_vector_store()
 
 
-def _prod(monkeypatch):
+def _prod(monkeypatch, tmp_path):
+    # ingest_root must resolve to an existing directory (see _validate_ingest_root),
+    # so production fixtures point it at a real temp dir, not a literal path.
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
-    monkeypatch.setattr(deps.settings, "ingest_root", "/data")
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
 
 
-def test_partial_tenant_map_rejected_in_production(monkeypatch):
+def test_partial_tenant_map_rejected_in_production(monkeypatch, tmp_path):
     # A configured key with no tenant mapping would collapse into the shared
     # "default" tenant and break isolation — production must fail closed.
-    _prod(monkeypatch)
+    _prod(monkeypatch, tmp_path)
     monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
     monkeypatch.setattr(deps.settings, "api_key_tenants", {"ka": "alice"})  # kb unmapped
     with pytest.raises(RuntimeError, match="tenant mapping"):
         deps._validate_production_settings()
 
 
-def test_full_tenant_map_accepted_in_production(monkeypatch):
-    _prod(monkeypatch)
+def test_full_tenant_map_accepted_in_production(monkeypatch, tmp_path):
+    _prod(monkeypatch, tmp_path)
     monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
     monkeypatch.setattr(deps.settings, "api_key_tenants", {"ka": "alice", "kb": "bob"})
     deps._validate_production_settings()  # no raise
 
 
-def test_no_tenant_map_is_single_tenant_mode(monkeypatch):
+def test_no_tenant_map_is_single_tenant_mode(monkeypatch, tmp_path):
     # No mapping at all is the legitimate single-(default-)tenant mode, not a
     # partial-map misconfig — must not raise.
-    _prod(monkeypatch)
+    _prod(monkeypatch, tmp_path)
     monkeypatch.setattr(deps.settings, "api_keys", ["ka", "kb"])
     monkeypatch.setattr(deps.settings, "api_key_tenants", {})
     deps._validate_production_settings()  # no raise
