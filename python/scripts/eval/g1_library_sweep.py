@@ -132,7 +132,11 @@ optimizer activity, which is exactly what a concurrent ingest causes.
 Usage::
 
     cd python
-    # smoke (~2 minutes): one size, the two pre-registered cells, few queries
+    # /rag/envs/ragstack has `ragstack` installed from /rag/repos/ragstack, which
+    # predates ragstack/provenance.py — PYTHONPATH must point at THIS checkout.
+    export PYTHONPATH="$PWD"
+
+    # smoke (~1 minute): one size, the two pre-registered cells, few queries
     /rag/envs/ragstack/bin/python scripts/eval/g1_library_sweep.py \\
         --doc-counts 50 --query-limit 8 --smoke
 
