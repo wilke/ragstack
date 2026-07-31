@@ -16,7 +16,7 @@ library via the eval seam (#125/PR #126) and publish the winner as a normative
 `LibraryRetrievalDefaults` block in this spec. Run it early because it decides whether a
 per-library-size parameter branch exists at all, which touches the config surface.
 
-**G2 — re-measure the Qdrant filter in the v1 shape (#199).** #199 measured a single key/value at 1% selectivity on synthetic 128-d vectors. v1 issues `library_id == X AND tenant_id ANY […]` at ~0.005%. Sweep 10⁻²→10⁻⁵ on real 4096-d SFR vectors. **Pass: returned-hits == `min(k, |library|)`.**
+**G2 — re-measure the Qdrant filter in the v1 shape (#199).** Harness: `python/scripts/bench_filter_truncation.py` — scrolls real 4096-d SFR vectors read-only from prod into a guarded `g2bench_*` scratch collection. Note §4 now makes every query single-valued, so G2 no longer gates *multi-scope* retrieval; it gates whether **one** library's slice of a large shared index retrieves correctly. #199 measured a single key/value at 1% selectivity on synthetic 128-d vectors. v1 issues `library_id == X AND tenant_id ANY […]` at ~0.005%. Sweep 10⁻²→10⁻⁵ on real 4096-d SFR vectors. **Pass: returned-hits == `min(k, |library|)`.**
 
 **G3 — RESOLVED, downgraded to a deployment question (§11 Q1).** The earlier framing assumed
 the BV-BRC App Service would schedule ingest onto *BV-BRC* compute. It does not: **GoWe is the
@@ -210,9 +210,17 @@ Assert in §14: ingest a record whose `metadata.library_id` names another librar
 
 **Payload index is PER COLLECTION.** `_ensure_tenant_index` (`qdrant.py:176-188`) runs from `ensure_collection`, which `deps.py:298` calls for **every registry entry at every startup** and swallows errors. Generalizing it globally would fire a `create_payload_index("library_id")` against 24.8M / 12.6M / 3.0M / lucid at every restart — exactly the §16 Tier-2 operation that requires a maintenance window. **Only `ragstack_lib_v1` gets `library_id` indexed.**
 
-**Index name is HAND-PINNED: `ragstack_lib_v1`.** Its build spec is identical to prod `ragstack_sfr_tok512`, so content-addressing would **collide**. Created with an explicit `max_segment_size` (G2's cliff is per-segment and moves as the optimizer merges), on its own Qdrant instance via `QDRANT_COLLECTION_ROUTES`. ~82 VMAs/library, ~800 per process; at 70% registration returns **503** and an operator provisions the next index (there is no automatic placement in v1).
+**Index name is HAND-PINNED: `ragstack_lib_v1`.** Its build spec is identical to prod `ragstack_sfr_tok512`, so content-addressing would **collide**. Created with **both `max_segment_size` and `full_scan_threshold` pinned explicitly**, on its own Qdrant instance via `QDRANT_COLLECTION_ROUTES`. Pinning only the first is insufficient: at production's `full_scan_threshold=10000` KB and 16 KiB/vector the planner hands off from payload-index full scan to HNSW at ~625 vectors **per segment**, and a 1000-PDF library is ~72,000 chunks over ~99 segments ≈ 730/segment — on the boundary. Which side of that handoff a library falls on must be a deliberate config decision, not a consequence of segment-merge timing. ~82 VMAs/library, ~800 per process; at 70% registration returns **503** and an operator provisions the next index (there is no automatic placement in v1).
 
-**A scoped-library query returns that library ONLY.** The 40.4M public chunks are in other indexes and unreachable. **If "my papers + BV-BRC literature" is the requirement — and #201 reads that way — it is two searches fused client-side** (comparable because the build specs are identical). **Decide before the index exists**; it changes the response shape and citation model.
+**Every query carries exactly ONE `library_id`. Broader scopes are N single-value queries fused by RRF — never one widened filter.** This is the stated mechanism, not a fallback: a single-valued filter cannot enter the `MatchAny` truncation band, so the failure G2 measures is structurally unreachable for any scope built this way.
+
+- **Reuses existing machinery.** `HybridRetriever` already fuses ranked lists (vector + BM25 + graph) through `RRFScorer`; per-library legs are the same operation with more legs.
+- **RRF, not score-averaging.** Rank fusion is robust to score-scale differences between legs. `ragstack_lib_v1` and `asm-tok512` share a build spec so raw scores would be comparable, but `asm-semantic` is semantically chunked — same model and dim, different chunk lengths, biased raw cosine. Ranks are unaffected.
+- **Over-fetch per leg:** request `top_k` from each leg and fuse down to `top_k`; the global distribution is not knowable in advance.
+- Legs are independent → `asyncio.gather`, so latency is the slowest leg, not the sum.
+- **Bounded fan-out:** `LIBRARY_FUSION_MAX_LEGS`, default 4. This serves "my libraries + public", not 500 libraries.
+
+**This settles the question §4 previously deferred.** "My papers + BV-BRC's literature" is two retrievers fused — and it works **across physical collections**, which a payload filter could never do. The 40.4M public chunks are therefore reachable as a *leg*, not via a widened filter. §9's response carries per-source attribution so a citation traces to the leg it came from.
 
 ---
 
