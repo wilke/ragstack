@@ -29,23 +29,36 @@ subsume the second.
 | Corpus | real ASM PDF libraries, **50 / 100 / 200 documents** | BEIR judged cores in a distractor ladder, **6k → 1M chunks** |
 | Chunk span | 1.8k → 7.2k (4×) | 6k → 1M (170×) |
 | Ground truth | pooled LLM-judged graded qrels + a SciFact anchor | real graded qrels (SciFact, NFCorpus) |
-| Settles | H1b, H2c, hit-count sanity, the noise floor, the corrected corpus arithmetic, a first-pass defaults recommendation for 50–200-doc libraries | H1, H1c, H2, H2b, **H3 (the size branch)**, H4 |
-| Cost | ≈ 3 developer-days + judge compute | ≈ 4.5 developer-days + a few GPU-hours |
+| Queries | **600** per rung (60% confirm split → n = 360) + the 300-claim SciFact anchor | 300 (SciFact) + 323 (NFCorpus), pooled confirm n = 374 |
+| Settles | H1b, hit-count sanity, the noise floor and realized MDE, the corrected corpus arithmetic; then — conditional on that measured power — H2c and a first-pass defaults recommendation for 50–200-doc libraries (§4.6) | H1, H1c, H2, H2b, **H3 (the size branch)**, H4 |
+| Cost | ≈ 6 developer-days (5.25 build + ~1 run/analysis) + judge compute | ≈ 3.5 further developer-days (2 build + ~1.5 run/analysis) + a few GPU-hours |
 
 **The pilot is decision-useful on its own.** It runs at exactly the scale v1 ships at, on
 the actual target distribution (real full-text PDFs at ≈36 chunks/doc, not 1.18-chunk
 abstracts), and its mechanism results (§6.4) are near-deterministic counts rather than
 noisy means — they falsify or confirm the spec's stated premise about BM25 depth without
-any labels at all. If the pilot finds the shipping defaults EQUIVALENT to every
-alternative across 50–200 documents, that is a shippable answer for v1.
+any labels at all.
 
-**The pilot cannot settle H3, and the ladder is why.** A 4× chunk span inside one order
-of magnitude, with distractors drawn from a single topical cluster, cannot distinguish a
-*size-dependent parameter branch* from the guaranteed and uninteresting fact that small
-corpora are easy. H3 is an **interaction** — the *ranking* of configurations must change
-with size — and detecting an interaction needs both a long lever arm and a paired
-estimator. §5.2 builds both. Running the pilot alone and branching the config surface on
-its point estimates is precisely the error §5.2 exists to prevent.
+**What the pilot's quality track can and cannot return.** At 600 queries the 60% confirm
+split gives n = 360, a Holm-adjusted MDE of ≈ 0.027 ≈ 1.35 δ, and a 90% TOST half-width of
+≈ 0.013–0.017 — inside δ. So **EQUIVALENT is reachable, and DIFFERENT is reachable only for
+effects ≳ 1.35 δ**; a real difference of exactly δ returns INCONCLUSIVE. The shippable pilot
+outcome is therefore the equivalence one: if the pilot finds the shipping defaults EQUIVALENT
+to every alternative across 50–200 documents, that is a shippable answer for v1. A claim that
+some alternative *beats* the default by δ is not one this pilot can make. §7.4 gives the
+derivation and the pre-registered response if realized power comes in worse than the design
+values; §4.6 sorts every pilot output by whether it depends on that power at all.
+
+**The pilot cannot settle H3, and the ladder is why — the reason is power, not confounding.**
+The pilot's nesting (§4.1) already holds the relevant set constant, and the DiD estimator
+(§7.6) does difference the "small corpora are easy" main effect out; the pilot computes θ and
+reports it. What the pilot lacks is a **lever arm**. H3 is an **interaction** — the *ranking*
+of configurations must change with size — and θ over a 4× span is a difference of four
+correlated terms whose SE exceeds that of any single contrast, while the interaction it must
+detect is a fraction of what a 170× span produces. Single-cluster distractors compound it: an
+interaction that did clear the bar could not be told apart from cluster-specific
+idiosyncrasy. §5.2 supplies the lever arm. Running the pilot alone and branching the config
+surface on its point estimates is precisely the error §5.2 exists to prevent.
 
 ---
 
@@ -139,6 +152,16 @@ is 72 chunks/doc — the measured figure for `fixed_tok256`
 by a factor of two, and its segment-boundary argument rested on the larger number. Both
 figures are corrected in this change; the *measured* replacement is a deliverable (§11).
 
+The segment-boundary argument itself is **withdrawn rather than re-derived**. Correcting the
+numerator leaves the denominator — segment count — unmeasured, and the ~99 segments the spec
+divided by came from the 24.8M-point production collection. The two segment counts this
+repository actually has at anything like library scale (500k points / 8 segments from G2, §2.1;
+6,108 points / 2 segments in §8.2's manifest example) put a 36k-chunk library at
+4,500–18,000 points per segment, well *above* the ~625 full-scan handoff rather than below it.
+The spec now says the side is undetermined until measured, and this protocol supplies the
+measurement: `segments_count` is recorded per rung (§8.1) on collections built to the
+`ragstack_lib_v1` spec, which is the first library-sized observation of it.
+
 **(b) The interesting scale variable is chunk count, not document count.** Both retrieval
 legs index *chunks*. BM25 document-frequency statistics, HNSW graph connectivity, and
 Qdrant's segment-level full-scan handoff are all functions of indexed chunk count. This
@@ -225,10 +248,12 @@ HNSW never truncates.
 
 **Consequences for G1.**
 
-1. The §6.4 returned-hit-count assertion is **retained unchanged** on every cell. It is
-   cheap, it is the guard that makes a G1 number interpretable, and a pass on a 500k
-   synthetic-scope sweep is not a pass on every G1 cell. **G1 results measured on cells
-   that fail §6.4 are void, not interesting.**
+1. The §6.4 returned-hit-count assertion is **retained on every cell** — in its per-leg form
+   (a single `min(D, N_matching_filter)` ceiling is right for the dense leg and wrong for
+   BM25; §6.4). It is cheap, it is the guard that makes a G1 number interpretable, and a pass
+   on a 500k synthetic-scope sweep is not a pass on every G1 cell. **G1 results measured on
+   cells that fail §6.4's *deficit* criterion are void, not interesting** — a *starved* leg,
+   by contrast, is a finding, not a failure.
 2. The filtered arm (§5.5) is retained but downgraded from *blocking* to *confirmatory*:
    its expected result is agreement with the unfiltered arm.
 3. Threat T7 (§9) drops from *medium* residual risk to *low*.
@@ -240,7 +265,12 @@ HNSW never truncates.
 All hypotheses carry a falsification condition. δ is the minimum shippable effect, fixed at
 **δ = 0.02 nDCG@10** and justified in §7.4. Unless stated otherwise a directional claim
 requires both `|Δ| ≥ δ` and Holm-adjusted `p < 0.05` on the confirm split (§7), with
-consistent sign in each dataset separately.
+consistent sign in each dataset separately. **δ is the threshold worth acting on; it is not
+claimed to be the threshold this design resolves.** §7.4 puts the Holm-adjusted confirm-split
+MDE at ≈ 1.35 δ in both parts, so directional claims are reachable only above that, while
+equivalence claims (TOST, §7.5) are reachable at δ. Whether δ itself becomes resolvable is
+settled empirically by the pilot's noise floor and realized SDs, with a pre-registered
+response either way (§7.4, §12 step 6).
 
 The **Part** column says where each hypothesis is decided. Hypotheses marked *Pilot* are
 answerable at 50–200 documents; those marked *Full* need the ladder.
@@ -248,11 +278,11 @@ answerable at 50–200 documents; those marked *Full* need the ladder.
 | ID | Claim | Part |
 |---|---|---|
 | H1 | Hybrid ≥ dense-only at library scale | Pilot (screen) → Full (decide) |
-| H1b | Neither leg is depth-starved at D=10 over ≈7k chunks | **Pilot (decides)** |
+| H1b | Neither leg is depth-starved at D=10 over ≈7k chunks | **Pilot (decides outright — exact counters)** |
 | H1c | BM25-only is materially worse than both | Pilot (screen) → Full (decide) |
 | H2 | Reranking with pool `C ≥ 25` improves nDCG@5 by ≥ δ | Full |
 | H2b | Rerank effect is monotone non-decreasing in `C` | Full |
-| H2c | The shipping "rerank gain" is a breadth effect, not a cross-encoder effect | **Pilot (decides at 200 docs)** |
+| H2c | The shipping "rerank gain" is a breadth effect, not a cross-encoder effect | Pilot (confirms at 200 docs via TOST; falsifies only above ≈1.35 δ — §4.6) → Full |
 | H3 | The optimal configuration differs between library and production scale | **Full only** |
 | H3b | The crossover chunk count `N*` is estimable to within 3× | Full |
 | H4 | Optimal `rrf_k` rises with per-leg depth; at D=10 the optimum is below 60 | Pilot (screen) → Full (decide) |
@@ -269,14 +299,24 @@ exact ES query and provides lexical-match coverage that nDCG under-weights.
 
 **H1b (mechanism; no ground truth needed; decided by the pilot).** The premise formerly in
 `libraries-spec.md` §-1 — that BM25 returns 3–4 hits where dense returns 20 — is false at
-chunk level in a 50–200-document library. Registered prediction: at per-leg depth D = 10,
-the BM25 leg returns exactly D on **≥ 95%** of queries and the dense leg returns exactly D
-on **≥ 99%** (unfiltered) at *every* pilot rung — i.e. **neither** leg is depth-starved and
-any hybrid/dense difference is a *ranking* effect, not a *depth* effect.
-*Falsified if* either leg returns < D on > 5% of queries. A falsification is the more
-interesting outcome: it reframes RQ1 as a depth problem and must be reported as such rather
-than absorbed. Because the counters are exact per-query integers rather than noisy means,
-150 queries at the 50-doc rung are ample; this is why the pilot decides H1b outright.
+chunk level in a 50–200-document library. Registered prediction, in terms of §6.4's
+`*_starved_rate` (returned < D for *any* reason): at per-leg depth D = 10 and at *every*
+pilot rung, `bm25_starved_rate ≤ 5%` and `dense_starved_rate ≤ 1%` (unfiltered) — i.e.
+**neither** leg is depth-starved and any hybrid/dense difference is a *ranking* effect, not a
+*depth* effect.
+*Falsified, per leg, if* that leg's starved rate exceeds its threshold: BM25 above 5%, dense
+above 1%. (The thresholds are the complements of the predictions; an earlier draft predicted
+≥ 99% for dense but falsified at > 5% for both, which are different claims.) A falsification
+is the more interesting outcome: it reframes RQ1 as a depth problem and must be reported as
+such rather than absorbed — and, per §6.4, it is *not* a stop condition and does not void the
+cell; only a non-zero `*_deficit_rate` does that.
+*Estimability.* These are exact per-query integers, not noisy means, so no MDE applies — but
+a rate bound still needs enough queries to be observable. At 600 queries per rung the rule of
+three puts a one-sided 95% upper bound of 3/600 = **0.5%** on a zero-observation starved rate,
+so the 1% dense threshold is genuinely estimable. At the 150 queries an earlier draft used
+the same rule gives only 2%, which cannot distinguish "≥ 99%" from "≥ 98%" — another reason
+the query set is 600 (§4.2). Report `*_starved_rate` with an exact Clopper–Pearson interval,
+per leg, per rung, per D.
 
 **H1c.** BM25-only is materially worse than both at library scale.
 *Falsified if* BM25-only is within δ of hybrid on the confirm split.
@@ -302,9 +342,12 @@ cross-encoder. Registered decomposition, run at the 200-doc pilot rung:
 - *reranker effect* = `Δ(rerank on, D=100) − Δ(rerank off, D=100)`
 - *breadth effect* = `Δ(rerank off, D=100) − Δ(rerank off, D=10)`
 
-*Falsified if* the reranker effect at matched depth is ≥ δ, i.e. the cross-encoder
-contributes independently of breadth. The pilot decides this because the decomposition is a
-within-rung contrast: it needs no size lever, only matched depth.
+*Confirmed if* the matched-depth reranker effect is EQUIVALENT to zero (90% CI ⊂ ±δ);
+*falsified if* it is DIFFERENT, i.e. ≥ δ **and** Holm p < 0.05. The pilot can run the
+decomposition because it is a within-rung contrast needing no size lever, only matched depth
+— but only the confirmation arm is comfortably within its power. At the pilot's confirm-split
+MDE of ≈ 1.35 δ, a genuine reranker contribution of exactly δ returns INCONCLUSIVE, so the
+falsification arm carries over to Part II (§4.6 item 5).
 
 ### RQ3 — Does the tuned configuration need a size-dependent branch?
 
@@ -379,9 +422,14 @@ library is topically concentrated; concentration raises inter-document similarit
 discrimination *harder*, working against the "small is easy" effect. A second,
 labelling-free contrast is available at zero cost:
 
-- **P200-random** — 200 documents sampled uniformly instead of clustered. Run with Track-C
-  mechanism metrics only (no judging). It isolates topical concentration as its own factor
-  and tells us whether the clustered result generalizes.
+- **P200-random** — composition is **`P50 ∪ 150 documents sampled uniformly`** from the
+  production ASM corpus, *not* 200 uniform documents. Holding the judged core fixed is what
+  makes it comparable: P200-random differs from P200 in exactly one factor — whether the 150
+  added distractors are in-cluster or uniform — and its queries, relevant set and P50 core are
+  identical to every other rung, so it is paired with them the same way P100 and P200 are. Run
+  with Track-C mechanism metrics only (no judging). It isolates topical concentration as its
+  own factor and tells us whether the clustered result generalizes. Note P200 adds 150
+  documents to P50 too, so the two 200-doc rungs are matched in size as well as in core.
 
 **Anchor: SciFact at L0.** The full SciFact corpus at `fixed_tok512` is 6,108 chunks
 (§1.3b) — within 10% of P200's chunk count, but with **real graded qrels** rather than
@@ -393,17 +441,33 @@ geometry (T2, §9).
 
 ### 4.2 Queries
 
-150 per library, generated by a local LLM from randomly sampled **chunks of the P50 core**
+**600 per library**, generated by a local LLM from randomly sampled **chunks of the P50 core**
 (not documents, and not from the added distractor documents), then filtered. A query is
 discarded if:
 
 - it is answerable from its source chunk's document title alone;
 - it names a document explicitly;
-- two human reviewers judge it not to be a plausible researcher question.
+- two human reviewers judge it not to be a plausible researcher question (on a sampled audit
+  of 100; the rest are screened by the same rubric applied by the generator's critic pass).
 
 Queries are generated **before** any retrieval run and pinned as a fixture (§8). Generating
 from the P50 core is what keeps the relevant set nested: the intended answer for every query
 lives in the smallest rung.
+
+**Why 600 and not 150.** 150 was the earlier figure and it does not work: at a 60% confirm
+split it leaves n = 90, where MDE ≈ 0.044 and the 90% TOST half-width ≈ 0.026 — *both* larger
+than δ, so every quality comparison would be INCONCLUSIVE by construction (§7.4). 600 gives a
+confirm split of 360, matching Part II's pooled 374. The reason enlargement is the affordable
+fix here rather than dropping the split or inflating δ is that the pilot's binding cost is
+**judge compute, not developer time**: query generation is one LLM pass, and pooled judging at
+depth 20 over the pilot grid is on the order of 40–80 (query, document) pairs per query,
+i.e. ≈ 25k–50k judgments at temperature 0 on the local fleet. The human-annotation subsample
+for κ stays at 100 pairs (§4.4) and does not scale with the query count.
+
+**Generation bias.** Generating queries from the text they are meant to retrieve imports a
+lexical-overlap bias that favours the sparse leg. It is registered as threat **T1b** (§9),
+which also fixes the generation mode (paraphrase-first) and requires overlap to be recorded
+as a per-query covariate.
 
 ### 4.3 Judgments — TREC-style pooling, fixed depth
 
@@ -473,32 +537,64 @@ Reduced from the full grid (§5.4) to what the pilot can resolve.
 
 First-stage retrievals actually run, per rung: `bm25` 2 (one per D) + `vector` 2 +
 `hybrid` 4 `rrf_k` × 2 D = 8 → **12 cells per rung**. Over 3 judged rungs + P200-random +
-SciFact = 5 rung-equivalents → **60 first-stage cells**, ≈ 150 queries each ≈ 9k
-query-executions. Cross-encoder work is bounded by the D ≤ 100 ceiling and the score cache
-(§5.4b): well under one GPU-hour.
+SciFact = 5 rung-equivalents → **60 first-stage cells**, 600 queries each (300 for the
+SciFact anchor, which has a fixed test set) ≈ 33k query-executions. Cross-encoder work is
+bounded by the D ≤ 100 ceiling and the score cache (§5.4b): a few GPU-hours.
 
 ### 4.6 What the pilot decides, and what it does not
 
-**Decides.**
+The pilot's outputs split three ways by *what they depend on*: the label-free ones depend on
+nothing but exact counters; the quality ones depend on the realized power, which is measured
+in step 4 (§12) before any of them is claimed.
+
+**Decides unconditionally — no labels, no power budget.**
 
 1. **H1b** — whether the spec's BM25-depth premise is true, at all three sizes. Exact
-   counters, no labels, no power problem.
-2. **H2c** — the breadth/reranker decomposition at P200. A within-rung contrast.
-3. **§6.4 hit-count sanity** at library scale, in the shape v1 ships.
-4. **The noise floor.** The A/A replicate null (§7 replication) gives the per-query SD, and
-   therefore whether δ = 0.02 is resolvable at n = 150. **If the pilot's MDE exceeds δ, stop
-   and amend** before running Part II (§12).
-5. **The corrected corpus arithmetic** — measured chunks/doc on the real libraries, which
-   ships regardless of outcome (§11.4).
+   per-query integers; at 600 queries the rule of three bounds a zero-starvation rate at
+   0.5%, so even the ≥ 99% arm of the prediction is estimable (§3, H1b).
+2. **§6.4 hit-count sanity** at library scale, in the shape v1 ships — the per-leg ceiling
+   probe and the starved/deficit split.
+3. **The noise floor and the realized MDE.** The A/A replicate null (§7.2 replication) gives
+   the per-query SD; the realized per-query difference SDs on the actual G1 contrasts give
+   the confirm-split MDE and the 90% TOST half-width. **This is a stop-and-amend gate**: if
+   the realized MDE exceeds 1.5 δ or the realized 90% half-width exceeds δ, no quality
+   verdict is claimed until §7.4's pre-registered response is applied and recorded as an
+   amendment (§12 step 6).
+4. **The corrected corpus arithmetic** — measured chunks/doc on the real libraries, plus the
+   first library-sized `segments_count` (§1.3a, §8.1). Both ship regardless of outcome
+   (§11.4).
+
+**Decides conditionally, on the realized power measured in item 3.** At the design values
+(confirm n = 360, Holm-adjusted MDE ≈ 0.027, 90% TOST half-width ≈ 0.013–0.017) these are
+reachable; at materially worse realized SDs they are not, and they then move to "does not
+decide" by the same gate.
+
+5. **H2c** — the breadth/reranker decomposition at P200, a within-rung contrast.
+   Asymmetrically decidable: H2c is *confirmed* when the matched-depth reranker effect is
+   EQUIVALENT (90% CI ⊂ ±δ), which the design does reach; it is *falsified* only by an effect
+   ≳ 1.35 δ, so a genuine reranker contribution of exactly δ would be reported INCONCLUSIVE.
+   The falsification arm is therefore power-limited and Part II retains it.
 6. **A v1 defaults recommendation scoped to 50–200 documents**, provided the SciFact anchor
-   agrees in sign and κ(judge–human) ≥ 0.4.
+   agrees in sign, κ(judge–human) ≥ 0.4, **and** every comparison behind the recommendation
+   lands DIFFERENT or EQUIVALENT rather than INCONCLUSIVE. The realistic shape of this output
+   is "the shipping defaults are EQUIVALENT to every alternative across 50–200 documents" —
+   an equivalence claim, which is the verdict the design is powered for. A claim that some
+   alternative *beats* the default by δ is not reachable here.
 
 **Does not decide.**
 
-1. **H3.** See §5.2. A 4× span with in-cluster distractors is not a size lever.
+1. **H3.** See §5.2 — and note the reason is *power*, not confounding: the DiD in §7.6 does
+   difference the easiness effect out, and the pilot computes it. What the pilot lacks is a
+   lever arm. θ over a 4× span is a difference of four correlated terms whose SE exceeds any
+   single contrast's, while the interaction it must detect is a fraction of the one a 170×
+   span would produce; and single-cluster distractors would make any interaction that *did*
+   clear the bar cluster-specific. A non-zero pilot θ is a reason to prioritize Part II, never
+   a reason to branch the config surface.
 2. **H2 / H2b** at pool depths beyond 100, or **H4** at fine `rrf_k` resolution — the pilot
    grid is coarse by design.
-3. Anything about production scale. The pilot's largest index is ≈ 7k chunks; production is
+3. **Any quality difference at or just above δ.** The design resolves ≈ 1.35 δ; effects
+   between δ and that are INCONCLUSIVE by construction and pre-registered as such.
+4. Anything about production scale. The pilot's largest index is ≈ 7k chunks; production is
    3M–25M (`libraries-spec.md` §16).
 
 ---
@@ -664,16 +760,24 @@ compute cost and is capped by the D ≤ 200 ceiling.
 Track A's rungs are unfiltered scratch collections, the clean way to vary size. The shipping
 library path instead issues `library_id == L AND tenant_id ∈ (readable ∪ {owner_of(L)})`
 (`libraries-spec.md` §4, `scoped` row) against a *shared* index, via `_build_filter`
-(`stores/qdrant.py:425-455`), and only `tenant_id` carries a payload index
-(`qdrant.py:176-188`).
+(`stores/qdrant.py:425-455`).
+
+**Which payload indexes exist is a precondition, not a detail.** Today `_ensure_tenant_index`
+(`qdrant.py:176-188`) creates a payload index on `tenant_id` only. `libraries-spec.md` §4
+requires `ragstack_lib_v1` — and only that collection — to *additionally* index `library_id`,
+and that is not implemented. The filtered arm must therefore run against a collection built
+to the spec'd index set, and the actual set present at query time is recorded in the manifest
+(`index.payload_indexes`, §8.1). Running it with `library_id` unindexed measures a different
+planner path than the one v1 ships, so a filtered-arm result must state which set it had.
 
 One Track-A arm — the shipping default plus the top-2 nominated configurations, at L1 — is
 additionally run with the judged core loaded into a `ragstack_lib_v1`-shaped collection
 alongside distractors under a *different* `library_id`, and queried through the real filter.
-The §6.4 hit-count assertion is the pass criterion. Since G2 passed (§2.1) the expected
-result is agreement; if filtered and unfiltered results diverge by ≥ δ, the G1
-recommendation is conditional and must say so, and the divergence is escalated as a G2
-regression.
+The §6.4 deficit assertion is the pass criterion (per leg, against the filtered `*_matchable`
+ceilings — the filtered rung is the case where `matchable < D` is a live possibility for the
+dense leg too). Since G2 passed (§2.1) the expected result is agreement; if filtered and
+unfiltered results diverge by ≥ δ, the G1 recommendation is conditional and must say so, and
+the divergence is escalated as a G2 regression.
 
 ### 5.6 Determinism and caching (both parts)
 
@@ -707,7 +811,10 @@ regression.
   full-text PDF. Rejected as primary because it is retrieval-easy by construction — the title
   is verbatim in the lead chunk, giving BM25 an unfair lexical advantage on precisely the
   axis RQ1 measures. Using it would bias H1 toward hybrid. Retained as an optional zero-cost
-  sanity arm, never as evidence for or against H1.
+  sanity arm, never as evidence for or against H1. **The pilot's generated queries are a
+  weaker form of the same objection**, not an escape from it — see T1b (§9), which is why
+  they are generated from a paraphrase and why query↔source-chunk overlap is a reported
+  covariate.
 - **Citation-based pseudo-qrels** (query = a citing sentence with the citation removed;
   relevant = the cited paper when present in the library). Objective, free, derivable from
   existing enrichment output (`ingestion/enrich.py` extracts DOIs and citations). Rejected as
@@ -763,8 +870,8 @@ decision between the two is resolved in favour of nDCG@5 and reported explicitly
 ### 6.3 Tertiary — answer-level metrics
 
 **Do answer-level metrics belong?** Partly. Against making them primary: substantially
-higher per-query variance and therefore much lower power at n = 150–300; they conflate
-retrieval with generation, attenuating any retrieval-parameter effect; and scoring them
+higher per-query variance and therefore much lower power at confirm-split n ≈ 360–374; they
+conflate retrieval with generation, attenuating any retrieval-parameter effect; and scoring them
 requires an LLM judge, with the biases §4.4 enumerates. For including them at all: the
 deliverable feeds a chatbot, and a retrieval configuration that maximizes nDCG while
 degrading answers is the wrong answer.
@@ -792,21 +899,48 @@ interpretable. Every cell records, per query:
 |---|---|
 | `dense_hits` | length of the list returned by `QdrantVectorStore.search` at requested depth D |
 | `bm25_hits` | length returned by `ElasticsearchTextIndex.search` at depth D |
-| `dense_deficit`, `bm25_deficit` | `D − hits`, per leg |
+| `dense_matchable` | **per-leg ceiling**: Qdrant `count` of points passing the same filter (all points, on an unfiltered rung) |
+| `bm25_matchable` | **per-leg ceiling**: ES `_count` of the *same* `{"match": {"content": q}}` query under the same filter — i.e. `\|filter-passing ∩ term-matching\|` |
+| `dense_starved`, `bm25_starved` | `hits < D` — returned fewer than asked, **for any reason** |
+| `dense_deficit`, `bm25_deficit` | `hits < min(D, matchable)` — returned fewer than the leg *could* have |
 | `union_depth` | `\|dense ∪ bm25\|` — the actual input cardinality to RRF |
 | `overlap` | `\|dense ∩ bm25\|` — how much of the fusion is agreement vs coverage |
 | `fused_depth` | `len(RRFScorer.fuse(...))` before truncation |
 | `unique_docs@k` | doc-collapse ratio, per k |
 | `rerank_pool_occupancy` | `min(C, union_depth) / C` — how full the cross-encoder pool actually was |
 
+**Each leg has its own ceiling, and the two must not be conflated.** An earlier draft of this
+section asserted `dense_hits == min(D, N_chunks_matching_filter)` **and**
+`bm25_hits == min(D, N_chunks_matching_filter)`. The second half is wrong, for the reason
+§1.3c already gives: `ElasticsearchTextIndex.search` returns
+`min(size, |filter-passing ∩ term-matching|)`, and `N_chunks_matching_filter` is only the
+*first* of those two sets. A query whose terms are scarce in the index legitimately returns
+fewer than D hits with nothing broken — the most plausible place for that is P50, the
+smallest rung. The ceilings are therefore **probed per leg** as the `*_matchable` counters
+above — once per (index, filter) for the dense leg, whose ceiling is query-independent, and
+once per (index, query) for BM25, whose ceiling is not. This is the correction PR #210
+arrived at independently, from a smoke run that marked a valid cell `INVALID`; this protocol
+adopts its form.
+
+**Two rates, and only one of them is a failure.**
+
+| Rate | Definition | Meaning |
+|---|---|---|
+| `dense_starved_rate`, `bm25_starved_rate` | fraction of queries with `hits < D` | **This is H1b's measurement.** A leg can be starved because the index genuinely holds fewer matching chunks than D. Not a failure; a finding — and the whole point of registering H1b. |
+| `dense_deficit_rate`, `bm25_deficit_rate` | fraction of queries with `hits < min(D, matchable)` | The leg returned fewer than it could have. This is truncation, and it is a bug. |
+
 **Pass assertion, evaluated per cell, mirroring G2's criterion
-(`bench_filter_truncation.py:154`):**
-`dense_hits == min(D, N_chunks_matching_filter)` and
-`bm25_hits == min(D, N_chunks_matching_filter)` for ≥ 99% of queries.
-A cell failing this is **void**: quality metrics are reported as `INVALID (hit deficit)` and
-excluded from all statistical tests. Because unfiltered rungs have `N_chunks >> D`, the
-expected value is simply `hits == D`; any deficit is an HNSW/segment artefact and is itself a
-finding to escalate as a G2 regression.
+(`bench_filter_truncation.py:154`):** `hits == min(D, matchable)` **per leg** on ≥ 99% of
+queries — i.e. `dense_deficit_rate ≤ 1%` and `bm25_deficit_rate ≤ 1%`. A cell failing *this*
+is **void**: quality metrics are reported as `INVALID (hit deficit)` and excluded from all
+statistical tests, and the failure is escalated as a G2 regression. A non-zero
+`*_starved_rate` with a zero `*_deficit_rate` voids nothing and escalates nothing; it is
+recorded, and it decides H1b.
+
+Keeping these apart is not bookkeeping. Under the flat assertion, a *correct falsification of
+H1b* — BM25 running out of term-matching chunks at P50, exactly the condition the spec's
+original premise described — and an Elasticsearch or Qdrant truncation bug are the same
+event, and §12's stop rule would halt the study on the former.
 
 `rerank_pool_occupancy` deserves emphasis: it is the direct test of the spec's concern that
 "the reranker's candidate pool assumes depth that will not exist." At the shipping default
@@ -888,10 +1022,20 @@ significance.
 **Replication.** With frozen indexes and cached query vectors, retrieval is deterministic
 except for HNSW nondeterminism under concurrent optimizer activity — which
 `libraries-spec.md` §16 documents explicitly as a reason to cache query vectors and raise
-count timeouts. Therefore: **3 replicates of one designated reference cell per rung** (an A/A
-null), not 3 replicates of everything. Report SD of nDCG@10 across replicates and rank-biased
-overlap (RBO) of the top-20 lists. **δ must exceed 3× the A/A SD**; if it does not, the
-experiment is under-resolved and the query set must be enlarged before any claim is made.
+count timeouts. Therefore: **10 replicates of one designated reference cell per rung** (an
+A/A null), not replicates of everything. Report SD of nDCG@10 across replicates and
+rank-biased overlap (RBO) of the top-20 lists.
+
+**The gate uses the upper confidence limit on the SD, not the point estimate**, and the
+replicate count follows from that. An SD from `r` replicates has `r − 1` degrees of freedom
+and its one-sided 95% upper limit is `s × √((r−1)/χ²_{0.05, r−1})`: at r = 3 that factor is
+**4.4**, which makes a point-estimate gate close to meaningless — a true SD four times the
+observed one is entirely consistent with three replicates. At r = 5 the factor is 2.4; at
+r = 10 it is **1.65**. A/A replicates are pure retrieval against a frozen index with cached
+query vectors — no judging, no GPU — so 10 costs minutes and buys a gate that means
+something. **δ must exceed 3× the *upper 95% limit* of the A/A SD**; if it does not, the
+experiment is under-resolved and §7.4's pre-registered response applies before any claim is
+made.
 
 ### 7.3 Confidence intervals
 
@@ -904,17 +1048,54 @@ acceptable output from this protocol.**
 
 **δ = 0.02 absolute nDCG@10.** Justification, from measurements already in this repository:
 
-1. *Resolvable.* R5's paired-bootstrap difference CIs at n = 300 had half-widths 0.005–0.023
-   (`fixed_tok256`: ΔnDCG@10 +0.023 [+0.006, +0.040], half-width 0.017). A 95% half-width of
-   0.017 corresponds to an 80%-power MDE of `0.017 × (1 + z_β/z_{α/2}) = 0.017 × 1.43 ≈
-   0.024`. So n = 300 alone resolves ≈ 0.025; **pooling SciFact (300) and NFCorpus (323) to
-   n = 623 gives MDE ≈ 0.017**, below δ. This is the concrete reason the second dataset is
-   mandatory in Part II rather than nice to have.
-   *Corollary for the pilot:* at n = 150 the same scaling gives MDE ≈ 0.034 > δ. **The pilot
-   is therefore expected to return INCONCLUSIVE for effects near δ**, and this is
-   pre-registered, not a surprise. Pilot quality findings smaller than ≈ 0.035 are screening
-   signal only; the pilot's decisive outputs are the ones that do not depend on this
-   power budget (§4.6).
+1. *Resolvability — an open question, not a settled one.* R5's paired-bootstrap difference
+   CIs at n = 300 had half-widths 0.005–0.023 (`fixed_tok256`: ΔnDCG@10 +0.023
+   [+0.006, +0.040], half-width 0.017). A 95% half-width of `h` corresponds to an 80%-power
+   MDE of `h × (1 + z_β/z_{α/2}) = h × 1.43`, and MDE scales as `1/√n`. Three corrections to
+   the naive version of this arithmetic, all of which cut the same way:
+
+   - **Every significance claim happens on the confirm split, not the full query set** (§7.2).
+     The confirm split is 60%: SciFact 180 + NFCorpus 194 = **n = 374**, not 623. At n = 374,
+     `0.017 × 1.43 × √(300/374)` ≈ **0.022 — already above δ**.
+   - **Holm inflates it further.** Stage 2 runs ≤ 5 pre-registered tests per metric per
+     dataset, so the operative two-sided level is 0.01 (`z = 2.576`, against 1.96). MDE scales
+     as `(z_{α/2} + z_β)`, i.e. `(2.576 + 0.84)/(1.96 + 0.84) = 1.22`. Holm-adjusted confirm
+     MDE ≈ **0.027 ≈ 1.35 δ**.
+   - **The 0.017 half-width is the wrong prior for G1's contrasts.** It comes from
+     *chunker-vs-chunker* differences on an identical query set, identical retriever and
+     identical index — near-maximally paired, so the difference SE is small. G1's headline
+     contrasts (hybrid vs dense-only, D = 10 vs D = 100) change *which documents come back*,
+     decorrelating the paired scores and inflating the difference SE. R5's own largest
+     half-width, 0.0225, already gives MDE ≈ 0.032 at n = 300 — and G1's contrasts should be
+     expected at or beyond that end of the range, not at the 0.017 end.
+
+   So: **the claim that this design resolves δ = 0.02 is withdrawn.** Under the most
+   favourable in-repo prior the pooled confirm split resolves ≈ 0.027 (1.35 δ); under the
+   least favourable, ≈ 0.035 (1.75 δ). **Whether δ is resolvable at all is an open question
+   the pilot settles empirically**, from the A/A noise floor and the realized per-query
+   difference SDs on the actual G1 contrasts (§7.2 replication, §4.6 item 3, §12 step 4).
+   Pooling both datasets remains mandatory in Part II — it is worth a factor of `√(374/180)`
+   = 1.44 on the MDE — but it is no longer claimed to be *sufficient*.
+
+   **Pre-registered response if realized power is worse than the design values.** Trigger:
+   realized Holm-adjusted confirm MDE > 1.5 δ, or realized 90% TOST half-width > δ. Responses,
+   in order of preference: (i) enlarge the confirm split — for the pilot this means generating
+   and judging more queries, the cheapest lever because the cost is judge compute (§4.2);
+   (ii) shrink the pre-registered test family from 5 to 3, which buys `(2.394+0.84)/(2.576+0.84)`
+   = 5% on the MDE; (iii) raise δ by amendment, with the raised value justified against the
+   §1.2 effect size. Until one is applied and recorded as an amendment, near-δ effects are
+   reported INCONCLUSIVE — a correct outcome, not a failure. Note (ii) is a small lever and
+   (iii) weakens the deliverable, which is why the query count is set generously up front.
+
+   *Corollary for the pilot.* The pilot uses **600 queries per rung** (§4.2), giving a confirm
+   split of **n = 360** — deliberately matched to Part II's 374 so the two parts have
+   comparable power. Holm-adjusted confirm MDE ≈ **0.027**; the 90% TOST half-width is
+   ≈ **0.013** (optimistic prior) to ≈ **0.017** (pessimistic), both inside δ, so
+   **EQUIVALENT is reachable and DIFFERENT is reachable only for effects ≳ 1.35 δ**. §4.6
+   states what that does and does not buy. At the 150 queries an earlier draft specified, the
+   confirm split would have been n = 90, MDE ≈ **0.044** and the 90% half-width ≈ **0.026** —
+   *both* verdicts out of reach, i.e. every quality comparison INCONCLUSIVE by construction.
+   That is why the query set is 600.
 2. *Below the effect the experiment exists to find.* The uncontrolled retrieval-breadth change
    in §1.2 moved nDCG@10 by ≈ 0.046 — more than 2δ. If the G1 axes matter at all, they matter
    at a scale this experiment can see.
@@ -923,8 +1104,9 @@ acceptable output from this protocol.**
    that boundary, which is why the decision rule requires **both** `|Δ| ≥ δ` **and**
    Holm-adjusted `p < 0.05` — magnitude alone is not enough, and neither is significance
    alone.
-4. *Bounded below by measured noise.* δ must exceed 3× the A/A replicate SD (§7.2). If the
-   A/A SD exceeds 0.0067, δ is raised accordingly and the change is recorded as an amendment.
+4. *Bounded below by measured noise.* δ must exceed 3× the **upper 95% confidence limit** of
+   the A/A replicate SD (§7.2), not 3× its point estimate. If that limit exceeds 0.0067, δ is
+   raised accordingly and the change is recorded as an amendment.
 
 For nDCG@5 the same δ = 0.02 applies. For the answer-level non-inferiority check the margin
 is 0.05 on a proportion.
@@ -996,9 +1178,10 @@ to the datasets and the hardware can reproduce every number from the artefacts a
 | Embedding | model, dim, revision/digest, `embedding_api`, `embedding_endpoints` (the live set, not the candidate set), batch size, token counter model, hard cap |
 | Chunker | `chunk_method`, `chunk_size`, `chunk_overlap`, `chunk_params`, and `chunk_descriptor(...)` (`provenance.py:27`) |
 | Build identity | `spec_hash(model, dim, chunk)` (`provenance.py:51`) for the judged core **and** the distractor source collection, with an equality assertion |
-| Index config | Qdrant: `m`, `ef_construct`, server-side search `ef`, `full_scan_threshold`, `max_segment_size`, `indexing_threshold`, `on_disk_payload`, `segments_count`, `points`, `indexed_vectors`, `hnsw_coverage`. ES: version, index name, similarity, analyzer, `n_docs`, `avgdl` |
+| Index config | Qdrant: `m`, `ef_construct`, server-side search `ef`, `full_scan_threshold`, `max_segment_size`, `indexing_threshold`, `on_disk_payload`, `segments_count`, `points`, `indexed_vectors`, `hnsw_coverage`, **`payload_indexes`** (the field names actually indexed — §5.5). ES: version, index name, similarity, analyzer, `n_docs`, `avgdl`. `segments_count` on the pilot rungs is the first library-sized observation of it and settles the `libraries-spec.md` §4 segment-boundary question (§1.3a) |
 | Distractors | source collection, sample seed, count, digest of the sampled point-id sequence |
 | Judging (pilot / Track B) | judge model + revision, temperature, seed, rubric hash, pool depth, label histogram, κ(human–human), κ(judge–human), self-consistency rate |
+| Query generation (pilot / Track B) | generator model + revision, **paraphrase-pass prompt hash and query-pass prompt hash** (T1b, §9), temperature, seed, accept/discard counts by filter reason, and the per-query IDF-weighted query↔source-chunk overlap distribution |
 | Parameters | `mode`, `rrf_k`, `D`, `top_k`, `candidate_multiplier`, `rerank_enabled`, `rerank_candidates`, reranker model + revision, `use_graph=false`, `rewrite="passthrough"` |
 | Software | Python, `qdrant-client`, `elasticsearch`, `httpx`, `numpy`, `transformers`/`tokenizers`, Qdrant server, ES server, sidecar image digests |
 | Hardware | host, GPU model and count, which endpoints served the run, concurrency settings (`EMBED_CONCURRENCY`, `EVAL_CONCURRENCY`) |
@@ -1053,7 +1236,9 @@ already carries `collection`, `model`, `dim`, `embedding_api`, `embedding_endpoi
              "full_scan_threshold": 10000, "max_segment_size": null,
              "indexing_threshold": 20000, "on_disk_payload": true,
              "points": 6108, "indexed_vectors": 6108, "segments_count": 2,
-             "hnsw_coverage": 1.0},
+             "hnsw_coverage": 1.0,
+             "payload_indexes": ["tenant_id"]},   // spec'd for ragstack_lib_v1:
+                                                  //   ["tenant_id", "library_id"] (§5.5)
     "es": {"version": "8.x", "index": "g1_a1_l0", "similarity": "BM25",
            "analyzer": "standard", "n_docs": 6108, "avgdl": 0.0}
   },
@@ -1066,6 +1251,16 @@ already carries `collection`, `model`, `dim`, `embedding_api`, `embedding_endpoi
               "temperature": 0, "seed": 0, "rubric_sha256": null, "pool_depth": null,
               "label_histogram": null, "kappa_human_human": null,
               "kappa_judge_human": null, "self_consistency": null},
+
+  "query_generation": {"applies": false,          // pilot / Track B only (T1b, §9)
+                       "generator_model": null, "generator_revision": null,
+                       "paraphrase_prompt_sha256": null, "query_prompt_sha256": null,
+                       "temperature": 0, "seed": 0,
+                       "n_generated": 0, "discarded": {"title_answerable": 0,
+                                                       "names_document": 0,
+                                                       "implausible": 0},
+                       "idf_overlap": {"mean": null, "p50": null, "p90": null,
+                                       "tertile_edges": null}},
 
   "params": {"mode": "hybrid", "rrf_k": 60, "leg_depth": 100,
              "top_k": 5, "candidate_multiplier": 20,
@@ -1082,8 +1277,10 @@ already carries `collection`, `model`, `dim`, `embedding_api`, `embedding_endpoi
   "seeds": {"distractor_sample": 0, "query_split": 0, "bootstrap": 0},
   "argv": ["python", "scripts/eval/retrieval_sweep.py", "…"],
 
-  "sanity": {"dense_deficit_rate": 0.0, "bm25_deficit_rate": 0.0,
-             "assertion": "hits == min(D, |match|)", "verdict": "PASS"},
+  "sanity": {"dense_starved_rate": 0.0, "bm25_starved_rate": 0.0,   // H1b; not a failure
+             "dense_deficit_rate": 0.0, "bm25_deficit_rate": 0.0,   // voids the cell
+             "assertion": "hits_leg == min(D, matchable_leg), per leg (§6.4)",
+             "verdict": "PASS"},
 
   "results": {"n_queries": 180, "query_ids": ["…"],
               "means": {"ndcg@10": 0.0, "ndcg@5_chunk": 0.0, "recall@10": 0.0,
@@ -1092,6 +1289,7 @@ already carries `collection`, `model`, `dim`, `embedding_api`, `embedding_endpoi
               "per_query": {"ndcg@10": [], "map": [], "recall@10": []},
               "counters": {"union_depth": [], "overlap": [], "unique_docs@10": [],
                            "dense_hits": [], "bm25_hits": [],
+                           "dense_matchable": [], "bm25_matchable": [],
                            "rerank_pool_occupancy": []}},
 
   "cost": {"wall_s": 0.0, "p50_query_ms": 0.0, "p95_query_ms": 0.0,
@@ -1173,6 +1371,40 @@ direction in the report.
 *Residual risk: high* for Part II alone; **reduced by staging** — the pilot's corpora are
 uncontaminated, so a pilot/Part-II disagreement on H1 is itself the contamination signal.
 
+**T1b — Query-generation contamination, and the sparse leg's home advantage.** *The mirror of
+T1, and it points the other way.* The pilot's queries are LLM-generated **from the target
+chunk itself** (§4.2), so the query and the chunk it is supposed to retrieve share vocabulary
+by construction — entities, gene and strain names, assay terms, numbers. That is exactly the
+lexical bias §5.7 invokes to disqualify the known-item title→doc proxy as primary evidence
+("retrieval-easy by construction — the title is verbatim in the lead chunk, giving BM25 an
+unfair lexical advantage on precisely the axis RQ1 measures"), and the objection does not
+weaken merely because the source is a body chunk rather than a title. Like T1 it is
+*directional*, but toward the **sparse** leg: it inflates BM25-only and hybrid relative to
+dense-only, on RQ1/H1 and H1c — the same axis T1 biases the opposite way. It also feeds H1b:
+term-rich generated queries make BM25 starvation *less* likely than real user queries would,
+so a clean H1b pass is a weaker guarantee than it looks.
+*Mitigations, all pre-registered:*
+(a) **Generate from a paraphrase, not the chunk.** The generator's default mode is two-pass —
+an abstractive summary of the source chunk is produced first and the query is written from
+the summary, with the verbatim chunk never in the query-writing context. The generator model,
+both prompts and their hashes go in the manifest (§8.1, judging row).
+(b) **Measure the overlap and report it as a covariate.** For every pilot query record the
+**IDF-weighted term overlap between the query and its source chunk** (IDF from the P200
+index, so it is comparable across rungs), plus the unweighted Jaccard. Report the
+distribution; it goes in `05_pilot.md` and in the `LibraryRetrievalDefaults` evidence block
+as part of the evidence base.
+(c) **Sensitivity analysis on the leg contrasts.** Recompute the hybrid-vs-dense and
+BM25-only contrasts on the lowest-overlap tertile, and report the interaction between overlap
+and (hybrid − dense). A leg conclusion that only holds in the high-overlap tertile is
+reported as an artefact of generation, not as a result.
+(d) **T1 and T1b bracket each other.** The SciFact anchor's claims are human-written against
+real qrels and carry T1 but not T1b; the pilot libraries carry T1b but not T1. A leg
+conclusion that survives both is credible; the §7.2 pilot cross-check ("must hold in sign on
+both") is what enforces it, and a sign disagreement on H1 between the two is now interpretable
+rather than merely alarming.
+*Residual risk: medium* for the leg-comparison outputs (H1, H1c), *low* for the
+depth/parameter outputs (H1b's counters, H2c, H4), which do not turn on lexical match.
+
 **T2 — Distribution shift: chunks-per-document and the doc-collapse step.**
 SciFact is 1.18 chunks/doc and NFCorpus is comparable; a real library at `fixed_tok512` is
 ≈ 36. This changes three things at once: BM25 length normalization and `avgdl`; how many
@@ -1221,18 +1453,23 @@ explicitly scoped to 50–200 documents.
 *Residual risk: medium in Part I, low in Part II.*
 
 **T6 — Overfitting to the grid.** 320 cells on 300 queries invites selection on noise; the
-pilot's 60 cells on 150 queries invites it more.
+pilot's 60 cells on 600 queries invite it too — the tune split is 240 queries against 60
+cells.
 *Mitigations:* two-stage tune/confirm with a pre-registered nomination rule, the
 cross-corpus consistency requirement, and the exploratory-labelling rule (§7.7).
 *Residual risk: low if the protocol is followed; the risk is procedural, not statistical.*
 
 **T7 — Filtered production path vs unfiltered measurement.** `_build_filter`
-(`stores/qdrant.py:425-455`) ANDs conditions into `Filter(must=[...])` (`:455`), only
-`tenant_id` carries a payload index (`qdrant.py:176-188`), and an empty list is deliberately
-unsatisfiable (`:430-434`) — a scope mistake returns zero rows silently rather than raising.
-A filtered HNSW search can in principle return fewer than `limit`.
-*Mitigations:* G2 has now measured this shape and passed (§2.1); §6.4's assertion runs on
-every cell; §5.5 runs the filtered arm.
+(`stores/qdrant.py:425-455`) ANDs conditions into `Filter(must=[...])` (`:455`), and an empty
+list is deliberately unsatisfiable (`:430-434`) — a scope mistake returns zero rows silently
+rather than raising. A filtered HNSW search can in principle return fewer than `limit`. The
+index set matters and is currently short: `_ensure_tenant_index` (`qdrant.py:176-188`) builds
+a payload index on `tenant_id` only, while `libraries-spec.md` §4 requires `ragstack_lib_v1`
+to index `library_id` as well — unimplemented, and a different planner path (§5.5).
+*Mitigations:* G2 has now measured this shape and passed (§2.1); §6.4's per-leg deficit
+assertion runs on every cell; §5.5 runs the filtered arm and records
+`index.payload_indexes` so a result cannot be silently read as covering the spec'd
+configuration when it did not.
 *Residual risk: **low*** (downgraded from medium on the G2 result).
 
 **T8 — Chunk-length confounds within the reranker.** Cross-encoder scores correlate with
@@ -1252,19 +1489,28 @@ than claiming generality.
 
 ## 10. What this repository does not have yet
 
-Honest gap list with sizing. **Pilot (Part I) needs gaps 1, 2, 5, 6, 7p, 9 ≈ 3 developer-days
-plus judge compute.** Part II adds gaps 3, 4 and the Track-B extension ≈ 4.5 days. The
-conditional config-surface work adds ≈ 1.5.
+Honest gap list with sizing. The per-gap numbers below are **build effort only**; run time and
+analysis are counted separately so the totals add up.
+
+| Roll-up | Gaps | Build | + run/analysis | Total |
+|---|---|---|---|---|
+| **Part I — pilot** | 1 (1.5) + 2 (0.5) + 5 (0.5) + 6 (0.5) + 7p (2) + 9 (0.25) | **5.25 d** | ≈ 1 d | **≈ 6 d** + judge compute |
+| **Part II — full study** | 3 (0.5) + 4 (0.5) + 7f (1) | **2 d** | ≈ 1.5 d | **≈ 3.5 d** + a few GPU-hours |
+| Conditional on H3 | 8 | 1–1.5 d | — | 1–1.5 d |
+
+These match §0's cost row. Judge compute (§4.2: ≈ 25k–50k pairs at temperature 0) and
+cross-encoder GPU time (§5.4) are fleet hours, not developer time, and are excluded from all
+three totals.
 
 | # | Gap | Why it is needed | Part | Size |
 |---|---|---|---|---|
 | 1 | **`python/scripts/eval/retrieval_sweep.py`** — the sweep driver: parameterized `mode`/`rrf_k`/`D`/`C`, query-vector cache, cross-encoder score cache, `rankings.jsonl.zst` dump, manifest emission. Must run **in-process** (§5.6). Emits `chunk_one`-compatible `per_query.json` so `aggregate_stats.py` works. Nothing today varies any retrieval parameter; `chunk_one.py` sweeps chunkers only and `scifact_chunk_eval.evaluate_config` hardcodes `HybridRetriever(vstore, tindex, embedder)` at `:313`. | I + II | ~450 LOC, **1.5 d** |
-| 2 | **Per-leg instrumentation.** `retrieve()` returns only the fused list and `RRFScorer.fuse` overwrites `retrieval_method="hybrid"` (`scorers.py:43`), erasing provenance. Recommend an **eval-only subclass** returning `(fused, LegStats)` rather than touching the production class. Track C / §6.4 / H1b / H2c are unmeasurable without it. | I + II | ~60 LOC, **0.5 d** |
+| 2 | **Per-leg instrumentation, including the per-leg ceiling probe.** `retrieve()` returns only the fused list and `RRFScorer.fuse` overwrites `retrieval_method="hybrid"` (`scorers.py:43`), erasing provenance. Recommend an **eval-only subclass** returning `(fused, LegStats)` rather than touching the production class. Must also probe `dense_matchable` (filtered Qdrant `count`) and `bm25_matchable` (ES `_count` of the same match query) and keep `*_starved_rate` and `*_deficit_rate` apart (§6.4). PR #210 has a working implementation of exactly this. Track C / §6.4 / H1b / H2c are unmeasurable without it. | I + II | ~90 LOC, **0.5 d** |
 | 3 | **Distractor-shell builder.** Scroll prod `ragstack_sfr_tok512` → scratch Qdrant *and* ES. `bench_filter_truncation.py:250-293` (`scroll_vectors`) is the template but is **Qdrant-only**; the ES half is new and non-optional (§5.2 ii). Prefix-guarded teardown modelled on `bench_filter_truncation.guard_scratch:82-89` and `scifact_chunk_eval.teardown`. | II | ~200 LOC, **0.5 d** |
 | 4 | **NFCorpus loader**, mirroring `scifact_chunk_eval._load_via_datasets` (graded 0–2 qrels; `_stats.ndcg_at_k` already supports graded gains). Second dataset is mandatory for the MDE budget (§7.4) and for generalization. | II | ~80 LOC, **0.5 d** |
-| 5 | **`_stats.py` additions:** TOST equivalence, Benjamini–Hochberg, MDE/power helper, DiD bootstrap, RBO, bpref, condensed-list nDCG. `build_stats_table` extended to emit DIFFERENT / EQUIVALENT / INCONCLUSIVE. | I + II | ~180 LOC, **0.5 d** |
+| 5 | **`_stats.py` additions:** TOST equivalence, Benjamini–Hochberg, MDE/power helper (Holm-aware, computed on the confirm split — §7.4), Clopper–Pearson intervals for the §6.4 rates, the χ²-based upper limit on the A/A SD (§7.2), DiD bootstrap, RBO, bpref, condensed-list nDCG. `build_stats_table` extended to emit DIFFERENT / EQUIVALENT / INCONCLUSIVE. | I + II | ~200 LOC, **0.5 d** |
 | 6 | **`EvalRunManifest`** in `ragstack/provenance.py` (or `ragstack/eval/manifest.py`), embedding `CollectionManifest` and reusing `spec_hash` / `chunk_descriptor` / `ragstack_version`. | I + II | ~120 LOC, **0.5 d** |
-| 7p | **Pilot library + judging harness:** nested clustered/random library sampling at 50/100/200, LLM query generation + filtering, fixed-depth pooling, judging loop, κ, self-consistency. | I | ~500 LOC + judge compute, **2 d** |
+| 7p | **Pilot library + judging harness:** nested clustered/random library sampling at 50/100/200 (P200-random = `P50 ∪ 150 uniform`, §4.1), two-pass paraphrase-then-query LLM generation at 600/rung with the filters and the IDF-overlap covariate (T1b, §9), fixed-depth pooling, judging loop, κ, self-consistency. | I | ~550 LOC + judge compute, **2 d** |
 | 7f | **Track-B extension to 1,000 documents**, reusing 7p. | II | **1 d** |
 | 8 | **Conditional — config surface,** only if H3 holds: per-collection retrieval overrides. There is **no size-dependent or per-collection retrieval branch anywhere today** — `CollectionSpec` (`api/collections.py:29-54`) carries no retrieval fields, and both retriever construction sites (`deps.py:267-277`, `deps.py:988-997`) read the same global `settings`. Natural seams: `CollectionSpec` + `_hybrid_retriever`. | II | **1–1.5 d** |
 | 9 | **Reporting-surface fixes** (small, worth doing regardless): expose `rrf_k` and `retrieval_candidate_multiplier` in `GET /v1/admin/config` (`admin.py:47-90` omits both); resolve the phantom `settings.top_k` (`config.py:305` has no reader; the API default is the literal `5` at `query.py:72`/`:107`). Without these a deployed server cannot report, and a settings file cannot set, the parameters this experiment tunes. | I | ~40 LOC, **0.25 d** |
@@ -1298,14 +1544,17 @@ LibraryRetrievalDefaults:            # NORMATIVE. Applies to `scoped` libraries 
     primary_metric: ndcg@10
     delta_vs_current_default: "<point> [<lo>, <hi>]  (paired bootstrap, n=<n>)"
     holm_p: <float>
+    realized_mde: <float>            # confirm-split, Holm-adjusted (§7.4)
     verdict: DIFFERENT | EQUIVALENT | INCONCLUSIVE
     judge_agreement: "kappa(judge-human)=<float>"
+    query_source_idf_overlap: "<mean> (p50 <x>, p90 <y>)"   # T1b covariate, §9
     track_b_veto: passed | not_applicable | blocked
     manifests: reports/g1-library-retrieval/manifests/
   measured_corpus_facts:             # replaces the corrected estimates in §-1 and §4
     chunks_per_document_tok512: <float>
     chunks_200_docs: <int>
     chunks_1000_docs: <int>
+    segments_count_by_rung: {<chunks>: <int>, …}   # settles the §4 handoff question (§1.3a)
 ```
 
 **Staging rule for the block.** The pilot may publish this block with
@@ -1342,13 +1591,22 @@ Four things ship no matter what the sweep finds. **The first three are already a
 `docs/libraries-spec.md` by the same change that added this protocol**; the fourth follows
 the pilot.
 
-1. **The corrected chunks-per-document arithmetic.** "~4k chunks per 200 docs" (§-1 G1) and
-   "~72,000 chunks per 1000 PDFs" (§4) replaced with the measured `fixed_tok512` figure of
-   36.2 chunks/doc, and the §4 segment-boundary argument re-derived on the corrected count.
+1. **The corrected chunks-per-document arithmetic, and a withdrawn conclusion.** "~4k chunks
+   per 200 docs" (§-1 G1) and "~72,000 chunks per 1000 PDFs" (§4) are replaced with the
+   measured `fixed_tok512` figure of 36.2 chunks/doc. §4's segment-boundary argument is **not
+   re-derived in a new direction** — correcting the numerator left the denominator (segment
+   count) unmeasured, so the spec now states that the side of the full-scan/HNSW handoff is
+   *undetermined*, notes that the only in-repo segment counts near library scale (8 at 500k
+   points, 2 at 6.1k) would put a library well above the ~625 handoff rather than below it,
+   and observes that the uncertainty strengthens rather than weakens the requirement to pin
+   both `max_segment_size` and `full_scan_threshold` (§1.3a).
 2. **The BM25 premise restated as a hypothesis.** The assertion that BM25 returns 3–4 hits
    against dense's 20 is now flagged in the spec as unverified and pointing the wrong way
    (§1.3c), and is registered here as H1b. The pilot decides it. If H1b holds, the spec
    sentence is struck and the depth risk relocated to the dense leg, where G2 already looks.
+   Note that the *correct* form of the BM25 ceiling is
+   `min(D, |filter-passing ∩ term-matching|)`, not `min(D, |filter-passing|)` — §6.4 measures
+   the two sets separately for exactly this reason.
 3. **The `settings.top_k` config gap.** The spec's G1 section now records that `top_k` is not
    currently readable as configuration (§8.1), so part of the deliverable is not expressible
    until gap 9 is done.
@@ -1365,18 +1623,29 @@ the pilot.
 2. Gaps 1, 2 (sweep driver, per-leg instrumentation).
 3. Gap 7p: build the nested P50 ⊂ P100 ⊂ P200 libraries + P200-random; generate and pin
    queries; **do not judge yet**.
-4. **Track C first, on unlabelled data:** run the pilot grid, evaluate the §6.4 hit
-   assertions, decide **H1b** and **H2c**, run the A/A null, measure the per-query SD and the
-   realized MDE. This step needs no judgments at all and is the cheapest decision-useful
-   output in the whole protocol.
-   **If the §6.4 assertion fails at any rung, stop** — the finding is a G2 regression and
-   supersedes G1.
+4. **Track C first, on unlabelled data:** run the pilot grid, probe the per-leg ceilings and
+   evaluate the §6.4 assertions, decide **H1b**, run the A/A null (10 replicates), and
+   measure the per-query SDs, the realized confirm-split MDE and the realized 90% TOST
+   half-width — on the actual G1 contrasts, not on a chunker proxy. This step needs no
+   judgments at all and is the cheapest decision-useful output in the whole protocol.
+   **Stop rule — deficit only.** If `dense_deficit_rate` or `bm25_deficit_rate` breaches
+   §6.4's threshold at any rung, **stop**: a leg returned fewer hits than it could have, the
+   finding is a G2 regression, and it supersedes G1. A non-zero `*_starved_rate` with zero
+   deficit **does not
+   stop anything** — it falsifies H1b, which is a registered outcome, gets reported as such
+   (§6.4), and the study continues. Conflating the two would halt the study on legitimate
+   BM25 term scarcity, which is most likely at P50.
 5. Judge the pool; measure κ. **If κ(judge–human) < 0.4, the pilot's quality track is
    descriptive only** (§4.4) and step 6 is skipped.
-6. Pilot stage 1 (tune) → stage 2 (confirm) on P50/P100/P200 + the SciFact anchor. Publish
-   `05_pilot.md` and, if warranted, a scoped `LibraryRetrievalDefaults` under §11.1's staging
-   rule. **If the realized MDE from step 4 exceeds δ, record the amendment** (enlarge the
-   query set or raise δ) before making any quality claim.
+6. Pilot stage 1 (tune) → stage 2 (confirm) on P50/P100/P200 + the SciFact anchor, including
+   the **H2c** matched-depth decomposition (it needs labels, so it lands here, not in step 4).
+   Publish `05_pilot.md` and, if warranted, a scoped `LibraryRetrievalDefaults` under §11.1's
+   staging rule. **Gate:** compare the realized confirm-split MDE and 90% TOST half-width
+   from step 4 against the design values (≈ 0.027 and ≈ 0.013–0.017). If either is materially
+   worse — specifically, if the realized MDE exceeds 1.5 δ or the 90% half-width exceeds δ —
+   apply §7.4's pre-registered response (enlarge the confirm split, shrink the test family,
+   or raise δ) and **record it as an amendment before making any quality claim**. Comparisons
+   that remain unresolvable are published as INCONCLUSIVE; the step-4 outputs ship either way.
 
 **Part II — full study.**
 
