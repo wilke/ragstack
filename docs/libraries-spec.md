@@ -6,7 +6,15 @@ Rev 3. MUST/MUST NOT are normative. Target: implementable without inventing deci
 
 ## §-1. Blocking gates
 
-**G1 — retrieval quality at library scale (#200).** All quality numbers here were measured at ≥5.8k chunks with `--retrieve-pool 300 --rerank-pool 100`; shipping defaults (`rrf_k=60`, `candidate_multiplier=2`, `top_k=5`, `rerank_enabled=False`) were never under measurement. Score a ~200-doc library through the eval seam (#125/PR #126). If constants need a small-N branch, that branch is normative and part of v1. **One day. Can invalidate the design.**
+**G1 — tune retrieval for small libraries (#200). A required experiment, NOT a go/no-go.** All
+quality numbers here were measured at ≥5.8k chunks with `--retrieve-pool 300 --rerank-pool 100`;
+shipping defaults (`rrf_k=60`, `candidate_multiplier=2`, `top_k=5`, `rerank_enabled=False`) were
+never under measurement, and a ~200-doc library is ~4k chunks where BM25 may return 3–4 hits
+against dense's 20. **The pipeline is parameterised, so the outcome is a settings change, not a
+redesign** — sweep `rrf_k`, candidate multiplier, rerank on/off and dense-only over a ~200-doc
+library via the eval seam (#125/PR #126) and publish the winner as a normative
+`LibraryRetrievalDefaults` block in this spec. Run it early because it decides whether a
+per-library-size parameter branch exists at all, which touches the config surface.
 
 **G2 — re-measure the Qdrant filter in the v1 shape (#199).** #199 measured a single key/value at 1% selectivity on synthetic 128-d vectors. v1 issues `library_id == X AND tenant_id ANY […]` at ~0.005%. Sweep 10⁻²→10⁻⁵ on real 4096-d SFR vectors. **Pass: returned-hits == `min(k, |library|)`.**
 
@@ -16,7 +24,11 @@ execution plane and it runs on coconut** (live at `*:8091`, all interfaces; Qdra
 A GoWe worker reaching the embedding fleet and Qdrant is a same-host call. The BV-BRC app is a
 *submission surface*, not an execution target. §6 is therefore decidable now and no longer gated.
 
-**G4 — §11 Q6** (is BV-BRC's token signing key published and offline-verifiable?). A "no" collapses §5's cache design. Gates §5.0.
+**G4 — RESOLVED as a design choice: use token introspection, not offline signature
+verification.** Ask BV-BRC "is this token valid and who is it", and cache the answer — the
+Google `tokeninfo` pattern, and what the operator specified (rate-limited but raisable for
+services; cache with a TTL or query-count bound). No signing key is required, so the original
+gate dissolves. What remains is an ordinary integration question, §11 Q6.
 
 ---
 
@@ -190,13 +202,15 @@ Assert in §14: ingest a record whose `metadata.library_id` names another librar
 
 ## §5. AuthN / AuthZ
 
-### §5.0 Token verification — new subsystem, gated on G4
+### §5.0 Token verification — introspection
 
 Nothing in the repo verifies a BV-BRC token; `gowe_client.py:83-84` only forwards one, and `openapi.yaml:674` declares one scheme.
 
 - Scheme `BvbrcToken`: **`type: apiKey, in: header, name: Authorization`** — *not* `http`/`bearer`; the wire format has no `Bearer ` prefix.
-- Format `un=…|tokenid=…|expiry=…|sig=…`. **MUST verify `sig` offline** against the published key. **MUST NOT parse `un=` from an unverified token.** `token_id` is set **only after** verification, else the cache key is attacker-chosen and a forged token bearing a victim's `tokenid` poisons the victim's entry.
-- Key from `BVBRC_TOKEN_PUBKEY_URL`, cached, refetched on unknown key id; ≤300 s skew. `expiry` checked **every request, uncached**.
+- Format `un=…|tokenid=…|expiry=…|sig=…`. **The identity MUST come from BV-BRC, never from parsing `un=`.** A forged `un=` carrying a valid signature from a *different* user would authenticate as the signer while claiming to be someone else, so `un=` is a hint for cache keying only and is never the principal.
+- **Validate by introspection**: call BV-BRC's token endpoint (`BVBRC_TOKEN_INTROSPECT_URL`) and take the authenticated username from its response. Cache on `token_id` with TTL = `min(300s, expiry − now)`, bounded LRU. `expiry` is additionally checked locally **every request, uncached**, as a cheap pre-filter — a locally-expired token never reaches BV-BRC.
+- `token_id` is used as a cache key **only after** a successful introspection, else the key is attacker-chosen and a forged token bearing a victim's `tokenid` poisons the victim's entry.
+- **Possible simplification to evaluate at build time:** §5.1 already makes an authenticated Workspace call per query, and a successful one proves the token is valid. If that response carries the authenticated identity, the probe subsumes introspection and the auth path costs zero extra round-trips. It does **not** work if the response echoes only the client-supplied name — confirm before relying on it (§11 Q6).
 - Yields `Principal(tenant=f"bvbrc:{un}", role=ROLE_RESEARCHER, token=…, token_id=…, token_exp=…)`. **The role is explicit and MUST NOT fall through to `default_role`** — prod runs `DEFAULT_ROLE=admin` (`/rag/config/unified.env:19`), which would make every researcher a superuser.
 - Both `X-API-Key` and `Authorization` present → **400**. Enforced in a dedicated dependency; `APIKeyHeader(auto_error=False)` cannot do it alone.
 - Failures: malformed / bad sig / expired → **401**. Key server unreachable → **503**, never 401, never allow.
@@ -419,7 +433,7 @@ Per library ≤1000 documents, ≤20 GB — enforced at stage 0 as a **job failu
 3. Chatbot server-to-server or browser? Determines delegation vs CORS/CSRF; if browser, a bearer token sits behind an XSS boundary (the UI persists keys in `localStorage`, `config.ts:30`).
 4. Will users accept one top-level workspace per shareable library? Forced by §2.
 5. Workspace rate limits for a service; does `create` batch? Gates §6 stage 6.
-6. Is the token signing key published, and how does it rotate? **(G4)**
+6. **Which endpoint introspects a token and returns the *authenticated* username** (not the client-supplied `un=`)? Rate limits for a service caller? And does an authenticated Workspace response already carry that identity — if so the §5.1 probe subsumes token validation entirely.
 7. **Is `ObjectID` genuinely stable across move?** §3 rests on it and it is asserted without a citation.
 8. **Is there a "workspaces shared with me" listing?** Without one, §9's shared enumeration is an O(all libraries) scan.
 
@@ -503,7 +517,7 @@ Not a migration: content-addressing makes a different `(model, dim, chunk)` a di
 
 ## §15. Build order
 
-0. **G1, G2** (§-1). G4 before §5.0. (G3 resolved — GoWe on coconut is the execution plane.)
+0. **G2** (§-1) — the only true gate left. G1 is a tuning experiment, run early. (G3, G4 resolved.)
 1. **§10 fix-first 1–3, 6–9**, then #130/#195. Authorization bugs; nothing user-owned lands on top. Each ships independently (§13).
 2. **§8.1** state store + `ensure_columns()`.
 3. **§1 protocols** — including the `Principal` extension (prerequisite for `for_principal`, not part of the verifier) — plus `LocalFs`/`LocalAclAuthz` and the §14 seam. Build against the fake; BV-BRC impls slot in behind the same interfaces last.
