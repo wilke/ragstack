@@ -10,7 +10,11 @@ Rev 3. MUST/MUST NOT are normative. Target: implementable without inventing deci
 
 **G2 — re-measure the Qdrant filter in the v1 shape (#199).** #199 measured a single key/value at 1% selectivity on synthetic 128-d vectors. v1 issues `library_id == X AND tenant_id ANY […]` at ~0.005%. Sweep 10⁻²→10⁻⁵ on real 4096-d SFR vectors. **Pass: returned-hits == `min(k, |library|)`.**
 
-**G3 — §11 Q1** (can BV-BRC compute reach coconut?). A "no" rewrites §6.
+**G3 — RESOLVED, downgraded to a deployment question (§11 Q1).** The earlier framing assumed
+the BV-BRC App Service would schedule ingest onto *BV-BRC* compute. It does not: **GoWe is the
+execution plane and it runs on coconut** (live at `*:8091`, all interfaces; Qdrant `0.0.0.0:6333`).
+A GoWe worker reaching the embedding fleet and Qdrant is a same-host call. The BV-BRC app is a
+*submission surface*, not an execution target. §6 is therefore decidable now and no longer gated.
 
 **G4 — §11 Q6** (is BV-BRC's token signing key published and offline-verifiable?). A "no" collapses §5's cache design. Gates §5.0.
 
@@ -224,7 +228,7 @@ Nothing in the repo verifies a BV-BRC token; `gowe_client.py:83-84` only forward
 
 ---
 
-## §6. Ingest — gated on G3
+## §6. Ingest
 
 CWL `CommandLineTool` per stage, following `cwl/embed-bulk.cwl`. Stages exist to be **gated**; that is why this is a workflow.
 
@@ -406,7 +410,11 @@ Per library ≤1000 documents, ≤20 GB — enforced at stage 0 as a **job failu
 
 ## §11. Open questions — BLOCKING, for BV-BRC
 
-1. Can BV-BRC compute reach coconut (`:9001–9008`, Qdrant `:6333`)? **(G3)**
+1. **Firewall only, not architecture.** (a) Can BV-BRC's app service / chatbot reach coconut's
+   GoWe `:8091` to submit? It already binds all interfaces and uses BV-BRC token auth with
+   anonymous disabled, so it is built for external callers — the open part is the network path
+   (NAT / VPN / allowlist). (b) Can GoWe workers on coconut reach bv-brc.org's Workspace and
+   Shock outbound? Almost certainly — coconut already reaches mango, lambda13 and HF.
 2. Is there an upload analogue to `get_download_url`? A yes deletes most of #202/#195.
 3. Chatbot server-to-server or browser? Determines delegation vs CORS/CSRF; if browser, a bearer token sits behind an XSS boundary (the UI persists keys in `localStorage`, `config.ts:30`).
 4. Will users accept one top-level workspace per shareable library? Forced by §2.
@@ -495,7 +503,7 @@ Not a migration: content-addressing makes a different `(model, dim, chunk)` a di
 
 ## §15. Build order
 
-0. **G1, G2** (§-1). G3 before §6, G4 before §5.0.
+0. **G1, G2** (§-1). G4 before §5.0. (G3 resolved — GoWe on coconut is the execution plane.)
 1. **§10 fix-first 1–3, 6–9**, then #130/#195. Authorization bugs; nothing user-owned lands on top. Each ships independently (§13).
 2. **§8.1** state store + `ensure_columns()`.
 3. **§1 protocols** — including the `Principal` extension (prerequisite for `for_principal`, not part of the verifier) — plus `LocalFs`/`LocalAclAuthz` and the §14 seam. Build against the fake; BV-BRC impls slot in behind the same interfaces last.
@@ -505,4 +513,7 @@ Not a migration: content-addressing makes a different `(model, dim, chunk)` a di
 7. **§3 id change + `ragstack_lib_v1`. Atomic single commit.** Then `purge=true`.
    **7a. §16 Tier 0 verification gate — merge blocker.**
 8. §4/§5.1 query scoping (`library_scope_filters`) + §16 Tier 1's two enforcement changes.
-9. §6 ingest workflow — gated on G3.
+9. §6 ingest workflow. **No longer gated** — GoWe on coconut is the execution plane. Two
+   implementation risks remain (not gates): GoWe's `bvbrc` executor is marked not
+   conformance-validated, and a BV-BRC-app→GoWe→BV-BRC-app path is a double queue in which a
+   `GoWeClient.wait()` timeout marks every item failed while the run continues orphaned.
