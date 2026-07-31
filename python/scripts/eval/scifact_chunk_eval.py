@@ -279,6 +279,9 @@ async def evaluate_config(
     retrieve_pool: int,
     reranker: SidecarReranker,
     store: tuple[str, str, str] | None = None,
+    *,
+    retriever_factory=None,
+    mode: str = "hybrid",
 ) -> dict:
     """Retrieve chunks, map to docs, score vs qrels. Returns per-query metric arrays.
 
@@ -291,6 +294,15 @@ async def evaluate_config(
     cap recall@100. The tail is in first-stage (hybrid) order — only the head is
     reranked — so nDCG@10 / recall@{10,20} are unaffected. Per-query nDCG@10 /
     recall@{10,20,100} / AP vs the graded qrels feed the Part-2 stats layer.
+
+    Retrieval is **parameterised, not hardcoded**: ``retriever_factory`` is called as
+    ``factory(vstore, tindex, embedder)`` and must return something with
+    ``HybridRetriever``'s ``retrieve()`` signature — pass one that sets
+    ``rrf_scorer=RRFScorer(k=…)`` / ``candidate_multiplier=…`` to vary the fusion
+    constant or the per-leg depth. ``mode`` selects the legs (``hybrid`` | ``vector``
+    | ``bm25``). Both default to today's behaviour (plain ``HybridRetriever``, hybrid
+    mode), so the CLI is unchanged; ``scripts/eval/g1_library_sweep.py`` is the
+    caller that actually varies them.
     """
     key = cfg.key
     qids = sorted(queries, key=lambda q: int(q) if q.isdigit() else q)
@@ -310,7 +322,11 @@ async def evaluate_config(
         api="openai", http=client, base_url=c7.SFR_ENDPOINTS[0], model=c7.SFR_MODEL,
         api_key=c7.EMBED_API_KEY,
     )
-    retriever = HybridRetriever(vstore, tindex, embedder)
+    retriever = (
+        retriever_factory(vstore, tindex, embedder)
+        if retriever_factory is not None
+        else HybridRetriever(vstore, tindex, embedder)
+    )
     filters = scope_filters({}, tenant)
     sem = asyncio.Semaphore(c7.EVAL_CONCURRENCY)
 
@@ -334,7 +350,7 @@ async def evaluate_config(
         async with sem:
             pool = await retriever.retrieve(
                 query, top_k=retrieve_pool, filters=filters,
-                use_graph=False, tenant_id=tenant,
+                use_graph=False, tenant_id=tenant, mode=mode,
             )
             if not pool:
                 return {"ndcg": 0.0, "ap": 0.0,
@@ -554,6 +570,8 @@ async def amain(args, live_eps) -> int:
                 cfg, queries, qrels, client, args.rerank_pool,
                 args.retrieve_pool, reranker,
                 store=(args.collection, es_index, tenant),
+                retriever_factory=make_retriever_factory(args),
+                mode=args.retrieval_mode,
             )
         print("\n" + "=" * 80 + "\nSCIFACT RESULTS (external store)\n" + "=" * 80)
         print(build_metrics_table({label: stats}, [label]))
@@ -590,7 +608,9 @@ async def amain(args, live_eps) -> int:
         for cfg in configs:
             eval_stats[cfg.key] = await evaluate_config(
                 cfg, queries, qrels, client, args.rerank_pool,
-                args.retrieve_pool, reranker
+                args.retrieve_pool, reranker,
+                retriever_factory=make_retriever_factory(args),
+                mode=args.retrieval_mode,
             )
 
         # Compute the (expensive 10k-iter bootstrap) significance section once and
@@ -654,7 +674,38 @@ def parse_args(argv=None):
     p.add_argument("--metrics-out", default=None,
                    help="write per-query metric arrays + means as JSON — a pinnable "
                         "regression baseline (works in either mode)")
+    # Retrieval parameters. Defaults reproduce the historical behaviour exactly
+    # (hybrid legs, RRFScorer(k=60), candidate_multiplier=2 — the class defaults),
+    # so existing invocations are byte-identical. G1 (#200) needs them exposed.
+    p.add_argument("--retrieval-mode", default="hybrid",
+                   choices=("hybrid", "vector", "bm25"),
+                   help="retrieval legs: hybrid (dense+BM25 RRF), vector (dense "
+                        "only), bm25 (sparse only). Default: hybrid.")
+    p.add_argument("--rrf-k", type=int, default=None,
+                   help="RRF fusion constant (default: RRFScorer's 60)")
+    p.add_argument("--candidate-multiplier", type=int, default=None,
+                   help="per-leg candidate depth multiplier (default: "
+                        "HybridRetriever's 2)")
     return p.parse_args(argv)
+
+
+def make_retriever_factory(args):
+    """A ``retriever_factory`` honouring --rrf-k / --candidate-multiplier, or None
+    when both are unset (so the default path constructs exactly what it always did)."""
+    if args.rrf_k is None and args.candidate_multiplier is None:
+        return None
+
+    from ragstack.scoring.scorers import RRFScorer
+
+    def _factory(vstore, tindex, embedder):
+        kwargs = {}
+        if args.rrf_k is not None:
+            kwargs["rrf_scorer"] = RRFScorer(k=args.rrf_k)
+        if args.candidate_multiplier is not None:
+            kwargs["candidate_multiplier"] = args.candidate_multiplier
+        return HybridRetriever(vstore, tindex, embedder, **kwargs)
+
+    return _factory
 
 
 def main(argv=None) -> int:
