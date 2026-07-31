@@ -1170,4 +1170,192 @@ publishable.
 
 ## Amendments
 
-*(none yet — record dated deviations here, never by editing the body above)*
+Dated deviations and additions. The body above is never edited; every amendment
+changes this file, therefore changes its SHA-256, therefore changes the
+`protocol_version` stamped into every subsequent run manifest. A run whose
+`protocol_version` predates an amendment was **not** governed by it.
+
+---
+
+### A1 — 2026-07-31 — When the tune/confirm split is derived
+
+**§6.4 says** the 40/60 stratified split is "written to a pinned fixture *before*
+any sweep run".
+
+**Deviation.** Stratification is by per-query difficulty measured on the shipping
+default at L0 — which is itself a measurement, so the *first* run necessarily
+derives the split rather than reading it. The harness therefore computes the
+split mechanically from the shipping-default cell alone, at fixed seed 0, writes
+it to `reports/g1-library-retrieval/fixtures/g1_scifact_split.json` keyed on the
+query-set SHA-256, and treats that fixture as authoritative from then on. A
+changed query set invalidates the fixture and forces a new split rather than
+silently reusing a stale one; the fixture path and its SHA-256 go in every
+manifest.
+
+**Why this preserves the guarantee §6.4 wanted.** The concern is an analyst
+choosing a split that flatters a candidate. The split assignment depends on the
+*reference* configuration only — the one cell that is the comparator in both
+stages — and on a fixed seed, so no candidate's numbers can influence it. What is
+lost is the ability to point at a commit predating the first run; what is kept is
+the substantive independence.
+
+### A2 — 2026-07-31 — EQUIVALENT requires discriminating queries
+
+**§7.5 says** two configurations are practically equivalent when the 90% paired
+bootstrap CI of their difference lies entirely within (−δ, +δ).
+
+**Addition.** That rule is reachable through degeneracy. The bootstrap resamples
+*queries*; if every query's paired difference is identically zero, every resample
+has mean difference exactly 0, the interval is exactly `[0, 0]`, and TOST fires at
+**any** n — including n = 1. This is the absence of a measurement, not a
+measurement of sameness, and it occurs in practice whenever two nominally
+different cells are in fact the same retrieval or the task saturates.
+
+There is a second, subtler route to the same false verdict: a *constant* paired
+offset. Every difference is then non-zero — so a count-based guard does not fire
+— but the variance is still zero, every resample returns the same mean, and the
+interval is again a point.
+
+**Amended rule.** A comparison is labelled EQUIVALENT only if, in addition to the
+§7.5 interval condition, **both** of the following hold:
+
+1. at least **5** of the paired per-query differences are non-zero
+   (`MIN_DISCRIMINATING_QUERIES`; the count is recorded per comparison as
+   `n_discriminating`); and
+2. the 90% interval has non-trivial width — greater than `δ × 10⁻⁶`
+   (`MIN_CI_WIDTH`). Real per-query dispersion produces widths around 10⁻³, so
+   this only ever fires on an exactly degenerate difference distribution.
+
+Otherwise the verdict is INCONCLUSIVE and the report states which condition
+failed.
+
+### A3 — 2026-07-31 — The recommendation gate: refusing to answer
+
+**§11 says** the deliverable is a normative `LibraryRetrievalDefaults` block, and
+§11.3 provides the "no change" form. Neither addresses the case where the *run
+itself* cannot support any normative claim.
+
+**Addition.** The harness now refuses to emit a `LibraryRetrievalDefaults`
+recommendation — as a machine-readable `recommendation_gate` in the manifest and
+a banner at the top of the report — whenever any of the following holds:
+
+1. **HNSW was not built at the decision rung.** Qdrant builds no graph below
+   `indexing_threshold`, so the dense leg is an exact brute-force scan. In that
+   regime H1b is vacuous (§5.4's dense verdict confirms only that exact search is
+   exact), the depth parameters under test do not bind on an approximate index,
+   and measured nDCG saturates at 0.94–0.98 so δ = 0.02 sits *inside* the
+   ceiling — there is no room for the effect the experiment is looking for.
+2. **HNSW status is unknown** (Qdrant telemetry missing or errored). A missing
+   measurement is not a passing one, and the report says
+   "HNSW status unknown — do not quote" rather than staying silent.
+3. **The A/A resolution gate did not run or did not pass** (§6.4: δ must exceed
+   3× the A/A SD).
+4. **A primary cell is void** under §5.4, or a rung's shipping-default reference
+   was substituted for another cell (see A6).
+5. **The reference already scores above 1 − δ** on the primary metric.
+6. **The working tree is dirty.** A published number must be reproducible from a
+   commit. `git.dirty_digest` (SHA-256 of the porcelain status plus the full
+   `git diff HEAD`) is recorded either way so the delta is at least identified,
+   and `--require-clean` refuses to start.
+
+This does not weaken §11; it makes explicit that "we cannot tell" is a fourth
+possible outcome alongside DIFFERENT / EQUIVALENT / INCONCLUSIVE, and prevents
+the pilot's document-count regime (A5) from producing a shipping recommendation.
+
+### A4 — 2026-07-31 — The primary comparison is *designated*, not pre-registered
+
+**§3 and §6.1 register** the factors, the metric, δ, and the decision rules.
+They do **not** name a single primary pair.
+
+**Recorded fact.** The harness designates one comparison — shipping defaults at
+per-leg depth D = 10 versus the identical cell at D = 100, at the largest rung,
+on nDCG@10, δ = 0.02. That pair was chosen when the harness was written, *after*
+this document was first hashed and after the initial smoke runs. It is therefore
+**not pre-registered**, and is labelled a **designated primary** in the manifest
+(`preregistered: false`), the report, and the console output.
+
+It carries the epistemic weight of a single pre-specified comparison — one test,
+one δ, no selection over the grid, both cells force-added to every grid so the
+comparison cannot be dropped for being unfavourable. It does not carry the weight
+of pre-registration, and no artefact may describe it as pre-registered.
+Rationale for designating it: §1.2 identifies retrieval breadth as the only knob
+ever observed to move this metric in this repository (ΔnDCG@10 ≈ +0.046 between
+R5 and R5b), and D = 100 is §6.2's own worked example of a shippable depth.
+
+### A5 — 2026-07-31 — The document-count pilot, and its standing
+
+**§4.4 rejects** "subsample SciFact to 200 documents" on the grounds that it
+produces ~236 chunks and is "not a library; it is a toy".
+
+**Recorded deviation.** The first implemented harness
+(`python/scripts/eval/g1_library_sweep.py`) is exactly a document-count sweep at
+50 / 100 / 200 SciFact documents. This is deliberate and it is **not** Track A:
+it is a *prior on the parameters* and a shakedown of the instrumentation, run
+because the distractor ladder (§4.3) is a larger piece of work and the per-leg
+instrumentation, the §5.4 assertions, the manifest, and the statistics needed to
+be exercised end to end first.
+
+Its standing is fixed by A3: at these sizes Qdrant builds no HNSW graph, so the
+recommendation gate is shut by construction and no `LibraryRetrievalDefaults`
+block can come out of it. The harness carries the ladder seam
+(`build_library_index(extra_chunks=...)`, zero-filled `distractors` manifest
+block, rung-keyed cells) so adding rungs is a new source function, not a rewrite.
+Every report from this mode stamps the chunks-per-document caveat and the HNSW
+regime into a banner and into machine-readable per-cell fields.
+
+### A6 — 2026-07-31 — One retrieval pass, two splits; and reference substitution
+
+**§6.4 says** stage 1 "runs the full grid on the tune split" and stage 2 "runs
+only the nominated ≤ 5 configurations ... on the confirm split".
+
+**Deviation (operational only).** The harness executes each cell once over *all*
+retained queries and applies the split at analysis time by masking the per-query
+arrays. Retrieval is deterministic given a frozen index and cached query vectors,
+so the numbers are identical to two separate executions; what changes is cost.
+The independence §6.4 protects is preserved because the *nomination rule reads
+only tune-split numbers* and the confirm-split arrays are not consulted until the
+shortlist is fixed.
+
+**Addition — reference substitution.** §7.2's comparisons are all worded "vs the
+shipping default". If the shipping-default cell is itself void under §5.4, the
+harness previously fell back to the alphabetically first valid cell while keeping
+the prose. It now (a) marks the rung `reference_substituted: true` and
+`directional_claims: "VOID"`, (b) prints a banner above that rung's table, and
+(c) excludes the rung from stage-2 nomination, since its ordering is not an
+ordering relative to the default.
+
+### A7 — 2026-07-31 — Provenance additions beyond §8.1
+
+Three fields §8.1 requires or implies were unobtainable from the artefacts and
+are now recorded:
+
+- **Reranker model and revision.** §8.1 lists both and §6.3b keys the rerank
+  score cache on them, but the sidecar was identified only by URL — and it reads
+  `MODEL_NAME` from its own environment, so the same port can serve a different
+  checkpoint after a restart. The harness now records the model from
+  `GET /health` and resolves the revision from the local HF snapshot directory,
+  recording ambiguity explicitly when more than one snapshot is materialized.
+- **Query-vector cache identity.** The cache is keyed on
+  `(spec_hash, query texts)`, which says nothing about which model served the
+  embeddings; a model swap behind the shared fleet at a fixed `spec_hash` would
+  silently reuse stale vectors. The cache file's SHA-256, a hit/miss flag, and
+  the entry count and dimension are now in every manifest, and validation is on
+  the key set and dimension rather than the entry count alone.
+- **Dirty-tree identity.** `git.dirty` was a bare bool, which tells a third party
+  that the code is unreproducible but not what it was. `git.dirty_digest`,
+  `git.dirty_files` and `git.diff_bytes` are now recorded; see A3.6 for the
+  refusal rule.
+
+### A8 — 2026-07-31 — Scratch collection names carry the sample digest
+
+**§8.1's "Build identity"** keys a collection on
+`spec_hash(model, dim, chunk_descriptor)`. The harness originally named its
+scratch stores `g1_lib_<n>docs_<spec_hash>`, which depends only on the build spec
+— so two runs at different `--seed` or `--judged-fraction` values would resolve
+to the same name, and `ensure_collection` / `ensure_index` reuse an existing
+store rather than failing. The two corpora would merge silently and every metric
+would describe their union.
+
+Names are now `g1_lib_<n>docs_<spec_hash>_<sample_digest[:12]>`, where the sample
+digest covers the document ids, the query ids and the seed; and the harness
+refuses to build into a Qdrant collection or ES index that already holds data.

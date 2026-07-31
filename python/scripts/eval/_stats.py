@@ -13,6 +13,11 @@ value per eval query, per config) and hand them here to get:
   metric) deltas vs the reference: Wilcoxon signed-rank
   (:func:`wilcoxon_signed_rank`) with **Holm–Bonferroni** multiplicity correction
   (:func:`holm_bonferroni`) across the config comparisons.
+- **Benjamini–Hochberg FDR** (:func:`benjamini_hochberg`) for the *screening*
+  stage of a two-stage design, where a false lead is cheap because a
+  confirmatory stage will kill it and FWER control would be crippling.
+- **Rank-biased overlap** (:func:`rbo`) for comparing two ranked lists — the
+  replicate-stability measure for an A/A null.
 
 Everything is implemented directly (no scipy). The bootstrap is seeded
 (``numpy.random.default_rng(0)``) so a re-run reproduces the intervals exactly.
@@ -211,6 +216,68 @@ def holm_bonferroni(
             still_rejecting = False
         out[key] = (adj, rejected)
     return out
+
+
+def benjamini_hochberg(
+    pvalues: dict[str, float], q: float = 0.10
+) -> dict[str, tuple[float, bool]]:
+    """Benjamini–Hochberg FDR control across a family of comparisons.
+
+    ``pvalues`` maps comparison key → raw p-value. Returns key → (BH-adjusted p,
+    discovered-at-``q``).
+
+    BH controls the *expected proportion of false discoveries* rather than the
+    probability of any false discovery, which is the right criterion for a
+    **screen**: carrying a false lead into a confirmatory stage costs one extra
+    confirmatory test, whereas Holm over a large grid would let only a huge
+    effect through and the screen would nominate nothing. Adjusted p for the
+    i-th smallest raw p (1-based) is ``m * p / i``, made monotone
+    non-increasing from the largest p downward and capped at 1 — so a
+    BH-adjusted p is directly comparable to ``q``.
+    """
+    items = sorted(pvalues.items(), key=lambda kv: kv[1])
+    m = len(items)
+    out: dict[str, tuple[float, bool]] = {}
+    running = 1.0
+    # Walk from the largest p down, enforcing monotonicity of the adjusted values.
+    for i in range(m - 1, -1, -1):
+        key, p = items[i]
+        adj = min(1.0, m * p / (i + 1))
+        running = min(running, adj)
+        out[key] = (running, running <= q)
+    return out
+
+
+def rbo(a: list[str], b: list[str], p: float = 0.9) -> float:
+    """Rank-biased overlap of two ranked id lists (Webber et al., 2010).
+
+    Top-weighted set agreement in ``[0, 1]``: 1.0 for identical prefixes, and
+    disagreement deep in the list is discounted geometrically by ``p``. Used as
+    the A/A replicate-stability measure (protocol §6.4) because two runs of the
+    *same* configuration against an HNSW index can legitimately differ in the
+    tail while agreeing exactly where it matters.
+
+    This is the finite-depth (non-extrapolated) form: the sum is truncated at
+    ``max(len(a), len(b))`` and normalized by the same truncated weight mass, so
+    the value is a weighted mean of the prefix agreements actually observed
+    rather than an estimate of the infinite-depth quantity.
+    """
+    depth = max(len(a), len(b))
+    if depth == 0:
+        return 1.0
+    seen_a: set[str] = set()
+    seen_b: set[str] = set()
+    total = 0.0
+    weight_mass = 0.0
+    for d in range(depth):
+        if d < len(a):
+            seen_a.add(a[d])
+        if d < len(b):
+            seen_b.add(b[d])
+        w = p**d
+        total += w * (len(seen_a & seen_b) / (d + 1))
+        weight_mass += w
+    return total / weight_mass if weight_mass else 1.0
 
 
 # --------------------------------------------------------------------------- #

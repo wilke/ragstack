@@ -56,8 +56,15 @@ Corpus construction, and what happens to unsatisfiable queries
    shuffled order — so the 50-doc query set is a subset of the 100-doc set is a
    subset of the 200-doc set, and per-query scores are paired across library
    sizes as well as across configurations.
-3. Fill the remaining ``n_docs - |judged|`` slots from a single seeded shuffle of
-   the non-judged corpus, taking a prefix — so the distractor sets nest too.
+3. Fill the remaining ``n_docs - |judged|`` slots from a **single seeded shuffle
+   of the whole corpus**, walking it in order and skipping this rung's judged
+   docs. Because the permutation does not depend on ``n_docs``, each rung's
+   distractors are a prefix of one shared order and the *libraries* nest:
+   ``docs(n50) ⊆ docs(n100) ⊆ docs(n200)``. Shuffling ``corpus - judged_set``
+   instead — which an earlier version did — produces a *different* permutation
+   per rung and destroys the pairing entirely (measured overlap 1/25 between
+   adjacent rungs). :meth:`LibrarySample.nests_within` checks it at runtime and
+   the result is recorded in the manifest as ``sample_nesting``.
 
 **Queries whose relevant documents are not all in the library are DROPPED, not
 kept as guaranteed misses.** Justification: such a query scores a deterministic
@@ -71,23 +78,75 @@ Every retained query has its full judged set present, which is also what makes
 recall@k well defined at library scale. The retained/dropped counts and the
 sampling digest are recorded in the manifest.
 
-The pre-registered primary comparison (exactly one)
----------------------------------------------------
-    At the largest library size in the run, **shipping defaults**
-    (``mode=hybrid, rrf_k=60, top_k=5, candidate_multiplier=2, rerank_enabled=False``
-    → per-leg depth 10) **versus the same cell with
-    ``candidate_multiplier=10``** (per-leg depth 100), on document-level
-    **nDCG@10**, paired over the retained SciFact test queries,
-    minimum effect δ = 0.02.
+What is swept: absolute per-leg depth D, not (top_k × multiplier)
+-----------------------------------------------------------------
+Protocol §6.2. ``top_k`` and ``retrieval_candidate_multiplier`` reach
+``HybridRetriever`` **only through their product** (``retriever.py:53``), and
+:meth:`InstrumentedHybridRetriever.retrieve_instrumented` deliberately does not
+truncate — so ``top_k=10, mult=1`` and ``top_k=5, mult=2`` are the *same*
+retrieval and would emit byte-identical duplicate cells. Sweeping both would
+confound the report cutoff with the retrieval breadth, and every duplicate pair
+would enter the multiplicity family as a guaranteed null, deflating every other
+adjusted p-value.
 
-Chosen before any measurement because §1.2 of the protocol identifies retrieval
-breadth as the only knob ever observed to move this metric (ΔnDCG@10 ≈ +0.046
-between R5 and R5b, twice the largest chunking effect ever measured here), and
-because it is the one comparison whose outcome changes a shipping default on its
-own. Both cells are force-added to every grid so the comparison always exists.
-**Everything else in the grid is an exploratory screen** and is reported as such:
-Holm–Bonferroni is applied across the whole grid so no screening cell can be
-mistaken for a confirmed result.
+So the grid axis is **D**, and :func:`shippable_triples` maps each D back to the
+``(top_k, candidate_multiplier, rerank_candidates)`` triples an operator could
+actually write — reported per cell, in ``results.csv`` and in the manifest,
+because the deliverable (§11) states the triple, not D. The report cutoff k stays
+free: every metric at every k is recomputed from one stored top-200 ranking
+(§6.3a).
+
+The designated primary comparison (exactly one) — NOT pre-registered
+---------------------------------------------------------------------
+    At the largest library size in the run, **shipping defaults**
+    (``mode=hybrid, rrf_k=60, rerank_enabled=False``, per-leg depth **D = 10**,
+    realizable as ``top_k=5 × multiplier=2``) **versus the same cell at
+    D = 100** (``top_k=5 × multiplier=20``), on document-level **nDCG@10**,
+    paired over the held-out **confirm** split, minimum effect δ = 0.02.
+
+**This pair is not in the pre-registration.** PROTOCOL.md §6.2 registers the
+*factor* (absolute depth D over {10, 20, 50, 100, 200}) but never names this pair
+as the primary; the pair appears only here and in :data:`PRIMARY_DEPTH`,
+committed *with* the harness and after the first smoke runs. Calling it
+"pre-registered" would be a false provenance claim in a published artefact, so it
+is labelled a **designated** primary everywhere it appears — in the manifest
+(``preregistered: false``), the report, and the console — and recorded as
+PROTOCOL.md amendment **A4**. It carries the weight of a single pre-specified
+comparison (one test, one δ, no selection over the grid); it does not carry the
+weight of pre-registration.
+
+It is worth designating because §1.2 identifies retrieval breadth as the only
+knob ever observed to move this metric (ΔnDCG@10 ≈ +0.046 between R5 and R5b,
+twice the largest chunking effect ever measured here), and because it is the one
+comparison whose outcome changes a shipping default on its own. Both cells are
+force-added to every grid so the comparison always exists.
+
+Statistics: the two-stage protocol, as pre-registered
+------------------------------------------------------
+Protocol §6.4 and §7.2, implemented rather than approximated:
+
+* **Split.** 40% tune / 60% confirm, stratified by per-query nDCG@10 difficulty
+  quintiles under the shipping default, seed 0, pinned to a fixture keyed on the
+  query-set digest (:func:`stratified_split`, :func:`load_or_write_split`).
+* **Stage 1 — screen.** The whole grid on the *tune* split, Benjamini–Hochberg
+  FDR at q = 0.10, explicitly labelled *not a result* (:func:`screen_rung`).
+* **Nomination.** §7.2's rule applied mechanically to stage-1 output: ≤ 5 cells,
+  latency-constrained to 2× the default's p95 (§5.5), ties by p95 then by D
+  (:func:`nominate`).
+* **Stage 2 — confirm.** Holm–Bonferroni at α = 0.05 over exactly the nominated
+  cells, **one family across the grid**, on the held-out split
+  (:func:`confirm_stage2`).
+* **The co-primary votes.** §5.1: a recommendation "must not be worse on either
+  primary", so a candidate is recommended only if the 90% CI of
+  Δ(nDCG@5-chunk) stays above −δ. Failures are reported as §5.1 split decisions.
+* **A/A resolution gate.** §6.4: three replicates of one reference cell per run;
+  δ must exceed 3× the A/A SD, with RBO@20 reported alongside
+  (:func:`aa_gate`). If it did not run or did not pass, no recommendation.
+* **The recommendation gate.** :func:`recommendation_gate` refuses to emit a
+  ``LibraryRetrievalDefaults`` block at all when the regime cannot support one —
+  HNSW unbuilt or unknown at the decision rung, a void primary cell, a
+  substituted reference, an nDCG ceiling that leaves no room for δ, a failed A/A
+  gate, or a dirty working tree.
 
 Per-leg instrumentation (protocol §5.4 / H1b)
 ---------------------------------------------
@@ -145,9 +204,9 @@ Usage::
         --doc-counts 50,100,200 \\
         --modes hybrid,vector,bm25 \\
         --rrf-k 1,10,20,60,120,240 \\
-        --top-k 5,10 \\
-        --multipliers 1,2,5,10,20 \\
-        --rerank off,on --rerank-candidates 50
+        --depths 10,20,50,100,200 \\
+        --rerank off,on --rerank-candidates 10,25,50,100,200 \\
+        --require-clean
 """
 from __future__ import annotations
 
@@ -226,12 +285,49 @@ DEFAULT_MULTIPLIER = 2
 DEFAULT_RERANK_ENABLED = False
 DEFAULT_RERANK_CANDIDATES = 50
 
-# The single pre-registered primary comparison (see module docstring): shipping
-# defaults vs. the identical cell at candidate_multiplier=10 (per-leg depth 100).
-PRIMARY_MULTIPLIER = 10
+# The swept factor is **absolute per-leg depth D**, never (top_k x multiplier)
+# separately — protocol §6.2. `top_k` and `candidate_multiplier` reach the
+# retriever only through their product, so sweeping both would emit byte-identical
+# duplicate cells (tk10_m1 == tk5_m2) that enter the multiplicity family as
+# guaranteed nulls and deflate every other adjusted p-value.
+DEFAULT_DEPTH = DEFAULT_TOP_K * DEFAULT_MULTIPLIER          # 10, rerank off
+DEPTH_LEVELS = (10, 20, 50, 100, 200)                        # protocol §6.1
+# The designated (NOT pre-registered — see the module docstring) primary
+# comparison: D=10 vs D=100 at the largest rung. D=100 is protocol §6.2's worked
+# example and is what the shipping defaults compose to with rerank ON.
+PRIMARY_DEPTH = 100
 
 # Minimum shippable effect, protocol §7.4.
 DELTA = 0.02
+
+# Protocol §6.4 / §7.2 two-stage design.
+TUNE_FRACTION = 0.40         # 40% tune / 60% confirm, stratified by difficulty
+SPLIT_SEED = 0
+SCREEN_Q = 0.10              # stage-1 Benjamini-Hochberg FDR level
+CONFIRM_ALPHA = 0.05         # stage-2 Holm-Bonferroni FWER level
+MAX_NOMINATIONS = 5          # protocol §7.2: <= 5 candidates reach stage 2
+LATENCY_BUDGET_FACTOR = 2.0  # protocol §5.5: p95 <= 2x the default's p95
+
+# Protocol §6.4: 3 replicates of one designated reference cell per rung (an A/A
+# null). delta must exceed 3x the A/A SD or the experiment is under-resolved.
+AA_REPLICATES = 3
+AA_SD_FACTOR = 3.0
+AA_RBO_P = 0.9
+AA_RBO_DEPTH = 20
+
+# A paired bootstrap over per-query differences that are *identically zero* has
+# zero variance, so its CI collapses to exactly [0, 0] and TOST fires at any n.
+# That is degeneracy, not equivalence: it means no query in the set discriminates
+# the two configurations. Below this many non-zero paired differences the verdict
+# is INCONCLUSIVE regardless of the interval.
+MIN_DISCRIMINATING_QUERIES = 5
+
+# The second, subtler degeneracy route: a *constant* paired offset also has zero
+# variance, so every resample returns the same mean and the interval collapses —
+# without any zero difference for the count above to catch. An interval narrower
+# than a millionth of the effect size we care about is not an interval; real
+# per-query dispersion produces widths around 1e-3.
+MIN_CI_WIDTH = DELTA * 1e-6
 
 # How deep a per-query ranking is stored. The report cutoff k is then free
 # (protocol §6.3a): every metric at every k is recomputed from this list.
@@ -270,6 +366,18 @@ class LibrarySample:
     def rung(self) -> str:
         return f"n{self.n_docs}"
 
+    def nests_within(self, bigger: LibrarySample) -> bool:
+        """Is this library a subset of ``bigger``, queries and documents both?
+
+        Cross-rung pairing is the justification for the whole ladder design, so
+        it is checked at runtime and recorded in the manifest rather than
+        asserted in a docstring. A distractor promoted to *judged* at the larger
+        rung still counts as nesting — the document is present either way."""
+        return (
+            set(self.doc_ids) <= set(bigger.doc_ids)
+            and self.query_ids == bigger.query_ids[: len(self.query_ids)]
+        )
+
 
 def _digest(*parts: str) -> str:
     h = hashlib.sha256()
@@ -290,9 +398,22 @@ def sample_library(
     """Carve a deterministic ``n_docs``-document library out of a labelled corpus.
 
     See the module docstring for the algorithm and for why unsatisfiable queries
-    are dropped rather than retained as guaranteed misses. Returns a
-    :class:`LibrarySample`; the query sets and distractor sets **nest** across
-    increasing ``n_docs`` for a fixed seed.
+    are dropped rather than retained as guaranteed misses.
+
+    **Nesting.** For a fixed seed the query sets and the judged-doc sets nest by
+    construction (both are prefixes of one shuffled order). The *library* nests
+    too — ``set(doc_ids(n_small)) <= set(doc_ids(n_big))`` — because the
+    distractor pool is one shuffled permutation of the whole corpus and each rung
+    takes a **prefix of that single permutation** minus its own judged set. The
+    prefix property is what makes the pairing valid across rungs; an earlier
+    version re-shuffled ``corpus - judged_set`` per rung, which produced two
+    *unrelated* permutations and 1/25 measured overlap between adjacent rungs
+    despite the docstring claiming otherwise.
+
+    The library-nesting guarantee is exact whenever
+    ``n_big * (1 - judged_fraction) >= n_small``, which the shipped 50/100/200
+    ladder at ``judged_fraction=0.5`` satisfies; ``nests_within`` on the returned
+    sample lets a caller check rather than assume.
     """
     if n_docs <= 0:
         raise ValueError(f"n_docs must be positive, got {n_docs}")
@@ -331,10 +452,18 @@ def sample_library(
             f"--doc-counts or --judged-fraction"
         )
 
-    others = [d for d in corpus if d not in judged_set]
-    rng_fill = random.Random(seed + 1)
-    rng_fill.shuffle(others)
-    distractors = others[: max(0, n_docs - len(judged))]
+    # Shuffle the WHOLE corpus once — the permutation must not depend on n_docs or
+    # on this rung's judged set, or successive rungs get unrelated distractor sets
+    # and nothing is paired across rungs.
+    pool = list(corpus)
+    random.Random(seed + 1).shuffle(pool)
+    need = max(0, n_docs - len(judged))
+    distractors = []
+    for d in pool:
+        if len(distractors) >= need:
+            break
+        if d not in judged_set:
+            distractors.append(d)
 
     doc_ids = tuple(sorted(judged) + sorted(distractors))
     return LibrarySample(
@@ -470,50 +599,97 @@ def leg_depth_for(
     reranking and ``top_k`` otherwise; ``retrieval/retriever.py:53`` then
     multiplies by ``candidate_multiplier``. Turning the reranker on therefore
     changes first-stage breadth by 10x as a *side effect* at the shipping
-    defaults (5 -> 50) — the confound this function makes explicit and every
-    manifest records as ``leg_depth``."""
+    defaults (5 -> 50) — the confound this function makes explicit.
+
+    This function is **not** a sweep axis. It is the forward map that
+    :func:`shippable_triples` inverts at reporting time (protocol §6.2)."""
     base = max(top_k, rerank_candidates) if rerank_enabled else top_k
     return base * multiplier
 
 
+def shippable_triples(
+    depth: int,
+    rerank_enabled: bool,
+    rerank_candidates: int | None,
+    top_ks: tuple[int, ...] = CURVE_KS,
+) -> list[dict[str, Any]]:
+    """Every production ``(top_k, candidate_multiplier, rerank_candidates)`` triple
+    that realizes this absolute per-leg depth — the inverse of
+    :func:`leg_depth_for`, and the protocol §6.2 reporting-time mapping.
+
+    The sweep varies D because only D reaches the retriever; but the deliverable
+    is config, and config has no ``D`` field. So every cell carries the list of
+    settings an operator could actually write to realize it. ``top_k`` ranges over
+    the report cutoffs (§6.1) because ``top_k`` *is* the report cutoff in
+    production; a triple exists only when ``base`` divides ``D`` exactly, since
+    ``candidate_multiplier`` is an integer."""
+    out: list[dict[str, Any]] = []
+    for tk in top_ks:
+        base = max(tk, rerank_candidates or 0) if rerank_enabled else tk
+        if base <= 0 or depth % base != 0:
+            continue
+        mult = depth // base
+        if mult < 1:
+            continue
+        out.append(
+            {
+                "top_k": tk,
+                "candidate_multiplier": mult,
+                "rerank_candidates": rerank_candidates if rerank_enabled else None,
+            }
+        )
+    return out
+
+
+def _fmt_triples(triples: list[dict[str, Any]]) -> str:
+    """Compact one-cell rendering of :func:`shippable_triples` for CSV/markdown."""
+    return " | ".join(
+        f"tk{t['top_k']}xm{t['candidate_multiplier']}" for t in triples
+    ) or "none"
+
+
 @dataclass(frozen=True)
 class Cell:
-    """One point of the sweep grid."""
+    """One point of the sweep grid.
+
+    The depth factor is **absolute per-leg depth D**, not ``(top_k, multiplier)``.
+    Protocol §6.2: only their product reaches ``HybridRetriever``, and
+    ``retrieve_instrumented`` deliberately does not truncate, so ``tk10_m1`` and
+    ``tk5_m2`` would be byte-identical cells. The shippable triples are recovered
+    at reporting time by :func:`shippable_triples`."""
 
     rung: str
     n_docs: int
     mode: str
     rrf_k: int | None
-    top_k: int
-    multiplier: int
+    depth: int
     rerank_enabled: bool
     rerank_candidates: int | None
 
     @property
     def leg_depth(self) -> int:
-        return leg_depth_for(
-            self.top_k,
-            self.multiplier,
-            self.rerank_enabled,
-            self.rerank_candidates or 0,
-        )
+        return self.depth
 
     @property
     def cell_id(self) -> str:
         rrf = f"rrf{self.rrf_k}" if self.rrf_k is not None else "rrfna"
         rr = f"rr{self.rerank_candidates}" if self.rerank_enabled else "rr0"
-        return (
-            f"{self.rung}_{self.mode}_{rrf}_tk{self.top_k}"
-            f"_m{self.multiplier}_{rr}"
+        return f"{self.rung}_{self.mode}_{rrf}_d{self.depth}_{rr}"
+
+    @property
+    def triples(self) -> list[dict[str, Any]]:
+        return shippable_triples(
+            self.depth, self.rerank_enabled, self.rerank_candidates
         )
 
     @property
     def is_default(self) -> bool:
+        """The shipping-default configuration: hybrid, rrf_k=60, rerank off, and
+        the depth that ``top_k=5 x candidate_multiplier=2`` composes to."""
         return (
             self.mode == "hybrid"
             and self.rrf_k == DEFAULT_RRF_K
-            and self.top_k == DEFAULT_TOP_K
-            and self.multiplier == DEFAULT_MULTIPLIER
+            and self.depth == DEFAULT_DEPTH
             and self.rerank_enabled is DEFAULT_RERANK_ENABLED
         )
 
@@ -522,8 +698,7 @@ class Cell:
         return (
             self.mode == "hybrid"
             and self.rrf_k == DEFAULT_RRF_K
-            and self.top_k == DEFAULT_TOP_K
-            and self.multiplier == PRIMARY_MULTIPLIER
+            and self.depth == PRIMARY_DEPTH
             and self.rerank_enabled is DEFAULT_RERANK_ENABLED
         )
 
@@ -533,11 +708,12 @@ class Cell:
             "n_docs": self.n_docs,
             "mode": self.mode,
             "rrf_k": self.rrf_k,
-            "top_k": self.top_k,
-            "candidate_multiplier": self.multiplier,
+            "leg_depth": self.depth,
             "rerank_enabled": self.rerank_enabled,
             "rerank_candidates": self.rerank_candidates,
-            "leg_depth": self.leg_depth,
+            # Protocol §6.2: the deliverable states the triple, not D.
+            "shippable_triples": self.triples,
+            "is_shipping_default": self.is_default,
             "use_graph": False,
             "rewrite_strategies": ["passthrough"],
         }
@@ -547,19 +723,21 @@ def build_grid(
     n_docs_list: list[int],
     modes: list[str],
     rrf_ks: list[int],
-    top_ks: list[int],
-    multipliers: list[int],
+    depths: list[int],
     rerank_flags: list[bool],
     rerank_candidates: list[int],
 ) -> list[Cell]:
     """Expand the factor lists into a de-duplicated cell list.
 
-    Two collapses keep the grid honest rather than merely large: ``rrf_k`` is a
+    Three collapses keep the grid honest rather than merely large: ``rrf_k`` is a
     no-op outside ``hybrid`` mode (one leg, nothing to fuse) so non-hybrid cells
-    are emitted once with ``rrf_k=None``; and ``rerank_candidates`` is
-    meaningless with the reranker off. The two pre-registered primary cells are
-    force-added at every rung so the primary comparison always exists regardless
-    of what the CLI asked for.
+    are emitted once with ``rrf_k=None``; ``rerank_candidates`` is meaningless
+    with the reranker off; and ``C > D`` is dropped, because protocol §6.3b's
+    offline derivation of smaller ``C`` is faithful only while ``C <= D``.
+
+    The two designated primary cells (D=10 and D=100, hybrid, rrf_k=60, rerank
+    off) are force-added at every rung so the primary comparison always exists
+    regardless of what the CLI asked for.
     """
     seen: dict[str, Cell] = {}
 
@@ -568,18 +746,17 @@ def build_grid(
 
     for n in n_docs_list:
         rung = f"n{n}"
-        for mode, top_k, mult, rr in product(modes, top_ks, multipliers, rerank_flags):
+        for mode, depth, rr in product(modes, depths, rerank_flags):
             ks = rrf_ks if mode == "hybrid" else [None]
-            cs = rerank_candidates if rr else [None]
+            cs = [c for c in rerank_candidates if c <= depth] if rr else [None]
             for rrf_k, cand in product(ks, cs):
-                _add(Cell(rung, n, mode, rrf_k, top_k, mult, rr, cand))
-        # Pre-registered primary pair — always present.
-        for mult in (DEFAULT_MULTIPLIER, PRIMARY_MULTIPLIER):
+                _add(Cell(rung, n, mode, rrf_k, depth, rr, cand))
+        for depth in (DEFAULT_DEPTH, PRIMARY_DEPTH):
             _add(
-                Cell(rung, n, "hybrid", DEFAULT_RRF_K, DEFAULT_TOP_K, mult,
+                Cell(rung, n, "hybrid", DEFAULT_RRF_K, depth,
                      DEFAULT_RERANK_ENABLED, None)
             )
-    return sorted(seen.values(), key=lambda c: (c.n_docs, c.cell_id))
+    return sorted(seen.values(), key=lambda c: (c.n_docs, c.depth, c.cell_id))
 
 
 # --------------------------------------------------------------------------- #
@@ -698,10 +875,85 @@ class LibraryIndex:
     # it is one number; BM25 is additionally term-scoped, so it is per query.
     dense_matchable: int = 0
     bm25_matchable: dict[str, int] = field(default_factory=dict)
+    # Filled by measure_index_telemetry() before any cell runs, so every cell
+    # record can carry the regime it was measured in (protocol §6.6).
+    hnsw: dict[str, Any] = field(default_factory=dict)
+    es: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def hnsw_built(self) -> bool | None:
+        return hnsw_state(self.hnsw)
+
+    @property
+    def scale_regime(self) -> str:
+        return scale_regime_for(self.hnsw)
 
 
-def library_collection_name(n_docs: int, spec_hash: str) -> str:
-    return guard_scratch(f"g1_lib_{n_docs}docs_{spec_hash}")
+# Three states, never two. `hnsw_built is False` and "we could not find out" are
+# different facts and the second one must never be reported as the first — see
+# _scale_banner and recommendation_gate.
+REGIME_HNSW = "hnsw"                # graph built; approximate search is live
+REGIME_BRUTE_FORCE = "brute_force"  # below indexing_threshold; exact scan
+REGIME_UNKNOWN = "unknown"          # telemetry missing or errored
+
+
+def hnsw_state(hnsw: dict[str, Any] | None) -> bool | None:
+    """``True`` / ``False`` / ``None`` for "we do not know".
+
+    ``qdrant_index_info`` returns ``{"error": ...}`` on any failure, with no
+    ``hnsw_built`` key at all. Treating a missing key as "built" (or as "not
+    built") turns a telemetry outage into an affirmative claim about the index."""
+    if not isinstance(hnsw, dict) or "error" in hnsw:
+        return None
+    v = hnsw.get("hnsw_built")
+    return v if isinstance(v, bool) else None
+
+
+def scale_regime_for(hnsw: dict[str, Any] | None) -> str:
+    state = hnsw_state(hnsw)
+    if state is None:
+        return REGIME_UNKNOWN
+    return REGIME_HNSW if state else REGIME_BRUTE_FORCE
+
+
+def library_collection_name(n_docs: int, spec_hash: str, sample_digest: str) -> str:
+    """Name a scratch store so two runs can never merge their corpora.
+
+    ``spec_hash`` covers only model/dim/chunker, so ``g1_lib_50docs_<spec>`` is
+    identical for every seed and every ``judged_fraction`` — and both
+    ``ensure_collection`` and ``ensure_index`` happily reuse an existing store.
+    Two runs at different seeds would therefore silently upsert two different
+    50-document corpora into the same collection and score the union. Folding in
+    the sample digest (which covers doc ids, query ids and the seed) makes the
+    name identify the *corpus*, not just the build spec."""
+    return guard_scratch(f"g1_lib_{n_docs}docs_{spec_hash}_{sample_digest[:12]}")
+
+
+async def assert_store_absent_or_empty(collection: str, es_index: str) -> None:
+    """Refuse to upsert into a store that already holds points.
+
+    The name now carries the sample digest, so a collision means either a
+    concurrent run or a leaked store from a crashed one. Either way, appending to
+    it produces a corpus that matches no manifest."""
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.get(f"{c7.QDRANT_URL}/collections/{collection}")
+        if r.status_code == 200:
+            points = (r.json().get("result") or {}).get("points_count") or 0
+            if points:
+                raise SystemExit(
+                    f"REFUSING to build: Qdrant collection {collection!r} already "
+                    f"holds {points} points. A leaked store from a crashed run, or "
+                    f"a concurrent run at the same seed. Drop it or pass --keep to "
+                    f"the run that owns it."
+                )
+        r = await c.get(f"{c7.ES_URL}/{es_index}/_count")
+        if r.status_code == 200:
+            n = int(r.json().get("count", 0))
+            if n:
+                raise SystemExit(
+                    f"REFUSING to build: ES index {es_index!r} already holds {n} "
+                    f"documents."
+                )
 
 
 def build_spec() -> tuple[str, str, str]:
@@ -716,10 +968,16 @@ async def build_library_index(
     docs_by_id: dict[str, Any],
     client: httpx.AsyncClient,
     *,
+    created: list[str] | None = None,
     extra_chunks: list[Chunk] | None = None,
     distractor_meta: dict[str, Any] | None = None,
 ) -> LibraryIndex:
     """Chunk + embed + ingest one library into guarded ``g1_*`` stores.
+
+    ``created`` is the caller's teardown ledger and is appended to **the moment
+    the name is known**, before any store is created. Registering it on return
+    instead would leak the Qdrant collection and the ES index whenever embedding
+    or the upsert loop raises — which is exactly when a leak is most likely.
 
     ``extra_chunks`` is the **distractor-ladder seam**: pre-embedded chunks (the
     future read-only scroll of production ``ragstack_sfr_tok512``) are written to
@@ -729,14 +987,21 @@ async def build_library_index(
     BM25 index at rung 0 while the dense index grew, manufacturing a spurious
     hybrid-vs-dense interaction.
     """
-    cfg = c7.CONFIG_BY_KEY[CHUNK_CONFIG_KEY]
-    docs = [docs_by_id[d] for d in sample.doc_ids]
     t0 = time.perf_counter()
+    cfg = c7.CONFIG_BY_KEY[CHUNK_CONFIG_KEY]
+    desc, spec_hash, _ = build_spec()
+    collection = library_collection_name(sample.n_docs, spec_hash, sample.digest)
+    es_index = guard_scratch(collection)
+    # Register for teardown BEFORE anything else can raise (see the docstring).
+    # Nothing between here and the return may fail without the name being on the
+    # ledger, so the `finally:` in amain can always clean up.
+    if created is not None and collection not in created:
+        created.append(collection)
+    await assert_store_absent_or_empty(collection, es_index)
+
+    docs = [docs_by_id[d] for d in sample.doc_ids]
     chunks = c7.chunk_docs_for_config(cfg, docs)
     chunks, n_capped = c7.cap_oversized(chunks)
-    desc, spec_hash, _ = build_spec()
-    collection = library_collection_name(sample.n_docs, spec_hash)
-    es_index = guard_scratch(collection)
 
     print(
         f"[{sample.rung}] {len(docs)} docs -> {len(chunks)} chunks "
@@ -976,22 +1241,94 @@ async def teardown(client: httpx.AsyncClient, collections: list[str]) -> bool:
 # --------------------------------------------------------------------------- #
 async def load_query_vectors(
     queries: dict[str, str], client: httpx.AsyncClient, cache_dir: Path, spec_hash: str
-) -> dict[str, list[float]]:
-    """Embed every query text once and memoize on disk, keyed by (spec, query set)."""
+) -> tuple[dict[str, list[float]], dict[str, Any]]:
+    """Embed every query text once and memoize on disk, keyed by (spec, query set).
+
+    Returns ``(vectors, cache_provenance)``. The provenance block is not
+    decoration: the cache key is ``(spec_hash, query texts)``, which says nothing
+    about *which model behind the endpoint* produced the vectors. A model swap
+    behind ``:9001-9008`` at a fixed ``spec_hash`` would silently reuse stale
+    vectors and every dense number in the run would describe an embedder that is
+    no longer deployed. The file's own SHA-256 plus a hit/miss flag is what makes
+    that detectable after the fact — two runs claiming the same ``spec_hash`` but
+    carrying different ``sha256`` values did not use the same query vectors.
+
+    Validation is on the key set and the dimensionality, not just the count: a
+    cache with the right number of entries for the wrong queries is worse than a
+    miss."""
     texts = [queries[q] for q in sorted(queries)]
     key = _digest(spec_hash, *texts)[:16]
     path = cache_dir / f"{DATASET_NAME}.{spec_hash}.{key}.json"
+    out: dict[str, list[float]] | None = None
+    hit = False
     if path.exists():
         cached = json.loads(path.read_text(encoding="utf-8"))
-        if len(cached) == len(texts):
+        dims = {len(v) for v in cached.values()}
+        if set(cached) == set(texts) and dims == {c7.VECTOR_SIZE}:
             print(f"[qvec] {len(cached)} query vectors from cache {path.name}",
                   flush=True)
-            return cached
-    print(f"[qvec] embedding {len(texts)} queries once ...", flush=True)
-    vecs = await c7.embed_texts_async(client, texts)
-    out = dict(zip(texts, vecs, strict=True))
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(out), encoding="utf-8")
+            out, hit = cached, True
+        else:
+            print(
+                f"[qvec] cache {path.name} rejected "
+                f"(keys match={set(cached) == set(texts)}, dims={sorted(dims)}) "
+                f"— re-embedding",
+                flush=True,
+            )
+    if out is None:
+        print(f"[qvec] embedding {len(texts)} queries once ...", flush=True)
+        vecs = await c7.embed_texts_async(client, texts)
+        out = dict(zip(texts, vecs, strict=True))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(out), encoding="utf-8")
+    meta = {
+        "path": str(path),
+        "sha256": _sha256_file(path),
+        "hit": hit,
+        "n_vectors": len(out),
+        "dim": c7.VECTOR_SIZE,
+        "key": key,
+        "spec_hash": spec_hash,
+    }
+    return out, meta
+
+
+async def reranker_provenance(base_url: str) -> dict[str, Any]:
+    """Model **and revision** of the cross-encoder actually serving this run.
+
+    Protocol §8 lists "reranker model + revision" as required provenance and
+    §6.3b keys the rerank score cache on them — recording only the sidecar URL
+    makes both unenforceable, since the sidecar reads ``MODEL_NAME`` from its own
+    environment and can be restarted onto a different checkpoint at the same
+    port. ``/health`` reports the model id; the revision is resolved from the
+    local HF snapshot directory, which is the commit sha the weights were
+    materialized from."""
+    out: dict[str, Any] = {
+        "url": base_url, "model": None, "revision": None, "revision_source": None,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            out["model"] = (await c.get(f"{base_url}/health")).json().get("model")
+    except Exception as exc:  # noqa: BLE001 - provenance must never fail a run
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    model = out["model"]
+    if not model:
+        return out
+    hub = Path(
+        os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface")
+    ) / "hub"
+    snaps = hub / f"models--{model.replace('/', '--')}" / "snapshots"
+    try:
+        revs = sorted(p.name for p in snaps.iterdir() if p.is_dir())
+    except OSError:
+        revs = []
+    if len(revs) == 1:
+        out["revision"], out["revision_source"] = revs[0], str(snaps)
+    elif revs:
+        # More than one materialized snapshot: we cannot tell which one the
+        # sidecar loaded, so record the ambiguity rather than guessing.
+        out["revision_candidates"], out["revision_source"] = revs, str(snaps)
     return out
 
 
@@ -1008,33 +1345,38 @@ async def evaluate_cell(
     rerank_cache: dict[tuple[str, str], float],
     *,
     concurrency: int = 8,
+    store_factory: Any | None = None,
 ) -> dict[str, Any]:
     """Run one grid cell over every retained query. Returns per-query arrays,
-    Track-C counters and the §5.4 sanity verdict."""
+    Track-C counters and the §5.4 sanity verdict.
+
+    This is the one place every swept parameter is threaded into the retriever,
+    so it is also the one place a parameter can silently stop being applied.
+    ``store_factory`` exists to make that testable offline: it is called as
+    ``store_factory(index)`` and must return ``(vector_store, text_index)``;
+    ``None`` builds the real Qdrant/ES clients."""
     qids = list(index.sample.query_ids)
-    vstore = QdrantVectorStore(
-        url=c7.QDRANT_URL, collection=index.collection,
-        vector_size=c7.VECTOR_SIZE, timeout=120,
-    )
-    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=index.es_index)
+    if store_factory is None:
+        vstore: Any = QdrantVectorStore(
+            url=c7.QDRANT_URL, collection=index.collection,
+            vector_size=c7.VECTOR_SIZE, timeout=120,
+        )
+        tindex: Any = ElasticsearchTextIndex(url=c7.ES_URL, index=index.es_index)
+    else:
+        vstore, tindex = store_factory(index)
     retriever = InstrumentedHybridRetriever(
         vstore,
         tindex,
         CachedQueryEmbedder(qvectors),
         rrf_scorer=RRFScorer(k=cell.rrf_k if cell.rrf_k is not None else DEFAULT_RRF_K),
-        candidate_multiplier=cell.multiplier,
+        # The swept factor is absolute per-leg depth D (protocol §6.2). Feeding it
+        # as `top_k=D` with `candidate_multiplier=1` makes D reach both legs
+        # exactly, with no aliasing between a report cutoff and a breadth knob.
+        candidate_multiplier=1,
     )
     filters = scope_filters({}, TENANT)
     sem = asyncio.Semaphore(concurrency)
-
-    # top_k passed to the retriever is the *depth driver*, exactly as production
-    # composes it (query.py:199-204 + retriever.py:53). The reported cutoffs are
-    # read back from the stored ranking (§6.3a).
-    depth_driver = (
-        max(cell.top_k, cell.rerank_candidates or 0)
-        if cell.rerank_enabled
-        else cell.top_k
-    )
+    depth_driver = cell.depth
 
     async def _one(qid: str) -> dict[str, Any]:
         text = queries[qid]
@@ -1107,7 +1449,9 @@ async def evaluate_cell(
         }
 
     results = await asyncio.gather(*[_one(q) for q in qids])
-    await tindex.close()
+    close = getattr(tindex, "close", None)
+    if close is not None:
+        await close()
 
     per_query = {m: [r["metrics"][m] for r in results] for m in METRIC_NAMES}
     means = {m: (sum(v) / len(v) if v else 0.0) for m, v in per_query.items()}
@@ -1123,7 +1467,20 @@ async def evaluate_cell(
         "per_query": per_query,
         "means": means,
         "counters": counters,
+        "rankings": {r["qid"]: r["ranking"] for r in results},
         "sanity": sanity,
+        # Machine-readable measurability regime, on EVERY cell record — not only
+        # in the markdown banner. A consumer of results.csv or manifest.json must
+        # be able to tell that a cell was measured on an unbuilt HNSW graph
+        # without reading prose (protocol §6.6; review finding 4).
+        "regime": {
+            "scale_regime": index.scale_regime,
+            "hnsw_built": index.hnsw_built,
+            "chunks_per_doc": index.chunks_per_doc,
+            "n_chunks": index.n_chunks,
+            "indexed_vectors": index.hnsw.get("indexed_vectors"),
+            "indexing_threshold": index.hnsw.get("indexing_threshold"),
+        },
         "cost": {
             "p50_query_ms": lat[len(lat) // 2],
             "p95_query_ms": lat[min(len(lat) - 1, int(0.95 * len(lat)))],
@@ -1143,18 +1500,35 @@ async def evaluate_cell(
 # Provenance — the run manifest
 # --------------------------------------------------------------------------- #
 def _git_info() -> dict[str, Any]:
+    """Code identity, with the uncommitted delta *identified* rather than flagged.
+
+    A bare ``dirty: true`` is not reproducible provenance — it says a third party
+    cannot rebuild this code but not what it was. ``dirty_digest`` is the SHA-256
+    of the porcelain status plus the full working-tree diff (tracked files,
+    staged and unstacked), so two runs can at least be shown to have run the same
+    uncommitted code, and a published number can be traced to a specific delta.
+    The recommendation gate additionally refuses to recommend from a dirty tree
+    (see :func:`recommendation_gate`)."""
     def _run(*args: str) -> str:
         try:
             return subprocess.run(
-                args, cwd=REPO_ROOT, capture_output=True, text=True, timeout=10
-            ).stdout.strip()
+                args, cwd=REPO_ROOT, capture_output=True, text=True, timeout=30
+            ).stdout
         except Exception:  # noqa: BLE001
             return ""
 
+    status = _run("git", "status", "--porcelain")
+    diff = _run("git", "diff", "HEAD")
+    dirty = bool(status.strip())
     return {
-        "commit": _run("git", "rev-parse", "HEAD"),
-        "branch": _run("git", "rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(_run("git", "status", "--porcelain")),
+        "commit": _run("git", "rev-parse", "HEAD").strip(),
+        "branch": _run("git", "rev-parse", "--abbrev-ref", "HEAD").strip(),
+        "dirty": dirty,
+        "dirty_digest": ("sha256:" + _digest(status, diff)) if dirty else None,
+        "dirty_files": sorted(
+            ln[3:].strip() for ln in status.splitlines() if ln.strip()
+        ),
+        "diff_bytes": len(diff.encode("utf-8")) if dirty else 0,
     }
 
 
@@ -1219,6 +1593,8 @@ def build_run_manifest(
     indexes: dict[str, dict[str, Any]],
     grid: list[Cell],
     started_at: str,
+    qvec_cache: dict[str, Any],
+    reranker: dict[str, Any],
 ) -> dict[str, Any]:
     """The ``ragstack.eval_run/v1`` manifest (protocol §8.2).
 
@@ -1250,16 +1626,37 @@ def build_run_manifest(
         "grid": {
             "n_cells": len(grid),
             "cells": [c.cell_id for c in grid],
+            "swept_factor": "absolute per-leg depth D (protocol §6.2)",
+            "depths": sorted({c.depth for c in grid}),
+            "shippable_triples_by_depth": {
+                str(d): shippable_triples(d, False, None)
+                for d in sorted({c.depth for c in grid})
+            },
             "primary_comparison": {
                 "metric": PRIMARY_METRIC,
+                "co_primary_metric": CO_PRIMARY_METRIC,
                 "reference": "shipping defaults "
-                f"(hybrid, rrf_k={DEFAULT_RRF_K}, top_k={DEFAULT_TOP_K}, "
-                f"multiplier={DEFAULT_MULTIPLIER}, rerank=off)",
-                "candidate": f"same cell with candidate_multiplier={PRIMARY_MULTIPLIER}",
+                f"(hybrid, rrf_k={DEFAULT_RRF_K}, rerank=off, per-leg depth "
+                f"D={DEFAULT_DEPTH})",
+                "candidate": f"the same cell at per-leg depth D={PRIMARY_DEPTH}",
                 "delta": DELTA,
-                "preregistered": True,
+                # NOT pre-registered: the pair was chosen with the harness, after
+                # PROTOCOL.md was hashed. PROTOCOL.md amendment A4 records it as a
+                # designated comparison. Claiming pre-registration here would be
+                # the one provenance field a reader most relies on being true.
+                "preregistered": False,
+                "designation": "designated primary (PROTOCOL.md amendment A4)",
+            },
+            "procedure": {
+                "stage1": f"Benjamini-Hochberg FDR q={SCREEN_Q}, tune split",
+                "stage2": f"Holm-Bonferroni alpha={CONFIRM_ALPHA} over <= "
+                          f"{MAX_NOMINATIONS} nominated cells, confirm split, "
+                          f"one family across the grid",
+                "co_primary_rule": "protocol §5.1 — not worse on either primary",
             },
         },
+        "reranker": reranker,
+        "query_vector_cache": qvec_cache,
         "runtime": {
             "host": platform.node(),
             "python": platform.python_version(),
@@ -1274,6 +1671,7 @@ def build_run_manifest(
         },
         "seeds": {
             "sample": args.seed,
+            "query_split": SPLIT_SEED,
             "bootstrap": _stats.SEED,
             "bootstrap_iters": args.bootstrap_iters,
         },
@@ -1285,28 +1683,263 @@ def build_run_manifest(
 # --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
-def stats_for_rung(
-    cells: list[dict[str, Any]], iters: int
-) -> tuple[str, str, dict[str, Any]]:
-    """Paired bootstrap CIs + Holm-corrected Wilcoxon vs the shipping default.
+def _cell_kwargs(cell_result: dict[str, Any]) -> dict[str, Any]:
+    p = cell_result["params"]
+    return {
+        "rung": p["rung"], "n_docs": p["n_docs"], "mode": p["mode"],
+        "rrf_k": p["rrf_k"], "depth": p["leg_depth"],
+        "rerank_enabled": p["rerank_enabled"],
+        "rerank_candidates": p["rerank_candidates"],
+    }
 
-    Cells voided by the §5.4 assertion are excluded — their quality numbers
-    describe a degraded pipeline, so including them would launder a bug into a
-    parameter effect."""
+
+# --------------------------------------------------------------------------- #
+# Query splits (protocol §6.4)
+# --------------------------------------------------------------------------- #
+def stratified_split(
+    query_ids: list[str],
+    difficulty: dict[str, float],
+    *,
+    tune_fraction: float = TUNE_FRACTION,
+    seed: int = SPLIT_SEED,
+    n_strata: int = 5,
+) -> tuple[list[str], list[str]]:
+    """Protocol §6.4's 40/60 tune/confirm split, stratified by difficulty quintiles.
+
+    ``difficulty`` is per-query nDCG@10 under the **shipping-default**
+    configuration — the reference in both stages, so stratifying on it cannot
+    advantage any candidate. Queries are ordered by difficulty, cut into
+    ``n_strata`` contiguous strata, and each stratum is split independently, so
+    the two halves cannot differ in baseline difficulty; an unstratified split
+    would let a hard-query surplus in one half inflate or deflate every stage-2
+    effect.
+
+    Deterministic given ``(query_ids, difficulty, seed)``. Ties in difficulty are
+    broken by query id so the ordering does not depend on dict iteration order.
+    """
+    if not query_ids:
+        return [], []
+    ordered = sorted(query_ids, key=lambda q: (difficulty.get(q, 0.0), q))
+    rng = random.Random(seed)
+    tune: list[str] = []
+    confirm: list[str] = []
+    n = len(ordered)
+    bounds = [round(i * n / n_strata) for i in range(n_strata + 1)]
+    for lo, hi in zip(bounds[:-1], bounds[1:], strict=True):
+        stratum = ordered[lo:hi]
+        if not stratum:
+            continue
+        shuffled = list(stratum)
+        rng.shuffle(shuffled)
+        n_tune = round(len(shuffled) * tune_fraction)
+        tune.extend(shuffled[:n_tune])
+        confirm.extend(shuffled[n_tune:])
+    return sorted(tune), sorted(confirm)
+
+
+def load_or_write_split(
+    fixture_path: Path,
+    query_ids: list[str],
+    difficulty: dict[str, float],
+    *,
+    queries_sha256: str,
+    difficulty_cell: str,
+) -> dict[str, Any]:
+    """Pin the split to a fixture, and reuse it whenever the query set is unchanged.
+
+    Protocol §6.4 wants the split written *before* any sweep run. The difficulty
+    it stratifies on is itself a measurement, so the first run necessarily
+    derives it — mechanically, from the shipping-default cell alone, at a fixed
+    seed. From then on the fixture is authoritative and the split is genuinely
+    pre-run.
+
+    Reuse is keyed on ``split_query_ids_sha256`` — a digest of the query ids
+    **actually split** — not on the dataset-wide ``queries_sha256``. The two
+    differ whenever ``--query-limit`` truncates or a rung drops unsatisfiable
+    queries, and keying on the dataset digest would let a 12-query smoke run's
+    fixture become authoritative for a 300-query publishable run. The dataset
+    digest is still recorded, as provenance.
+    """
+    ids_sha = "sha256:" + _digest("|".join(sorted(query_ids)))
+    if fixture_path.exists():
+        try:
+            fx = json.loads(fixture_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            fx = None
+        if fx and fx.get("split_query_ids_sha256") == ids_sha:
+            fx["source"] = "fixture"
+            fx["path"] = str(fixture_path)
+            fx["sha256"] = _sha256_file(fixture_path)
+            return fx
+    tune, confirm = stratified_split(query_ids, difficulty)
+    fx = {
+        "schema": "ragstack.g1_query_split/v1",
+        "dataset": DATASET_NAME,
+        "queries_sha256": queries_sha256,
+        "split_query_ids_sha256": ids_sha,
+        "n_queries": len(query_ids),
+        "split_seed": SPLIT_SEED,
+        "tune_fraction": TUNE_FRACTION,
+        "difficulty_metric": PRIMARY_METRIC,
+        "difficulty_cell": difficulty_cell,
+        "tune": tune,
+        "confirm": confirm,
+    }
+    fixture_path.parent.mkdir(parents=True, exist_ok=True)
+    fixture_path.write_text(json.dumps(fx, indent=2, sort_keys=True), encoding="utf-8")
+    fx["source"] = "derived"
+    fx["path"] = str(fixture_path)
+    fx["sha256"] = _sha256_file(fixture_path)
+    return fx
+
+
+def _slice(cell: dict[str, Any], metric: str, keep: set[str]) -> list[float]:
+    """This cell's per-query array for ``metric``, restricted to ``keep``."""
+    return [
+        v
+        for q, v in zip(cell["query_ids"], cell["per_query"][metric], strict=True)
+        if q in keep
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# Verdicts (protocol §7.5) — with the degeneracy guard
+# --------------------------------------------------------------------------- #
+def n_discriminating(a: list[float], b: list[float]) -> int:
+    """How many queries actually separate the two configurations."""
+    return sum(1 for x, y in zip(a, b, strict=True) if x != y)
+
+
+def three_way_verdict(
+    diff95: _stats.CI, diff90: _stats.CI, p: float, n_disc: int, *, delta: float = DELTA
+) -> tuple[str, str | None]:
+    """DIFFERENT / EQUIVALENT / INCONCLUSIVE, with a floor on the evidence.
+
+    **Why the floor.** The paired bootstrap resamples *queries*. If every query's
+    paired difference is zero — which happens whenever two "different" cells are
+    in fact the same retrieval, or when the task saturates — then every resample
+    has mean difference exactly 0, the 90% CI is exactly ``[0, 0]``, and TOST
+    declares EQUIVALENT at **any** n, including n=1. That is not a measurement of
+    sameness; it is the absence of a measurement, and reporting it as
+    "genuinely no practical difference" (protocol §7.5) would be a false claim
+    in a published artefact. Below :data:`MIN_DISCRIMINATING_QUERIES` non-zero
+    paired differences the verdict is INCONCLUSIVE and the reason is recorded.
+    """
+    if n_disc < MIN_DISCRIMINATING_QUERIES:
+        return "INCONCLUSIVE", (
+            f"only {n_disc} of the paired per-query differences are non-zero "
+            f"(floor {MIN_DISCRIMINATING_QUERIES}); the difference distribution is "
+            f"degenerate, so the equivalence interval carries no information"
+        )
+    if abs(diff95.point) >= delta and p < 0.05:
+        return "DIFFERENT", None
+    if diff90.lo > -delta and diff90.hi < delta:
+        # Second degeneracy route, and the subtler one: a *constant* offset also
+        # has zero variance in the paired difference, so every resample returns
+        # the same mean and the interval is again a point. The query count is
+        # healthy and the floor above does not fire, but the interval still
+        # measures nothing. Equivalence must be earned against real dispersion.
+        if (diff90.hi - diff90.lo) <= MIN_CI_WIDTH:
+            return "INCONCLUSIVE", (
+                "the paired difference distribution has zero variance, so the "
+                f"bootstrap interval collapsed to a point ({diff90.lo:+.6f}, "
+                f"width <= {MIN_CI_WIDTH:g}); TOST would fire at any n. This is "
+                "the absence of a measurement, not equivalence"
+            )
+        return "EQUIVALENT", None
+    return "INCONCLUSIVE", None
+
+
+def compare_cells(
+    ref: dict[str, Any],
+    alt: dict[str, Any],
+    keep: set[str],
+    iters: int,
+    *,
+    metric: str = PRIMARY_METRIC,
+) -> dict[str, Any]:
+    """One paired comparison of ``alt`` against ``ref`` on ``keep``'s queries."""
+    a = _slice(ref, metric, keep)
+    b = _slice(alt, metric, keep)
+    pq = {"ref": a, "alt": b}
+    diff = _stats.bootstrap_diff_ci(pq, "ref", iters=iters)["alt"]
+    tost = _stats.bootstrap_diff_ci(pq, "ref", iters=iters, alpha=0.10)["alt"]
+    _, p = _stats.wilcoxon_signed_rank(b, a)
+    n_disc = n_discriminating(b, a)
+    verdict, reason = three_way_verdict(diff, tost, p, n_disc)
+    return {
+        "metric": metric,
+        "reference_cell": ref["cell_id"],
+        "candidate_cell": alt["cell_id"],
+        "n_queries": len(a),
+        "n_discriminating": n_disc,
+        "reference_mean": (sum(a) / len(a)) if a else 0.0,
+        "candidate_mean": (sum(b) / len(b)) if b else 0.0,
+        "diff_ci95": asdict(diff),
+        "diff_ci90": asdict(tost),
+        "wilcoxon_p": p,
+        "delta": DELTA,
+        "verdict": verdict,
+        "verdict_reason": reason,
+        "valid": ref["sanity"]["verdict"] == "PASS"
+        and alt["sanity"]["verdict"] == "PASS",
+    }
+
+
+def pick_reference(cells: list[dict[str, Any]]) -> dict[str, Any]:
+    """Choose the rung's reference cell, and say so loudly if it is not the default.
+
+    Every comparison at a rung is worded "vs the shipping default". If the
+    shipping-default cell is itself void, falling back to the alphabetically
+    first valid cell keeps the prose while changing its meaning — so the
+    substitution is reported as a field, the rung's directional claims are
+    voided, and the rung is excluded from nomination."""
     valid = [c for c in cells if c["sanity"]["verdict"] == "PASS"]
-    if not valid:
-        return "", "**No valid cell at this rung** (all failed the §5.4 assertion).", {}
-    ref = next(
-        (c["cell_id"] for c in valid if Cell(**_cell_kwargs(c)).is_default),
-        valid[0]["cell_id"],
+    default = next(
+        (c for c in valid if Cell(**_cell_kwargs(c)).is_default), None
     )
+    if default is not None:
+        return {
+            "valid": valid, "reference": default["cell_id"],
+            "reference_is_default": True, "substituted": False,
+            "n_void_cells": len(cells) - len(valid),
+        }
+    return {
+        "valid": valid,
+        "reference": valid[0]["cell_id"] if valid else None,
+        "reference_is_default": False,
+        "substituted": bool(valid),
+        "n_void_cells": len(cells) - len(valid),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Stage 1 — the screen (protocol §7.2: BH FDR q = 0.10, tune split)
+# --------------------------------------------------------------------------- #
+def screen_rung(
+    cells: list[dict[str, Any]], tune: set[str], iters: int
+) -> tuple[str, str, dict[str, Any]]:
+    """Exploratory screen for one rung, on the **tune** split only.
+
+    Benjamini–Hochberg at q = 0.10, not Holm: this stage makes no ship/no-ship
+    claim, and FWER over a whole rung's grid would nominate nothing. Cells voided
+    by the §5.4 assertion are excluded — their quality numbers describe a
+    degraded pipeline, so including them would launder a bug into a parameter
+    effect."""
+    picked = pick_reference(cells)
+    valid, ref = picked["valid"], picked["reference"]
+    if not valid or ref is None:
+        return "", "**No valid cell at this rung** (all failed the §5.4 assertion).", {
+            "reference": None, "n_valid_cells": 0,
+            "n_void_cells": picked["n_void_cells"], "screen": {},
+        }
     by_id = {c["cell_id"]: c for c in valid}
     keys = sorted(by_id)
     metrics = {
-        m: {k: by_id[k]["per_query"][m] for k in keys}
+        m: {k: _slice(by_id[k], m, tune) for k in keys}
         for m in (PRIMARY_METRIC, CO_PRIMARY_METRIC, "recall@10", "map")
     }
-    table, interp = _stats.build_stats_table(
+    table, _ = _stats.build_stats_table(
         keys, ref, metrics, PRIMARY_METRIC, metrics[PRIMARY_METRIC], iters=iters
     )
     diffs = _stats.bootstrap_diff_ci(metrics[PRIMARY_METRIC], ref, iters=iters)
@@ -1317,31 +1950,359 @@ def stats_for_rung(
         for k in keys
         if k != ref
     }
-    holm = _stats.holm_bonferroni(raw_p) if raw_p else {}
+    bh = _stats.benjamini_hochberg(raw_p, q=SCREEN_Q) if raw_p else {}
+    n_flagged = sum(1 for v in bh.values() if v[1])
+    interp = (
+        f"**Stage-1 screen (exploratory, NOT a result).** Tune split, n="
+        f"{len(metrics[PRIMARY_METRIC][ref])}. Benjamini–Hochberg FDR at "
+        f"q={SCREEN_Q}: {n_flagged} of {len(bh)} cell(s) flagged for stage 2. "
+        f"No cell here may change a shipping default; only the stage-2 "
+        f"confirm-split table below can."
+    )
+    if picked["substituted"]:
+        interp = (
+            f"> ⚠️ **REFERENCE SUBSTITUTED — directional claims at this rung are "
+            f"VOID.** The shipping-default cell failed the §5.4 assertion, so "
+            f"`{ref}` is standing in for it. Every 'vs the shipping default' "
+            f"reading below is wrong: this rung compares cells to another "
+            f"candidate. The rung is excluded from stage-2 nomination.\n\n"
+        ) + interp
     summary = {
         "reference": ref,
+        "reference_is_default": picked["reference_is_default"],
+        "reference_substituted": picked["substituted"],
+        "directional_claims": "VOID" if picked["substituted"] else "ok",
         "n_valid_cells": len(valid),
-        "n_void_cells": len(cells) - len(valid),
+        "n_void_cells": picked["n_void_cells"],
+        "split": "tune",
+        "n_queries": len(metrics[PRIMARY_METRIC][ref]),
         "diff_ci": {k: asdict(v) for k, v in diffs.items()},
-        "holm": {k: {"adj_p": v[0], "rejected": v[1]} for k, v in holm.items()},
+        "bh_fdr_q": SCREEN_Q,
+        "screen": {k: {"adj_p": v[0], "flagged": v[1]} for k, v in bh.items()},
     }
     return table, interp, summary
 
 
-def _cell_kwargs(cell_result: dict[str, Any]) -> dict[str, Any]:
-    p = cell_result["params"]
+def nominate(
+    cell_results: list[dict[str, Any]],
+    rung_summaries: dict[str, dict[str, Any]],
+    tune: set[str],
+) -> dict[str, Any]:
+    """Protocol §7.2's nomination rule, applied mechanically to stage-1 output.
+
+    The shortlist is (1) the shipping default, (2) the highest-mean-nDCG@10 cell
+    at the smallest rung meeting the §5.5 latency constraint, (3) the same at the
+    largest rung, (4) the best dense-only cell, (5) the best rerank-on cell.
+    Ties break by lower p95 latency, then by lower D. Rungs whose reference was
+    substituted are excluded — their "vs default" ordering is not about the
+    default. If (2) and (3) coincide the shortlist is shorter, which §7.2 notes
+    is itself weak evidence against H3."""
+    usable_rungs = {
+        r for r, s in rung_summaries.items()
+        if s.get("reference_is_default") and s.get("n_valid_cells")
+    }
+    pool = [
+        c for c in cell_results
+        if c["sanity"]["verdict"] == "PASS" and c["params"]["rung"] in usable_rungs
+    ]
+    if not pool:
+        return {
+            "shortlist": [], "rationale": {},
+            "excluded_rungs": sorted(set(rung_summaries) - usable_rungs),
+            "note": "no rung has a valid shipping-default reference",
+        }
+    defaults = {
+        c["params"]["rung"]: c for c in pool if Cell(**_cell_kwargs(c)).is_default
+    }
+
+    def _mean(c: dict[str, Any]) -> float:
+        vals = _slice(c, PRIMARY_METRIC, tune)
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def _within_budget(c: dict[str, Any]) -> bool:
+        ref = defaults.get(c["params"]["rung"])
+        if ref is None:
+            return False
+        budget = LATENCY_BUDGET_FACTOR * ref["cost"]["p95_query_ms"]
+        return budget <= 0 or c["cost"]["p95_query_ms"] <= budget
+
+    def _best(cands: list[dict[str, Any]]) -> dict[str, Any] | None:
+        ok = [c for c in cands if _within_budget(c)]
+        if not ok:
+            return None
+        return max(
+            ok,
+            key=lambda c: (
+                _mean(c), -c["cost"]["p95_query_ms"], -c["params"]["leg_depth"]
+            ),
+        )
+
+    rungs = sorted(usable_rungs, key=lambda r: int(r[1:]))
+    smallest, largest = rungs[0], rungs[-1]
+    shortlist: list[str] = []
+    rationale: dict[str, str] = {}
+
+    def _take(c: dict[str, Any] | None, why: str) -> None:
+        if c is None or len(shortlist) >= MAX_NOMINATIONS:
+            return
+        if c["cell_id"] in shortlist:
+            rationale[c["cell_id"]] += f"; {why}"
+            return
+        shortlist.append(c["cell_id"])
+        rationale[c["cell_id"]] = why
+
+    _take(defaults.get(largest) or next(iter(defaults.values()), None),
+          "(1) the shipping default — the reference")
+    _take(_best([c for c in pool if c["params"]["rung"] == smallest]),
+          f"(2) highest mean {PRIMARY_METRIC} at the smallest rung `{smallest}`")
+    _take(_best([c for c in pool if c["params"]["rung"] == largest]),
+          f"(3) highest mean {PRIMARY_METRIC} at the largest rung `{largest}`")
+    _take(_best([c for c in pool if c["params"]["mode"] == "vector"]),
+          "(4) best dense-only cell")
+    _take(_best([c for c in pool if c["params"]["rerank_enabled"]]),
+          "(5) best rerank-on cell at matched depth")
     return {
-        "rung": p["rung"], "n_docs": p["n_docs"], "mode": p["mode"],
-        "rrf_k": p["rrf_k"], "top_k": p["top_k"], "multiplier": p["candidate_multiplier"],
-        "rerank_enabled": p["rerank_enabled"],
-        "rerank_candidates": p["rerank_candidates"],
+        "shortlist": shortlist,
+        "rationale": rationale,
+        "excluded_rungs": sorted(set(rung_summaries) - usable_rungs),
+        "max_nominations": MAX_NOMINATIONS,
+        "latency_budget_factor": LATENCY_BUDGET_FACTOR,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Stage 2 — confirm (protocol §7.2: Holm alpha = 0.05, held-out split)
+# --------------------------------------------------------------------------- #
+def confirm_stage2(
+    cell_results: list[dict[str, Any]],
+    shortlist: list[str],
+    confirm: set[str],
+    iters: int,
+) -> dict[str, Any]:
+    """Holm–Bonferroni over exactly the nominated candidates, on the held-out split.
+
+    One family **across the grid**, not per rung: the nomination rule is itself
+    across the grid (items 2 and 3 name different rungs), so the family of
+    ship/no-ship tests is the shortlist, and Holm's m is its size.
+
+    The co-primary votes here, as protocol §5.1 requires: "any configuration
+    recommended must not be worse than the default on either primary". Worse is
+    operationalized as the 90% CI of Δ(nDCG@5-chunk) reaching below −δ — a
+    one-sided non-inferiority read of the same interval TOST uses. A candidate
+    that clears nDCG@10 but fails this is reported as a **split decision**, and
+    §5.1 resolves splits in favour of nDCG@5, i.e. it is not recommended.
+    """
+    by_id = {c["cell_id"]: c for c in cell_results}
+    defaults = {
+        c["params"]["rung"]: c
+        for c in cell_results
+        if Cell(**_cell_kwargs(c)).is_default and c["sanity"]["verdict"] == "PASS"
+    }
+    comparisons: dict[str, dict[str, Any]] = {}
+    for cid in shortlist:
+        cand = by_id.get(cid)
+        if cand is None:
+            continue
+        ref = defaults.get(cand["params"]["rung"])
+        if ref is None or ref["cell_id"] == cid:
+            continue
+        primary = compare_cells(ref, cand, confirm, iters, metric=PRIMARY_METRIC)
+        co = compare_cells(ref, cand, confirm, iters, metric=CO_PRIMARY_METRIC)
+        comparisons[cid] = {"primary": primary, "co_primary": co}
+    holm = (
+        _stats.holm_bonferroni(
+            {k: v["primary"]["wilcoxon_p"] for k, v in comparisons.items()},
+            alpha=CONFIRM_ALPHA,
+        )
+        if comparisons
+        else {}
+    )
+    for cid, v in comparisons.items():
+        adj_p, rejected = holm.get(cid, (float("nan"), False))
+        d = v["primary"]["diff_ci95"]["point"]
+        co_lo = v["co_primary"]["diff_ci90"]["lo"]
+        co_ok = co_lo > -DELTA
+        v["holm_adj_p"] = adj_p
+        v["holm_rejected"] = rejected
+        v["co_primary_non_inferior"] = co_ok
+        v["split_decision"] = bool(rejected and d >= DELTA and not co_ok)
+        # DIFFERENT on the primary requires |D| >= delta AND Holm p < alpha
+        # (protocol §7.4.3: magnitude alone is not enough, and neither is
+        # significance alone). Recommending additionally requires the direction
+        # to be an improvement and the co-primary not to be worse.
+        v["confirmed_different"] = bool(rejected and abs(d) >= DELTA)
+        v["recommended"] = bool(rejected and d >= DELTA and co_ok)
+    return {
+        "stage": "confirm",
+        "split": "confirm",
+        "alpha": CONFIRM_ALPHA,
+        "family": "holm over the nominated shortlist, across the grid",
+        "family_size": len(comparisons),
+        "comparisons": comparisons,
+        "recommended": sorted(
+            k for k, v in comparisons.items() if v["recommended"]
+        ),
+        "split_decisions": sorted(
+            k for k, v in comparisons.items() if v["split_decision"]
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# The A/A replicate gate (protocol §6.4 / §7.4.4)
+# --------------------------------------------------------------------------- #
+def aa_gate(
+    replicates: list[dict[str, Any]], *, delta: float = DELTA
+) -> dict[str, Any]:
+    """Is δ above the noise floor? Three replicates of one cell, per protocol §6.4.
+
+    "δ must exceed 3× the A/A SD; if it does not, the experiment is
+    under-resolved and the query set must be enlarged before any claim is made."
+    Two runs of the *same* configuration against the same frozen index should
+    agree exactly; where they do not, the residual is HNSW nondeterminism under
+    concurrent optimizer activity (threat T4), and it bounds what any Δ can
+    mean. RBO@20 is reported alongside the SD because a rank-order wobble deep in
+    the list can move a metric without meaning the retrieval changed.
+    """
+    means = [r["means"][PRIMARY_METRIC] for r in replicates]
+    if len(means) < 2:
+        return {
+            "ran": False, "n_replicates": len(means),
+            "reason": "fewer than 2 replicates; protocol §6.4 requires 3",
+            "passed": None, "sd": None, "threshold": None,
+            "rbo_mean": None, "cell_id": replicates[0]["cell_id"] if replicates else None,
+        }
+    sd = statistics.stdev(means)
+    rbos: list[float] = []
+    for i in range(len(replicates) - 1):
+        a, b = replicates[i].get("rankings", {}), replicates[i + 1].get("rankings", {})
+        for qid in sorted(set(a) & set(b)):
+            rbos.append(_stats.rbo(a[qid][:AA_RBO_DEPTH], b[qid][:AA_RBO_DEPTH],
+                                   p=AA_RBO_P))
+    return {
+        "ran": True,
+        "cell_id": replicates[0]["cell_id"],
+        "n_replicates": len(means),
+        "metric": PRIMARY_METRIC,
+        "means": means,
+        "sd": sd,
+        "threshold": delta / AA_SD_FACTOR,
+        "sd_factor": AA_SD_FACTOR,
+        "rbo_mean": (statistics.fmean(rbos) if rbos else None),
+        "rbo_depth": AA_RBO_DEPTH,
+        "passed": delta > AA_SD_FACTOR * sd,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# The recommendation gate
+# --------------------------------------------------------------------------- #
+def recommendation_gate(
+    primary: dict[str, Any] | None,
+    libs: dict[str, Any],
+    aa: dict[str, Any],
+    git: dict[str, Any],
+    rung_summaries: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """May this run emit a ``LibraryRetrievalDefaults`` recommendation at all?
+
+    A recommendation is a normative claim about production configuration
+    (protocol §11). It must not be emitted from a regime in which the thing being
+    claimed is not measurable, and the harness — not the reader of a markdown
+    banner — is where that has to be enforced.
+
+    The blocking conditions, each of which independently makes the deliverable
+    unsupportable:
+
+    * **HNSW was never built at the decision rung.** Then H1b is vacuous (an
+      exact brute-force scan cannot exhibit approximate-search truncation, so a
+      dense §5.4 PASS confirms only that exact search is exact); the retrieval
+      task is so far from saturation-free that nDCG sits at 0.94–0.98, which puts
+      δ = 0.02 *inside* the ceiling where a real improvement has no room to
+      appear; and the depth parameters this experiment is about only bind on an
+      approximate index.
+    * **HNSW status unknown.** Same treatment: a missing measurement is not a
+      passing one.
+    * **The A/A resolution gate did not run or did not pass** (protocol §6.4:
+      δ must exceed 3× the A/A SD).
+    * **A primary cell is void** under §5.4, or the rung's reference was
+      substituted for a non-default cell.
+    * **The working tree is dirty** — a published number must be traceable to
+      committed code (§8.1).
+    """
+    reasons: list[str] = []
+    rung = f"n{primary['n_docs']}" if primary else None
+    lib = libs.get(rung or "", {}) if isinstance(libs, dict) else {}
+    regime = scale_regime_for(lib.get("hnsw"))
+    if regime == REGIME_BRUTE_FORCE:
+        reasons.append(
+            f"HNSW was never built at the decision rung `{rung}` "
+            f"(indexed_vectors=0 below Qdrant's indexing_threshold): the dense leg "
+            f"ran as an exact brute-force scan, so H1b is vacuous, the depth "
+            f"parameters under test do not bind, and nDCG saturates where "
+            f"δ={DELTA} sits inside the ceiling"
+        )
+    elif regime == REGIME_UNKNOWN:
+        reasons.append(
+            f"HNSW status at the decision rung `{rung}` is UNKNOWN (Qdrant "
+            f"telemetry missing or errored) — a missing measurement is not a "
+            f"passing one"
+        )
+    if primary is None:
+        reasons.append("the primary comparison is not computable in this run")
+    elif not primary.get("valid"):
+        reasons.append("a primary cell failed the §5.4 hit-deficit assertion")
+    if primary is not None:
+        ceiling = 1.0 - DELTA
+        if primary.get("reference_mean", 0.0) > ceiling:
+            reasons.append(
+                f"the reference cell scores {primary['reference_mean']:.3f} "
+                f"{PRIMARY_METRIC}, above the 1−δ={ceiling:.2f} ceiling: an "
+                f"improvement of δ={DELTA} does not fit in the remaining headroom"
+            )
+    if not aa.get("ran"):
+        reasons.append(
+            f"the A/A resolution gate did not run ({aa.get('reason', 'no replicates')}); "
+            f"protocol §6.4 requires δ > {AA_SD_FACTOR}× the A/A SD before any claim"
+        )
+    elif not aa.get("passed"):
+        reasons.append(
+            f"the A/A resolution gate FAILED: SD={aa['sd']:.4f}, "
+            f"δ={DELTA} is not above {AA_SD_FACTOR}×SD={AA_SD_FACTOR * aa['sd']:.4f} "
+            f"— the experiment is under-resolved, enlarge the query set"
+        )
+    substituted = sorted(
+        r for r, s in rung_summaries.items() if s.get("reference_substituted")
+    )
+    if substituted:
+        reasons.append(
+            f"the shipping-default reference was substituted at rung(s) "
+            f"{', '.join(substituted)} — those rungs' directional claims are void"
+        )
+    if git.get("dirty"):
+        reasons.append(
+            f"the working tree is dirty ({len(git.get('dirty_files') or [])} file(s), "
+            f"digest {git.get('dirty_digest')}): a published number must be "
+            f"reproducible from a commit"
+        )
+    return {
+        "permitted": not reasons,
+        "blocked_reasons": reasons,
+        "decision_rung": rung,
+        "decision_rung_regime": regime,
+        "decision_rung_hnsw_built": hnsw_state(lib.get("hnsw")),
     }
 
 
 def primary_comparison(
-    cells: list[dict[str, Any]], iters: int
+    cells: list[dict[str, Any]], iters: int, keep: set[str] | None = None
 ) -> dict[str, Any] | None:
-    """The one pre-registered comparison, at the largest rung present."""
+    """The one **designated** primary comparison, at the largest rung present.
+
+    Not pre-registered — see the module docstring and PROTOCOL.md amendment A4.
+    Shipping defaults (D=10) vs the same cell at D=100, on ``PRIMARY_METRIC``.
+    ``keep`` restricts to a query split; ``None`` uses every retained query and
+    the result is labelled as pooled rather than confirmatory."""
     largest = max((c["params"]["n_docs"] for c in cells), default=None)
     if largest is None:
         return None
@@ -1356,35 +2317,18 @@ def primary_comparison(
             alt = c
     if ref is None or alt is None:
         return None
-    pq = {
-        "default": ref["per_query"][PRIMARY_METRIC],
-        "depth100": alt["per_query"][PRIMARY_METRIC],
-    }
-    diff = _stats.bootstrap_diff_ci(pq, "default", iters=iters)["depth100"]
-    _, p = _stats.wilcoxon_signed_rank(pq["depth100"], pq["default"])
-    tost = _stats.bootstrap_diff_ci(pq, "default", iters=iters, alpha=0.10)["depth100"]
-    if abs(diff.point) >= DELTA and p < 0.05:
-        verdict = "DIFFERENT"
-    elif tost.lo > -DELTA and tost.hi < DELTA:
-        verdict = "EQUIVALENT"
-    else:
-        verdict = "INCONCLUSIVE"
-    return {
-        "n_docs": largest,
-        "reference_cell": ref["cell_id"],
-        "candidate_cell": alt["cell_id"],
-        "metric": PRIMARY_METRIC,
-        "n_queries": ref["n_queries"],
-        "reference_mean": ref["means"][PRIMARY_METRIC],
-        "candidate_mean": alt["means"][PRIMARY_METRIC],
-        "diff_ci95": asdict(diff),
-        "diff_ci90": asdict(tost),
-        "wilcoxon_p": p,
-        "delta": DELTA,
-        "verdict": verdict,
-        "valid": ref["sanity"]["verdict"] == "PASS"
-        and alt["sanity"]["verdict"] == "PASS",
-    }
+    keep_set = keep if keep is not None else set(ref["query_ids"])
+    out = compare_cells(ref, alt, keep_set, iters, metric=PRIMARY_METRIC)
+    co = compare_cells(ref, alt, keep_set, iters, metric=CO_PRIMARY_METRIC)
+    out["n_docs"] = largest
+    out["rung"] = f"n{largest}"
+    out["split"] = "confirm" if keep is not None else "pooled"
+    out["preregistered"] = False
+    out["designation"] = "designated primary (see PROTOCOL.md amendment A4)"
+    out["co_primary"] = co
+    # Protocol §5.1: a recommendation must not be worse on EITHER primary.
+    out["co_primary_non_inferior"] = co["diff_ci90"]["lo"] > -DELTA
+    return out
 
 
 def write_outputs(
@@ -1392,10 +2336,18 @@ def write_outputs(
     manifest: dict[str, Any],
     cell_results: list[dict[str, Any]],
     iters: int,
+    *,
+    split: dict[str, Any],
+    aa: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write manifest + per-cell artefacts + CSV + report into the run directory."""
+    """Write manifest + per-cell artefacts + CSV + report into the run directory.
+
+    Runs the full protocol §6.4/§7.2 pipeline: stage-1 BH screen on the tune
+    split, mechanical nomination, stage-2 Holm confirm on the held-out split with
+    the co-primary voting, the A/A resolution gate, and the recommendation gate."""
     (out_dir / "cells").mkdir(parents=True, exist_ok=True)
     (out_dir / "raw").mkdir(parents=True, exist_ok=True)
+    tune, confirm = set(split["tune"]), set(split["confirm"])
     for c in cell_results:
         # chunk_one-compatible payload so scripts/eval/aggregate_stats.py works.
         (out_dir / "cells" / f"{c['cell_id']}.json").write_text(
@@ -1408,6 +2360,7 @@ def write_outputs(
                     "means": c["means"],
                     "per_query": c["per_query"],
                     "params": c["params"],
+                    "regime": c["regime"],
                     "sanity": c["sanity"],
                     "cost": c["cost"],
                 },
@@ -1420,20 +2373,49 @@ def write_outputs(
         ) as fh:
             for row in c["counters"]:
                 fh.write(json.dumps(row, sort_keys=True) + "\n")
+        # Protocol §8.3: the top-200 ranking per query is the highest-value
+        # artefact — every metric at every k is recomputable from it offline.
+        with (out_dir / "raw" / f"{c['cell_id']}.rankings.jsonl").open(
+            "w", encoding="utf-8"
+        ) as fh:
+            for qid in c["query_ids"]:
+                fh.write(
+                    json.dumps(
+                        {"query_id": qid, "chunk_ids": c["rankings"].get(qid, [])},
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
 
-    primary = primary_comparison(cell_results, iters)
     rungs = sorted({c["params"]["rung"] for c in cell_results},
                    key=lambda r: int(r[1:]))
     sections, summaries = [], {}
     for rung in rungs:
         subset = [c for c in cell_results if c["params"]["rung"] == rung]
-        table, interp, summary = stats_for_rung(subset, iters)
+        table, interp, summary = screen_rung(subset, tune, iters)
         summaries[rung] = summary
         sections.append(f"### Rung `{rung}`\n\n{table}\n{interp}\n")
 
+    nominations = nominate(cell_results, summaries, tune)
+    stage2 = confirm_stage2(cell_results, nominations["shortlist"], confirm, iters)
+    primary = primary_comparison(cell_results, iters, keep=confirm)
+    aa = aa or {"ran": False, "reason": "no A/A replicates were requested",
+                "passed": None}
+    gate = recommendation_gate(
+        primary, manifest.get("libraries", {}), aa, manifest.get("git", {}), summaries
+    )
+
     manifest["finished_at"] = datetime.now(UTC).isoformat()
+    manifest["query_split"] = {
+        k: v for k, v in split.items() if k not in ("tune", "confirm")
+    } | {"n_tune": len(tune), "n_confirm": len(confirm)}
     manifest["primary_comparison_result"] = primary
-    manifest["stats"] = summaries
+    manifest["stage1_screen"] = summaries
+    manifest["nomination"] = nominations
+    manifest["stage2_confirm"] = stage2
+    manifest["aa_gate"] = aa
+    manifest["recommendation_gate"] = gate
+    manifest["regime_by_cell"] = {c["cell_id"]: c["regime"] for c in cell_results}
     manifest["sanity_by_cell"] = {c["cell_id"]: c["sanity"] for c in cell_results}
     (out_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8"
@@ -1442,19 +2424,26 @@ def write_outputs(
     with (out_dir / "results.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(
-            ["cell_id", "n_docs", "mode", "rrf_k", "top_k", "multiplier",
-             "rerank_enabled", "rerank_candidates", "leg_depth", "verdict",
-             "n_queries", PRIMARY_METRIC, CO_PRIMARY_METRIC, "recall@10",
+            ["cell_id", "n_docs", "rung", "mode", "rrf_k", "leg_depth",
+             "shippable_triples", "rerank_enabled", "rerank_candidates",
+             # Machine-readable measurability regime — review finding 4.
+             "scale_regime", "hnsw_built", "chunks_per_doc", "n_chunks",
+             "verdict", "n_queries", PRIMARY_METRIC, CO_PRIMARY_METRIC, "recall@10",
              "recall@100", "map", "mrr@10", "mean_union_depth", "mean_overlap",
              "dense_starved_rate", "bm25_starved_rate",
              "dense_deficit_rate", "bm25_deficit_rate", "p50_ms", "p95_ms"]
         )
         for c in cell_results:
-            p, m, s, cost = c["params"], c["means"], c["sanity"], c["cost"]
+            p, m, s, cost, g = (
+                c["params"], c["means"], c["sanity"], c["cost"], c["regime"]
+            )
             w.writerow([
-                c["cell_id"], p["n_docs"], p["mode"], p["rrf_k"], p["top_k"],
-                p["candidate_multiplier"], p["rerank_enabled"],
-                p["rerank_candidates"], p["leg_depth"], s["verdict"], c["n_queries"],
+                c["cell_id"], p["n_docs"], p["rung"], p["mode"], p["rrf_k"],
+                p["leg_depth"], _fmt_triples(p["shippable_triples"]),
+                p["rerank_enabled"], p["rerank_candidates"],
+                g["scale_regime"], g["hnsw_built"],
+                round(g["chunks_per_doc"], 3), g["n_chunks"],
+                s["verdict"], c["n_queries"],
                 round(m[PRIMARY_METRIC], 4), round(m[CO_PRIMARY_METRIC], 4),
                 round(m["recall@10"], 4), round(m["recall@100"], 4),
                 round(m["map"], 4), round(m["mrr@10"], 4),
@@ -1465,9 +2454,11 @@ def write_outputs(
             ])
 
     (out_dir / "report.md").write_text(
-        _report_body(manifest, cell_results, primary, sections), encoding="utf-8"
+        _report_body(manifest, cell_results, primary, sections, nominations,
+                     stage2, aa, gate),
+        encoding="utf-8",
     )
-    return primary or {}
+    return {"primary": primary or {}, "gate": gate, "stage2": stage2, "aa": aa}
 
 
 def _scale_banner(libs: dict[str, Any]) -> str:
@@ -1493,24 +2484,143 @@ def _scale_banner(libs: dict[str, Any]) -> str:
         f"library-scale measurement; the distractor ladder (protocol §4.3) is "
         f"what makes the chunk count realistic."
     )
-    unbuilt = [
-        r for r, v in libs.items()
-        if isinstance(v.get("hnsw"), dict) and v["hnsw"].get("hnsw_built") is False
-    ]
+    # THREE states, never two. A rung whose telemetry errored has no `hnsw_built`
+    # key at all; bucketing it with "built" would turn a telemetry outage into an
+    # affirmative claim that the dense leg ran on a real HNSW graph.
+    by_regime: dict[str, list[str]] = {}
+    for r, v in libs.items():
+        by_regime.setdefault(scale_regime_for(v.get("hnsw")), []).append(r)
+    unbuilt = sorted(by_regime.get(REGIME_BRUTE_FORCE, []))
+    unknown = sorted(by_regime.get(REGIME_UNKNOWN, []))
+    built = sorted(by_regime.get(REGIME_HNSW, []))
     if unbuilt:
         lines.append(
-            f"> - **HNSW was never built** at rung(s) {', '.join(sorted(unbuilt))} "
+            f"> - **HNSW was never built** at rung(s) {', '.join(unbuilt)} "
             f"(points below Qdrant's `indexing_threshold`), so the dense leg ran "
             f"as an exact brute-force scan. Every §5.4 dense verdict at those "
             f"rungs is therefore vacuous with respect to approximate-search "
             f"truncation — it confirms only that exact search is exact."
         )
-    else:
-        lines.append("> - HNSW was built at every rung; dense results are approximate.")
+    if unknown:
+        lines.append(
+            f"> - **HNSW status UNKNOWN — do not quote** at rung(s) "
+            f"{', '.join(unknown)}: the Qdrant collection telemetry was missing or "
+            f"errored, so this run cannot say whether the dense leg ran on an "
+            f"approximate graph or an exact scan. This is *not* evidence that the "
+            f"graph was built; it is the absence of the measurement."
+        )
+    if built and not unbuilt and not unknown:
+        lines.append(
+            "> - HNSW was built at every rung; dense results are approximate."
+        )
+    elif built:
+        lines.append(
+            f"> - HNSW was built at rung(s) {', '.join(built)}; dense results are "
+            f"approximate there and only there."
+        )
+    if not libs:
+        lines.append(
+            "> - No library telemetry recorded — **HNSW status unknown, do not "
+            "quote** any dense result from this run."
+        )
     return "\n".join(lines) + "\n"
 
 
-def _report_body(manifest, cell_results, primary, sections) -> str:
+def _gate_banner(gate: dict[str, Any]) -> str:
+    """The recommendation gate, rendered where a reader cannot miss it."""
+    if gate.get("permitted"):
+        return (
+            "> ✅ **Recommendation gate: OPEN.** Every precondition in protocol "
+            "§6.4/§11 is satisfied, so a `LibraryRetrievalDefaults` block may be "
+            "derived from the stage-2 table below.\n"
+        )
+    reasons = "\n".join(f"> {i}. {r}" for i, r in enumerate(gate["blocked_reasons"], 1))
+    return (
+        "> ⛔ **NO RECOMMENDATION MAY BE EMITTED FROM THIS RUN.**\n>\n"
+        "> The harness refuses to derive a `LibraryRetrievalDefaults` block "
+        "(protocol §11) because this run is in a regime where the claim is not "
+        f"measurable. Decision rung `{gate.get('decision_rung')}`, scale regime "
+        f"`{gate.get('decision_rung_regime')}`. Blocking conditions:\n>\n"
+        f"{reasons}\n>\n"
+        "> Numbers below remain valid as *descriptions of this run*. None of them "
+        "may be used to change a shipping default.\n"
+    )
+
+
+def _stage2_section(nominations, stage2) -> str:
+    if not nominations.get("shortlist"):
+        return (
+            "No candidate was nominated: "
+            f"{nominations.get('note', 'the stage-1 screen flagged nothing usable')}.\n"
+        )
+    lines = [
+        "**Shortlist** (protocol §7.2, applied mechanically to the stage-1 output):",
+        "",
+    ]
+    lines += [
+        f"- `{cid}` — {nominations['rationale'].get(cid, '')}"
+        for cid in nominations["shortlist"]
+    ]
+    comps = stage2.get("comparisons", {})
+    if not comps:
+        lines.append(
+            "\nNo confirmatory comparison ran (the shortlist holds only the "
+            "shipping default).\n"
+        )
+        return "\n".join(lines) + "\n"
+    lines += [
+        "",
+        f"Holm–Bonferroni at α={CONFIRM_ALPHA} over exactly these "
+        f"{stage2['family_size']} comparison(s), **one family across the grid**, "
+        f"on the held-out confirm split.",
+        "",
+        f"| candidate | Δ{PRIMARY_METRIC} [95% CI] | Holm adj p | "
+        f"Δ{CO_PRIMARY_METRIC} 90% lo | co-primary not worse | verdict | recommend |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for cid, v in sorted(comps.items()):
+        d = v["primary"]["diff_ci95"]
+        lines.append(
+            f"| `{cid}` | {d['point']:+.4f} [{d['lo']:+.4f}, {d['hi']:+.4f}] | "
+            f"{v['holm_adj_p']:.4f} | "
+            f"{v['co_primary']['diff_ci90']['lo']:+.4f} | "
+            f"{'yes' if v['co_primary_non_inferior'] else '**NO**'} | "
+            f"{v['primary']['verdict']} | "
+            f"{'yes' if v['recommended'] else 'no'} |"
+        )
+    if stage2.get("split_decisions"):
+        lines.append(
+            f"\n**Split decision** on {', '.join('`' + k + '`' for k in stage2['split_decisions'])}: "
+            f"the candidate clears {PRIMARY_METRIC} but is worse on the co-primary "
+            f"{CO_PRIMARY_METRIC}. Protocol §5.1 resolves splits in favour of "
+            f"nDCG@5 — these are **not** recommended, and the split is reported "
+            f"explicitly as §5.1 requires."
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _aa_section(aa: dict[str, Any]) -> str:
+    if not aa.get("ran"):
+        return (
+            f"**Not run** — {aa.get('reason', 'no replicates')}. Protocol §6.4 "
+            f"requires 3 replicates of one reference cell per rung and δ > "
+            f"{AA_SD_FACTOR}× the A/A SD before any claim; without it the "
+            f"resolution of this experiment is unmeasured and the recommendation "
+            f"gate stays shut.\n"
+        )
+    verdict = "PASS" if aa["passed"] else "**FAIL — experiment under-resolved**"
+    rbo = f"{aa['rbo_mean']:.4f}" if aa["rbo_mean"] is not None else "n/a"
+    return (
+        f"{aa['n_replicates']} replicate(s) of `{aa['cell_id']}`, "
+        f"{PRIMARY_METRIC} = {', '.join(f'{m:.4f}' for m in aa['means'])}.\n\n"
+        f"- A/A SD = **{aa['sd']:.5f}**; δ = {DELTA} must exceed "
+        f"{AA_SD_FACTOR}×SD = {AA_SD_FACTOR * aa['sd']:.5f} → {verdict}\n"
+        f"- mean RBO@{aa['rbo_depth']} between consecutive replicates = {rbo}\n"
+    )
+
+
+def _report_body(manifest, cell_results, primary, sections, nominations,
+                 stage2, aa, gate) -> str:
     libs = manifest["libraries"]
     lib_rows = "".join(
         f"| `{r}` | {v['n_docs']} | {v['n_chunks']} | {v['chunks_per_doc']:.2f} | "
@@ -1539,16 +2649,23 @@ def _report_body(manifest, cell_results, primary, sections) -> str:
         )
     if primary:
         pc = (
-            f"- reference (`{primary['reference_cell']}`): "
+            f"- reference (`{primary['reference_cell']}`, D={DEFAULT_DEPTH}): "
             f"{primary['reference_mean']:.4f}\n"
-            f"- candidate (`{primary['candidate_cell']}`): "
+            f"- candidate (`{primary['candidate_cell']}`, D={PRIMARY_DEPTH}): "
             f"{primary['candidate_mean']:.4f}\n"
             f"- Δ{PRIMARY_METRIC} = {primary['diff_ci95']['point']:+.4f} "
             f"[{primary['diff_ci95']['lo']:+.4f}, {primary['diff_ci95']['hi']:+.4f}] "
-            f"(95% paired bootstrap, n={primary['n_queries']})\n"
+            f"(95% paired bootstrap, {primary['split']} split, "
+            f"n={primary['n_queries']}, "
+            f"{primary['n_discriminating']} discriminating)\n"
+            f"- Δ{CO_PRIMARY_METRIC} 90% CI lower bound = "
+            f"{primary['co_primary']['diff_ci90']['lo']:+.4f} → co-primary "
+            f"{'not worse' if primary['co_primary_non_inferior'] else '**WORSE** (§5.1 split decision)'}\n"
             f"- Wilcoxon p = {primary['wilcoxon_p']:.4f}, δ = {DELTA}\n"
             f"- **verdict: {primary['verdict']}**"
             f"{'' if primary['valid'] else '  — VOID, a cell failed the §5.4 assertion'}\n"
+            + (f"- verdict reason: {primary['verdict_reason']}\n"
+               if primary.get("verdict_reason") else "")
         )
     else:
         pc = "- not computable in this run (a primary cell is missing or void).\n"
@@ -1566,17 +2683,38 @@ Build spec `{manifest['build_spec']['chunk_config']}` /
 `{manifest['build_spec']['model']}` @ {manifest['build_spec']['dim']}-d,
 spec_hash `{manifest['build_spec']['spec_hash']}`.
 
-## Pre-registered primary comparison
+{_gate_banner(gate)}
+## Designated primary comparison
 
-Shipping defaults vs. the identical cell at
-`candidate_multiplier={PRIMARY_MULTIPLIER}` (per-leg depth 100), document-level
-{PRIMARY_METRIC}, largest library size in the run.
+**Not pre-registered.** This specific pair was chosen when the harness was
+written, after the protocol was hashed; PROTOCOL.md amendment A4 records it as a
+*designated* primary. It carries the weight of a single pre-specified
+comparison — one test, one δ, no selection over the grid — but it does **not**
+carry the weight of pre-registration, and it is labelled that way everywhere it
+appears.
+
+Shipping defaults (per-leg depth D={DEFAULT_DEPTH}, realizable as
+`{_fmt_triples(shippable_triples(DEFAULT_DEPTH, False, None))}`) vs. the identical
+cell at D={PRIMARY_DEPTH} (`{_fmt_triples(shippable_triples(PRIMARY_DEPTH, False, None))}`),
+document-level {PRIMARY_METRIC}, largest library size in the run, on the
+**held-out confirm split**.
 
 {pc}
-Every other cell below is an **exploratory screen**, Holm-corrected across the
-rung's grid. No cell other than the one above may be used to change a shipping
-default without a confirmatory run on a held-out query split.
+## Query split (protocol §6.4)
 
+{TUNE_FRACTION:.0%} tune / {1 - TUNE_FRACTION:.0%} confirm, stratified by
+per-query {PRIMARY_METRIC} difficulty quintiles under the shipping default,
+seed {SPLIT_SEED}. n_tune={manifest['query_split']['n_tune']},
+n_confirm={manifest['query_split']['n_confirm']}, fixture
+`{manifest['query_split'].get('path')}` @ `{manifest['query_split'].get('sha256')}`
+({manifest['query_split'].get('source')}).
+
+## A/A resolution gate (protocol §6.4)
+
+{_aa_section(aa)}
+## Stage 2 — confirmatory (protocol §7.2)
+
+{_stage2_section(nominations, stage2)}
 ## Libraries built
 
 | rung | docs | chunks | chunks/doc | queries | judged docs | collection |
@@ -1601,16 +2739,22 @@ returned fewer than `min(D, matchable)`, i.e. fewer than it could have — that
 | cell | D | mean dense_hits | mean bm25_hits | mean bm25_matchable | union | overlap | dense starved | bm25 starved | dense deficit | bm25 deficit | §5.4 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 {mech_rows}
-## Retrieval quality by rung
+## Stage 1 — exploratory screen by rung (NOT a result)
+
+Benjamini–Hochberg FDR at q={SCREEN_Q} on the **tune** split only, per protocol
+§7.2. Nothing in this section may change a shipping default; only the stage-2
+table above can, and only when the recommendation gate is open.
 
 {''.join(sections)}
 ## Reproducing
 
-Full `argv`, seeds, package versions, HNSW/ES index telemetry and per-library
-`CollectionManifest`s are in `manifest.json`. Per-cell per-query arrays are in
-`cells/<cell_id>.json` (`chunk_one`-compatible, so
-`scripts/eval/aggregate_stats.py` reads them); per-query Track-C counters are in
-`raw/<cell_id>.counters.jsonl`.
+Full `argv`, seeds, package versions, HNSW/ES index telemetry, reranker model +
+revision, query-vector cache digest and per-library `CollectionManifest`s are in
+`manifest.json`. Per-cell per-query arrays are in `cells/<cell_id>.json`
+(`chunk_one`-compatible, so `scripts/eval/aggregate_stats.py` reads them);
+per-query Track-C counters are in `raw/<cell_id>.counters.jsonl`; the top-{RANKING_DEPTH}
+ranking per query is in `raw/<cell_id>.rankings.jsonl`, from which every metric at
+every k is recomputable offline.
 """
 
 
@@ -1665,12 +2809,31 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
             f"{s.n_queries_available} available, digest {s.digest[:12]}",
             flush=True,
         )
+    # Cross-rung pairing is the design's justification (protocol §4.3i), so it is
+    # verified rather than asserted in prose.
+    ordered = sorted(samples, key=lambda s: s.n_docs)
+    nesting = [
+        {"smaller": a.rung, "bigger": b.rung, "nests": a.nests_within(b)}
+        for a, b in zip(ordered[:-1], ordered[1:], strict=True)
+    ]
+    for n in nesting:
+        if not n["nests"]:
+            print(
+                f"[sample] WARNING {n['smaller']} does NOT nest within "
+                f"{n['bigger']}: cross-rung differences are not paired and the "
+                f"H3 difference-in-differences is invalid at this ladder.",
+                flush=True,
+            )
 
     grid = build_grid(
-        args.doc_counts, args.modes, args.rrf_k, args.top_k, args.multipliers,
+        args.doc_counts, args.modes, args.rrf_k, args.depths,
         args.rerank, args.rerank_candidates,
     )
-    print(f"[grid] {len(grid)} cells over {len(samples)} librar(ies)", flush=True)
+    print(
+        f"[grid] {len(grid)} cells over {len(samples)} librar(ies) — swept factor "
+        f"is absolute per-leg depth D {sorted({c.depth for c in grid})}",
+        flush=True,
+    )
 
     run_id = f"g1-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     out_dir = _run_dir(args.out_root, run_id)
@@ -1684,13 +2847,14 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
             reranker = SidecarReranker(c7.RERANKER_URL, http=client)
             indexes: dict[str, LibraryIndex] = {}
             for s in samples:
-                idx = await build_library_index(s, docs_by_id, client)
-                created.append(idx.collection)
+                idx = await build_library_index(
+                    s, docs_by_id, client, created=created
+                )
                 indexes[s.rung] = idx
 
             _, spec_hash, _ = build_spec()
             wanted = {queries[q] for s in samples for q in s.query_ids}
-            qvectors = await load_query_vectors(
+            qvectors, qvec_cache = await load_query_vectors(
                 {q: queries[q] for s in samples for q in s.query_ids},
                 client, args.cache_dir, spec_hash,
             )
@@ -1701,6 +2865,16 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
             lib_manifest: dict[str, dict[str, Any]] = {}
             for rung, idx in indexes.items():
                 await measure_matchable(idx, queries, client)
+                # Telemetry lands on the LibraryIndex first so every cell record
+                # can carry its measurement regime (review finding 4).
+                idx.hnsw = await qdrant_index_info(idx.collection)
+                idx.es = await es_index_info(idx.es_index)
+                print(
+                    f"[regime] {rung}: scale_regime={idx.scale_regime} "
+                    f"hnsw_built={idx.hnsw_built} "
+                    f"chunks_per_doc={idx.chunks_per_doc:.2f}",
+                    flush=True,
+                )
                 lib_manifest[rung] = {
                     "n_docs": idx.sample.n_docs,
                     "n_chunks": idx.n_chunks,
@@ -1714,8 +2888,10 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
                     "es_index": idx.es_index,
                     "sample": asdict(idx.sample),
                     "manifest": idx.manifest.model_dump(),
-                    "hnsw": await qdrant_index_info(idx.collection),
-                    "es": await es_index_info(idx.es_index),
+                    "hnsw": idx.hnsw,
+                    "es": idx.es,
+                    "scale_regime": idx.scale_regime,
+                    "hnsw_built": idx.hnsw_built,
                     "distractors": idx.distractors,
                     "build_s": idx.build_s,
                 }
@@ -1724,7 +2900,17 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
                 run_id=run_id, argv=argv, args=args,
                 dataset=dataset_provenance(corpus_docs, queries, qrels, source),
                 indexes=lib_manifest, grid=grid, started_at=started_at,
+                qvec_cache=qvec_cache,
+                reranker=await reranker_provenance(c7.RERANKER_URL),
             )
+            manifest["sample_nesting"] = nesting
+            if manifest["git"]["dirty"] and args.require_clean:
+                raise SystemExit(
+                    "REFUSING to run: --require-clean was passed and the working "
+                    f"tree is dirty ({len(manifest['git']['dirty_files'])} file(s), "
+                    f"digest {manifest['git']['dirty_digest']}). A publishable "
+                    "artefact must be reproducible from a commit."
+                )
 
             rerank_cache: dict[tuple[str, str], float] = {}
             cell_results: list[dict[str, Any]] = []
@@ -1745,19 +2931,97 @@ async def amain(args: argparse.Namespace, argv: list[str]) -> int:
                     flush=True,
                 )
 
-            primary = write_outputs(
-                out_dir, manifest, cell_results, args.bootstrap_iters
+            # --- A/A null (protocol §6.4): re-run ONE reference cell -------- #
+            largest = max(indexes.values(), key=lambda i: i.sample.n_docs)
+            ref_cell = next(
+                (c for c in grid if c.rung == largest.sample.rung and c.is_default),
+                None,
             )
+            aa: dict[str, Any] = {
+                "ran": False, "passed": None,
+                "reason": "--aa-replicates < 2" if args.aa_replicates < 2
+                          else "no shipping-default cell at the largest rung",
+            }
+            if ref_cell is not None and args.aa_replicates >= 2:
+                reps = [
+                    r for r in cell_results if r["cell_id"] == ref_cell.cell_id
+                ]
+                for r in range(len(reps), args.aa_replicates):
+                    print(
+                        f"[a/a] replicate {r + 1}/{args.aa_replicates} of "
+                        f"{ref_cell.cell_id}", flush=True,
+                    )
+                    reps.append(
+                        await evaluate_cell(
+                            ref_cell, largest, queries, qrels, qvectors, reranker,
+                            rerank_cache, concurrency=args.concurrency,
+                        )
+                    )
+                aa = aa_gate(reps)
+                print(
+                    f"[a/a] SD={aa['sd']:.5f} threshold={aa['threshold']:.5f} "
+                    f"rbo={aa['rbo_mean']} → "
+                    f"{'PASS' if aa['passed'] else 'FAIL (under-resolved)'}",
+                    flush=True,
+                )
+
+            # --- Query split (protocol §6.4) -------------------------------- #
+            smallest = min(indexes.values(), key=lambda i: i.sample.n_docs)
+            probe = next(
+                (
+                    c for c in cell_results
+                    if c["params"]["rung"] == smallest.sample.rung
+                    and Cell(**_cell_kwargs(c)).is_default
+                ),
+                None,
+            ) or cell_results[0]
+            difficulty = dict(
+                zip(probe["query_ids"], probe["per_query"][PRIMARY_METRIC],
+                    strict=True)
+            )
+            split = load_or_write_split(
+                args.split_fixture,
+                list(probe["query_ids"]),
+                difficulty,
+                queries_sha256=manifest["dataset"]["queries_sha256"],
+                difficulty_cell=probe["cell_id"],
+            )
+            print(
+                f"[split] {len(split['tune'])} tune / {len(split['confirm'])} "
+                f"confirm ({split['source']}, stratified on {probe['cell_id']})",
+                flush=True,
+            )
+
+            out = write_outputs(
+                out_dir, manifest, cell_results, args.bootstrap_iters,
+                split=split, aa=aa,
+            )
+            primary, gate = out["primary"], out["gate"]
             print("\n" + "=" * 78)
             print(f"G1 sweep complete — {len(cell_results)} cells → {out_dir}")
             if primary:
                 d = primary["diff_ci95"]
+                void = "" if primary["valid"] else "  [VOID — §5.4 hit deficit]"
                 print(
-                    f"PRE-REGISTERED PRIMARY ({primary['n_docs']} docs, "
-                    f"{PRIMARY_METRIC}): {d['point']:+.4f} "
-                    f"[{d['lo']:+.4f}, {d['hi']:+.4f}] "
-                    f"p={primary['wilcoxon_p']:.4f} → {primary['verdict']}"
+                    f"DESIGNATED PRIMARY (not pre-registered; {primary['n_docs']} "
+                    f"docs, {PRIMARY_METRIC}, {primary['split']} split): "
+                    f"{d['point']:+.4f} [{d['lo']:+.4f}, {d['hi']:+.4f}] "
+                    f"p={primary['wilcoxon_p']:.4f} → {primary['verdict']}{void}"
                 )
+                if primary.get("verdict_reason"):
+                    print(f"  reason: {primary['verdict_reason']}")
+                if not primary["co_primary_non_inferior"]:
+                    print(
+                        f"  §5.1 SPLIT DECISION: worse on the co-primary "
+                        f"{CO_PRIMARY_METRIC}"
+                    )
+            if gate["permitted"]:
+                print("RECOMMENDATION GATE: OPEN")
+            else:
+                print("RECOMMENDATION GATE: **SHUT** — no LibraryRetrievalDefaults "
+                      "may be derived from this run:")
+                for i, r in enumerate(gate["blocked_reasons"], 1):
+                    print(f"  {i}. {r}")
             print("=" * 78)
     finally:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1795,11 +3059,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="retrieval modes: hybrid,vector,bm25")
     p.add_argument("--rrf-k", type=_int_list, default=[DEFAULT_RRF_K],
                    help="RRF constants to sweep (hybrid only)")
-    p.add_argument("--top-k", type=_int_list, default=[DEFAULT_TOP_K],
-                   help="top_k values (drives per-leg depth, see leg_depth_for)")
-    p.add_argument("--multipliers", type=_int_list,
-                   default=[DEFAULT_MULTIPLIER, PRIMARY_MULTIPLIER],
-                   help="retrieval_candidate_multiplier values")
+    p.add_argument("--depths", type=_int_list,
+                   default=[DEFAULT_DEPTH, PRIMARY_DEPTH],
+                   help="ABSOLUTE per-leg depths D to sweep (protocol §6.2). "
+                        "top_k and candidate_multiplier are NOT swept "
+                        "independently — only their product reaches the "
+                        "retriever, so sweeping both emits duplicate cells. The "
+                        "shippable (top_k, multiplier) triples for each D are "
+                        "reported per cell.")
     p.add_argument("--rerank", type=_bool_list, default=[False],
                    help="rerank_enabled values: off,on")
     p.add_argument("--rerank-candidates", type=_int_list,
@@ -1817,10 +3084,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="per-run output directories are created under here")
     p.add_argument("--cache-dir", type=Path,
                    default=REPORT_ROOT / "cache" / "query_vectors")
+    p.add_argument("--split-fixture", type=Path,
+                   default=REPORT_ROOT / "fixtures" / f"g1_{DATASET_NAME}_split.json",
+                   help="pinned tune/confirm split (protocol §6.4); derived and "
+                        "written on first use, authoritative thereafter")
+    p.add_argument("--aa-replicates", type=int, default=AA_REPLICATES,
+                   help="A/A null replicates of the reference cell at the largest "
+                        "rung (protocol §6.4). <2 disables the gate, which in turn "
+                        "blocks any recommendation.")
+    p.add_argument("--require-clean", action="store_true",
+                   help="refuse to run from a dirty working tree (use when the "
+                        "output is intended for publication)")
     p.add_argument("--keep", action="store_true",
                    help="keep the g1_* stores (default: torn down in a finally:)")
     p.add_argument("--smoke", action="store_true",
-                   help="minimal grid: the two pre-registered cells only")
+                   help="minimal grid: the two designated primary cells only")
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None)
@@ -1833,8 +3111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.smoke:
         args.modes = ["hybrid"]
         args.rrf_k = [DEFAULT_RRF_K]
-        args.top_k = [DEFAULT_TOP_K]
-        args.multipliers = [DEFAULT_MULTIPLIER, PRIMARY_MULTIPLIER]
+        args.depths = [DEFAULT_DEPTH, PRIMARY_DEPTH]
         args.rerank = [False]
     return args
 
