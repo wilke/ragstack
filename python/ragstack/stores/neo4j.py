@@ -103,6 +103,12 @@ class Neo4jGraphStore:
         readable tenants. Matching is case-insensitive substring on the entity name
         to mirror the in-memory store.
 
+        ``tenant_id=None`` is a deliberate unscoped read (dev/tests/library use,
+        per the module docstring) and returns every tenant's triples. Requests
+        never reach it: the API resolves a concrete tenant server-side before
+        calling the retriever, and :meth:`HybridRetriever._graph_context`
+        re-applies the same scope to whatever comes back.
+
         TODO(M4 Phase 2): fuse this neighbourhood into the hybrid retriever
         (graph-aware reranking / passage expansion) instead of returning raw
         triples; couple with LLM extraction quality work.
