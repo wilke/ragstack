@@ -51,13 +51,55 @@ async def test_delete_scoped_to_tenant():
 
 
 @pytest.mark.asyncio
-async def test_empty_list_filter_is_no_constraint():
-    # An empty multi-value filter must mean "no constraint on this key", not
-    # "match nothing" — otherwise a degenerate filter silently drops all results.
+async def test_empty_list_filter_matches_nothing():
+    # An empty multi-value filter means "match nothing" (`x in []` is false), not
+    # "no constraint on this key" (#196) — the latter would turn a degenerate
+    # scope into an unfiltered, cross-tenant read.
     store = InMemoryVectorStore()
     await store.upsert([_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob")])
     res = await store.search([1.0, 0.0], top_k=10, filters={"tenant_id": []})
-    assert len(res) == 2
+    assert res == []
+
+
+@pytest.mark.asyncio
+async def test_empty_second_scope_key_does_not_widen_the_read():
+    # The shape that makes this dangerous: a second scope dimension sourced from
+    # a lookup (visible libraries) comes back empty → must narrow to nothing,
+    # not fall back to the tenant scope alone.
+    store = InMemoryVectorStore()
+    await store.upsert([_chunk("1", "dA", "alice"), _chunk("2", "dP", "public")])
+    res = await store.search(
+        [1.0, 0.0], top_k=10, filters={"library_id": [], "tenant_id": ["alice", "public"]}
+    )
+    assert res == []
+
+
+@pytest.mark.asyncio
+async def test_absent_filter_key_is_still_unconstrained():
+    # Only an absent key means "no constraint" — a filter dict with no keys, or
+    # none at all, must stay unfiltered.
+    store = InMemoryVectorStore()
+    await store.upsert([_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob")])
+    assert len(await store.search([1.0, 0.0], top_k=10)) == 2
+    assert len(await store.search([1.0, 0.0], top_k=10, filters={})) == 2
+
+
+@pytest.mark.asyncio
+async def test_text_index_empty_list_filter_matches_nothing():
+    # _matches backs the text index too, so the fail-closed reading must hold
+    # on the BM25 side (where a widened read is just as much of a leak).
+    idx = InMemoryTextIndex()
+    await idx.index([_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob")])
+    assert await idx.search("chunk", top_k=10, filters={"tenant_id": []}) == []
+    assert len(await idx.search("chunk", top_k=10)) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_empty_scope_returns_nothing():
+    store = InMemoryVectorStore()
+    await store.upsert([_chunk("1", "dA", "alice"), _chunk("2", "dB", "bob")])
+    assert await store.get_chunks(["1", "2"], filters={"tenant_id": []}) == []
+    assert len(await store.get_chunks(["1", "2"], filters={"tenant_id": ["alice"]})) == 1
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ No real Qdrant: the AsyncQdrantClient is replaced with a fake exposing only the
 methods ensure_collection uses.
 """
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ pytest.importorskip("qdrant_client")
 from ragstack.stores.errors import VectorDimMismatch  # noqa: E402
 from ragstack.stores.qdrant import (  # noqa: E402
     QdrantVectorStore,
+    _build_filter,
     collection_name,
 )
 
@@ -31,6 +33,13 @@ class _FakeClient:
         self.indexed: list[tuple[str, str]] = []  # (collection, field)
         self.exact_raises = exact_raises
         self._exact_count, self._approx_count = counts
+        self.last_query_filter: Any = "unset"
+
+    async def query_points(
+        self, collection_name, query, limit, query_filter, with_payload
+    ):
+        self.last_query_filter = query_filter
+        return SimpleNamespace(points=[])
 
     async def count(self, collection_name, count_filter, exact, timeout=None):
         if exact:
@@ -149,3 +158,55 @@ async def test_count_tenants_falls_back_to_estimate_on_timeout():
     # exact count times out on a huge match set → fast segment estimate
     store = _store(_FakeClient(exact_raises=True, counts=(7, 5)), collection="c")
     assert await store.count_tenants(["public"]) == 5
+
+
+# --- _build_filter: empty multi-value list fails closed (#196) ---------------
+
+def _conditions(f):
+    return {c.key: c.match for c in f.must}
+
+
+def test_build_filter_no_keys_is_unfiltered():
+    # An absent constraint is still an absent constraint — only None/{} means
+    # "no filter". This is the case the fail-closed change must NOT break.
+    assert _build_filter(None) is None
+    assert _build_filter({}) is None
+
+
+def test_build_filter_non_empty_list_is_match_any():
+    f = _build_filter({"tenant_id": ["alice", "public"]})
+    assert f is not None
+    assert _conditions(f)["tenant_id"].any == ["alice", "public"]
+
+
+def test_build_filter_scalar_is_match_value():
+    f = _build_filter({"doc_id": "d1"})
+    assert f is not None
+    assert _conditions(f)["doc_id"].value == "d1"
+
+
+def test_build_filter_empty_list_matches_nothing_not_everything():
+    # `value in []` is false: keep the key as an unsatisfiable MatchAny rather
+    # than dropping it (which would return an unfiltered, cross-tenant read).
+    f = _build_filter({"tenant_id": []})
+    assert f is not None, "empty scope must not degrade to an unfiltered read"
+    assert _conditions(f)["tenant_id"].any == []
+
+
+def test_build_filter_empty_second_scope_key_still_constrains():
+    # The dangerous shape once a second scope dimension exists: a DB lookup
+    # returns no visible libraries → the whole library constraint must not vanish.
+    f = _build_filter({"library_id": [], "tenant_id": ["alice", "public"]})
+    assert f is not None
+    conds = _conditions(f)
+    assert set(conds) == {"library_id", "tenant_id"}
+    assert conds["library_id"].any == []
+
+
+@pytest.mark.asyncio
+async def test_search_with_empty_scope_sends_a_filter():
+    # End-to-end at the store boundary: the query must still carry a filter.
+    client = _FakeClient()
+    store = _store(client, collection="c")
+    await store.search([1.0, 0.0], top_k=5, filters={"tenant_id": []})
+    assert client.last_query_filter is not None

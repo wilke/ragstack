@@ -56,7 +56,14 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
 
     This index is a tenancy boundary, so a non-empty ``tenant_id`` filter is
     required: an unscoped (or empty-scoped) search would silently return chunks
-    across every tenant. Fail closed rather than leak."""
+    across every tenant. Fail closed rather than leak.
+
+    Every *other* key fails closed too, without raising: an empty list matches
+    nothing rather than lifting the constraint (#196), which is what ES's own
+    ``terms`` with an empty array does. A key present with an empty list is a
+    real (unsatisfiable) constraint; only an absent key means unconstrained.
+    Keep in sync with ``_build_filter`` in stores/qdrant.py and ``_matches`` in
+    stores/memory.py."""
     filters = filters or {}
     if not filters.get("tenant_id"):
         raise ValueError(
@@ -67,10 +74,9 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
     for key, value in filters.items():
         field = f"metadata.{key}"
         if isinstance(value, (list, tuple, set)):
-            values = list(value)
-            if not values:
-                continue  # empty list = no constraint, not "match nothing"
-            filter_clauses.append({"terms": {field: values}})
+            # An empty ``terms`` array matches no documents — the fail-closed
+            # reading of "value in []" — so it needs no special-casing.
+            filter_clauses.append({"terms": {field: list(value)}})
         else:
             filter_clauses.append({"term": {field: value}})
     return {"bool": {"must": [{"match": {"content": query}}], "filter": filter_clauses}}
