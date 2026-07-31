@@ -178,6 +178,22 @@ async def ingest(
                 f"workflows for bulk ingest"
             ),
         )
+    # Fail closed when ingest is unconfined. `request.source` is a server-side
+    # path; with ingest_root empty, build_manifest skips confine_to_root entirely,
+    # so any readable file or tree is ingested and then readable back through
+    # /v1/retrieve. Gate here, at request time, rather than at boot: this closes
+    # keyless deployments (where DEFAULT_ROLE=admin makes that an unauthenticated
+    # arbitrary file read) exactly as it closes keyed ones, and it cannot brick a
+    # running deployment that never calls /v1/ingest.
+    if not settings.ingest_root.strip():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ingest is disabled: INGEST_ROOT is not configured (an unset root "
+                "would make POST /v1/ingest an arbitrary server-side file read); "
+                "set INGEST_ROOT to the directory holding ingestable documents"
+            ),
+        )
     # Route into a specific collection when asked: documents are indexed with that
     # collection's bound embedder/chunker/stores (so vectors match its model and
     # land in its index). Omitted — or the default id — keeps the prebuilt app

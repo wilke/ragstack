@@ -1,4 +1,6 @@
 """Auth, CORS, and production-settings security tests."""
+import logging
+
 import pytest
 
 from ragstack.api import deps, security
@@ -48,10 +50,10 @@ def test_production_requires_api_keys_and_ingest_root(monkeypatch):
     assert "ingest_root" in str(exc.value)
 
 
-def test_production_settings_pass_when_set(monkeypatch):
+def test_production_settings_pass_when_set(monkeypatch, tmp_path):
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
     monkeypatch.setattr(deps.settings, "api_keys", ["k"])
-    monkeypatch.setattr(deps.settings, "ingest_root", "/srv/corpus")
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
     deps._validate_production_settings()  # must not raise
 
 
@@ -60,3 +62,102 @@ def test_dev_skips_production_validation(monkeypatch):
     monkeypatch.setattr(deps.settings, "api_keys", [])
     monkeypatch.setattr(deps.settings, "ingest_root", "")
     deps._validate_production_settings()  # must not raise
+
+
+# --- ingest_root: request-time gate + boot-time shape check ------------------ #
+
+
+@pytest.mark.asyncio
+async def test_ingest_disabled_without_ingest_root(client, monkeypatch):
+    """The real exposure: with no ingest_root, POST /v1/ingest must not run.
+
+    This is the keyless shape that actually runs on the fleet (DEFAULT_ROLE=admin,
+    no API_KEYS), where an accepted job recursively reads the server filesystem
+    and makes it retrievable. The gate has to be on the request; a boot-time
+    policy keyed off api_keys lets exactly this configuration sail through.
+    """
+    monkeypatch.setattr(deps.settings, "ingest_root", "")
+    monkeypatch.setattr(security.settings, "api_keys", [])  # keyless, wide open
+
+    resp = await client.post("/v1/ingest", json={"source": "/etc"})
+
+    assert resp.status_code == 503
+    assert "INGEST_ROOT" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_disabled_for_authenticated_caller_too(client, monkeypatch):
+    # Same gate with auth on: a valid key does not buy an unconfined read.
+    monkeypatch.setattr(deps.settings, "ingest_root", "")
+    monkeypatch.setattr(security.settings, "api_keys", ["s3cret"])
+
+    resp = await client.post(
+        "/v1/ingest", json={"source": "/etc"}, headers={"X-API-Key": "s3cret"}
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_ingest_accepted_when_ingest_root_set(client, monkeypatch, tmp_path):
+    # The gate is exactly the empty root — a configured one still ingests.
+    doc = tmp_path / "doc.txt"
+    doc.write_text("hello " * 40, encoding="utf-8")
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+
+    resp = await client.post("/v1/ingest", json={"source": str(doc)})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "accepted"
+
+
+def test_unset_ingest_root_warns_but_boots(monkeypatch, caplog):
+    # No hard fail: an unset root disables ingest (503) instead of bricking a
+    # deployment that never ingests — but it must be visible at boot.
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "api_keys", ["k"])
+    monkeypatch.setattr(deps.settings, "ingest_root", "")
+    with caplog.at_level(logging.WARNING):
+        deps._validate_production_settings()  # must not raise
+    assert any("ingest_root is unset" in r.message for r in caplog.records)
+
+
+def test_filesystem_root_as_ingest_root_rejected(monkeypatch):
+    # "/" satisfies non-emptiness while confining nothing — refuse it, so a boot
+    # complaint about ingest_root can't be "fixed" by disabling the guard.
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "ingest_root", "/")
+    with pytest.raises(RuntimeError, match="confines nothing"):
+        deps._validate_production_settings()
+
+
+def test_traversal_to_filesystem_root_rejected(monkeypatch):
+    # ...including a root that only *resolves* to "/".
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "ingest_root", "/srv/..")
+    with pytest.raises(RuntimeError, match="confines nothing"):
+        deps._validate_production_settings()
+
+
+def test_missing_ingest_root_directory_rejected(monkeypatch, tmp_path):
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path / "nope"))
+    with pytest.raises(RuntimeError, match="not an existing directory"):
+        deps._validate_production_settings()
+
+
+def test_file_as_ingest_root_rejected(monkeypatch, tmp_path):
+    f = tmp_path / "corpus.txt"
+    f.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(deps.settings, "require_durable_backends", False)
+    monkeypatch.setattr(deps.settings, "ingest_root", str(f))
+    with pytest.raises(RuntimeError, match="not an existing directory"):
+        deps._validate_production_settings()
+
+
+def test_durable_still_requires_an_ingest_root(monkeypatch):
+    # Unchanged pre-existing policy: the production marker demands one be set.
+    # (Distinct from the request-time gate above — this one refuses to boot.)
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    monkeypatch.setattr(deps.settings, "api_keys", ["k"])
+    monkeypatch.setattr(deps.settings, "ingest_root", "")
+    with pytest.raises(RuntimeError, match="require_durable_backends is set"):
+        deps._validate_production_settings()

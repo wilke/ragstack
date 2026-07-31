@@ -7,6 +7,8 @@ exercised without standing up any services.
 """
 from __future__ import annotations
 
+import tempfile
+
 import httpx
 import pytest
 import pytest_asyncio
@@ -55,6 +57,19 @@ def _isolate_qdrant(monkeypatch):
     from ragstack.config import settings
 
     monkeypatch.setattr(settings, "qdrant_url", "http://localhost:6399")
+
+
+@pytest.fixture(autouse=True)
+def _enable_ingest(monkeypatch):
+    """``POST /v1/ingest`` fails closed with 503 when ``ingest_root`` is unset — an
+    unconfined ``source`` is an arbitrary server-side file read. Unset is the
+    default, so point the root at the temp dir that ``tmp_path`` lives under;
+    otherwise every ingest test would be asserting against the gate rather than
+    the behaviour it is about. Tests that exercise the gate set it back to ``""``
+    themselves (their monkeypatch is applied after this one, so it wins)."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "ingest_root", tempfile.gettempdir())
 
 
 @pytest_asyncio.fixture

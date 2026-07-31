@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, TypedDict
 
 import httpx
@@ -786,13 +787,59 @@ def _build_chunker():
     return chunker, bridge
 
 
+def _validate_ingest_root() -> None:
+    """Check the *shape* of ingest_root — and announce it when it is unset.
+
+    An empty ingest_root is not fatal here: ``POST /v1/ingest`` fails closed with
+    503 at request time (see ``api/routers/documents.py``), so a deployment that
+    never ingests keeps serving. It is logged at WARNING so an operator sees the
+    disabled capability at boot instead of discovering it from a 503.
+
+    A *set* root, though, must actually confine something. ``INGEST_ROOT=/``
+    passes any non-emptiness test while being identical in effect to leaving it
+    unset (every path resolves inside "/"), so it is refused outright — nobody
+    should be able to "fix" a complaint about ingest_root by pointing it at the
+    filesystem root. A root that does not exist, or is not a directory, is also
+    refused: every ingest would fail against it, so it is a misconfiguration
+    worth catching at boot rather than per request.
+    """
+    raw = settings.ingest_root.strip()
+    if not raw:
+        log.warning(
+            "ingest_root is unset: POST /v1/ingest is DISABLED (503). Without a "
+            "root, request.source would be an arbitrary server-side file read "
+            "whose text is readable back through /v1/retrieve. Set INGEST_ROOT "
+            "to the directory holding ingestable documents to enable ingest."
+        )
+        return
+    resolved = Path(raw).resolve()
+    if resolved == Path(resolved.anchor):
+        raise RuntimeError(
+            f"ingest_root={settings.ingest_root!r} resolves to the filesystem root "
+            f"({resolved}), which confines nothing: POST /v1/ingest would still be "
+            "an arbitrary server-side file read. Point INGEST_ROOT at the directory "
+            "holding ingestable documents, or leave it unset to disable ingest "
+            "entirely (the endpoint then returns 503)."
+        )
+    if not resolved.is_dir():
+        raise RuntimeError(
+            f"ingest_root={settings.ingest_root!r} is not an existing directory "
+            f"(resolved to {resolved}); every ingest would fail against it. Create "
+            "it, or leave INGEST_ROOT unset to disable ingest entirely — do not set "
+            "it to '/', which disables the confinement instead of the endpoint."
+        )
+
+
 def _validate_production_settings() -> None:
     """Refuse to start in production without the security-critical settings.
 
     Without auth, the data API is open; without an ingest_root, request.source
-    is an unconfined arbitrary-file read. Both must be set when durability (the
-    production marker) is required.
+    would be an unconfined arbitrary-file read — which is why ``POST /v1/ingest``
+    is gated at request time (503) on every configuration, keyed or keyless. Here
+    we only validate the *shape* of a configured root, and additionally require
+    one to be present when durability (the production marker) is required.
     """
+    _validate_ingest_root()
     if not settings.require_durable_backends:
         return
     missing = []

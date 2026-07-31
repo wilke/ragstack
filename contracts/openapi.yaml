@@ -78,6 +78,13 @@ paths:
         whose chunks all fail embedding — fails the job and leaves the prior
         version intact; it does not remove the document. To delete a document,
         use DELETE /v1/documents/{id}.
+
+
+        Requires the server to be configured with an ingest root (INGEST_ROOT)
+        confining `source` to a directory tree. Without one the endpoint is
+        disabled and every request returns 503: an unconfined `source` would be
+        an arbitrary server-side file read whose text is retrievable back through
+        /v1/retrieve.
       tags: [Documents]
       requestBody:
         required: true
@@ -94,6 +101,10 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "422":
           description: Validation error
+        "503":
+          description: >
+            Ingest is disabled — the server has no INGEST_ROOT configured, so
+            `source` cannot be confined.
 
   /v1/ingest/{job_id}:
     get:

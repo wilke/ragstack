@@ -12,6 +12,11 @@ pytestmark = pytest.mark.asyncio
 async def test_ingest_returns_accepted(client: httpx.AsyncClient) -> None:
     """POST /v1/ingest returns 200 with status 'accepted' and a job_id."""
     resp = await client.post("/v1/ingest", json={"source": "/tmp/test.txt"})
+    if resp.status_code == 503:
+        # Conformant: a server with no INGEST_ROOT disables ingest, because an
+        # unconfined `source` would be an arbitrary server-side file read. Not a
+        # failure — there is simply no accepted-job contract to assert.
+        pytest.skip("target server has no INGEST_ROOT; /v1/ingest disabled (503)")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "accepted"
