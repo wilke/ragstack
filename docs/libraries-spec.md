@@ -523,10 +523,15 @@ Not a migration: content-addressing makes a different `(model, dim, chunk)` a di
    irrelevant here. If a BV-BRC app is ever added as a *submission surface*, it MUST return a
    handle immediately and MUST NOT block on the GoWe run.
 
-   **One real single-queue risk remains:** `GoWeClient.wait()` raises on timeout while the
-   submission keeps running (`gowe_client.py:138-142`), and `GoWeBackend.run_shards` catches
-   that and marks **every item failed** (`gowe_backend.py:93-94`), default 7200 s
-   (`config.py:229`). A legitimately long run — 1000 PDFs under contention, or any OCR — thus
-   manufactures a false all-failed result while orphaning a live run. Fix before user traffic:
-   submit-and-return with a handle plus a reconciler that polls, and never convert a
-   client-side wait timeout into item failures.
+   **GoWe's API is asynchronous and the client already implements it:** `submit()` →
+   `POST /api/v1/submissions` returns a submission id, and `get_submission(id)` →
+   `GET /api/v1/submissions/{id}` polls it (`gowe_client.py:106,125`). `wait()` (`:128`) is a
+   blocking convenience wrapper on top, nothing more.
+
+   So the only defect here is client-side misuse, and the correct primitives already exist:
+   `GoWeBackend.run_shards` calls `wait()` and then converts its timeout into **all items
+   failed** (`gowe_backend.py:93-94`, default 7200 s at `config.py:229`), so a legitimately long
+   run manufactures a false failure while a live run continues. **Fix: on the library path use
+   `submit()`, persist the submission id on `library_runs`, and poll `get_submission()` from the
+   §9 runs endpoint. Do not call `wait()`, and never turn a client-side timeout into item
+   failures.** No new GoWe capability is required.
