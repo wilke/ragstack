@@ -513,7 +513,20 @@ Not a migration: content-addressing makes a different `(model, dim, chunk)` a di
 7. **§3 id change + `ragstack_lib_v1`. Atomic single commit.** Then `purge=true`.
    **7a. §16 Tier 0 verification gate — merge blocker.**
 8. §4/§5.1 query scoping (`library_scope_filters`) + §16 Tier 1's two enforcement changes.
-9. §6 ingest workflow. **No longer gated** — GoWe on coconut is the execution plane. Two
-   implementation risks remain (not gates): GoWe's `bvbrc` executor is marked not
-   conformance-validated, and a BV-BRC-app→GoWe→BV-BRC-app path is a double queue in which a
-   `GoWeClient.wait()` timeout marks every item failed while the run continues orphaned.
+9. §6 ingest workflow. **No longer gated** — GoWe on coconut is the execution plane.
+
+   **No stage is a BV-BRC app.** Every stage is RAGStack code running as a CWL
+   `CommandLineTool` on a GoWe worker; the only BV-BRC touchpoints are Workspace JSON-RPC
+   calls (`ls`, `get_download_url`, `create`), which are service calls, not App Service jobs.
+   Nothing goes through `start_app`, so there is one scheduler and no nesting. GoWe's `bvbrc`
+   executor is therefore not on this path at all, and its not-conformance-validated status is
+   irrelevant here. If a BV-BRC app is ever added as a *submission surface*, it MUST return a
+   handle immediately and MUST NOT block on the GoWe run.
+
+   **One real single-queue risk remains:** `GoWeClient.wait()` raises on timeout while the
+   submission keeps running (`gowe_client.py:138-142`), and `GoWeBackend.run_shards` catches
+   that and marks **every item failed** (`gowe_backend.py:93-94`), default 7200 s
+   (`config.py:229`). A legitimately long run — 1000 PDFs under contention, or any OCR — thus
+   manufactures a false all-failed result while orphaning a live run. Fix before user traffic:
+   submit-and-return with a handle plus a reconciler that polls, and never convert a
+   client-side wait timeout into item failures.
