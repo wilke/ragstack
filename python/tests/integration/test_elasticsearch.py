@@ -87,3 +87,46 @@ async def test_es_bm25_tenant_scoped_search_and_delete():
     finally:
         await idx._es.indices.delete(index=INDEX, ignore_unavailable=True)
         await idx.close()
+
+
+@pytest.mark.asyncio
+async def test_es_empty_terms_matches_nothing_server_side():
+    """Pin the *server-side* half of the fail-closed filter contract (#196).
+
+    The unit tests assert we emit ``{"terms": {field: []}}``; only a live ES can
+    say whether ES reads that as match-nothing or ignores it. If an upgrade ever
+    turns empty-terms into a no-op, the fail-open regression is back and every
+    unit test still passes — this is the test that would catch it.
+    """
+    if not await _reachable():
+        pytest.skip("elasticsearch not reachable at TEST_ES_URL")
+
+    idx = ElasticsearchTextIndex(URL, INDEX)
+    await idx.ensure_index()
+    try:
+        await idx.index(
+            [
+                _chunk("1", "dA", "alice", "vector databases store dense embeddings",
+                       source="guide.pdf"),
+                _chunk("2", "dB", "alice", "more about vector databases",
+                       source="other.pdf"),
+            ]
+        )
+
+        # Key absent => unfiltered on that key. Both alice chunks come back.
+        unfiltered = await idx.search(
+            "vector databases", top_k=10, filters={"tenant_id": ["alice"]}
+        )
+        assert {r.chunk.doc_id for r in unfiltered} == {"dA", "dB"}
+
+        # Same query, same tenant, plus an empty list for ``source`` => ES must
+        # match nothing, not ignore the clause.
+        constrained = await idx.search(
+            "vector databases",
+            top_k=10,
+            filters={"tenant_id": ["alice"], "source": []},
+        )
+        assert constrained == []
+    finally:
+        await idx._es.indices.delete(index=INDEX, ignore_unavailable=True)
+        await idx.close()
