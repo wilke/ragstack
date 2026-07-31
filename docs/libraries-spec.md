@@ -90,6 +90,20 @@ class BlobStore(Protocol):
     async def put(self, ref, data: AsyncIterator[bytes], *, overwrite=True) -> BlobMeta: ...
     async def delete(self, ref, *, recursive=False) -> None: ...   # idempotent
 
+@dataclass(frozen=True)
+class Identity:
+    subject: str          # AUTHORITATIVE. From the provider. NEVER parsed from the credential.
+    issuer: str           # "bvbrc" | "google" | …
+    token_id: str         # stable per credential; cache key
+    expires_at: int | None
+
+class IdentityProvider(Protocol):
+    """Who is this caller? Raises IdentityInvalid (401) | IdentityUnavailable (503).
+    Implementations may authenticate by introspection OR by verifying a signed claim
+    offline — both are authoritative. What is forbidden is reading an identity out of
+    an UNVERIFIED credential."""
+    async def authenticate(self, credential: str) -> Identity: ...
+
 class AuthzDecision(StrEnum):
     ALLOW = "allow"; DENY = "deny"; UNAVAILABLE = "unavailable"
 
@@ -100,6 +114,8 @@ class AuthorizationProvider(Protocol):
 ```
 
 `UNAVAILABLE` ≠ `DENY`: both refuse, but they map to different HTTP statuses and different alerts. A `-> bool` interface cannot express that and MUST NOT be used.
+
+**Three interfaces, three questions:** `IdentityProvider` (who are you?), `AuthorizationProvider` (may you read this?), `BlobStore` (give me the bytes). Keeping them apart is what lets a non-BV-BRC deployment exist at all — an S3 backend has no ACLs and a Google-authenticated user has no Workspace.
 
 **Provider selection is PER LIBRARY** (`libraries.authz_backend`), not global. At startup every non-deleted library's `authz_backend` MUST resolve to a configured provider or that library is **unmounted and logged** — the process still starts. (Rev-2 had a global setting; it was unsatisfiable, since prod needs `bvbrc` for user libraries and `local` for the ASM/lucid whole-index rows simultaneously.)
 
@@ -202,16 +218,30 @@ Assert in §14: ingest a record whose `metadata.library_id` names another librar
 
 ## §5. AuthN / AuthZ
 
-### §5.0 Token verification — introspection
+### §5.0 Identity — provider-agnostic
+
+BV-BRC and Google auth are two **prototypes of one interface**, not two subsystems. Everything
+below is `IdentityProvider`; `BvbrcIdentityProvider` is the first implementation and
+`GoogleIdentityProvider` is the proof the border is real.
+
+**The invariant, for every provider:** the subject is authenticated by the auth service — either
+by introspection, or by verifying a signed claim against the issuer's published keys. Reading an
+identity out of an unverified credential is forbidden in all cases.
+
+`tenant = f"{issuer}:{subject}"`. Namespacing keeps a BV-BRC `alice` distinct from a Google
+`alice` and both clear of the reserved `public` / `default`. An identity pairs with whichever
+`authz_backend` its library declares — a Google-authenticated user has no Workspace, so those
+libraries use `LocalAclAuthz`.
 
 Nothing in the repo verifies a BV-BRC token; `gowe_client.py:83-84` only forwards one, and `openapi.yaml:674` declares one scheme.
 
 - Scheme `BvbrcToken`: **`type: apiKey, in: header, name: Authorization`** — *not* `http`/`bearer`; the wire format has no `Bearer ` prefix.
 - Format `un=…|tokenid=…|expiry=…|sig=…`. **The identity MUST come from BV-BRC, never from parsing `un=`.** A forged `un=` carrying a valid signature from a *different* user would authenticate as the signer while claiming to be someone else, so `un=` is a hint for cache keying only and is never the principal.
-- **Validate by introspection**: call BV-BRC's token endpoint (`BVBRC_TOKEN_INTROSPECT_URL`) and take the authenticated username from its response. Cache on `token_id` with TTL = `min(300s, expiry − now)`, bounded LRU. `expiry` is additionally checked locally **every request, uncached**, as a cheap pre-filter — a locally-expired token never reaches BV-BRC.
-- `token_id` is used as a cache key **only after** a successful introspection, else the key is attacker-chosen and a forged token bearing a victim's `tokenid` poisons the victim's entry.
+- **`BvbrcIdentityProvider` validates by introspection** (`BVBRC_TOKEN_INTROSPECT_URL`), taking the authenticated username from the response. **`GoogleIdentityProvider` verifies the JWT against JWKS** and takes the `sub` claim — offline, and equally authoritative. Both return the same `Identity`.
+- Cache on `(issuer, token_id)`, TTL `min(300s, expires_at − now)`, bounded LRU. Local expiry is additionally checked **every request, uncached**, so an expired credential never reaches the provider.
+- The cache key is used **only after** successful authentication, else it is attacker-chosen and a forged credential bearing a victim's `token_id` poisons the victim's entry.
 - **Possible simplification to evaluate at build time:** §5.1 already makes an authenticated Workspace call per query, and a successful one proves the token is valid. If that response carries the authenticated identity, the probe subsumes introspection and the auth path costs zero extra round-trips. It does **not** work if the response echoes only the client-supplied name — confirm before relying on it (§11 Q6).
-- Yields `Principal(tenant=f"bvbrc:{un}", role=ROLE_RESEARCHER, token=…, token_id=…, token_exp=…)`. **The role is explicit and MUST NOT fall through to `default_role`** — prod runs `DEFAULT_ROLE=admin` (`/rag/config/unified.env:19`), which would make every researcher a superuser.
+- Yields `Principal(tenant=f"{identity.issuer}:{identity.subject}", role=ROLE_RESEARCHER, token=…, token_id=…, token_exp=…)`. **The role is explicit and MUST NOT fall through to `default_role`** — prod runs `DEFAULT_ROLE=admin` (`/rag/config/unified.env:19`), which would make every researcher a superuser.
 - Both `X-API-Key` and `Authorization` present → **400**. Enforced in a dedicated dependency; `APIKeyHeader(auto_error=False)` cannot do it alone.
 - Failures: malformed / bad sig / expired → **401**. Key server unreachable → **503**, never 401, never allow.
 - **`TenantQuota._sems` MUST gain LRU eviction** before tenant derives from a username (`quota.py:22-24` says so in-code).
