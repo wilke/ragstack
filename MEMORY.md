@@ -45,6 +45,7 @@ These bit us once. Don't repeat them.
 ### qdrant-client
 
 - **`AsyncQdrantClient.search()` was removed in v1.10+** in favor of `query_points()`. New return shape: `response.points` (list), not a flat list. Param renamed: `query=` not `query_vector=`. The `QdrantVectorStore` adapter uses `query_points()`.
+- **An empty match list matches *nothing*, in both backends.** Verified against the running Qdrant 1.18 (`{"match": {"any": []}}` → count 0 on a populated collection) and Elasticsearch 8.13 (`{"terms": {field: []}}` → count 0). This is what lets the filter builders fail *closed* on an empty scope list (#196) without a special match-nothing condition type — don't "optimise" the empty list away as "no constraint".
 - **Point IDs must be UUID or int.** Arbitrary string chunk IDs need to be hashed deterministically — we use `uuid.uuid5(NAMESPACE_URL, chunk_id)` so re-ingest overwrites in place, with the original ID preserved in payload as `chunk_id`.
 
 ### Embedding sidecar

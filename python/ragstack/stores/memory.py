@@ -17,12 +17,16 @@ from ragstack.tenancy import readable_tenants, tenant_of
 
 def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     """A chunk matches when every filter holds; a list value matches any entry
-    (MatchAny — used for tenant reads: own + public)."""
+    (MatchAny — used for tenant reads: own + public).
+
+    An empty list matches *nothing* rather than lifting the constraint (#196):
+    membership in the empty set is false, and reading it as "no constraint" would
+    silently widen a scope key into a cross-tenant read. Only a key that is
+    absent from ``filters`` is unconstrained. Keep in sync with ``_build_filter``
+    in stores/qdrant.py and ``_build_query`` in stores/elasticsearch.py."""
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
         if isinstance(value, (list, tuple, set)):
-            if not value:
-                continue  # empty multi-value filter = no constraint on this key
             if actual not in value:
                 return False
         elif actual != value:

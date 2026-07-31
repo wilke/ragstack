@@ -100,13 +100,12 @@ PUBLIC_TENANT = "public"
 
 def build_filter(filters: dict[str, Any]) -> Filter | None:
     """Byte-for-byte the semantics of ``ragstack.stores.qdrant._build_filter``:
-    a list value is ``MatchAny``, a scalar is ``MatchValue``, all conditions go
-    into ``must`` in dict-insertion order (scope keys pinned last)."""
+    a list value is ``MatchAny`` (empty list included — it matches nothing), a
+    scalar is ``MatchValue``, all conditions go into ``must`` in dict-insertion
+    order (scope keys pinned last)."""
     conditions: list[Any] = []
     for key, value in filters.items():
         if isinstance(value, (list, tuple, set)):
-            if not value:
-                continue
             conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value))))
         else:
             conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))

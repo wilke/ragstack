@@ -263,9 +263,9 @@ class QdrantVectorStore:
         Uses ``client.count(count_filter=..., exact=True)`` — never
         ``get_collection().points_count``, which is the *whole shared
         collection* total and would leak every tenant's chunk count to a
-        non-admin. Fails closed on an empty ``tenants`` list: ``_build_filter``
-        drops an empty multi-value list as "no constraint" (fail-open → a global
-        count), so the guard must happen here, before any filter is built.
+        non-admin. Fails closed on an empty ``tenants`` list — ``_build_filter``
+        now fails closed too (an empty list matches nothing, #196), so this guard
+        is belt-and-braces: it just skips a round trip that can only return 0.
 
         Exact where affordable, estimate where not. The tenant field is indexed
         (see ``_ensure_tenant_index``) so *filtering* is fast — but an EXACT count
@@ -425,18 +425,31 @@ def _chunk_from_payload(payload: Any, fallback_id: Any) -> Chunk:
 def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     """Build a Qdrant filter from a flat dict. A list value matches *any* of its
     entries (MatchAny) — used for tenant reads (own + public); a scalar is an
-    exact match. Keep the empty-list handling in sync with ``_matches`` in
-    stores/memory.py."""
+    exact match.
+
+    An **empty** list matches nothing, it is not "no constraint" (#196):
+    membership in the empty set is false, and treating it as unconstrained would
+    silently drop a scope key — with every key empty the read would go out
+    unfiltered, across all tenants. ``MatchAny(any=[])`` is unsatisfiable
+    server-side, so the fail-closed reading needs no special condition type.
+    Only ``None`` or a dict with *no keys at all* means unfiltered; a key that is
+    present with an empty list is a real (unsatisfiable) constraint. Keep this in
+    sync with ``_matches`` in stores/memory.py and ``_build_query`` in
+    stores/elasticsearch.py.
+
+    Why match-nothing rather than raising as ``_build_query`` does for its tenant
+    key: this builder also serves the deliberately unscoped delete paths
+    (``delete``/``delete_except`` with ``tenant_id=None``), so it cannot require
+    a tenant key — and every caller then gets fail-closed behaviour for free
+    instead of needing its own guard."""
     if not filters:
         return None
     conditions: list[Condition] = []
     for key, value in filters.items():
         if isinstance(value, (list, tuple, set)):
-            if not value:
-                continue  # empty multi-value filter = no constraint on this key
             conditions.append(FieldCondition(key=key, match=MatchAny(any=list(value))))
         else:
             conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
-    if not conditions:
-        return None
+    # Every key contributes a condition, so a non-empty ``filters`` can never
+    # collapse to ``None`` (an unfiltered read).
     return Filter(must=conditions)
