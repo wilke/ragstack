@@ -97,3 +97,42 @@ async def test_delete_is_tenant_scoped(client, tmp_path):
 
     assert "SHARED" in await _retrieve("alice", "name")  # alice's still indexed
     assert "SHARED" not in await _retrieve("bob", "name")  # bob's gone from text leg too
+
+
+@pytest.mark.asyncio
+async def test_graph_leg_sources_are_scoped_and_stamped(client):
+    """The graph leg of /v1/retrieve (use_graph defaults to True) must be tenant
+    scoped at the source AND stamp each pseudo-chunk with its owning tenant, so
+    graph-derived context reaching the LLM prompt is filterable like any chunk."""
+    from ragstack.api.main import app
+    from ragstack.models import Triple
+    from ragstack.retrieval.retriever import HybridRetriever
+    from ragstack.stores import InMemoryGraphStore
+
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="Reactor", predicate="operated_by", object="ALICECORP",
+               doc_id="da", tenant_id="alice"),
+        Triple(subject="Reactor", predicate="operated_by", object="BOBCORP",
+               doc_id="db", tenant_id="bob"),
+        Triple(subject="Reactor", predicate="described_in", object="PUBLICDOC",
+               doc_id="dp", tenant_id="public"),
+    ])
+    app.state.retriever = HybridRetriever(
+        app.state.vector_store, app.state.text_index, app.state.embedder,
+        graph_store=graph,
+    )
+
+    r = await client.post(
+        "/v1/retrieve", json={"query": "Reactor", "top_k": 10}, headers=_h("alice")
+    )
+    assert r.status_code == 200, r.text
+    sources = r.json()["sources"]
+
+    contents = " ".join(s["content"] for s in sources)
+    assert "ALICECORP" in contents and "PUBLICDOC" in contents  # own + public
+    assert "BOBCORP" not in contents  # never another tenant's triples
+    # Every graph source carries a tenant stamp a downstream filter can evaluate.
+    assert sources and all(
+        s["metadata"].get("tenant_id") in ("alice", "public") for s in sources
+    )

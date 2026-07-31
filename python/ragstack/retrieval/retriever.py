@@ -6,6 +6,7 @@ from typing import Any
 from ragstack.models import ScoredChunk
 from ragstack.protocols import GraphStore, TextIndex, VectorStore
 from ragstack.scoring.scorers import RRFScorer
+from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
 
 class HybridRetriever:
@@ -79,13 +80,33 @@ class HybridRetriever:
 
         ``tenant_id`` is the caller's own tenant; it scopes the neighbourhood
         query so the graph leg reads only the caller's triples plus the shared
-        ``public`` corpus (the store derives that scope). ``None`` (dev/tests /
-        unauthenticated) reads unscoped, matching the other legs' behaviour."""
+        ``public`` corpus (the store derives that scope). Scoping happens at the
+        source — both graph stores filter on the triple's stored ``tenant_id``
+        (Neo4j in Cypher, in-memory in ``_visible``) — and is re-applied here so
+        the leg does not depend on a single store implementation getting it
+        right. An unstamped triple (empty ``tenant_id``) is *not* readable by a
+        scoped caller: the re-check fails closed, matching Neo4j, where a null
+        ``r.tenant_id`` never satisfies ``IN $tenants``.
+
+        ``tenant_id=None`` means deliberately unscoped and reads every triple —
+        a dev/test/library affordance, matching the other legs (which take
+        ``filters=None``). The HTTP API never reaches it: ``resolve_tenant``
+        always yields a concrete tenant (``default`` when auth is disabled), so
+        request-borne retrieval is always scoped.
+
+        Every pseudo-chunk is stamped with its triple's owning tenant, the same
+        way real chunks carry ``metadata["tenant_id"]``. Without the stamp,
+        ``tenancy.tenant_of`` reads the default tenant for every graph result,
+        so a post-retrieval re-check can only pass or fail the whole leg
+        wholesale instead of evaluating it per chunk."""
         from ragstack.models import Chunk
 
         triples = await self.graph_store.query_neighborhood(  # type: ignore[union-attr]
             query, depth=self.graph_context_depth, tenant_id=tenant_id
         )
+        if tenant_id is not None:
+            allowed = set(readable_tenants(tenant_id))
+            triples = [t for t in triples if t.tenant_id in allowed]
         chunks = []
         for triple in triples[:top_k]:
             content = f"{triple.subject} {triple.predicate} {triple.object}"
@@ -95,6 +116,7 @@ class HybridRetriever:
                         id=f"graph-{triple.subject}-{triple.predicate}-{triple.object}",
                         doc_id=triple.doc_id,
                         content=content,
+                        metadata={"tenant_id": triple.tenant_id or DEFAULT_TENANT},
                     ),
                     score=self.graph_context_score,
                     retrieval_method="graph",
