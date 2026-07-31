@@ -912,8 +912,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         results["collection_state"] = telemetry
         segs = telemetry.get("segments_count") or 0
         indexed = int(telemetry.get("indexed_vectors_count") or 0)
-        hnsw_built = indexed >= args.points
+        # Coverage, not exact equality. Qdrant leaves whatever sits in the current
+        # write segment unindexed until it crosses indexing_threshold, so a healthy
+        # collection settles a little short of `points` forever — 499,840/500,000 is
+        # HNSW fully built, not absent. Requiring equality aborted two good runs.
+        coverage = indexed / args.points if args.points else 0.0
+        hnsw_built = coverage >= 0.95
         telemetry["hnsw_built"] = hnsw_built
+        telemetry["hnsw_coverage"] = round(coverage, 4)
         print(f"[=] segments at measurement time: {segs}   "
               f"(the truncation cliff is evaluated PER SEGMENT)")
         print("=" * 78)
@@ -922,14 +928,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                   f"across {segs} segments — the truncation question is live.")
         else:
             kb_per_seg = (args.points * dim * 4 / 1024 / max(segs, 1))
+            under = kb_per_seg < args.indexing_threshold
             print(
-                f"*** HNSW IS *NOT* BUILT: indexed_vectors={indexed}/{args.points}. ***\n"
+                f"*** HNSW IS *NOT* BUILT: indexed_vectors={indexed}/{args.points} "
+                f"({coverage:.1%} coverage). ***\n"
                 f"    ~{kb_per_seg:,.0f} KB/segment vs indexing_threshold="
-                f"{args.indexing_threshold} KB, so every segment stayed on the PLAIN\n"
-                f"    index and every search below is a brute-force scan. A PASS here\n"
-                f"    says NOTHING about HNSW truncation.\n"
-                f"    Fix: raise --points, or lower --indexing-threshold "
-                f"(e.g. --indexing-threshold 1000)."
+                f"{args.indexing_threshold} KB — segments are "
+                f"{'UNDER' if under else 'OVER'} the threshold.\n"
+                + ("    Every segment stayed on the PLAIN index, so every search below is a\n"
+                   "    brute-force scan and a PASS says NOTHING about HNSW truncation.\n"
+                   "    Fix: raise --points, or lower --indexing-threshold.\n" if under else
+                   "    Segments are over the threshold, so this is an INCOMPLETE build, not an\n"
+                   "    absent one — the optimizer is still working. Fix: raise --index-timeout.\n")
             )
             if args.require_hnsw:
                 raise SystemExit(
