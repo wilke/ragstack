@@ -381,10 +381,17 @@ async def ingest_upload(
     )
 
     job = await job_store.create(source="upload")
-    # Staging dir is derived from the server-side root + the server-derived tenant
-    # + the freshly minted job_id — none client-controlled — and each file dest is
-    # then re-confined under it, so a hostile filename cannot escape.
-    staging_dir = Path(settings.ingest_root) / "uploads" / tenant / job.job_id
+    # Staging dir is server-side root + tenant + the freshly minted job_id — none
+    # client-controlled today — and each file dest is re-confined under it. But
+    # confine the dir itself too: tenant is not validated (config.py accepts any
+    # string), and under token auth it will derive from the credential, so a value
+    # with path separators must not relocate the tree outside {ingest_root}/uploads.
+    uploads_root = Path(settings.ingest_root) / "uploads"
+    staging_dir = uploads_root / tenant / job.job_id
+    try:
+        confine_to_root(str(staging_dir), uploads_root)
+    except LoaderError:
+        raise HTTPException(status_code=400, detail="invalid tenant for staging") from None
     staging_dir.mkdir(parents=True, exist_ok=True)
     try:
         for idx, upload in enumerate(files):

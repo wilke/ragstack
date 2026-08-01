@@ -155,3 +155,22 @@ async def test_upload_into_unknown_collection_is_404(client, rooted):
         data={"collection": "ghost"},
     )
     assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_tenant_with_path_separators(client, rooted):
+    # tenant is server-derived and unvalidated (config accepts any string); under
+    # token auth it will come from the credential. A tenant that escapes the
+    # uploads root must 400, not relocate the staging tree.
+    from ragstack.api.main import app
+    from ragstack.api.security import resolve_tenant
+
+    app.dependency_overrides[resolve_tenant] = lambda: "../../escape"
+    try:
+        r = await client.post(
+            "/v1/ingest/upload",
+            files=[("files", ("paper.pdf", _pdf_bytes(), "application/pdf"))],
+        )
+    finally:
+        app.dependency_overrides.pop(resolve_tenant, None)
+    assert r.status_code == 400, r.text
