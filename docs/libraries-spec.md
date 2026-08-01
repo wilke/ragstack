@@ -9,12 +9,36 @@ Rev 3. MUST/MUST NOT are normative. Target: implementable without inventing deci
 **G1 — tune retrieval for small libraries (#200). A required experiment, NOT a go/no-go.** All
 quality numbers here were measured at ≥5.8k chunks with `--retrieve-pool 300 --rerank-pool 100`;
 shipping defaults (`rrf_k=60`, `candidate_multiplier=2`, `top_k=5`, `rerank_enabled=False`) were
-never under measurement, and a ~200-doc library is ~4k chunks where BM25 may return 3–4 hits
-against dense's 20. **The pipeline is parameterised, so the outcome is a settings change, not a
-redesign** — sweep `rrf_k`, candidate multiplier, rerank on/off and dense-only over a ~200-doc
-library via the eval seam (#125/PR #126) and publish the winner as a normative
-`LibraryRetrievalDefaults` block in this spec. Run it early because it decides whether a
-per-library-size parameter branch exists at all, which touches the config surface.
+never under measurement. **The pipeline is parameterised, so the outcome is a settings change, not a
+redesign** — sweep `rrf_k`, candidate multiplier, rerank on/off and dense-only via the eval seam
+(#125/PR #126) and publish the winner as a normative `LibraryRetrievalDefaults` block in this spec.
+Pre-registered, staged protocol: **[`docs/g1-retrieval-protocol.md`](g1-retrieval-protocol.md)** — a
+pilot at **50 / 100 / 200 documents** first, the distractor ladder second. Run it early because it
+decides whether a per-library-size parameter branch exists at all, which touches the config surface.
+
+*G1 — corrected scale (rev 3 was wrong).* Measured `fixed_tok512` chunks/doc on real ASM articles is
+**36.2** (`reports/chunking-comparison-overview.md:223`; 1,500 docs → 54,270 chunks; 33.8 on a 300-doc
+subset, `chunking_compare_7way_report.md:96`). A ~200-doc library is therefore **~7k chunks, not ~4k**,
+and a 1,000-doc library is **~36k, not ~72k** (§4 carried the same error). Rev 3's ~4k corresponds to a
+~110-doc library.
+
+*G1 — registered hypothesis, NOT an assumption (rev 3 stated it as fact).* Rev 3 asserted "BM25 may
+return 3–4 hits against dense's 20." That is unverified and probably backwards.
+`ElasticsearchTextIndex.search` (`stores/elasticsearch.py:143-168`) issues `size=top_k` against a
+single `match` — an exact search returning `min(size, |matching docs|)` — so a BM25 leg asked for 10
+returns 10 unless fewer than 10 chunks in the whole index contain any query term. Conversely
+`QdrantVectorStore.search` (`stores/qdrant.py:243-249`) passes `limit=top_k` with **no `search_params`**
+— no `hnsw_ef`, no `exact`, no oversampling — so the **dense** leg is the one that can silently
+under-return. The claim is now H1b of the protocol, decided by returned-hit counters in the pilot. It
+MUST NOT be used to justify a design decision until then.
+
+*G1 — config gap: part of the deliverable is not currently expressible.* `settings.top_k`
+(`config.py:305`) has **no reader in the retrieval path** — the API default is the literal `5` at
+`query.py:72`/`:107` and the effective value comes from `request.top_k`; the only thing that touches
+the setting is the reflective loop at `admin.py:98-99`. `GET /v1/admin/config` (`admin.py:47-90`)
+exposes neither `rrf_k` nor `retrieval_candidate_multiplier`. So a `top_k` recommendation cannot be
+shipped as configuration, and a deployed instance cannot self-report the two constants G1 tunes, until
+both are fixed (~40 LOC; protocol §10 gap 9).
 
 **G2 — re-measure the Qdrant filter in the v1 shape (#199).** Harness: `python/scripts/bench_filter_truncation.py` — scrolls real 4096-d SFR vectors read-only from prod into a guarded `g2bench_*` scratch collection. Note §4 now makes every query single-valued, so G2 no longer gates *multi-scope* retrieval; it gates whether **one** library's slice of a large shared index retrieves correctly. #199 measured a single key/value at 1% selectivity on synthetic 128-d vectors. v1 issues `library_id == X AND tenant_id ANY […]` at ~0.005%. Sweep 10⁻²→10⁻⁵ on real 4096-d SFR vectors. **Pass: returned-hits == `min(k, |library|)`.**
 
@@ -210,7 +234,11 @@ Assert in §14: ingest a record whose `metadata.library_id` names another librar
 
 **Payload index is PER COLLECTION.** `_ensure_tenant_index` (`qdrant.py:176-188`) runs from `ensure_collection`, which `deps.py:298` calls for **every registry entry at every startup** and swallows errors. Generalizing it globally would fire a `create_payload_index("library_id")` against 24.8M / 12.6M / 3.0M / lucid at every restart — exactly the §16 Tier-2 operation that requires a maintenance window. **Only `ragstack_lib_v1` gets `library_id` indexed.**
 
-**Index name is HAND-PINNED: `ragstack_lib_v1`.** Its build spec is identical to prod `ragstack_sfr_tok512`, so content-addressing would **collide**. Created with **both `max_segment_size` and `full_scan_threshold` pinned explicitly**, on its own Qdrant instance via `QDRANT_COLLECTION_ROUTES`. Pinning only the first is insufficient: at production's `full_scan_threshold=10000` KB and 16 KiB/vector the planner hands off from payload-index full scan to HNSW at ~625 vectors **per segment**, and a 1000-PDF library is ~72,000 chunks over ~99 segments ≈ 730/segment — on the boundary. Which side of that handoff a library falls on must be a deliberate config decision, not a consequence of segment-merge timing. ~82 VMAs/library, ~800 per process; at 70% registration returns **503** and an operator provisions the next index (there is no automatic placement in v1).
+**Index name is HAND-PINNED: `ragstack_lib_v1`.** Its build spec is identical to prod `ragstack_sfr_tok512`, so content-addressing would **collide**. Created with **both `max_segment_size` and `full_scan_threshold` pinned explicitly**, on its own Qdrant instance via `QDRANT_COLLECTION_ROUTES`. Pinning only the first is insufficient: at production's `full_scan_threshold=10000` KB and 16 KiB/vector the planner hands off from payload-index full scan to HNSW at ~625 vectors **per segment**. **Corrected (rev 3 arithmetic was wrong; its directional conclusion is withdrawn, not replaced).** Rev 3 put a 1000-PDF library at ~72,000 chunks over ~99 segments ≈ 730/segment — "on the boundary" — but 72 chunks/doc is the measured `fixed_tok256` figure (`reports/chunking-comparison-overview.md:222`), not `fixed_tok512`'s **36.2** (`:223`, and §-1), so a 1000-PDF library is **~36,000 chunks**, not ~72,000.
+
+The ~99-segment divisor does not survive the correction either. It is carried over from the 24.8M-point prod collection (§16 Tier 2), has never been measured on a library-sized index, and **cannot apply to this collection at all**: the capacity rail below caps `ragstack_lib_v1` at ~800/82 ≈ **7–10 libraries ≈ 250k–360k points in total**, so the whole index never reaches the point count that produced ~99 segments. The only in-repo segment counts near this scale point the other way — G2 built **500k points across 8 segments** (§-1 G2) and the G1 protocol's manifest example records **6,108 points in 2 segments** (`docs/g1-retrieval-protocol.md` §8.2). At a plausible **2–8 segments** a 36.2k-chunk library is **4,500–18,000 points per segment, 7–29× above the ~625 handoff — firmly on the HNSW side**. Equivalently, the handoff falls at **~1,250–5,000 chunks per library ≈ 35–140 documents**, so essentially every v1-sized library lands on the HNSW side, not the full-scan side.
+
+That is a plausibility range, not a measurement: **which side of the handoff a library falls on is undetermined until `segments_count` is recorded on a real library-sized `ragstack_lib_v1`** (the G1 pilot records it per rung — `g1-retrieval-protocol.md` §8.1). Two things follow regardless of how it resolves. First, the uncertainty **strengthens** the requirement this paragraph exists to justify: with the boundary this sensitive to `max_segment_size` and merge timing, **both** `max_segment_size` **and** `full_scan_threshold` MUST be pinned explicitly, so the side is a deliberate config decision rather than a consequence of segment-merge timing. Second, if libraries do sit on the HNSW side — the direction the available segment counts indicate — then **G2's filtered-HNSW result is more relevant to v1, not less**, because the approximate path is the one v1 actually exercises. ~82 VMAs/library, ~800 per process; at 70% registration returns **503** and an operator provisions the next index (there is no automatic placement in v1).
 
 **Every query carries exactly ONE `library_id`. Broader scopes are N single-value queries fused by RRF — never one widened filter.** This is the stated mechanism, not a fallback: a single-valued filter cannot enter the `MatchAny` truncation band, so the failure G2 measures is structurally unreachable for any scope built this way.
 
