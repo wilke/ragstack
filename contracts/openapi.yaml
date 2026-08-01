@@ -106,6 +106,63 @@ paths:
             Ingest is disabled — the server has no INGEST_ROOT configured, so
             `source` cannot be confined.
 
+  /v1/ingest/upload:
+    post:
+      operationId: ingestUpload
+      summary: Upload PDF files for ingestion
+      description: >
+        Multipart counterpart to POST /v1/ingest: instead of a server-side path,
+        the caller uploads one or more PDF files. Each file is staged under a
+        per-tenant, per-job directory below INGEST_ROOT with a sanitized,
+        traversal-confined filename, then the same background ingest path runs
+        over it. Returns 202 with a job_id and status "accepted"; poll
+        GET /v1/ingest/{job_id} for progress exactly as for a path ingest.
+
+
+        The tenant is derived server-side from the API key (never from the body).
+        Each upload is validated by content-type and a %PDF magic sniff; a non-PDF
+        is rejected with 415, a file larger than max_document_bytes with 413, and
+        more than max_upload_files files with 413. Requires INGEST_ROOT to be
+        configured — without one, uploads have nowhere confined to land and every
+        request returns 503 (matching POST /v1/ingest).
+      tags: [Documents]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  description: One or more PDF files to ingest.
+                  items:
+                    type: string
+                    format: binary
+                collection:
+                  type: string
+                  description: >
+                    Optional target collection id (same semantics as
+                    IngestRequest.collection); omit for the server default.
+      responses:
+        "202":
+          description: Upload accepted and queued for ingestion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IngestResponse"
+        "413":
+          description: A file exceeds max_document_bytes, or too many files.
+        "415":
+          description: An uploaded file is not a PDF.
+        "422":
+          description: Validation error
+        "503":
+          description: >
+            Ingest is disabled — the server has no INGEST_ROOT configured, so
+            uploads cannot be confined.
+
   /v1/ingest/{job_id}:
     get:
       operationId: ingestStatus

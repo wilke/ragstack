@@ -2,16 +2,21 @@
 from __future__ import annotations
 
 import logging
+import shutil
+from pathlib import Path
 from typing import Any
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
+    File,
+    Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
 )
 from pydantic import BaseModel, Field
 
@@ -26,7 +31,7 @@ from ragstack.api.deps import (
 )
 from ragstack.api.security import resolve_tenant
 from ragstack.config import settings
-from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES
+from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
 from ragstack.ingestion.manifest import build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
@@ -107,6 +112,43 @@ async def _run_ingest(
             from ragstack.api.deps import write_ingest_manifest
 
             write_ingest_manifest(source=source, chunk_count=chunks or None)
+
+
+def _resolve_ingest_target(
+    collection_id: str | None,
+    tenant: str,
+    collections: CollectionRegistry,
+    app_state: Any,
+    prebuilt: ShardedIngestor,
+) -> tuple[CollectionEntry | None, ShardedIngestor]:
+    """Resolve an optional target collection to ``(entry, ingestor)``.
+
+    Shared by ``POST /v1/ingest`` and ``POST /v1/ingest/upload`` so the routing
+    into a collection's bound embedder/chunker/stores — and its tenant allowlist
+    check — cannot drift between the two entry points. Omitting the collection
+    (or naming the default id) keeps the prebuilt app ingestor. An id the tenant
+    may not access, or an unknown id, is a 404 (never a silent write elsewhere).
+    """
+    if not collection_id or collection_id == collections.default_id:
+        return None, prebuilt
+    allowed = allowed_collection_ids(tenant, settings.tenant_collections)
+    if allowed is not None and collection_id not in allowed:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
+        )
+    try:
+        target = collections.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
+        ) from None
+    try:
+        run_ingestor = build_ingestor_for(app_state, target)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
+    return target, run_ingestor
 
 
 class IngestRequest(BaseModel):
@@ -198,28 +240,9 @@ async def ingest(
     # collection's bound embedder/chunker/stores (so vectors match its model and
     # land in its index). Omitted — or the default id — keeps the prebuilt app
     # ingestor (backward compatible). An unknown id is a 404, not a silent default.
-    target: CollectionEntry | None = None
-    run_ingestor = ingestor
-    if request.collection and request.collection != collections.default_id:
-        # A restricted tenant may only ingest into a collection it's allowed to
-        # access (same allowlist as reads); out-of-scope → 404, not a silent write.
-        allowed = allowed_collection_ids(tenant, settings.tenant_collections)
-        if allowed is not None and request.collection not in allowed:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {request.collection!r}; see GET /v1/collections",
-            )
-        try:
-            target = collections.resolve(request.collection)
-        except KeyError:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {request.collection!r}; see GET /v1/collections",
-            ) from None
-        try:
-            run_ingestor = build_ingestor_for(http_request.app.state, target)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from None
+    target, run_ingestor = _resolve_ingest_target(
+        request.collection, tenant, collections, http_request.app.state, ingestor
+    )
 
     job = await job_store.create(source=request.source)
     background_tasks.add_task(
@@ -229,6 +252,166 @@ async def ingest(
         settings.ingest_root,
         job.job_id,
         request.source,
+        tenant,
+        target,
+    )
+    return IngestResponse(job_id=job.job_id, status=job.status)
+
+
+_PDF_MAGIC = b"%PDF"
+_UPLOAD_CHUNK = 1 << 20  # 1 MiB read granularity while streaming to disk
+
+
+def _safe_pdf_name(raw: str | None, fallback: str) -> str:
+    """Reduce a client-supplied filename to a safe, traversal-free basename.
+
+    Keeps only the final path component (drops any directory parts, absolute
+    prefixes, and ``..`` segments), strips other separators, and forces a
+    ``.pdf`` suffix. Falls back to ``fallback`` when nothing usable remains. The
+    result is still re-confined under the staging dir by the caller — this is the
+    first line of defence, not the only one.
+    """
+    # PurePosixPath/ntpath both leave ".." as a name component, so take the last
+    # component and reject the dot-names explicitly.
+    base = raw.replace("\\", "/").rsplit("/", 1)[-1].strip() if raw else ""
+    base = base.replace("\x00", "")
+    if base in ("", ".", ".."):
+        return fallback
+    if not base.lower().endswith(".pdf"):
+        base = f"{base}.pdf"
+    return base
+
+
+async def _stage_upload(
+    upload: UploadFile, dest: Path, max_bytes: int
+) -> None:
+    """Sniff, size-check, and stream one uploaded PDF to ``dest``.
+
+    Enforces the PDF content-type + ``%PDF`` magic (415) and the per-file byte
+    cap (413) while writing, so an oversize file is rejected without buffering it
+    whole in memory. ``dest`` is assumed already confined to the staging dir.
+    """
+    if (upload.content_type or "").split(";", 1)[0].strip() != "application/pdf":
+        raise HTTPException(
+            status_code=415,
+            detail=f"{upload.filename!r}: only application/pdf uploads are accepted",
+        )
+    written = 0
+    first = True
+    with dest.open("wb") as fh:
+        while True:
+            chunk = await upload.read(_UPLOAD_CHUNK)
+            if not chunk:
+                break
+            if first:
+                if not chunk.startswith(_PDF_MAGIC):
+                    raise HTTPException(
+                        status_code=415,
+                        detail=f"{upload.filename!r}: not a PDF (missing %PDF header)",
+                    )
+                first = False
+            written += len(chunk)
+            if max_bytes and written > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"{upload.filename!r}: exceeds max_document_bytes "
+                        f"({max_bytes} bytes)"
+                    ),
+                )
+            fh.write(chunk)
+    if first:  # never entered the loop → empty upload, so magic was never checked
+        raise HTTPException(
+            status_code=415,
+            detail=f"{upload.filename!r}: not a PDF (empty upload)",
+        )
+
+
+@router.post("/ingest/upload", response_model=IngestResponse, status_code=202)
+async def ingest_upload(
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(..., description="One or more PDF files."),
+    collection: str | None = Form(default=None),
+    tenant: str = Depends(resolve_tenant),
+    ingestor: ShardedIngestor = Depends(get_ingestor),
+    job_store: JobStore = Depends(get_job_store),
+    collections: CollectionRegistry = Depends(get_collections),
+) -> IngestResponse:
+    """Upload one or more PDF files and ingest them in the background.
+
+    Multipart counterpart to ``POST /v1/ingest`` (which takes a server-side path):
+    each file is staged under ``{INGEST_ROOT}/uploads/{tenant}/{job_id}/`` with a
+    sanitized, traversal-confined filename, then the SAME sharded ingest path runs
+    over that per-job directory. Returns 202 with a real job_id; poll
+    ``GET /v1/ingest/{job_id}`` for progress exactly as for a path ingest.
+
+    Rejections: non-PDF (content-type or magic) → 415, a file over
+    ``max_document_bytes`` → 413, more than ``max_upload_files`` files → 413, and
+    — like ``POST /v1/ingest`` — 503 when no INGEST_ROOT is configured (uploads
+    have nowhere confined to land) and 501 for a non-local ingest backend.
+    """
+    if settings.ingest_backend != "local":
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"file upload is not supported with ingest_backend="
+                f"{settings.ingest_backend!r}; use ingest_backend=local"
+            ),
+        )
+    if not settings.ingest_root.strip():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ingest is disabled: INGEST_ROOT is not configured; set it to the "
+                "directory uploads should be staged under"
+            ),
+        )
+    if len(files) > settings.max_upload_files:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"too many files: {len(files)} > max_upload_files "
+                f"({settings.max_upload_files})"
+            ),
+        )
+
+    target, run_ingestor = _resolve_ingest_target(
+        collection, tenant, collections, http_request.app.state, ingestor
+    )
+
+    job = await job_store.create(source="upload")
+    # Staging dir is derived from the server-side root + the server-derived tenant
+    # + the freshly minted job_id — none client-controlled — and each file dest is
+    # then re-confined under it, so a hostile filename cannot escape.
+    staging_dir = Path(settings.ingest_root) / "uploads" / tenant / job.job_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for idx, upload in enumerate(files):
+            safe_name = _safe_pdf_name(upload.filename, fallback=f"upload_{idx}.pdf")
+            dest = staging_dir / safe_name
+            try:
+                dest = confine_to_root(str(dest), staging_dir)
+            except LoaderError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{upload.filename!r}: resolves outside the staging directory",
+                ) from None
+            await _stage_upload(upload, dest, settings.max_document_bytes)
+    except HTTPException:
+        # Reject cleanly: drop the partial staging dir and mark the job failed so a
+        # poll reflects reality, then re-raise the original 4xx to the client.
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        await job_store.update(job.job_id, status=FAILED, error="rejected")
+        raise
+
+    background_tasks.add_task(
+        _run_ingest,
+        job_store,
+        run_ingestor,
+        settings.ingest_root,
+        job.job_id,
+        str(staging_dir),
         tenant,
         target,
     )

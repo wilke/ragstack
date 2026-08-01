@@ -198,6 +198,9 @@ class Settings(BaseSettings):
     # caps input size as a DoS guard; 0 disables the cap.
     ingest_root: str = ""
     max_document_bytes: int = 50_000_000
+    # POST /v1/ingest/upload: cap the number of files accepted per multipart
+    # request (a DoS guard on top of the per-file max_document_bytes cap).
+    max_upload_files: int = 50
 
     # Sharded (batch/directory) ingestion: how many documents process at once
     # and how many per shard. Bounds in-flight work for large directories.
