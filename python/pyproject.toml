@@ -12,6 +12,7 @@ license = { text = "MIT" }
 
 dependencies = [
     "fastapi>=0.111",
+    "python-multipart>=0.0.9",  # required by POST /v1/ingest/upload (Form/File)
     "uvicorn[standard]>=0.29",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",

@@ -28,6 +28,17 @@ func HandleIngest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// HandleIngestUpload accepts multipart PDF uploads for ingestion.
+//
+// Phase 1 scaffold: file-upload ingestion (issue #202) is implemented in the
+// Python surface only; this returns 501 until the Go pipeline can stage and
+// ingest uploaded files.
+func HandleIngestUpload(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{
+		"detail": "file upload ingestion is not yet implemented in the Go server",
+	})
+}
+
 // HandleIngestStatus returns the status of an ingestion job.
 func HandleIngestStatus(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "job_id")

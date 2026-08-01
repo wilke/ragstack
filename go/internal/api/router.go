@@ -22,6 +22,7 @@ func NewRouter(_ *slog.Logger) http.Handler {
 		r.Post("/query", HandleQuery)
 		r.Post("/retrieve", HandleRetrieve)
 		r.Post("/ingest", HandleIngest)
+		r.Post("/ingest/upload", HandleIngestUpload)
 		r.Get("/ingest/{job_id}", HandleIngestStatus)
 		r.Get("/documents", HandleListDocuments)
 		r.Get("/collections", HandleListCollections)
