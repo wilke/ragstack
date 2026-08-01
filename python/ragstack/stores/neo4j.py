@@ -1,11 +1,19 @@
-"""Neo4j-backed GraphStore (knowledge graph), tenant-scoped.
+"""Neo4j-backed GraphStore (knowledge graph), tenant- and collection-scoped.
 
-Triples become a property graph: ``(:Entity {name, tenant_id})-[:REL {predicate,
-doc_id, tenant_id}]->(:Entity {...})``. Entities are keyed by ``(name, tenant_id)``
-so the same surface form under two tenants is two distinct nodes — a tenant can
-never read or delete across the boundary. Reads filter relationships to the
-caller's *readable* tenants (own + the shared ``public`` corpus); an unscoped
-read (``tenant_id=None``) is allowed only for dev/tests and sees everything.
+Triples become a property graph: ``(:Entity {name, tenant_id, collection})-[:REL
+{predicate, doc_id, tenant_id, collection}]->(:Entity {...})``. Entities are keyed
+by ``(name, tenant_id, collection)`` so the same surface form under two tenants —
+or in two collections — is two distinct nodes; neither boundary can be read or
+deleted across. Reads filter relationships to the caller's *readable* tenants (own
++ the shared ``public`` corpus) and to the caller's collection; an unscoped read
+(``tenant_id=None`` / ``collection=None``) is allowed only for dev/tests and admin
+inspection, and sees everything on that axis.
+
+Why the collection lives in the data rather than in one store instance per
+collection (#209): unlike Qdrant/ES, where each collection gets its own physical
+collection/index, Neo4j Community serves a single database — N ``Neo4jGraphStore``
+objects would all point at the same graph. Stamping is the only mechanism that
+isolates identically here and in ``InMemoryGraphStore``.
 
 The ``neo4j`` driver import is lazy so the optional ``graph`` extra is only
 required when this backend is actually selected. LLM-driven triple extraction
@@ -55,11 +63,19 @@ class Neo4jGraphStore:
 
     async def ensure_schema(self) -> None:
         """Create the uniqueness/index constraints idempotently so node lookups and
-        MERGE stay fast and ``(name, tenant_id)`` identity is enforced by the DB."""
+        MERGE stay fast and ``(name, tenant_id, collection)`` identity is enforced
+        by the DB.
+
+        The pre-#209 ``entity_name_tenant`` constraint is dropped first: keyed on
+        ``(name, tenant_id)`` alone it would *reject* the same entity name existing
+        in two collections, which is exactly what collection scoping requires. Both
+        statements are idempotent, so this doubles as the one-way migration for an
+        existing graph."""
         async with self._session() as session:
+            await session.run("DROP CONSTRAINT entity_name_tenant IF EXISTS")
             await session.run(
-                "CREATE CONSTRAINT entity_name_tenant IF NOT EXISTS "
-                "FOR (e:Entity) REQUIRE (e.name, e.tenant_id) IS UNIQUE"
+                "CREATE CONSTRAINT entity_name_tenant_collection IF NOT EXISTS "
+                "FOR (e:Entity) REQUIRE (e.name, e.tenant_id, e.collection) IS UNIQUE"
             )
 
     def _session(self) -> Any:
@@ -68,9 +84,10 @@ class Neo4jGraphStore:
         return self._driver.session()
 
     async def add_triples(self, triples: list[Triple]) -> None:
-        """Upsert triples. Each triple's ``tenant_id`` is stamped onto both endpoint
-        nodes and the relationship, so isolation is a property of the stored data
-        rather than something the read path has to reconstruct."""
+        """Upsert triples. Each triple's ``tenant_id`` *and* ``collection`` are
+        stamped onto both endpoint nodes and the relationship, so both isolation
+        boundaries are properties of the stored data rather than something the
+        read path has to reconstruct."""
         if not triples:
             return
         rows = [
@@ -80,34 +97,63 @@ class Neo4jGraphStore:
                 "object": t.object,
                 "doc_id": t.doc_id,
                 "tenant_id": _tenant_or_default(t.tenant_id),
+                "collection": t.collection,
             }
             for t in triples
         ]
-        # MERGE on (name, tenant_id) keeps entities tenant-scoped; the relationship
-        # is keyed by (predicate, doc_id, tenant_id) so re-ingesting the same doc
-        # is idempotent rather than piling up duplicate edges.
+        # MERGE on (name, tenant_id, collection) keeps entities scoped on both
+        # axes; the relationship is keyed by (predicate, doc_id, tenant_id,
+        # collection) so re-ingesting the same doc is idempotent rather than
+        # piling up duplicate edges.
         query = (
             "UNWIND $rows AS row "
-            "MERGE (s:Entity {name: row.subject, tenant_id: row.tenant_id}) "
-            "MERGE (o:Entity {name: row.object, tenant_id: row.tenant_id}) "
+            "MERGE (s:Entity {name: row.subject, tenant_id: row.tenant_id, "
+            "collection: row.collection}) "
+            "MERGE (o:Entity {name: row.object, tenant_id: row.tenant_id, "
+            "collection: row.collection}) "
             "MERGE (s)-[r:REL {predicate: row.predicate, doc_id: row.doc_id, "
-            "tenant_id: row.tenant_id}]->(o)"
+            "tenant_id: row.tenant_id, collection: row.collection}]->(o)"
         )
         async with self._session() as session:
             await session.run(query, rows=rows)
 
+    def _scope(
+        self, params: dict[str, Any], tenant_id: str | None, collection: str | None
+    ) -> list[str]:
+        """Register the scope parameters and return the per-relationship predicate
+        templates (``{alias}`` is the relationship variable) shared by every read.
+
+        Keeping the two axes in one place means a new read path can't accidentally
+        apply the tenant filter and forget the collection filter."""
+        preds: list[str] = []
+        if tenant_id is not None:
+            params["tenants"] = readable_tenants(tenant_id)
+            preds.append("{alias}.tenant_id IN $tenants")
+        if collection is not None:
+            params["collection"] = collection
+            # Exact equality, so a legacy triple written before #209 (null/empty
+            # ``collection``) matches no real collection — fail closed.
+            preds.append("{alias}.collection = $collection")
+        return preds
+
     async def query_neighborhood(
-        self, entity: str, depth: int = 1, tenant_id: str | None = None
+        self,
+        entity: str,
+        depth: int = 1,
+        tenant_id: str | None = None,
+        collection: str | None = None,
     ) -> list[Triple]:
         """Return triples within ``depth`` hops of ``entity``, scoped to the caller's
-        readable tenants. Matching is case-insensitive substring on the entity name
-        to mirror the in-memory store.
+        readable tenants and to ``collection``. Matching is case-insensitive
+        substring on the entity name to mirror the in-memory store.
 
-        ``tenant_id=None`` is a deliberate unscoped read (dev/tests/library use,
-        per the module docstring) and returns every tenant's triples. Requests
-        never reach it: the API resolves a concrete tenant server-side before
-        calling the retriever, and :meth:`HybridRetriever._graph_context`
-        re-applies the same scope to whatever comes back.
+        ``tenant_id=None`` / ``collection=None`` are deliberate unscoped reads
+        (dev/tests/library use, per the module docstring) and return every
+        tenant's / every collection's triples. Requests never reach either: the
+        API resolves a concrete tenant server-side and the retriever is bound to
+        one collection before calling here, and
+        :meth:`HybridRetriever._graph_context` re-applies both scopes to whatever
+        comes back.
 
         TODO(M4 Phase 2): fuse this neighbourhood into the hybrid retriever
         (graph-aware reranking / passage expansion) instead of returning raw
@@ -115,45 +161,57 @@ class Neo4jGraphStore:
         """
         depth = max(1, min(depth, _MAX_DEPTH))
         params: dict[str, Any] = {"entity": entity.lower()}
-        tenant_clause = ""
+        preds = self._scope(params, tenant_id, collection)
+        # Anchor the traversal inside the collection too: without this a start
+        # node in collection y could seed a walk that the path filter then prunes
+        # to nothing — correct but wasteful — and, more importantly, entity
+        # identity is per-collection so the in-scope node is a different node.
+        start_clause = "AND start.collection = $collection " if collection is not None else ""
         path_clause = ""
-        if tenant_id is not None:
-            params["tenants"] = readable_tenants(tenant_id)
-            tenant_clause = "AND r.tenant_id IN $tenants "
+        edge_clause = ""
+        if preds:
             # Scope the TRAVERSAL, not just the returned edges: every hop on the
             # path must be readable, so a multi-hop query can't tunnel through
-            # another tenant's edge to reach an entity the caller can't otherwise
-            # see (a connectivity leak at depth > 1).
-            path_clause = "WHERE all(rel IN rels WHERE rel.tenant_id IN $tenants) "
+            # another tenant's (or collection's) edge to reach an entity the
+            # caller can't otherwise see (a connectivity leak at depth > 1).
+            path_clause = (
+                "WHERE all(rel IN rels WHERE "
+                + " AND ".join(p.format(alias="rel") for p in preds)
+                + ") "
+            )
+            edge_clause = "".join(f"AND {p.format(alias='r')} " for p in preds)
         # Variable-length path 1..depth from any node whose name contains the term
         # (either as subject or object). Collect each relationship's endpoints so we
         # can reconstruct directed (subject, predicate, object) triples.
         query = (
             "MATCH (start:Entity) "
-            "WHERE toLower(start.name) CONTAINS $entity "
+            "WHERE toLower(start.name) CONTAINS $entity " + start_clause +
             f"MATCH (start)-[rels:REL*1..{depth}]-(:Entity) "
             + path_clause +
             "UNWIND rels AS r "
             "WITH DISTINCT r "
-            "WHERE true " + tenant_clause +
+            "WHERE true " + edge_clause +
             "MATCH (s:Entity)-[r]->(o:Entity) "
             "RETURN s.name AS subject, r.predicate AS predicate, o.name AS object, "
-            "r.doc_id AS doc_id, r.tenant_id AS tenant_id"
+            "r.doc_id AS doc_id, r.tenant_id AS tenant_id, r.collection AS collection"
         )
         return await self._run_triples(query, params)
 
     async def list_entities(
-        self, tenant_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        limit: int = 100,
+        collection: str | None = None,
     ) -> list[tuple[str, int]]:
         """Distinct entities the caller may read, each with its relationship degree,
         most-connected first."""
         params: dict[str, Any] = {"limit": limit}
-        tenant_clause = ""
-        if tenant_id is not None:
-            params["tenants"] = readable_tenants(tenant_id)
-            tenant_clause = "WHERE r.tenant_id IN $tenants "
+        preds = self._scope(params, tenant_id, collection)
+        where = (
+            "WHERE " + " AND ".join(p.format(alias="r") for p in preds) + " " if preds else ""
+        )
         query = (
-            "MATCH (e:Entity)-[r:REL]-(:Entity) " + tenant_clause +
+            "MATCH (e:Entity)-[r:REL]-(:Entity) " + where +
             "WITH e.name AS name, count(r) AS degree "
             "RETURN name, degree ORDER BY degree DESC, name ASC LIMIT $limit"
         )
@@ -162,21 +220,26 @@ class Neo4jGraphStore:
             records = [record async for record in result]
         return [(str(rec["name"]), int(rec["degree"])) for rec in records]
 
-    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+    async def stats(
+        self, tenant_id: str | None = None, collection: str | None = None
+    ) -> tuple[int, int]:
         """Return ``(entities, relationships)`` visible to the caller.
 
-        Both counts are scoped to the caller's readable tenants (own + public);
-        an unscoped call (``tenant_id=None``, dev/tests) counts everything. The
-        WHERE clauses fail closed on an empty tenant set — Cypher ``x IN []`` is
-        false, so no rows match — rather than counting across tenants.
+        Both counts are scoped to the caller's readable tenants (own + public) and
+        to ``collection``; an unscoped call (``None``, dev/tests) counts everything
+        on that axis. The WHERE clauses fail closed on an empty tenant set — Cypher
+        ``x IN []`` is false, so no rows match — rather than counting across
+        tenants. Entities are counted on the node, which is safe because node
+        identity is ``(name, tenant_id, collection)``: a node belongs to exactly
+        one collection.
         """
         params: dict[str, Any] = {}
+        preds = self._scope(params, tenant_id, collection)
         ent_clause = ""
         rel_clause = ""
-        if tenant_id is not None:
-            params["tenants"] = readable_tenants(tenant_id)
-            ent_clause = "WHERE e.tenant_id IN $tenants "
-            rel_clause = "WHERE r.tenant_id IN $tenants "
+        if preds:
+            ent_clause = "WHERE " + " AND ".join(p.format(alias="e") for p in preds) + " "
+            rel_clause = "WHERE " + " AND ".join(p.format(alias="r") for p in preds) + " "
         # count(e) with no grouping key yields a single row (entities=0 even over
         # zero matches). The relationship side is an OPTIONAL MATCH so that row
         # survives when there are entities but no relationships — a plain MATCH
@@ -194,20 +257,33 @@ class Neo4jGraphStore:
             return (0, 0)
         return (int(rec["entities"]), int(rec["relationships"]))
 
-    async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
-        """Delete the relationships a document contributed, never crossing tenants.
-        Orphaned entities (no remaining edges) are removed too."""
+    async def delete_by_doc(
+        self,
+        doc_id: str,
+        tenant_id: str | None = None,
+        collection: str | None = None,
+    ) -> None:
+        """Delete the relationships a document contributed, never crossing tenants
+        **or** collections. Orphaned entities (no remaining edges) are removed too.
+
+        The collection clause matters as much as the tenant one: the same
+        ``doc_id`` re-ingested into a second collection has its own triples there,
+        and the delete-prior step of a re-ingest into collection x would otherwise
+        wipe collection y's copy."""
         params: dict[str, Any] = {"doc_id": doc_id}
-        tenant_clause = ""
+        scope_clause = ""
         if tenant_id is not None:
             params["tenant_id"] = tenant_id
-            tenant_clause = "AND r.tenant_id = $tenant_id "
+            scope_clause += "AND r.tenant_id = $tenant_id "
+        if collection is not None:
+            params["collection"] = collection
+            scope_clause += "AND r.collection = $collection "
         # Delete this doc's relationships, then sweep ONLY their endpoint entities
         # if they're now edgeless — scoped to the entities this delete touched, so
         # it never deletes another tenant's nodes and never full-scans the graph.
         query = (
             "MATCH (s:Entity)-[r:REL]->(o:Entity) "
-            "WHERE r.doc_id = $doc_id " + tenant_clause +
+            "WHERE r.doc_id = $doc_id " + scope_clause +
             "WITH collect(DISTINCT s) + collect(DISTINCT o) AS ends, collect(r) AS rels "
             "FOREACH (x IN rels | DELETE x) "
             "WITH ends "
@@ -229,6 +305,7 @@ class Neo4jGraphStore:
                 object=str(rec["object"]),
                 doc_id=str(rec.get("doc_id") or ""),
                 tenant_id=str(rec.get("tenant_id") or ""),
+                collection=str(rec.get("collection") or ""),
             )
             for rec in records
         ]

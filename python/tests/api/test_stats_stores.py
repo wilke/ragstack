@@ -89,3 +89,22 @@ async def test_graph_count_is_relationship_count(client, monkeypatch):
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
     assert body["graph"]["available"] is True
     assert body["graph"]["count"] == 2  # relationships, distinct from 3 entities
+
+
+async def test_graph_count_is_collection_scoped_for_a_confined_tenant(client, monkeypatch):
+    """One graph store spans every collection (#209), so a tenant confined by
+    TENANT_COLLECTIONS must not be told the size of the whole graph. The fixture's
+    only collection is physically named ``ragstack``."""
+    from ragstack.config import settings
+
+    _configure_keys(monkeypatch)
+    await app.state.graph_store.add_triples([
+        Triple(subject="A", predicate="rel", object="B", doc_id="d1",
+               tenant_id="acme", collection="ragstack"),
+        Triple(subject="X", predicate="rel", object="Y", doc_id="d2",
+               tenant_id="acme", collection="other_corpus"),
+    ])
+    monkeypatch.setattr(settings, "tenant_collections", {"acme": ["default"]})
+
+    body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
+    assert body["graph"]["count"] == 1  # not 2 — the other collection's edge is out

@@ -25,6 +25,7 @@ class HybridRetriever:
         candidate_multiplier: int = 2,
         graph_context_score: float = 0.5,
         graph_context_depth: int = 1,
+        collection: str | None = None,
     ) -> None:
         self.vector_store = vector_store
         self.text_index = text_index
@@ -36,6 +37,12 @@ class HybridRetriever:
         self.candidate_multiplier = candidate_multiplier
         self.graph_context_score = graph_context_score
         self.graph_context_depth = graph_context_depth
+        # The collection this retriever serves. The vector/text legs get their
+        # collection for free — their stores ARE per-collection — but one graph
+        # store holds every collection's triples, so the graph leg has to name it
+        # (#209). ``None`` = unscoped: dev/tests and single-collection callers
+        # that build a retriever directly.
+        self.collection = collection
 
     async def retrieve(
         self,
@@ -94,29 +101,45 @@ class HybridRetriever:
         always yields a concrete tenant (``default`` when auth is disabled), so
         request-borne retrieval is always scoped.
 
-        Every pseudo-chunk is stamped with its triple's owning tenant, the same
-        way real chunks carry ``metadata["tenant_id"]``. Without the stamp,
-        ``tenancy.tenant_of`` reads the default tenant for every graph result,
-        so a post-retrieval re-check can only pass or fail the whole leg
-        wholesale instead of evaluating it per chunk."""
+        ``self.collection`` is the second scope (#209). The vector and BM25 legs
+        can't cross a collection because their stores are per-collection; the
+        graph leg can, because one graph store holds every collection's triples.
+        So the collection is pushed into the neighbourhood query and, like the
+        tenant, re-checked on the way back — the leg must not depend on a single
+        store implementation getting it right. A triple with no collection stamp
+        (written before #209) fails both the store filter and this re-check.
+
+        Every pseudo-chunk is stamped with its triple's owning tenant *and*
+        collection, the same way real chunks carry ``metadata["tenant_id"]``.
+        Without the stamps, ``tenancy.tenant_of`` reads the default tenant for
+        every graph result, so a post-retrieval re-check can only pass or fail
+        the whole leg wholesale instead of evaluating it per chunk."""
         from ragstack.models import Chunk
 
         triples = await self.graph_store.query_neighborhood(  # type: ignore[union-attr]
-            query, depth=self.graph_context_depth, tenant_id=tenant_id
+            query,
+            depth=self.graph_context_depth,
+            tenant_id=tenant_id,
+            collection=self.collection,
         )
         if tenant_id is not None:
             allowed = set(readable_tenants(tenant_id))
             triples = [t for t in triples if t.tenant_id in allowed]
+        if self.collection is not None:
+            triples = [t for t in triples if t.collection == self.collection]
         chunks = []
         for triple in triples[:top_k]:
             content = f"{triple.subject} {triple.predicate} {triple.object}"
+            metadata: dict[str, Any] = {"tenant_id": triple.tenant_id or DEFAULT_TENANT}
+            if triple.collection:
+                metadata["collection"] = triple.collection
             chunks.append(
                 ScoredChunk(
                     chunk=Chunk(
                         id=f"graph-{triple.subject}-{triple.predicate}-{triple.object}",
                         doc_id=triple.doc_id,
                         content=content,
-                        metadata={"tenant_id": triple.tenant_id or DEFAULT_TENANT},
+                        metadata=metadata,
                     ),
                     score=self.graph_context_score,
                     retrieval_method="graph",

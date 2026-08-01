@@ -52,19 +52,21 @@ async def test_hybrid_fuses_both_legs_and_passes_tenant_filter():
 
 
 class _SpyGraphStore:
-    """Records the tenant_id passed to query_neighborhood and returns the given
-    triples (defaulting to one alice-owned triple), ignoring the scope — so the
-    retriever's own re-check is what the assertions exercise."""
+    """Records the tenant_id/collection passed to query_neighborhood and returns
+    the given triples (defaulting to one alice-owned triple), ignoring the scope
+    — so the retriever's own re-check is what the assertions exercise."""
 
     def __init__(self, triples: list[Triple] | None = None) -> None:
         self.tenant_id = "unset"
+        self.collection = "unset"
         self._triples = triples if triples is not None else [
             Triple(subject="Alice", predicate="knows", object="Bob",
                    doc_id="d", tenant_id="alice"),
         ]
 
-    async def query_neighborhood(self, entity, depth=1, tenant_id=None):
+    async def query_neighborhood(self, entity, depth=1, tenant_id=None, collection=None):
         self.tenant_id = tenant_id
+        self.collection = collection
         return list(self._triples)
 
 

@@ -45,6 +45,7 @@ class IngestionPipeline:
         graph_store: GraphStore | None = None,
         kg_extractor: KGExtractor | None = None,
         delete_concurrency: int = 8,
+        collection: str | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -53,6 +54,12 @@ class IngestionPipeline:
         self.text_index = text_index
         self.graph_store = graph_store
         self.kg_extractor = kg_extractor
+        # The collection this pipeline writes into. The vector store and text
+        # index carry it implicitly (they ARE per-collection); the graph store is
+        # shared across collections, so triples must be stamped with it on write
+        # and deletes scoped by it (#209). ``None`` = unstamped/unscoped, for
+        # library and test pipelines that have no collection identity.
+        self.collection = collection
         # Delete-prior is one delete per replaced doc_id across vector+text(+graph);
         # run serially it is ~6000 round-trips for a 3000-doc shard and dominates
         # the load (the #144 A/B benchmark). Bound-concurrent it instead.
@@ -242,7 +249,9 @@ class IngestionPipeline:
                 await self.vector_store.delete(doc_id, tenant_id=tenant_id)
                 await self.text_index.delete(doc_id, tenant_id=tenant_id)
                 if self.graph_store is not None:
-                    await self.graph_store.delete_by_doc(doc_id, tenant_id=tenant_id)
+                    await self.graph_store.delete_by_doc(
+                        doc_id, tenant_id=tenant_id, collection=self.collection
+                    )
 
         await asyncio.gather(*(_delete_prior(d) for d in docs_with_chunks))
 
@@ -253,10 +262,13 @@ class IngestionPipeline:
         # Knowledge-graph extraction (optional)
         if self.kg_extractor and self.graph_store:
             triples = await self.kg_extractor.extract(chunks)
-            # Stamp the owning tenant on every triple so graph deletes/reads can be
-            # tenant-scoped regardless of what the extractor populated.
+            # Stamp the owning tenant AND the target collection on every triple so
+            # graph deletes/reads can be scoped on both axes regardless of what the
+            # extractor populated. The collection stamp is what keeps one
+            # collection's triples out of another collection's graph leg (#209).
             for triple in triples:
                 triple.tenant_id = tenant_id
+                triple.collection = self.collection or ""
             await self.graph_store.add_triples(triples)
 
         return [c.id for c in chunks]

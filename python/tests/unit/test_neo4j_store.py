@@ -97,19 +97,30 @@ async def test_constructs_driver_with_auth(store):
     assert _FakeGraphDatabase.last_auth == ("bolt://x:7687", ("neo4j", "ragstack"))
 
 
-async def test_add_triples_merges_with_tenant(store):
+async def test_add_triples_merges_with_tenant_and_collection(store):
     await store.add_triples(
         [Triple(subject="Alice", predicate="knows", object="Bob",
-                doc_id="d1", tenant_id="alice")]
+                doc_id="d1", tenant_id="alice", collection="x")]
     )
     query, params = _driver(store).calls[-1]
-    # Entities and the relationship are all MERGE'd with tenant_id stamped.
-    assert "MERGE (s:Entity {name: row.subject, tenant_id: row.tenant_id})" in query
-    assert "MERGE (o:Entity {name: row.object, tenant_id: row.tenant_id})" in query
-    assert ":REL {predicate: row.predicate, doc_id: row.doc_id, tenant_id: row.tenant_id}" in query
+    # Entities and the relationship are all MERGE'd with BOTH stamps: entity
+    # identity is (name, tenant_id, collection), so the same surface form in two
+    # collections is two nodes and cannot be traversed between (#209).
+    assert (
+        "MERGE (s:Entity {name: row.subject, tenant_id: row.tenant_id, "
+        "collection: row.collection})"
+    ) in query
+    assert (
+        "MERGE (o:Entity {name: row.object, tenant_id: row.tenant_id, "
+        "collection: row.collection})"
+    ) in query
+    assert (
+        ":REL {predicate: row.predicate, doc_id: row.doc_id, "
+        "tenant_id: row.tenant_id, collection: row.collection}"
+    ) in query
     assert params["rows"] == [
         {"subject": "Alice", "predicate": "knows", "object": "Bob",
-         "doc_id": "d1", "tenant_id": "alice"}
+         "doc_id": "d1", "tenant_id": "alice", "collection": "x"}
     ]
 
 
@@ -221,9 +232,14 @@ async def test_delete_by_doc_unscoped_omits_tenant_clause(store):
 
 async def test_ensure_schema_creates_constraint(store):
     await store.ensure_schema()
-    query, _ = _driver(store).calls[-1]
-    assert "CREATE CONSTRAINT" in query
-    assert "(e.name, e.tenant_id) IS UNIQUE" in query
+    queries = [q for q, _ in _driver(store).calls]
+    # The pre-#209 (name, tenant_id) constraint is dropped first: it would REJECT
+    # the same entity name existing in two collections, which is exactly what
+    # collection scoping needs. Both statements are idempotent (IF EXISTS /
+    # IF NOT EXISTS), so ensure_schema doubles as the migration.
+    assert "DROP CONSTRAINT entity_name_tenant IF EXISTS" in queries[0]
+    assert "CREATE CONSTRAINT" in queries[-1]
+    assert "(e.name, e.tenant_id, e.collection) IS UNIQUE" in queries[-1]
 
 
 async def test_stats_scopes_both_counts_and_reports_n_zero(store):

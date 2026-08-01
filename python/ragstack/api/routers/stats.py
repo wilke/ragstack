@@ -12,10 +12,10 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from ragstack.api.collections import CollectionRegistry
+from ragstack.api.collections import CollectionRegistry, confined_collection_name
 from ragstack.api.deps import (
     get_collections,
     get_graph_store,
@@ -57,16 +57,20 @@ async def _count_store(backend: str, store: Any, tenants: list[str]) -> StoreCou
     return StoreCount(backend=backend, available=n is not None, count=n)
 
 
-async def _count_graph(backend: str, store: Any, tenant_id: str) -> StoreCount:
+async def _count_graph(
+    backend: str, store: Any, tenant_id: str, collection: str | None = None
+) -> StoreCount:
     """Graph store size (relationship count), tenant-scoped, degrading gracefully.
 
     The graph store takes a single ``tenant_id`` and applies ``readable_tenants``
     internally (its existing read convention), so it isn't handed the widened
-    list the vector/text stores get."""
+    list the vector/text stores get. ``collection`` narrows the count for a tenant
+    confined by ``TENANT_COLLECTIONS`` — one graph store spans every collection,
+    so without it a confined caller would be told the whole graph's size (#209)."""
     if store is None or not hasattr(store, "stats"):
         return StoreCount(backend=backend, available=False, count=None)
     try:
-        _entities, relationships = await store.stats(tenant_id)
+        _entities, relationships = await store.stats(tenant_id, collection=collection)
     except Exception:
         log.warning("stats: %s graph stats probe failed", backend, exc_info=True)
         return StoreCount(backend=backend, available=False, count=None)
@@ -75,6 +79,7 @@ async def _count_graph(backend: str, store: Any, tenant_id: str) -> StoreCount:
 
 @router.get("/stats/stores", response_model=StoreStatsResponse)
 async def stats_stores(
+    request: Request,
     principal: Principal = Depends(resolve_principal),
     vector_store: Any = Depends(get_vector_store),
     text_index: Any = Depends(get_text_index),
@@ -83,15 +88,23 @@ async def stats_stores(
     """Per-store counts scoped to the caller's readable tenants (own + public).
 
     Never a global store total: the vector/text counts are tenant-filtered and
-    the graph count is scoped by the store. Any store that errors or lacks a
-    count method degrades to ``available=false`` / ``count=null``.
+    the graph count is scoped by the store — and, for a confined tenant, by its
+    collection. Any store that errors or lacks a count method degrades to
+    ``available=false`` / ``count=null``.
     """
     tenants = readable_tenants(principal.tenant)
+    graph_collection = confined_collection_name(
+        getattr(request.app.state, "collections", None),
+        principal.tenant,
+        settings.tenant_collections,
+    )
     return StoreStatsResponse(
         tenants=tenants,
         vector=await _count_store(settings.vector_backend, vector_store, tenants),
         text=await _count_store(settings.text_backend, text_index, tenants),
-        graph=await _count_graph(settings.graph_backend, graph_store, principal.tenant),
+        graph=await _count_graph(
+            settings.graph_backend, graph_store, principal.tenant, graph_collection
+        ),
     )
 
 
