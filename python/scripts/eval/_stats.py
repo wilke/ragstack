@@ -18,6 +18,12 @@ value per eval query, per config) and hand them here to get:
   confirmatory stage will kill it and FWER control would be crippling.
 - **Rank-biased overlap** (:func:`rbo`) for comparing two ranked lists — the
   replicate-stability measure for an A/A null.
+- **Inter-rater agreement** — Cohen's κ (:func:`cohen_kappa`, unweighted /
+  linear / quadratic), Fleiss' κ (:func:`fleiss_kappa`), an item-resampling
+  bootstrap CI for either (:func:`bootstrap_statistic_ci`) and a pre-run
+  precision forecast (:func:`kappa_se_forecast`). The G1 protocol gates its
+  pilot quality track on κ(judge–human) ≥ 0.4, which makes κ a decision
+  statistic and therefore one that needs an interval.
 
 Everything is implemented directly (no scipy). The bootstrap is seeded
 (``numpy.random.default_rng(0)``) so a re-run reproduces the intervals exactly.
@@ -31,6 +37,7 @@ paired bootstrap for all of them.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -278,6 +285,162 @@ def rbo(a: list[str], b: list[str], p: float = 0.9) -> float:
         total += w * (len(seen_a & seen_b) / (d + 1))
         weight_mass += w
     return total / weight_mass if weight_mass else 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Inter-rater agreement — κ (G1 protocol §4.4)
+#
+# The pilot's quality track is gated on κ(judge–human) ≥ 0.4, so κ is a *decision*
+# statistic here, not a descriptive one, and it needs an interval: at n = 100 the
+# 95% CI half-width around κ ≈ 0.5 is ≈ 0.15, which straddles the gate in both
+# directions. Hence the bootstrap below, and hence :func:`kappa_se_forecast`,
+# which lets the subsample size be chosen against the precision it buys instead
+# of by tradition.
+# --------------------------------------------------------------------------- #
+def bootstrap_statistic_ci(
+    n_items: int,
+    stat_fn: Callable[[np.ndarray], float],
+    iters: int = BOOTSTRAP_ITERS,
+    seed: int = SEED,
+    alpha: float = 0.05,
+    point: float | None = None,
+) -> CI:
+    """Percentile CI for any item-level statistic, resampling item *indices*.
+
+    ``stat_fn`` receives an array of resampled item indices and returns the
+    statistic on that resample. Item-level (not rating-level) resampling is the
+    right unit for κ: the ratings of one item are not independent of each other,
+    and resampling them separately would understate the interval.
+    """
+    if n_items <= 1:
+        p = point if point is not None else float("nan")
+        return CI(p, float("nan"), float("nan"))
+    idx = _resample_indices(n_items, iters, seed)
+    vals = np.array([stat_fn(row) for row in idx], dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        p = point if point is not None else float("nan")
+        return CI(p, float("nan"), float("nan"))
+    base = point if point is not None else float(stat_fn(np.arange(n_items)))
+    return CI(
+        point=base,
+        lo=float(np.percentile(vals, 100 * (alpha / 2))),
+        hi=float(np.percentile(vals, 100 * (1 - alpha / 2))),
+    )
+
+
+def _kappa_weights(k: int, weights: str) -> np.ndarray:
+    """Disagreement weights ``d[i][j]`` — 0 on the diagonal, 1 at the extremes."""
+    i = np.arange(k).reshape(-1, 1)
+    j = np.arange(k).reshape(1, -1)
+    if weights == "none":
+        return (i != j).astype(float)
+    span = max(k - 1, 1)
+    if weights == "linear":
+        return np.abs(i - j) / span
+    if weights == "quadratic":
+        return ((i - j) / span) ** 2
+    raise ValueError(f"unknown kappa weights {weights!r} (none|linear|quadratic)")
+
+
+def cohen_kappa(
+    a: Sequence[int], b: Sequence[int], categories: Sequence[int], weights: str = "none"
+) -> float:
+    """Cohen's κ between two raters over an ordinal category set.
+
+    ``weights="linear"`` is the right default *report* for a 0/1/2 relevance
+    scale — unweighted κ treats a 1-vs-2 boundary call as exactly as bad as a
+    0-vs-2 blowup, which is not how the labels are used downstream (nDCG's gain
+    is ``2**grade - 1``, so the 1↔2 confusion costs less than the 0↔2 one). Both
+    are reported; the protocol's 0.4 gate is stated against the unweighted value,
+    which is the conservative one.
+
+    Returns ``nan`` when κ is undefined (no items, or perfect agreement on a
+    single category, where ``Pe = 1``).
+    """
+    if len(a) != len(b):
+        raise ValueError("rating vectors must be the same length")
+    cats = list(categories)
+    k = len(cats)
+    if not a or k == 0:
+        return float("nan")
+    index = {c: i for i, c in enumerate(cats)}
+    obs = np.zeros((k, k), dtype=float)
+    for x, y in zip(a, b, strict=True):
+        obs[index[x], index[y]] += 1.0
+    n = obs.sum()
+    obs /= n
+    exp = np.outer(obs.sum(axis=1), obs.sum(axis=0))
+    d = _kappa_weights(k, weights)
+    dis_o = float((d * obs).sum())
+    dis_e = float((d * exp).sum())
+    if dis_e == 0:
+        return float("nan")
+    return 1.0 - dis_o / dis_e
+
+
+def fleiss_kappa(counts: Sequence[Sequence[int]]) -> float:
+    """Fleiss' κ for ``n_items × n_categories`` rating counts, equal raters per item.
+
+    Used for the *overlap set* — the pairs every rater on the panel saw — which is
+    exactly the design feature that makes a panel-wide agreement number exist at
+    all. Items with a different number of ratings are the caller's problem to
+    filter; a mixed-``n`` Fleiss is a different (and much less standard) estimator.
+    """
+    mat = np.asarray(counts, dtype=float)
+    if mat.ndim != 2 or mat.shape[0] == 0:
+        return float("nan")
+    per_item = mat.sum(axis=1)
+    if len({int(x) for x in per_item}) != 1:
+        raise ValueError("fleiss_kappa needs the same number of ratings on every item")
+    n_raters = float(per_item[0])
+    if n_raters < 2:
+        return float("nan")
+    n_items = mat.shape[0]
+    p_j = mat.sum(axis=0) / (n_items * n_raters)
+    p_i = ((mat**2).sum(axis=1) - n_raters) / (n_raters * (n_raters - 1))
+    p_bar = float(p_i.mean())
+    pe = float((p_j**2).sum())
+    if pe >= 1.0:
+        return float("nan")
+    return (p_bar - pe) / (1.0 - pe)
+
+
+def kappa_se_forecast(
+    n_items: int,
+    grade_probs: Sequence[float],
+    kappa: float,
+    seed: int = SEED,
+    iters: int = 400,
+) -> float:
+    """Monte-Carlo SD of κ̂ for a planned design — *before* any rating happens.
+
+    The generative model is the one κ itself assumes: rater A draws from the
+    marginal ``grade_probs``; with probability κ rater B copies A, otherwise B
+    draws independently from the same marginal. That construction has population
+    κ exactly ``kappa`` (``Po = κ + (1−κ)Pe`` ⟹ ``(Po−Pe)/(1−Pe) = κ``), so the
+    spread of κ̂ over simulated datasets is the sampling SD at that design point.
+
+    This is what turns "300–500 pairs" from a preference into an argument: at
+    n = 100 the SD around κ = 0.5 is ≈ 0.08 (95% CI ≈ ±0.15, which spans the 0.4
+    gate); at n = 400 it is ≈ 0.04.
+    """
+    if n_items <= 1:
+        return float("nan")
+    probs = np.asarray(grade_probs, dtype=float)
+    probs = probs / probs.sum()
+    cats = list(range(len(probs)))
+    rng = np.random.default_rng(seed)
+    out: list[float] = []
+    for _ in range(iters):
+        a = rng.choice(cats, size=n_items, p=probs)
+        indep = rng.choice(cats, size=n_items, p=probs)
+        copy = rng.random(n_items) < kappa
+        b = np.where(copy, a, indep)
+        val = cohen_kappa([int(x) for x in a], [int(x) for x in b], cats)
+        if math.isfinite(val):
+            out.append(val)
+    return float(np.std(out, ddof=1)) if len(out) > 1 else float("nan")
 
 
 # --------------------------------------------------------------------------- #

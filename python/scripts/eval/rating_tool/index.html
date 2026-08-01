@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>G1 relevance rating</title>
+<!--
+  G1 human relevance-rating tool — one file, no network, no build step.
+
+  Open this file directly from disk (file://…/rating_tool/index.html), load the
+  assignment JSONL that `g1_make_pool.py` produced, rate, export. Nothing is
+  fetched, nothing is uploaded, and no part of the page needs a server: the
+  assignment arrives through <input type="file"> (FileReader works under file://,
+  fetch() does not) and the export leaves through a Blob download, with a
+  copy-to-clipboard fallback for browsers that block downloads from file://.
+
+  Three design constraints come straight from docs/g1-retrieval-protocol.md §4.4
+  and are load-bearing, not decoration:
+
+  1. BLINDING. The rater sees the query, the chunk text and the source document
+     title — nothing else. §4.4's "config leakage" row requires it: a rater who
+     can see which retrieval configuration surfaced a chunk, or what the LLM
+     judge called it, is not an independent label source, and κ(judge–human)
+     computed over such labels is inflated in exactly the direction that matters.
+     The loader therefore REFUSES a file carrying such a field rather than
+     quietly dropping it — a silent strip would let a broken pipeline keep
+     producing plausible-looking data.
+
+  2. ORDER RANDOMISATION WITH A RECORDED SEED. Presentation order is a seeded
+     Fisher–Yates shuffle, per rater. Order effects are real over hundreds of
+     items (drift, fatigue, streaks of grade 0), and a fixed order would
+     correlate them across raters — which inflates agreement for the wrong
+     reason. The seed rides along on every exported judgment so the exact
+     presentation order is reconstructible.
+
+  3. TIME ON ITEM. Recorded per judgment, counting only active seconds (the
+     clock pauses when the tab is hidden or the window loses focus, so a coffee
+     break does not become a 900-second "deliberation"). This is the input to
+     the SOP's disqualification rule: a rater whose median is 3 s did not read
+     the chunks.
+
+  Work in progress is saved to localStorage after every judgment, keyed by
+  (assignment_id, rater_id), so a browser crash costs at most one item. If
+  localStorage is unavailable — some browsers restrict it under file:// — the
+  page says so, loudly, and asks for more frequent exports.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa;
+    --panel: #ffffff;
+    --ink: #1a1a19;
+    --muted: #6b6b66;
+    --line: #e3e3df;
+    --accent: #2f5d8a;
+    --warn: #8a4b2f;
+    --bad: #a12b2b;
+    --ok: #2e6b45;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a;
+      --panel: #1e2024;
+      --ink: #e8e8e4;
+      --muted: #9a9a94;
+      --line: #32353b;
+      --accent: #7fb0e0;
+      --warn: #e0a87f;
+      --bad: #e08b8b;
+      --ok: #8fcfa8;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 900px; margin: 0 auto; padding: 20px 18px 64px; }
+  h1 { font-size: 1.15rem; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.09em;
+       color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  header {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    border-bottom: 1px solid var(--line); padding: 12px 0 10px; margin-bottom: 18px;
+  }
+  .bar { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .bar .spacer { flex: 1 1 auto; }
+  .meta { color: var(--muted); font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+  .progress { height: 5px; background: var(--line); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width 180ms ease; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 18px; margin-bottom: 16px;
+  }
+  .query { font-size: 1.12rem; font-weight: 600; line-height: 1.45; }
+  .chunk { white-space: pre-wrap; font-size: 1rem; line-height: 1.62; max-height: 46vh; overflow-y: auto; }
+  .title { color: var(--muted); font-size: 0.86rem; margin-top: 10px; font-style: italic; }
+  .grades { display: flex; gap: 10px; flex-wrap: wrap; }
+  button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .grade-btn { flex: 1 1 180px; text-align: left; padding: 12px 14px; }
+  .grade-btn kbd { margin-right: 10px; }
+  .grade-btn small { display: block; color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+  kbd {
+    font: 0.78rem ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px;
+    padding: 1px 6px; background: var(--bg);
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .note { color: var(--muted); font-size: 0.84rem; }
+  .bad { color: var(--bad); }
+  .ok { color: var(--ok); }
+  .warn { color: var(--warn); }
+  .banner {
+    border-left: 3px solid var(--warn); padding: 10px 14px; margin-bottom: 16px;
+    background: var(--panel); border-radius: 0 var(--radius) var(--radius) 0; font-size: 0.9rem;
+  }
+  .banner.error { border-left-color: var(--bad); }
+  ul.reasons { margin: 8px 0 0; padding-left: 20px; font-size: 0.88rem; }
+  input[type="text"], input[type="file"] {
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; max-width: 100%;
+  }
+  textarea {
+    width: 100%; min-height: 180px; font: 0.8rem ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px;
+    background: var(--bg); color: var(--ink);
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 5px 10px 5px 0; }
+  th { color: var(--muted); font-weight: 600; }
+  .hidden { display: none !important; }
+  dialog {
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+    color: var(--ink); max-width: 640px; padding: 20px 24px;
+  }
+  dialog::backdrop { background: rgba(0,0,0,0.45); }
+  code { font: 0.86em ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <div class="bar">
+    <h1>G1 relevance rating</h1>
+    <span class="meta" id="ctx">no assignment loaded</span>
+    <span class="spacer"></span>
+    <span class="meta" id="counts"></span>
+    <button id="btn-help" title="Keyboard help (?)">?</button>
+  </div>
+  <div class="progress"><div id="progress-bar"></div></div>
+</header>
+
+<!-- ── load screen ─────────────────────────────────────────────────────── -->
+<section id="screen-load">
+  <div class="panel">
+    <h2>1 · Load your assignment</h2>
+    <p class="note">
+      Pick the <code>.jsonl</code> file you were given. It stays on this machine —
+      the page has no network access and nothing is uploaded.
+    </p>
+    <div class="row">
+      <input type="file" id="file" accept=".jsonl,.json,application/json,text/plain">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <label class="note" for="rater">Rater id</label>
+      <input type="text" id="rater" placeholder="from the file, if present" size="18">
+      <label class="note" for="seed">Shuffle seed (blank = derived)</label>
+      <input type="text" id="seed" placeholder="auto" size="12">
+    </div>
+    <div id="load-msg"></div>
+  </div>
+
+  <div class="panel">
+    <h2>2 · The scale</h2>
+    <table>
+      <tr><th>Grade</th><th>Means</th><th>Test</th></tr>
+      <tr><td><kbd>0</kbd> irrelevant</td>
+          <td>The passage does not help answer the question.</td>
+          <td>Same topic is not enough. Ask: could a reader answer <em>anything</em> asked?</td></tr>
+      <tr><td><kbd>1</kbd> partially answers</td>
+          <td>Contains part of an answer, or answers a component of the question.</td>
+          <td>You would still need another passage to answer properly.</td></tr>
+      <tr><td><kbd>2</kbd> fully answers</td>
+          <td>A reader could answer the question from this passage alone.</td>
+          <td>No further source needed for the question <em>as asked</em>.</td></tr>
+    </table>
+    <p class="note" style="margin-bottom:0">
+      The 1-vs-2 boundary is where raters diverge most. The rule is
+      <strong>sufficiency, not quality</strong>: a terse passage that fully answers
+      is a 2; an eloquent passage that answers half is a 1. See
+      <code>docs/g1-sop-rating.md</code> §2 for worked examples.
+    </p>
+  </div>
+</section>
+
+<!-- ── rating screen ───────────────────────────────────────────────────── -->
+<section id="screen-rate" class="hidden">
+  <div id="resume-banner" class="banner hidden"></div>
+  <div id="storage-banner" class="banner hidden"></div>
+
+  <div class="panel">
+    <h2>Question</h2>
+    <div class="query" id="query"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Passage</h2>
+    <div class="chunk" id="chunk"></div>
+    <div class="title" id="doc-title"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Does the passage answer the question?</h2>
+    <div class="grades">
+      <button class="grade-btn" data-grade="0"><kbd>0</kbd>irrelevant
+        <small>does not help answer it</small></button>
+      <button class="grade-btn" data-grade="1"><kbd>1</kbd>partially answers
+        <small>part of an answer; another passage still needed</small></button>
+      <button class="grade-btn" data-grade="2"><kbd>2</kbd>fully answers
+        <small>answerable from this passage alone</small></button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="btn-undo"><kbd>u</kbd> undo last</button>
+      <button id="btn-skip"><kbd>s</kbd> skip for now</button>
+      <span class="spacer"></span>
+      <button id="btn-export">Export judgments</button>
+      <button id="btn-manifest">Session manifest</button>
+    </div>
+    <div class="note" id="item-note" style="margin-top:10px"></div>
+  </div>
+</section>
+
+<!-- ── done screen ─────────────────────────────────────────────────────── -->
+<section id="screen-done" class="hidden">
+  <div class="panel">
+    <h2>Finished</h2>
+    <p id="done-summary"></p>
+    <div class="row">
+      <button id="btn-export-2">Export judgments (.jsonl)</button>
+      <button id="btn-manifest-2">Session manifest (.json)</button>
+      <button id="btn-copy">Copy JSONL to clipboard</button>
+    </div>
+    <p class="note">
+      Send both files to the study lead. Until then they stay in this browser —
+      clearing site data loses them.
+    </p>
+    <textarea id="export-text" readonly class="hidden"></textarea>
+  </div>
+</section>
+
+<dialog id="help">
+  <h2>Keyboard</h2>
+  <table>
+    <tr><td><kbd>0</kbd> <kbd>1</kbd> <kbd>2</kbd></td><td>grade and advance</td></tr>
+    <tr><td><kbd>u</kbd> / <kbd>Backspace</kbd></td><td>undo the last judgment and go back to it</td></tr>
+    <tr><td><kbd>s</kbd> / <kbd>Space</kbd></td><td>skip — the item returns at the end</td></tr>
+    <tr><td><kbd>e</kbd></td><td>export judgments</td></tr>
+    <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+  </table>
+  <p class="note">
+    Judgments are saved in this browser after every item. The item timer pauses
+    when the tab is hidden, so breaks are not counted.
+  </p>
+  <form method="dialog"><button>Close</button></form>
+</dialog>
+
+</main>
+
+<script>
+"use strict";
+
+const TOOL_VERSION = "g1-rating/1";
+const GRADE_LABELS = {0: "irrelevant", 1: "partially answers", 2: "fully answers"};
+
+/* ── blinding (mirrors _g1_rating.py; keep the two in sync) ────────────── */
+const ALLOWED_KEYS = new Set([
+  "pair_id", "assignment_id", "rater_id", "set", "query_id", "query",
+  "chunk_text", "doc_title",
+]);
+const DENY_KEYS = new Set([
+  "cell", "cell_id", "config", "config_id", "grade", "grades", "judge",
+  "judge_grade", "judge_label", "label", "llm_grade", "llm_label", "mode",
+  "params", "rank", "ranks", "rerank_candidates", "rerank_enabled",
+  "retrieval_method", "rrf_k", "run_id", "score", "scores", "leg_depth",
+  "depth", "system", "run", "best_rank", "n_cells", "cells", "stratum",
+  "llm_stratum",
+]);
+const DENY_SUBSTRINGS = [
+  "bm25", "cell", "config", "dense", "hybrid", "judge", "ndcg", "rerank",
+  "retriev", "rrf", "vector",
+];
+const REQUIRED_KEYS = ["pair_id", "assignment_id", "query_id", "query", "chunk_text"];
+
+function blindingViolations(rec) {
+  const bad = new Set();
+  for (const key of Object.keys(rec)) {
+    const low = key.toLowerCase();
+    if (DENY_KEYS.has(low)) bad.add(key);
+    else if (DENY_SUBSTRINGS.some((p) => low.includes(p))) bad.add(key);
+    else if (!ALLOWED_KEYS.has(key)) bad.add(key);
+  }
+  return [...bad].sort();
+}
+
+/* ── seeded shuffle ────────────────────────────────────────────────────── */
+function hashSeed(str) {                       // cyrb53, deterministic across browsers
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)) % 2147483647;
+}
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function shuffledIndices(n, seed) {            // Fisher–Yates, seeded
+  const rnd = mulberry32(seed);
+  const idx = Array.from({length: n}, (_, i) => i);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [idx[i], idx[j]] = [idx[j], idx[i]];
+  }
+  return idx;
+}
+
+/* ── state ─────────────────────────────────────────────────────────────── */
+let S = null;         // {items, queue, pos, grades, raterId, assignmentId, seed, setLabel, startedAt}
+let itemStart = 0;    // performance.now() at display
+let itemActiveMs = 0; // accumulated active time on the current item
+let clockRunning = false;
+let storageOK = true;
+
+const $ = (id) => document.getElementById(id);
+
+function storageKey(assignmentId, raterId) {
+  return `g1rating:${assignmentId}:${raterId}`;
+}
+
+function save() {
+  if (!S || !storageOK) return;
+  try {
+    localStorage.setItem(storageKey(S.assignmentId, S.raterId), JSON.stringify({
+      version: TOOL_VERSION, assignmentId: S.assignmentId, raterId: S.raterId,
+      seed: S.seed, setLabel: S.setLabel, startedAt: S.startedAt,
+      grades: S.grades, queue: S.queue, pos: S.pos, n: S.items.length,
+    }));
+  } catch (err) {
+    storageOK = false;
+    showStorageWarning("Saving to this browser failed (" + err.name + "). Export often.");
+  }
+}
+
+function loadSaved(assignmentId, raterId) {
+  try {
+    const raw = localStorage.getItem(storageKey(assignmentId, raterId));
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    storageOK = false;
+    return null;
+  }
+}
+
+function showStorageWarning(msg) {
+  const el = $("storage-banner");
+  el.className = "banner error";
+  el.textContent = "⚠ " + msg;
+}
+
+/* ── clock (active seconds only) ───────────────────────────────────────── */
+function startClock() {
+  if (clockRunning) return;
+  itemStart = performance.now();
+  clockRunning = true;
+}
+function stopClock() {
+  if (!clockRunning) return;
+  itemActiveMs += performance.now() - itemStart;
+  clockRunning = false;
+}
+function resetClock() { itemActiveMs = 0; clockRunning = false; startClock(); }
+function elapsedSeconds() {
+  const ms = itemActiveMs + (clockRunning ? performance.now() - itemStart : 0);
+  return Math.round(ms / 100) / 10;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopClock(); else if (S && !isDone()) startClock();
+});
+window.addEventListener("blur", stopClock);
+window.addEventListener("focus", () => { if (S && !isDone()) startClock(); });
+
+/* ── parsing + validation ──────────────────────────────────────────────── */
+function parseAssignment(text) {
+  const items = [];
+  const problems = [];
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let rec;
+    try { rec = JSON.parse(line); }
+    catch (err) { problems.push(`line ${i + 1}: not valid JSON`); continue; }
+    if (typeof rec !== "object" || rec === null || Array.isArray(rec)) {
+      problems.push(`line ${i + 1}: expected a JSON object`); continue;
+    }
+    const bad = blindingViolations(rec);
+    if (bad.length) {
+      problems.push(`line ${i + 1}: forbidden or unknown field(s): ${bad.join(", ")}`);
+      continue;
+    }
+    const missing = REQUIRED_KEYS.filter((k) => !rec[k]);
+    if (missing.length) {
+      problems.push(`line ${i + 1}: missing ${missing.join(", ")}`); continue;
+    }
+    items.push(rec);
+  }
+  if (!items.length && !problems.length) problems.push("the file contained no records");
+  return {items, problems};
+}
+
+function loadFailure(problems) {
+  const el = $("load-msg");
+  el.innerHTML =
+    '<div class="banner error"><strong>This file was not loaded.</strong><br>' +
+    "An assignment may contain only: <code>" + [...ALLOWED_KEYS].sort().join("</code>, <code>") +
+    "</code>. Anything else — a configuration id, a rank, an existing label — would " +
+    "break blinding (protocol §4.4), so the tool refuses the file rather than " +
+    "silently dropping fields. Ask the study lead to regenerate it with " +
+    "<code>g1_make_pool.py</code>." +
+    '<ul class="reasons">' + problems.slice(0, 12).map((p) => "<li>" + escapeHtml(p) + "</li>").join("") +
+    (problems.length > 12 ? "<li>… and " + (problems.length - 12) + " more</li>" : "") +
+    "</ul></div>";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+}
+
+/* ── session start ─────────────────────────────────────────────────────── */
+function startSession(items) {
+  const assignmentId = items[0].assignment_id;
+  if (items.some((r) => r.assignment_id !== assignmentId)) {
+    loadFailure(["the file mixes more than one assignment_id"]); return;
+  }
+  const fromFile = (items.find((r) => r.rater_id) || {}).rater_id || "";
+  const typed = $("rater").value.trim();
+  const raterId = typed || fromFile;
+  if (!raterId) {
+    loadFailure(["no rater id: the file carries none, so type yours in the box above"]);
+    return;
+  }
+  if (fromFile && typed && typed !== fromFile) {
+    loadFailure([`this assignment belongs to "${fromFile}", not "${typed}"`]); return;
+  }
+
+  const seedInput = $("seed").value.trim();
+  const seed = seedInput === ""
+    ? hashSeed(raterId + ":" + assignmentId)
+    : (Number.isFinite(Number(seedInput)) ? Number(seedInput) : hashSeed(seedInput));
+
+  S = {
+    items, assignmentId, raterId, seed,
+    setLabel: items[0].set || "live",
+    grades: {}, queue: shuffledIndices(items.length, seed), pos: 0,
+    startedAt: new Date().toISOString(),
+  };
+
+  try { localStorage.setItem("g1rating:probe", "1"); localStorage.removeItem("g1rating:probe"); }
+  catch (err) {
+    storageOK = false;
+    showStorageWarning(
+      "This browser will not let the page save progress under file:// — " +
+      "nothing is lost while the tab stays open, but export every 50 items.");
+  }
+
+  const saved = loadSaved(assignmentId, raterId);
+  if (saved && saved.grades && Object.keys(saved.grades).length) {
+    S.grades = saved.grades;
+    if (Array.isArray(saved.queue) && saved.queue.length === items.length) S.queue = saved.queue;
+    if (saved.seed !== undefined) S.seed = saved.seed;
+    S.startedAt = saved.startedAt || S.startedAt;
+    S.pos = 0;
+    const banner = $("resume-banner");
+    banner.className = "banner";
+    banner.textContent =
+      `Resumed: ${Object.keys(S.grades).length} judgment(s) already recorded in this browser.`;
+  }
+
+  $("screen-load").classList.add("hidden");
+  $("screen-rate").classList.remove("hidden");
+  $("ctx").textContent =
+    `${S.raterId} · ${S.setLabel} · ${S.assignmentId.slice(0, 10)} · seed ${S.seed}`;
+  advanceToUngraded();
+  render();
+}
+
+/* ── navigation ────────────────────────────────────────────────────────── */
+function currentItem() {
+  if (!S || S.pos >= S.queue.length) return null;
+  return S.items[S.queue[S.pos]];
+}
+function isDone() {
+  return !S || S.queue.every((i) => S.grades[S.items[i].pair_id] !== undefined);
+}
+function advanceToUngraded() {
+  while (S.pos < S.queue.length &&
+         S.grades[S.items[S.queue[S.pos]].pair_id] !== undefined) S.pos++;
+}
+
+function grade(value) {
+  const item = currentItem();
+  if (!item) return;
+  const previous = S.grades[item.pair_id];
+  S.grades[item.pair_id] = {
+    grade: value,
+    rater_id: S.raterId,
+    timestamp: new Date().toISOString(),
+    seconds_on_item: elapsedSeconds(),
+    presentation_index: S.pos,
+    revised: previous !== undefined,
+  };
+  S.exported = false;
+  save();
+  S.pos++;
+  advanceToUngraded();
+  render();
+}
+
+function skip() {
+  if (S.pos >= S.queue.length) return;
+  const [idx] = S.queue.splice(S.pos, 1);
+  S.queue.push(idx);                     // returns at the end of the session
+  save();
+  advanceToUngraded();
+  render();
+}
+
+function undo() {
+  // Walk back to the most recent graded item in presentation order, clear it,
+  // and land on it — an undo that only deletes would leave the rater guessing.
+  let p = Math.min(S.pos, S.queue.length) - 1;
+  while (p >= 0 && S.grades[S.items[S.queue[p]].pair_id] === undefined) p--;
+  if (p < 0) return;
+  delete S.grades[S.items[S.queue[p]].pair_id];
+  S.pos = p;
+  save();
+  render();
+}
+
+/* ── rendering ─────────────────────────────────────────────────────────── */
+function render() {
+  const graded = Object.keys(S.grades).length;
+  const total = S.items.length;
+  $("counts").textContent = `${graded} / ${total} rated`;
+  $("progress-bar").style.width = (total ? (100 * graded) / total : 0) + "%";
+
+  if (graded >= total) {
+    $("screen-rate").classList.add("hidden");
+    $("screen-done").classList.remove("hidden");
+    stopClock();
+    const secs = Object.values(S.grades).map((g) => g.seconds_on_item).filter((s) => s > 0).sort((a, b) => a - b);
+    const median = secs.length ? secs[Math.floor(secs.length / 2)] : 0;
+    const hist = {0: 0, 1: 0, 2: 0};
+    Object.values(S.grades).forEach((g) => { hist[g.grade]++; });
+    $("done-summary").innerHTML =
+      `<strong>${total}</strong> items rated — ` +
+      `${hist[0]} × 0, ${hist[1]} × 1, ${hist[2]} × 2; median ${median}s per item. ` +
+      `Shuffle seed <code>${S.seed}</code>.`;
+    return;
+  }
+
+  advanceToUngraded();
+  if (!currentItem()) { S.pos = 0; advanceToUngraded(); }   // wrap to skipped items
+  const it = currentItem();
+  if (!it) return;
+
+  $("query").textContent = it.query;
+  $("chunk").textContent = it.chunk_text;
+  $("doc-title").textContent = it.doc_title ? "Source document: " + it.doc_title : "";
+  $("chunk").scrollTop = 0;
+  $("item-note").textContent =
+    `item ${S.pos + 1} of ${S.queue.length} in your order` +
+    (Object.values(S.grades).some((g) => g.revised) ? " · revised judgments are flagged in the export" : "");
+  $("btn-undo").disabled = Object.keys(S.grades).length === 0;
+  resetClock();
+}
+
+/* ── export ────────────────────────────────────────────────────────────── */
+function judgmentLines() {
+  return S.items
+    .filter((it) => S.grades[it.pair_id] !== undefined)
+    .map((it) => {
+      const g = S.grades[it.pair_id];
+      return JSON.stringify({
+        pair_id: it.pair_id,
+        grade: g.grade,
+        rater_id: g.rater_id || S.raterId,
+        timestamp: g.timestamp,
+        seconds_on_item: g.seconds_on_item,
+        shuffle_seed: S.seed,
+        assignment_id: S.assignmentId,
+        set: S.setLabel,
+        presentation_index: g.presentation_index,
+        revised: !!g.revised,
+        tool_version: TOOL_VERSION,
+      });
+    });
+}
+
+function sessionManifest() {
+  const secs = Object.values(S.grades).map((g) => g.seconds_on_item).filter((s) => s > 0).sort((a, b) => a - b);
+  const hist = {0: 0, 1: 0, 2: 0};
+  Object.values(S.grades).forEach((g) => { hist[g.grade]++; });
+  return {
+    schema_version: "ragstack.g1_rating_session/v1",
+    tool: "rating_tool/index.html",
+    tool_version: TOOL_VERSION,
+    assignment_id: S.assignmentId,
+    rater_id: S.raterId,
+    set: S.setLabel,
+    shuffle_seed: S.seed,
+    shuffle_algorithm: "fisher-yates/mulberry32(cyrb53(rater_id:assignment_id))",
+    n_items: S.items.length,
+    n_rated: Object.keys(S.grades).length,
+    grade_histogram: hist,
+    median_seconds_on_item: secs.length ? secs[Math.floor(secs.length / 2)] : null,
+    started_at: S.startedAt,
+    exported_at: new Date().toISOString(),
+    blinding_check: "passed on load (allowlist: " + [...ALLOWED_KEYS].sort().join(",") + ")",
+    user_agent: navigator.userAgent,
+  };
+}
+
+function download(name, text, mime) {
+  const blob = new Blob([text], {type: mime || "application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportJudgments() {
+  const text = judgmentLines().join("\n") + "\n";
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  download(`g1_judgments_${S.raterId}_${stamp}.jsonl`, text, "application/x-ndjson");
+  const ta = $("export-text");
+  ta.value = text;
+  ta.classList.remove("hidden");
+  S.exported = true;   // silences the "you have unsaved work" unload prompt
+}
+
+function exportManifest() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  download(`g1_session_${S.raterId}_${stamp}.json`,
+           JSON.stringify(sessionManifest(), null, 2) + "\n");
+}
+
+/* ── wiring ────────────────────────────────────────────────────────────── */
+$("file").addEventListener("change", (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const {items, problems} = parseAssignment(String(reader.result));
+    if (problems.length) { loadFailure(problems); return; }
+    startSession(items);
+  };
+  reader.onerror = () => loadFailure(["could not read the file"]);
+  reader.readAsText(file);
+});
+
+document.querySelectorAll(".grade-btn").forEach((btn) => {
+  btn.addEventListener("click", () => grade(Number(btn.dataset.grade)));
+});
+$("btn-undo").addEventListener("click", undo);
+$("btn-skip").addEventListener("click", skip);
+$("btn-export").addEventListener("click", exportJudgments);
+$("btn-export-2").addEventListener("click", exportJudgments);
+$("btn-manifest").addEventListener("click", exportManifest);
+$("btn-manifest-2").addEventListener("click", exportManifest);
+$("btn-help").addEventListener("click", () => $("help").showModal());
+$("btn-copy").addEventListener("click", async () => {
+  const text = judgmentLines().join("\n") + "\n";
+  const ta = $("export-text");
+  ta.value = text; ta.classList.remove("hidden"); ta.select();
+  try { await navigator.clipboard.writeText(text); $("btn-copy").textContent = "Copied"; }
+  catch (err) { $("btn-copy").textContent = "Select the text below and copy"; }
+});
+
+document.addEventListener("keydown", (ev) => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  const tag = (ev.target.tagName || "").toLowerCase();
+  if (tag === "input" || tag === "textarea") return;
+  if ($("help").open) return;
+  if (ev.key === "?") { ev.preventDefault(); $("help").showModal(); return; }
+  if (!S || isDone()) return;
+  if (ev.key === "0" || ev.key === "1" || ev.key === "2") {
+    ev.preventDefault(); grade(Number(ev.key));
+  } else if (ev.key === "u" || ev.key === "Backspace") {
+    ev.preventDefault(); undo();
+  } else if (ev.key === "s" || ev.key === " ") {
+    ev.preventDefault(); skip();
+  } else if (ev.key === "e") {
+    ev.preventDefault(); exportJudgments();
+  }
+});
+
+window.addEventListener("beforeunload", (ev) => {
+  if (S && Object.keys(S.grades).length && !S.exported) {
+    ev.preventDefault(); ev.returnValue = "";
+  }
+});
+</script>
+</body>
+</html>

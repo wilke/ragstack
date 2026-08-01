@@ -2,3 +2,8 @@
 # Publishable runs get copied out deliberately; see PROTOCOL.md §8.3.
 runs/
 cache/
+# Human rating rounds: assignments, raw judgment exports and their analysis.
+# Per-round artefacts, and the rater-id → person mapping is deliberately never
+# committed (docs/g1-sop-rating.md §7.1). Publish the agreement report, not the
+# round directory.
+rating/
