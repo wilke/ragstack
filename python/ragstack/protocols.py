@@ -111,28 +111,63 @@ class TextIndex(Protocol):
 class GraphStore(Protocol):
     """Knowledge-graph store.
 
-    Tenant-scoped: every triple carries a ``tenant_id`` (set server-side at
-    ingest), reads pass the caller's tenant so they see only their own corpus
-    plus the shared ``public`` one, and ``delete_by_doc`` never crosses tenants.
+    Scoped on **two** independent axes, both stamped onto every triple
+    server-side at ingest (see :class:`ragstack.models.Triple`):
+
+    * ``tenant_id`` — reads pass the caller's tenant and see their own corpus
+      plus the shared ``public`` one; ``delete_by_doc`` never crosses tenants.
+    * ``collection`` — which corpus the triple was derived from. Unlike the
+      vector/text stores, whose per-collection isolation is physical (one Qdrant
+      collection / ES index each), one graph backend holds every collection's
+      triples (Neo4j Community serves a single database), so the collection
+      boundary has to be carried in the data. Reads and deletes take the
+      collection they are scoped to; ``None`` means deliberately unscoped
+      (dev/tests/admin inspection) and spans every collection.
+
+    A ``collection``-scoped call never matches an unstamped triple (empty
+    ``collection``, i.e. data written before #209) — it fails closed rather than
+    guessing which corpus legacy data belongs to. Such triples remain reachable
+    through unscoped calls; re-ingest re-derives them with a stamp.
     """
 
-    async def add_triples(self, triples: list[Triple]) -> None: ...
+    async def add_triples(self, triples: list[Triple]) -> None:
+        """Upsert triples, persisting each one's ``tenant_id`` **and**
+        ``collection`` stamps so both scopes are properties of the stored data."""
+        ...
 
     async def query_neighborhood(
-        self, entity: str, depth: int = 1, tenant_id: str | None = None
+        self,
+        entity: str,
+        depth: int = 1,
+        tenant_id: str | None = None,
+        collection: str | None = None,
     ) -> list[Triple]: ...
 
     async def list_entities(
-        self, tenant_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        limit: int = 100,
+        collection: str | None = None,
     ) -> list[tuple[str, int]]: ...
 
-    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+    async def stats(
+        self, tenant_id: str | None = None, collection: str | None = None
+    ) -> tuple[int, int]:
         """Return ``(entities, relationships)`` visible to the caller — scoped to
-        readable tenants (own + public); unscoped (``None``) counts everything
-        (dev/tests)."""
+        readable tenants (own + public) and to ``collection``; unscoped (``None``)
+        counts everything on that axis (dev/tests)."""
         ...
 
-    async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None: ...
+    async def delete_by_doc(
+        self,
+        doc_id: str,
+        tenant_id: str | None = None,
+        collection: str | None = None,
+    ) -> None:
+        """Delete the triples ``doc_id`` contributed, never crossing the tenant or
+        the collection boundary. A collection-blind delete would drop another
+        collection's triples for a doc_id that exists in both."""
+        ...
 
 
 @runtime_checkable

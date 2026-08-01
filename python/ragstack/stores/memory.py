@@ -219,46 +219,76 @@ class InMemoryTextIndex:
 
 
 class InMemoryGraphStore:
-    """In-memory knowledge-graph store backed by a list of triples."""
+    """In-memory knowledge-graph store backed by a list of triples.
+
+    Scoped on the same two axes as :class:`~ragstack.stores.neo4j.Neo4jGraphStore`
+    — ``tenant_id`` and ``collection`` (#209). Deliberately *not* isolated by
+    holding one store instance per collection: the Neo4j backend can't do that
+    (Community Edition serves a single database), so isolating here by object
+    identity would let the unit suite pass on a guarantee the durable backend
+    doesn't provide. Both stores carry the boundary in the data instead.
+    """
 
     def __init__(self) -> None:
         self._triples: list[Triple] = []
 
     async def add_triples(self, triples: list[Triple]) -> None:
-        # Dedup includes tenant_id so two tenants' identical (s,p,o) triples both
-        # survive — matching Neo4j's per-tenant MERGE and the store's isolation
-        # contract (keying on (s,p,o) alone would drop the second tenant's copy).
-        existing = {(t.subject, t.predicate, t.object, t.tenant_id) for t in self._triples}
+        # Dedup includes tenant_id and collection so two tenants' — or two
+        # collections' — identical (s,p,o) triples all survive, matching Neo4j's
+        # MERGE key (keying on (s,p,o) alone would drop the second copy).
+        existing = {self._key(t) for t in self._triples}
         for triple in triples:
-            key = (triple.subject, triple.predicate, triple.object, triple.tenant_id)
+            key = self._key(triple)
             if key not in existing:
                 self._triples.append(triple)
                 existing.add(key)
 
-    def _visible(self, tenant_id: str | None) -> list[Triple]:
+    @staticmethod
+    def _key(t: Triple) -> tuple[str, str, str, str, str]:
+        return (t.subject, t.predicate, t.object, t.tenant_id, t.collection)
+
+    def _visible(self, tenant_id: str | None, collection: str | None = None) -> list[Triple]:
         """Triples the caller may read: all when unscoped (dev/tests), else the
-        caller's own tenant plus the shared ``public`` corpus."""
-        if tenant_id is None:
-            return self._triples
-        allowed = set(readable_tenants(tenant_id))
-        return [t for t in self._triples if t.tenant_id in allowed]
+        caller's own tenant plus the shared ``public`` corpus, further narrowed to
+        ``collection`` when one is given.
+
+        The collection test is exact equality, so an unstamped legacy triple
+        (``collection == ""``) matches no real collection — the same fail-closed
+        behaviour Neo4j gives, where a null ``r.collection`` never satisfies
+        ``r.collection = $collection``."""
+        triples = self._triples
+        if tenant_id is not None:
+            allowed = set(readable_tenants(tenant_id))
+            triples = [t for t in triples if t.tenant_id in allowed]
+        if collection is not None:
+            triples = [t for t in triples if t.collection == collection]
+        return triples
 
     async def query_neighborhood(
-        self, entity: str, depth: int = 1, tenant_id: str | None = None
+        self,
+        entity: str,
+        depth: int = 1,
+        tenant_id: str | None = None,
+        collection: str | None = None,
     ) -> list[Triple]:
         entity_lower = entity.lower()
-        visible = self._visible(tenant_id)
+        visible = self._visible(tenant_id, collection)
         direct = [
             t for t in visible
             if entity_lower in t.subject.lower() or entity_lower in t.object.lower()
         ]
         if depth <= 1:
             return direct
-        # Expand one more hop
+        # Expand one more hop. Every hop re-enters through ``_visible``, so a
+        # multi-hop walk can't tunnel through another collection's edge to reach
+        # an entity the caller couldn't see directly (mirrors the Cypher path
+        # clause, which requires *every* relationship on the path to be in scope).
         neighbours = {t.subject for t in direct} | {t.object for t in direct}
         extended = list(direct)
         for n in neighbours:
-            extended += await self.query_neighborhood(n, depth=depth - 1, tenant_id=tenant_id)
+            extended += await self.query_neighborhood(
+                n, depth=depth - 1, tenant_id=tenant_id, collection=collection
+            )
         # Deduplicate
         seen: set[tuple[str, str, str]] = set()
         unique = []
@@ -270,31 +300,49 @@ class InMemoryGraphStore:
         return unique
 
     async def list_entities(
-        self, tenant_id: str | None = None, limit: int = 100
+        self,
+        tenant_id: str | None = None,
+        limit: int = 100,
+        collection: str | None = None,
     ) -> list[tuple[str, int]]:
         """Distinct entities (subjects + objects) the caller may read, each with
         the count of triples it participates in, most-connected first."""
         counts: dict[str, int] = {}
-        for t in self._visible(tenant_id):
+        for t in self._visible(tenant_id, collection):
             counts[t.subject] = counts.get(t.subject, 0) + 1
             counts[t.object] = counts.get(t.object, 0) + 1
         ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
         return ranked[:limit]
 
-    async def stats(self, tenant_id: str | None = None) -> tuple[int, int]:
+    async def stats(
+        self, tenant_id: str | None = None, collection: str | None = None
+    ) -> tuple[int, int]:
         """(distinct entities, relationship count) the caller may read. Reuses
-        ``_visible`` so tenant scoping (own + public) is applied identically to
-        the other reads."""
-        visible = self._visible(tenant_id)
+        ``_visible`` so tenant + collection scoping is applied identically to the
+        other reads."""
+        visible = self._visible(tenant_id, collection)
         entities: set[str] = set()
         for t in visible:
             entities.add(t.subject)
             entities.add(t.object)
         return (len(entities), len(visible))
 
-    async def delete_by_doc(self, doc_id: str, tenant_id: str | None = None) -> None:
+    async def delete_by_doc(
+        self,
+        doc_id: str,
+        tenant_id: str | None = None,
+        collection: str | None = None,
+    ) -> None:
+        """Drop ``doc_id``'s triples within the given tenant and collection. Both
+        scopes must match: the same doc_id ingested into two collections keeps a
+        separate triple set per collection, and a collection-blind delete would
+        take both."""
         self._triples = [
             t
             for t in self._triples
-            if not (t.doc_id == doc_id and (tenant_id is None or t.tenant_id == tenant_id))
+            if not (
+                t.doc_id == doc_id
+                and (tenant_id is None or t.tenant_id == tenant_id)
+                and (collection is None or t.collection == collection)
+            )
         ]

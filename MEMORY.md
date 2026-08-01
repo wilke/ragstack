@@ -41,6 +41,8 @@ These bit us once. Don't repeat them.
 ### Neo4j
 
 - **Neo4j 5 rejects the literal string `neo4j` as a password.** `apptainer/up.sh` defaults to `NEO4J_PASSWORD=ragstack`. `.env.example` still has the broken default; docker-compose path will hit this until fixed.
+- **Neo4j Community serves exactly one user database**, so per-collection isolation cannot be "one store instance per collection" the way Qdrant/ES do it — N `Neo4jGraphStore` objects all point at the same graph. The collection boundary is therefore stamped into the data: `(:Entity {name, tenant_id, collection})` and `[:REL {…, collection}]`, filtered on every read and delete (#209). Don't "simplify" this back to per-collection store objects: `InMemoryGraphStore` would then isolate by object identity, the unit suite would pass, and Neo4j would leak.
+- **A triple with no `collection` stamp is invisible to any collection-scoped read** — deliberate fail-closed, same rule as an unstamped `tenant_id`. Pre-#209 graphs go dark for query/graph endpoints until re-ingested; the KG is small and derived, so re-ingest is the migration. `ensure_schema` drops the old `entity_name_tenant` constraint (it would *reject* one name existing in two collections) and creates `entity_name_tenant_collection`; both statements are idempotent.
 
 ### qdrant-client
 

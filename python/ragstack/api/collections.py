@@ -8,6 +8,11 @@ index + an embedder (matched to that collection's model/dim) into its own
 shared. An empty registry means single-collection mode: the pinned/derived
 collection is the sole ``default`` entry and behaviour is unchanged.
 
+The shared graph store is the reason ``CollectionEntry.collection`` (the physical
+collection name) is also handed to the retriever and the ingest pipeline: since
+one Neo4j holds every collection's triples, the collection boundary on the graph
+axis lives in the triple data, not in the store instance (#209).
+
 The registry is *built* in ``api/deps.py`` (which owns the embedder/store/
 retriever construction helpers); this module holds the config shape and the
 lookup container so both the builder and the routers can import them without a
@@ -22,6 +27,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+from ragstack.tenancy import allowed_collection_ids
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +118,37 @@ class CollectionRegistry:
         if cid is None:
             return self._entries[self._default_id]
         return self._entries[cid]  # KeyError → 404/400 at the router
+
+
+def confined_collection_name(
+    registry: CollectionRegistry | None, tenant: str, mapping: dict[str, list[str]]
+) -> str | None:
+    """The physical collection name a *confined* tenant's graph reads must be
+    scoped to, or ``None`` when the caller is unrestricted.
+
+    The knowledge-graph endpoints take no ``collection`` argument — one graph
+    store spans every collection — so a tenant confined by ``TENANT_COLLECTIONS``
+    would otherwise inspect triples derived from collections it may not query
+    (#209). This picks the same collection an unqualified ``/v1/query`` serves it:
+    the registry default when permitted, else its first allowed collection present
+    in the registry.
+
+    ``None`` means "don't scope": the caller is unrestricted (operators/admins
+    keep the cross-collection inspection view, which is also the only way to see
+    pre-#209 triples that carry no collection stamp), or there is no registry, or
+    the tenant's allowlist matches nothing in it — the last case being a caller
+    with no readable collection at all, which the routers already handle by way of
+    the tenant filter.
+    """
+    allowed = allowed_collection_ids(tenant, mapping)
+    if allowed is None or registry is None:
+        return None
+    if registry.default_id in allowed:
+        return registry.resolve(registry.default_id).collection
+    present = sorted(e.id for e in registry.entries() if e.id in allowed)
+    if not present:
+        return None
+    return registry.resolve(present[0]).collection
 
 
 def load_collection_specs(settings: Any) -> list[CollectionSpec]:

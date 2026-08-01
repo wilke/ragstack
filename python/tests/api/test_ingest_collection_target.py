@@ -46,6 +46,10 @@ def test_build_ingestor_binds_collection_stores():
     assert p.embedder is e.embedder
     assert p.vector_store is e.vector_store
     assert p.text_index is e.text_index
+    # ...and it knows WHICH collection it writes into. The graph store is shared
+    # across collections, so without this the triples it extracts would be
+    # unstamped and its delete-prior would cross the collection boundary (#209).
+    assert p.collection == e.collection
 
 
 # --- endpoint --------------------------------------------------------------- #

@@ -264,9 +264,16 @@ def _embedder_for_spec(http: httpx.AsyncClient, spec: CollectionSpec) -> Any:
     return _make_embedder(http, api=spec.embedding_api, model=spec.embedding_model, urls=urls)
 
 
-def _hybrid_retriever(vs: Any, ti: Any, emb: Any, *, graph_store: Any) -> Any:
+def _hybrid_retriever(
+    vs: Any, ti: Any, emb: Any, *, graph_store: Any, collection: str
+) -> Any:
     """A HybridRetriever over one collection's stores — shared by the startup
-    builder and the runtime create path so their retriever wiring can't drift."""
+    builder and the runtime create path so their retriever wiring can't drift.
+
+    ``collection`` is the physical collection name this retriever serves. The
+    vector store and text index are already bound to it; the graph store is the
+    single process-wide instance shared by every collection, so the name has to
+    be handed to the retriever for the graph leg to be scoped at all (#209)."""
     return HybridRetriever(
         vs, ti, emb,
         graph_store=graph_store,
@@ -274,6 +281,7 @@ def _hybrid_retriever(vs: Any, ti: Any, emb: Any, *, graph_store: Any) -> Any:
         candidate_multiplier=settings.retrieval_candidate_multiplier,
         graph_context_score=settings.graph_context_score,
         graph_context_depth=settings.graph_context_depth,
+        collection=collection,
     )
 
 
@@ -314,7 +322,9 @@ async def build_collection_entry(
         chunk_overlap=spec.chunk_overlap,
         chunk_params=spec.chunk_params,
         is_default=False,
-        retriever=_hybrid_retriever(vs, ti, emb, graph_store=graph_store),
+        retriever=_hybrid_retriever(
+            vs, ti, emb, graph_store=graph_store, collection=spec.collection
+        ),
         vector_store=vs,
         text_index=ti,
         embedder=emb,
@@ -354,7 +364,12 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
     collection's bound embedder/chunker/stores (so vectors match its model and
     land in its index), while sharing the app's loader, graph store, KG extractor,
     job store, and ingest backend. Used when ``/v1/ingest`` targets a non-default
-    ``collection``; the default collection keeps using the prebuilt app ingestor."""
+    ``collection``; the default collection keeps using the prebuilt app ingestor.
+
+    The graph store is shared, so the pipeline is told which collection it writes
+    into: triples get stamped with it, and delete-prior is scoped by it so a
+    re-ingest here can't drop another collection's triples for the same doc_id
+    (#209)."""
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,
@@ -367,6 +382,7 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         text_index=entry.text_index,
         graph_store=app_state.graph_store,
         kg_extractor=app_state.kg_extractor,
+        collection=entry.collection,
     )
     return ShardedIngestor(
         pipeline,
@@ -879,6 +895,10 @@ async def lifespan(app: FastAPI):
     vector_store = _build_vector_store()
     text_index = _build_text_index()
     graph_store = _build_graph_store()
+    # Resolved up front (not just where the registry is built) because the default
+    # pipeline and retriever below need it to scope the shared graph store: the
+    # "default" collection is a collection like any other on the graph axis (#209).
+    default_collection = _derived_collection_name()
 
     # Qdrant: make sure the collection exists at startup so the first request doesn't race.
     if hasattr(vector_store, "ensure_collection"):
@@ -944,6 +964,7 @@ async def lifespan(app: FastAPI):
         text_index=text_index,
         graph_store=graph_store,
         kg_extractor=kg_extractor,
+        collection=default_collection,
     )
 
     job_store = make_job_store(
@@ -985,15 +1006,9 @@ async def lifespan(app: FastAPI):
     # via RRF. With the in-memory text index the BM25 leg still works (Jaccard),
     # but it's the Elasticsearch backend that makes it real; the graph leg is
     # active only when a graph store is configured.
-    retriever = HybridRetriever(
-        vector_store,
-        text_index,
-        embedder,
-        graph_store=graph_store,
-        rrf_scorer=RRFScorer(k=settings.rrf_k),
-        candidate_multiplier=settings.retrieval_candidate_multiplier,
-        graph_context_score=settings.graph_context_score,
-        graph_context_depth=settings.graph_context_depth,
+    retriever = _hybrid_retriever(
+        vector_store, text_index, embedder,
+        graph_store=graph_store, collection=default_collection,
     )
 
     app.state.http_client = http_client
@@ -1019,7 +1034,6 @@ async def lifespan(app: FastAPI):
     # Multi-collection registry: the pinned/derived collection is the "default"
     # entry; collections_file/_json add cross-model / per-chunker entries. With no
     # config this is a one-entry registry equal to the default (unchanged).
-    default_collection = _derived_collection_name()
     app.state.collections = await _build_collection_registry(
         http_client,
         graph_store=graph_store,

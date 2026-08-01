@@ -53,6 +53,20 @@ async def test_create_then_listed(client):
     assert cid in {c["id"] for c in listed}
 
 
+async def test_created_entry_retriever_is_collection_scoped(client):
+    """#209: a runtime-created collection's retriever must be bound to its own
+    physical collection, or its graph leg would fuse every other collection's
+    triples (the graph store is shared; only the vector/text stores are not)."""
+    await _register(client, EMB)
+    r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK})
+    assert r.status_code == 201, r.text
+
+    from ragstack.api.main import app
+
+    entry = app.state.collections.resolve(r.json()["id"])
+    assert entry.retriever.collection == entry.collection
+
+
 async def test_create_unknown_model_404(client):
     r = await client.post("/v1/collections", json={"embedding": "ghost", "chunk": CHUNK})
     assert r.status_code == 404

@@ -68,3 +68,54 @@ async def test_neighbors_rejects_out_of_range_depth(client):
     assert (await client.get("/v1/graph/neighbors/Alice?depth=0")).status_code == 422
     assert (await client.get("/v1/graph/neighbors/Alice?depth=999")).status_code == 422
     assert (await client.get("/v1/graph/neighbors/Alice?depth=3")).status_code == 200
+
+
+async def _seed_two_collections() -> InMemoryGraphStore:
+    """One graph store holding triples from the ``client`` fixture's collection
+    (physical name ``ragstack``) and from another one."""
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="Alice", predicate="knows", object="Bob",
+               tenant_id="default", collection="ragstack"),
+        Triple(subject="Alice", predicate="knows", object="Eve",
+               tenant_id="default", collection="other_corpus"),
+    ])
+    app.state.graph_store = graph
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_confined_tenant_sees_only_its_collections_triples(client, monkeypatch):
+    """#209: the graph endpoints take no ``collection`` argument, so a tenant
+    confined by TENANT_COLLECTIONS would otherwise inspect triples derived from a
+    collection it may not even query."""
+    from ragstack.config import settings
+
+    await _seed_two_collections()
+    monkeypatch.setattr(settings, "tenant_collections", {"default": ["default"]})
+
+    neighbors = (await client.get("/v1/graph/neighbors/Alice")).json()
+    assert {t["object"] for t in neighbors} == {"Bob"}
+
+    entities = {e["name"] for e in (await client.get("/v1/graph/entities")).json()}
+    assert entities == {"Alice", "Bob"}
+
+    stats = (await client.get("/v1/graph/stats")).json()
+    assert stats["relationships"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unrestricted_caller_keeps_the_cross_collection_view(client, monkeypatch):
+    """Operators/admins (and every deployment with the feature off) still get the
+    whole graph — which is also the only view that shows pre-#209 triples, written
+    before triples carried a collection stamp."""
+    from ragstack.config import settings
+
+    graph = await _seed_two_collections()
+    await graph.add_triples([
+        Triple(subject="Alice", predicate="knows", object="Legacy", tenant_id="default"),
+    ])
+    monkeypatch.setattr(settings, "tenant_collections", {})
+
+    neighbors = (await client.get("/v1/graph/neighbors/Alice")).json()
+    assert {t["object"] for t in neighbors} == {"Bob", "Eve", "Legacy"}

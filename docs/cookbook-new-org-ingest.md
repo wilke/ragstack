@@ -354,5 +354,13 @@ A different org's key can never read `acme` data (tenant filter enforced at Qdra
   worker, so ingest won't silently land on a stock container and `ModuleNotFound`.
 - **Neo4j** (only if you enable the graph leg): password must not be the default `neo4j`
   (Neo4j 5 rejects it) — set `NEO4J_PASSWORD=ragstack`.
+- **Graph triples are stamped with their collection** (#209). Unlike Qdrant/ES, one Neo4j
+  holds every collection's triples, so the boundary lives in the data: a query on `acme`
+  never fuses graph context derived from another collection, and a re-ingest into `acme`
+  never deletes another collection's triples for the same `doc_id`. Triples written
+  *before* that change carry no stamp and are invisible to any collection-scoped read —
+  re-ingest to re-derive them (the KG is small and derived; nothing else is affected).
+  `ensure_schema` at startup drops the old `entity_name_tenant` constraint and creates
+  `entity_name_tenant_collection`; both statements are idempotent.
 - **Single ragstack worker = serial scatter.** Start more `ragstack-cpu-N` workers to
   actually parallelize 40k docs across the fleet.
