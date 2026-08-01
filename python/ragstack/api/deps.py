@@ -27,7 +27,7 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import make_ingest_backend
-from ragstack.ingestion.chunkers import make_chunker
+from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
@@ -721,7 +721,11 @@ def _build_chunker():
     raise a cross-loop error — and is closed at shutdown.
     """
     method = settings.chunk_method
-    if method not in ("fixed", "sentence", "words", "semantic"):
+    # Validate against the canonical set, not a hand-copied literal: an out-of-date
+    # literal here silently dropped `fixed_token` (and `semantic_pooled`) to `fixed`,
+    # turning a token-window request into char-budget chunking before the
+    # method-specific handling below could run.
+    if method not in CHUNK_METHODS:
         log.warning("unknown chunk_method %r — falling back to 'fixed'", method)
         method = "fixed"
     bridge: SyncEmbedBridge | None = None
