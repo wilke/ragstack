@@ -1,0 +1,4 @@
+# Per-run outputs and caches are reproducible artefacts, not source.
+# Publishable runs get copied out deliberately; see PROTOCOL.md §8.3.
+runs/
+cache/
