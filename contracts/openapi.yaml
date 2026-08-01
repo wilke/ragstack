@@ -377,6 +377,7 @@ paths:
       tags: [Stats]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Per-store tenant-scoped counts
@@ -406,6 +407,7 @@ paths:
       tags: [Stats]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Tenancy and per-tenant, per-collection counts
@@ -428,6 +430,7 @@ paths:
       tags: [Query]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Available collections
@@ -511,6 +514,7 @@ paths:
       tags: [Query]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Assignable models
@@ -534,6 +538,7 @@ paths:
       tags: [Query]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       parameters:
         - name: ids
           in: query
@@ -568,6 +573,7 @@ paths:
       tags: [Graph]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Tenant-scoped graph counts
@@ -692,6 +698,29 @@ components:
         RBAC role (admin | engineer | manager | researcher). Roles are enforced
         per-endpoint server-side; some routes (e.g. /v1/config, /v1/admin/*)
         require the admin role and return 403 otherwise.
+    BearerIdentity:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >-
+        End-user identity credential, verified server-side by the configured
+        identity provider (`IDENTITY_PROVIDER=bvbrc|oidc`; `none`, the default,
+        disables this scheme entirely and the header is ignored). The canonical
+        form is `Authorization: Bearer <credential>`; the `Bearer ` prefix is
+        optional because the BV-BRC token wire format carries no scheme.
+
+
+        The authenticated subject always comes from the provider — a BV-BRC
+        token's `un=` is read only after its RSA signature verifies against a
+        public key from a **pinned** issuer allowlist, and an OIDC ID token's
+        `sub` only after RS256 verification against the issuer's JWKS with `iss`
+        and `aud` pinned. The caller's tenant is `{issuer}:{subject}` and the
+        role is always `researcher` (never the deployment's default role).
+
+
+        Presenting this header together with `X-API-Key` is a **400**: which
+        credential authenticated the request must never be ambiguous. A provider
+        that cannot be reached is a **503**, never a 401 and never an allow.
   schemas:
     ConfigResponse:
       type: object

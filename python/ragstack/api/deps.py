@@ -874,6 +874,12 @@ async def lifespan(app: FastAPI):
     from ragstack.api.security import validate_role_settings
 
     validate_role_settings()
+    # Same idea for the identity layer: an unknown provider name, an empty
+    # BV-BRC issuer allowlist or an OIDC client with no pinned `aud` are all
+    # silent-and-permanent failures (the last one being a silent *acceptance*).
+    from ragstack.identity import validate_identity_settings
+
+    validate_identity_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()

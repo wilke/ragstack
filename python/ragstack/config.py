@@ -291,6 +291,62 @@ class Settings(BaseSettings):
     # privilege by default: the admin/config/stats surface stays closed unless a
     # key is explicitly granted a higher role (or this is raised in dev).
     default_role: str = "researcher"
+
+    # --- Identity (bearer credentials) ------------------------------------- #
+    # OFF by default. "none" means the Authorization header is not an
+    # authentication input at all and every existing deployment behaves exactly
+    # as before. Turning this on makes `Authorization: Bearer <credential>` a
+    # second way in, resolving to tenant f"{issuer}:{subject}" with the explicit
+    # ROLE_RESEARCHER role — never default_role, which is `admin` on the demo box.
+    identity_provider: str = "none"          # none | bvbrc | oidc
+    # HARD PIN for BV-BRC tokens: the only SigningSubject URLs whose keys may
+    # verify a token. BV-BRC's own validateToken.js fetches the key from whatever
+    # URL the token embeds (its allowlist guard builds an Error it never throws),
+    # so without this pin anyone who can serve a URL can forge any username.
+    # Default is the canonical set from BV-BRC's P3AuthConstants.pm.
+    identity_issuer_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "https://user.patricbrc.org/public_key",
+            "https://user.bv-brc.org/public_key",
+            "https://user.alpha.patricbrc.org/public_key",
+            "https://user.beta.patricbrc.org/public_key",
+        ]
+    )
+
+    @field_validator("identity_issuer_allowlist", mode="before")
+    @classmethod
+    def _split_identity_issuer_allowlist(cls, value: object) -> object:
+        return _split_list_env(value)
+    # Successful authentications are memoized for this long (bounded LRU, per
+    # process). This is also the revocation lag — and BV-BRC tokens cannot be
+    # revoked before expiry at all — so the startup check refuses > 300 s.
+    identity_cache_ttl_seconds: int = 300
+    # Public-key / JWKS cache lifetime, and the HTTP timeout for fetching them.
+    identity_key_cache_ttl_seconds: int = 86400
+    identity_http_timeout_seconds: float = 5.0
+    # Clock skew tolerated on ID-token exp/nbf/iat, capped at 300 s.
+    identity_clock_skew_seconds: int = 300
+    # OIDC. The issuer is used for discovery ({issuer}/.well-known/...); the
+    # client ids pin `aud` — WITHOUT them an ID token minted for any other
+    # application on the same IdP would be accepted, so startup refuses an empty
+    # list. allowed_issuers overrides the accepted `iss` spellings; left empty it
+    # is [issuer], except for Google, which mints both accounts.google.com and
+    # https://accounts.google.com (enumerated, never prefix-matched).
+    identity_oidc_issuer: str = ""
+    identity_oidc_client_ids: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    identity_oidc_allowed_issuers: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    # Short label that becomes Identity.issuer and the tenant prefix ("google:123…").
+    identity_oidc_issuer_label: str = "oidc"
+
+    @field_validator(
+        "identity_oidc_client_ids", "identity_oidc_allowed_issuers", mode="before"
+    )
+    @classmethod
+    def _split_identity_oidc_lists(cls, value: object) -> object:
+        return _split_list_env(value)
+
     # Per-tenant collection allowlist: tenant -> [collection ids] it may read/query
     # (and ingest into). A tenant ABSENT from the map is UNRESTRICTED — so an
     # operator/admin tenant sees every collection while specific orgs are confined
