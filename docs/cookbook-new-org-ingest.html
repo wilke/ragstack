@@ -202,7 +202,7 @@ works without it.</p>
 <p>Key facts (verified):
 - Python env: <code>/rag/envs/ragstack</code> (3.12). Run pytest/uvicorn with this interpreter.
 - <code>HF_HOME=/rag/cache</code> (shared tokenizer cache — required for <code>fixed_token</code> chunking).
-- GoWe engine: <code>http://localhost:8091</code>, BV-BRC token auth (anonymous disabled).</p>
+- GoWe engine: <code>http://GOWE_HOST</code>, BV-BRC token auth (anonymous disabled).</p>
 <hr />
 <h2 id="2-start-a-new-api-server-for-the-org">2. Start a NEW API server for the org</h2>
 <p>Create an env file. If another API is already on <code>:8000</code>, pick a free port.</p>
@@ -306,7 +306,7 @@ chunks, then POSTs batches to a vLLM embedding instance and upserts to Qdrant/ES
 independent ways to scale 40k docs (both supported today, pick either/both):</p>
 <pre><code>                 scatter (N shards)
   GoWe engine ─────────────────────────▶  ragstack-cpu workers  ──HTTP──▶  vLLM fleet
-  :8091                                    (--runtime none, in the         :9001..:9008
+  (engine)                                 (--runtime none, in the         :9001..:9008
                                             ragstack env; CPU orchestration) (GPU embedding)
                                                     │
                                                     └── upsert ──▶ Qdrant :6333 / ES :9200
@@ -332,7 +332,7 @@ ragstack env</strong>, group <code>ragstack-cpu</code> (one, <code>ragstack-cpu-
 <pre><code class="language-bash"># repeat with --name ragstack-cpu-2..N to parallelize the scatter
 PATH=&quot;/rag/envs/ragstack/bin:$PATH&quot; HF_HOME=/rag/cache \
   /scout/Experiments/GoWe/bin/gowe-worker \
-    --server http://localhost:8091 --runtime none \
+    --server http://GOWE_HOST --runtime none \
     --name ragstack-cpu-2 --group ragstack-cpu \
     --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
 </code></pre>
@@ -377,7 +377,7 @@ CWL   = Path(&quot;/rag/repos/ragstack/cwl/ingest-bulk.cwl&quot;).read_text()
 INPUTS= yaml.safe_load(Path(&quot;/scout/wf/data/acme/ingest.inputs.yml&quot;).read_text())
 
 async def main():
-    c = GoWeClient(&quot;http://localhost:8091&quot;)           # token from $GOWE_TOKEN
+    c = GoWeClient(&quot;http://GOWE_HOST&quot;)           # token from $GOWE_TOKEN
     try:
         wf  = await c.register_workflow(&quot;acme-bulk-ingest&quot;, CWL)
         sub = await c.submit(wf, INPUTS, labels={&quot;worker_group&quot;: &quot;ragstack-cpu&quot;})

@@ -57,7 +57,7 @@ works without it.
 Key facts (verified):
 - Python env: `/rag/envs/ragstack` (3.12). Run pytest/uvicorn with this interpreter.
 - `HF_HOME=/rag/cache` (shared tokenizer cache — required for `fixed_token` chunking).
-- GoWe engine: `http://localhost:8091`, BV-BRC token auth (anonymous disabled).
+- GoWe engine: `http://GOWE_HOST`, BV-BRC token auth (anonymous disabled).
 
 ---
 
@@ -184,7 +184,7 @@ independent ways to scale 40k docs (both supported today, pick either/both):
 ```
                  scatter (N shards)
   GoWe engine ─────────────────────────▶  ragstack-cpu workers  ──HTTP──▶  vLLM fleet
-  :8091                                    (--runtime none, in the         :9001..:9008
+  (engine)                                 (--runtime none, in the         :9001..:9008
                                             ragstack env; CPU orchestration) (GPU embedding)
                                                     │
                                                     └── upsert ──▶ Qdrant :6333 / ES :9200
@@ -215,7 +215,7 @@ The `gowe-worker` binary is **not** in the ragstack env — it lives in the GoWe
 # repeat with --name ragstack-cpu-2..N to parallelize the scatter
 PATH="/rag/envs/ragstack/bin:$PATH" HF_HOME=/rag/cache \
   /scout/Experiments/GoWe/bin/gowe-worker \
-    --server http://localhost:8091 --runtime none \
+    --server http://GOWE_HOST --runtime none \
     --name ragstack-cpu-2 --group ragstack-cpu \
     --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
 ```
@@ -268,7 +268,7 @@ CWL   = Path("/rag/repos/ragstack/cwl/ingest-bulk.cwl").read_text()
 INPUTS= yaml.safe_load(Path("/scout/wf/data/acme/ingest.inputs.yml").read_text())
 
 async def main():
-    c = GoWeClient("http://localhost:8091")           # token from $GOWE_TOKEN
+    c = GoWeClient("http://GOWE_HOST")           # token from $GOWE_TOKEN
     try:
         wf  = await c.register_workflow("acme-bulk-ingest", CWL)
         sub = await c.submit(wf, INPUTS, labels={"worker_group": "ragstack-cpu"})
