@@ -14,7 +14,7 @@ flowchart TB
     GB["GoWeBackend → GoWeClient<br/>(async REST, BV-BRC token)"]
   end
 
-  subgraph engine["GoWe engine :8091 (CWL v1.2)"]
+  subgraph engine["GoWe engine (CWL v1.2)"]
     direction TB
     API["REST /api/v1<br/>auth: BV-BRC token (anon disabled)"]
     SCH["scheduler · scatter/gather · retry · resume"]
@@ -71,7 +71,7 @@ flowchart TB
                   │  REST /api/v1  (Authorization: BV-BRC token; anon disabled)
                   ▼
   ┌──────────────────────────────────────────────────────────────┐
-  │  GoWe engine  :8091   scatter/gather · retry · resume          │
+  │  GoWe engine          scatter/gather · retry · resume          │
   └───────┬───────────────────────────────────────────┬──────────┘
    scatter │ 1 task per shard                    gather │
           ▼                 ▼                 ▼          ▼

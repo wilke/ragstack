@@ -82,7 +82,7 @@ The full suite is 550+ passing; the GoWe modules are `ruff`-clean.
 
 ## 4. Runtimes & execution model
 
-- **Server:** `http://localhost:8091`, `--default-executor worker`. **Auth is a BV-BRC
+- **Server:** `http://GOWE_HOST`, `--default-executor worker`. **Auth is a BV-BRC
   token** in the `Authorization` header (the server strips an optional `Bearer` prefix).
 - **Workers** run tasks in one of three runtimes (`internal/worker/runtime.go`): `apptainer`
   (default deployment; container per task), `docker`, or **`none`** (runs the command
@@ -96,7 +96,7 @@ The full suite is 550+ passing; the GoWe modules are `ruff`-clean.
 
   ```bash
   PATH="/rag/envs/ragstack/bin:$PATH" HF_HOME=/rag/cache gowe-worker \
-      --server http://localhost:8091 --runtime none \
+      --server http://GOWE_HOST --runtime none \
       --name ragstack-cpu-1 --group ragstack-cpu \
       --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
   ```
@@ -131,7 +131,7 @@ dominant cost (the embedder).
 | Axis | Value |
 |---|---|
 | Host | `coconut` — 8× NVIDIA H200 NVL (144 GB) |
-| GoWe | server `:8091`; workers: 4× apptainer (`default` group) + 1× `--runtime none` (`ragstack-cpu`, this study). **Single ragstack worker → scatter serializes.** |
+| GoWe | GoWe engine (local); workers: several apptainer workers plus a `--runtime none` group (`ragstack-cpu`, this study). **Single ragstack worker → scatter serializes.** |
 | Embedders | **SFR-Embedding-Mistral** (4096-d) on vLLM `:9001–9008` (GPU); **BGE-base** (768-d) sidecar `:50053` (CPU) |
 | Stores | Qdrant `:6333`, Elasticsearch `:9200` (throwaway collection/index `ragstack_perf_bench`, dim 4096; torn down after) |
 | Chunker | `fixed_token`, 256-token window / 32 overlap (production default) |
