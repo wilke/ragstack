@@ -1,7 +1,7 @@
 .PHONY: help install-python test-python lint-python run-python \
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
-       test-conformance-authz \
+       test-conformance-authz test-conformance-identity-google \
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
@@ -76,6 +76,9 @@ test-conformance: test-conformance-python test-conformance-go ## Run conformance
 
 test-conformance-authz: ## Boot a keyed in-memory API and run the authz (401/403) conformance suite
 	conformance/run_authz_keyed.sh
+
+test-conformance-identity-google: ## Boot a Google-OIDC API and run the identity conformance suite (needs GOOGLE_OIDC_CLIENT_ID)
+	conformance/run_identity_google.sh
 
 # ---------------------------------------------------------------------------
 # Docker

@@ -1,4 +1,10 @@
-"""Protocol definitions for all pipeline components."""
+"""Protocol definitions for all pipeline components.
+
+The auth-side protocol lives next to its implementations rather than here:
+``ragstack.identity.base.IdentityProvider`` (who is this caller?), because its
+failure modes are normative — ``IdentityInvalid`` → 401 vs ``IdentityUnavailable``
+→ 503, never an allow — and belong beside the code that raises them.
+"""
 from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable

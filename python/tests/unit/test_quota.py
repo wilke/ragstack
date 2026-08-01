@@ -84,3 +84,57 @@ async def test_sharded_ingestor_enforces_quota():
     results = await ingestor.ingest_manifest(manifest, tenant_id="t")
     assert len(results) == 8
     assert probe.peak <= 2
+
+
+# --- LRU eviction (spec §5.0: tenants now derive from usernames) ------------- #
+
+
+@pytest.mark.asyncio
+async def test_semaphore_map_is_bounded():
+    """A tenant is f"{issuer}:{subject}" once the identity layer is on — one per
+    authenticated end user. An unbounded map would be a memory leak keyed by
+    anyone who can log in."""
+    quota = TenantQuota(2, max_tenants=8)
+    for i in range(100):
+        async with quota.slot(f"bvbrc:user-{i}"):
+            pass
+    assert len(quota._sems) <= 8
+    assert quota._inflight == {}
+
+
+@pytest.mark.asyncio
+async def test_eviction_is_least_recently_used():
+    quota = TenantQuota(2, max_tenants=2)
+    for tenant in ("a", "b"):
+        async with quota.slot(tenant):
+            pass
+    async with quota.slot("a"):  # refresh a's recency
+        pass
+    async with quota.slot("c"):  # pushes past the ceiling → evicts b
+        pass
+    assert set(quota._sems) == {"a", "c"}
+
+
+@pytest.mark.asyncio
+async def test_an_in_flight_tenant_is_never_evicted():
+    """Evicting a live semaphore would let the next caller mint a fresh one and
+    quietly double that tenant's concurrency."""
+    quota = TenantQuota(1, max_tenants=1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def holder():
+        async with quota.slot("busy"):
+            started.set()
+            await release.wait()
+
+    task = asyncio.create_task(holder())
+    await started.wait()
+    for i in range(20):
+        async with quota.slot(f"other-{i}"):
+            pass
+    assert "busy" in quota._sems  # still held, so still present
+
+    release.set()
+    await task
+    assert quota._inflight == {}

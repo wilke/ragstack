@@ -17,6 +17,12 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "httpx>=0.27",
+    # RSA signature verification for the identity layer (ragstack/identity/):
+    # BV-BRC signed tokens (PKCS#1 v1.5 / SHA-1) and OIDC ID tokens (RS256).
+    # Non-optional even though IDENTITY_PROVIDER defaults to `none`, because
+    # api/security.py imports the layer unconditionally — an auth path that can
+    # be switched off by a missing wheel is worse than a required dependency.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
