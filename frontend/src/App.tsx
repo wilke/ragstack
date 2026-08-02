@@ -3,6 +3,7 @@ import { getStoredApiKey, setStoredApiKey } from "./api/config";
 import { BackendSwitcher } from "./components/BackendSwitcher";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
+import { LibraryView } from "./components/LibraryView";
 import { OpsDashboard } from "./components/OpsDashboard";
 
 // SPA shell: Explore (query console, #93) + Compare (multi-collection/tenant A/B
@@ -10,16 +11,18 @@ import { OpsDashboard } from "./components/OpsDashboard";
 // toggle rather than a router keeps the scaffold minimal. The in-memory API key
 // is shared across modules.
 
-type View = "explore" | "compare" | "ops";
+type View = "explore" | "library" | "compare" | "ops";
 
 const TABS: { id: View; label: string }[] = [
   { id: "explore", label: "Explore" },
+  { id: "library", label: "Library" },
   { id: "compare", label: "Compare" },
   { id: "ops", label: "Ops" },
 ];
 
 const SUBTITLE: Record<View, string> = {
   explore: "Explore — ask the corpus, verify the sources",
+  library: "Library — upload PDFs, watch them ingest, then ask",
   compare: "Compare — same query across collections, ranked side by side",
   ops: "Ops — stores, counts, and dependency health",
 };
@@ -66,6 +69,8 @@ export function App() {
 
       {view === "explore" ? (
         <ExploreView apiKey={apiKey} setApiKey={setApiKey} />
+      ) : view === "library" ? (
+        <LibraryView apiKey={apiKey} setApiKey={setApiKey} />
       ) : view === "compare" ? (
         <CompareView apiKey={apiKey} setApiKey={setApiKey} />
       ) : (

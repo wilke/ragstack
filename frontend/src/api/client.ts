@@ -96,6 +96,61 @@ export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryRespo
   return post<QueryResponse>("/v1/query", req, apiKey);
 }
 
+// --- Ingest upload (multipart) + job polling (demo Library view) ---
+
+// Per-document progress for a batch/directory ingest. Present once the job has
+// enumerated its documents; may be null for a job that hasn't started yet.
+export interface IngestItemCounts {
+  total?: number;
+  completed?: number;
+  failed?: number;
+  pending?: number;
+}
+
+// Response shape shared by POST /v1/ingest/upload and GET /v1/ingest/{job_id}.
+export interface IngestResponse {
+  job_id: string;
+  status: string; // accepted | running | completed | failed | unknown
+  chunk_ids?: string[];
+  items?: IngestItemCounts | null;
+}
+
+// A terminal ingest status: polling should stop once one of these is seen.
+export function isTerminalIngestStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "unknown";
+}
+
+// Multipart upload of one or more PDFs. Does NOT set Content-Type — the browser
+// must add the multipart boundary itself. The tenant/collection default is
+// derived server-side from the API key; `collection` overrides the target.
+// 415 (non-PDF) / 413 (too large or too many) surface as ApiError with the code.
+export async function uploadPdfs(
+  files: File[],
+  collection?: string,
+  apiKey?: string,
+): Promise<IngestResponse> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  if (collection) form.append("collection", collection);
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(apiUrl("/v1/ingest/upload"), {
+    method: "POST",
+    headers,
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail || res.statusText);
+  }
+  return (await res.json()) as IngestResponse;
+}
+
+// Poll a single ingest job. An unknown job_id returns status "unknown" (HTTP 200).
+export function getIngestJob(jobId: string, apiKey?: string): Promise<IngestResponse> {
+  return get<IngestResponse>(`/v1/ingest/${encodeURIComponent(jobId)}`, apiKey);
+}
+
 // --- Ops dashboard read endpoints (#85) ---
 
 async function get<T>(path: string, apiKey?: string): Promise<T> {
