@@ -51,6 +51,16 @@ class CollectionSpec(BaseModel):
     chunk_params: dict[str, Any] = Field(default_factory=dict)
 
     def es_index(self) -> str:
+        """The ES index this entry's BM25 leg reads/writes. It rides on
+        ``collection`` by default, so whatever isolates the vector store isolates
+        the text index too — there is no second name-derivation to keep in sync.
+
+        ``collection``/``text_index`` are also the *deliberate* way to share one
+        physical store between two registry ids: author both specs in
+        ``collections_file`` with the same ``collection`` value. Nothing in the
+        codebase does this today, and the ``POST /v1/collections`` path never
+        produces it (an explicit id is folded into the physical name so named
+        libraries stay isolated) — sharing is opt-in, by hand, at config time."""
         return self.text_index or self.collection
 
     def emb_signature(self) -> tuple[str, str, tuple[str, ...], str]:

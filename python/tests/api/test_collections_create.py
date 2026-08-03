@@ -102,6 +102,84 @@ async def test_create_is_content_addressed_and_idempotent(client):
     assert other.json()["id"] != a.json()["id"]
 
 
+# --- named libraries must not share a physical store ------------------------ #
+
+
+async def test_named_collections_with_same_spec_get_distinct_stores(
+    client, monkeypatch, tmp_path
+):
+    """The isolation bug: `andy`, `open-access` and `test2` were all created with
+    the same embedding model + chunker, so all three derived the SAME physical
+    Qdrant collection / ES index and reported identical counts — aliases over one
+    store. An explicit id must mint its own store."""
+    from ragstack.api.collections import CollectionSpec
+    from ragstack.api.main import app
+
+    f = tmp_path / "libs.collections.json"
+    monkeypatch.setattr(settings, "collections_file", str(f))
+    await _register(client, EMB)
+    ids = ["andy", "open-access", "test2"]
+    for cid in ids:
+        r = await client.post(
+            "/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK, "id": cid}
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["id"] == cid
+
+    physicals = [app.state.collections.resolve(cid).collection for cid in ids]
+    assert len(set(physicals)) == 3, physicals
+    # ...and each name is still diagnosable back to its library + build spec.
+    for p in physicals:
+        assert p.startswith("ragstack_lib_") and "fixed_token" in p and "_8_" in p
+
+    # The ES index rides on the same name (CollectionSpec.es_index() is
+    # `text_index or collection`, and create pins text_index to the physical name),
+    # so the text side is isolated by the same fix. Read it back off the persisted
+    # specs rather than the built entry, which doesn't carry the index name.
+    specs = [CollectionSpec.model_validate(d) for d in json.loads(f.read_text())]
+    indices = [s.es_index() for s in specs if s.id in ids]
+    assert len(indices) == 3 and len(set(indices)) == 3, indices
+    assert set(indices) == set(physicals)
+
+
+async def test_named_collection_differs_from_content_addressed_one(client):
+    """An id'd library and the anonymous content-addressed corpus built from the
+    same spec are different data and must not land in the same store."""
+    from ragstack.api.main import app
+
+    await _register(client, EMB)
+    anon = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK})
+    named = await client.post(
+        "/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK, "id": "andy"}
+    )
+    assert anon.status_code == 201 and named.status_code == 201
+    a = app.state.collections.resolve(anon.json()["id"])
+    b = app.state.collections.resolve("andy")
+    assert a.collection != b.collection
+
+
+async def test_named_collection_duplicate_id_is_still_409(client):
+    await _register(client, EMB)
+    first = await client.post(
+        "/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK, "id": "andy"}
+    )
+    assert first.status_code == 201
+    dup = await client.post(
+        "/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK, "id": "andy"}
+    )
+    assert dup.status_code == 409
+    # ...even with a *different* build spec: the registry id is the unique key.
+    dup2 = await client.post(
+        "/v1/collections",
+        json={
+            "embedding": "emb-sfr",
+            "chunk": {"method": "fixed_token", "size": 512, "overlap": 64},
+            "id": "andy",
+        },
+    )
+    assert dup2.status_code == 409
+
+
 async def test_create_requires_admin(client, monkeypatch):
     monkeypatch.setattr(security.settings, "default_role", "researcher")
     r = await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK})

@@ -1166,7 +1166,12 @@ components:
             params: { type: object, default: {} }
           additionalProperties: false
         id:
-          description: Optional explicit id; omitted → derived from the (model, dim, chunk) signature.
+          description: >-
+            Optional explicit id, naming a *library*. When given, the id is also
+            folded into the physical store name, so two libraries built from the
+            same (model, dim, chunk) spec are isolated from each other rather than
+            aliasing one store. Omitted → both the id and the physical name are
+            derived from the content-addressed (model, dim, chunk) signature.
           type: string
         label:
           type: string

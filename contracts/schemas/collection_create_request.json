@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "collection_create_request.json",
   "title": "CollectionCreateRequest",
-  "description": "Create a content-addressed collection bound to a registered embedding model and a chunk strategy. Build-time config is collection identity, so this mints a new collection rather than editing one. The collection is created empty; populate it via POST /v1/ingest with the returned collection id.",
+  "description": "Create a collection bound to a registered embedding model and a chunk strategy. Build-time config is collection identity, so this mints a new collection rather than editing one. The collection is created empty; populate it via POST /v1/ingest with the returned collection id. Omit `id` for a corpus (content-addressed over the build spec, so re-creating the same spec is idempotent); supply `id` for a named library (its own isolated store, even when another library shares the build spec).",
   "type": "object",
   "required": ["embedding", "chunk"],
   "properties": {
@@ -35,7 +35,7 @@
       "additionalProperties": false
     },
     "id": {
-      "description": "Optional explicit collection id. Omitted → derived from the content-addressed (model, dim, chunk) signature.",
+      "description": "Optional explicit collection id, naming a *library*. When given, the id is also folded into the physical store name, so two libraries built from the same (model, dim, chunk) spec are isolated from each other rather than aliasing one store. Omitted → both the id and the physical name are derived from the content-addressed (model, dim, chunk) signature.",
       "type": "string"
     },
     "label": {

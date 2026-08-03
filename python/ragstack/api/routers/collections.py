@@ -174,7 +174,10 @@ class ChunkConfig(BaseModel):
 class CollectionCreateRequest(BaseModel):
     embedding: str  # id of a registered embedding model
     chunk: ChunkConfig
-    id: str | None = None  # explicit collection id; omitted → content-addressed
+    # Explicit id → a *named library*: the id is folded into the physical store name
+    # so same-spec libraries stay isolated. Omitted → a *corpus*: content-addressed
+    # over (model, dim, chunk), so re-creating the same spec is idempotent.
+    id: str | None = None
     label: str = ""
     model_config = ConfigDict(extra="forbid")
 
@@ -192,12 +195,17 @@ async def create_collection(
     models: ModelRegistry = Depends(get_model_registry),
     registry: CollectionRegistry = Depends(get_collections),
 ) -> CollectionInfo:
-    """Create a content-addressed collection bound to a registered embedding model
-    and a chunk strategy (build-time model selection). Admin only. The collection
-    is created empty; populate it via POST /v1/ingest with the returned id.
+    """Create a collection bound to a registered embedding model and a chunk
+    strategy (build-time model selection). Admin only. The collection is created
+    empty; populate it via POST /v1/ingest with the returned id.
 
     Build-time config *is* collection identity, so this mints a new collection
     rather than editing one — you cannot re-point an index at a new embedder.
+
+    Omit ``id`` for a *corpus*: the physical store is content-addressed over
+    (model, dim, chunk), so the same spec is idempotent (409 on a repeat). Supply
+    ``id`` for a *named library*: the id is part of the physical name, so two
+    libraries with identical build specs stay isolated from each other.
     """
     # 1. Resolve the embedding model-ref against the Phase-1 registry.
     entry = models.get(body.embedding)
@@ -219,11 +227,18 @@ async def create_collection(
             f"unknown chunk method {body.chunk.method!r}; valid: {', '.join(sorted(CHUNK_METHODS))}",
         )
 
-    # 3. Derive the content-addressed physical name over (model, dim, chunk).
+    # 3. Derive the physical name. With no explicit id this is content-addressed
+    # over (model, dim, chunk): the same build spec re-maps to the same store, which
+    # is what makes corpus re-ingest idempotent. With an explicit id the caller is
+    # naming a *library*, and two libraries that happen to share a build spec are
+    # still different data — so the id is folded into the physical name and they get
+    # separate Qdrant collections / ES indices instead of aliasing one store.
     desc = chunk_descriptor(
         body.chunk.method, body.chunk.size, body.chunk.overlap, body.chunk.params or None
     )
-    physical = collection_name(settings.qdrant_collection, entry.model, entry.dim, chunk=desc)
+    physical = collection_name(
+        settings.qdrant_collection, entry.model, entry.dim, chunk=desc, name=body.id or None
+    )
     cid = body.id or physical
     if registry.has(cid):
         raise HTTPException(409, f"collection {cid!r} already exists")
