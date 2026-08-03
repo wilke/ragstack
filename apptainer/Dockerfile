@@ -32,11 +32,14 @@ ENV PIP_NO_CACHE_DIR=1 \
 # The build context is the repo root; copy the package tree in.
 COPY python /opt/ragstack/python
 
-# elasticsearch pinned <9: a 9.x client's `compatible-with=9` header is rejected
-# by an ES 8 server (the deployed cluster / prod ragstack env runs 8.x). The
-# pyproject `text` extra is unbounded (>=8.13), so constrain it explicitly here.
+# The Elasticsearch client is held to the 8.x line by python/pyproject.toml's
+# `text` extra (`elasticsearch[async]>=8.13,<9`): a 9.x client's
+# `compatible-with=9` header is rejected by an ES 8 server (the deployed cluster
+# / prod ragstack env runs 8.x) with a 400 media_type_header_exception. The bound
+# lives in pyproject only, on purpose — a second copy here would silently
+# disagree with the API env the day the clusters move to ES 9.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install "elasticsearch[async]>=8.13,<9" "/opt/ragstack/python[vector,pdf,text,tokenization]" \
+    && python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization]" \
     && python -m pip install sentencepiece protobuf \
     && cp -r /opt/ragstack/python/scripts /opt/ragstack/scripts \
     && chmod -R a+rX /opt/ragstack/scripts \

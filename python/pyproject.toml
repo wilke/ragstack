@@ -37,7 +37,24 @@ postgres = [
 ]
 text = [
     # [async] pulls aiohttp, required by AsyncElasticsearch.
-    "elasticsearch[async]>=8.13",
+    #
+    # UPPER BOUND IS LOAD-BEARING — do not remove it to "get the latest".
+    # The Elasticsearch client's major version must match the server's major
+    # version: a 9.x client stamps every request with an
+    # `Accept: application/vnd.elasticsearch+json; compatible-with=9` header,
+    # which an ES 8.x server rejects outright with HTTP 400
+    # `media_type_header_exception`. That is a *runtime* failure on the first
+    # ES call, not an install-time one, so an unbounded `>=8.13` breaks silently
+    # on any fresh install or resolver refresh.
+    #
+    # Deployed servers are ES 8.x (deploy/docker-compose.infra.yml and the CI
+    # integration job both run elasticsearch:8.13.4; prod runs 8.13.4/8.19.3),
+    # and the prod env `/rag/envs/ragstack` has client 8.19.3. This was hit for
+    # real building the CWL worker image (#225), which resolved to 9.4.1.
+    #
+    # Raise the bound to `<10` ONLY together with upgrading the ES servers to 9.x
+    # (compose infra, the CI service image, and the deployed clusters).
+    "elasticsearch[async]>=8.13,<9",
 ]
 graph = [
     "neo4j>=5.20",
