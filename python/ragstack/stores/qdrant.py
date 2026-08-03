@@ -65,7 +65,7 @@ def _slug(s: str, n: int = 40) -> str:
 
 
 def collection_name(
-    base: str, model: str | None, dim: int, *, chunk: str | None = None
+    base: str, model: str | None, dim: int, *, chunk: str | None = None, name: str | None = None
 ) -> str:
     """Derive a collection name scoped to the corpus's build spec.
 
@@ -80,7 +80,35 @@ def collection_name(
     chunkers on the same model get DIFFERENT collections instead of silently
     overwriting each other. ``chunk=None`` keeps the legacy ``(model, dim)``-only
     name byte-for-byte unchanged (back-compat for callers that don't opt in).
+
+    ``name`` switches from *corpus* semantics to *named-library* semantics. Content
+    addressing is right for a corpus (re-ingesting the same build spec is
+    idempotent) but WRONG for a user-named library: two libraries built with the
+    same embedding model + chunker are different data and MUST NOT share a physical
+    store, or content uploaded to one shows up in the other and a delete hits both.
+    When ``name`` is given the name gains a ``lib`` marker + a slug of the name, and
+    the hash covers ``name|model|dim|chunk`` — so distinct names always yield
+    distinct collections, including names that slugify identically ("open access"
+    vs "open-access") or slugify to nothing at all. The result stays deterministic,
+    lowercase ``[a-z0-9_]``, never leading-``_``, and short enough for both Qdrant
+    and Elasticsearch (≲110 chars vs ES's 255-byte index-name limit).
     """
+    if name:
+        # ``.strip("_")`` because _slug truncates *after* stripping, so a cut mid-slug
+        # can leave a trailing "_" and a doubled separator. Stripping here (not inside
+        # _slug) keeps every already-built content-addressed name byte-identical.
+        parts = [
+            base,
+            "lib",
+            _slug(name, 32).strip("_"),
+            _slug(model or "default", 24).strip("_"),
+            str(dim),
+        ]
+        if chunk is not None:
+            parts.append(_slug(chunk, 20).strip("_"))
+        digest = hashlib.sha1(f"{name}|{model or ''}|{dim}|{chunk or ''}".encode()).hexdigest()[:8]
+        parts.append(digest)
+        return "_".join(p for p in parts if p)
     slug = _slug(model or "default")
     if chunk is None:
         digest = hashlib.sha1((model or "").encode()).hexdigest()[:8]

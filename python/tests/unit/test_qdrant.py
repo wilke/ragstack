@@ -3,6 +3,7 @@
 No real Qdrant: the AsyncQdrantClient is replaced with a fake exposing only the
 methods ensure_collection uses.
 """
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -93,6 +94,73 @@ def test_collection_name_differs_by_model_and_by_dim():
 def test_collection_name_disambiguates_slug_collisions():
     # Two distinct model names slugify to the same string but must not collide.
     assert collection_name("r", "a/b", 8) != collection_name("r", "a-b", 8)
+
+
+# --- collection_name: named libraries (isolation) ---------------------------
+
+CHUNK = "fixed_token/512/64"
+
+
+def test_named_libraries_with_identical_build_specs_are_isolated():
+    """The bug: user-named libraries built from the same (model, dim, chunk) all
+    mapped to ONE physical collection, so they were aliases over one store."""
+    a = collection_name("ragstack", "test/sfr", 8, chunk=CHUNK, name="andy")
+    b = collection_name("ragstack", "test/sfr", 8, chunk=CHUNK, name="open-access")
+    c = collection_name("ragstack", "test/sfr", 8, chunk=CHUNK, name="test2")
+    assert len({a, b, c}) == 3
+
+
+def test_named_collection_name_is_deterministic():
+    args = ("ragstack", "test/sfr", 8)
+    kw = {"chunk": CHUNK, "name": "andy"}
+    assert collection_name(*args, **kw) == collection_name(*args, **kw)
+
+
+def test_named_collection_survives_slug_collisions_and_empty_slugs():
+    # Names that slugify identically, and names that slugify to nothing at all,
+    # must still get distinct stores — the hash covers the raw name.
+    def n(name: str) -> str:
+        return collection_name("ragstack", "test/sfr", 8, chunk=CHUNK, name=name)
+
+    assert n("open access") != n("open-access")
+    assert n("!!!") != n("???")
+
+
+def test_named_collection_name_is_store_safe_and_diagnosable():
+    name = collection_name(
+        "ragstack", "BAAI/bge-base-en-v1.5", 768, chunk=CHUNK, name="Open Access"
+    )
+    # Qdrant + ES safe: lowercase [a-z0-9_], no leading "_", well under ES's 255-byte
+    # index-name limit.
+    assert re.fullmatch(r"[a-z0-9_]+", name)
+    assert not name.startswith("_") and len(name) < 200
+    # ...and still carries enough build spec to diagnose from the store listing.
+    assert "lib" in name.split("_") and "open_access" in name
+    assert "768" in name and "fixed_token" in name
+
+
+def test_named_collection_never_equals_the_content_addressed_one():
+    spec = ("ragstack", "test/sfr", 8)
+    assert collection_name(*spec, chunk=CHUNK) != collection_name(
+        *spec, chunk=CHUNK, name="andy"
+    )
+
+
+def test_unnamed_collection_names_are_byte_for_byte_unchanged():
+    """Pin the content-addressed (corpus) names exactly. Changing them would
+    orphan every already-built collection, so a regression must fail loudly."""
+    assert (
+        collection_name("ragstack", "BAAI/bge-base-en-v1.5", 768)
+        == "ragstack_baai_bge_base_en_v1_5_768_0896d168"
+    )
+    assert (
+        collection_name("ragstack", "BAAI/bge-base-en-v1.5", 768, chunk=CHUNK)
+        == "ragstack_baai_bge_base_en_v1_5_768_fixed_token_512_64_a3c446b1"
+    )
+    # name=None and name="" both mean "no explicit id" → content-addressed.
+    assert collection_name("ragstack", "BAAI/bge-base-en-v1.5", 768, chunk=CHUNK, name="") == (
+        collection_name("ragstack", "BAAI/bge-base-en-v1.5", 768, chunk=CHUNK)
+    )
 
 
 # --- ensure_collection dimension reconciliation ------------------------------

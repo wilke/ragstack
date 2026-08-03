@@ -101,7 +101,15 @@ curl -s -X POST http://localhost:8030/v1/collections \
       }'
 ```
 
-Omit `id` to get a content-addressed name derived from (model, dim, chunk).
+Passing `id` names a **library**: the id is folded into the physical Qdrant
+collection / ES index name, so two libraries built with the same embedding model
+and chunker (which is what the UI's "＋ New library" does) each get their own
+store instead of aliasing one.
+
+Omit `id` for a **corpus**: both the id and the physical name are then
+content-addressed over (model, dim, chunk), so re-creating the same build spec
+maps back to the same store (idempotent re-ingest) and 409s at the registry.
+
 Verify with `GET /v1/collections`.
 
 ## 4. Upload PDFs
