@@ -152,6 +152,37 @@ class Settings(BaseSettings):
     # with ``ragstack.ingestion.enrich.resolve_profile(settings.publisher_profile)``.
     publisher_profile: str = "asm"
 
+    # DOI metadata enrichment (ragstack.ingestion.doi_metadata). Resolves each
+    # ingested document's DOI against Crossref (DataCite as fallback) and fills
+    # *missing* bibliographic fields — title, authors, journal, year, publisher,
+    # publication_type, url — so PDFs that carry no usable metadata stop showing
+    # up as bare filenames in citations.
+    #
+    # OFF by default and network-touching: leaving it off keeps ingest behaviour
+    # byte-for-byte unchanged and offline/air-gapped deployments unaffected.
+    # Precedence is always "existing explicit metadata wins, enrichment fills
+    # gaps" — see ``doi_metadata.merge_enrichment``.
+    doi_enrichment_enabled: bool = False
+    # Contact address for Crossref's polite pool. Not required, but strongly
+    # recommended: it routes requests to better-behaved infrastructure and lets
+    # Crossref reach an operator instead of blocking the deployment outright.
+    doi_enrichment_mailto: str = ""
+    # Directory for the on-disk resolution cache (one JSON per DOI, negatives
+    # included). Empty = in-process memory only, so a restart re-fetches; set it
+    # on any real deployment so re-ingests never re-hit the API.
+    doi_enrichment_cache_dir: str = ""
+    doi_enrichment_timeout: float = 10.0
+    # Max concurrent lookups. Keep small — this is the politeness contract, and
+    # a 3000-document shard would otherwise open 3000 connections to Crossref.
+    doi_enrichment_concurrency: int = 4
+    # Try DataCite when Crossref authoritatively has no record (datasets,
+    # preprints, repository deposits). Costs one extra request only on a
+    # confirmed Crossref 404.
+    doi_enrichment_datacite_fallback: bool = True
+    # Override the User-Agent entirely. Empty builds a descriptive default from
+    # the package version and doi_enrichment_mailto.
+    doi_enrichment_user_agent: str = ""
+
     # Chunker defaults. fixed_token is a sliding TOKEN window (chunk_size/overlap in
     # tokens) and needs embedding_model (its HF tokenizer). See CHUNK_METHODS.
     chunk_method: str = "fixed"   # fixed | fixed_token | sentence | words | semantic

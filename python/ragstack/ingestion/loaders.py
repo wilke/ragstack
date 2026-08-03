@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
@@ -21,6 +22,11 @@ from ragstack.protocols import DocumentLoader
 # fresh points and silently duplicate the corpus. Deriving the doc ID from a
 # stable key (resolved path / content) makes re-ingest overwrite in place.
 _DOC_NAMESPACE = uuid.NAMESPACE_URL
+
+# DOI as it appears inside a PDF's embedded info dictionary (see
+# ``_doi_from_pdf_metadata``). Kept local to the loader so the module stays free
+# of an import-time dependency on the enrichment code.
+_PDF_META_DOI = re.compile(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+")
 
 
 def deterministic_doc_id(key: str) -> str:
@@ -84,6 +90,15 @@ class PdfLoader:
     and does not fetch remote resources, so the usual malicious-PDF active
     vectors (JS, SSRF via remote URIs) are not exercised here. The import is
     lazy so the optional ``pdf`` extra is only required when PDFs are ingested.
+
+    Metadata is deliberately minimal: ``filename``, ``pages``, and — when the
+    file carries one — ``doi``. The DOI is worth lifting out because it is the
+    key that :mod:`ragstack.ingestion.doi_metadata` can turn into a real
+    bibliographic record. The PDF's *other* embedded fields (``title``,
+    ``author``) are deliberately NOT lifted: in practice they are dominated by
+    producer junk ("Microsoft Word - final_v3.docx", "untitled"), and because
+    enrichment's precedence rule is "existing metadata wins", writing junk here
+    would permanently block the good remote title from ever landing.
     """
 
     def load(self, source: str) -> list[Document]:
@@ -101,6 +116,7 @@ class PdfLoader:
             raise LoaderError(f"could not open PDF '{path.name}'") from e
         try:
             pages = [page.get_text() for page in doc.pages()]
+            embedded_doi = _doi_from_pdf_metadata(doc)
         except Exception as e:
             raise LoaderError(f"could not extract text from PDF '{path.name}'") from e
         finally:
@@ -111,14 +127,49 @@ class PdfLoader:
             # Scanned/image-only PDFs yield no extractable text; surface it as a
             # typed loader error rather than silently ingesting an empty document.
             raise LoaderError(f"no extractable text in PDF '{path.name}'")
+        metadata: dict[str, object] = {"filename": path.name, "pages": len(pages)}
+        if embedded_doi:
+            metadata["doi"] = embedded_doi
+            metadata["doi_source"] = "pdf-metadata"
         return [
             Document(
                 id=deterministic_doc_id(str(path.resolve())),
                 content=content,
-                metadata={"filename": path.name, "pages": len(pages)},
+                metadata=metadata,
                 source=source,
             )
         ]
+
+
+def _doi_from_pdf_metadata(doc: object) -> str:
+    """Best-effort DOI from a PDF's own info dictionary.
+
+    Publishers commonly stamp the DOI into ``subject`` or ``keywords`` (and
+    occasionally ``title``), which is more reliable than a first-page text scan
+    for articles that print the DOI only in a sidebar or footer that extracts out
+    of order. Free — the info dict is already parsed by the time we have the
+    document — and never fatal: any surprise from a malformed PDF degrades to
+    "no DOI", leaving the text scan in
+    :func:`ragstack.ingestion.doi_metadata.document_doi` as the fallback.
+    """
+    from ragstack.ingestion.doi_metadata import normalize_doi
+
+    try:
+        info = getattr(doc, "metadata", None) or {}
+        if not isinstance(info, dict):
+            return ""
+        for key in ("subject", "keywords", "title", "creator", "producer"):
+            value = info.get(key)
+            if not isinstance(value, str) or not value:
+                continue
+            match = _PDF_META_DOI.search(value)
+            if match:
+                doi = normalize_doi(match.group(0))
+                if doi:
+                    return doi
+    except Exception:  # pragma: no cover - defensive; PDF info is untrusted input
+        return ""
+    return ""
 
 
 class JsonlLoader:

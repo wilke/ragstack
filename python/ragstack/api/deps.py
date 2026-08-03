@@ -28,6 +28,7 @@ from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import make_ingest_backend
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
+from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import resolve_profile
 from ragstack.ingestion.loaders import default_loader_registry
@@ -383,6 +384,11 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         graph_store=app_state.graph_store,
         kg_extractor=app_state.kg_extractor,
         collection=entry.collection,
+        # Share the app's enricher (and therefore its cache and its concurrency
+        # budget) so per-collection ingests can't multiply the load on Crossref.
+        # getattr: app_state is duck-typed in tests, and a missing enricher must
+        # mean "disabled", never an AttributeError mid-ingest.
+        doi_enricher=getattr(app_state, "doi_enricher", None),
     )
     return ShardedIngestor(
         pipeline,
@@ -621,6 +627,45 @@ def _build_kg_extractor(llm: OpenAILLM | None) -> LLMKGExtractor | None:
         max_chunks=settings.kg_extraction_max_chunks,
         max_triples_per_chunk=settings.kg_extraction_max_triples_per_chunk,
     )
+
+
+def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
+    """The Crossref/DataCite metadata enricher, or ``None`` when disabled.
+
+    Opt-in via ``doi_enrichment_enabled`` (default off) because it is the only
+    part of ingest that reaches the public internet; disabled, ingest keeps the
+    exact behaviour it had before enrichment existed, which is what
+    offline/air-gapped deployments need.
+
+    Shares the app's HTTP client (deps owns its lifecycle) and the app's
+    publisher profile, so DOI discovery here uses the same filename->DOI rule as
+    the local ``enrich`` leg. Warns — but still builds — without a contact
+    address, since Crossref's polite pool is a genuine operational nicety we
+    shouldn't silently skip.
+    """
+    if not settings.doi_enrichment_enabled:
+        return None
+    if not settings.doi_enrichment_mailto:
+        log.warning(
+            "doi enrichment enabled without DOI_ENRICHMENT_MAILTO: requests will "
+            "use Crossref's anonymous pool. Set a contact address."
+        )
+    log.info(
+        "doi enrichment enabled (concurrency=%d, timeout=%.1fs, cache=%s)",
+        settings.doi_enrichment_concurrency,
+        settings.doi_enrichment_timeout,
+        settings.doi_enrichment_cache_dir or "memory-only",
+    )
+    resolver = build_resolver(
+        http,
+        mailto=settings.doi_enrichment_mailto,
+        user_agent=settings.doi_enrichment_user_agent,
+        cache_dir=settings.doi_enrichment_cache_dir,
+        timeout=settings.doi_enrichment_timeout,
+        concurrency=settings.doi_enrichment_concurrency,
+        datacite_fallback=settings.doi_enrichment_datacite_fallback,
+    )
+    return DoiEnricher(resolver, profile=resolve_profile(settings.publisher_profile))
 
 
 def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
@@ -962,6 +1007,7 @@ async def lifespan(app: FastAPI):
     kg_extractor = _build_kg_extractor(llm)
 
     chunker, embed_bridge = _build_chunker()
+    doi_enricher = _build_doi_enricher(http_client)
     pipeline = IngestionPipeline(
         loader=default_loader_registry(
             ingest_root=settings.ingest_root or None,
@@ -975,6 +1021,7 @@ async def lifespan(app: FastAPI):
         graph_store=graph_store,
         kg_extractor=kg_extractor,
         collection=default_collection,
+        doi_enricher=doi_enricher,
     )
 
     job_store = make_job_store(
@@ -1027,6 +1074,9 @@ async def lifespan(app: FastAPI):
     app.state.text_index = text_index
     app.state.graph_store = graph_store
     app.state.kg_extractor = kg_extractor
+    # Hung off app.state so build_ingestor_for can share the one enricher (and
+    # its cache + concurrency budget) across per-collection ingests.
+    app.state.doi_enricher = doi_enricher
     app.state.pipeline = pipeline
     app.state.embed_bridge = embed_bridge
     app.state.job_store = job_store

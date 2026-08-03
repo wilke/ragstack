@@ -330,3 +330,107 @@ async def test_embed_source_raises_on_empty_without_store_contact():
     )
     with pytest.raises(EmptyIngestError):
         await pipeline.embed_source("file.txt")
+
+
+# --------------------------------------------------------------------------- #
+# DOI metadata enrichment (opt-in, best-effort)
+# --------------------------------------------------------------------------- #
+
+class _MetadataDocLoader:
+    """A loader that returns one document with caller-supplied metadata — models
+    PdfLoader's output (filename/pages only, DOI in the text)."""
+
+    def __init__(self, content: str, metadata: dict) -> None:
+        self.content = content
+        self.metadata = metadata
+
+    def load(self, source: str) -> list[Document]:
+        return [
+            Document(
+                id="doc-1", content=self.content, metadata=dict(self.metadata),
+                source=source,
+            )
+        ]
+
+
+class _StubEnricher:
+    """Stands in for DoiEnricher: records the documents it saw and stamps them."""
+
+    def __init__(self, raises: bool = False) -> None:
+        self.seen: list[list[Document]] = []
+        self.raises = raises
+
+    async def enrich_documents(self, documents: list[Document]) -> int:
+        self.seen.append(list(documents))
+        if self.raises:
+            raise RuntimeError("enrichment exploded")
+        for doc in documents:
+            doc.metadata["title"] = "Resolved Title"
+        return len(documents)
+
+
+@pytest.mark.asyncio
+async def test_doi_enrichment_lands_on_every_chunk():
+    """Enrichment runs between load and chunk, so what it writes on the document
+    is copied onto every chunk (and therefore into the store payloads)."""
+    vector_store = InMemoryVectorStore()
+    enricher = _StubEnricher()
+    pipeline = IngestionPipeline(
+        loader=_MetadataDocLoader("abcdefghijklmnopqrst", {"filename": "p.pdf"}),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=vector_store,
+        text_index=InMemoryTextIndex(),
+        doi_enricher=enricher,
+    )
+    chunks = await pipeline.embed_source("p.pdf")
+    assert len(enricher.seen) == 1
+    assert len(chunks) > 1
+    assert all(c.metadata["title"] == "Resolved Title" for c in chunks)
+    assert all(c.metadata["filename"] == "p.pdf" for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_doi_enrichment_failure_never_fails_the_ingest():
+    pipeline = IngestionPipeline(
+        loader=_MetadataDocLoader("abcdefghijklmnopqrst", {"filename": "p.pdf"}),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(),
+        doi_enricher=_StubEnricher(raises=True),
+    )
+    chunk_ids = await pipeline.ingest("p.pdf")
+    assert chunk_ids
+    chunks = await pipeline.vector_store.search([1.0, 1.0], top_k=10)
+    assert chunks
+
+
+@pytest.mark.asyncio
+async def test_no_enricher_leaves_metadata_untouched():
+    """Default (disabled) path: byte-for-byte the pre-enrichment behaviour."""
+    pipeline = IngestionPipeline(
+        loader=_MetadataDocLoader("abcdefghijklmnopqrst", {"filename": "p.pdf"}),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(),
+    )
+    chunks = await pipeline.embed_source("p.pdf")
+    assert all("title" not in c.metadata for c in chunks)
+
+
+@pytest.mark.asyncio
+async def test_streaming_embed_path_also_enriches():
+    enricher = _StubEnricher()
+    pipeline = IngestionPipeline(
+        loader=_MetadataDocLoader("abcdefghijklmnopqrst", {"filename": "p.pdf"}),
+        chunker=RecursiveCharacterChunker(chunk_size=10, chunk_overlap=0),
+        embedder=_FakeEmbedder(),
+        vector_store=InMemoryVectorStore(),
+        text_index=InMemoryTextIndex(),
+        doi_enricher=enricher,
+    )
+    groups = [g async for g in pipeline.iter_embed_source("p.pdf")]
+    assert len(enricher.seen) == 1
+    assert all(c.metadata["title"] == "Resolved Title" for g in groups for c in g)

@@ -120,3 +120,33 @@ def test_registry_missing_source_raises(tmp_path: Path):
     registry = default_loader_registry()
     with pytest.raises(LoaderError):
         registry.load(str(tmp_path / "does-not-exist.txt"))
+
+
+def _write_pdf_with_info(path: Path, info: dict, text: str = "Body text") -> None:
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), text)
+    doc.set_metadata(info)
+    doc.save(str(path))
+    doc.close()
+
+
+def test_pdfloader_lifts_doi_from_embedded_metadata(tmp_path: Path):
+    """The DOI is the one embedded field worth lifting — it's the key DOI
+    enrichment turns into a real bibliographic record."""
+    pdf = tmp_path / "paper.pdf"
+    _write_pdf_with_info(pdf, {"subject": "doi:10.3390/Antibiotics14050475"})
+    meta = PdfLoader().load(str(pdf))[0].metadata
+    assert meta["doi"] == "10.3390/antibiotics14050475"  # normalized
+    assert meta["doi_source"] == "pdf-metadata"
+
+
+def test_pdfloader_omits_doi_when_the_pdf_has_none(tmp_path: Path):
+    pdf = tmp_path / "plain.pdf"
+    _write_pdf_with_info(pdf, {"subject": "A paper about things", "title": "untitled"})
+    meta = PdfLoader().load(str(pdf))[0].metadata
+    assert "doi" not in meta
+    # Producer junk in `title` is deliberately NOT lifted: under the "existing
+    # metadata wins" precedence it would permanently block the real remote title.
+    assert "title" not in meta
