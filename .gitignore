@@ -56,3 +56,8 @@ Thumbs.db
 
 # local demo scratch (SciFact data, backfill, ingest jsonl)
 .localdata/
+
+# Apptainer/Singularity worker images — large build artifacts, not source.
+# Build with: apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
+#          && apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
+apptainer/images/*.sif

@@ -14,9 +14,17 @@
 #
 #   cwltool cwl/load-embeddings.cwl cwl/load-embeddings.inputs.yml
 #
-# Input/output files must live under GoWe's --upload-download-dirs. The task
-# stages python/ and sets PYTHONPATH (CWD-independent, runs on a GoWe worker); the
-# worker must have ragstack's store deps (qdrant-client/elasticsearch).
+# Input/output files must live under GoWe's --upload-download-dirs.
+#
+# CONTAINERIZED (#135). The task runs inside the ragstack-worker image via
+# DockerRequirement — ragstack's store deps (qdrant-client / elasticsearch) come
+# from the pinned image, replacing the old `pkgdir: ../python` staging + PYTHONPATH
+# hack. Script lives at /opt/ragstack/scripts (baseCommand). Image resolution +
+# build + network notes: see cwl/ingest-bulk.cwl header. (No HF tokenizer needed
+# here — load is store-only.)
+#
+#   CWL_SINGULARITY_CACHE=apptainer/images \
+#     cwltool --singularity cwl/load-embeddings.cwl cwl/load-embeddings.inputs.yml
 cwlVersion: v1.2
 class: Workflow
 
@@ -64,19 +72,12 @@ steps:
     run:
       class: CommandLineTool
       requirements:
-        InitialWorkDirRequirement:
-          listing:
-            - $(inputs.pkgdir)
-        EnvVarRequirement:
-          envDef:
-            PYTHONPATH: $(inputs.pkgdir.path)
-      baseCommand: [python]
+        DockerRequirement:
+          dockerImageId: ragstack-worker.sif
+        NetworkAccess:
+          networkAccess: true
+      baseCommand: [python, /opt/ragstack/scripts/load_embeddings.py]
       inputs:
-        pkgdir:
-          type: Directory
-          default:
-            class: Directory
-            location: ../python
         embeddings:
           type: File[]
           inputBinding:
@@ -117,8 +118,6 @@ steps:
             prefix: --backpressure
             position: 9
       arguments:
-        - position: 1
-          valueFrom: $(inputs.pkgdir.basename)/scripts/load_embeddings.py
         - position: 10
           prefix: --out
           valueFrom: load-summary.json

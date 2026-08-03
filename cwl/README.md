@@ -20,6 +20,38 @@ tool + receipts).
 | `embed-bulk.cwl` | **Step 2 (decoupled embed half, #141).** Scatter `embed_shard` → one JSONL **embedding file** per shard (no store contact), gather receipts. |
 | `load-embeddings.cwl` | **Step 2 (decoupled load half, #141).** Single task: upsert the embedding files into Qdrant/ES (`index_chunks`), where backpressure will live. |
 | `embed-bulk.inputs.yml` / `load-embeddings.inputs.yml` | Example inputs for the two halves. |
+| `pdf-extract.cwl` | **PDF plane (#202/#203).** Run the real `PdfLoader` (PyMuPDF) over PDFs → one `{text,path,metadata}` JSONL shard (+ a skipped-files report). |
+| `pdf-ingest.cwl` | **PDF plane (#202/#203).** Workflow chaining `pdf-extract` → `embed_shard` → `load_embeddings` — a directory of PDFs straight into Qdrant/ES. |
+| `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
+
+### Containerized runtime (#135)
+
+Every step now runs inside the **`ragstack-worker` image** (`apptainer/ragstack-worker.def`
+→ `apptainer/images/ragstack-worker.sif`; parallel `apptainer/Dockerfile` for
+Docker hosts) via `DockerRequirement: {dockerImageId: ragstack-worker.sif}`. The
+`ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
+the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
+at `/opt/ragstack/scripts`. This **replaces the old
+`InitialWorkDirRequirement: {pkgdir: ../python}` + PYTHONPATH staging** (delivering
+path B below), which only worked next to a checkout and needed a ragstack-provisioned
+host env.
+
+Build + run:
+
+```bash
+apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
+apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
+# cwltool: --singularity resolves the SIF by filename from CWL_SINGULARITY_CACHE.
+# APPTAINER_BIND/HF_HOME bind the tokenizer cache; steps reach the fleet via NetworkAccess.
+CWL_SINGULARITY_CACHE=apptainer/images APPTAINER_BIND=/rag/cache HF_HOME=/rag/cache \
+  cwltool --singularity cwl/pdf-ingest.cwl cwl/pdf-ingest.inputs.yml
+```
+
+The SIF is a build artifact (gitignored); the `.def`/`Dockerfile` are the source
+of truth. cwltool does **not** expand `$(inputs...)` expressions inside
+`DockerRequirement`, so the image is referenced by a bare filename (portable, not a
+host path) rather than a CWL input; GoWe overrides it with a
+`gowe:Execution.docker_image` hint.
 
 ### Step 2 tools (bulk ingest)
 
@@ -43,17 +75,15 @@ tool + receipts).
 
 ### Runtime requirement (real GoWe workers)
 
-Both steps stage `python/` and set `PYTHONPATH` so the staged `ragstack` imports —
-this is what makes them run on a GoWe worker (default-executor `worker` →
-apptainer), not only under cwltool. Verified: the **merge step runs end-to-end
-with no external `PYTHONPATH`** (it needs only stdlib + pure-python `ragstack`).
+Steps run inside the `ragstack-worker` image (see **Containerized runtime**
+above), which carries the `ragstack` package + its deps — so neither source
+staging nor a ragstack-provisioned host env is needed. `merge_receipts` is pure
+stdlib+ragstack but runs in the same image for uniformity.
 
-**`ingest_shard` additionally needs `ragstack`'s dependencies** (qdrant-client,
-httpx, elasticsearch, the tokenizer stack) in the worker's runtime — staging the
-source is necessary but not sufficient. Two ways to provide them (a dedicated
-`--runtime none` worker in the ragstack env, or a ragstack SIF) are covered in the
-**dedicated-worker path** below; on a stock container the step
-`ModuleNotFoundError`s on those deps.
+> **Historical:** earlier revisions staged `python/` via
+> `InitialWorkDirRequirement` + `PYTHONPATH` and required the worker to already
+> have `ragstack`'s deps (qdrant-client / httpx / elasticsearch / tokenizer) —
+> the image now supplies both, retiring that hack.
 
 ### Decoupled embed/load (#141) — the capped-Qdrant path
 
@@ -146,10 +176,12 @@ them:
   even wired through `ingest-bulk.cwl`.) Input/output files must live under the
   server's `--upload-download-dirs`.
 
-- **(B, follow-up) A ragstack-provisioned worker SIF.** A pinned apptainer image
-  with ragstack + deps, referenced via `DockerRequirement`/`gowe:Execution.docker_image`
-  — the reproducible/portable production path (multi-host). Heavier (torch/tokenizer
-  stack). Tracked in #135.
+- **(B, DELIVERED #135) A ragstack-provisioned worker SIF.** `apptainer/ragstack-worker.def`
+  → `apptainer/images/ragstack-worker.sif`, referenced via `DockerRequirement`
+  (`gowe:Execution.docker_image` on GoWe) — the reproducible/portable production
+  path (multi-host). CPU-only (**no torch**: the steps call the embedding fleet
+  over HTTP), so it's lean (~170 MB). This is now the default the CWL steps use;
+  see **Containerized runtime** above.
 
 **Wired in:** `ragstack.ingestion.backends.make_ingest_backend` selects the
 `ShardedIngestor`'s backend from config — `INGEST_BACKEND=local` (default,
