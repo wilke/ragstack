@@ -378,6 +378,30 @@ export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
   return get<CollectionsResponse>("/v1/collections", apiKey);
 }
 
+// Create a new (empty) collection bound to a registered embedding model + chunk
+// strategy. Admin-only server-side; returns the created CollectionInfo (201).
+// 409 = id already exists · 404 = unknown embedding model · 400 = bad model/chunk.
+export interface ChunkConfig {
+  method: string;
+  size?: number | null;
+  overlap?: number | null;
+  params?: Record<string, unknown>;
+}
+
+export interface CollectionCreateRequest {
+  embedding: string; // id of a registered embedding model (e.g. "sfr")
+  chunk: ChunkConfig;
+  id?: string; // explicit collection id; omit → content-addressed
+  label?: string;
+}
+
+export function createCollection(
+  req: CollectionCreateRequest,
+  apiKey?: string,
+): Promise<CollectionInfo> {
+  return post<CollectionInfo>("/v1/collections", req, apiKey);
+}
+
 // A registered model assignable per-request to a hot-swappable task (llm/reranker).
 export interface AvailableModel {
   id: string;
