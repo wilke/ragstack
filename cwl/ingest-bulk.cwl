@@ -14,12 +14,23 @@
 # only worked next to a checkout and needed a ragstack-provisioned env on the host.
 # The scripts live in the image at /opt/ragstack/scripts (baseCommand).
 #
-# Image resolution: `dockerImageId: ragstack-worker.sif` is a bare filename, not a
-# host path. cwltool --singularity finds it in $CWL_SINGULARITY_CACHE (point that
-# at apptainer/images/); GoWe resolves it from its image store (override per run
-# with a gowe:Execution.docker_image hint). cwltool does NOT expand `$(inputs...)`
-# expressions inside DockerRequirement, so the image can't be a CWL input — the
-# filename is the seam instead. Build it with:
+# Image resolution: `ragstack-worker.sif` is a bare filename, not a host path, and
+# it is declared under BOTH `dockerPull` and `dockerImageId` — each runner reads a
+# different key and neither falls back to the other:
+#   * GoWe's CWL parser reads ONLY `dockerPull`. With just `dockerImageId` the task
+#     registers fine but dies at execution with "Apptainer execution requested but
+#     no docker image specified". A GoWe worker joins the bare name onto its
+#     `--image-dir`, so the SIF must be deployed into that dir on every worker host
+#     (override per run with a gowe:Execution.docker_image hint).
+#   * cwltool --singularity treats a lone `dockerPull` as a REGISTRY reference: it
+#     searches for "<value>.sif"/"<value>.img" (i.e. ragstack-worker.sif.sif) and,
+#     not finding it, runs `singularity pull docker://ragstack-worker.sif` — which
+#     fails. Only `dockerImageId` makes it match the bare filename in
+#     $CWL_SINGULARITY_CACHE (point that at apptainer/images/).
+# With both keys present cwltool takes the dockerImageId branch and never pulls, so
+# the pair is the one spelling that runs on both. cwltool does NOT expand
+# `$(inputs...)` expressions inside DockerRequirement, so the image can't be a CWL
+# input — the filename is the seam instead. Build it with:
 #   apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
 #   apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
 #
@@ -76,6 +87,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true
@@ -109,6 +121,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:

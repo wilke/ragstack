@@ -73,6 +73,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true

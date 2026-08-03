@@ -17,6 +17,10 @@
 # /rag/cache) and HF_HOME on the host so cwltool/apptainer pass them through.
 # Image resolution + build: see cwl/ingest-bulk.cwl header.
 #
+# SELF-CONTAINED: every step's tool is inlined (no `run: <file>.cwl`), because
+# GoWeClient.register_workflow POSTs the CWL text and an external reference cannot
+# be resolved engine-side. `cwl/pdf-extract.cwl` is the same tool standalone.
+#
 #   CWL_SINGULARITY_CACHE=apptainer/images \
 #     cwltool --singularity cwl/pdf-ingest.cwl cwl/pdf-ingest.inputs.yml
 cwlVersion: v1.2
@@ -73,11 +77,42 @@ inputs:
 steps:
   extract:
     doc: "PDF -> one JSONL shard (+ skipped-files report)."
-    run: pdf-extract.cwl
     in:
       pdfs: pdfs
       out_name: out_name
     out: [shard, report]
+    # INLINED (not `run: pdf-extract.cwl`) on purpose: GoWeClient.register_workflow
+    # POSTs the CWL *text*, so an external `run:` reference has nothing to resolve
+    # against engine-side. The other two steps were already inlined; the standalone
+    # cwl/pdf-extract.cwl stays for direct `cwltool` use — keep the two in sync.
+    run:
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: ragstack-worker.sif
+          dockerImageId: ragstack-worker.sif
+      baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]
+      inputs:
+        pdfs:
+          type: File[]
+          doc: "PDF files to extract (each staged into the container by the runner)."
+          inputBinding: {position: 2}
+        out_name:
+          type: string
+          default: "pdf-shard.jsonl"
+          doc: "Name of the emitted JSONL shard (fed to embed/ingest steps)."
+          inputBinding: {prefix: --out, position: 3}
+      arguments:
+        - {position: 4, prefix: --report, valueFrom: $(inputs.out_name).report.json}
+      outputs:
+        shard:
+          type: File
+          doc: "The JSONL shard: one {text,path,metadata} line per extracted PDF."
+          outputBinding: {glob: $(inputs.out_name)}
+        report:
+          type: File
+          doc: "Sidecar JSON report: counts + the list of skipped files with reasons."
+          outputBinding: {glob: $(inputs.out_name).report.json}
 
   embed:
     doc: "Embed the shard -> one embedding file (no store contact)."
@@ -95,6 +130,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true
@@ -137,6 +173,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true

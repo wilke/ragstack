@@ -28,7 +28,8 @@ tool + receipts).
 
 Every step now runs inside the **`ragstack-worker` image** (`apptainer/ragstack-worker.def`
 → `apptainer/images/ragstack-worker.sif`; parallel `apptainer/Dockerfile` for
-Docker hosts) via `DockerRequirement: {dockerImageId: ragstack-worker.sif}`. The
+Docker hosts) via `DockerRequirement` (both `dockerPull:` **and**
+`dockerImageId: ragstack-worker.sif` — see the gotcha below). The
 `ragstack` package + its CPU-only deps (qdrant-client / httpx / elasticsearch<9 /
 the HF tokenizer — **no torch**) come from the pinned image, and the scripts live
 at `/opt/ragstack/scripts`. This **replaces the old
@@ -52,6 +53,85 @@ of truth. cwltool does **not** expand `$(inputs...)` expressions inside
 `DockerRequirement`, so the image is referenced by a bare filename (portable, not a
 host path) rather than a CWL input; GoWe overrides it with a
 `gowe:Execution.docker_image` hint.
+
+Note the build uses the **sandbox route** (two `apptainer build` calls above)
+because `--fakeroot` is not available to unprivileged users on the dev/deploy
+hosts — building the SIF directly from the `.def` fails without it.
+
+#### Declare **both** `dockerPull` and `dockerImageId`
+
+Every `DockerRequirement` here carries the same bare filename under **two** keys:
+
+```yaml
+DockerRequirement:
+  dockerPull: ragstack-worker.sif      # GoWe reads only this
+  dockerImageId: ragstack-worker.sif   # cwltool --singularity needs this
+```
+
+Neither runner falls back to the other key, and each ignores the one the other
+needs:
+
+- **GoWe** (`internal/parser/parser.go`) reads *only* `dockerPull`. With just
+  `dockerImageId` the workflow registers fine but every container step dies at
+  execution with `execute: Apptainer execution requested but no docker image
+  specified`. Found by a real submission of `pdf-ingest.cwl`: identical workflow,
+  FAILED before, COMPLETED after adding `dockerPull`. GoWe keeps the bare name as
+  a local image only because it ends in `.sif` (`resolveApptainerImage`); anything
+  else is turned into `docker://<name>` — so don't drop the extension.
+- **cwltool `--singularity`** treats a lone `dockerPull` as a *registry* reference.
+  It looks for `<value>.sif` / `<value>.img` — i.e. `ragstack-worker.sif.sif` —
+  and, not finding it, runs `singularity pull docker://ragstack-worker.sif`, which
+  fails with `requested access to the resource is denied`. Only `dockerImageId`
+  matches the bare filename found under `$CWL_SINGULARITY_CACHE`.
+
+With both keys present cwltool takes the `dockerImageId` branch (verified: the
+image is used from the cache, no pull attempted) and GoWe takes `dockerPull`.
+Keep them in sync when the image name changes.
+
+### Running these on a real GoWe engine — operational gotchas
+
+Findings from an end-to-end `pdf-ingest.cwl` submission against the live engine.
+These describe **the current deployment**, not permanent properties of GoWe —
+re-check before relying on them.
+
+**1. Deploy the SIF where the workers resolve it.** A GoWe worker is started with
+`--image-dir <dir>` and joins the bare image name from `dockerPull` onto it. So
+`dockerPull: ragstack-worker.sif` resolves to `<image-dir>/ragstack-worker.sif`
+and the SIF must exist there on **every** worker host. The validated submission
+used `/scout/containers/ragstack-worker.sif`. `CWL_SINGULARITY_CACHE` is a
+**cwltool-only** variable — it has no effect on GoWe workers.
+
+```bash
+# after rebuilding, refresh the worker-visible copy
+cp apptainer/images/ragstack-worker.sif /scout/containers/ragstack-worker.sif
+```
+
+**2. Worker group matters — a `--runtime none` worker cannot run container
+steps.** GoWe only dispatches tasks carrying a `docker_image` to
+container-capable runtimes. On the current deployment the **`ragstack-cpu` group
+worker runs `--runtime none`** (path A above, the pre-image conda-env worker)
+while the **default-group workers run `--runtime apptainer`**. Consequently a
+submission of these now-containerized workflows must **not** set
+`worker_group="ragstack-cpu"` (nor a `gowe:Execution.worker_group` hint naming
+it) — leave the group unset so the task lands on an apptainer-capable default
+worker, or the task will never be picked up. Correspondingly, leave
+`GOWE_WORKER_GROUP` unset for `INGEST_BACKEND=gowe`. If a `--runtime apptainer`
+worker is later added to the `ragstack-cpu` group, this restriction goes away.
+
+**3. Workflows must be self-contained.** `GoWeClient.register_workflow` POSTs the
+CWL **text**; there is no bundle upload, so an external `run: other-tool.cwl`
+reference cannot be resolved engine-side. `pdf-ingest.cwl` therefore inlines all
+three of its steps (`cwl/pdf-extract.cwl` remains as a standalone tool for direct
+`cwltool` use — keep them in sync). Any new multi-step workflow intended for GoWe
+must inline its tools too — and for the same reason it must not depend on any
+**path relative to the CWL file**. `eval-scifact-chunking.cwl` still does (its
+`evaldir` default is `{class: Directory, location: ../python/scripts/eval}`,
+staged via `InitialWorkDirRequirement`, and it declares no `DockerRequirement`):
+it is `cwltool`-only until it is containerized like the others. Not a regression —
+it predates the image — but don't submit it to GoWe as-is.
+
+**4. Input/output files must live under the server's `--upload-download-dirs`**
+(and be readable by the worker host).
 
 ### Step 2 tools (bulk ingest)
 
@@ -158,6 +238,10 @@ them:
       --name ragstack-cpu-1 --group ragstack-cpu \
       --workdir /scout/wf/data/ragstack-workdir --stage-out file:///scout/wf/data
   ```
+  > **Superseded by (B).** Now that every step declares a `DockerRequirement`,
+  > routing to this `--runtime none` group makes the task *undispatchable* — see
+  > "Worker group matters" above. Don't set `worker_group="ragstack-cpu"`.
+
   Route to it with `GoWeBackend(..., worker_group="ragstack-cpu")` (sends a
   submission `worker_group` label — it propagates to every scatter + merge task) or
   a `gowe:Execution.worker_group` CWL hint (which wins over the label). **The label
@@ -178,6 +262,7 @@ them:
 
 - **(B, DELIVERED #135) A ragstack-provisioned worker SIF.** `apptainer/ragstack-worker.def`
   → `apptainer/images/ragstack-worker.sif`, referenced via `DockerRequirement`
+  (`dockerPull:` + `dockerImageId:` — see the gotcha above)
   (`gowe:Execution.docker_image` on GoWe) — the reproducible/portable production
   path (multi-host). CPU-only (**no torch**: the steps call the embedding fleet
   over HTTP), so it's lean (~170 MB). This is now the default the CWL steps use;
