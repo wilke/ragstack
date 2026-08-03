@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncIterator
 
 from ragstack.ingestion.chunkers import link_neighbors_by_document
+from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.models import Chunk, Document
 from ragstack.protocols import (
     Chunker,
@@ -46,6 +47,7 @@ class IngestionPipeline:
         kg_extractor: KGExtractor | None = None,
         delete_concurrency: int = 8,
         collection: str | None = None,
+        doi_enricher: DoiEnricher | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -54,6 +56,12 @@ class IngestionPipeline:
         self.text_index = text_index
         self.graph_store = graph_store
         self.kg_extractor = kg_extractor
+        # Optional, opt-in (DOI_ENRICHMENT_ENABLED) scholarly-metadata lookup,
+        # applied between load and chunk so resolved fields ride on every chunk's
+        # metadata. ``None`` = disabled, and the load→chunk path is byte-for-byte
+        # what it was before — no import-time cost, no network, no behaviour
+        # change for offline/air-gapped deployments.
+        self.doi_enricher = doi_enricher
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
         # shared across collections, so triples must be stamped with it on write
@@ -98,6 +106,7 @@ class IngestionPipeline:
         store-mutating half with an empty replacement.
         """
         documents: list[Document] = self.loader.load(source)
+        await self._apply_doi_enrichment(documents)
         all_chunks: list[Chunk] = []
         for doc in documents:
             # Run chunking in a worker thread: chunkers are synchronous, and the
@@ -138,6 +147,28 @@ class IngestionPipeline:
                 source, len(skipped), skipped,
             )
         return kept
+
+    async def _apply_doi_enrichment(self, documents: list[Document]) -> None:
+        """Fill metadata gaps from each document's DOI, between load and chunk.
+
+        Placed here — after ``loader.load``, before ``chunker.chunk`` — because
+        chunking copies ``Document.metadata`` onto every chunk, so this is the
+        one point where a single write per document reaches every downstream
+        payload (Qdrant, Elasticsearch, ``/v1/query`` sources) at no per-chunk
+        cost.
+
+        **Enrichment must never fail an ingest.** ``DoiEnricher`` already catches
+        internally; this second guard covers the case where the enricher itself
+        is misconfigured or a non-conforming object was injected. Whatever
+        happens, the documents keep the metadata their loader produced and the
+        ingest proceeds.
+        """
+        if self.doi_enricher is None:
+            return
+        try:
+            await self.doi_enricher.enrich_documents(documents)
+        except Exception as e:
+            log.warning("doi enrichment skipped for this source: %s", e)
 
     async def _embed_and_link(
         self, all_chunks: list[Chunk], tenant_id: str
@@ -184,6 +215,7 @@ class IngestionPipeline:
         of :meth:`embed_source`'s ``EmptyIngestError`` (no store is touched here, so
         there is no prior data to protect)."""
         documents: list[Document] = self.loader.load(source)
+        await self._apply_doi_enrichment(documents)
         step = max(1, group_size)
         for start in range(0, len(documents), step):
             group = documents[start : start + step]
