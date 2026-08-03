@@ -1,0 +1,90 @@
+Bootstrap: docker
+From: python:3.12-slim-bookworm
+
+# RAGStack CPU-only worker image (#135).
+#
+# The image the offline/throughput CWL steps (ingest_shard / embed_shard /
+# load_embeddings / pdf_extract) run in on a GoWe worker or under
+# `cwltool --singularity`. It replaces the fragile `InitialWorkDirRequirement`
+# staging of `../python` + PYTHONPATH hack with a real, pinned, reproducible
+# runtime.
+#
+# CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
+# `/v1/embeddings`); none of them run a model locally, so torch/CUDA are
+# deliberately NOT installed. Deps are the ragstack package + its
+# [vector,pdf,text,tokenization] extras:
+#   - qdrant-client  (vector store upserts)
+#   - pymupdf        (PDF text extraction — the `pdf` extra / PdfLoader)
+#   - elasticsearch  (BM25 text index)
+#   - transformers   (HF tokenizer for fixed_token chunk sizing — NO torch)
+#   - httpx/pydantic/cryptography come in via the base ragstack dependency set.
+# `transformers` does not pull torch (torch is an optional backend); sentencepiece
+# + protobuf are added so slow-path tokenizers still load without torch present.
+#
+# MODELS ARE NOT BAKED IN. The tokenizer is read at runtime from a bind-mounted
+# HF_HOME (defaults to /rag/cache below). Bind it in when you run:
+#   apptainer exec -B /rag/cache:/rag/cache ragstack-worker.sif ...
+# cwltool passes the host env through, so exporting HF_HOME on the host is enough.
+#
+# Build (rootless — no Docker, --fakeroot unavailable without subuid/subgid):
+#   apptainer build --sandbox /tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
+#   apptainer build apptainer/images/ragstack-worker.sif /tmp/ragstack-worker.sbx
+# (If `apptainer build --fakeroot img.sif def` works on your host, use that.)
+#
+# Smoke test:
+#   apptainer exec apptainer/images/ragstack-worker.sif \
+#       python -c "import ragstack, fitz, qdrant_client; print('ok')"
+
+%files
+    python /opt/ragstack/python
+
+%post
+    set -eu
+    export PIP_NO_CACHE_DIR=1
+    export PIP_DISABLE_PIP_VERSION_CHECK=1
+
+    python -m pip install --upgrade pip
+
+    # Install the ragstack package + the CPU-only extras the CWL steps need.
+    # Version constraints come from python/pyproject.toml (the source of truth) —
+    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, elasticsearch[async]>=8.13,
+    # transformers>=4.40. torch is intentionally absent.
+    # Pin the Elasticsearch client to the 8.x line: the pyproject `text` extra is
+    # `elasticsearch[async]>=8.13` (unbounded), which resolves to 9.x, but a 9.x
+    # client sends a `compatible-with=9` header that an ES 8 server (the deployed
+    # cluster) rejects with a 400 media_type_header_exception. Matching the server
+    # major (and the prod ragstack env, which runs 8.19.x) is required for load to
+    # work. Listed before the package install so pip resolves the constraint.
+    python -m pip install "elasticsearch[async]>=8.13,<9" \
+        "/opt/ragstack/python[vector,pdf,text,tokenization]"
+
+    # Tokenizer robustness without torch: some HF slow tokenizers need these.
+    python -m pip install sentencepiece protobuf
+
+    # The CWL steps invoke scripts by an in-image path. Mirror python/scripts/ to
+    # the documented /opt/ragstack/scripts location so the baseCommand is stable.
+    cp -r /opt/ragstack/python/scripts /opt/ragstack/scripts
+    chmod -R a+rX /opt/ragstack/scripts
+
+    # Fail the build loudly if the core imports don't resolve.
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers; print('build import ok')"
+
+%environment
+    # Models (the HF tokenizer) are read from a bind-mounted HF_HOME at runtime,
+    # never baked into the image. Override by exporting HF_HOME on the host.
+    export HF_HOME=/rag/cache
+    # Keep the tokenizer offline/quiet and deterministic on a worker.
+    export HF_HUB_DISABLE_TELEMETRY=1
+    export PYTHONUNBUFFERED=1
+
+%labels
+    org.ragstack.role worker
+    org.ragstack.gpu false
+    org.ragstack.issue 135
+
+%help
+    RAGStack CPU-only worker for the offline CWL plane. Runs the ingest_shard,
+    embed_shard, load_embeddings, and pdf_extract scripts against the embedding
+    fleet / Qdrant / Elasticsearch over HTTP. Bind a host HF_HOME (default
+    /rag/cache) for the tokenizer. See apptainer/ragstack-worker.def header and
+    cwl/README.md for the DockerRequirement wiring.

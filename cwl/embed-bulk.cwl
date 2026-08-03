@@ -9,12 +9,14 @@
 # would otherwise stall the embedding fleet. The produced embedding files are fed
 # to the separate `load-embeddings.cwl` (or the standalone backpressure loader).
 #
-#   cwltool cwl/embed-bulk.cwl cwl/embed-bulk.inputs.yml
+# CONTAINERIZED (#135). Each step runs inside the ragstack-worker image via
+# DockerRequirement — the `ragstack` package, the embedder client, and the HF
+# tokenizer all come from the pinned image, replacing the old `pkgdir: ../python`
+# staging + PYTHONPATH hack. Scripts live at /opt/ragstack/scripts (baseCommand).
+# Image resolution + build + HF_HOME/network notes: see cwl/ingest-bulk.cwl header.
 #
-# Each step stages python/ into its sandbox (InitialWorkDirRequirement) and puts
-# it on PYTHONPATH so the staged `ragstack` imports and the CWL is CWD-independent
-# (runs on a GoWe worker, not only cwltool). The embed step needs the embedder +
-# tokenizer deps (a ragstack-provisioned worker); the merge step is pure stdlib.
+#   CWL_SINGULARITY_CACHE=apptainer/images \
+#     cwltool --singularity cwl/embed-bulk.cwl cwl/embed-bulk.inputs.yml
 cwlVersion: v1.2
 class: Workflow
 
@@ -64,19 +66,12 @@ steps:
     run:
       class: CommandLineTool
       requirements:
-        InitialWorkDirRequirement:
-          listing:
-            - $(inputs.pkgdir)
-        EnvVarRequirement:
-          envDef:
-            PYTHONPATH: $(inputs.pkgdir.path)
-      baseCommand: [python]
+        DockerRequirement:
+          dockerImageId: ragstack-worker.sif
+        NetworkAccess:
+          networkAccess: true
+      baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
       inputs:
-        pkgdir:
-          type: Directory
-          default:
-            class: Directory
-            location: ../python
         shard:
           type: File
           inputBinding:
@@ -117,8 +112,6 @@ steps:
             prefix: --embedding-url
             position: 9
       arguments:
-        - position: 1
-          valueFrom: $(inputs.pkgdir.basename)/scripts/embed_shard.py
         - position: 10
           prefix: --out
           valueFrom: $(inputs.shard.nameroot).emb.jsonl
@@ -143,26 +136,15 @@ steps:
     run:
       class: CommandLineTool
       requirements:
-        InitialWorkDirRequirement:
-          listing:
-            - $(inputs.pkgdir)
-        EnvVarRequirement:
-          envDef:
-            PYTHONPATH: $(inputs.pkgdir.path)
-      baseCommand: [python]
+        DockerRequirement:
+          dockerImageId: ragstack-worker.sif
+      baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
-        pkgdir:
-          type: Directory
-          default:
-            class: Directory
-            location: ../python
         receipts:
           type: File[]
           inputBinding:
             position: 2
       arguments:
-        - position: 1
-          valueFrom: $(inputs.pkgdir.basename)/scripts/merge_receipts.py
         - position: 3
           prefix: --out
           valueFrom: summary.json

@@ -7,17 +7,29 @@
 # ingest_jsonl.py (#71); each shard task is idempotent (deterministic uuid5 ids +
 # upsert-only), so a retry is safe.
 #
-# Each step stages python/ (the ragstack package + scripts) into its job sandbox
-# (InitialWorkDirRequirement) and puts it on PYTHONPATH (EnvVarRequirement) so the
-# staged `ragstack` is importable and the CWL is CWD-independent — this is what
-# lets it run on a GoWe worker (default-executor=worker → apptainer container),
-# not only under cwltool. IMPORTANT: the runtime env must still provide ragstack's
-# dependencies — `merge_receipts` needs only stdlib+ragstack (pure python, runs
-# anywhere), but `ingest_shard` imports qdrant-client/httpx/elasticsearch/etc., so
-# its worker container must be a ragstack-provisioned image. See cwl/README.md and
-# the step-2b deployment follow-up.
+# CONTAINERIZED (#135). Each step runs inside the ragstack-worker image via
+# DockerRequirement, so the `ragstack` package + its deps (qdrant-client / httpx /
+# elasticsearch / the HF tokenizer) come from the pinned image — NOT from the old
+# `InitialWorkDirRequirement: {pkgdir: ../python}` staging + PYTHONPATH hack, which
+# only worked next to a checkout and needed a ragstack-provisioned env on the host.
+# The scripts live in the image at /opt/ragstack/scripts (baseCommand).
 #
-#   cwltool cwl/ingest-bulk.cwl cwl/ingest-bulk.inputs.yml
+# Image resolution: `dockerImageId: ragstack-worker.sif` is a bare filename, not a
+# host path. cwltool --singularity finds it in $CWL_SINGULARITY_CACHE (point that
+# at apptainer/images/); GoWe resolves it from its image store (override per run
+# with a gowe:Execution.docker_image hint). cwltool does NOT expand `$(inputs...)`
+# expressions inside DockerRequirement, so the image can't be a CWL input — the
+# filename is the seam instead. Build it with:
+#   apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
+#   apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
+#
+# The steps reach the embedding fleet + Qdrant/ES over the network (NetworkAccess)
+# and read the HF tokenizer from a bind-mounted HF_HOME (export APPTAINER_BIND, and
+# HF_HOME, on the host so cwltool/apptainer pass them through). merge_receipts is
+# pure stdlib+ragstack but runs in the same image for uniformity.
+#
+#   CWL_SINGULARITY_CACHE=apptainer/images \
+#     cwltool --singularity cwl/ingest-bulk.cwl cwl/ingest-bulk.inputs.yml
 #
 # NOTE: pinning shards to specific embedding endpoints (the current bash k%N
 # scheme) becomes GoWe's per-task endpoint assignment; here every shard is handed
@@ -63,17 +75,12 @@ steps:
     run:
       class: CommandLineTool
       requirements:
-        InitialWorkDirRequirement:
-          listing:
-            - $(inputs.pkgdir)
-        EnvVarRequirement:
-          envDef:
-            PYTHONPATH: $(inputs.pkgdir.path)
-      baseCommand: [python]
+        DockerRequirement:
+          dockerImageId: ragstack-worker.sif
+        NetworkAccess:
+          networkAccess: true
+      baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
       inputs:
-        pkgdir:
-          type: Directory
-          default: {class: Directory, location: ../python}
         shard: {type: File, inputBinding: {position: 2}}
         collection: {type: string, inputBinding: {prefix: --collection, position: 3}}
         tenant: {type: string, inputBinding: {prefix: --tenant, position: 4}}
@@ -88,7 +95,6 @@ steps:
           type: string[]
           inputBinding: {prefix: --embedding-url, position: 10}
       arguments:
-        - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/ingest_shard.py}
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: receipt.json}
       outputs:
@@ -102,22 +108,14 @@ steps:
     run:
       class: CommandLineTool
       requirements:
-        InitialWorkDirRequirement:
-          listing:
-            - $(inputs.pkgdir)
-        EnvVarRequirement:
-          envDef:
-            PYTHONPATH: $(inputs.pkgdir.path)
-      baseCommand: [python]
+        DockerRequirement:
+          dockerImageId: ragstack-worker.sif
+      baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
-        pkgdir:
-          type: Directory
-          default: {class: Directory, location: ../python}
         receipts:
           type: File[]
           inputBinding: {position: 2}
       arguments:
-        - {position: 1, valueFrom: $(inputs.pkgdir.basename)/scripts/merge_receipts.py}
         - {position: 3, prefix: --out, valueFrom: summary.json}
       outputs:
         summary: {type: File, outputBinding: {glob: summary.json}}
