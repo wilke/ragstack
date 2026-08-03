@@ -13,6 +13,11 @@
 # Extraction is offline (no embedding fleet / stores), so no NetworkAccess and no
 # HF tokenizer are needed here. Image resolution + build: see cwl/ingest-bulk.cwl.
 #
+# This standalone tool is also inlined verbatim as the `extract` step of
+# cwl/pdf-ingest.cwl (that workflow must be self-contained to register with GoWe,
+# which is sent the CWL text and cannot resolve an external `run:` reference) —
+# keep the two copies in sync.
+#
 #   CWL_SINGULARITY_CACHE=apptainer/images \
 #     cwltool --singularity cwl/pdf-extract.cwl --pdfs a.pdf --pdfs b.pdf
 cwlVersion: v1.2
@@ -20,6 +25,7 @@ class: CommandLineTool
 
 requirements:
   DockerRequirement:
+    dockerPull: ragstack-worker.sif
     dockerImageId: ragstack-worker.sif
 
 baseCommand: [python, /opt/ragstack/scripts/pdf_extract.py]

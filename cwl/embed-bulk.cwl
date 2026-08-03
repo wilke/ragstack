@@ -67,6 +67,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true
@@ -137,6 +138,7 @@ steps:
       class: CommandLineTool
       requirements:
         DockerRequirement:
+          dockerPull: ragstack-worker.sif
           dockerImageId: ragstack-worker.sif
       baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
       inputs:
