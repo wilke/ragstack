@@ -1,11 +1,14 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import {
   ApiError,
+  createCollection,
+  getCollections,
   getIngestJob,
   isTerminalIngestStatus,
   queryRag,
   uploadPdfs,
+  type CollectionInfo,
   type IngestResponse,
   type QueryResponse,
 } from "../api/client";
@@ -17,10 +20,30 @@ import { EmptyState } from "./states/EmptyState";
 //   1. Upload   — drag/drop or pick PDFs, POST /v1/ingest/upload (multipart).
 //   2. Progress — poll GET /v1/ingest/{job_id} every ~1.5s until terminal.
 //   3. Query    — ask the corpus, reusing the Explore answer/source components.
-// The collection defaults to the server default (the pre-loaded demo collection)
-// and can be overridden — e.g. a throwaway collection for a test upload.
+// The target collection is PICKED from a dropdown of existing collections
+// (GET /v1/collections) — never free-typed, so a user can't aim upload/query at a
+// non-existent id. A "＋ New library" control mints a fresh named collection
+// (POST /v1/collections) and selects it.
 
 const MAX_MB = 50; // advisory only; the server is authoritative (returns 413).
+
+// Chunk/embedding config for a new library — matches the demo's SFR collection so
+// a user-created library is queryable with the same embedder as the default.
+const NEW_LIBRARY_EMBEDDING = "sfr";
+const NEW_LIBRARY_CHUNK = { method: "fixed_token", size: 512, overlap: 64 } as const;
+
+function createErrorMessage(error: Error): string {
+  if (error instanceof ApiError) {
+    if (error.status === 409) return "A library with that name already exists — pick another name.";
+    if (error.status === 404)
+      return "The embedding model isn't registered on this server; a library can't be created.";
+    if (error.status === 400) return "The server rejected the library config (bad model or chunk).";
+    if (error.status === 401 || error.status === 403)
+      return "Creating a library needs an admin API key.";
+    return `Could not create the library (error ${error.status}).`;
+  }
+  return "Could not create the library — could not reach the API.";
+}
 
 function stageBadge(n: number, label: string, active: boolean, done: boolean) {
   return (
@@ -66,6 +89,43 @@ export function LibraryView({
   const [collection, setCollection] = useState(""); // "" → server default (demo)
   const [jobId, setJobId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  // Existing collections populate the picker (any authenticated caller can read
+  // this). The picker is the ONLY way to choose a target — no free-text ids.
+  const collections = useQuery({
+    queryKey: ["collections", apiKey],
+    queryFn: () => getCollections(apiKey || undefined),
+    retry: false,
+  });
+  const opts: CollectionInfo[] = collections.data?.collections ?? [];
+
+  // "＋ New library": prompt for a name, create it, then select it once the
+  // registry refetch has it as an option. Errors surface via createErrorMessage.
+  const create = useMutation<CollectionInfo, Error, string>({
+    mutationFn: (name) =>
+      createCollection(
+        {
+          embedding: NEW_LIBRARY_EMBEDDING,
+          chunk: { ...NEW_LIBRARY_CHUNK },
+          id: name,
+          label: name,
+        },
+        apiKey || undefined,
+      ),
+    onSuccess: async (info) => {
+      await queryClient.invalidateQueries({ queryKey: ["collections", apiKey] });
+      setCollection(info.id); // info.id is server-echoed; option now exists post-refetch
+    },
+  });
+
+  const newLibrary = () => {
+    const raw = window.prompt("Name for the new library (e.g. andy):");
+    if (raw == null) return; // cancelled
+    const name = raw.trim();
+    if (!name) return;
+    create.mutate(name);
+  };
 
   // Query stage state.
   const [query, setQuery] = useState("");
@@ -137,22 +197,46 @@ export function LibraryView({
           autoComplete="off"
         />
 
-        <div className="mb-3 flex items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <label htmlFor="lib-collection" className="text-xs font-medium text-gray-500">
-            Collection
+            Library
           </label>
-          <input
+          <select
             id="lib-collection"
-            type="text"
             value={collection}
             onChange={(e) => setCollection(e.target.value)}
-            placeholder="blank = demo default"
-            className="rounded-md border border-gray-300 px-2 py-1 text-sm"
-          />
-          <span className="text-xs text-gray-400">
-            used for both upload target and query
-          </span>
+            disabled={opts.length === 0}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
+          >
+            {opts.length === 0 ? (
+              <option value="">
+                {collections.isLoading ? "Loading…" : "No libraries available"}
+              </option>
+            ) : (
+              opts.map((c) => (
+                <option key={c.id} value={c.default ? "" : c.id}>
+                  {c.label}
+                  {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
+                </option>
+              ))
+            )}
+          </select>
+          <button
+            type="button"
+            onClick={newLibrary}
+            disabled={create.isPending}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+          >
+            {create.isPending ? "Creating…" : "＋ New library"}
+          </button>
+          <span className="text-xs text-gray-400">upload target &amp; query source</span>
         </div>
+
+        {create.isError && create.error && (
+          <div role="alert" className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">
+            {createErrorMessage(create.error)}
+          </div>
+        )}
 
         {/* Drop zone */}
         <div
