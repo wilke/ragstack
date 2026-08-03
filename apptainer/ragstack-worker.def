@@ -47,16 +47,16 @@ From: python:3.12-slim-bookworm
 
     # Install the ragstack package + the CPU-only extras the CWL steps need.
     # Version constraints come from python/pyproject.toml (the source of truth) —
-    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, elasticsearch[async]>=8.13,
-    # transformers>=4.40. torch is intentionally absent.
-    # Pin the Elasticsearch client to the 8.x line: the pyproject `text` extra is
-    # `elasticsearch[async]>=8.13` (unbounded), which resolves to 9.x, but a 9.x
-    # client sends a `compatible-with=9` header that an ES 8 server (the deployed
-    # cluster) rejects with a 400 media_type_header_exception. Matching the server
-    # major (and the prod ragstack env, which runs 8.19.x) is required for load to
-    # work. Listed before the package install so pip resolves the constraint.
-    python -m pip install "elasticsearch[async]>=8.13,<9" \
-        "/opt/ragstack/python[vector,pdf,text,tokenization]"
+    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, transformers>=4.40 and
+    # elasticsearch[async]>=8.13,<9. torch is intentionally absent.
+    #
+    # That `<9` on the Elasticsearch client is what makes the CWL load step work:
+    # a 9.x client sends a `compatible-with=9` header that an ES 8 server (the
+    # deployed cluster, and the prod ragstack env at 8.19.x) rejects with a 400
+    # media_type_header_exception. The bound is declared in pyproject.toml and is
+    # deliberately NOT repeated here — a second copy would silently disagree with
+    # the API env the day the clusters move to ES 9.
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization]"
 
     # Tokenizer robustness without torch: some HF slow tokenizers need these.
     python -m pip install sentencepiece protobuf
