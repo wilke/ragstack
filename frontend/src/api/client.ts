@@ -96,7 +96,7 @@ export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryRespo
   return post<QueryResponse>("/v1/query", req, apiKey);
 }
 
-// --- Ingest upload (multipart) + job polling (demo Library view) ---
+// --- Ingest upload (multipart) + job polling (demo Collection view) ---
 
 // Per-document progress for a batch/directory ingest. Present once the job has
 // enumerated its documents; may be null for a job that hasn't started yet.
@@ -162,6 +162,18 @@ async function get<T>(path: string, apiKey?: string): Promise<T> {
     throw new ApiError(res.status, detail || res.statusText);
   }
   return (await res.json()) as T;
+}
+
+// DELETE with no response body (204). Errors carry the raw body like get/post so
+// the caller can unwrap FastAPI's `detail`.
+async function del(path: string, apiKey?: string): Promise<void> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(apiUrl(path), { method: "DELETE", headers });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail || res.statusText);
+  }
 }
 
 export interface StoreStat {
@@ -400,6 +412,41 @@ export function createCollection(
   apiKey?: string,
 ): Promise<CollectionInfo> {
   return post<CollectionInfo>("/v1/collections", req, apiKey);
+}
+
+// Drop a collection's REGISTRY BINDING (admin-only, 204). The physical Qdrant
+// collection and Elasticsearch index are deliberately NOT dropped — the server
+// documents this, and callers must say so out loud before confirming.
+// 409 = it's the default collection · 404 = unknown id.
+export function deleteCollection(id: string, apiKey?: string): Promise<void> {
+  return del(`/v1/collections/${encodeURIComponent(id)}`, apiKey);
+}
+
+// --- Model registry (admin-only) ---
+
+// One registered model. Mirrors ragstack.api.model_registry.ModelEntry. Note
+// `base_urls` IS returned by this admin endpoint (unlike /v1/models/available);
+// the UI shows only how many, never the URLs.
+export interface RegisteredModel {
+  id: string;
+  task: string; // embedding | tokenizer | llm | reranker
+  provider: string; // sidecar | openai | vllm
+  base_urls: string[];
+  model: string;
+  dim?: number | null;
+  params?: Record<string, unknown>;
+}
+
+export interface ModelsRegistryResponse {
+  models: RegisteredModel[];
+  assignments: Record<string, string>;
+}
+
+// The full registry — the only place the *embedding* models are listed, and so
+// the only source for "which embedder can a new collection bind to?". Admin-only:
+// a non-admin caller gets 403, which the UI degrades to an advisory.
+export function getModelsRegistry(apiKey?: string): Promise<ModelsRegistryResponse> {
+  return get<ModelsRegistryResponse>("/v1/admin/models/registry", apiKey);
 }
 
 // A registered model assignable per-request to a hot-swappable task (llm/reranker).

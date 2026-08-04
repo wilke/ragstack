@@ -3,26 +3,32 @@ import { getStoredApiKey, setStoredApiKey } from "./api/config";
 import { BackendSwitcher } from "./components/BackendSwitcher";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
-import { LibraryView } from "./components/LibraryView";
+import { CollectionView } from "./components/CollectionView";
 import { OpsDashboard } from "./components/OpsDashboard";
 
-// SPA shell: Explore (query console, #93) + Compare (multi-collection/tenant A/B
-// eval) + Ops (store stats / deep health, a slice of #95). A lightweight state
-// toggle rather than a router keeps the scaffold minimal. The in-memory API key
-// is shared across modules.
+// SPA shell: Explore (query console, #93) + Collection (upload -> ingest -> ask)
+// + Compare (multi-collection/tenant A/B eval) + Ops (store stats / deep health /
+// collection administration, a slice of #95). A lightweight state toggle rather
+// than a router keeps the scaffold minimal. The in-memory API key is shared
+// across modules.
+//
+// The "Collection" tab was called "Library" until it was renamed to match what it
+// actually creates (POST /v1/collections). Per docs/libraries-spec.md §0 a
+// *library* is a user-owned document set INSIDE a collection and does not exist
+// yet (#230) — when it does, it gets its own name back.
 
-type View = "explore" | "library" | "compare" | "ops";
+type View = "explore" | "collection" | "compare" | "ops";
 
 const TABS: { id: View; label: string }[] = [
   { id: "explore", label: "Explore" },
-  { id: "library", label: "Library" },
+  { id: "collection", label: "Collection" },
   { id: "compare", label: "Compare" },
   { id: "ops", label: "Ops" },
 ];
 
 const SUBTITLE: Record<View, string> = {
   explore: "Explore — ask the corpus, verify the sources",
-  library: "Library — upload PDFs, watch them ingest, then ask",
+  collection: "Collection — upload PDFs, watch them ingest, then ask",
   compare: "Compare — same query across collections, ranked side by side",
   ops: "Ops — stores, counts, and dependency health",
 };
@@ -69,8 +75,8 @@ export function App() {
 
       {view === "explore" ? (
         <ExploreView apiKey={apiKey} setApiKey={setApiKey} />
-      ) : view === "library" ? (
-        <LibraryView apiKey={apiKey} setApiKey={setApiKey} />
+      ) : view === "collection" ? (
+        <CollectionView apiKey={apiKey} setApiKey={setApiKey} />
       ) : view === "compare" ? (
         <CompareView apiKey={apiKey} setApiKey={setApiKey} />
       ) : (

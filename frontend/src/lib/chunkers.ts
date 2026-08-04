@@ -1,6 +1,10 @@
-// Chunk-strategy choices for the "New library" flow (the `chunk` object on
+// Chunk-strategy choices for the "New collection" flows (the `chunk` object on
 // POST /v1/collections) plus the read-side helper that renders how an existing
-// library was built.
+// collection was built. Shared by the demo NewCollectionForm and the Ops admin
+// panel via components/ChunkStrategyPicker.
+//
+// NAMING: these build *collections* (registry entry: model + dim + chunker -> an
+// index), never "libraries" — see docs/libraries-spec.md §0 and #230.
 //
 // SOURCE OF TRUTH for the method list: python/ragstack/ingestion/chunkers.py ::
 // CHUNK_METHODS. The API validates `chunk.method` against that tuple and returns
@@ -216,7 +220,7 @@ export interface ChunkConfigBody {
 
 /**
  * The `chunk` object to POST. Size/overlap are included ONLY for methods that
- * actually measure by them — a semantic library sends neither, so its manifest
+ * actually measure by them — a semantic collection sends neither, so its manifest
  * and provenance don't claim a window it never used. Blank semantic params are
  * omitted so the server's defaults apply (and are recorded) rather than a
  * client-side guess at them.
@@ -261,7 +265,7 @@ export interface ChunkingSource {
 }
 
 /**
- * One-line "how was this library built" summary, e.g. `fixed_token · 512/64 tok`
+ * One-line "how was this collection built" summary, e.g. `fixed_token · 512/64 tok`
  * or `semantic · buffer 3`. Prefers the manifest (what an ingest actually
  * recorded) over the registry label (what an operator asserted). Empty string
  * when nothing is known, so callers can skip the row.

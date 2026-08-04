@@ -12,55 +12,50 @@ import {
   type IngestResponse,
   type QueryResponse,
 } from "../api/client";
-import { apiDetail, describeChunking, type ChunkConfigBody } from "../lib/chunkers";
-import { NewLibraryForm } from "./NewLibraryForm";
+import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
+import { collectionCreateMessage } from "../lib/collections";
+import { NewCollectionForm } from "./NewCollectionForm";
 import { ResultsPanel } from "./ResultsPanel";
 import { SearchForm } from "./SearchForm";
 import { EmptyState } from "./states/EmptyState";
 
-// Demo "Library" view: the full upload → ingest → query loop on one page.
-//   1. Upload   — drag/drop or pick PDFs, POST /v1/ingest/upload (multipart).
-//   2. Progress — poll GET /v1/ingest/{job_id} every ~1.5s until terminal.
-//   3. Query    — ask the corpus, reusing the Explore answer/source components.
+// Demo "Collection" view: the full upload -> ingest -> query loop on one page.
+//   1. Upload   - drag/drop or pick PDFs, POST /v1/ingest/upload (multipart).
+//   2. Progress - poll GET /v1/ingest/{job_id} every ~1.5s until terminal.
+//   3. Query    - ask the corpus, reusing the Explore answer/source components.
 // The target collection is PICKED from a dropdown of existing collections
-// (GET /v1/collections) — never free-typed, so a user can't aim upload/query at a
-// non-existent id. A "＋ New library" control opens an inline form (name + chunk
+// (GET /v1/collections) - never free-typed, so a user can't aim upload/query at a
+// non-existent id. A "+ New collection" control opens an inline form (name + chunk
 // strategy) that mints a fresh named collection (POST /v1/collections) and
 // selects it.
+//
+// NAMING (docs/libraries-spec.md §0): index = the physical Qdrant collection + ES
+// index; **collection** = the registry entry binding (model + dim + chunker) to an
+// index, which is what this view creates and selects; **library** = a user-owned,
+// access-controlled document set *inside* a collection, isolated by `library_id`
+// - NOT implemented (#230). This view was called "Library" while calling
+// POST /v1/collections, which is exactly the collision #230 has to avoid; every
+// user-facing string here says "collection" now, and should keep saying it.
+//
+// Collection administration proper - choosing the embedding model, inspecting a
+// collection's build spec/provenance, deleting a registry binding - lives in the
+// Ops view's Collections section, since those are admin-gated operations.
 
 const MAX_MB = 50; // advisory only; the server is authoritative (returns 413).
 
-// Embedding model for a new library — matches the demo's SFR collection so a
-// user-created library is queryable with the same embedder as the default. The
-// CHUNK strategy is no longer hardcoded here: it is chosen per library in
-// NewLibraryForm (defaults still fixed_token/512/64).
-const NEW_LIBRARY_EMBEDDING = "sfr";
+// Embedding model for a new collection - matches the demo's SFR collection so a
+// user-created collection is queryable with the same embedder as the default.
+// (The Ops admin panel lets an admin pick any registered embedding model; this
+// demo path keeps one fewer decision in the way.) The CHUNK strategy is no longer
+// hardcoded here: it is chosen per collection in NewCollectionForm (defaults still
+// fixed_token/512/64).
+const NEW_COLLECTION_EMBEDDING = "sfr";
 
+// Create errors are worded once, in lib/collections.ts, so this view and the Ops
+// admin panel explain the same 409/404/400 the same way.
 function createErrorMessage(error: Error): string {
-  if (error instanceof ApiError) {
-    if (error.status === 409) return "A library with that name already exists — pick another name.";
-    if (error.status === 404)
-      return "The embedding model isn't registered on this server; a library can't be created.";
-    // 400 = bad chunk config (unknown method, size/overlap the chunker can't
-    // use). The server says exactly what's wrong, so show that sentence rather
-    // than a status code — but only the `detail` string, never the raw body.
-    if (error.status === 400) {
-      const detail = apiDetail(error.message);
-      return detail
-        ? `The server rejected the library config: ${detail}`
-        : "The server rejected the library config (bad model or chunk strategy).";
-    }
-    if (error.status === 422) {
-      const detail = apiDetail(error.message);
-      return detail
-        ? `The library config didn't validate: ${detail}`
-        : "The library config didn't validate (422).";
-    }
-    if (error.status === 401 || error.status === 403)
-      return "Creating a library needs an admin API key.";
-    return `Could not create the library (error ${error.status}).`;
-  }
-  return "Could not create the library — could not reach the API.";
+  const status = error instanceof ApiError ? error.status : null;
+  return collectionCreateMessage(status, error.message);
 }
 
 function stageBadge(n: number, label: string, active: boolean, done: boolean) {
@@ -95,7 +90,7 @@ function uploadErrorMessage(error: Error): string {
   return "Upload failed — could not reach the API.";
 }
 
-export function LibraryView({
+export function CollectionView({
   apiKey,
   setApiKey,
 }: {
@@ -118,14 +113,14 @@ export function LibraryView({
   });
   const opts: CollectionInfo[] = collections.data?.collections ?? [];
 
-  // "＋ New library": open the inline form, create with the chosen name + chunk
+  // "＋ New collection": open the inline form, create with the chosen name + chunk
   // strategy, then select it once the registry refetch has it as an option.
   // Errors surface via createErrorMessage (which unwraps the server's `detail`).
   const [creating, setCreating] = useState(false);
   const create = useMutation<CollectionInfo, Error, { name: string; chunk: ChunkConfigBody }>({
     mutationFn: ({ name, chunk }) =>
       createCollection(
-        { embedding: NEW_LIBRARY_EMBEDDING, chunk, id: name, label: name },
+        { embedding: NEW_COLLECTION_EMBEDDING, chunk, id: name, label: name },
         apiKey || undefined,
       ),
     onSuccess: async (info) => {
@@ -135,7 +130,7 @@ export function LibraryView({
     },
   });
 
-  // The library currently selected as upload target / query source, so its build
+  // The collection currently selected as upload target / query source, so its build
   // config (model + chunker) can be shown next to the picker.
   const selected = opts.find((c) => (c.default ? "" : c.id) === collection) ?? null;
   const selectedChunking = selected ? describeChunking(selected) : "";
@@ -211,11 +206,11 @@ export function LibraryView({
         />
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <label htmlFor="lib-collection" className="text-xs font-medium text-gray-500">
-            Library
+          <label htmlFor="target-collection" className="text-xs font-medium text-gray-500">
+            Collection
           </label>
           <select
-            id="lib-collection"
+            id="target-collection"
             value={collection}
             onChange={(e) => setCollection(e.target.value)}
             disabled={opts.length === 0}
@@ -223,11 +218,11 @@ export function LibraryView({
           >
             {opts.length === 0 ? (
               <option value="">
-                {collections.isLoading ? "Loading…" : "No libraries available"}
+                {collections.isLoading ? "Loading…" : "No collections available"}
               </option>
             ) : (
               opts.map((c) => {
-                // Show how each library was built right in the picker: chunking
+                // Show how each collection was built right in the picker: chunking
                 // is build-time identity, so "which chunker is this?" is part of
                 // choosing a target, not a detail buried in the ops dashboard.
                 const built = describeChunking(c);
@@ -247,12 +242,12 @@ export function LibraryView({
             disabled={create.isPending}
             className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
           >
-            {create.isPending ? "Creating…" : creating ? "Cancel" : "＋ New library"}
+            {create.isPending ? "Creating…" : creating ? "Cancel" : "＋ New collection"}
           </button>
           <span className="text-xs text-gray-400">upload target &amp; query source</span>
         </div>
 
-        {/* How the selected library was built. `provenance` (when present) is the
+        {/* How the selected collection was built. `provenance` (when present) is the
             manifest a real ingest wrote; otherwise these are the registry's
             declared values. Rendered as text, never markup. */}
         {selected ? (
@@ -274,7 +269,7 @@ export function LibraryView({
         ) : null}
 
         {creating && (
-          <NewLibraryForm
+          <NewCollectionForm
             pending={create.isPending}
             error={create.isError && create.error ? createErrorMessage(create.error) : null}
             onCancel={() => {

@@ -1,27 +1,59 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Fragment,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ApiError,
+  createCollection,
+  deleteCollection,
   getCollections,
   getConfig,
   getDeepHealth,
   getJobs,
+  getModelsRegistry,
   getModelsStatus,
   getStoreStats,
   getTenants,
   runModelBenchmark,
   type AppConfig,
   type BenchmarkResult,
+  type CollectionInfo,
   type JobSummary,
   type ModelStatus,
   type Provenance,
   type StoreStat,
 } from "../api/client";
+import {
+  DEFAULT_CHUNK_FORM,
+  buildChunkConfig,
+  validateChunkForm,
+  type ChunkForm,
+} from "../lib/chunkers";
+import {
+  ID_BLANK_HINT,
+  ID_EXPLICIT_HINT,
+  collectionCreateMessage,
+  collectionDeleteMessage,
+} from "../lib/collections";
+import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 
-// Ops module (slice of #95): read-only operational view fed by the tenant-scoped
-// read endpoints (#85). Store stats work for any caller; deep health is admin-only
-// (start the API with DEFAULT_ROLE=admin, or pass an admin key) — a 403 degrades to
-// a note rather than an error. Counts auto-refresh so an in-progress ingest is visible.
+// Ops module (slice of #95): the operational view fed by the tenant-scoped read
+// endpoints (#85). Store stats work for any caller; deep health, config, jobs and
+// the model registry are admin-only (start the API with DEFAULT_ROLE=admin, or
+// pass an admin key) — a 403 degrades to an amber note rather than an error.
+// Counts auto-refresh so an in-progress ingest is visible.
+//
+// Everything here was read-only until the Collections section gained collection
+// administration (create / inspect / unregister). Those are the only writes on
+// this page, they are admin-gated server-side, and they live here because this is
+// where collections are already listed and audited — see the note above
+// CollectionsPanel for the full rationale.
 
 const fmt = (n: number | null | undefined): string => (n == null ? "—" : n.toLocaleString());
 
@@ -352,7 +384,25 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
   );
 }
 
-// --- Collections registry -------------------------------------------------
+// --- Collections registry + administration --------------------------------
+
+// This is the admin home for collections: list, inspect, create, delete.
+//
+// WHY HERE and not a fourth top-level tab: every write on this surface is
+// admin-gated server-side (POST/DELETE /v1/collections and
+// GET /v1/admin/models/registry all require the admin role), and Ops is already
+// the admin surface — it owns the 403-degrades-to-amber pattern, the section
+// registry/TOC, and the read-side listing these controls act on. Splitting
+// "which collections exist, and are their two legs in parity?" from "make one /
+// delete one" across two tabs would put the evidence and the action in different
+// places. The demo Collection tab keeps its own one-click create (name + chunker
+// against the demo's embedder) because that is a *demo flow*, not administration.
+//
+// NAMING (docs/libraries-spec.md §0): a **collection** is the registry entry
+// binding (embedding model + dim + chunker) to an **index** (one physical Qdrant
+// collection + matching ES index). A **library** — a user-owned document set
+// inside a collection, isolated by `library_id` — is NOT implemented (#230).
+// Nothing on this panel is a library.
 
 // Vector count vs text (BM25) count for a collection. They should match — both
 // legs index the same chunks — so a drift flags a half-broken ingest (one store
@@ -411,7 +461,390 @@ function provenanceDetail(p: Provenance): string {
   return parts.filter(Boolean).join("\n");
 }
 
+function ProvenanceBadge({ p }: { p?: Provenance | null }) {
+  if (!p) {
+    return (
+      <span
+        className="text-gray-300"
+        title="No build manifest for this collection — set COLLECTION_MANIFEST_DIR and restart to materialize one from the registry spec (an ingest through this API then upgrades it to a verified record)."
+      >
+        none
+      </span>
+    );
+  }
+  return (
+    <span title={provenanceDetail(p)}>
+      <span
+        className={`rounded px-1 ${p.source === "ingest" ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}
+      >
+        {p.source === "ingest" ? "verified" : "declared"}
+      </span>
+      {p.ingested_at ? <span className="ml-1 text-gray-400">{p.ingested_at.slice(0, 10)}</span> : null}
+    </span>
+  );
+}
+
+// One label/value line in the expanded "what is this collection made of" panel.
+function Field({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+  return (
+    <div className="flex gap-2 py-0.5">
+      <dt className="w-40 shrink-0 text-gray-400">{k}</dt>
+      <dd className={`break-all text-gray-700 ${mono ? "font-mono text-xs" : ""}`}>{v || "—"}</dd>
+    </div>
+  );
+}
+
+// The full build spec of one collection: what it was built with, and whether
+// that is a verified record (an ingest wrote it) or a declaration (materialized
+// from the registry spec). Everything here is rendered as text.
+function CollectionDetail({ c }: { c: CollectionInfo }) {
+  const p = c.provenance ?? null;
+  const params = p?.chunk_params ?? {};
+  const paramText = Object.entries(params)
+    .map(([k, v]) => `${k}=${String(v)}`)
+    .join(", ");
+  const overlap = p?.chunk_overlap;
+  return (
+    <div className="grid gap-4 bg-gray-50 px-4 py-3 text-sm sm:grid-cols-2">
+      <dl>
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
+          Binding (registry)
+        </div>
+        <Field k="collection id" v={c.id} mono />
+        <Field k="label" v={c.label} />
+        <Field k="embedding model" v={c.model} mono />
+        <Field k="dimensions" v={String(c.dim)} />
+        <Field k="chunk method" v={c.chunk_method ?? "—"} />
+        <Field k="chunk size" v={c.chunk_size != null ? String(c.chunk_size) : "—"} />
+        <Field k="default" v={c.default ? "yes — cannot be deleted" : "no"} />
+      </dl>
+      <dl>
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
+          Build record (manifest)
+        </div>
+        {p ? (
+          <>
+            <Field
+              k="source"
+              v={
+                p.source === "ingest"
+                  ? "verified — recorded by a real ingest run"
+                  : "declared — materialized from config, never observed"
+              }
+            />
+            <Field k="physical store" v={p.collection ?? "—"} mono />
+            <Field
+              k="built with"
+              v={p.model ? `${p.model}${p.dim ? ` · ${p.dim}d` : ""}` : "—"}
+              mono
+            />
+            <Field k="embedding api" v={p.embedding_api ?? "—"} />
+            <Field
+              k="chunking"
+              v={`${p.chunk_method ?? "—"}${p.chunk_size != null ? ` · ${p.chunk_size}` : ""}${
+                overlap != null ? ` / ${overlap} overlap` : ""
+              }${paramText ? ` · ${paramText}` : ""}`}
+            />
+            <Field k="spec hash" v={p.spec_hash ?? "—"} mono />
+            <Field
+              k="chunks at ingest"
+              v={p.chunk_count != null ? p.chunk_count.toLocaleString() : "—"}
+            />
+            <Field k="corpus" v={p.corpus ?? "—"} mono />
+            <Field k="ingested at" v={p.ingested_at ?? "—"} />
+            <Field k="ragstack version" v={p.ragstack_version ?? "—"} />
+          </>
+        ) : (
+          <p className="text-xs text-gray-500">
+            No manifest. Set <code className="font-mono">COLLECTION_MANIFEST_DIR</code> and restart
+            to materialize a declared one from the registry spec; an ingest through this API then
+            upgrades it to a verified record.
+          </p>
+        )}
+      </dl>
+    </div>
+  );
+}
+
+// --- Create ---------------------------------------------------------------
+
+// The embedding model comes from the real registry (GET /v1/admin/models/registry,
+// task=embedding) — never a free-typed string, because the model + its dim are
+// what the physical store is built for and a typo mints a collection nothing can
+// ingest into. When no embedding model is registered we say exactly that, and
+// what to do about it, rather than showing an empty dropdown.
+function CreateCollectionForm({
+  apiKey,
+  onDone,
+}: {
+  apiKey?: string;
+  onDone: (created: CollectionInfo) => void;
+}) {
+  const registry = useQuery({
+    queryKey: ["models-registry", apiKey],
+    queryFn: () => getModelsRegistry(apiKey || undefined),
+    retry: false,
+  });
+  const embedders = (registry.data?.models ?? []).filter((m) => m.task === "embedding");
+
+  const [embedding, setEmbedding] = useState("");
+  const [form, setForm] = useState<ChunkForm>(DEFAULT_CHUNK_FORM);
+  const [collectionId, setCollectionId] = useState("");
+  const [label, setLabel] = useState("");
+  const [touched, setTouched] = useState(false);
+
+  // Derived rather than seeded via an effect: the first registered embedder is
+  // the selection until the admin picks another, and the list arrives async.
+  const chosen = embedding || embedders[0]?.id || "";
+  const chosenEntry = embedders.find((m) => m.id === chosen) ?? null;
+
+  const create = useMutation<CollectionInfo, Error, void>({
+    mutationFn: () =>
+      createCollection(
+        {
+          embedding: chosen,
+          chunk: buildChunkConfig(form),
+          id: collectionId.trim() || undefined,
+          label: label.trim() || undefined,
+        },
+        apiKey || undefined,
+      ),
+    onSuccess: onDone,
+  });
+
+  const problem =
+    chosen === ""
+      ? "Pick a registered embedding model."
+      : chosenEntry && !(chosenEntry.dim && chosenEntry.dim > 0)
+        ? "That model has no dimension recorded in the registry, so a store can't be built for it — fix the registry entry first."
+        : validateChunkForm(form);
+
+  const regErr = registry.error as ApiError | undefined;
+
+  if (registry.isError) {
+    return (
+      <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        {regErr?.status === 403 || regErr?.status === 401
+          ? "Creating a collection is admin-only: the embedding-model registry (GET /v1/admin/models/registry) refused this key. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
+          : `Can't read the model registry: ${(registry.error as Error).message}`}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-gray-800">New collection</h3>
+
+      {registry.isLoading ? (
+        <p className="text-sm text-gray-500">Loading registered models…</p>
+      ) : embedders.length === 0 ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          No embedding model is registered on this server, so there is nothing to bind a collection
+          to. Register one first with{" "}
+          <code className="font-mono">POST /v1/admin/models/registry</code> — it takes{" "}
+          <code className="font-mono">
+            {"{ id, task: \"embedding\", provider, base_urls, model, dim }"}
+          </code>
+          , and <code className="font-mono">base_urls</code> must pass the server&apos;s SSRF
+          allowlist. Then reopen this form.
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label
+                htmlFor="ops-col-embedding"
+                className="mb-1 block text-xs font-medium text-gray-500"
+              >
+                Embedding model
+              </label>
+              <select
+                id="ops-col-embedding"
+                value={chosen}
+                onChange={(e) => setEmbedding(e.target.value)}
+                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+              >
+                {embedders.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id} · {m.model || "(no model name)"} ·{" "}
+                    {m.dim ? `${m.dim}d` : "no dim"} · {m.provider}
+                  </option>
+                ))}
+              </select>
+              {chosenEntry ? (
+                <p className="mt-1 text-[11px] leading-snug text-gray-400">
+                  {chosenEntry.base_urls.length} endpoint
+                  {chosenEntry.base_urls.length === 1 ? "" : "s"} registered. The model and its
+                  dimension are baked into the store — changing embedder later means building a
+                  new collection, not editing this one.
+                </p>
+              ) : null}
+            </div>
+
+            <div>
+              <label htmlFor="ops-col-label" className="mb-1 block text-xs font-medium text-gray-500">
+                Label (optional)
+              </label>
+              <input
+                id="ops-col-label"
+                type="text"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="shown in pickers"
+                className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+              />
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <label htmlFor="ops-col-id" className="mb-1 block text-xs font-medium text-gray-500">
+              Collection id (optional)
+            </label>
+            <input
+              id="ops-col-id"
+              type="text"
+              value={collectionId}
+              onChange={(e) => setCollectionId(e.target.value)}
+              placeholder="leave blank for a content-addressed, shared store"
+              className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 font-mono text-sm sm:w-80"
+            />
+            {/* The distinction that caused a real data-sharing bug — one line each,
+                and the one that applies right now is highlighted. */}
+            <p
+              className={`mt-1 text-[11px] leading-snug ${
+                collectionId.trim() ? "font-medium text-gray-600" : "text-gray-400"
+              }`}
+            >
+              {ID_EXPLICIT_HINT}
+            </p>
+            <p
+              className={`text-[11px] leading-snug ${
+                collectionId.trim() ? "text-gray-400" : "font-medium text-gray-600"
+              }`}
+            >
+              {ID_BLANK_HINT}
+            </p>
+          </div>
+
+          <div className="mt-3">
+            <ChunkStrategyPicker idPrefix="ops-col" form={form} onChange={setForm} />
+          </div>
+
+          {touched && problem ? (
+            <p role="alert" className="mt-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
+              {problem}
+            </p>
+          ) : null}
+
+          {create.isError && create.error ? (
+            <p role="alert" className="mt-3 rounded bg-red-50 p-2 text-sm text-red-700">
+              {collectionCreateMessage(
+                create.error instanceof ApiError ? create.error.status : null,
+                create.error.message,
+              )}
+            </p>
+          ) : null}
+
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setTouched(true);
+                if (!problem) create.mutate();
+              }}
+              disabled={create.isPending}
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white transition-opacity hover:bg-blue-700 disabled:opacity-50"
+            >
+              {create.isPending ? "Creating…" : "Create collection"}
+            </button>
+            <span className="text-xs text-gray-400">
+              The collection is created empty — populate it with POST /v1/ingest (or the Collection
+              tab) against the returned id.
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- Delete ---------------------------------------------------------------
+
+// Deleting is a registry operation ONLY. The honest sentence is spelled out here
+// because people have been surprised by the orphan: the Qdrant collection and ES
+// index keep existing (and keep costing disk) after the binding is gone, and
+// re-creating a collection with the same build spec re-attaches to them.
+function DeleteConfirm({
+  c,
+  apiKey,
+  onCancel,
+  onDeleted,
+}: {
+  c: CollectionInfo;
+  apiKey?: string;
+  onCancel: () => void;
+  onDeleted: () => void;
+}) {
+  const store = c.provenance?.collection ?? null;
+  const del = useMutation<void, Error, void>({
+    mutationFn: () => deleteCollection(c.id, apiKey || undefined),
+    onSuccess: onDeleted,
+  });
+  return (
+    <div className="border-l-4 border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+      <p className="font-medium">Remove the registry binding for “{c.id}”?</p>
+      <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+        <li>
+          The collection disappears from <code className="font-mono">GET /v1/collections</code> and
+          can no longer be queried or ingested into by that id.
+        </li>
+        <li>
+          The physical store is <strong>not</strong> deleted: the Qdrant collection
+          {store ? (
+            <>
+              {" "}
+              <code className="font-mono">{store}</code>
+            </>
+          ) : null}{" "}
+          and its Elasticsearch index survive with all{" "}
+          {c.count != null ? c.count.toLocaleString() : "their"} chunks, and keep using disk. This
+          is documented behaviour, not a bug — dropping data is a separate, heavier operation you
+          must run against Qdrant/ES yourself.
+        </li>
+        <li>Nothing about the model registry or any other collection changes.</li>
+      </ul>
+      {del.isError && del.error ? (
+        <p role="alert" className="mt-2 rounded bg-white p-2 text-red-700">
+          {collectionDeleteMessage(
+            del.error instanceof ApiError ? del.error.status : null,
+            del.error.message,
+          )}
+        </p>
+      ) : null}
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          onClick={() => del.mutate()}
+          disabled={del.isPending}
+          className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+        >
+          {del.isPending ? "Removing…" : "Remove binding"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={del.isPending}
+          className="rounded border border-red-300 bg-white px-3 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function CollectionsPanel({ apiKey }: { apiKey?: string }) {
+  const queryClient = useQueryClient();
   const cols = useQuery({
     queryKey: ["collections-ops", apiKey],
     queryFn: () => getCollections(apiKey || undefined),
@@ -420,9 +853,58 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   });
   const rows = cols.data?.collections ?? [];
 
+  const [creating, setCreating] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Both the demo picker (["collections"]) and this panel read the registry, so
+  // a create/delete here has to invalidate both or the other view goes stale.
+  const refreshAll = () => {
+    void queryClient.invalidateQueries({ queryKey: ["collections-ops", apiKey] });
+    void queryClient.invalidateQueries({ queryKey: ["collections", apiKey] });
+  };
+
   return (
     <>
-      <SectionHeading id="collections" unavailable={cols.isError} />
+      <SectionHeading id="collections" unavailable={cols.isError}>
+        <button
+          type="button"
+          onClick={() => {
+            setNotice(null);
+            setCreating((v) => !v);
+          }}
+          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+        >
+          {creating ? "Cancel" : "＋ New collection"}
+        </button>
+      </SectionHeading>
+
+      {creating ? (
+        <CreateCollectionForm
+          apiKey={apiKey}
+          onDone={(created) => {
+            setCreating(false);
+            setExpanded(created.id);
+            setNotice(
+              `Created “${created.id}” — ${created.model} · ${created.dim}d${
+                created.provenance?.collection ? ` → store ${created.provenance.collection}` : ""
+              }. It is empty until you ingest into it.`,
+            );
+            refreshAll();
+          }}
+        />
+      ) : null}
+
+      {notice ? (
+        <div
+          role="status"
+          className="mb-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800"
+        >
+          {notice}
+        </div>
+      ) : null}
+
       {cols.isError ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           Unavailable: {(cols.error as Error).message}
@@ -453,6 +935,7 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                   Text
                 </th>
                 <th className="px-3 py-2 text-center font-medium">Parity</th>
+                <th className="px-3 py-2 text-right font-medium">Registry</th>
               </tr>
             </thead>
             <tbody>
@@ -464,50 +947,93 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 const chunking = method
                   ? `${method}${size ? "/" + size : ""}${p?.chunk_overlap != null ? " · ov " + p.chunk_overlap : ""}`
                   : "—";
+                const open = expanded === c.id;
                 return (
-                  <tr key={c.id} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium text-gray-800">
-                      {c.label}
-                      {c.default ? (
-                        <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
-                      ) : null}
-                    </td>
-                    <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
-                      {c.model}
-                      <span className="text-gray-400"> · {c.dim}d</span>
-                    </td>
-                    <td className="px-3 py-2 text-gray-600">{chunking}</td>
-                    <td className="px-3 py-2 text-xs">
-                      {p ? (
-                        <span title={provenanceDetail(p)}>
-                          <span
-                            className={`rounded px-1 ${p.source === "ingest" ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}
-                          >
-                            {p.source === "ingest" ? "verified" : "declared"}
-                          </span>
-                          {p.ingested_at ? (
-                            <span className="ml-1 text-gray-400">{p.ingested_at.slice(0, 10)}</span>
-                          ) : null}
-                        </span>
-                      ) : (
-                        <span
-                          className="text-gray-300"
-                          title="No build manifest for this collection — set COLLECTION_MANIFEST_DIR and restart to materialize one from the registry spec (an ingest through this API then upgrades it to a verified record)."
+                  <Fragment key={c.id}>
+                    <tr className="border-t border-gray-100">
+                      <td className="px-3 py-2 font-medium text-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setExpanded(open ? null : c.id)}
+                          aria-expanded={open}
+                          className="text-left hover:underline"
+                          title="Show what this collection is made of"
                         >
-                          none
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-600">
-                      {c.count != null ? c.count.toLocaleString() : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-600">
-                      {c.text_count != null ? c.text_count.toLocaleString() : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <ParityBadge vec={c.count} text={c.text_count} />
-                    </td>
-                  </tr>
+                          <span className="mr-1 text-gray-400">{open ? "▾" : "▸"}</span>
+                          {c.label || c.id}
+                        </button>
+                        {c.default ? (
+                          <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
+                        ) : null}
+                      </td>
+                      <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
+                        {c.model}
+                        <span className="text-gray-400"> · {c.dim}d</span>
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">{chunking}</td>
+                      <td className="px-3 py-2 text-xs">
+                        <ProvenanceBadge p={p} />
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-600">
+                        {c.count != null ? c.count.toLocaleString() : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-gray-600">
+                        {c.text_count != null ? c.text_count.toLocaleString() : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <ParityBadge vec={c.count} text={c.text_count} />
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {c.default ? (
+                          <span
+                            className="text-xs text-gray-300"
+                            title="The default collection can't be unregistered."
+                          >
+                            —
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNotice(null);
+                              setConfirming(confirming === c.id ? null : c.id);
+                            }}
+                            className="text-xs text-gray-400 hover:text-red-600"
+                          >
+                            Unregister
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {open ? (
+                      <tr className="border-t border-gray-100">
+                        <td colSpan={8} className="p-0">
+                          <CollectionDetail c={c} />
+                        </td>
+                      </tr>
+                    ) : null}
+                    {confirming === c.id ? (
+                      <tr className="border-t border-gray-100">
+                        <td colSpan={8} className="p-0">
+                          <DeleteConfirm
+                            c={c}
+                            apiKey={apiKey}
+                            onCancel={() => setConfirming(null)}
+                            onDeleted={() => {
+                              setConfirming(null);
+                              setExpanded(null);
+                              setNotice(
+                                `Unregistered “${c.id}”. Its physical store${
+                                  c.provenance?.collection ? ` (${c.provenance.collection})` : ""
+                                } and Elasticsearch index still exist — delete them in Qdrant/ES if you want the data gone.`,
+                              );
+                              refreshAll();
+                            }}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -516,13 +1042,15 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
       )}
       {rows.length > 0 ? (
         <p className="mt-2 text-xs text-gray-400">
-          <span className="font-medium text-gray-500">Vectors</span> counts the dense
+          Click a collection to see the model, dimension, chunk strategy and build manifest it was
+          made with. <span className="font-medium text-gray-500">Vectors</span> counts the dense
           embeddings in Qdrant; <span className="font-medium text-gray-500">Text</span>{" "}
           counts the BM25 documents in Elasticsearch. Hybrid retrieval queries both legs
           over the <em>same</em> chunks, so equal numbers are the healthy state — a drift
           means one store is missing rows (a partial or failed ingest), not extra data.
           Both are filtered to your readable tenants; very large counts may be
-          approximate.
+          approximate. <span className="font-medium text-gray-500">Unregister</span> drops the
+          registry binding only, never the stored chunks.
         </p>
       ) : null}
     </>
