@@ -23,6 +23,8 @@ tool + receipts).
 | `pdf-extract.cwl` | **PDF plane (#202/#203).** Run the real `PdfLoader` (PyMuPDF) over PDFs → one `{text,path,metadata}` JSONL shard (+ a skipped-files report). |
 | `pdf-ingest.cwl` | **PDF plane (#202/#203).** Workflow chaining `pdf-extract` → `embed_shard` → `load_embeddings` — a directory of PDFs straight into Qdrant/ES. |
 | `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
+| `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-PDF (#203 Option A).** Scatter/gather: one PDF → one extract task → one `ingest_shard` task → **one receipt**, then merge. The only PDF workflow `GoWeBackend` can actually drive (below). |
+| `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
 
 ### Containerized runtime (#135)
 
@@ -197,6 +199,66 @@ uncapped Qdrant). Like the other step tools, a real run needs live infra — the
 `run_embed_shard`/`run_load_file` cores are unit-tested offline with a fake
 embedder + in-memory stores (an end-to-end embed→file→load round-trip that
 reconstructs the same store state as the coupled `ingest()`).
+
+### PDF scatter-per-PDF (#203 Option A) — the driveable PDF workflow
+
+`pdf-ingest.cwl` is **one shard per run**: every PDF lands in a single JSONL
+shard, embedded once and loaded once, and the workflow emits no receipts. That is
+fine for an operator running a batch by hand, but it cannot be driven by
+`GoWeBackend`, which maps a `receipts` `File[]` output back to work items
+**positionally** — a workflow with no `receipts` output makes a fully successful
+run report *every item failed*.
+
+`pdf-ingest-scatter.cwl` is the driveable shape: **one PDF = one work item = one
+task chain = one receipt.**
+
+```
+pdfs: File[]  --scatter-->  extract (1 PDF -> 1 JSONL shard + report)
+              --scatter-->  ingest  (1 shard -> Qdrant/ES + 1 ShardReceipt)
+              --gather--->  merge   (receipts -> run summary)
+```
+
+Two deliberate choices:
+
+- **The receipt comes from `ingest_shard.py`, not from `embed_shard.py`.** The
+  decoupled halves exist so a stalling Qdrant can't back-pressure the GPU fleet,
+  and `load_embeddings` is intentionally a *single* un-scattered task (that's
+  where backpressure will live) — scattering it per PDF would contradict #141,
+  and an embed-stage receipt would report `completed` for chunks that were never
+  upserted. The coupled tool keeps `status`/`chunk_ids` honest and halves the
+  per-PDF container starts.
+- **`--shard-id` is the PDF's stem**, so each receipt names the document it came
+  from rather than a staged temp basename.
+
+Driving it from `GoWeBackend` needs **one non-default argument** — the scattered
+input key, because this workflow's input is `pdfs`, not `shards`:
+
+```python
+GoWeBackend(client, cwl, workflow_name="ragstack-pdf-ingest-scatter",
+            shards_input_key="pdfs",   # default is "shards" (ingest-bulk.cwl)
+            worker_group=None,         # must stay unset — see "Worker group matters"
+            static_inputs={"collection": ..., "embedding_url": [...], ...})
+```
+
+> **Not reachable from config yet.** `shards_input_key` is a constructor argument
+> with no `Settings` field, and `make_ingest_backend` never passes it — so
+> `INGEST_BACKEND=gowe` + `GOWE_WORKFLOW_CWL=cwl/pdf-ingest-scatter.cwl` alone
+> would submit a `shards` input the workflow doesn't declare. Both `/v1/ingest`
+> and `/v1/ingest/upload` also still return **501** for any non-local backend, and
+> each `WorkItem.source` must be a path under the GoWe server's
+> `--upload-download-dirs`. Those are the remaining gaps between this workflow and
+> a browser upload (#203).
+
+Failure semantics: `ingest_shard.py` exits non-zero on a failed shard, so a PDF
+with no extractable text (scanned/image-only → empty shard → `EmptyIngestError`)
+fails its task and therefore the submission. The extract step's `report` output
+lists unextractable files — pre-filter on it rather than letting one bad file sink
+a batch.
+
+Validated end to end: `cwltool --singularity` over 3 corpus PDFs (3 receipts, 187
+chunks in Qdrant **and** ES), and a live GoWe submission of the same three PDFs
+staged under `/scout/wf/data`, submitted through `GoWeBackend` with no worker
+group → `COMPLETED`, three `completed` `ItemResult`s with 31/82/74 chunk ids.
 
 ### Step 2b — submitting to a live GoWe engine
 

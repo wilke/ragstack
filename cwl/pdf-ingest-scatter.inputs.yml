@@ -1,0 +1,24 @@
+# Example inputs for cwl/pdf-ingest-scatter.cwl (one task chain + one receipt per
+# PDF). Run against the live embedding fleet (:9001-9004) + Qdrant (:6333) + ES
+# (:9200). Use a demo_*-prefixed throwaway collection for smoke tests.
+#
+#   CWL_SINGULARITY_CACHE=apptainer/images \
+#   APPTAINER_BIND=/rag/cache HF_HOME=/rag/cache \
+#     cwltool --singularity cwl/pdf-ingest-scatter.cwl cwl/pdf-ingest-scatter.inputs.yml
+pdfs:
+  - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10100743.pdf}
+  - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10100882.pdf}
+  - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10105658.pdf}
+collection: demo_gowe_pdf_scatter
+tenant: public
+chunk_method: fixed_token
+chunk_size: 256
+chunk_overlap: 32
+embedding_url:
+  - http://localhost:9001
+  - http://localhost:9002
+  - http://localhost:9003
+  - http://localhost:9004
+embedding_model: Salesforce/SFR-Embedding-Mistral
+qdrant_url: http://localhost:6333
+es_url: http://localhost:9200
