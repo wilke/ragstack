@@ -329,23 +329,54 @@ async def build_collection_entry(
         vector_store=vs,
         text_index=ti,
         embedder=emb,
+        embedding_api=spec.embedding_api,
+        embedding_endpoints=list(
+            spec.embedding_endpoints
+            or ([spec.embedding_sidecar_url] if spec.embedding_sidecar_url else [])
+        ),
     )
 
 
-def _chunker_for(entry: CollectionEntry) -> Any:
+def _semantic_param(params: dict[str, Any], key: str, default: Any, cast: Any) -> Any:
+    """Read one semantic tunable out of a collection's ``chunk_params``.
+
+    ``chunk_params`` is free-form in the contract, so a value can be anything JSON
+    can hold. A bad one is raised as ``ValueError`` — which the ingest router turns
+    into a 400 carrying this message — rather than a ``TypeError`` surfacing as a
+    500 mid-ingest.
+    """
+    if key not in params or params[key] is None:
+        return default
+    try:
+        return cast(params[key])
+    except (TypeError, ValueError):
+        raise ValueError(f"chunk param {key!r} must be a number; got {params[key]!r}") from None
+
+
+def _chunker_for(entry: CollectionEntry, *, embed_fn: Any = None) -> Any:
     """Build a chunker from a *target collection's* own chunk config, falling back
     to the server defaults for any unset field. ``fixed_token`` binds the HF
     tokenizer of the collection's embedding model (its sliding window is sized in
-    that model's tokens). Semantic methods are rejected here: they need the sync
-    embed bridge wired only into the default pipeline, so a targeted semantic
-    ingest isn't supported yet."""
+    that model's tokens).
+
+    The semantic methods embed sentence buffers synchronously, so they need an
+    ``embed_fn``; ``build_ingestor_for`` supplies one bound to *this collection's*
+    embedding backend (see :func:`_embed_bridge_for`). Called without one for a
+    semantic collection this raises, which the ingest router surfaces as a 400 —
+    never a silent fall back to a different chunking.
+
+    A collection's ``chunk_params`` (the free-form ``params`` object on
+    ``POST /v1/collections``) are honoured here, so a library created with e.g.
+    ``buffer_size=5`` is ingested with 5 rather than the server default.
+    """
     method = entry.chunk_method or settings.chunk_method
     size = entry.chunk_size if entry.chunk_size is not None else settings.chunk_size
     overlap = entry.chunk_overlap if entry.chunk_overlap is not None else settings.chunk_overlap
-    if method in ("semantic", "semantic_pooled"):
+    params = dict(entry.chunk_params or {})
+    if method in ("semantic", "semantic_pooled") and embed_fn is None:
         raise ValueError(
-            f"chunk_method={method!r} is not supported for a per-collection ingest "
-            "(semantic chunking runs only through the default pipeline)"
+            f"chunk_method={method!r} needs an embedding backend for this collection, "
+            "but none could be built"
         )
     token_counter = None
     if method == "fixed_token":
@@ -356,8 +387,62 @@ def _chunker_for(entry: CollectionEntry) -> Any:
             )
         token_counter = make_token_counter("hf", model=model, api_key=settings.openai_api_key or None)
     return make_chunker(
-        method, chunk_size=size, chunk_overlap=overlap, token_counter=token_counter
+        method,
+        chunk_size=size,
+        chunk_overlap=overlap,
+        token_counter=token_counter,
+        embed_fn=embed_fn,
+        buffer_size=_semantic_param(params, "buffer_size", settings.chunk_buffer_size, int),
+        breakpoint_percentile_threshold=_semantic_param(
+            params, "breakpoint_percentile_threshold", settings.chunk_breakpoint_percentile, float
+        ),
+        min_chunk_length=_semantic_param(
+            params, "min_chunk_length", settings.chunk_min_length, int
+        ),
     )
+
+
+def _embed_bridge_for(app_state: Any, entry: CollectionEntry) -> SyncEmbedBridge:
+    """The sync embed bridge a *semantic* per-collection ingest needs, cached per
+    collection id on ``app_state``.
+
+    Each bridge owns a background event loop + httpx client, so one is built per
+    collection and reused — a fresh bridge per ``/v1/ingest`` call would leak a
+    thread per request. Its factory rebuilds THIS collection's embedding backend on
+    the bridge's own loop: an httpx client binds to the loop it is first used on,
+    so the entry's main-loop embedder cannot be reused, and using the server
+    default instead would detect boundaries with a different model than the one
+    storing the vectors. ``lifespan`` closes every cached bridge at shutdown.
+    """
+    bridges = getattr(app_state, "collection_embed_bridges", None)
+    if bridges is None:
+        bridges = {}
+        # app_state is duck-typed in tests; a namespace that refuses attributes
+        # just means the bridge isn't cached, not that the ingest fails.
+        try:
+            app_state.collection_embed_bridges = bridges
+        except (AttributeError, TypeError):  # pragma: no cover - defensive
+            pass
+    bridge = bridges.get(entry.id)
+    if bridge is None:
+        api = entry.embedding_api or settings.embedding_api
+        model = entry.model or settings.embedding_model
+        # Only fall back to the server-wide endpoints when the entry records none
+        # (a spec with neither `embedding_endpoints` nor `embedding_sidecar_url`);
+        # the collection's own endpoints always win.
+        urls = list(entry.embedding_endpoints) or embedding_urls()
+        bridge = SyncEmbedBridge(lambda http: _make_embedder(http, api=api, model=model, urls=urls))
+        bridges[entry.id] = bridge
+    return bridge
+
+
+def _embed_fn_for(app_state: Any, entry: CollectionEntry) -> Any:
+    """The sync ``embed_fn`` a collection's chunker needs, or ``None``. Only the
+    semantic methods embed during chunking, so nothing else pays for a bridge."""
+    method = entry.chunk_method or settings.chunk_method
+    if method not in ("semantic", "semantic_pooled"):
+        return None
+    return _embed_bridge_for(app_state, entry)
 
 
 def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngestor:
@@ -377,7 +462,11 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
             max_bytes=settings.max_document_bytes,
             profile=resolve_profile(settings.publisher_profile),
         ),
-        chunker=_chunker_for(entry),
+        # The target collection's OWN chunker (method/size/overlap/params from its
+        # build spec), not the server default. Semantic methods additionally get a
+        # per-collection sync embed bridge so boundary detection uses the same
+        # model that stores the vectors.
+        chunker=_chunker_for(entry, embed_fn=_embed_fn_for(app_state, entry)),
         embedder=entry.embedder,
         vector_store=entry.vector_store,
         text_index=entry.text_index,
@@ -470,6 +559,8 @@ async def _build_collection_registry(
             vector_store=default_vector_store,
             text_index=default_text_index,
             embedder=default_embedder,
+            embedding_api=settings.embedding_api,
+            embedding_endpoints=list(embedding_urls()),
         )
     ]
     _materialize_config_manifest(
@@ -791,7 +882,11 @@ def _build_chunker():
         method = "fixed"
     bridge: SyncEmbedBridge | None = None
     embed_fn = None
-    if method == "semantic":
+    # BOTH semantic variants embed while chunking — ``semantic_pooled`` embeds each
+    # sentence once and mean-pools, but it still needs the bridge. Testing only for
+    # 'semantic' here meant CHUNK_METHOD=semantic_pooled died at startup with
+    # make_chunker's "requires an embed_fn".
+    if method in ("semantic", "semantic_pooled"):
         bridge = SyncEmbedBridge(_build_embedder)
         embed_fn = bridge
 
@@ -1079,6 +1174,10 @@ async def lifespan(app: FastAPI):
     app.state.doi_enricher = doi_enricher
     app.state.pipeline = pipeline
     app.state.embed_bridge = embed_bridge
+    # Per-collection sync embed bridges for semantic chunking on a targeted
+    # ingest, built lazily by _embed_bridge_for and closed below at shutdown.
+    collection_embed_bridges: dict[str, SyncEmbedBridge] = {}
+    app.state.collection_embed_bridges = collection_embed_bridges
     app.state.job_store = job_store
     app.state.ingestor = ingestor
     app.state.generator = (
@@ -1155,9 +1254,16 @@ async def lifespan(app: FastAPI):
         # Close the Neo4j driver if the graph store holds one.
         if graph_store is not None and hasattr(graph_store, "close"):
             await graph_store.close()
-        # Stop the semantic chunker's background embed loop, if any.
+        # Stop the semantic chunker's background embed loop, if any — the default
+        # pipeline's, plus one per collection that ran a semantic targeted ingest.
         if embed_bridge is not None:
             embed_bridge.close()
+        for cid, b in list(collection_embed_bridges.items()):
+            try:
+                b.close()
+            except Exception:  # noqa: BLE001 — shutdown must not raise
+                log.warning("collection %r: embed bridge close failed", cid, exc_info=True)
+        collection_embed_bridges.clear()
 
 
 def get_pipeline(request: Request) -> IngestionPipeline:

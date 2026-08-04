@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -89,6 +89,15 @@ class CollectionEntry:
     vector_store: Any
     text_index: Any
     embedder: Any = None  # the collection's embedder (matched to its model/dim); for ingest
+    # Where that embedder points. The built ``embedder`` is bound to the app's
+    # main-loop httpx client, so a *semantic* chunker — which embeds sentence
+    # buffers synchronously from a background loop — cannot reuse it and must
+    # build its own on its own loop. Retaining the api/endpoints here is what lets
+    # ``deps._embed_bridge_for`` rebuild the SAME backend for this collection
+    # instead of falling back to the server-default embedder (which would detect
+    # boundaries with a different model than the one storing the vectors).
+    embedding_api: str = ""
+    embedding_endpoints: list[str] = field(default_factory=list)
 
 
 class CollectionRegistry:

@@ -24,8 +24,11 @@ def _entry(method: str = "fixed") -> CollectionEntry:
 
 # --- builders (unit, offline) ---------------------------------------------- #
 
-def test_chunker_for_rejects_semantic():
-    # semantic methods need the sync embed bridge (default pipeline only)
+def test_chunker_for_rejects_semantic_without_an_embed_fn():
+    # semantic methods embed while chunking, so they need a sync embed_fn.
+    # build_ingestor_for now supplies a per-collection bridge (see
+    # test_chunk_choice.py); called bare this must still raise rather than
+    # silently chunk some other way.
     for m in ("semantic", "semantic_pooled"):
         with pytest.raises(ValueError):
             _chunker_for(_entry(m))

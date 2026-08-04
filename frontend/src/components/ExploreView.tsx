@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { getCollections, queryRag, type QueryResponse } from "../api/client";
+import { describeChunking } from "../lib/chunkers";
 import { ResultsPanel } from "./ResultsPanel";
 import { SearchForm } from "./SearchForm";
 import { EmptyState } from "./states/EmptyState";
@@ -62,13 +63,19 @@ export function ExploreView({
             onChange={(e) => setCollection(e.target.value)}
             className="rounded-md border border-gray-300 px-2 py-1 text-sm"
           >
-            {opts.map((c) => (
-              <option key={c.id} value={c.default ? "" : c.id}>
-                {c.label}
-                {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
-                {c.chunk_method ? ` · ${c.chunk_method}${c.chunk_size ? "/" + c.chunk_size : ""}` : ""}
-              </option>
-            ))}
+            {opts.map((c) => {
+              // Shared with the Library picker (lib/chunkers.ts) so both name a
+              // collection's build config the same way, and semantic collections
+              // don't get an invented size appended.
+              const built = describeChunking(c);
+              return (
+                <option key={c.id} value={c.default ? "" : c.id}>
+                  {c.label}
+                  {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
+                  {built ? ` · ${built}` : ""}
+                </option>
+              );
+            })}
           </select>
           <span className="text-xs text-gray-400">
             {(opts.find((c) => (c.default ? "" : c.id) === collection) ?? opts[0])?.model}
