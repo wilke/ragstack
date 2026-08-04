@@ -171,6 +171,75 @@ class ChunkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# Chunk methods whose boundaries come from embedding similarity rather than a
+# size budget, and the tunables they read out of the free-form ``chunk.params``.
+SEMANTIC_METHODS = ("semantic", "semantic_pooled")
+# name -> (numeric kind, inclusive min, inclusive max)
+SEMANTIC_PARAM_BOUNDS: dict[str, tuple[type, float, float]] = {
+    "buffer_size": (int, 1, 50),
+    "breakpoint_percentile_threshold": (float, 1, 100),
+    "min_chunk_length": (int, 0, 100_000),
+}
+# sentence/words read size == -1 as "one chunk per document"; the char/token
+# window chunkers have no such mode (and would never terminate on a negative size).
+WHOLE_DOC_METHODS = ("sentence", "words")
+
+
+def _validate_chunk(chunk: ChunkConfig) -> None:
+    """Reject a chunk config that cannot chunk, with a message a UI can show.
+
+    An unknown method is a 400: chunking is collection *identity*, so a typo must
+    not mint a collection nobody can ingest into. Beyond that, the sizes are
+    checked for the two configurations that don't merely produce odd chunks but
+    *hang* — a size of zero, and an overlap >= the size — since both leave the
+    sliding-window loop advancing by <= 0 units per step. Semantic params are
+    range-checked because ``params`` is free-form JSON and lands in the chunker
+    unvalidated otherwise.
+    """
+    method = chunk.method
+    if method not in CHUNK_METHODS:
+        raise HTTPException(
+            400,
+            f"unknown chunk method {method!r}; valid: {', '.join(sorted(CHUNK_METHODS))}",
+        )
+    if method in SEMANTIC_METHODS:
+        for key, value in (chunk.params or {}).items():
+            bounds = SEMANTIC_PARAM_BOUNDS.get(key)
+            if bounds is None:
+                continue  # params is free-form; unrecognised keys ride along untouched
+            kind, low, high = bounds
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise HTTPException(400, f"chunk param {key!r} must be a number; got {value!r}")
+            if kind is int and float(value) != int(value):
+                raise HTTPException(400, f"chunk param {key!r} must be a whole number")
+            if not (low <= float(value) <= high):
+                raise HTTPException(400, f"chunk param {key!r} must be between {low} and {high}")
+        return
+    size = chunk.size
+    if size is not None:
+        if size == -1 and method not in WHOLE_DOC_METHODS:
+            raise HTTPException(
+                400,
+                f"chunk size -1 (whole document) is only supported by "
+                f"{', '.join(WHOLE_DOC_METHODS)}, not {method!r}",
+            )
+        if size < 1 and size != -1:
+            raise HTTPException(400, f"chunk size must be at least 1; got {size}")
+    overlap = chunk.overlap
+    if overlap is not None:
+        if overlap < 0:
+            raise HTTPException(400, f"chunk overlap cannot be negative; got {overlap}")
+        # An omitted size falls back to the server default at ingest, so that is
+        # what the overlap has to be smaller than.
+        effective = size if size is not None else settings.chunk_size
+        if effective > 0 and overlap >= effective:
+            raise HTTPException(
+                400,
+                f"chunk overlap ({overlap}) must be smaller than the chunk size "
+                f"({effective}); otherwise chunking never advances",
+            )
+
+
 class CollectionCreateRequest(BaseModel):
     embedding: str  # id of a registered embedding model
     chunk: ChunkConfig
@@ -220,12 +289,9 @@ async def create_collection(
     if not (entry.dim and entry.dim > 0):
         raise HTTPException(400, f"embedding model {body.embedding!r} has no positive dim")
 
-    # 2. Validate the chunk method (identity input; unknown → 400).
-    if body.chunk.method not in CHUNK_METHODS:
-        raise HTTPException(
-            400,
-            f"unknown chunk method {body.chunk.method!r}; valid: {', '.join(sorted(CHUNK_METHODS))}",
-        )
+    # 2. Validate the chunk strategy (identity input; unknown method or a
+    # size/overlap that can't chunk → 400 with a message the UI can show).
+    _validate_chunk(body.chunk)
 
     # 3. Derive the physical name. With no explicit id this is content-addressed
     # over (model, dim, chunk): the same build spec re-maps to the same store, which

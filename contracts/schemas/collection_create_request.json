@@ -12,22 +12,25 @@
       "minLength": 1
     },
     "chunk": {
+      "description": "Chunk strategy — part of the collection's build identity, so it is fixed at creation and cannot be edited later. An unknown `method`, or a size/overlap the chosen chunker cannot advance through, is a 400.",
       "type": "object",
       "required": ["method"],
       "properties": {
         "method": {
-          "description": "Chunker method (e.g. fixed_token, fixed, sentence, words, semantic).",
+          "description": "One of fixed, fixed_token, sentence, words, semantic, semantic_pooled (the server's CHUNK_METHODS). Anything else is a 400.",
           "type": "string",
           "minLength": 1
         },
         "size": {
+          "description": "Chunk budget: characters for fixed/sentence/words, tokens of the collection's embedding model for fixed_token. Must be >= 1 (sentence/words also accept -1 = one chunk per document). Omit for the semantic methods, which derive boundaries from the text — a size sent there would be recorded in the collection's provenance without ever having been used.",
           "type": ["integer", "null"]
         },
         "overlap": {
+          "description": "Overlap between neighbouring chunks, in the same unit as `size`. Must be >= 0 and strictly less than `size`, otherwise the sliding window never advances. Omit for the semantic methods.",
           "type": ["integer", "null"]
         },
         "params": {
-          "description": "Free-form extra chunker parameters.",
+          "description": "Free-form extra chunker parameters. The semantic methods read buffer_size (1-50), breakpoint_percentile_threshold (1-100) and min_chunk_length (0-100000); anything omitted falls back to the server default. Unrecognised keys are accepted and stored as-is.",
           "type": "object",
           "default": {}
         }

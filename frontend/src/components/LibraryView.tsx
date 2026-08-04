@@ -12,6 +12,8 @@ import {
   type IngestResponse,
   type QueryResponse,
 } from "../api/client";
+import { apiDetail, describeChunking, type ChunkConfigBody } from "../lib/chunkers";
+import { NewLibraryForm } from "./NewLibraryForm";
 import { ResultsPanel } from "./ResultsPanel";
 import { SearchForm } from "./SearchForm";
 import { EmptyState } from "./states/EmptyState";
@@ -22,22 +24,38 @@ import { EmptyState } from "./states/EmptyState";
 //   3. Query    — ask the corpus, reusing the Explore answer/source components.
 // The target collection is PICKED from a dropdown of existing collections
 // (GET /v1/collections) — never free-typed, so a user can't aim upload/query at a
-// non-existent id. A "＋ New library" control mints a fresh named collection
-// (POST /v1/collections) and selects it.
+// non-existent id. A "＋ New library" control opens an inline form (name + chunk
+// strategy) that mints a fresh named collection (POST /v1/collections) and
+// selects it.
 
 const MAX_MB = 50; // advisory only; the server is authoritative (returns 413).
 
-// Chunk/embedding config for a new library — matches the demo's SFR collection so
-// a user-created library is queryable with the same embedder as the default.
+// Embedding model for a new library — matches the demo's SFR collection so a
+// user-created library is queryable with the same embedder as the default. The
+// CHUNK strategy is no longer hardcoded here: it is chosen per library in
+// NewLibraryForm (defaults still fixed_token/512/64).
 const NEW_LIBRARY_EMBEDDING = "sfr";
-const NEW_LIBRARY_CHUNK = { method: "fixed_token", size: 512, overlap: 64 } as const;
 
 function createErrorMessage(error: Error): string {
   if (error instanceof ApiError) {
     if (error.status === 409) return "A library with that name already exists — pick another name.";
     if (error.status === 404)
       return "The embedding model isn't registered on this server; a library can't be created.";
-    if (error.status === 400) return "The server rejected the library config (bad model or chunk).";
+    // 400 = bad chunk config (unknown method, size/overlap the chunker can't
+    // use). The server says exactly what's wrong, so show that sentence rather
+    // than a status code — but only the `detail` string, never the raw body.
+    if (error.status === 400) {
+      const detail = apiDetail(error.message);
+      return detail
+        ? `The server rejected the library config: ${detail}`
+        : "The server rejected the library config (bad model or chunk strategy).";
+    }
+    if (error.status === 422) {
+      const detail = apiDetail(error.message);
+      return detail
+        ? `The library config didn't validate: ${detail}`
+        : "The library config didn't validate (422).";
+    }
     if (error.status === 401 || error.status === 403)
       return "Creating a library needs an admin API key.";
     return `Could not create the library (error ${error.status}).`;
@@ -100,32 +118,27 @@ export function LibraryView({
   });
   const opts: CollectionInfo[] = collections.data?.collections ?? [];
 
-  // "＋ New library": prompt for a name, create it, then select it once the
-  // registry refetch has it as an option. Errors surface via createErrorMessage.
-  const create = useMutation<CollectionInfo, Error, string>({
-    mutationFn: (name) =>
+  // "＋ New library": open the inline form, create with the chosen name + chunk
+  // strategy, then select it once the registry refetch has it as an option.
+  // Errors surface via createErrorMessage (which unwraps the server's `detail`).
+  const [creating, setCreating] = useState(false);
+  const create = useMutation<CollectionInfo, Error, { name: string; chunk: ChunkConfigBody }>({
+    mutationFn: ({ name, chunk }) =>
       createCollection(
-        {
-          embedding: NEW_LIBRARY_EMBEDDING,
-          chunk: { ...NEW_LIBRARY_CHUNK },
-          id: name,
-          label: name,
-        },
+        { embedding: NEW_LIBRARY_EMBEDDING, chunk, id: name, label: name },
         apiKey || undefined,
       ),
     onSuccess: async (info) => {
       await queryClient.invalidateQueries({ queryKey: ["collections", apiKey] });
       setCollection(info.id); // info.id is server-echoed; option now exists post-refetch
+      setCreating(false);
     },
   });
 
-  const newLibrary = () => {
-    const raw = window.prompt("Name for the new library (e.g. andy):");
-    if (raw == null) return; // cancelled
-    const name = raw.trim();
-    if (!name) return;
-    create.mutate(name);
-  };
+  // The library currently selected as upload target / query source, so its build
+  // config (model + chunker) can be shown next to the picker.
+  const selected = opts.find((c) => (c.default ? "" : c.id) === collection) ?? null;
+  const selectedChunking = selected ? describeChunking(selected) : "";
 
   // Query stage state.
   const [query, setQuery] = useState("");
@@ -213,26 +226,66 @@ export function LibraryView({
                 {collections.isLoading ? "Loading…" : "No libraries available"}
               </option>
             ) : (
-              opts.map((c) => (
-                <option key={c.id} value={c.default ? "" : c.id}>
-                  {c.label}
-                  {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
-                </option>
-              ))
+              opts.map((c) => {
+                // Show how each library was built right in the picker: chunking
+                // is build-time identity, so "which chunker is this?" is part of
+                // choosing a target, not a detail buried in the ops dashboard.
+                const built = describeChunking(c);
+                return (
+                  <option key={c.id} value={c.default ? "" : c.id}>
+                    {c.label}
+                    {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
+                    {built ? ` · ${built}` : ""}
+                  </option>
+                );
+              })
             )}
           </select>
           <button
             type="button"
-            onClick={newLibrary}
+            onClick={() => setCreating((v) => !v)}
             disabled={create.isPending}
             className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
           >
-            {create.isPending ? "Creating…" : "＋ New library"}
+            {create.isPending ? "Creating…" : creating ? "Cancel" : "＋ New library"}
           </button>
           <span className="text-xs text-gray-400">upload target &amp; query source</span>
         </div>
 
-        {create.isError && create.error && (
+        {/* How the selected library was built. `provenance` (when present) is the
+            manifest a real ingest wrote; otherwise these are the registry's
+            declared values. Rendered as text, never markup. */}
+        {selected ? (
+          <p className="mb-3 text-xs text-gray-400">
+            <span className="font-mono text-gray-500">{selected.model}</span>
+            <span> · {selected.dim}d</span>
+            {selectedChunking ? <span> · {selectedChunking}</span> : null}
+            {selected.provenance ? (
+              <span
+                className={
+                  selected.provenance.source === "ingest" ? "text-green-600" : "text-gray-400"
+                }
+              >
+                {" "}
+                · {selected.provenance.source === "ingest" ? "verified" : "declared"}
+              </span>
+            ) : null}
+          </p>
+        ) : null}
+
+        {creating && (
+          <NewLibraryForm
+            pending={create.isPending}
+            error={create.isError && create.error ? createErrorMessage(create.error) : null}
+            onCancel={() => {
+              create.reset();
+              setCreating(false);
+            }}
+            onCreate={(name, chunk) => create.mutate({ name, chunk })}
+          />
+        )}
+
+        {!creating && create.isError && create.error && (
           <div role="alert" className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">
             {createErrorMessage(create.error)}
           </div>
