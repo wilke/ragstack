@@ -27,6 +27,7 @@ from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import make_ingest_backend
+from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
@@ -283,6 +284,9 @@ def _hybrid_retriever(
         graph_context_score=settings.graph_context_score,
         graph_context_depth=settings.graph_context_depth,
         collection=collection,
+        max_per_doc=settings.retrieval_max_per_doc,
+        demote_boilerplate=settings.retrieval_demote_boilerplate,
+        boilerplate_config=config_from_json(settings.boilerplate_config_json),
     )
 
 
@@ -478,6 +482,7 @@ def build_ingestor_for(app_state: Any, entry: CollectionEntry) -> ShardedIngesto
         # getattr: app_state is duck-typed in tests, and a missing enricher must
         # mean "disabled", never an AttributeError mid-ingest.
         doi_enricher=getattr(app_state, "doi_enricher", None),
+        boilerplate_filter=_build_boilerplate_filter(),
     )
     return ShardedIngestor(
         pipeline,
@@ -757,6 +762,27 @@ def _build_doi_enricher(http: httpx.AsyncClient) -> DoiEnricher | None:
         datacite_fallback=settings.doi_enrichment_datacite_fallback,
     )
     return DoiEnricher(resolver, profile=resolve_profile(settings.publisher_profile))
+
+
+def _build_boilerplate_filter() -> BoilerplateFilter | None:
+    """The chunk-level boilerplate filter, or ``None`` when detection is off.
+
+    Detection defaults ON because it only *adds* ``metadata["section"]`` /
+    ``metadata["is_boilerplate"]`` to non-body chunks — nothing is removed, so it
+    cannot lose data, and it makes the licence/reference/acknowledgement mass in
+    a scholarly corpus both measurable and filterable. Dropping those chunks
+    (``boilerplate_drop``) is the opt-in half, because a false positive there is
+    permanent for that ingest.
+    """
+    if not settings.boilerplate_detection_enabled:
+        return None
+    config = config_from_json(settings.boilerplate_config_json)
+    log.info(
+        "boilerplate detection enabled (action=%s, sections=%s)",
+        "drop" if settings.boilerplate_drop else "flag",
+        ",".join(sorted(config.boilerplate_sections)),
+    )
+    return BoilerplateFilter(config, drop=settings.boilerplate_drop)
 
 
 def _build_rewriters(llm: OpenAILLM | None) -> dict[str, QueryRewriter]:
@@ -1117,6 +1143,7 @@ async def lifespan(app: FastAPI):
         kg_extractor=kg_extractor,
         collection=default_collection,
         doi_enricher=doi_enricher,
+        boilerplate_filter=_build_boilerplate_filter(),
     )
 
     job_store = make_job_store(

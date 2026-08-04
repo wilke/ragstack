@@ -70,6 +70,7 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
+from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
@@ -464,6 +465,8 @@ def _write_run_metrics(
         "docs_indexed": stats["docs"],
         "docs_skipped": stats["skipped"],
         "chunks": chunks,
+        "boilerplate_flagged": stats.get("boilerplate_flagged", 0),
+        "boilerplate_dropped": stats.get("boilerplate_dropped", 0),
         "failed_batches": len(failed_seqs),
         "failed_batch_seqs": sorted(failed_seqs),
         "wall_s": wall,
@@ -634,7 +637,21 @@ async def run(args: argparse.Namespace) -> None:
               f"({len(seg_cache._spans)} cached spans loaded)", file=sys.stderr)
     ckpt_path, start_line, resume_done_ranges = _open_checkpoint_paths(args, current_doc_types)
     catalog = _open_catalog(args, start_line)
-    stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0}
+    stats = {"seen": 0, "skipped": 0, "docs": 0, "chunks": 0,
+             "boilerplate_flagged": 0, "boilerplate_dropped": 0}
+    # --boilerplate off|flag|drop. "flag" (the default) only *adds*
+    # metadata["section"]/["is_boilerplate"] to licence / reference-list /
+    # acknowledgement chunks: nothing is removed, so it cannot lose content, and
+    # the corpus becomes measurable ("how much of this library is bibliography?")
+    # and filterable at query time. "drop" additionally removes them before the
+    # embed, which is what a scholarly-PDF corpus wants — but it is opt-in
+    # because a false positive there is permanent for this ingest.
+    # getattr: `args` is a hand-built Namespace in the unit tests, and a missing
+    # attribute must mean the parser default ("flag"), never an AttributeError.
+    bp_mode = getattr(args, "boilerplate", "flag")
+    boilerplate = filter_from_mode(bp_mode, getattr(args, "boilerplate_config", ""))
+    if boilerplate is not None:
+        print(f"boilerplate detection: {bp_mode}", file=sys.stderr)
     # Per-document metrics (optional). Append on resume so a resumed run adds to
     # the rows already written rather than truncating them.
     doc_metrics: DocMetricsWriter | None = None
@@ -903,8 +920,24 @@ async def run(args: argparse.Namespace) -> None:
             # seg_cache is thread-safe. On a cache hit the breakpoint embed is skipped.
             async with chunk_sem:
                 if seg_cache is not None:
-                    return await asyncio.to_thread(seg_cache.get_or_compute, doc, chunker.chunk)
-                return await asyncio.to_thread(chunker.chunk, doc)
+                    chunks = await asyncio.to_thread(
+                        seg_cache.get_or_compute, doc, chunker.chunk
+                    )
+                else:
+                    chunks = await asyncio.to_thread(chunker.chunk, doc)
+            # Chunk-level boilerplate flag/drop, per document — which is also the
+            # granularity BoilerplateFilter's all-boilerplate guard needs. Counted
+            # into `stats` (and reported in --run-metrics-out and the final line)
+            # rather than dropped silently the way _kept() drops EMPTY records.
+            # NOTE: applied AFTER the segmentation cache reads/writes, so a cached
+            # segmentation stays a pure function of the chunker config and toggling
+            # the filter never invalidates the cache.
+            if boilerplate is not None and chunks:
+                result = boilerplate.apply(chunks)
+                stats["boilerplate_flagged"] += sum(result.flagged.values())
+                stats["boilerplate_dropped"] += result.dropped
+                chunks = result.chunks
+            return chunks
 
         async def _fold(item) -> None:
             # Fold one prepared item into the current batch. Called oldest-first, so
@@ -1114,6 +1147,9 @@ async def run(args: argparse.Namespace) -> None:
 
     print(f"done: {stats['docs']} docs indexed, {stats['skipped']} skipped, "
           f"{stats['chunks']} chunks (saw {stats['seen']} records)", file=sys.stderr)
+    if stats.get("boilerplate_flagged") or stats.get("boilerplate_dropped"):
+        print(f"boilerplate: {stats['boilerplate_flagged']} chunks flagged, "
+              f"{stats['boilerplate_dropped']} dropped", file=sys.stderr)
 
 
 def main() -> None:
@@ -1124,6 +1160,16 @@ def main() -> None:
     p.add_argument("--doc-types", nargs="+", default=None,
                    help="only ingest these doc_type classes (default: all non-empty). "
                         "e.g. --doc-types article supplement")
+    p.add_argument("--boilerplate", choices=["off", "flag", "drop"], default="flag",
+                   help="chunk-level boilerplate handling: off | flag (stamp "
+                        "metadata.section/is_boilerplate, default) | drop (also "
+                        "exclude licence/reference/acknowledgement chunks from the "
+                        "index). Counts are reported at end-of-run and in "
+                        "--run-metrics-out; a document that is ENTIRELY boilerplate "
+                        "is never emptied.")
+    p.add_argument("--boilerplate-config", default="",
+                   help="JSON object overriding BoilerplateConfig thresholds, e.g. "
+                        "'{\"reference_density\": 15}'")
     p.add_argument("--publisher-profile", default="asm",
                    help="enrichment profile (DOI prefix / filename rule / front-matter set); "
                         "unknown names fall back to the default. See enrich.PROFILES")

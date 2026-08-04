@@ -218,6 +218,34 @@ class Settings(BaseSettings):
             )
         return value
 
+    # --- Chunk-level boilerplate (ragstack.ingestion.boilerplate) ------------ #
+    # Scholarly PDFs contribute chunks that are not content: the Creative Commons
+    # licence footer, the "© The Author(s)" line, the acknowledgements/funding/
+    # competing-interests block, and the reference list. They are lexically about
+    # everything and semantically about nothing, so they match every query weakly
+    # and dominate the top-k whenever nothing scores strongly (observed live: a
+    # "role of bees" query returned a CC footer, a copyright line and two
+    # bibliography entries in its top 5, and the LLM then cited a paper it had
+    # only seen inside the retrieved bibliography).
+    #
+    # DETECTION is ON by default and purely additive: non-body chunks get
+    # metadata["section"] and metadata["is_boilerplate"], nothing is removed, and
+    # a body chunk's payload is byte-for-byte what it was. That makes the problem
+    # measurable and filterable without a behaviour change.
+    boilerplate_detection_enabled: bool = True
+    # DROPPING is OFF by default: a false positive is permanent for that ingest,
+    # so removing content is an explicit operator decision. Turn it on for
+    # scholarly-PDF corpora (it also saves the embed cost of those chunks); drops
+    # are counted and logged per source, never silent. A document whose chunks are
+    # ALL boilerplate is never emptied — see BoilerplateFilter's guard.
+    boilerplate_drop: bool = False
+    # Threshold overrides as a JSON object, e.g.
+    #   BOILERPLATE_CONFIG_JSON='{"reference_density":15,"boilerplate_sections":["references"]}'
+    # One string rather than a dozen settings: the thresholds are a calibration
+    # set tuned together per corpus. See BoilerplateConfig for every key and the
+    # reasoning behind its default. Malformed JSON degrades to the defaults.
+    boilerplate_config_json: str = ""
+
     # Embedding request batching (bounds request size so large documents don't
     # overflow the backend's max batch / context window).
     embedding_max_batch_items: int = 64
@@ -398,6 +426,23 @@ class Settings(BaseSettings):
     # without editing code (see the phantom-knob fix + ablation-harness work).
     retrieval_candidate_multiplier: int = 2   # per-leg fetch = top_k * this, before RRF
     rrf_k: int = 60                            # Reciprocal Rank Fusion constant
+    # Per-document diversity: at most N chunks from any one doc_id in the final
+    # top_k. 0 (default) = OFF, so existing deployments are unchanged. Without it
+    # one paper can monopolize the answer — observed live, 3 of the top 5 chunks
+    # came from a single document. Overflow chunks are demoted to the tail of the
+    # candidate pool rather than discarded, so the result count never shrinks:
+    # the cap only takes effect when there are enough other documents to fill it.
+    # 2-3 is the recommended setting for a multi-paper library.
+    retrieval_max_per_doc: int = 0
+    # Query-time boilerplate demotion: re-classify each fused candidate (using the
+    # ingest-time metadata["is_boilerplate"] stamp when present, else the same
+    # pure classifier over the chunk text) and sort licence/reference/
+    # acknowledgement chunks to the BACK of the candidate pool. Demotion, not
+    # deletion — a demoted chunk still surfaces when nothing else is available.
+    # OFF by default. Its purpose is corpora already indexed WITHOUT the flag:
+    # unlike boilerplate_drop it needs no re-ingest. Costs one regex pass over
+    # top_k*candidate_multiplier chunks per query.
+    retrieval_demote_boilerplate: bool = False
     multiquery_n: int = 3                      # paraphrases per multi-query rewrite
     graph_context_score: float = 0.5           # RRF score for graph-triple pseudo-chunks
     graph_context_depth: int = 1               # graph neighbourhood hop depth

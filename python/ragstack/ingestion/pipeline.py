@@ -5,6 +5,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 
+from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.doi_metadata import DoiEnricher
 from ragstack.models import Chunk, Document
@@ -48,6 +49,7 @@ class IngestionPipeline:
         delete_concurrency: int = 8,
         collection: str | None = None,
         doi_enricher: DoiEnricher | None = None,
+        boilerplate_filter: BoilerplateFilter | None = None,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -62,6 +64,11 @@ class IngestionPipeline:
         # what it was before — no import-time cost, no network, no behaviour
         # change for offline/air-gapped deployments.
         self.doi_enricher = doi_enricher
+        # Optional chunk-level boilerplate flag/drop, applied between chunk and
+        # embed — the one point where the chunk text exists but has not yet cost
+        # a GPU round-trip or reached a store. ``None`` = disabled, and the
+        # chunk→embed path is byte-for-byte what it was.
+        self.boilerplate_filter = boilerplate_filter
         # The collection this pipeline writes into. The vector store and text
         # index carry it implicitly (they ARE per-collection); the graph store is
         # shared across collections, so triples must be stamped with it on write
@@ -114,6 +121,7 @@ class IngestionPipeline:
             # otherwise stall the event loop. to_thread keeps the loop responsive.
             all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
         produced = len(all_chunks)
+        all_chunks = self._filter_boilerplate(all_chunks, source)
 
         kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
         if quarantined:
@@ -147,6 +155,36 @@ class IngestionPipeline:
                 source, len(skipped), skipped,
             )
         return kept
+
+    def _filter_boilerplate(self, chunks: list[Chunk], source: str) -> list[Chunk]:
+        """Stamp (and, if configured, drop) boilerplate chunks — visibly.
+
+        Runs between chunk and embed. The counts are logged at INFO on every
+        source that had any, and at WARNING when the filter removed more than
+        half a source's chunks — the signal that the thresholds are wrong for
+        this corpus. Deliberately NOT silent: ``scripts/ingest_jsonl.py``'s
+        ``_kept()`` drops records with no record of having done so, which is how
+        an over-aggressive filter goes unnoticed until answers start missing.
+
+        Never fatal: a bug in the classifier must not be able to fail an ingest,
+        so any exception degrades to "keep every chunk".
+        """
+        if self.boilerplate_filter is None or not chunks:
+            return chunks
+        try:
+            result = self.boilerplate_filter.apply(chunks)
+        except Exception as e:  # pragma: no cover - defensive
+            log.warning("boilerplate filter skipped for %r: %s", source, e)
+            return chunks
+        if sum(result.flagged.values()):
+            log.info("ingest %r: boilerplate %s", source, result.summary())
+        if result.dropped > len(chunks) // 2:
+            log.warning(
+                "ingest %r: boilerplate filter dropped %d of %d chunks (>50%%) — "
+                "check BOILERPLATE_CONFIG_JSON thresholds for this corpus",
+                source, result.dropped, len(chunks),
+            )
+        return result.chunks
 
     async def _apply_doi_enrichment(self, documents: list[Document]) -> None:
         """Fill metadata gaps from each document's DOI, between load and chunk.
@@ -222,6 +260,9 @@ class IngestionPipeline:
             all_chunks: list[Chunk] = []
             for doc in group:
                 all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+            if not all_chunks:
+                continue
+            all_chunks = self._filter_boilerplate(all_chunks, source)
             if not all_chunks:
                 continue
             kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
