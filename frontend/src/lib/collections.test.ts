@@ -4,6 +4,9 @@ import {
   ID_EXPLICIT_HINT,
   collectionCreateMessage,
   collectionDeleteMessage,
+  collectionPurgeMessage,
+  purgeConfirmed,
+  purgeReportSummary,
 } from "./collections";
 
 describe("collectionCreateMessage", () => {
@@ -64,6 +67,103 @@ describe("collectionDeleteMessage", () => {
 
   it("says admin for 403", () => {
     expect(collectionDeleteMessage(403, "")).toContain("admin");
+  });
+});
+
+describe("collectionPurgeMessage", () => {
+  it("passes the shared-store 409 through verbatim so the other collections are named", () => {
+    const body =
+      '{"detail":"cannot purge collection \'a\': its physical store (phys) is also used by \'b\', \'c\', and purging would destroy their data too."}';
+    const msg = collectionPurgeMessage(409, body);
+    expect(msg).toContain("'b', 'c'");
+    expect(msg).toContain("phys");
+    expect(msg).not.toContain("{");
+  });
+
+  it("passes the default-collection 409 through too", () => {
+    expect(collectionPurgeMessage(409, '{"detail":"cannot delete the default collection"}')).toBe(
+      "cannot delete the default collection",
+    );
+  });
+
+  it("says the store was untouched on a 404", () => {
+    expect(collectionPurgeMessage(404, "")).toMatch(/not touched/i);
+  });
+
+  it("says admin for 401/403", () => {
+    expect(collectionPurgeMessage(403, "")).toContain("admin");
+    expect(collectionPurgeMessage(401, "")).toContain("admin");
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(collectionPurgeMessage(null, "")).toContain("could not reach the API");
+    expect(collectionPurgeMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("purgeConfirmed", () => {
+  // The gate on an irreversible, GPU-expensive delete. Anything looser than an
+  // exact id match would make it a click-through.
+  it("unlocks only on the exact id", () => {
+    expect(purgeConfirmed("my-corpus", "my-corpus")).toBe(true);
+    expect(purgeConfirmed("my-corpu", "my-corpus")).toBe(false);
+    expect(purgeConfirmed("My-Corpus", "my-corpus")).toBe(false);
+    expect(purgeConfirmed("", "my-corpus")).toBe(false);
+    expect(purgeConfirmed("delete", "my-corpus")).toBe(false);
+  });
+
+  it("forgives surrounding whitespace from a paste", () => {
+    expect(purgeConfirmed("  my-corpus\n", "my-corpus")).toBe(true);
+  });
+
+  it("never unlocks for an empty id", () => {
+    expect(purgeConfirmed("", "")).toBe(false);
+    expect(purgeConfirmed("   ", "")).toBe(false);
+  });
+});
+
+describe("purgeReportSummary", () => {
+  const base = { collection_id: "gone", store: "phys_gone" };
+
+  it("names every target that was removed", () => {
+    const msg = purgeReportSummary({
+      ...base,
+      deleted: ["registry", "vectors", "text_index", "manifest"],
+      absent: [],
+      failed: [],
+      ok: true,
+    });
+    expect(msg).toContain("Qdrant collection");
+    expect(msg).toContain("Elasticsearch index");
+    expect(msg).toContain("provenance manifest");
+    expect(msg).toContain("phys_gone");
+  });
+
+  it("admits which targets were already gone rather than claiming a deletion", () => {
+    const msg = purgeReportSummary({
+      ...base,
+      deleted: ["registry"],
+      absent: ["vectors", "manifest"],
+      failed: [],
+      ok: true,
+    });
+    expect(msg).toContain("Already absent");
+    expect(msg).toContain("Qdrant collection");
+  });
+
+  it("leads with the failure on a partial purge and says nothing was rolled back", () => {
+    const msg = purgeReportSummary({
+      ...base,
+      deleted: ["registry", "vectors"],
+      absent: [],
+      failed: [{ target: "text_index", error: "ConnectionError: refused" }],
+      ok: false,
+    });
+    expect(msg).toContain("Partly deleted");
+    expect(msg).toContain("COULD NOT delete the Elasticsearch index");
+    expect(msg).toContain("ConnectionError: refused");
+    expect(msg).toMatch(/rolled back/);
+    expect(msg).toMatch(/by hand/);
   });
 });
 

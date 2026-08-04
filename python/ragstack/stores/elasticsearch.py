@@ -254,6 +254,27 @@ class ElasticsearchTextIndex:
         Raises on an unreachable server."""
         await self._es.info()
 
+    async def drop_index(self) -> bool:
+        """Delete the entire index — every document, every tenant.
+
+        The nuclear counterpart to :meth:`ensure_index`, used only by the
+        collection purge (``DELETE /v1/collections/{id}?purge=true``). Not
+        tenant-scoped, by design: it removes the index itself, not rows in it.
+
+        Idempotent — a missing index returns ``False`` rather than raising, so a
+        purge can report "already gone" instead of failing. Any other API error
+        propagates so the purge reports it as a real failure.
+        """
+        from elasticsearch import ApiError
+
+        try:
+            await self._es.indices.delete(index=self._index)
+        except ApiError as e:
+            if getattr(e, "status_code", None) == 404 or "index_not_found_exception" in str(e):
+                return False
+            raise
+        return True
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         filter_clauses: list[dict[str, Any]] = [{"term": {"doc_id": doc_id}}]
         if tenant_id is not None:

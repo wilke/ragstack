@@ -176,6 +176,19 @@ async function del(path: string, apiKey?: string): Promise<void> {
   }
 }
 
+// DELETE that answers 200 + a body (the collection purge report). Same error
+// handling as `del`; separate so the 204 callers keep a `Promise<void>`.
+async function delJson<T>(path: string, apiKey?: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-API-Key"] = apiKey;
+  const res = await fetch(apiUrl(path), { method: "DELETE", headers });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail || res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
 export interface StoreStat {
   backend: string;
   available: boolean;
@@ -420,6 +433,42 @@ export function createCollection(
 // 409 = it's the default collection · 404 = unknown id.
 export function deleteCollection(id: string, apiKey?: string): Promise<void> {
   return del(`/v1/collections/${encodeURIComponent(id)}`, apiKey);
+}
+
+// One target the purge could not remove. Its presence means the physical
+// resource may STILL EXIST — the server does not roll back — so this is an
+// operator to-do, not a warning to dismiss.
+export interface PurgeFailure {
+  target: string; // vectors | text_index | manifest
+  error: string;
+}
+
+// What DELETE /v1/collections/{id}?purge=true actually destroyed. Three lists
+// rather than a boolean because the purge touches four independent systems
+// (registry binding, Qdrant, Elasticsearch, manifest file) that can each
+// succeed, be already-gone, or fail on their own.
+export interface CollectionPurgeReport {
+  collection_id: string;
+  purged: boolean;
+  store: string; // physical Qdrant collection name
+  text_index: string; // physical Elasticsearch index name
+  deleted: string[]; // actually removed
+  absent: string[]; // already gone (idempotent, not an error)
+  failed: PurgeFailure[]; // errored, NOT rolled back
+  ok: boolean; // failed is empty
+}
+
+// DESTROY a collection and its data (admin-only, 200 + report). Unlike
+// deleteCollection this deletes the physical Qdrant collection, the ES index and
+// the provenance manifest — the embeddings are gone and only a re-ingest brings
+// them back. Never call this without a typed-confirmation gate in front of it.
+// 409 = the default collection, or a physical store shared with other registry
+// entries (the detail names them) · 404 = unknown id.
+export function purgeCollection(id: string, apiKey?: string): Promise<CollectionPurgeReport> {
+  return delJson<CollectionPurgeReport>(
+    `/v1/collections/${encodeURIComponent(id)}?purge=true`,
+    apiKey,
+  );
 }
 
 // --- Model registry (admin-only) ---

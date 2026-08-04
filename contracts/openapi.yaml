@@ -537,10 +537,31 @@ paths:
   /v1/collections/{collection_id}:
     delete:
       operationId: deleteCollection
-      summary: Delete a collection from the registry
+      summary: Unregister a collection, optionally purging its data
       description: >-
-        Removes a collection registry entry. Admin only. (Whether the underlying
-        Qdrant collection / ES index is dropped is governed server-side.)
+        Removes a collection registry entry. Admin only.
+
+
+        By default (`purge=false`) this drops the *binding* only: the underlying
+        Qdrant collection and Elasticsearch index survive with every chunk, and a
+        later collection built from the same spec re-attaches to them. This is
+        why repeated create/delete cycles accumulate orphaned physical stores.
+
+
+        With `purge=true` the physical Qdrant collection, the Elasticsearch index
+        and the provenance manifest are deleted too. **Irreversible**: the
+        embeddings are destroyed and can only be recovered by re-ingesting. The
+        response is a 200 `CollectionPurgeReport` describing exactly what was
+        removed, what was already absent, and what failed — a partial failure
+        (e.g. Qdrant dropped but ES errored) is reported, never rolled back and
+        never hidden behind a 500. Purging is idempotent: a target that is
+        already gone is listed under `absent`, not an error.
+
+
+        Purge is refused with 409 for the default collection, and for a
+        collection whose physical store is still referenced by another registry
+        entry (content-addressed collections built from an identical spec share
+        one store) — the 409 message names the other collections.
       tags: [Documents]
       security:
         - ApiKeyAuth: []
@@ -550,15 +571,34 @@ paths:
           required: true
           schema:
             type: string
+        - name: purge
+          in: query
+          required: false
+          description: >-
+            Also delete the physical Qdrant collection, the Elasticsearch index
+            and the provenance manifest. Default false (unregister only).
+          schema:
+            type: boolean
+            default: false
       responses:
+        "200":
+          description: Purged (`purge=true`) — the report lists what was removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionPurgeReport"
         "204":
-          description: Deleted
+          description: Unregistered (`purge=false`) — physical stores left intact
         "401":
           description: Missing or invalid API key
         "403":
           description: Caller is not an admin
         "404":
           description: Unknown collection id
+        "409":
+          description: >-
+            The default collection, or (with `purge=true`) a collection whose
+            physical store is shared with other registry entries
 
   /v1/models/available:
     get:
@@ -1144,6 +1184,53 @@ components:
             chunk_count: { type: [integer, "null"] }
             ingested_at: { type: string }
             source: { type: string }
+      additionalProperties: false
+
+    CollectionPurgeReport:
+      type: object
+      description: >-
+        What `DELETE /v1/collections/{id}?purge=true` actually destroyed. Four
+        independent systems are touched (registry, Qdrant, Elasticsearch, the
+        manifest file) and each can succeed, be already-gone, or fail on its own —
+        so the outcome is three lists, not a boolean. Targets are `registry`,
+        `vectors`, `text_index`, `manifest`.
+      required: [collection_id, purged, store, text_index, deleted, absent, failed, ok]
+      properties:
+        collection_id:
+          description: The registry id that was purged.
+          type: string
+        purged:
+          description: True — a `purge=false` delete returns 204 with no body instead.
+          type: boolean
+        store:
+          description: Physical Qdrant collection name the purge targeted.
+          type: string
+        text_index:
+          description: Physical Elasticsearch index name the purge targeted.
+          type: string
+        deleted:
+          description: Targets that were actually removed.
+          type: array
+          items: { type: string }
+        absent:
+          description: Targets that were already gone (idempotent no-op, not an error).
+          type: array
+          items: { type: string }
+        failed:
+          description: >-
+            Targets that errored. NOT rolled back — the physical resource may
+            still exist and needs cleaning up by hand.
+          type: array
+          items:
+            type: object
+            required: [target, error]
+            properties:
+              target: { type: string }
+              error: { type: string }
+            additionalProperties: false
+        ok:
+          description: True when `failed` is empty — the collection and its data are fully gone.
+          type: boolean
       additionalProperties: false
 
     CollectionCreateRequest:

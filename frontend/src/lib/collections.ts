@@ -57,6 +57,84 @@ export function collectionDeleteMessage(status: number | null, body: string): st
   return `Could not delete the collection (error ${status}).`;
 }
 
+/**
+ * Same, for the DESTRUCTIVE `DELETE /v1/collections/{id}?purge=true`.
+ *
+ * Split from `collectionDeleteMessage` because the 409s mean different things: an
+ * unregister can only ever collide with the default collection, while a purge is
+ * also refused when the physical store is shared with other registry entries —
+ * and that message names them, so it must reach the screen verbatim rather than
+ * being flattened to "the default collection can't be deleted".
+ */
+export function collectionPurgeMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not delete the collection — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "That collection can't be permanently deleted.";
+  }
+  if (status === 404)
+    return "That collection is already gone from the registry. Its physical store, if any, was not touched.";
+  if (status === 401 || status === 403)
+    return "Permanently deleting a collection needs an admin API key.";
+  return `Could not permanently delete the collection (error ${status}).`;
+}
+
+/**
+ * Whether what the operator typed unlocks the permanent delete for `id`.
+ *
+ * Typing the id — not clicking OK — is the gate, because this destroys
+ * embeddings that cost GPU hours. Surrounding whitespace is forgiven (people
+ * paste); case and content are not.
+ */
+export function purgeConfirmed(typed: string, id: string): boolean {
+  return typed.trim() === id && id.length > 0;
+}
+
+/** The purge report's four possible targets, in human words. */
+const PURGE_TARGETS: Record<string, string> = {
+  registry: "the registry binding",
+  vectors: "the Qdrant collection",
+  text_index: "the Elasticsearch index",
+  manifest: "the provenance manifest",
+};
+
+export function purgeTargetLabel(target: string): string {
+  return PURGE_TARGETS[target] ?? target;
+}
+
+/**
+ * One honest sentence about a finished purge.
+ *
+ * Deliberately reports the "already gone" targets too: a purge that found no
+ * Qdrant collection did not delete one, and saying "deleted everything" there
+ * would be the same dishonesty the server's three-list report exists to avoid.
+ * When something FAILED, the sentence leads with that — the physical resource
+ * may still exist and is now an orphan nobody is tracking.
+ */
+export function purgeReportSummary(report: {
+  collection_id: string;
+  store: string;
+  deleted: string[];
+  absent: string[];
+  failed: { target: string; error: string }[];
+  ok: boolean;
+}): string {
+  const names = (ts: string[]) => ts.map(purgeTargetLabel).join(", ");
+  const removed = report.deleted.length ? `Deleted ${names(report.deleted)}.` : "";
+  const gone = report.absent.length ? ` Already absent: ${names(report.absent)}.` : "";
+  if (report.ok) {
+    return `Permanently deleted “${report.collection_id}” (store ${report.store}). ${removed}${gone}`.trim();
+  }
+  const failures = report.failed
+    .map((f) => `${purgeTargetLabel(f.target)} (${f.error})`)
+    .join("; ");
+  return (
+    `Partly deleted “${report.collection_id}” (store ${report.store}). ` +
+    `${removed}${gone} COULD NOT delete ${failures} — nothing was rolled back, so that ` +
+    `resource may still exist and needs removing by hand.`
+  );
+}
+
 // The one subtlety that has actually bitten: whether the physical store is
 // private to this collection or shared with every collection built the same way.
 // Both flows print these verbatim, one line each.

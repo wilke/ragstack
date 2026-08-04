@@ -20,10 +20,12 @@ import {
   getModelsStatus,
   getStoreStats,
   getTenants,
+  purgeCollection,
   runModelBenchmark,
   type AppConfig,
   type BenchmarkResult,
   type CollectionInfo,
+  type CollectionPurgeReport,
   type JobSummary,
   type ModelStatus,
   type Provenance,
@@ -40,6 +42,9 @@ import {
   ID_EXPLICIT_HINT,
   collectionCreateMessage,
   collectionDeleteMessage,
+  collectionPurgeMessage,
+  purgeConfirmed,
+  purgeReportSummary,
 } from "../lib/collections";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 
@@ -50,10 +55,12 @@ import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 // Counts auto-refresh so an in-progress ingest is visible.
 //
 // Everything here was read-only until the Collections section gained collection
-// administration (create / inspect / unregister). Those are the only writes on
-// this page, they are admin-gated server-side, and they live here because this is
-// where collections are already listed and audited — see the note above
-// CollectionsPanel for the full rationale.
+// administration (create / inspect / unregister / permanently delete). Those are
+// the only writes on this page, they are admin-gated server-side, and they live
+// here because this is where collections are already listed and audited — see the
+// note above CollectionsPanel for the full rationale. The last of them is the only
+// irreversible action in the whole UI, which is why it sits behind a type-the-id
+// gate rather than a click.
 
 const fmt = (n: number | null | undefined): string => (n == null ? "—" : n.toLocaleString());
 
@@ -843,6 +850,107 @@ function DeleteConfirm({
   );
 }
 
+// --- Delete permanently (purge) -------------------------------------------
+//
+// The destructive sibling of DeleteConfirm. Two things make it a different
+// control rather than a checkbox on the same one: it destroys embeddings that
+// cost GPU hours and cannot be recovered from the registry, and the gate is
+// TYPING THE ID — a button you can click through is not a gate for that.
+export function PurgeConfirm({
+  c,
+  apiKey,
+  onCancel,
+  onPurged,
+}: {
+  c: CollectionInfo;
+  apiKey?: string;
+  onCancel: () => void;
+  onPurged: (report: CollectionPurgeReport) => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const store = c.provenance?.collection ?? null;
+  const unlocked = purgeConfirmed(typed, c.id);
+  const purge = useMutation<CollectionPurgeReport, Error, void>({
+    mutationFn: () => purgeCollection(c.id, apiKey || undefined),
+    onSuccess: onPurged,
+  });
+  const inputId = `purge-confirm-${c.id}`;
+  return (
+    <div className="border-l-4 border-red-600 bg-red-50 px-4 py-3 text-sm text-red-900">
+      <p className="font-semibold">
+        Permanently delete “{c.id}” and everything in it?
+      </p>
+      <p className="mt-1 text-xs">
+        This is <strong>irreversible</strong>. The embeddings are destroyed; the only way back is a
+        full re-ingest, which costs the GPU time that produced them.
+      </p>
+      <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs">
+        <li>
+          The Qdrant collection{" "}
+          {store ? <code className="font-mono">{store}</code> : <em>backing this collection</em>} is
+          dropped, with{" "}
+          <strong>{c.count != null ? c.count.toLocaleString() : "all of its"}</strong> vector
+          {c.count === 1 ? "" : "s"}.
+        </li>
+        <li>
+          Its Elasticsearch index is deleted, with{" "}
+          <strong>{c.text_count != null ? c.text_count.toLocaleString() : "all of its"}</strong> BM25
+          document{c.text_count === 1 ? "" : "s"}.
+        </li>
+        <li>The provenance manifest recording how the corpus was built is removed.</li>
+        <li>
+          The registry binding goes too — the collection disappears from{" "}
+          <code className="font-mono">GET /v1/collections</code>.
+        </li>
+      </ul>
+      <label htmlFor={inputId} className="mt-3 block text-xs font-medium">
+        Type <code className="font-mono font-semibold">{c.id}</code> to confirm:
+      </label>
+      <input
+        id={inputId}
+        type="text"
+        value={typed}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(e) => setTyped(e.target.value)}
+        disabled={purge.isPending}
+        placeholder={c.id}
+        className="mt-1 w-64 rounded border border-red-300 bg-white px-2 py-1 font-mono text-xs text-red-900 placeholder:text-red-200 focus:border-red-500 focus:outline-none disabled:opacity-50"
+      />
+      {purge.isError && purge.error ? (
+        <p role="alert" className="mt-2 rounded bg-white p-2 text-xs text-red-700">
+          {collectionPurgeMessage(
+            purge.error instanceof ApiError ? purge.error.status : null,
+            purge.error.message,
+          )}
+        </p>
+      ) : null}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => purge.mutate()}
+          disabled={!unlocked || purge.isPending}
+          title={unlocked ? undefined : "Type the collection id above to enable this."}
+          className="rounded bg-red-700 px-3 py-1 text-xs font-semibold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {purge.isPending ? "Deleting…" : "Delete permanently"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={purge.isPending}
+          className="rounded border border-red-300 bg-white px-3 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <span className="text-xs text-red-400">
+          Prefer Unregister if you only want the id freed — it keeps the data.
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   const queryClient = useQueryClient();
   const cols = useQuery({
@@ -855,8 +963,15 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
 
   const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  // Which row is asking for confirmation, and for WHICH of the two deletes —
+  // they are different operations with different consequences, so one row can
+  // never be showing both gates at once.
+  const [confirming, setConfirming] = useState<{ id: string; mode: "unregister" | "purge" } | null>(
+    null,
+  );
+  // `warn` is the partial-failure case: some of the purge landed and some didn't,
+  // which is neither a success nor an error the mutation can retry.
+  const [notice, setNotice] = useState<{ text: string; tone: "ok" | "warn" } | null>(null);
 
   // Both the demo picker (["collections"]) and this panel read the registry, so
   // a create/delete here has to invalidate both or the other view goes stale.
@@ -886,11 +1001,12 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
           onDone={(created) => {
             setCreating(false);
             setExpanded(created.id);
-            setNotice(
-              `Created “${created.id}” — ${created.model} · ${created.dim}d${
+            setNotice({
+              tone: "ok",
+              text: `Created “${created.id}” — ${created.model} · ${created.dim}d${
                 created.provenance?.collection ? ` → store ${created.provenance.collection}` : ""
               }. It is empty until you ingest into it.`,
-            );
+            });
             refreshAll();
           }}
         />
@@ -899,9 +1015,13 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
       {notice ? (
         <div
           role="status"
-          className="mb-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800"
+          className={
+            notice.tone === "warn"
+              ? "mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
+              : "mb-3 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800"
+          }
         >
-          {notice}
+          {notice.text}
         </div>
       ) : null}
 
@@ -987,21 +1107,46 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                         {c.default ? (
                           <span
                             className="text-xs text-gray-300"
-                            title="The default collection can't be unregistered."
+                            title="The default collection can't be unregistered or deleted."
                           >
                             —
                           </span>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setNotice(null);
-                              setConfirming(confirming === c.id ? null : c.id);
-                            }}
-                            className="text-xs text-gray-400 hover:text-red-600"
-                          >
-                            Unregister
-                          </button>
+                          // Unregister stays the quiet default; the destructive one
+                          // is visually separate and never the primary action.
+                          <span className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNotice(null);
+                                setConfirming(
+                                  confirming?.id === c.id && confirming.mode === "unregister"
+                                    ? null
+                                    : { id: c.id, mode: "unregister" },
+                                );
+                              }}
+                              className="text-xs text-gray-400 hover:text-gray-700"
+                              title="Drop the registry binding only. The stored chunks survive."
+                            >
+                              Unregister
+                            </button>
+                            <span className="text-gray-200">|</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setNotice(null);
+                                setConfirming(
+                                  confirming?.id === c.id && confirming.mode === "purge"
+                                    ? null
+                                    : { id: c.id, mode: "purge" },
+                                );
+                              }}
+                              className="rounded border border-red-200 px-1.5 py-0.5 text-xs font-medium text-red-600 hover:border-red-400 hover:bg-red-50"
+                              title="Destroy the data: the Qdrant collection, the Elasticsearch index and the manifest. Irreversible."
+                            >
+                              Delete permanently
+                            </button>
+                          </span>
                         )}
                       </td>
                     </tr>
@@ -1012,24 +1157,45 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                         </td>
                       </tr>
                     ) : null}
-                    {confirming === c.id ? (
+                    {confirming?.id === c.id ? (
                       <tr className="border-t border-gray-100">
                         <td colSpan={8} className="p-0">
-                          <DeleteConfirm
-                            c={c}
-                            apiKey={apiKey}
-                            onCancel={() => setConfirming(null)}
-                            onDeleted={() => {
-                              setConfirming(null);
-                              setExpanded(null);
-                              setNotice(
-                                `Unregistered “${c.id}”. Its physical store${
-                                  c.provenance?.collection ? ` (${c.provenance.collection})` : ""
-                                } and Elasticsearch index still exist — delete them in Qdrant/ES if you want the data gone.`,
-                              );
-                              refreshAll();
-                            }}
-                          />
+                          {confirming.mode === "unregister" ? (
+                            <DeleteConfirm
+                              c={c}
+                              apiKey={apiKey}
+                              onCancel={() => setConfirming(null)}
+                              onDeleted={() => {
+                                setConfirming(null);
+                                setExpanded(null);
+                                setNotice({
+                                  tone: "ok",
+                                  text: `Unregistered “${c.id}”. Its physical store${
+                                    c.provenance?.collection ? ` (${c.provenance.collection})` : ""
+                                  } and Elasticsearch index still exist — use “Delete permanently” (or clean up in Qdrant/ES) if you want the data gone.`,
+                                });
+                                refreshAll();
+                              }}
+                            />
+                          ) : (
+                            <PurgeConfirm
+                              c={c}
+                              apiKey={apiKey}
+                              onCancel={() => setConfirming(null)}
+                              onPurged={(report) => {
+                                setConfirming(null);
+                                setExpanded(null);
+                                // A partial failure is still a 200: the server does
+                                // not roll back, so report it rather than claiming
+                                // a clean delete.
+                                setNotice({
+                                  tone: report.ok ? "ok" : "warn",
+                                  text: purgeReportSummary(report),
+                                });
+                                refreshAll();
+                              }}
+                            />
+                          )}
                         </td>
                       </tr>
                     ) : null}
@@ -1050,7 +1216,12 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
           means one store is missing rows (a partial or failed ingest), not extra data.
           Both are filtered to your readable tenants; very large counts may be
           approximate. <span className="font-medium text-gray-500">Unregister</span> drops the
-          registry binding only, never the stored chunks.
+          registry binding only, never the stored chunks — the physical store keeps costing disk
+          until something removes it.{" "}
+          <span className="font-medium text-red-600">Delete permanently</span> is the one that
+          removes it: it drops the Qdrant collection, the Elasticsearch index and the build
+          manifest too, is irreversible, and is refused when another collection still shares the
+          same physical store.
         </p>
       ) : null}
     </>
