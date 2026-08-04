@@ -18,11 +18,10 @@ from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
-    forget_collection_spec,
-    persist_collection_spec,
 )
 from ragstack.api.deps import (
     build_collection_entry,
+    get_collection_store,
     get_collections,
     get_model_registry,
     materialize_config_manifest_for_spec,
@@ -30,6 +29,7 @@ from ragstack.api.deps import (
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.security import ROLE_ADMIN, Principal, require_role, resolve_principal
+from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.provenance import chunk_descriptor, read_manifest
@@ -263,6 +263,7 @@ async def create_collection(
     principal: Principal = Depends(resolve_principal),
     models: ModelRegistry = Depends(get_model_registry),
     registry: CollectionRegistry = Depends(get_collections),
+    store: CollectionStore = Depends(get_collection_store),
 ) -> CollectionInfo:
     """Create a collection bound to a registered embedding model and a chunk
     strategy (build-time model selection). Admin only. The collection is created
@@ -328,7 +329,10 @@ async def create_collection(
     )
 
     # 5. Build the live entry (stores + retriever), register it, write-through to
-    # collections_file so it survives restart, and materialize its config manifest.
+    # the durable collection store so it survives restart, and materialize its
+    # config manifest. The store — not this process's registry dict — is the
+    # authoritative record: it is what the next startup rebuilds from and what the
+    # ingest guard's spec comparison ultimately defends.
     built = await build_collection_entry(
         request.app.state.http_client,
         graph_store=request.app.state.graph_store,
@@ -338,10 +342,11 @@ async def create_collection(
         registry.add(built)
     except KeyError:
         raise HTTPException(409, f"collection {cid!r} already exists") from None
-    persisted = persist_collection_spec(settings, spec)
+    persisted = await store.put(spec)
     if not persisted:
         log.warning(
-            "collection %r created in-memory only (no collections_file); lost on restart", cid
+            "collection %r created in-memory only (no durable collection store); "
+            "lost on restart", cid
         )
     materialize_config_manifest_for_spec(spec)
 
@@ -358,6 +363,7 @@ async def create_collection(
 async def delete_collection(
     collection_id: str,
     registry: CollectionRegistry = Depends(get_collections),
+    store: CollectionStore = Depends(get_collection_store),
 ) -> None:
     """Remove a collection registry entry (admin only). The underlying Qdrant
     collection / ES index are left intact — this drops the registry binding, not
@@ -366,7 +372,7 @@ async def delete_collection(
         raise HTTPException(409, "cannot delete the default collection")
     if not registry.remove(collection_id):
         raise HTTPException(404, f"unknown collection {collection_id!r}")
-    forget_collection_spec(settings, collection_id)
+    await store.delete(collection_id)
 
 
 class AvailableModel(BaseModel):

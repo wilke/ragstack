@@ -86,6 +86,33 @@ class Settings(BaseSettings):
     #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
     collections_file: str = ""
     collections_json: str = ""
+    # Where that registry actually LIVES. A collection's identity is its build
+    # spec (model + dim + chunker), so the mapping id -> {index, model, dim,
+    # chunker} has to be durable and authoritative — an ingest that used a
+    # different spec would corrupt the index silently.
+    #   json     (default) the shipped `collections_file` / `collections_json`
+    #            path, byte-compatible with what is deployed. The read-modify-
+    #            write is now flock'd, so instances sharing one file (prod runs
+    #            three) can no longer lose an entry.
+    #   memory   process-local; nothing persists (dev/tests).
+    #   sqlite   a durable `collections` table in `collection_store_path`.
+    #   postgres the same table in `collection_store_dsn` (falls back to
+    #            `postgres_dsn`) — the multi-process source of truth.
+    # Switching to sqlite/postgres seeds the empty table ONCE from
+    # `collections_file`, so migrating is a backend flip plus a restart; the JSON
+    # file is left untouched, so rolling back is flipping it back.
+    collection_store_backend: str = "json"  # json | memory | sqlite | postgres
+    collection_store_path: str = "ragstack_collections.db"
+    collection_store_dsn: str = ""
+    # Refuse an ingest whose build spec differs from the target collection's
+    # recorded provenance (spec_hash over model|dim|chunk descriptor). Writing
+    # vectors from a different embedder, or chunks from a different chunker, into
+    # an existing index produces an incoherent corpus with no error — this turns
+    # that into a 409. Only fires when a manifest exists to compare against
+    # (`collection_manifest_dir` set) and both sides state the field concretely,
+    # so a pre-manifest corpus is never blocked. Set false to override (e.g. a
+    # deliberate in-place rebuild of a collection).
+    collection_spec_guard: bool = True
     # Runtime model registry (Phase 1): a JSON file persisting registered models
     # and hot-swappable task assignments (llm / reranker). Empty → in-memory only
     # (CRUD works, but nothing is persisted across restarts).
