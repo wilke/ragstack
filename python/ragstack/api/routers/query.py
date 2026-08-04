@@ -140,14 +140,28 @@ class ChunksResponse(BaseModel):
 _MAX_CHUNK_IDS = 20
 
 
+def _shaping_active(retriever: Any) -> bool:
+    """Does ``retriever`` apply post-fusion shaping (per-doc cap / boilerplate
+    demotion)? Duck-typed: tests and library callers inject retrievers that
+    predate ``shape``, and a missing attribute must mean "no shaping", never an
+    AttributeError mid-request."""
+    if not callable(getattr(retriever, "shape", None)):
+        return False
+    return bool(getattr(retriever, "max_per_doc", 0) > 0) or bool(
+        getattr(retriever, "demote_boilerplate", False)
+    )
+
+
 async def _maybe_rerank(
-    reranker, query: str, scored: list[ScoredChunk], top_k: int
+    reranker, query: str, scored: list[ScoredChunk], top_k: int | None
 ) -> list[ScoredChunk]:
     """Rescore the fused candidate pool with the cross-encoder, if one is wired.
 
     Only the top ``top_k`` are kept downstream, so we ask the sidecar to return
     just those — it scores the whole pool either way, but the response payload
-    shrinks from the full pool to ``top_k``.
+    shrinks from the full pool to ``top_k``. ``top_k=None`` asks for the whole
+    ranked pool instead, which is what the caller needs when a post-rerank
+    shaping pass still has to choose from it.
 
     Degrades gracefully: a reranker outage / bad response falls back to the
     fused order rather than failing the request (same contract as the LLM and
@@ -219,7 +233,15 @@ async def _retrieve_fused(
             )
         )
         scored = _RRF.fuse(list(ranked))
-    scored = await _maybe_rerank(active, query, scored, top_k)
+    # Post-fusion shaping (per-document cap / boilerplate demotion) has to be the
+    # LAST step before the top_k cut: reranking re-sorts the whole pool and would
+    # otherwise undo it. When shaping is active we therefore keep the reranker's
+    # full ranked pool instead of its top_k, so the shaping has candidates to
+    # promote from; with shaping off this is byte-for-byte the previous path.
+    shaping = _shaping_active(retriever)
+    scored = await _maybe_rerank(active, query, scored, None if shaping else top_k)
+    if shaping:
+        scored = retriever.shape(scored)
     return scored[:top_k]
 
 

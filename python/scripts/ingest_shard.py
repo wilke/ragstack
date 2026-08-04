@@ -34,6 +34,7 @@ import sys
 import httpx
 
 from ragstack.embed_pool import make_embedder_auto
+from ragstack.ingestion.boilerplate import filter_from_mode
 from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -106,7 +107,9 @@ async def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
         tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=chunker, embedder=embedder,
-                             vector_store=vstore, text_index=tindex)
+                             vector_store=vstore, text_index=tindex,
+                             boilerplate_filter=filter_from_mode(
+                                 args.boilerplate, args.boilerplate_config))
 
 
 async def amain(args) -> int:
@@ -130,6 +133,13 @@ def parse_args(argv=None):
     p.add_argument("--out", default="receipt.json", help="output receipt path")
     p.add_argument("--shard-id", default=None, help="receipt shard id (default: basename)")
     p.add_argument("--tenant", default="public")
+    # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
+    # offline plane matches the online API's default instead of silently
+    # producing chunks the API path would have tagged.
+    p.add_argument("--boilerplate", choices=["off", "flag", "drop"], default="flag",
+                   help="chunk-level boilerplate handling (see ingest_jsonl.py)")
+    p.add_argument("--boilerplate-config", default="",
+                   help="JSON object overriding BoilerplateConfig thresholds")
     p.add_argument("--chunk-method", default="fixed_token")
     p.add_argument("--chunk-size", type=int, default=256)
     p.add_argument("--chunk-overlap", type=int, default=32)

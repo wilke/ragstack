@@ -1,12 +1,15 @@
 """Retrieval pipeline — hybrid vector + BM25 + graph retrieval."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ragstack.models import ScoredChunk
 from ragstack.protocols import GraphStore, TextIndex, VectorStore
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
+
+if TYPE_CHECKING:
+    from ragstack.ingestion.boilerplate import BoilerplateConfig
 
 
 class HybridRetriever:
@@ -26,6 +29,9 @@ class HybridRetriever:
         graph_context_score: float = 0.5,
         graph_context_depth: int = 1,
         collection: str | None = None,
+        max_per_doc: int = 0,
+        demote_boilerplate: bool = False,
+        boilerplate_config: BoilerplateConfig | None = None,
     ) -> None:
         self.vector_store = vector_store
         self.text_index = text_index
@@ -43,6 +49,14 @@ class HybridRetriever:
         # (#209). ``None`` = unscoped: dev/tests and single-collection callers
         # that build a retriever directly.
         self.collection = collection
+        # Post-fusion shaping (both default-off, i.e. no behaviour change):
+        # max_per_doc bounds how much of the answer any single document may
+        # supply; demote_boilerplate pushes licence/reference/acknowledgement
+        # chunks to the back. Both *reorder* the candidate pool and only then cut
+        # to top_k, so neither can shrink the result set.
+        self.max_per_doc = max_per_doc
+        self.demote_boilerplate = demote_boilerplate
+        self.boilerplate_config = boilerplate_config
 
     async def retrieve(
         self,
@@ -78,7 +92,73 @@ class HybridRetriever:
                 ranked_lists.append(graph_chunks)
 
         fused = self.rrf.fuse(ranked_lists)
-        return fused[:top_k]
+        return self.shape(fused)[:top_k]
+
+    def shape(self, fused: list[ScoredChunk]) -> list[ScoredChunk]:
+        """Reorder the fused candidate pool before it is cut to ``top_k``.
+
+        Two independent, opt-in passes, applied in this order:
+
+        1. **Boilerplate demotion** — licence footers, reference lists and
+           acknowledgement blocks go to the back (see
+           :mod:`ragstack.ingestion.boilerplate`). Done first so the diversity
+           cap below spends its per-document budget on real content.
+        2. **Per-document cap** — at most ``max_per_doc`` chunks from any one
+           ``doc_id`` before the rest of that document is demoted.
+
+        Both are *stable demotions*, never deletions: the relative order within
+        the promoted and the demoted group is the fused order, and every input
+        chunk is still in the output. That is what makes them safe to apply
+        before the ``[:top_k]`` cut — the caller gets the same number of results
+        it would have got, just drawn from further down the pool. Public so the
+        rerank stage (which re-fetches a larger pool and re-sorts it) can apply
+        the same shaping to its own final list.
+        """
+        if self.demote_boilerplate:
+            fused = self._demote_boilerplate(fused)
+        if self.max_per_doc > 0:
+            fused = self._cap_per_doc(fused)
+        return fused
+
+    def _demote_boilerplate(self, fused: list[ScoredChunk]) -> list[ScoredChunk]:
+        """Stable-partition the pool into content first, boilerplate last.
+
+        Trusts ``metadata["is_boilerplate"]`` when the chunk carries it (stamped
+        at ingest); otherwise re-derives it from the text, which is what lets
+        this help a corpus that was indexed before the flag existed — the case
+        that motivated the setting.
+        """
+        from ragstack.ingestion.boilerplate import BOILERPLATE_KEY, is_boilerplate
+
+        keep: list[ScoredChunk] = []
+        demoted: list[ScoredChunk] = []
+        for scored in fused:
+            stamped = scored.chunk.metadata.get(BOILERPLATE_KEY)
+            flagged = (
+                bool(stamped)
+                if isinstance(stamped, bool)
+                else is_boilerplate(scored.chunk.content, self.boilerplate_config)
+            )
+            (demoted if flagged else keep).append(scored)
+        return keep + demoted
+
+    def _cap_per_doc(self, fused: list[ScoredChunk]) -> list[ScoredChunk]:
+        """Stable-partition the pool so no ``doc_id`` leads with more than
+        ``max_per_doc`` chunks; the overflow keeps its relative order at the back.
+
+        Demoting rather than dropping the overflow matters: a query whose only
+        good matches genuinely all live in one paper still returns ``top_k``
+        chunks from that paper, so the cap costs nothing in the single-relevant-
+        document case while breaking the monopoly whenever an alternative exists.
+        """
+        seen: dict[str, int] = {}
+        keep: list[ScoredChunk] = []
+        overflow: list[ScoredChunk] = []
+        for scored in fused:
+            doc_id = scored.chunk.doc_id
+            seen[doc_id] = seen.get(doc_id, 0) + 1
+            (keep if seen[doc_id] <= self.max_per_doc else overflow).append(scored)
+        return keep + overflow
 
     async def _graph_context(
         self, query: str, top_k: int, tenant_id: str | None = None
