@@ -22,7 +22,9 @@ from pydantic import BaseModel, Field
 
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
+    BuildSpecMismatch,
     build_ingestor_for,
+    check_ingest_build_spec,
     get_collections,
     get_ingestor,
     get_job_store,
@@ -125,11 +127,19 @@ def _resolve_ingest_target(
 
     Shared by ``POST /v1/ingest`` and ``POST /v1/ingest/upload`` so the routing
     into a collection's bound embedder/chunker/stores — and its tenant allowlist
-    check — cannot drift between the two entry points. Omitting the collection
-    (or naming the default id) keeps the prebuilt app ingestor. An id the tenant
-    may not access, or an unknown id, is a 404 (never a silent write elsewhere).
+    check, and the build-spec guard — cannot drift between the two entry points.
+    Omitting the collection (or naming the default id) keeps the prebuilt app
+    ingestor. An id the tenant may not access, or an unknown id, is a 404 (never a
+    silent write elsewhere).
+
+    Both branches run :func:`check_ingest_build_spec` against the collection the
+    write will land in, including the default one: a pinned
+    ``qdrant_collection_explicit`` keeps its name across a settings change, so the
+    default collection is precisely where a swapped embedder or chunker would
+    quietly append incoherent data to a 25M-point index.
     """
     if not collection_id or collection_id == collections.default_id:
+        _guard(collections.resolve(collections.default_id))
         return None, prebuilt
     allowed = allowed_collection_ids(tenant, settings.tenant_collections)
     if allowed is not None and collection_id not in allowed:
@@ -144,11 +154,24 @@ def _resolve_ingest_target(
             status_code=404,
             detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
         ) from None
+    _guard(target)
     try:
         run_ingestor = build_ingestor_for(app_state, target)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     return target, run_ingestor
+
+
+def _guard(entry: CollectionEntry) -> None:
+    """409 when this ingest's build spec contradicts the collection's recorded one.
+
+    409 rather than 400: the request is well-formed and would be valid against a
+    collection built the same way — it is the *state* of the target that makes it
+    a conflict, and the fix is a new collection, not a new payload."""
+    try:
+        check_ingest_build_spec(entry)
+    except BuildSpecMismatch as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
 
 
 class IngestRequest(BaseModel):

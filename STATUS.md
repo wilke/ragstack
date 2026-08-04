@@ -158,6 +158,43 @@ A batch of feature + hardening work, each reviewed (multi-agent) and fixed befor
 
 **300 unit/api tests pass, 1 skipped; ruff + mypy clean.** Every PR was rebased onto main and reconciled (the shared `deps.py`/`config.py` made each later merge a small rebase).
 
+## Durable collection registry + build-spec guard (PR #235)
+
+A collection's identity **is** its build spec (embedding model + dim + chunk
+method/size/overlap/params). Before this, the mapping `id → {index, model, dim,
+chunker}` lived in an unlocked read-modify-write of a JSON file that was *opt-in*
+— unset `COLLECTIONS_FILE` meant created libraries vanished on restart, and two
+instances sharing one file silently lost entries (measured: **14 of 48 survive**
+with 6 concurrent writers).
+
+- **`python/ragstack/collection_store.py`** — `CollectionSpec` moved here (re-exported
+  from `api/collections.py`) plus four backends behind one protocol, selected by
+  `COLLECTION_STORE_BACKEND`: `json` (default), `memory`, `sqlite`, `postgres`.
+  The SQL pair share one DDL string and `ensure_columns` additive migration, per
+  [`docs/libraries-spec.md` §8.1](docs/libraries-spec.md) and the `jobstore.py`
+  precedent (TEXT/INTEGER only, `json.dumps` for structured fields).
+- **The JSON path is unchanged on disk and now concurrency-safe**: read-modify-write
+  under an `flock` on `{collections_file}.lock` (a sidecar file, because the write
+  ends in `os.replace` and a lock on the old inode says nothing about the new one),
+  plus a per-writer unique temp path. Appends are upserts, and unknown keys in
+  hand-authored entries (prod's `_alias_note`) survive a rewrite.
+- **Migration**: set `COLLECTION_STORE_BACKEND=sqlite|postgres`, leave
+  `COLLECTIONS_FILE` in place, restart — the empty table is seeded once from the
+  file and never again (a later delete is not resurrected). The file is not
+  modified, so rolling back is flipping the setting back.
+- **Build-spec guard** (`COLLECTION_SPEC_GUARD`, default on): `/v1/ingest` and
+  `/v1/ingest/upload` refuse with **409** when the target collection's recorded
+  provenance concretely disagrees with what the ingest would build — naming the
+  field (`chunk_size=512 but this ingest would use chunk_size=200`), not just two
+  hashes. Applies to the default collection too, which is where a pinned
+  `QDRANT_COLLECTION_EXPLICIT` would otherwise let a settings change append
+  incoherent data to a 25M-point index. Fails **open** where it cannot know:
+  no manifest dir, no manifest, or a field either side leaves unstated.
+- **Real bug found**: `write_ingest_manifest_for` dropped `chunk_params` and stamped
+  the *server's* `embedding_api`, so the first real ingest into a semantic library
+  rewrote its manifest under a **different `spec_hash` for the identical build** —
+  fake drift, in exactly the field the guard reads.
+
 ## Active TODOs
 
 ### Near-term — pick up here in the next session

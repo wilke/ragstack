@@ -19,9 +19,14 @@ from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
-    load_collection_specs,
 )
 from ragstack.api.model_registry import ModelEntry, ModelRegistry
+from ragstack.collection_store import (
+    CollectionStore,
+    JsonFileCollectionStore,
+    make_collection_store,
+    seed_from_json,
+)
 from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
@@ -498,25 +503,108 @@ def write_ingest_manifest_for(
 ) -> None:
     """Verified (source='ingest') manifest for a *specific* collection after a
     targeted ingest — the per-collection analogue of ``write_ingest_manifest``
-    (which targets the default derived collection). Best-effort, never raises."""
+    (which targets the default derived collection). Best-effort, never raises.
+
+    Records the entry's OWN ``chunk_params`` and embedding backend, not the server
+    defaults. Dropping the params here used to re-hash the very same build as a
+    different ``spec_hash`` the moment a semantic collection was ingested into —
+    an ingest manifest that disagreed with the config manifest of the identical
+    spec, i.e. fake drift, which is exactly what the ingest guard reads."""
     if not settings.collection_manifest_dir:
         return
     try:
         from ragstack.provenance import make_ingest_manifest, write_manifest
 
-        # The built entry doesn't retain its endpoint list; the manifest's identity
-        # is (model, dim, chunk), so an empty endpoints list is fine here.
         manifest = make_ingest_manifest(
             collection=entry.collection,
             model=entry.model, dim=entry.dim,
-            embedding_api=settings.embedding_api, embedding_endpoints=[],
+            embedding_api=entry.embedding_api or settings.embedding_api,
+            embedding_endpoints=list(entry.embedding_endpoints),
             chunk_method=entry.chunk_method, chunk_size=entry.chunk_size,
-            chunk_overlap=entry.chunk_overlap,
+            chunk_overlap=entry.chunk_overlap, chunk_params=entry.chunk_params,
             corpus=source, chunk_count=chunk_count,
         )
         write_manifest(settings.collection_manifest_dir, manifest)
     except Exception:  # noqa: BLE001 — provenance must never fail an ingest
         log.warning("provenance: targeted ingest manifest write failed", exc_info=True)
+
+
+class BuildSpecMismatch(Exception):
+    """An ingest would write into a collection built with a different spec.
+
+    Carries the per-field differences so the router can name what differs instead
+    of quoting two opaque hashes at the operator."""
+
+    def __init__(self, cid: str, collection: str, differences: list[str],
+                 recorded_hash: str, requested_hash: str) -> None:
+        self.cid = cid
+        self.collection = collection
+        self.differences = differences
+        self.recorded_hash = recorded_hash
+        self.requested_hash = requested_hash
+        super().__init__(
+            f"ingest refused: collection {cid!r} (index {collection!r}) was built with "
+            + "; ".join(differences)
+            + f". Recorded spec_hash {recorded_hash or '?'} != this ingest's "
+            f"{requested_hash}. A different build spec is a different corpus — create a "
+            f"new collection instead of mixing specs (set COLLECTION_SPEC_GUARD=false to "
+            f"override)."
+        )
+
+
+def _differs(field: str, recorded: Any, requested: Any) -> str | None:
+    """One field's difference, or ``None`` when there is no *provable* conflict.
+
+    A missing value on either side (empty string, ``None``, empty params) means
+    "not stated", not "differs": manifests predate several of these fields, and a
+    corpus whose provenance never recorded a chunker must not become un-ingestable
+    the moment this guard ships. Only a concrete-vs-concrete disagreement — the
+    kind that actually produces mismatched vectors or chunk boundaries — counts."""
+    if recorded in (None, "", {}) or requested in (None, "", {}):
+        return None
+    if recorded == requested:
+        return None
+    return f"{field}={recorded!r} but this ingest would use {field}={requested!r}"
+
+
+def check_ingest_build_spec(entry: CollectionEntry) -> None:
+    """Refuse an ingest into a collection whose recorded build spec differs.
+
+    The collection's provenance manifest is the durable record of how the corpus
+    was built; ``entry`` is what this ingest is about to build with (its embedder
+    and ``_chunker_for``'s chunker come from exactly these fields). If they
+    disagree the write would mix embedding spaces and/or chunk boundaries inside
+    one index — retrievable, plausible-looking, and wrong — so raise instead.
+
+    Skipped when the guard is off, when manifests are disabled, or when the
+    collection has no manifest yet (nothing to contradict)."""
+    if not settings.collection_spec_guard or not settings.collection_manifest_dir:
+        return
+    from ragstack.provenance import chunk_descriptor, read_manifest, spec_hash
+
+    recorded = read_manifest(settings.collection_manifest_dir, entry.collection)
+    if recorded is None:
+        return
+    diffs = [
+        d for d in (
+            _differs("embedding_model", recorded.model, entry.model),
+            _differs("embedding_dim", recorded.dim, entry.dim),
+            _differs("chunk_method", recorded.chunk_method, entry.chunk_method),
+            _differs("chunk_size", recorded.chunk_size, entry.chunk_size),
+            _differs("chunk_overlap", recorded.chunk_overlap, entry.chunk_overlap),
+            _differs("chunk_params", recorded.chunk_params, entry.chunk_params),
+        ) if d is not None
+    ]
+    if not diffs:
+        return
+    requested = spec_hash(
+        entry.model or "", entry.dim,
+        chunk_descriptor(
+            entry.chunk_method, entry.chunk_size, entry.chunk_overlap,
+            entry.chunk_params or None,
+        ),
+    )
+    raise BuildSpecMismatch(entry.id, entry.collection, diffs, recorded.spec_hash, requested)
 
 
 def materialize_config_manifest_for_spec(spec: CollectionSpec) -> None:
@@ -541,13 +629,17 @@ async def _build_collection_registry(
     default_text_index: Any,
     default_retriever: Any,
     default_collection: str,
+    store: CollectionStore | None = None,
 ) -> CollectionRegistry:
     """Build the collection registry. The top-level pinned/derived collection is
-    the ``default`` entry (reusing the already-built objects); each spec in
-    ``collections_file``/``_json`` adds a self-contained entry with its own
-    Qdrant collection + ES index + embedder (shared by signature). Empty specs →
-    a one-entry registry equal to the default, so single-collection mode is
-    unchanged."""
+    the ``default`` entry (reusing the already-built objects); each spec from the
+    durable collection store adds a self-contained entry with its own Qdrant
+    collection + ES index + embedder (shared by signature). No specs → a one-entry
+    registry equal to the default, so single-collection mode is unchanged.
+
+    ``store`` is the authoritative registry (``collection_store_backend``); it
+    defaults to the JSON-file backend, which reads exactly the
+    ``collections_file``/``collections_json`` this used to read directly."""
     entries: list[CollectionEntry] = [
         CollectionEntry(
             id="default",
@@ -575,7 +667,7 @@ async def _build_collection_registry(
         chunk_overlap=settings.chunk_overlap,
     )
 
-    specs = load_collection_specs(settings)
+    specs = await (store or JsonFileCollectionStore(settings)).list_specs()
     if not specs:
         return CollectionRegistry(entries, default_id="default")
 
@@ -1217,8 +1309,15 @@ async def lifespan(app: FastAPI):
     app.state.rewriters = _build_rewriters(llm)
     app.state.reranker = _build_reranker(http_client)
 
+    # The durable collection registry. Defaults to the JSON-file backend, i.e.
+    # exactly the shipped `collections_file` behaviour; sqlite/postgres are seeded
+    # once from that file so switching backends needs no hand-transcription.
+    collection_store = make_collection_store(settings)
+    await seed_from_json(collection_store, settings)
+    app.state.collection_store = collection_store
+
     # Multi-collection registry: the pinned/derived collection is the "default"
-    # entry; collections_file/_json add cross-model / per-chunker entries. With no
+    # entry; the store's specs add cross-model / per-chunker entries. With no
     # config this is a one-entry registry equal to the default (unchanged).
     app.state.collections = await _build_collection_registry(
         http_client,
@@ -1228,6 +1327,7 @@ async def lifespan(app: FastAPI):
         default_text_index=text_index,
         default_retriever=retriever,
         default_collection=default_collection,
+        store=collection_store,
     )
 
     # Runtime model registry (Phase 1): load persisted models + assignments, then
@@ -1275,6 +1375,8 @@ async def lifespan(app: FastAPI):
         # Release the job store's resources (PostgresJobStore's asyncpg pool;
         # a no-op for the in-memory / sqlite stores).
         await job_store.close()
+        # Same for the collection store (only the postgres backend holds a pool).
+        await collection_store.close()
         # Close the ES client if the text index holds one.
         if hasattr(text_index, "close"):
             await text_index.close()
@@ -1329,6 +1431,16 @@ def get_retriever(request: Request):
 
 def get_collections(request: Request) -> CollectionRegistry:
     return request.app.state.collections
+
+
+def get_collection_store(request: Request) -> CollectionStore:
+    """The durable registry behind ``app.state.collections``. Falls back to the
+    JSON-file backend when the app was assembled without a lifespan (duck-typed
+    ``app.state`` in tests), so the create/delete paths always have a store."""
+    store = getattr(request.app.state, "collection_store", None)
+    if store is None:
+        return JsonFileCollectionStore(settings)
+    return store
 
 
 def get_model_registry(request: Request) -> ModelRegistry:

@@ -14,61 +14,40 @@ one Neo4j holds every collection's triples, the collection boundary on the graph
 axis lives in the triple data, not in the store instance (#209).
 
 The registry is *built* in ``api/deps.py`` (which owns the embedder/store/
-retriever construction helpers); this module holds the config shape and the
-lookup container so both the builder and the routers can import them without a
-cycle.
+retriever construction helpers); this module holds the lookup container so both
+the builder and the routers can import it without a cycle. The durable side —
+``CollectionSpec`` itself and the backends that persist it — lives in
+:mod:`ragstack.collection_store`; the three ``*_collection_spec`` helpers here
+are the JSON-file façade over it, kept for the callers (and tests) that hold a
+``settings`` object rather than a store.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, Field
-
+from ragstack.collection_store import (
+    CollectionSpec,
+    JsonFileCollectionStore,
+    append_spec_to_file,
+    remove_spec_from_file,
+)
 from ragstack.tenancy import allowed_collection_ids
 
 log = logging.getLogger(__name__)
 
-
-class CollectionSpec(BaseModel):
-    """One registry entry as authored in JSON (``collections_file`` / ``_json``)."""
-
-    id: str
-    label: str = ""
-    collection: str  # Qdrant collection name (BM25 index defaults to the same)
-    text_index: str = ""  # ES index; "" → same as `collection`
-    embedding_api: str = "openai"  # sidecar | openai
-    embedding_model: str = ""
-    embedding_model_dim: int
-    embedding_endpoints: list[str] = Field(default_factory=list)
-    embedding_sidecar_url: str = ""  # single-endpoint fallback when no `endpoints`
-    chunk_method: str = ""  # how the corpus was chunked (see chunk_overlap/params below)
-    chunk_size: int | None = None
-    chunk_overlap: int | None = None
-    chunk_params: dict[str, Any] = Field(default_factory=dict)
-
-    def es_index(self) -> str:
-        """The ES index this entry's BM25 leg reads/writes. It rides on
-        ``collection`` by default, so whatever isolates the vector store isolates
-        the text index too — there is no second name-derivation to keep in sync.
-
-        ``collection``/``text_index`` are also the *deliberate* way to share one
-        physical store between two registry ids: author both specs in
-        ``collections_file`` with the same ``collection`` value. Nothing in the
-        codebase does this today, and the ``POST /v1/collections`` path never
-        produces it (an explicit id is folded into the physical name so named
-        libraries stay isolated) — sharing is opt-in, by hand, at config time."""
-        return self.text_index or self.collection
-
-    def emb_signature(self) -> tuple[str, str, tuple[str, ...], str]:
-        """Identity of the embedding backend — entries that share it reuse one
-        embedder instance (one pool), so N same-model collections don't spin up N
-        redundant connection pools."""
-        eps = tuple(sorted(self.embedding_endpoints)) or (self.embedding_sidecar_url,)
-        return (self.embedding_api, self.embedding_model, eps, str(self.embedding_model_dim))
+# Re-exported: `CollectionSpec` moved to ragstack.collection_store (which owns
+# every backend that persists it) but is imported from here all over the API.
+__all__ = [
+    "CollectionEntry",
+    "CollectionRegistry",
+    "CollectionSpec",
+    "confined_collection_name",
+    "forget_collection_spec",
+    "load_collection_specs",
+    "persist_collection_spec",
+]
 
 
 @dataclass
@@ -172,76 +151,31 @@ def confined_collection_name(
 
 def load_collection_specs(settings: Any) -> list[CollectionSpec]:
     """Parse ``collections_file`` (preferred) or ``collections_json`` into specs.
-    Returns [] (single-collection mode) when neither is set."""
-    raw: str = ""
-    if settings.collections_file:
-        try:
-            with open(settings.collections_file, encoding="utf-8") as f:
-                raw = f.read()
-        except OSError as e:
-            raise RuntimeError(f"collections_file unreadable: {e}") from e
-    elif settings.collections_json:
-        raw = settings.collections_json
-    if not raw.strip():
-        return []
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"collections config is not valid JSON: {e}") from e
-    if not isinstance(data, list):
-        raise RuntimeError("collections config must be a JSON list of specs")
-    specs = [CollectionSpec.model_validate(d) for d in data]
-    ids = [s.id for s in specs]
-    if len(set(ids)) != len(ids):
-        raise RuntimeError(f"duplicate collection ids in registry: {ids}")
-    return specs
+    Returns [] (single-collection mode) when neither is set.
+
+    Synchronous façade over :class:`JsonFileCollectionStore` — the file read runs
+    under the same shared ``flock`` as the writers, so a reader can never observe
+    a registry mid-update."""
+    return JsonFileCollectionStore(settings).load_specs_sync()
 
 
 def persist_collection_spec(settings: Any, spec: CollectionSpec) -> bool:
-    """Write-through append a newly created spec to ``collections_file`` so it
-    survives restart (the lifespan re-reads that file). Returns ``False`` when no
-    file is configured (in-memory only, lost on restart — same single-worker
-    caveat as the model registry). Atomic via a temp file + ``os.replace``."""
+    """Write-through upsert a spec into ``collections_file`` so it survives
+    restart (the lifespan re-reads that file). Returns ``False`` when no file is
+    configured (in-memory only, lost on restart).
+
+    Concurrency-safe as of the durable-registry work: the read-modify-write runs
+    under an exclusive ``flock`` on ``{collections_file}.lock`` and writes through
+    a per-writer unique temp path, so two API processes sharing one registry file
+    can no longer lose each other's entry. The file format is unchanged."""
     path: str = getattr(settings, "collections_file", "") or ""
-    if not path:
-        return False
-    existing: list[Any] = []
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                existing = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            raise RuntimeError(f"collections_file unreadable for append: {e}") from e
-        if not isinstance(existing, list):
-            raise RuntimeError("collections_file must be a JSON list to append to")
-    existing.append(spec.model_dump())
-    _atomic_write_json(path, existing)
-    return True
+    return append_spec_to_file(path, spec)
 
 
 def forget_collection_spec(settings: Any, cid: str) -> bool:
     """Write-through remove the spec with id ``cid`` from ``collections_file`` so a
     delete survives restart. Returns ``False`` when no file is configured or the id
-    isn't present in the file (e.g. an in-memory-only or default entry)."""
+    isn't present in the file (e.g. an in-memory-only or default entry). Same lock
+    discipline as :func:`persist_collection_spec`."""
     path: str = getattr(settings, "collections_file", "") or ""
-    if not path or not os.path.exists(path):
-        return False
-    try:
-        with open(path, encoding="utf-8") as f:
-            existing = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"collections_file unreadable for removal: {e}") from e
-    if not isinstance(existing, list):
-        raise RuntimeError("collections_file must be a JSON list to remove from")
-    kept = [d for d in existing if not (isinstance(d, dict) and d.get("id") == cid)]
-    if len(kept) == len(existing):
-        return False
-    _atomic_write_json(path, kept)
-    return True
-
-
-def _atomic_write_json(path: str, data: Any) -> None:
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    return remove_spec_from_file(path, cid)
