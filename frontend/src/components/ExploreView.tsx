@@ -64,7 +64,7 @@ export function ExploreView({
             className="rounded-md border border-gray-300 px-2 py-1 text-sm"
           >
             {opts.map((c) => {
-              // Shared with the Library picker (lib/chunkers.ts) so both name a
+              // Shared with the Collection picker (lib/chunkers.ts) so both name a
               // collection's build config the same way, and semantic collections
               // don't get an invented size appended.
               const built = describeChunking(c);

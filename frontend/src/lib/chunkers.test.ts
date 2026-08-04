@@ -99,7 +99,7 @@ describe("buildChunkConfig", () => {
   });
 
   it("sends NO size/overlap for a semantic chunker", () => {
-    // A semantic library never used a window; claiming one in the request would
+    // A semantic collection never used a window; claiming one in the request would
     // land a false size/overlap in the collection's manifest + provenance.
     const body = buildChunkConfig(form({ method: "semantic" }));
     expect(body).toEqual({ method: "semantic" });
