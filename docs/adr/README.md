@@ -12,6 +12,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | # | Title | Status |
 |---|---|---|
 | [0001](0001-execution-topology.md) | Execution topology: workflow engine, Go, and Python ownership | Proposed |
+| [0002](0002-collection-identity.md) | Collection identity: content-addressed stores + a durable registry | Accepted |
 
 ## Conventions
 

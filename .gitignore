@@ -61,3 +61,10 @@ Thumbs.db
 # Build with: apptainer build --sandbox /rag/tmp/ragstack-worker.sbx apptainer/ragstack-worker.def
 #          && apptainer build apptainer/images/ragstack-worker.sif /rag/tmp/ragstack-worker.sbx
 apptainer/images/*.sif
+
+# Local sqlite state written by the sqlite job/collection-store backends (ADR-0002).
+# The registry is per-deployment state, never source.
+*.sqlite
+*.sqlite3
+ragstack_collections.db
+ragstack_jobs.db

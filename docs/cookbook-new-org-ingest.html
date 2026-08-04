@@ -452,6 +452,14 @@ curl -s -X POST localhost:8010/v1/query \
   worker, so ingest won't silently land on a stock container and <code>ModuleNotFound</code>.</li>
 <li><strong>Neo4j</strong> (only if you enable the graph leg): password must not be the default <code>neo4j</code>
   (Neo4j 5 rejects it) — set <code>NEO4J_PASSWORD=ragstack</code>.</li>
+<li><strong>Graph triples are stamped with their collection</strong> (#209). Unlike Qdrant/ES, one Neo4j
+  holds every collection's triples, so the boundary lives in the data: a query on <code>acme</code>
+  never fuses graph context derived from another collection, and a re-ingest into <code>acme</code>
+  never deletes another collection's triples for the same <code>doc_id</code>. Triples written
+  <em>before</em> that change carry no stamp and are invisible to any collection-scoped read —
+  re-ingest to re-derive them (the KG is small and derived; nothing else is affected).
+  <code>ensure_schema</code> at startup drops the old <code>entity_name_tenant</code> constraint and creates
+  <code>entity_name_tenant_collection</code>; both statements are idempotent.</li>
 <li><strong>Single ragstack worker = serial scatter.</strong> Start more <code>ragstack-cpu-N</code> workers to
   actually parallelize 40k docs across the fleet.</li>
 </ul>
