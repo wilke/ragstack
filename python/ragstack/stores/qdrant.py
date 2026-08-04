@@ -381,6 +381,23 @@ class QdrantVectorStore:
         return CollectionHealth(status=status, optimizer_ok=optimizer_ok,
                                 segments_count=segments)
 
+    async def drop_collection(self) -> bool:
+        """Delete the entire physical collection — every vector, every tenant.
+
+        The nuclear counterpart to :meth:`ensure_collection`, and the only method
+        on this class that is NOT tenant-scoped: dropping a collection is a
+        registry/ops operation (``DELETE /v1/collections/{id}?purge=true``), never
+        something a query-path caller reaches.
+
+        Idempotent: returns ``True`` when a collection was actually removed and
+        ``False`` when there was nothing there, so a purge can report "already
+        gone" honestly instead of inventing a deletion. Only *errors* raise.
+        """
+        if not await self._client.collection_exists(self._collection):
+            return False
+        await self._client.delete_collection(collection_name=self._collection)
+        return True
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         # Tenant-scoped: a caller can only delete its own documents, even if it
         # knows another tenant's doc_id. tenant_id=None deletes across tenants.

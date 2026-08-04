@@ -11,7 +11,8 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from ragstack.api.collections import (
@@ -32,7 +33,7 @@ from ragstack.api.security import ROLE_ADMIN, Principal, require_role, resolve_p
 from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
 from ragstack.ingestion.chunkers import CHUNK_METHODS
-from ragstack.provenance import chunk_descriptor, read_manifest
+from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
 
@@ -355,24 +356,173 @@ async def create_collection(
     return _collection_info(built, count)
 
 
+class PurgeFailure(BaseModel):
+    """One target the purge could not remove, with the backend's own message.
+    Its presence means the physical resource may still exist — the purge does not
+    roll back, so this is the operator's to-do list, not a warning to ignore."""
+
+    target: str  # vectors | text_index | manifest
+    error: str
+
+
+class PurgeReport(BaseModel):
+    """What a ``purge=true`` delete actually destroyed.
+
+    Deliberately three lists rather than a boolean: a purge touches four
+    independent systems (registry, Qdrant, Elasticsearch, manifest file) that can
+    each succeed, be already-gone, or fail on their own. Reporting them
+    separately is what lets a partial failure be *honest* instead of a 500 that
+    hides the three deletions that did land."""
+
+    collection_id: str
+    purged: bool  # false for the default unregister-only delete
+    store: str  # the physical Qdrant collection name
+    text_index: str  # the physical Elasticsearch index name
+    deleted: list[str]  # targets actually removed
+    absent: list[str]  # targets that were already gone (idempotent no-op)
+    failed: list[PurgeFailure]  # targets that errored — NOT rolled back
+    ok: bool  # no failures; the collection and its data are fully gone
+
+
+# Purge targets, in the order they're attempted. "registry" first because a
+# collection whose binding is gone can no longer be queried or ingested into, so
+# even a purge that then fails on Qdrant leaves nothing writing new data into the
+# store the operator is about to clean up by hand.
+_TARGET_REGISTRY = "registry"
+_TARGET_VECTORS = "vectors"
+_TARGET_TEXT = "text_index"
+_TARGET_MANIFEST = "manifest"
+
+
+def _shared_store_users(registry: CollectionRegistry, entry: CollectionEntry) -> list[str]:
+    """Other registry ids pointing at the same physical Qdrant collection or ES
+    index as ``entry``.
+
+    This is the guard that matters (#228): a collection created with an explicit
+    id gets its own store, but a *blank*-id (content-addressed) collection shares
+    its store with every identically-built collection — and a hand-authored
+    ``collections_file`` can alias two ids onto one store deliberately. Purging
+    either would silently destroy the other's embeddings, which cost GPU time to
+    produce and cannot be recovered from the registry."""
+    return sorted(
+        e.id
+        for e in registry.entries()
+        if e.id != entry.id
+        and (e.collection == entry.collection or e.es_index() == entry.es_index())
+    )
+
+
+async def _purge_physical(entry: CollectionEntry, report: PurgeReport) -> None:
+    """Drop this collection's physical stores + manifest, recording each outcome
+    on ``report``. Never raises and never rolls back: a Qdrant drop that succeeded
+    cannot be undone by an ES failure, so pretending otherwise would be a lie.
+    Each target is independent, so one failure must not skip the rest."""
+    drops: list[tuple[str, Any]] = [
+        (_TARGET_VECTORS, getattr(entry.vector_store, "drop_collection", None)),
+        (_TARGET_TEXT, getattr(entry.text_index, "drop_index", None)),
+    ]
+    for target, fn in drops:
+        if fn is None:
+            report.failed.append(
+                PurgeFailure(target=target, error="backend does not support dropping")
+            )
+            continue
+        try:
+            existed = await fn()
+        except Exception as e:  # noqa: BLE001 — reported, not raised: fail soft + honest
+            log.warning("purge %r: %s drop failed: %s", entry.id, target, e)
+            report.failed.append(PurgeFailure(target=target, error=f"{type(e).__name__}: {e}"))
+        else:
+            (report.deleted if existed else report.absent).append(target)
+    try:
+        removed = delete_manifest(settings.collection_manifest_dir, entry.collection)
+    except Exception as e:  # noqa: BLE001 — e.g. a read-only manifest dir
+        log.warning("purge %r: manifest delete failed: %s", entry.id, e)
+        report.failed.append(PurgeFailure(target=_TARGET_MANIFEST, error=f"{type(e).__name__}: {e}"))
+    else:
+        (report.deleted if removed else report.absent).append(_TARGET_MANIFEST)
+
+
 @router.delete(
     "/collections/{collection_id}",
-    status_code=204,
+    response_model=None,
+    responses={
+        200: {"model": PurgeReport, "description": "Purged — see the report for what was removed"},
+        204: {"description": "Registry binding removed; physical stores untouched"},
+    },
     dependencies=[Depends(require_role(ROLE_ADMIN))],
 )
 async def delete_collection(
     collection_id: str,
+    purge: bool = Query(
+        False,
+        description=(
+            "Also delete the physical Qdrant collection, the Elasticsearch index and the "
+            "provenance manifest. Default false: unregister only (the binding, not the data)."
+        ),
+    ),
     registry: CollectionRegistry = Depends(get_collections),
     store: CollectionStore = Depends(get_collection_store),
-) -> None:
-    """Remove a collection registry entry (admin only). The underlying Qdrant
-    collection / ES index are left intact — this drops the registry binding, not
-    the data (dropping data is a heavier, separate operation)."""
+) -> Response:
+    """Remove a collection registry entry (admin only).
+
+    ``purge=false`` (the default) drops the *binding* only — the underlying Qdrant
+    collection and ES index survive with all their chunks. 204, no body.
+
+    ``purge=true`` additionally destroys the data: the physical Qdrant collection,
+    the Elasticsearch index and the provenance manifest. **Irreversible** — the
+    embeddings are gone and re-creating them costs another ingest. 200 with a
+    :class:`PurgeReport` of what was removed, what was already absent, and what
+    failed; a partial failure is reported, never rolled back and never hidden
+    behind a 500.
+
+    Purge is refused (409) for the default collection, and for a collection whose
+    physical store is still referenced by another registry entry — that entry's
+    data is not this caller's to destroy.
+    """
     if collection_id == registry.default_id:
         raise HTTPException(409, "cannot delete the default collection")
-    if not registry.remove(collection_id):
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    if purge:
+        sharers = _shared_store_users(registry, entry)
+        if sharers:
+            raise HTTPException(
+                409,
+                f"cannot purge collection {collection_id!r}: its physical store "
+                f"({entry.collection}) is also used by {', '.join(repr(s) for s in sharers)}, "
+                f"and purging would destroy their data too. Unregister it instead "
+                f"(purge=false), or purge the other collections first.",
+            )
+
+    if not registry.remove(collection_id):  # pragma: no cover — resolve() just succeeded
         raise HTTPException(404, f"unknown collection {collection_id!r}")
     await store.delete(collection_id)
+
+    if not purge:
+        return Response(status_code=204)
+
+    report = PurgeReport(
+        collection_id=collection_id,
+        purged=True,
+        store=entry.collection,
+        text_index=entry.es_index(),
+        deleted=[_TARGET_REGISTRY],
+        absent=[],
+        failed=[],
+        ok=True,
+    )
+    await _purge_physical(entry, report)
+    report.ok = not report.failed
+    log.info(
+        "purged collection %r (store=%s): deleted=%s absent=%s failed=%s",
+        collection_id, entry.collection, report.deleted, report.absent,
+        [f.target for f in report.failed],
+    )
+    return JSONResponse(status_code=200, content=report.model_dump())
 
 
 class AvailableModel(BaseModel):

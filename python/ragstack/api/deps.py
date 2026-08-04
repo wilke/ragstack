@@ -337,6 +337,7 @@ async def build_collection_entry(
         ),
         vector_store=vs,
         text_index=ti,
+        text_index_name=spec.es_index(),
         embedder=emb,
         embedding_api=spec.embedding_api,
         embedding_endpoints=list(
@@ -655,6 +656,7 @@ async def _build_collection_registry(
             retriever=default_retriever,
             vector_store=default_vector_store,
             text_index=default_text_index,
+            text_index_name=_es_index_name(),
             embedder=default_embedder,
             embedding_api=settings.embedding_api,
             embedding_endpoints=list(embedding_urls()),

@@ -77,6 +77,17 @@ class CollectionEntry:
     # boundaries with a different model than the one storing the vectors).
     embedding_api: str = ""
     embedding_endpoints: list[str] = field(default_factory=list)
+    # The ES index name behind ``text_index`` (the field above holds the store
+    # *object*, which doesn't advertise its name). Needed by the purge guard: two
+    # registry entries may deliberately share one physical store (``CollectionSpec.
+    # es_index``), and dropping the index out from under the other entry would
+    # destroy data nobody asked to destroy. "" → same name as ``collection``.
+    text_index_name: str = ""
+
+    def es_index(self) -> str:
+        """The physical ES index this entry reads/writes — mirrors
+        ``CollectionSpec.es_index`` (it rides on ``collection`` by default)."""
+        return self.text_index_name or self.collection
 
 
 class CollectionRegistry:

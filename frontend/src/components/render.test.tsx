@@ -6,7 +6,7 @@ import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 import { CollectionView } from "./CollectionView";
 import { NewCollectionForm } from "./NewCollectionForm";
-import { OpsDashboard } from "./OpsDashboard";
+import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
 
 // Render smoke tests: no DOM, no fetch — `renderToStaticMarkup` just proves each
 // screen mounts and produces the text it promises. Cheap insurance for the parts
@@ -76,5 +76,33 @@ describe("static render", () => {
     expect(html).toContain("Buffer size");
     expect(html).toContain("Breakpoint percentile");
     expect(html).toContain("Min chunk length");
+  });
+
+  // The only irreversible control in the UI. Assert its confirmation actually
+  // spells out what dies and that the button starts locked — a purge gate that
+  // renders enabled, or that omits the store name, is the bug that matters.
+  it("spells out what the permanent delete destroys and starts locked", () => {
+    const html = render(
+      createElement(PurgeConfirm, {
+        c: {
+          id: "throwaway",
+          label: "Throwaway",
+          model: "test/sfr",
+          dim: 8,
+          default: false,
+          count: 1234,
+          text_count: 1234,
+          provenance: { collection: "ragstack_sfr_tok256_ab12cd34" },
+        },
+        onCancel: () => {},
+        onPurged: () => {},
+      }),
+    );
+    expect(html).toContain("ragstack_sfr_tok256_ab12cd34"); // the physical store, by name
+    expect(html).toContain("Elasticsearch index");
+    expect(html).toContain("provenance manifest");
+    expect(html).toContain("1,234"); // the chunk count that will be lost
+    expect(html).toContain("Type "); // the typed-id gate, not just an OK button
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>Delete permanently<\/button>/);
   });
 });

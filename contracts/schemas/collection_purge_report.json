@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collection_purge_report.json",
+  "title": "CollectionPurgeReport",
+  "description": "Body of DELETE /v1/collections/{collection_id}?purge=true. A purge touches four independent systems (the registry binding, the Qdrant collection, the Elasticsearch index, the provenance manifest) that can each succeed, be already-gone, or fail on their own, so the outcome is three lists rather than a boolean — that is what makes a partial failure reportable instead of a 500 that hides the deletions which did land. Nothing is ever rolled back. Target names: registry | vectors | text_index | manifest.",
+  "type": "object",
+  "required": ["collection_id", "purged", "store", "text_index", "deleted", "absent", "failed", "ok"],
+  "properties": {
+    "collection_id": {
+      "type": "string",
+      "description": "The registry id that was purged."
+    },
+    "purged": {
+      "type": "boolean",
+      "description": "Always true in this body; a purge=false delete returns 204 with no body."
+    },
+    "store": {
+      "type": "string",
+      "description": "Physical Qdrant collection name the purge targeted."
+    },
+    "text_index": {
+      "type": "string",
+      "description": "Physical Elasticsearch index name the purge targeted (defaults to the same name as `store`)."
+    },
+    "deleted": {
+      "type": "array",
+      "description": "Targets that were actually removed.",
+      "items": { "type": "string" }
+    },
+    "absent": {
+      "type": "array",
+      "description": "Targets that were already gone. Idempotent no-op, not an error — purging twice is safe.",
+      "items": { "type": "string" }
+    },
+    "failed": {
+      "type": "array",
+      "description": "Targets that errored. NOT rolled back: the physical resource may still exist and needs cleaning up by hand.",
+      "items": {
+        "type": "object",
+        "required": ["target", "error"],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Which target failed (vectors | text_index | manifest)."
+          },
+          "error": {
+            "type": "string",
+            "description": "The backend's own message, prefixed with the exception type."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "True when `failed` is empty — the collection and all of its data are fully gone."
+    }
+  },
+  "additionalProperties": false
+}

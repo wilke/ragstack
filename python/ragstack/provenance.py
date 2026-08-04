@@ -151,3 +151,22 @@ def write_manifest(manifest_dir: str, manifest: CollectionManifest) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(manifest.model_dump_json(indent=2))
     os.replace(tmp, path)  # atomic — a reader never sees a half-written file
+
+
+def delete_manifest(manifest_dir: str, collection: str) -> bool:
+    """Remove a collection's manifest file. Returns whether one was there.
+
+    Used by the collection purge (``DELETE /v1/collections/{id}?purge=true``):
+    once the physical store is gone the manifest describes nothing, and leaving
+    it behind is exactly the orphan the purge exists to prevent. No-op (``False``)
+    when manifests are disabled or the file is already absent — purging twice
+    must not be an error. An unlink that fails for any *other* reason (e.g. a
+    read-only manifest dir) raises, so the purge reports it instead of claiming
+    a deletion that didn't happen."""
+    if not manifest_dir:
+        return False
+    try:
+        os.remove(_path(manifest_dir, collection))
+    except FileNotFoundError:
+        return False
+    return True

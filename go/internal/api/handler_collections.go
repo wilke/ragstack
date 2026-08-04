@@ -71,6 +71,13 @@ func HandleCreateCollection(w http.ResponseWriter, r *http.Request) {
 //
 // Phase-3 scaffold: no runtime registry in Go yet, so this is a schema-valid
 // no-op (204). The Python implementation is authoritative.
+//
+// The contract's `purge` query param (also drop the physical Qdrant collection,
+// the ES index and the provenance manifest) is deliberately NOT honoured here,
+// and this stays a 204 rather than answering with a CollectionPurgeReport: there
+// is nothing behind this scaffold to destroy, and a report claiming deletions
+// that never happened would be worse than an obvious no-op. Implement it
+// alongside a real registry.
 func HandleDeleteCollection(w http.ResponseWriter, r *http.Request) {
 	_ = chi.URLParam(r, "collection_id")
 	w.WriteHeader(http.StatusNoContent)

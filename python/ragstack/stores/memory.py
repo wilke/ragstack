@@ -76,6 +76,15 @@ class InMemoryVectorStore:
         ]
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
 
+    async def drop_collection(self) -> bool:
+        """Discard every chunk — the in-memory analogue of dropping the physical
+        Qdrant collection (see ``QdrantVectorStore.drop_collection``). Returns
+        whether anything was actually there, so the purge report can distinguish
+        "removed" from "already empty"."""
+        existed = bool(self._chunks)
+        self._chunks = []
+        return existed
+
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         self._chunks = [
             c
@@ -160,6 +169,14 @@ class InMemoryTextIndex:
                     )
                 )
         return sorted(scored, key=lambda x: x.score, reverse=True)[:top_k]
+
+    async def drop_index(self) -> bool:
+        """Discard every document — the in-memory analogue of dropping the ES
+        index (see ``ElasticsearchTextIndex.drop_index``). Returns whether
+        anything was actually there."""
+        existed = bool(self._chunks)
+        self._chunks = []
+        return existed
 
     async def delete(self, doc_id: str, tenant_id: str | None = None) -> None:
         self._chunks = [
