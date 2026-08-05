@@ -27,11 +27,12 @@ ownership, and the word *tenant* means two incompatible things.
 - **`TENANT_COLLECTIONS`** confines a tenant to a set of collection ids but defaults to
   `{}` — feature off — and is an operator-authored env map, not a property of the resource.
 
-No resource carries an owner. `CollectionSpec` is twelve fields of pure build spec; a grep
+No resource carries an owner. `CollectionSpec` is thirteen fields of pure build spec; a grep
 for `owner|created_by|visibility|acl|shared_with` across `python/ragstack/` returns one
-hit, a comment about job leases. So `DELETE /v1/collections/{id}?purge=true` checks the
-admin role and nothing else — any admin may destroy any collection, because who created it
-was never recorded.
+hit, a comment about job leases. So `DELETE /v1/collections/{id}?purge=true` performs no
+ownership check at all — its only guards beyond the admin role are integrity ones (the
+default collection, a physical store shared by another registry entry). Any admin may
+destroy any collection, because who created it was never recorded.
 
 Meanwhile the *deployment* already practises a stronger tenancy than the code knows about:
 one Qdrant instance holds the shared corpora, a second serves an isolated org. Two
@@ -66,7 +67,7 @@ collections directly; `collection_create_request` currently requires `embedding`
 admin-only. A `user` may create and share private collections and read public ones.
 
 **4. Two roles: `admin` and `user`.** Drop `engineer` and `manager` — both inert. Rename
-`researcher` → `user` (coordinated: hardcoded at `security.py:166`, and present in
+`researcher` → `user` (coordinated: hardcoded at `security.py:167`, and present in
 `api_key_roles` on deployed servers). `maintainer` is deliberately **not** added: the only
 endpoint exclusive to admin under that split would be `GET /v1/config`, a read-only
 allowlist that already excludes `api_keys`, `*_password` and `postgres_dsn` and redacts URL
@@ -142,10 +143,18 @@ change, which is what makes deferring #230 safe rather than merely cheap.
 
 ## Follow-up
 
-`#199`'s conclusion that `is_tenant=true` degraded filtered recall should be re-checked
-before it hardens into received wisdom. Qdrant documents `is_tenant` as a **disk-layout**
-hint that co-locates a tenant's vectors for sequential reads, and a maintainer responding
-to an identical report said he would not expect it to affect recall at all. The documented
-causes of that symptom are the companion setting `m: 0`, which makes the global HNSW graph
-disjoint, or a stale graph — toggling `is_tenant` on an existing collection does not trigger
-a rebuild.
+`#199` recorded that `is_tenant=true` + `payload_m` made filtered results *worse* (0/20 at
+10 values) — and, to its credit, already attributed the mechanism to the companion setting
+`m: 0`, which leaves no global HNSW graph, only per-value subgraphs. The caution for the
+record is narrower: `is_tenant` itself is a **disk-layout** hint (it co-locates a tenant's
+vectors for sequential reads), a Qdrant maintainer responding to an identical report said
+he would not expect it to affect recall at all, and toggling it on an existing collection
+does not rebuild the graph — so a measurement taken right after enabling it measures the
+*old* graph. Do not let "`is_tenant` degrades recall" circulate shorn of the `m: 0`
+context. Note also `g1-retrieval-protocol.md` §2.1: #199's truncation did not reproduce in
+the v1 conjunction shape, which confines the finding to its original conditions without
+refuting it.
+
+The live measurements quoted under Consequences (empty-collection cost, thread and mmap
+counts, ES shard usage) were taken 2026-08-04 on the development deployment — Qdrant
+1.18.0, single node — and are recorded only here.

@@ -64,9 +64,13 @@ cannot edit; a collaborator may edit what they must not re-share), so it is a bo
 can never delegate more than they hold, and never with `grant_option` unless their own
 grant carries it. Every row records `granted_by`; **revocation follows the chain**, so
 revoking a grantor also revokes everything they granted onward. `owner` is a permission
-level like the others, constrained to exactly one active row per collection — which makes
-admin reassignment an ordinary revoke+grant pair in the same audited table, per ADR-0003's
-admin-bypass decision, rather than a special-cased column.
+level like the others, with two restrictions: it is **grantable to users only, never to a
+group** (a group cannot answer for a corpus, and group-membership edits must never move
+ownership implicitly), and there is **exactly one active owner row per collection** —
+enforced by its own partial unique index on `(collection_id) WHERE permission = 'owner'
+AND revoked_at IS NULL`, since the general active-shares index below is per-grantee and
+cannot express it. This makes admin reassignment an ordinary revoke+grant pair in the same
+audited table, per ADR-0003's admin-bypass decision, rather than a special-cased column.
 
 **6. Revocation is soft.** `revoked_at` + `revoked_by`, never DELETE. The performance
 objection is answered by a partial index:
@@ -92,6 +96,8 @@ group_members  (group_id → groups, subject → users, added_by, added_at)
 shares         (id PK, collection_id, grantee_type user|group, grantee_id,
                 permission read|write|owner, grant_option,
                 granted_by → users, granted_at, revoked_by, revoked_at)
+                -- owner: users only, one active row per collection (own partial index)
+                -- public group: read only, enforced at the API
 pending_shares (email, collection_id, permission, grant_option,
                 granted_by, granted_at, claimed_by, claimed_at)
 ```

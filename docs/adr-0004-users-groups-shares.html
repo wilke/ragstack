@@ -191,9 +191,13 @@ cannot edit; a collaborator may edit what they must not re-share), so it is a bo
 can never delegate more than they hold, and never with <code>grant_option</code> unless their own
 grant carries it. Every row records <code>granted_by</code>; <strong>revocation follows the chain</strong>, so
 revoking a grantor also revokes everything they granted onward. <code>owner</code> is a permission
-level like the others, constrained to exactly one active row per collection — which makes
-admin reassignment an ordinary revoke+grant pair in the same audited table, per ADR-0003's
-admin-bypass decision, rather than a special-cased column.</p>
+level like the others, with two restrictions: it is <strong>grantable to users only, never to a
+group</strong> (a group cannot answer for a corpus, and group-membership edits must never move
+ownership implicitly), and there is <strong>exactly one active owner row per collection</strong> —
+enforced by its own partial unique index on <code>(collection_id) WHERE permission = 'owner'
+AND revoked_at IS NULL</code>, since the general active-shares index below is per-grantee and
+cannot express it. This makes admin reassignment an ordinary revoke+grant pair in the same
+audited table, per ADR-0003's admin-bypass decision, rather than a special-cased column.</p>
 <p><strong>6. Revocation is soft.</strong> <code>revoked_at</code> + <code>revoked_by</code>, never DELETE. The performance
 objection is answered by a partial index:</p>
 <pre><code class="language-sql">CREATE UNIQUE INDEX shares_active
@@ -212,6 +216,8 @@ group_members  (group_id → groups, subject → users, added_by, added_at)
 shares         (id PK, collection_id, grantee_type user|group, grantee_id,
                 permission read|write|owner, grant_option,
                 granted_by → users, granted_at, revoked_by, revoked_at)
+                -- owner: users only, one active row per collection (own partial index)
+                -- public group: read only, enforced at the API
 pending_shares (email, collection_id, permission, grant_option,
                 granted_by, granted_at, claimed_by, claimed_at)
 </code></pre>

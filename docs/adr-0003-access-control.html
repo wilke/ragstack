@@ -159,11 +159,12 @@ ownership, and the word <em>tenant</em> means two incompatible things.</p>
 <li><strong><code>TENANT_COLLECTIONS</code></strong> confines a tenant to a set of collection ids but defaults to
   <code>{}</code> — feature off — and is an operator-authored env map, not a property of the resource.</li>
 </ul>
-<p>No resource carries an owner. <code>CollectionSpec</code> is twelve fields of pure build spec; a grep
+<p>No resource carries an owner. <code>CollectionSpec</code> is thirteen fields of pure build spec; a grep
 for <code>owner|created_by|visibility|acl|shared_with</code> across <code>python/ragstack/</code> returns one
-hit, a comment about job leases. So <code>DELETE /v1/collections/{id}?purge=true</code> checks the
-admin role and nothing else — any admin may destroy any collection, because who created it
-was never recorded.</p>
+hit, a comment about job leases. So <code>DELETE /v1/collections/{id}?purge=true</code> performs no
+ownership check at all — its only guards beyond the admin role are integrity ones (the
+default collection, a physical store shared by another registry entry). Any admin may
+destroy any collection, because who created it was never recorded.</p>
 <p>Meanwhile the <em>deployment</em> already practises a stronger tenancy than the code knows about:
 one Qdrant instance holds the shared corpora, a second serves an isolated org. Two
 meanings of "tenant" — a payload value and a process — share one name.</p>
@@ -191,7 +192,7 @@ collections directly; <code>collection_create_request</code> currently requires 
 <code>chunk</code>, so a server-configured <strong>default build spec</strong> must supply them, with those fields
 admin-only. A <code>user</code> may create and share private collections and read public ones.</p>
 <p><strong>4. Two roles: <code>admin</code> and <code>user</code>.</strong> Drop <code>engineer</code> and <code>manager</code> — both inert. Rename
-<code>researcher</code> → <code>user</code> (coordinated: hardcoded at <code>security.py:166</code>, and present in
+<code>researcher</code> → <code>user</code> (coordinated: hardcoded at <code>security.py:167</code>, and present in
 <code>api_key_roles</code> on deployed servers). <code>maintainer</code> is deliberately <strong>not</strong> added: the only
 endpoint exclusive to admin under that split would be <code>GET /v1/config</code>, a read-only
 allowlist that already excludes <code>api_keys</code>, <code>*_password</code> and <code>postgres_dsn</code> and redacts URL
@@ -261,13 +262,20 @@ change, which is what makes deferring #230 safe rather than merely cheap.</p>
   read it".</li>
 </ul>
 <h2 id="follow-up">Follow-up</h2>
-<p><code>#199</code>'s conclusion that <code>is_tenant=true</code> degraded filtered recall should be re-checked
-before it hardens into received wisdom. Qdrant documents <code>is_tenant</code> as a <strong>disk-layout</strong>
-hint that co-locates a tenant's vectors for sequential reads, and a maintainer responding
-to an identical report said he would not expect it to affect recall at all. The documented
-causes of that symptom are the companion setting <code>m: 0</code>, which makes the global HNSW graph
-disjoint, or a stale graph — toggling <code>is_tenant</code> on an existing collection does not trigger
-a rebuild.</p>
+<p><code>#199</code> recorded that <code>is_tenant=true</code> + <code>payload_m</code> made filtered results <em>worse</em> (0/20 at
+10 values) — and, to its credit, already attributed the mechanism to the companion setting
+<code>m: 0</code>, which leaves no global HNSW graph, only per-value subgraphs. The caution for the
+record is narrower: <code>is_tenant</code> itself is a <strong>disk-layout</strong> hint (it co-locates a tenant's
+vectors for sequential reads), a Qdrant maintainer responding to an identical report said
+he would not expect it to affect recall at all, and toggling it on an existing collection
+does not rebuild the graph — so a measurement taken right after enabling it measures the
+<em>old</em> graph. Do not let "<code>is_tenant</code> degrades recall" circulate shorn of the <code>m: 0</code>
+context. Note also <code>g1-retrieval-protocol.md</code> §2.1: #199's truncation did not reproduce in
+the v1 conjunction shape, which confines the finding to its original conditions without
+refuting it.</p>
+<p>The live measurements quoted under Consequences (empty-collection cost, thread and mmap
+counts, ES shard usage) were taken 2026-08-04 on the development deployment — Qdrant
+1.18.0, single node — and are recorded only here.</p>
   </article></main>
 </div>
 
