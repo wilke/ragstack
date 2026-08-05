@@ -185,7 +185,9 @@ independent ways to scale 40k docs (both supported today, pick either/both):
   (engine)                                 (--runtime none, in the         :9001..:9008
                                             ragstack env; CPU orchestration) (GPU embedding)
                                                     │
-                                                    └── upsert ──▶ Qdrant :6333 / ES :9200
+                                                    └── upsert ──▶ the TENANT'S Qdrant/ES
+                                                        (ports from the tenant's plan, §2 —
+                                                         NOT the shared :6333/:9200; see §4.2)
 ```
 
 - **Knob 1 — more CPU workers** in the `ragstack-cpu` group → more shards embed

@@ -9,10 +9,11 @@ Conceptually (ADR-0003 decision 1), the per-chunk ``tenant_id`` payload key is
 an **owner_id**: it records who *wrote* the chunk. It is provenance plus
 defence in depth — since #243 access is asserted at the *collection*
 (``resolve_access``), not by this filter. "Tenant" as a *deployment* concept
-now means a whole Qdrant instance (ADR-0005). The physical key name is
-historical and stays ``tenant_id`` forever: renaming storage would rewrite
-every point (it is indexed in Qdrant and baked into ES ids and point ids).
-See :data:`OWNER_FIELD`.
+now means a whole Qdrant instance (ADR-0005). The rename is a code-level
+alias ONLY (per the #246 migration checklist, not the ADR): the physical key
+name is historical and stays ``tenant_id`` forever, because renaming storage
+would rewrite every point (it is indexed in Qdrant and baked into ES ids and
+point ids). See :data:`OWNER_FIELD`.
 """
 from __future__ import annotations
 
@@ -26,9 +27,10 @@ PUBLIC_TENANT = "public"
 # Tenant for callers when auth is disabled (dev/tests) or a key has no mapping.
 DEFAULT_TENANT = "default"
 # Historical payload key stamped on every chunk; records who wrote it (owner
-# provenance, ADR-0003 §1). Never rename the stored key — it is indexed in
-# Qdrant and baked into ES ids and point ids. Single conceptual home for the
-# stores' tenant-field comments: _TENANT_FIELD in stores/qdrant.py, the
+# provenance, ADR-0003 §1). Never rename the stored key (#246: code-level
+# alias only) — it is indexed in Qdrant and baked into ES ids and point ids.
+# Single conceptual home for the stores' tenant-field
+# comments: _TENANT_FIELD in stores/qdrant.py, the
 # ``metadata.tenant_id`` mapping in stores/elasticsearch.py, _matches in
 # stores/memory.py.
 OWNER_FIELD = "tenant_id"

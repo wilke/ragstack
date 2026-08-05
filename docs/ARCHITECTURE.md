@@ -81,7 +81,7 @@ The distinction below is normative; the terms are used precisely throughout the 
 | **collection** | A *registry entry* binding an embedding model, dimension, and chunking strategy to an index. What users create and query. **Shipped.** |
 | **library** | Not a separate entity. [ADR-0003](adr/0003-access-control.md) makes it one-to-one with a collection; the word survives only as the `lib` marker in a named collection's derived store name. |
 | **tenant** | A Qdrant *instance*. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users. |
-| **owner_id / `tenant_id` (payload key)** | The per-chunk stamp recording who ingested it. Provenance + defence in depth, not the authorization mechanism; the physical key stays `tenant_id` ([ADR-0003](adr/0003-access-control.md) decision 1 — renaming storage would rewrite every point). |
+| **owner_id / `tenant_id` (payload key)** | The per-chunk stamp recording who ingested it. Provenance + defence in depth, not the authorization mechanism ([ADR-0003](adr/0003-access-control.md) decision 1: renamed `owner_id` and demoted to provenance). The rename is a code-level alias only (#246): the physical key stays `tenant_id` because renaming storage would rewrite every point. |
 
 A collection's physical name is derived deterministically from its build spec. Corpora are
 content-addressed over `(model, dim, chunk_descriptor)` so that re-ingesting an identical

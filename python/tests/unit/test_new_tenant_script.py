@@ -322,6 +322,94 @@ def test_real_run_keeps_operator_edited_env(tmp_path):
     assert "# operator edit" not in env_file.read_text()  # overwritten
 
 
+def test_concurrent_provisioning_allocates_disjoint_blocks(tmp_path):
+    """Two racing runs must not compute the same max+1 index (flock guards the
+    manifest read-modify-write) and neither manifest row may be lost."""
+    env = os.environ.copy()
+    env["RAG_DATA"] = str(tmp_path)
+    env["RAG_IMAGES"] = str(tmp_path / "images")
+    env.pop("TENANT_PORT_BASE", None)
+    env.pop("TENANT_PORT_STRIDE", None)
+    procs = [
+        subprocess.Popen(
+            ["bash", str(SCRIPT), name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=str(REPO_ROOT),
+        )
+        for name in ("alpha", "beta")
+    ]
+    for p in procs:
+        _, err = p.communicate(timeout=60)
+        assert p.returncode == 0, err
+
+    manifest = tmp_path / "tenants" / "manifest.tsv"
+    rows = {
+        line.split("\t")[0]: int(line.split("\t")[2])
+        for line in manifest.read_text().splitlines()
+        if line and not line.startswith("#")
+    }
+    assert set(rows) == {"alpha", "beta"}  # no lost update
+    assert len(set(rows.values())) == 2  # distinct base ports
+    urls = set()
+    for name in ("alpha", "beta"):
+        env_text = (tmp_path / "tenants" / name / "config" / "tenant.env").read_text()
+        urls.update(
+            line for line in env_text.splitlines() if line.startswith("QDRANT_URL=")
+        )
+    assert len(urls) == 2  # each tenant dials its own Qdrant
+
+
+def test_lost_manifest_row_dies_instead_of_port_split_brain(tmp_path):
+    """If the manifest row vanished and a re-run allocates a DIFFERENT block,
+    the script must die (tenant.env would keep the old ports while up.sh got
+    the new ones), not silently split the tenant across two port blocks."""
+    run_script(["acme"], tmp_path)
+    manifest = tmp_path / "tenants" / "manifest.tsv"
+    # lose acme's row, then let another tenant claim acme's recomputed block
+    manifest.write_text(
+        "".join(
+            line
+            for line in manifest.read_text().splitlines(keepends=True)
+            if not line.startswith("acme\t")
+        )
+    )
+    run_script(["beta"], tmp_path)
+
+    env_file = tmp_path / "tenants" / "acme" / "config" / "tenant.env"
+    up_sh = tmp_path / "tenants" / "acme" / "bin" / "up.sh"
+    env_before = env_file.read_text()
+    up_before = up_sh.read_text()
+
+    p = run_script(["acme"], tmp_path)
+    assert p.returncode != 0
+    assert "split-brain" in p.stderr
+    # nothing rewritten: env and wrappers still agree on the old block
+    assert env_file.read_text() == env_before
+    assert up_sh.read_text() == up_before
+
+
+def test_es_heap_persists_across_flagless_rerun(tmp_path):
+    """--es-heap is persisted in provision.env; a later flagless re-run must
+    not silently revert up.sh to the 512m default."""
+    p = run_script(["acme", "--es-heap", "8g"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    up_sh = tmp_path / "tenants" / "acme" / "bin" / "up.sh"
+    assert '-Xms8g -Xmx8g' in up_sh.read_text()
+    provision = tmp_path / "tenants" / "acme" / "config" / "provision.env"
+    assert "TENANT_ES_HEAP=8g" in provision.read_text()
+
+    p = run_script(["acme"], tmp_path)  # no flags
+    assert p.returncode == 0, p.stderr
+    assert '-Xms8g -Xmx8g' in up_sh.read_text()  # kept, not 512m
+    # a new explicit flag still updates it
+    p = run_script(["acme", "--es-heap", "2g"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert '-Xms2g -Xmx2g' in up_sh.read_text()
+
+
 def test_half_provisioned_tenant_is_completed(tmp_path):
     run_script(["acme"], tmp_path)
     tdir = tmp_path / "tenants" / "acme"
@@ -338,3 +426,62 @@ def test_half_provisioned_tenant_is_completed(tmp_path):
     assert (tdir / "qdrant" / "snapshots").is_dir()
     # existing pieces untouched (same ports, same secrets)
     assert env_file.read_text() == env_before
+
+
+# --------------------------------------------------------------------------- #
+# Ops-review regressions (independent review of PR #254).
+# --------------------------------------------------------------------------- #
+
+
+def test_keep_mode_diff_redacts_live_secrets(tmp_path):
+    """A re-run whose tenant.env was hand-edited prints a diff so the operator
+    can see what differs — but a hunk near the key block used to print live
+    API_KEYS material to stderr, which `... | tee provision.log` then wrote to
+    disk (the same failure class as the prior 0644-env-with-live-keys
+    incident). The diff must redact every secret-shaped assignment."""
+    proc = run_script(["acme"], tmp_path)
+    if proc.returncode != 0:
+        pytest.skip(f"real provisioning unavailable here: {proc.stderr[-200:]}")
+    env_file = tmp_path / "tenants" / "acme" / "config" / "tenant.env"
+    original = env_file.read_text(encoding="utf-8")
+    assert "API_KEYS=" in original
+    # Edit a line near the key block so the diff hunk spans the secrets.
+    env_file.write_text(
+        original.replace("DEFAULT_ROLE=user", "DEFAULT_ROLE=admin"), encoding="utf-8"
+    )
+    rerun = run_script(["acme"], tmp_path)
+    assert rerun.returncode == 0, rerun.stderr
+    assert "KEEPING the existing file" in rerun.stderr
+    # The real key values must not appear anywhere in the operator-visible output.
+    for line in original.splitlines():
+        if line.startswith("API_KEYS="):
+            secret = line.split("=", 1)[1].strip()
+            assert len(secret) > 8
+            assert secret not in rerun.stderr, "live API key leaked into the diff"
+            assert secret not in rerun.stdout
+    assert "<REDACTED>" in rerun.stderr
+
+
+def test_allocation_refuses_a_port_the_manifest_does_not_know_is_taken(tmp_path):
+    """The manifest only tracks tenants provisioned under THIS RAG_DATA. Run
+    from a checkout whose RAG_DATA differs from the deployment's and a fresh
+    manifest hands out a block a live tenant already holds — the stamped
+    tenant.env would then dial another tenant's stores. Ports must be probed
+    for real, not merely looked up in the manifest."""
+    import socket
+
+    if not shutil.which("ss") and not shutil.which("netstat"):
+        pytest.skip("no ss/netstat available to probe ports")
+    # Occupy the API port of the first block (base 24000 + 0).
+    sock = socket.socket()
+    try:
+        try:
+            sock.bind(("127.0.0.1", 24000))
+        except OSError:
+            pytest.skip("port 24000 not bindable in this environment")
+        sock.listen(1)
+        proc = run_script(["acme", "--dry-run"], tmp_path)
+        assert proc.returncode != 0, "must refuse a block whose port is already in use"
+        assert "already in use" in proc.stderr
+    finally:
+        sock.close()

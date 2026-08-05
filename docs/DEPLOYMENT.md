@@ -177,7 +177,15 @@ make new-tenant-apptainer NAME=acme            # or /rag/bin/rag new-tenant-appt
 
 # provision with a per-tenant DATABASE in an existing Postgres server instead
 ./apptainer/new-tenant.sh acme --postgres postgresql://ragstack:PW@localhost:5432/postgres
+
+# size the ES heap for a large tenant (default 512m; persisted in the tenant's
+# config/provision.env so later flagless re-runs keep it)
+./apptainer/new-tenant.sh acme --es-heap 8g
 ```
+
+Port allocation is tunable via `TENANT_PORT_BASE` (default `24000`, must be
+≥ 10000) and `TENANT_PORT_STRIDE` (default `20`, must be ≥ 6) — set them only
+before the first tenant; existing manifest rows are reused verbatim.
 
 What the script stamps out, following the persistence conventions (every writable path
 enumerated and bind-mounted; no tmpfs overlays):
@@ -185,9 +193,10 @@ enumerated and bind-mounted; no tmpfs overlays):
 - `$RAG_DATA/tenants/<name>/` — `qdrant/{storage,snapshots}`, `elasticsearch/{data,logs,config}`,
   `state/` (sqlite ACL/registry/jobs), `manifests/`, `ingest/`, `config/`, `bin/`
 - a deterministic **port block** recorded in `$RAG_DATA/tenants/manifest.tsv`
-  (base `24000 + index*20`; offsets: +0 API, +1/+2 Qdrant http/grpc, +3/+4 ES
-  http/transport, +5 reserved) — existing rows are reused verbatim, so re-runs and
-  restarts never move a tenant's ports
+  (one row per tenant: `name<TAB>index<TAB>base_port`; base `24000 + index*20`;
+  offsets: +0 API, +1/+2 Qdrant http/grpc, +3/+4 ES http/transport, +5 reserved) —
+  existing rows are reused verbatim, so re-runs and restarts never move a tenant's
+  ports; concurrent runs are serialized with a flock on `manifest.tsv.lock`
 - `config/tenant.env` — generated API keys/role maps, `DEFAULT_ROLE=user`,
   `MAX_COLLECTIONS=100`, per-tenant store URLs, shared `EMBEDDING_ENDPOINTS`,
   `REQUIRE_DURABLE_BACKENDS=true`, `INGEST_ROOT` confined to the tenant dir
@@ -195,10 +204,21 @@ enumerated and bind-mounted; no tmpfs overlays):
   style (instances `qdrant-<name>`, `elasticsearch-<name>`; shared SIFs reused —
   run `./apptainer/pull.sh` first)
 
-The script is **idempotent**: re-running completes missing pieces and changes nothing
-that exists (an operator-edited `tenant.env` is kept unless `--force`; secrets are
-generated once and never rotated by a re-run). It does not start services unless
-`--start`.
+The script is **idempotent**: re-running completes missing pieces. What is preserved
+vs. regenerated:
+
+- `config/tenant.env` — the one operator-editable file; an edited copy is **kept**
+  (diff printed) unless `--force`
+- `config/secrets.env` — generated once, never rotated by a re-run
+- `config/provision.env` — persists `--es-heap` and the store kind, so a flagless
+  re-run keeps them
+- `bin/up.sh` / `bin/down.sh` — **derived artifacts, regenerated deterministically
+  on every run**; hand edits to them do not survive (they say "do not edit")
+
+If the tenant's `manifest.tsv` row was lost and a re-run would allocate a different
+port block than the kept `tenant.env` uses, the script **dies** with restore
+instructions instead of splitting the tenant across two blocks. It does not start
+services unless `--start`.
 
 Start the API against the stamped env:
 
