@@ -12,8 +12,9 @@ Regenerate:  pip install markdown && python docs/build_docs.py
 from __future__ import annotations
 
 import html
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import markdown
 
@@ -48,7 +49,52 @@ PAGES = [
         card="Local Demo Runbook",
         blurb="Spin up the UI + API locally against SciFact data — the fastest way to see RAGStack running.",
     ),
+    dict(
+        src="adr/README.md", out="adr.html", label="Decisions",
+        card="Architecture Decision Records",
+        blurb="Why the system is shaped the way it is — one record per significant decision, with the options weighed and the consequences accepted.",
+    ),
+    dict(
+        src="adr/0001-execution-topology.md", out="adr-0001-execution-topology.html",
+        label="ADR 0001", card="ADR 0001 — Execution topology",
+        blurb="Which work runs in the workflow engine, which in Go, and which in Python.",
+    ),
+    dict(
+        src="adr/0002-collection-identity.md", out="adr-0002-collection-identity.html",
+        label="ADR 0002", card="ADR 0002 — Collection identity",
+        blurb="Content-addressed physical stores plus a durable registry, and the two production failures that forced them.",
+    ),
 ]
+
+# Relative .md links in the sources point at repo paths; on the built site they must point
+# at the rendered pages. Anything not listed here is left alone — repo-root links like
+# ../SPEC.md deliberately fall through to GitHub.
+_LINK_MAP = {p["src"]: p["out"] for p in PAGES}
+_LINK_MAP["adr/README.md"] = "adr.html"
+
+
+def _rewrite_links(md_text: str, src: str) -> str:
+    """Resolve every relative link in a source doc against the built site.
+
+    Pages get flattened into ``docs/``, so a doc's own relative links no longer
+    hold — one written from ``docs/adr/`` resolves from a different depth than the
+    page it becomes. Each link is resolved to a repo path first, then either mapped
+    to its built page or sent to GitHub. Nothing is left to dangle.
+    """
+    src_dir = PurePosixPath("docs") / PurePosixPath(src).parent
+
+    def sub(mo: re.Match) -> str:
+        label, target, anchor = mo.group(1), mo.group(2), mo.group(3) or ""
+        if re.match(r"^(https?:|mailto:|#|/)", target):
+            return mo.group(0)
+        # Normalise "../x" / "./x" against the source's directory -> repo-root path.
+        repo_path = str(PurePosixPath(os.path.normpath(str(src_dir / target))))
+        built = _LINK_MAP.get(repo_path[len("docs/"):] if repo_path.startswith("docs/") else "")
+        if built:
+            return f"{label}({built}{anchor})"
+        return f"{label}({REPO}/blob/main/{repo_path}{anchor})"
+
+    return re.sub(r"(\[[^\]]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
 
 
 def gh_slug(text: str) -> str:
@@ -59,7 +105,7 @@ def gh_slug(text: str) -> str:
 
 
 def render_page(page: dict) -> None:
-    raw = (HERE / page["src"]).read_text(encoding="utf-8")
+    raw = _rewrite_links((HERE / page["src"]).read_text(encoding="utf-8"), page["src"])
 
     m = re.match(r"#\s+(.+)\n", raw)
     title = m.group(1).strip() if m else page["card"]

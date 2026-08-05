@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RAGStack — Architecture &amp; Capabilities Overview · RAGStack</title>
+<title>RAGStack — Architecture &amp; Design · RAGStack</title>
 <style>
   :root {
     --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
@@ -108,7 +108,7 @@
 <header class="hero"><div class="hero-inner">
   <a class="home" href="index.html">&larr; RAGStack docs</a>
   <p class="kicker">RAGStack · Documentation</p>
-  <h1 class="title">RAGStack — Architecture &amp; Capabilities Overview</h1>
+  <h1 class="title">RAGStack — Architecture &amp; Design</h1>
   <p class="tagline">A high-level map — capabilities, components, data-flow diagrams, and the full API + service-script surface.</p>
   <div class="chips">
       <span class="chip">Overview</span>
@@ -120,54 +120,65 @@
 <div class="wrap">
   <nav class="side" id="side"><div class="side-title">Contents</div>
 <ul class="toc">
-<li><a href="#1-capabilities-overview">1. Capabilities overview</a>
+<li><a href="#1-what-it-is">1. What it is</a>
 </li>
-<li><a href="#2-system-components">2. System components</a>
+<li><a href="#2-repository-shape">2. Repository shape</a>
+</li>
+<li><a href="#3-the-collection-model">3. The collection model</a>
+</li>
+<li><a href="#4-system-components">4. System components</a>
 <ul class="toc-sub">
-<li><a href="#21-api-layer-pythonragstackapi">2.1 API layer (python/ragstack/api/)</a></li>
-<li><a href="#22-ingestion-subsystem-pythonragstackingestion">2.2 Ingestion subsystem (python/ragstack/ingestion/)</a></li>
-<li><a href="#23-retrieval-rewriting-scoring">2.3 Retrieval, rewriting, scoring</a></li>
-<li><a href="#24-storage-adapters-pythonragstackstores">2.4 Storage adapters (python/ragstack/stores/)</a></li>
-<li><a href="#25-embedding--llm">2.5 Embedding &amp; LLM</a></li>
-<li><a href="#26-cross-cutting">2.6 Cross-cutting</a></li>
-<li><a href="#27-model-sidecars-sidecars--independent-fastapi-services">2.7 Model sidecars (sidecars/) — independent FastAPI services</a></li>
-<li><a href="#28-infrastructure-services">2.8 Infrastructure services</a></li>
+<li><a href="#41-api-layer-pythonragstackapi">4.1 API layer (python/ragstack/api/)</a></li>
+<li><a href="#42-identity-pythonragstackidentity">4.2 Identity (python/ragstack/identity/)</a></li>
+<li><a href="#43-ingestion-pythonragstackingestion">4.3 Ingestion (python/ragstack/ingestion/)</a></li>
+<li><a href="#44-retrieval-rewriting-scoring">4.4 Retrieval, rewriting, scoring</a></li>
+<li><a href="#45-storage-adapters-pythonragstackstores">4.5 Storage adapters (python/ragstack/stores/)</a></li>
+<li><a href="#46-embedding-llm-and-the-model-registry">4.6 Embedding, LLM, and the model registry</a></li>
+<li><a href="#47-cross-cutting">4.7 Cross-cutting</a></li>
+<li><a href="#48-model-sidecars-sidecars">4.8 Model sidecars (sidecars/)</a></li>
+<li><a href="#49-infrastructure-dependencies">4.9 Infrastructure dependencies</a></li>
 </ul>
 </li>
-<li><a href="#3-system-diagram">3. System diagram</a>
+<li><a href="#5-system-diagram">5. System diagram</a>
 </li>
-<li><a href="#4-data-flow-diagrams">4. Data flow diagrams</a>
+<li><a href="#6-data-flow">6. Data flow</a>
 <ul class="toc-sub">
-<li><a href="#41-ingest-path-post-v1ingest--bulk-ingest_jsonlpy">4.1 Ingest path (POST /v1/ingest / bulk ingest_jsonl.py)</a></li>
-<li><a href="#42-query-path-post-v1query">4.2 Query path (POST /v1/query)</a></li>
+<li><a href="#61-ingest-post-v1ingest-post-v1ingestupload-bulk-cli-or-workflow">6.1 Ingest (POST /v1/ingest, POST /v1/ingest/upload, bulk CLI, or workflow)</a></li>
+<li><a href="#62-query-post-v1query">6.2 Query (POST /v1/query)</a></li>
 </ul>
 </li>
-<li><a href="#5-api-endpoints">5. API endpoints</a>
+<li><a href="#7-api-surface">7. API surface</a>
 </li>
-<li><a href="#6-service-scripts-pythonscripts">6. Service scripts (python/scripts/)</a>
+<li><a href="#8-service-scripts-pythonscripts">8. Service scripts (python/scripts/)</a>
 <ul class="toc-sub">
-<li><a href="#61-ingestion--search-clis">6.1 Ingestion &amp; search CLIs</a></li>
-<li><a href="#62-eval--benchmark-harnesses-pythonscriptseval">6.2 Eval / benchmark harnesses (python/scripts/eval/)</a></li>
+<li><a href="#81-ingestion--search-clis">8.1 Ingestion &amp; search CLIs</a></li>
+<li><a href="#82-eval--benchmark-harnesses-pythonscriptseval">8.2 Eval / benchmark harnesses (python/scripts/eval/)</a></li>
 </ul>
 </li>
-<li><a href="#7-deployment-topology">7. Deployment topology</a>
+<li><a href="#9-extension-points">9. Extension points</a>
+</li>
+<li><a href="#10-where-to-look-next">10. Where to look next</a>
 </li>
 </ul>
   </nav>
   <main><article class="content" id="content">
-<p>A high-level map of what RAGStack does, the components that make it work, how data
-flows through the system, and the complete API + service-script surface.</p>
+<p>A map of what RAGStack does, how the codebase is organised, how data flows through it, and
+where the extension points are.</p>
 <blockquote>
-<p>Scope note: this reflects the code on <code>main</code> as of 2026-07-02. The <strong>Python</strong>
-implementation is feature-complete; the <strong>Go</strong> implementation is a Phase-1
-scaffold whose handlers largely return stubs. Where they differ, this document
-describes Python and flags Go status explicitly.</p>
+<p><strong>Scope.</strong> This document describes the <strong>design</strong> — components, contracts, and the
+decisions behind them. It deliberately contains <strong>no ports, hostnames, credentials, or
+deployment topology</strong>, because those differ per environment and go stale far faster than
+the design does. For a specific deployment, see <a href="https://github.com/wilke/ragstack/blob/main/docs/DEPLOYMENT.md">DEPLOYMENT.md</a> and that
+environment's own operations page.</p>
+<p>Reflects <code>main</code> as of 2026-08-04. The <strong>Python</strong> implementation is the one in service;
+the <strong>Go</strong> implementation is a Phase-1 scaffold whose handlers largely return stubs.
+Where they differ, this document describes Python and flags Go explicitly.</p>
 </blockquote>
 <hr />
-<h2 id="1-capabilities-overview">1. Capabilities overview</h2>
-<p>RAGStack is a <strong>multi-tenant Retrieval-Augmented Generation (RAG) platform</strong> exposed
-as a single HTTP API, with two parallel implementations (Python/FastAPI, Go/Chi)
-conforming to one OpenAPI 3.1 contract.</p>
+<h2 id="1-what-it-is">1. What it is</h2>
+<p>RAGStack is a <strong>multi-tenant Retrieval-Augmented Generation platform</strong> exposed as a single
+HTTP API, with two implementations (Python/FastAPI, Go/Chi) conforming to one OpenAPI 3.1
+contract.</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -179,12 +190,12 @@ conforming to one OpenAPI 3.1 contract.</p>
 <tbody>
 <tr>
 <td><strong>Scholarly ingestion</strong></td>
-<td>Load PDF / text / Markdown / JSONL, chunk, embed, and index — single file, directory, or multi-hundred-MB JSONL corpus</td>
+<td>Load PDF / text / Markdown / JSONL, chunk, embed, index — single file, directory, upload, or multi-hundred-MB corpus</td>
 <td>✅ Python</td>
 </tr>
 <tr>
 <td><strong>Metadata enrichment</strong></td>
-<td>Recover DOI / title / authors / year / citations / doc-type from sparse extraction dumps, via pluggable publisher profiles</td>
+<td>Recover DOI / title / authors / year / citations / doc-type from sparse extraction dumps, via pluggable publisher profiles; optional DOI lookup against Crossref / DataCite</td>
 <td>✅ Python</td>
 </tr>
 <tr>
@@ -204,27 +215,37 @@ conforming to one OpenAPI 3.1 contract.</p>
 </tr>
 <tr>
 <td><strong>Cross-encoder reranking</strong></td>
-<td>Re-score the fused candidate pool with a cross-encoder sidecar, cut to <code>top_k</code></td>
+<td>Re-score the fused pool with a cross-encoder, cut to <code>top_k</code>; boilerplate suppression and per-document diversity caps</td>
 <td>✅ Python</td>
 </tr>
 <tr>
 <td><strong>Grounded answer generation</strong></td>
-<td>Synthesize a cited answer from retrieved sources via an OpenAI-compatible LLM</td>
+<td>Synthesise a cited answer from retrieved sources via an OpenAI-compatible LLM</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Collections</strong></td>
+<td>Named, registered bindings of <code>(model, dim, chunker)</code> → physical stores, with an immutable build spec and provenance — see <a href="#3-the-collection-model">§3</a></td>
 <td>✅ Python</td>
 </tr>
 <tr>
 <td><strong>Knowledge graph</strong></td>
-<td>LLM triple extraction → Neo4j; tenant-scoped entity/neighbor queries; graph-augmented retrieval leg</td>
+<td>LLM triple extraction → Neo4j; entity/neighbour queries scoped by tenant <em>and</em> collection</td>
 <td>✅ Python (opt-in)</td>
 </tr>
 <tr>
 <td><strong>Multi-tenancy</strong></td>
-<td>Every chunk carries a <code>tenant_id</code>; reads are scoped to <code>own + public</code>; tenant is derived server-side from the API key and cannot be spoofed</td>
+<td>Every chunk carries a <code>tenant_id</code>; reads scope to <code>own + public</code>; tenant is resolved server-side and cannot be spoofed</td>
 <td>✅ Python</td>
 </tr>
 <tr>
-<td><strong>RBAC</strong></td>
-<td>Four roles (<code>admin</code>, <code>engineer</code>, <code>manager</code>, <code>researcher</code>); admin-gated config/health surfaces</td>
+<td><strong>Identity &amp; RBAC</strong></td>
+<td>API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; four roles — <code>admin</code>, <code>engineer</code>, <code>manager</code>, <code>researcher</code></td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>Runtime model registry</strong></td>
+<td>Register models and hot-swap task assignments (embedding / LLM / reranker) without a restart; per-request overrides</td>
 <td>✅ Python</td>
 </tr>
 <tr>
@@ -233,243 +254,327 @@ conforming to one OpenAPI 3.1 contract.</p>
 <td>✅ Python</td>
 </tr>
 <tr>
-<td><strong>Scale &amp; resilience</strong></td>
-<td>Multi-endpoint embedder pool (least-loaded routing, failover, health re-probe), per-tenant concurrency quota, poison-input isolation, graceful degradation</td>
+<td><strong>Workflow-engine ingest</strong></td>
+<td>Submit sharded ingest to a CWL workflow engine (GoWe) instead of running in-process — see <a href="adr-0001-execution-topology.html">ADR-0001</a></td>
 <td>✅ Python</td>
 </tr>
 <tr>
-<td><strong>Two deployment paths</strong></td>
-<td>Docker Compose (layered) and Apptainer rootless (HPC / no-Docker hosts) with persistent host binds</td>
-<td>✅</td>
+<td><strong>Scale &amp; resilience</strong></td>
+<td>Multi-endpoint embedder pool (least-loaded routing, failover, health re-probe), upsert backpressure, per-tenant concurrency quota, poison-input isolation, graceful degradation</td>
+<td>✅ Python</td>
+</tr>
+<tr>
+<td><strong>MCP server</strong></td>
+<td>Exposes retrieval to MCP clients (Claude Desktop / Code)</td>
+<td>✅ Python · ✅ Go</td>
 </tr>
 <tr>
 <td><strong>Dashboard / Explorer</strong></td>
-<td>React + Vite SPA (sources-first query console) over new read-only stats/health endpoints</td>
+<td>React + Vite SPA — query console, collection admin, ops panels</td>
 <td>🚧 MVP</td>
 </tr>
 </tbody>
 </table></div>
-<p><strong>Design principles that recur throughout:</strong> composability via <code>Protocol</code> interfaces
-(every stage is swappable), deterministic <code>uuid5</code> IDs (re-ingest overwrites in place,
-never duplicates), tenancy as a first-class store concern, and graceful degradation
-(a failed stage returns partial results, never a 500).</p>
+<p><strong>Design principles that recur throughout:</strong> composability via <code>Protocol</code> interfaces (every
+stage is swappable), deterministic <code>uuid5</code> IDs (re-ingest overwrites in place, never
+duplicates), tenancy as a first-class store concern, and graceful degradation (a failed
+stage returns partial results, never a 500).</p>
 <hr />
-<h2 id="2-system-components">2. System components</h2>
-<h3 id="21-api-layer-pythonragstackapi">2.1 API layer (<code>python/ragstack/api/</code>)</h3>
-<p>The FastAPI surface. <code>main.py</code> assembles routers behind CORS + security; <code>deps.py</code>
-is the composition root — its <code>lifespan()</code> builds every backend from config at
-startup and exposes them via <code>Depends()</code> providers. <code>security.py</code> implements
-constant-time API-key auth, server-side tenant resolution, and <code>require_role()</code>
-RBAC gating. Routers: <code>query</code>, <code>documents</code>, <code>graph</code>, <code>stats</code>, <code>admin</code>, <code>health</code>,
-<code>health_deep</code>.</p>
-<h3 id="22-ingestion-subsystem-pythonragstackingestion">2.2 Ingestion subsystem (<code>python/ragstack/ingestion/</code>)</h3>
+<h2 id="2-repository-shape">2. Repository shape</h2>
+<p>A polyglot monorepo with two implementations of one API, a shared contract, and a
+black-box conformance suite that neither implementation can import from.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Directory</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>contracts/</code></td>
+<td><code>openapi.yaml</code> + JSON schemas (<code>additionalProperties: false</code>) + fixtures. <strong>Source of truth for the API surface.</strong></td>
+</tr>
+<tr>
+<td><code>python/</code></td>
+<td>Python / FastAPI implementation — the complete one</td>
+</tr>
+<tr>
+<td><code>go/</code></td>
+<td>Go / Chi implementation — Phase-1 scaffold</td>
+</tr>
+<tr>
+<td><code>conformance/</code></td>
+<td>pytest + httpx, over HTTP, against a running server; selected by env var, no imports from either implementation</td>
+</tr>
+<tr>
+<td><code>sidecars/</code></td>
+<td>Independent FastAPI model services (embedding, cross-encoder, legacy FAISS)</td>
+</tr>
+<tr>
+<td><code>cwl/</code></td>
+<td>CWL tool + workflow definitions for the workflow-engine ingest path</td>
+</tr>
+<tr>
+<td><code>frontend/</code></td>
+<td>React + Vite SPA</td>
+</tr>
+<tr>
+<td><code>deploy/</code>, <code>apptainer/</code></td>
+<td>Container and rootless-HPC deployment definitions</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Changing the API means:</strong> update <code>contracts/openapi.yaml</code> and the relevant schema first,
+then implement in both languages, then verify with conformance against each. Where the two
+implementations disagree on a field name, the schema is authoritative and the diverging
+side is the bug.</p>
+<hr />
+<h2 id="3-the-collection-model">3. The collection model</h2>
+<p>The distinction below is normative; the terms are used precisely throughout the codebase.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>index</strong></td>
+<td>A <em>physical</em> store — one Qdrant collection plus one Elasticsearch index of the same name.</td>
+</tr>
+<tr>
+<td><strong>collection</strong></td>
+<td>A <em>registry entry</em> binding an embedding model, dimension, and chunking strategy to an index. What users create and query. <strong>Shipped.</strong></td>
+</tr>
+<tr>
+<td><strong>library</strong></td>
+<td>A user-owned document set <em>inside</em> a collection, isolated by a <code>library_id</code> payload filter. <strong>Not yet implemented</strong> (#230).</td>
+</tr>
+</tbody>
+</table></div>
+<p>A collection's physical name is derived deterministically from its build spec. Corpora are
+content-addressed over <code>(model, dim, chunk_descriptor)</code> so that re-ingesting an identical
+spec is idempotent; user-named collections additionally fold the <em>name</em> into the identity
+so two users choosing the same model and chunker cannot land in one store.</p>
+<p>The <strong>build spec is immutable</strong>. Ingesting into an existing collection with a different
+model, dimension, or chunker returns <strong>409</strong> rather than writing incoherent vectors.
+Changing any of them means a new collection and a full re-ingest.</p>
+<p>A durable registry (<code>collection_store.py</code>, backends: <code>memory</code> / <code>json</code> / <code>sqlite</code> /
+<code>postgres</code>) persists each spec, keyed by collection id, alongside a denormalised
+<code>spec_hash</code> the ingest guard compares against. <em>Provenance</em> is separate — a per-collection
+manifest written by <code>provenance.py</code>, distinguishing <code>source: ingest</code> (verified — observed
+during a real ingest) from <code>source: config</code> (declared — asserted by an operator). Deletion
+unregisters the binding; <code>?purge=true</code> also destroys the data.</p>
+<blockquote>
+<p>Rationale, the failure modes that forced it, and the alternatives weighed:
+<strong><a href="adr-0002-collection-identity.html">ADR-0002 — Collection identity</a></strong>.</p>
+</blockquote>
+<hr />
+<h2 id="4-system-components">4. System components</h2>
+<h3 id="41-api-layer-pythonragstackapi">4.1 API layer (<code>python/ragstack/api/</code>)</h3>
+<p><code>main.py</code> assembles routers behind CORS + security. <code>deps.py</code> is the composition root — its
+<code>lifespan()</code> builds every backend from config at startup and exposes them via <code>Depends()</code>
+providers. <code>security.py</code> implements constant-time API-key auth, server-side tenant
+resolution, and <code>require_role()</code> RBAC gating. <code>collections.py</code> resolves a request's
+collection to a concrete store pair; <code>model_registry.py</code> holds the runtime model registry.
+Routers: <code>query</code>, <code>documents</code>, <code>collections</code>, <code>graph</code>, <code>stats</code>, <code>jobs</code>, <code>models</code>,
+<code>models_registry</code>, <code>admin</code>, <code>health</code>, <code>health_deep</code>.</p>
+<h3 id="42-identity-pythonragstackidentity">4.2 Identity (<code>python/ragstack/identity/</code>)</h3>
+<p>A pluggable <code>IdentityProvider</code> that verifies a bearer credential and returns a principal.
+<code>bvbrc.py</code> verifies BV-BRC tokens offline against the issuer's published public key;
+<code>oidc.py</code> handles standard OIDC discovery + JWKS. <code>cache.py</code> bounds verification cost with
+a TTL. Off by default — API keys remain the baseline. This is the foundation the <em>library</em>
+ownership model will sit on.</p>
+<h3 id="43-ingestion-pythonragstackingestion">4.3 Ingestion (<code>python/ragstack/ingestion/</code>)</h3>
 <ul>
 <li><strong>loaders.py</strong> — <code>LoaderRegistry</code> dispatches by extension to <code>PdfLoader</code> (PyMuPDF),
   <code>TextFileLoader</code>, <code>JsonlLoader</code>; enforces <code>ingest_root</code> (LFI guard) + <code>max_bytes</code> (DoS guard).</li>
-<li><strong>chunkers.py</strong> — <code>RecursiveCharacterChunker</code>, <code>SentenceChunker</code>, <code>WordChunker</code>,
-  <code>FixedTokenWindowChunker</code>, <code>SemanticChunker</code> (embedding-driven boundaries + oversize fallback).</li>
-<li><strong>enrich.py</strong> — scholarly metadata recovery; <code>PublisherProfile</code> (ASM default) drives
-  DOI derivation, citation parsing, classification. Pure functions, reused by API + scripts.</li>
+<li><strong>chunkers.py</strong> — the six strategies behind one <code>Chunker</code> protocol, with a single
+  <code>CHUNK_METHODS</code> registry so no caller can invent a method the others don't know.
+  <code>chunker_config.py</code> is the shared construction helper for the <em>bulk</em> ingesters; the API
+  builds chunkers from <code>chunkers.make_chunker</code> directly.</li>
+<li><strong>enrich.py / doi_metadata.py</strong> — scholarly metadata recovery; <code>PublisherProfile</code> drives
+  DOI derivation, citation parsing, classification. Optional DOI lookup fills gaps at ingest.</li>
+<li><strong>boilerplate.py</strong> — detects licence footers, copyright lines, and reference-list runs so
+  they don't monopolise a top-k.</li>
 <li><strong>tokenization.py</strong> — <code>HFTokenCounter</code> / <code>EstimatingTokenCounter</code> / <code>EndpointTokenCounter</code>
   keep chunks under the embedder's context window.</li>
-<li><strong>pipeline.py</strong> — <code>IngestionPipeline</code>: load → chunk → embed → replace-old → index (vector/text/graph).</li>
-<li><strong>manifest.py / backends.py / sharded.py</strong> — resumable batch layer: enumerate work
-  units, partition into shards, run concurrently with per-item failure isolation + checkpointing.</li>
-<li><strong>embed_bridge.py</strong> — <code>SyncEmbedBridge</code> lets synchronous chunkers call the async embedder on a dedicated loop.</li>
+<li><strong>pipeline.py</strong> — <code>IngestionPipeline</code>, split into <code>embed_source</code> and <code>index_chunks</code> so the
+  two stages can run in separate processes or workflow steps.</li>
+<li><strong>manifest.py / backends.py / sharded.py / receipts.py</strong> — the resumable batch layer:
+  enumerate work units, partition into shards, run with per-item failure isolation and
+  checkpointing, emit receipts.</li>
+<li><strong>gowe_client.py / gowe_backend.py</strong> — submit shards to a CWL workflow engine instead of
+  executing locally; selected by config (<a href="adr-0001-execution-topology.html">ADR-0001</a>).</li>
+<li><strong>embed_shard.py / load_embeddings.py / embedding_file.py</strong> — the decoupled
+  embed-then-load path the CWL tools invoke.</li>
+<li><strong>segmentation_cache.py / embed_bridge.py</strong> — reuse sentence segmentation across runs;
+  let synchronous chunkers call the async embedder on a dedicated loop.</li>
 </ul>
-<h3 id="23-retrieval-rewriting-scoring">2.3 Retrieval, rewriting, scoring</h3>
+<h3 id="44-retrieval-rewriting-scoring">4.4 Retrieval, rewriting, scoring</h3>
 <ul>
-<li><strong>retrieval/retriever.py</strong> — <code>HybridRetriever</code> runs dense + BM25 (+ optional graph)
-  legs and fuses them with RRF.</li>
+<li><strong>retrieval/retriever.py</strong> — <code>HybridRetriever</code> runs dense + BM25 (+ optional graph) legs
+  and fuses them with RRF. <code>retrieval_mode</code> selects <code>hybrid</code> | <code>vector</code> | <code>bm25</code>.</li>
 <li><strong>rewriting/rewriters.py</strong> — <code>PassthroughRewriter</code>, <code>MultiQueryRewriter</code>, <code>HyDERewriter</code>.</li>
-<li><strong>scoring/scorers.py</strong> — <code>RRFScorer</code> (rank fusion), <code>CrossEncoderScorer</code> (in-process),
-  <code>SidecarReranker</code> (HTTP cross-encoder).</li>
+<li><strong>scoring/scorers.py</strong> — <code>RRFScorer</code>, <code>CrossEncoderScorer</code> (in-process), <code>SidecarReranker</code> (HTTP).</li>
 </ul>
-<h3 id="24-storage-adapters-pythonragstackstores">2.4 Storage adapters (<code>python/ragstack/stores/</code>)</h3>
+<h3 id="45-storage-adapters-pythonragstackstores">4.5 Storage adapters (<code>python/ragstack/stores/</code>)</h3>
 <ul>
-<li><strong>qdrant.py</strong> — <code>QdrantVectorStore</code>; <code>(model, dim)</code>-scoped collections; tenant-filtered search.</li>
-<li><strong>elasticsearch.py</strong> — <code>ElasticsearchTextIndex</code> (BM25); doc id <code>tenant:chunk_id</code>; fail-closed on unscoped reads.</li>
-<li><strong>neo4j.py</strong> — <code>Neo4jGraphStore</code>; entities keyed by <code>(name, tenant_id)</code>; depth-capped traversal.</li>
-<li><strong>memory.py</strong> — in-memory vector/text/graph stores for dev + tests.</li>
+<li><strong>qdrant.py</strong> — <code>QdrantVectorStore</code>; build-spec-scoped collections, deterministic point
+  ids, tenant-filtered search.</li>
+<li><strong>elasticsearch.py</strong> — <code>ElasticsearchTextIndex</code> (BM25); doc id <code>tenant:chunk_id</code>;
+  fail-closed on unscoped reads.</li>
+<li><strong>neo4j.py</strong> — <code>Neo4jGraphStore</code>; entities keyed by <code>(name, tenant_id, collection)</code>;
+  depth-capped traversal.</li>
+<li><strong>backpressure.py</strong> — <code>BackpressuredVectorStore</code> gates upserts on optimiser health so a
+  bulk load cannot outrun indexing.</li>
+<li><strong>memory.py</strong> — in-memory stores for dev + tests.</li>
 </ul>
-<h3 id="25-embedding--llm">2.5 Embedding &amp; LLM</h3>
+<h3 id="46-embedding-llm-and-the-model-registry">4.6 Embedding, LLM, and the model registry</h3>
 <ul>
-<li><strong>embedders.py</strong> — <code>SidecarEmbedder</code>, <code>OpenAIEmbedder</code>, <code>BatchingEmbedder</code> (bounded + poison-isolating).</li>
-<li><strong>embed_pool.py</strong> — <code>PooledEmbedder</code>: least-loaded routing across endpoints, failover, lazy health re-probe.</li>
-<li><strong>graph/extractor.py</strong> — <code>LLMKGExtractor</code> (strict-JSON triple extraction, per-chunk graceful degrade).</li>
+<li><strong>embedders.py</strong> — <code>SidecarEmbedder</code>, <code>OpenAIEmbedder</code>, <code>BatchingEmbedder</code> (bounded +
+  poison-isolating). <code>make_embedder(api=…)</code> picks the transport, so a sidecar and an
+  OpenAI-compatible server (vLLM, hosted) are one flag apart.</li>
+<li><strong>embed_pool.py</strong> — <code>PooledEmbedder</code>: least-loaded routing across endpoints, failover,
+  lazy health re-probe. Adding embedding capacity is adding endpoints to the pool.</li>
+<li><strong>api/model_registry.py</strong> — register models at runtime; assign them to tasks
+  (embedding / llm / reranker) and hot-swap without a restart; per-request overrides.
+  Design and phased plan: <a href="model-registry.html">model-registry.md</a>.</li>
 <li><strong>llm.py</strong> — <code>OpenAILLM</code> + <code>RagGenerator</code> (cited answer synthesis).</li>
+<li><strong>graph/extractor.py</strong> — <code>LLMKGExtractor</code> (strict-JSON triple extraction, per-chunk degrade).</li>
 </ul>
-<h3 id="26-cross-cutting">2.6 Cross-cutting</h3>
+<h3 id="47-cross-cutting">4.7 Cross-cutting</h3>
 <ul>
-<li><strong>config.py</strong> — Pydantic <code>Settings</code>; env-driven backend selection.</li>
+<li><strong>config.py</strong> — Pydantic <code>Settings</code>; env-driven backend selection throughout.</li>
+<li><strong>collection_store.py</strong> — the durable collection registry (<a href="#3-the-collection-model">§3</a>).</li>
 <li><strong>tenancy.py / quota.py</strong> — readable-tenant scoping; per-tenant concurrency semaphore.</li>
 <li><strong>jobstore.py</strong> — <code>InMemory</code> / <code>Sqlite</code> / <code>Postgres</code> job stores for async + resumable ingest.</li>
+<li><strong>provenance.py</strong> — build manifests recording how a collection was produced.</li>
 <li><strong>sidecar_http.py</strong> — shared <code>SidecarClient</code> JSON-over-HTTP plumbing.</li>
+<li><strong>mcp/</strong> — an MCP server exposing retrieval to MCP clients. Go ships an equivalent
+  under <code>go/cmd/mcp/</code> — the one place the Go side is not a stub.</li>
 </ul>
-<h3 id="27-model-sidecars-sidecars--independent-fastapi-services">2.7 Model sidecars (<code>sidecars/</code>) — independent FastAPI services</h3>
-<div class="tablewrap"><table>
-<thead>
-<tr>
-<th>Sidecar</th>
-<th>Port</th>
-<th>Model (default)</th>
-<th>Endpoints</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>embedding</strong></td>
-<td>50053</td>
-<td><code>BAAI/bge-base-en-v1.5</code> (768-d)</td>
-<td><code>POST /embed</code>, <code>GET /health</code></td>
-</tr>
-<tr>
-<td><strong>crossencoder</strong></td>
-<td>50052</td>
-<td><code>BAAI/bge-reranker-v2-m3</code></td>
-<td><code>POST /rerank</code>, <code>GET /health</code></td>
-</tr>
-<tr>
-<td><strong>faiss</strong> (legacy/optional)</td>
-<td>50051</td>
-<td>FAISS flat index</td>
-<td><code>POST /search</code>, <code>GET /indices</code>, <code>GET /health</code></td>
-</tr>
-</tbody>
-</table></div>
-<h3 id="28-infrastructure-services">2.8 Infrastructure services</h3>
-<div class="tablewrap"><table>
-<thead>
-<tr>
-<th>Service</th>
-<th>Port</th>
-<th>Role in RAGStack</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>Qdrant</strong></td>
-<td>6333</td>
-<td>Primary vector store</td>
-</tr>
-<tr>
-<td><strong>Elasticsearch</strong></td>
-<td>9200</td>
-<td>BM25 text index (hybrid leg)</td>
-</tr>
-<tr>
-<td><strong>Neo4j</strong></td>
-<td>7687</td>
-<td>Knowledge-graph store (opt-in)</td>
-</tr>
-<tr>
-<td><strong>PostgreSQL</strong></td>
-<td>5432</td>
-<td>Durable job store / resumable checkpoints</td>
-</tr>
-<tr>
-<td><strong>Redis</strong></td>
-<td>6379</td>
-<td>Cache / rate-limit / Celery broker</td>
-</tr>
-</tbody>
-</table></div>
+<h3 id="48-model-sidecars-sidecars">4.8 Model sidecars (<code>sidecars/</code>)</h3>
+<p>Independent FastAPI services the API calls over HTTP, each resolved by URL from config:
+<strong>embedding</strong> (<code>POST /embed</code>), <strong>crossencoder</strong> (<code>POST /rerank</code>), and a legacy <strong>faiss</strong>
+(<code>POST /search</code>). All expose <code>GET /health</code>. The embedding sidecar is one of two
+interchangeable embedding transports — see §4.6.</p>
+<h3 id="49-infrastructure-dependencies">4.9 Infrastructure dependencies</h3>
+<p><strong>Qdrant</strong> (vectors), <strong>Elasticsearch</strong> (BM25), <strong>Neo4j</strong> (graph — opt-in), <strong>PostgreSQL</strong>
+(durable job + collection store). Each is selected by config and has an in-memory or
+file-backed alternative for dev, so the full set is a production choice rather than a hard
+requirement.</p>
+<p><code>redis_url</code> exists in <code>config.py</code> and Redis appears in the deployment definitions, but
+<strong>nothing in either implementation reads it</strong> — there is no client, no call site, and no
+backend that selects it. Treat it as reserved, not as a dependency.</p>
 <hr />
-<h2 id="3-system-diagram">3. System diagram</h2>
+<h2 id="5-system-diagram">5. System diagram</h2>
 <div class="diagram"><pre class="mermaid">graph TB
     subgraph clients[&quot;Clients&quot;]
-        SPA[&quot;Dashboard / Explorer SPA&lt;br/&gt;(React + Vite)&quot;]
+        SPA[&quot;Explorer SPA&lt;br/&gt;(React + Vite)&quot;]
         CLI[&quot;CLI scripts&lt;br/&gt;(ingest / search)&quot;]
-        EXT[&quot;External callers&lt;br/&gt;(X-API-Key)&quot;]
+        MCPC[&quot;MCP clients&quot;]
+        EXT[&quot;External callers&quot;]
     end
 
-    subgraph api[&quot;RAGStack API — FastAPI :8000 / Go Chi :8080&quot;]
-        SEC[&quot;Security&lt;br/&gt;API-key auth · tenant · RBAC&quot;]
-        RT[&quot;Routers&lt;br/&gt;query · documents · graph&lt;br/&gt;stats · admin · health&quot;]
+    subgraph api[&quot;RAGStack API (FastAPI · Go Chi)&quot;]
+        SEC[&quot;Security&lt;br/&gt;API key or bearer → principal&lt;br/&gt;tenant · RBAC&quot;]
+        RT[&quot;Routers&lt;br/&gt;query · documents · collections&lt;br/&gt;graph · stats · jobs · models · admin&quot;]
+        REG[&quot;Collection registry&lt;br/&gt;+ model registry&quot;]
         PIPE[&quot;Pipeline &amp;amp; orchestration&lt;br/&gt;IngestionPipeline · HybridRetriever&lt;br/&gt;rewriters · scorers · RagGenerator&quot;]
         SEC --&gt; RT --&gt; PIPE
+        RT --&gt; REG
+        REG --&gt; PIPE
     end
 
-    subgraph sidecars[&quot;Model sidecars (FastAPI)&quot;]
-        EMB[&quot;Embedding :50053&lt;br/&gt;BGE-base&quot;]
-        CE[&quot;Cross-encoder :50052&lt;br/&gt;BGE-reranker&quot;]
-        FA[&quot;FAISS :50051&lt;br/&gt;(legacy)&quot;]
+    subgraph models[&quot;Model serving&quot;]
+        EMB[&quot;Embedding&lt;br/&gt;sidecar or OpenAI-compatible pool&quot;]
+        CE[&quot;Cross-encoder&quot;]
+        LLM[&quot;LLM&lt;br/&gt;rewrite · HyDE · KG · answer&quot;]
     end
 
-    subgraph vllm[&quot;Self-hosted LLM/embeds (optional)&quot;]
-        VLLM[&quot;vLLM / OpenAI-compatible&lt;br/&gt;rewrite · HyDE · KG · answer · embeds&quot;]
-    end
-
-    subgraph infra[&quot;Infrastructure&quot;]
+    subgraph infra[&quot;Stores&quot;]
         QD[(&quot;Qdrant&lt;br/&gt;vectors&quot;)]
         ES[(&quot;Elasticsearch&lt;br/&gt;BM25&quot;)]
         NEO[(&quot;Neo4j&lt;br/&gt;graph&quot;)]
-        PG[(&quot;PostgreSQL&lt;br/&gt;jobs&quot;)]
-        RD[(&quot;Redis&lt;br/&gt;cache&quot;)]
+        PG[(&quot;PostgreSQL&lt;br/&gt;jobs · registry&quot;)]
     end
 
+    WF[&quot;Workflow engine (CWL)&lt;br/&gt;sharded ingest&quot;]
+
     SPA --&gt; SEC
-    CLI --&gt; EMB
-    CLI --&gt; QD
     EXT --&gt; SEC
+    MCPC --&gt; SEC
+    CLI --&gt; PIPE
 
     PIPE --&gt; EMB
     PIPE --&gt; CE
-    PIPE -.legacy.-&gt; FA
-    PIPE --&gt; VLLM
+    PIPE --&gt; LLM
     PIPE --&gt; QD
     PIPE --&gt; ES
     PIPE --&gt; NEO
     PIPE --&gt; PG
-    PIPE -.-&gt; RD
-    EMB -.pooled fan-out.-&gt; VLLM</pre></div>
+    PIPE -.dispatch.-&gt; WF
+    WF --&gt; EMB
+    WF --&gt; QD
+    WF --&gt; ES</pre></div>
 <hr />
-<h2 id="4-data-flow-diagrams">4. Data flow diagrams</h2>
-<h3 id="41-ingest-path-post-v1ingest--bulk-ingest_jsonlpy">4.1 Ingest path (<code>POST /v1/ingest</code> / bulk <code>ingest_jsonl.py</code>)</h3>
+<h2 id="6-data-flow">6. Data flow</h2>
+<h3 id="61-ingest-post-v1ingest-post-v1ingestupload-bulk-cli-or-workflow">6.1 Ingest (<code>POST /v1/ingest</code>, <code>POST /v1/ingest/upload</code>, bulk CLI, or workflow)</h3>
 <div class="diagram"><pre class="mermaid">flowchart LR
-    SRC[&quot;Source&lt;br/&gt;PDF · TXT · MD · JSONL&quot;] --&gt; LOAD[&quot;LoaderRegistry&lt;br/&gt;ingest_root + size guards&quot;]
-    LOAD --&gt; ENR[&quot;enrich()&lt;br/&gt;DOI · authors · citations&lt;br/&gt;(JSONL only)&quot;]
-    ENR --&gt; CHK[&quot;Chunker&lt;br/&gt;deterministic uuid5 IDs&lt;br/&gt;+ token-budget cap&quot;]
+    SRC[&quot;Source&lt;br/&gt;PDF · TXT · MD · JSONL · upload&quot;] --&gt; LOAD[&quot;LoaderRegistry&lt;br/&gt;ingest_root + size guards&quot;]
+    LOAD --&gt; ENR[&quot;enrich()&lt;br/&gt;DOI · authors · citations&quot;]
+    ENR --&gt; SPEC{&quot;Build spec matches&lt;br/&gt;the collection?&quot;}
+    SPEC --&gt;|no| ERR[&quot;409 — refuse&quot;]
+    SPEC --&gt;|yes| CHK[&quot;Chunker&lt;br/&gt;deterministic uuid5 IDs&lt;br/&gt;+ token-budget cap&quot;]
     CHK --&gt; EMBED[&quot;Embedder&lt;br/&gt;BatchingEmbedder → pool&lt;br/&gt;poison isolation&quot;]
-    EMBED --&gt; KG{&quot;kg_extraction&lt;br/&gt;enabled?&quot;}
-    KG --&gt;|yes| TRIP[&quot;LLMKGExtractor&lt;br/&gt;→ triples&quot;]
+    EMBED --&gt; KG{&quot;kg_extraction?&quot;}
+    KG --&gt;|yes| TRIP[&quot;LLMKGExtractor → triples&quot;]
     KG --&gt;|no| REP
     TRIP --&gt; REP[&quot;Replace old chunks&lt;br/&gt;(delete-except by doc)&quot;]
-    REP --&gt; VEC[(&quot;Qdrant&lt;br/&gt;upsert vectors&quot;)]
+    REP --&gt; VEC[(&quot;Qdrant&lt;br/&gt;backpressured upsert&quot;)]
     REP --&gt; TXT[(&quot;Elasticsearch&lt;br/&gt;index text&quot;)]
     TRIP --&gt; GR[(&quot;Neo4j&lt;br/&gt;add triples&quot;)]
     EMBED -.checkpoint.-&gt; JOB[(&quot;JobStore&lt;br/&gt;resumable frontier&quot;)]</pre></div>
 <p>Key properties: deterministic IDs make re-ingest idempotent (overwrite in place);
-upsert-before-prune means a prune timeout leaves harmless duplicates, never data loss;
-the checkpoint frontier (+ out-of-order <code>done_ranges</code>) lets a crashed bulk run resume
-without re-embedding completed work.</p>
-<h3 id="42-query-path-post-v1query">4.2 Query path (<code>POST /v1/query</code>)</h3>
+upsert-before-prune means a prune timeout leaves harmless duplicates, never data loss; the
+checkpoint frontier (+ out-of-order <code>done_ranges</code>) lets a crashed bulk run resume without
+re-embedding completed work; and the build-spec check fails the run <em>before</em> any vector is
+written rather than after.</p>
+<h3 id="62-query-post-v1query">6.2 Query (<code>POST /v1/query</code>)</h3>
 <div class="diagram"><pre class="mermaid">flowchart TB
-    Q[&quot;Query + X-API-Key&quot;] --&gt; AUTH[&quot;Auth → tenant + role&quot;]
-    AUTH --&gt; RW[&quot;Query rewrite&lt;br/&gt;passthrough · multiquery · hyde&quot;]
+    Q[&quot;Query + credential&quot;] --&gt; AUTH[&quot;Auth → principal&lt;br/&gt;tenant + role&quot;]
+    AUTH --&gt; COL[&quot;Resolve collection&lt;br/&gt;→ index pair + embedder&quot;]
+    COL --&gt; RW[&quot;Query rewrite&lt;br/&gt;passthrough · multiquery · hyde&quot;]
     RW --&gt; FAN[&quot;Per-variant retrieval (concurrent)&quot;]
 
     subgraph hybrid[&quot;HybridRetriever (per variant, tenant-scoped)&quot;]
         direction LR
         DENSE[&quot;Dense&lt;br/&gt;embed → Qdrant&quot;]
         SPARSE[&quot;Sparse&lt;br/&gt;BM25 → Elasticsearch&quot;]
-        GRAPH[&quot;Graph (optional)&lt;br/&gt;entity neighborhood → Neo4j&quot;]
+        GRAPH[&quot;Graph (optional)&lt;br/&gt;entity neighbourhood → Neo4j&quot;]
     end
 
     FAN --&gt; DENSE &amp; SPARSE &amp; GRAPH
     DENSE &amp; SPARSE &amp; GRAPH --&gt; RRF[&quot;RRF fusion&quot;]
-    RRF --&gt; RR{&quot;rerank?&quot;}
-    RR --&gt;|yes| CE[&quot;Cross-encoder sidecar&lt;br/&gt;→ top_k&quot;]
+    RRF --&gt; FILT[&quot;Boilerplate suppression&lt;br/&gt;+ per-doc diversity cap&quot;]
+    FILT --&gt; RR{&quot;rerank?&quot;}
+    RR --&gt;|yes| CE[&quot;Cross-encoder → top_k&quot;]
     RR --&gt;|no| GEN
     CE --&gt; GEN[&quot;RagGenerator&lt;br/&gt;(LLM, if configured)&quot;]
     GEN --&gt; RESP[&quot;Answer + cited sources&quot;]</pre></div>
-<p>Every stage degrades gracefully: an unknown rewrite strategy falls back to the plain
-query, a rerank failure falls back to the fused order, and an LLM failure returns
-sources with a note — the call still returns 200.</p>
+<p>Every stage degrades gracefully: an unknown rewrite strategy falls back to the plain query,
+a rerank failure falls back to the fused order, and an LLM failure returns sources with a
+note — the call still returns 200.</p>
 <hr />
-<h2 id="5-api-endpoints">5. API endpoints</h2>
-<p>Base URL: Python <code>:8000</code>, Go <code>:8080</code>. Auth header: <code>X-API-Key</code> (maps server-side to
-tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a key when keys are configured.</p>
+<h2 id="7-api-surface">7. API surface</h2>
+<p>Auth: <code>X-API-Key</code>, or a bearer credential when an identity provider is enabled. Both
+resolve server-side to a principal (tenant + role); the tenant is never read from the
+request body. <code>/health</code> is open; all <code>/v1/*</code> require a credential when auth is configured.
+The authoritative definition is <code>contracts/openapi.yaml</code>; per-field reference is
+<a href="https://github.com/wilke/ragstack/blob/main/docs/API.md">docs/API.md</a>.</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -494,23 +599,63 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>POST</td>
 <td><code>/v1/query</code></td>
 <td>Full RAG: rewrite → retrieve → rerank → generate</td>
-<td>key (tenant)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/v1/retrieve</code></td>
-<td>Hybrid retrieval, no answer generation</td>
-<td>key (tenant)</td>
+<td>Hybrid retrieval, no generation</td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/chunks</code></td>
+<td>Fetch chunks by id (context expansion)</td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/collections</code></td>
+<td>List collections + counts + provenance</td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/collections</code></td>
+<td>Create a collection (model + chunker)</td>
+<td>admin</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/v1/collections/{id}</code></td>
+<td>Unregister; <code>?purge=true</code> destroys data</td>
+<td>admin</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/v1/ingest</code></td>
-<td>Async ingest of a file or directory → <code>job_id</code></td>
-<td>key (tenant)</td>
+<td>Async ingest of a server-side path → <code>job_id</code></td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/ingest/upload</code></td>
+<td>Multipart upload → stage → ingest</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -518,23 +663,31 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/ingest/{job_id}</code></td>
 <td>Poll job status + per-item progress</td>
-<td>key (tenant)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>GET</td>
+<td><code>/v1/jobs</code></td>
+<td>List ingest jobs</td>
+<td>admin</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
 <td><code>/v1/documents</code></td>
 <td>List indexed documents</td>
-<td>key (tenant)</td>
-<td>⚠️ stub <code>[]</code></td>
-<td>⚠️ stub <code>[]</code></td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
 </tr>
 <tr>
 <td>DELETE</td>
 <td><code>/v1/documents/{doc_id}</code></td>
 <td>Delete a doc from vector + text legs</td>
-<td>key (tenant)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -542,15 +695,15 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/graph/entities</code></td>
 <td>List graph entities (own + public)</td>
-<td>key (tenant)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/v1/graph/neighbors/{entity}</code></td>
-<td>Neighborhood triples (depth 1–5)</td>
-<td>key (tenant)</td>
+<td>Neighbourhood triples (depth 1–5)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -558,7 +711,7 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/graph/stats</code></td>
 <td>Entity / relationship counts</td>
-<td>key (tenant)</td>
+<td>principal</td>
 <td>✅</td>
 <td>❌</td>
 </tr>
@@ -566,7 +719,63 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/stats/stores</code></td>
 <td>Per-store counts (vector/text/graph)</td>
-<td>key (principal)</td>
+<td>principal</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/stats/tenants</code></td>
+<td>Tenant × collection breakdown</td>
+<td>principal</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/stats/models</code></td>
+<td>Per-endpoint liveness, latency, in-flight</td>
+<td>admin</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/v1/stats/models/benchmark</code></td>
+<td>On-demand throughput probe</td>
+<td>admin</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/v1/models/available</code></td>
+<td>Models assignable per-request</td>
+<td>principal</td>
+<td>✅</td>
+<td>⚠️ stub</td>
+</tr>
+<tr>
+<td>GET,POST</td>
+<td><code>/v1/admin/models/registry</code></td>
+<td>List / register models</td>
+<td>admin</td>
+<td>✅</td>
+<td>⚠️ GET stub</td>
+</tr>
+<tr>
+<td>PUT,DELETE</td>
+<td><code>/v1/admin/models/registry/{id}</code></td>
+<td>Update / remove a model</td>
+<td>admin</td>
+<td>✅</td>
+<td>❌</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td><code>/v1/admin/config/assignments</code></td>
+<td>Hot-swap llm / reranker assignment</td>
+<td>admin</td>
 <td>✅</td>
 <td>❌</td>
 </tr>
@@ -574,7 +783,7 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/config</code></td>
 <td>Allowlisted config, secrets redacted</td>
-<td>key (<strong>admin</strong>)</td>
+<td>admin</td>
 <td>✅</td>
 <td>❌</td>
 </tr>
@@ -582,23 +791,21 @@ tenant + role). <code>/health</code> is open; all <code>/v1/*</code> require a k
 <td>GET</td>
 <td><code>/v1/health/deep</code></td>
 <td>Deep dependency probe + latencies</td>
-<td>key (<strong>admin</strong>)</td>
+<td>admin</td>
 <td>✅</td>
 <td>❌</td>
 </tr>
 </tbody>
 </table></div>
-<p><strong>RBAC roles:</strong> <code>admin</code> (superuser) · <code>engineer</code> (data ops) · <code>manager</code> (dashboard reads)
-· <code>researcher</code> (read-only). <strong>Tenancy:</strong> every data endpoint auto-scopes to the caller's
-tenant + the shared <code>public</code> corpus; the tenant is never read from the request body.</p>
+<p><strong>RBAC roles:</strong> <code>admin</code> (superuser) · <code>engineer</code> (data ops) · <code>manager</code> (dashboard reads) ·
+<code>researcher</code> (read-only).</p>
 <blockquote>
 <p>The <code>stream</code> field exists on the query request model but there is <strong>no</strong> separate
-streaming endpoint yet. Go request models still lack <code>rerank</code> / <code>rerank_candidates</code>
-(issue #27).</p>
+streaming endpoint yet. Go request models still lack <code>rerank</code> / <code>rerank_candidates</code> (#27).</p>
 </blockquote>
 <hr />
-<h2 id="6-service-scripts-pythonscripts">6. Service scripts (<code>python/scripts/</code>)</h2>
-<h3 id="61-ingestion--search-clis">6.1 Ingestion &amp; search CLIs</h3>
+<h2 id="8-service-scripts-pythonscripts">8. Service scripts (<code>python/scripts/</code>)</h2>
+<h3 id="81-ingestion--search-clis">8.1 Ingestion &amp; search CLIs</h3>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -611,7 +818,7 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 <tr>
 <td><code>ingest_jsonl.py</code></td>
 <td>Bulk-ingest a JSONL corpus → Qdrant (+ optional ES); streaming, enriching, resumable, concurrent</td>
-<td><code>--tenant</code>, <code>--doc-types</code>, <code>--publisher-profile</code>, <code>--chunk-method</code>, <code>--chunk-size</code>, <code>--embedding-api {sidecar,openai}</code>, <code>--embedding-url</code> (multi), <code>--concurrency</code>, <code>--chunk-concurrency</code>, <code>--batch-retries</code>, <code>--resume</code>, <code>--checkpoint</code>, <code>--catalog-out</code>, <code>--text-backend</code></td>
+<td><code>--tenant</code>, <code>--doc-types</code>, <code>--publisher-profile</code>, <code>--chunk-method</code>, <code>--chunk-size</code>, <code>--embedding-api {sidecar,openai}</code>, <code>--embedding-url</code> (multi), <code>--concurrency</code>, <code>--resume</code>, <code>--checkpoint</code>, <code>--catalog-out</code>, <code>--text-backend</code></td>
 </tr>
 <tr>
 <td><code>ingest_chunks.py</code></td>
@@ -621,16 +828,16 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 <tr>
 <td><code>search.py</code></td>
 <td>Embed a query, vector-search Qdrant, optional payload filter; tenant-scoped</td>
-<td><code>--collection</code>, <code>--tenant</code>, <code>--top-k</code>, <code>--filter KEY=VALUE</code>, <code>--embedding-api</code>, <code>--json</code></td>
+<td><code>--collection</code>, <code>--tenant</code>, <code>--top-k</code>, <code>--filter KEY=VALUE</code>, <code>--json</code></td>
 </tr>
 <tr>
 <td><code>verify_doi_pubmed.py</code></td>
 <td>Data-QA: validate sampled catalog DOIs/titles against PubMed E-utilities</td>
-<td><code>--sample</code>, <code>--email</code>, <code>--api-key</code>, <code>--min-ratio</code>, <code>--report</code></td>
+<td><code>--sample</code>, <code>--email</code>, <code>--min-ratio</code>, <code>--report</code></td>
 </tr>
 </tbody>
 </table></div>
-<h3 id="62-eval--benchmark-harnesses-pythonscriptseval">6.2 Eval / benchmark harnesses (<code>python/scripts/eval/</code>)</h3>
+<h3 id="82-eval--benchmark-harnesses-pythonscriptseval">8.2 Eval / benchmark harnesses (<code>python/scripts/eval/</code>)</h3>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -653,7 +860,7 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 </tr>
 <tr>
 <td><code>bge_gpu_bench.py</code></td>
-<td>BGE-base GPU throughput benchmark (no HTTP)</td>
+<td>Embedding GPU throughput benchmark (no HTTP)</td>
 </tr>
 <tr>
 <td><code>embed_speed.py</code></td>
@@ -674,17 +881,124 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 </tbody>
 </table></div>
 <hr />
-<h2 id="7-deployment-topology">7. Deployment topology</h2>
-<p><strong>Docker Compose</strong> — layered files stacked with multiple <code>-f</code> flags:
-- <code>docker-compose.infra.yml</code> — Qdrant · Elasticsearch · Neo4j · Postgres · Redis
-- <code>docker-compose.sidecars.yml</code> — embedding · crossencoder · faiss
-- <code>docker-compose.python.yml</code> / <code>docker-compose.go.yml</code> — the API (+ Celery worker on Python)</p>
-<p><strong>Apptainer (rootless)</strong> — preferred on no-Docker / HPC hosts (<code>apptainer/up.sh</code>,
-persistent host dir under <code>apptainer/data/&lt;service&gt;/</code>. The canonical deployed stack lives under <code>/rag/</code> (see <a href="../STATUS.md#production-layout-rag">STATUS.md</a>).</p>
+<h2 id="9-extension-points">9. Extension points</h2>
+<p>Every stage is a <code>Protocol</code>, so extending the system means implementing an interface and
+selecting it by config — not editing the pipeline. Most live in
+<code>python/ragstack/protocols.py</code>; the three that ship with their subsystem are noted.</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>To add…</th>
+<th>Implement</th>
+<th>Defined in</th>
+<th>Selected by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A file type</td>
+<td><code>DocumentLoader</code></td>
+<td><code>protocols.py</code></td>
+<td>extension, via <code>LoaderRegistry</code></td>
+</tr>
+<tr>
+<td>A chunking strategy</td>
+<td><code>Chunker</code></td>
+<td><code>protocols.py</code></td>
+<td><code>CHUNK_METHODS</code> registry + <code>chunk_method</code></td>
+</tr>
+<tr>
+<td>An embedding backend</td>
+<td><code>Embedder</code></td>
+<td><code>protocols.py</code></td>
+<td><code>make_embedder(api=…)</code>, or add an endpoint to the pool</td>
+</tr>
+<tr>
+<td>A vector / text / graph store</td>
+<td><code>VectorStore</code> / <code>TextIndex</code> / <code>GraphStore</code></td>
+<td><code>protocols.py</code></td>
+<td>config backend selection</td>
+</tr>
+<tr>
+<td>A reranking strategy</td>
+<td><code>Scorer</code></td>
+<td><code>protocols.py</code></td>
+<td>reranker assignment</td>
+</tr>
+<tr>
+<td>A query rewriter</td>
+<td><code>QueryRewriter</code></td>
+<td><code>protocols.py</code></td>
+<td><code>rewrite_strategies</code></td>
+</tr>
+<tr>
+<td>An identity source</td>
+<td><code>IdentityProvider</code></td>
+<td><code>identity/base.py</code></td>
+<td><code>identity/factory.py</code></td>
+</tr>
+<tr>
+<td>A collection registry backend</td>
+<td><code>CollectionStore</code></td>
+<td><code>collection_store.py</code></td>
+<td><code>COLLECTION_STORE_BACKEND</code></td>
+</tr>
+<tr>
+<td>An ingest execution mode</td>
+<td><code>IngestBackend</code></td>
+<td><code>ingestion/backends.py</code></td>
+<td><code>INGEST_BACKEND</code></td>
+</tr>
+</tbody>
+</table></div>
 <hr />
-<p><em>Generated from a source sweep of the repo. For design intent see <a href="../SPEC.md">SPEC.md</a>;
-for current state and TODOs see <a href="../STATUS.md">STATUS.md</a>; for the HTTP reference see
-<a href="API.md">docs/API.md</a>.</em></p>
+<h2 id="10-where-to-look-next">10. Where to look next</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>For</th>
+<th>Read</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Per-capability internals, algorithms, 33 diagrams</td>
+<td><a href="architecture-deep-dive.html">ARCHITECTURE-DEEP-DIVE.md</a></td>
+</tr>
+<tr>
+<td>Why a decision was made</td>
+<td><a href="adr.html">ADR index</a></td>
+</tr>
+<tr>
+<td>Design intent and milestones</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/SPEC.md">SPEC.md</a></td>
+</tr>
+<tr>
+<td>Current state, TODOs, checkpoints</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/STATUS.md">STATUS.md</a></td>
+</tr>
+<tr>
+<td>HTTP reference</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/docs/API.md">API.md</a></td>
+</tr>
+<tr>
+<td>Ingest paths and when to use each</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/docs/ingest-paths.md">ingest-paths.md</a></td>
+</tr>
+<tr>
+<td>Model registry design</td>
+<td><a href="model-registry.html">model-registry.md</a></td>
+</tr>
+<tr>
+<td>User-owned libraries (planned)</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/docs/libraries-spec.md">libraries-spec.md</a></td>
+</tr>
+<tr>
+<td>Running it somewhere</td>
+<td><a href="https://github.com/wilke/ragstack/blob/main/docs/DEPLOYMENT.md">DEPLOYMENT.md</a></td>
+</tr>
+</tbody>
+</table></div>
   </article></main>
 </div>
 
