@@ -11,9 +11,11 @@ Regenerate:  pip install markdown && python docs/build_docs.py
 """
 from __future__ import annotations
 
+import argparse
 import html
 import os
 import re
+import shutil
 from pathlib import Path, PurePosixPath
 
 import markdown
@@ -186,11 +188,32 @@ def build_index() -> None:
     print(f"  {'index.html':32} landing ({len(PAGES)} docs)")
 
 
+def assemble_site(dest: Path) -> None:
+    """Copy exactly the pages this script generates into a deploy directory.
+
+    The deploy step used to hardcode its own copy list, which silently dropped
+    any page added to PAGES but not to that list. Deriving it from PAGES means
+    adding a doc is a one-line change here and nowhere else.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in [p["out"] for p in PAGES] + ["index.html"]:
+        shutil.copy2(HERE / name, dest / name)
+    (dest / ".nojekyll").touch()
+    print(f"  assembled {len(PAGES) + 1} pages -> {dest}")
+
+
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--site", type=Path, metavar="DIR",
+                    help="also assemble the built pages into DIR for deployment")
+    args = ap.parse_args()
+
     print("building docs site:")
     for p in PAGES:
         render_page(p)
     build_index()
+    if args.site:
+        assemble_site(args.site)
 
 
 # --------------------------------------------------------------------------- #

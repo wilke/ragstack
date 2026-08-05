@@ -7,12 +7,11 @@ name: Publish docs to Pages
 on:
   push:
     branches: [main]
+    # Any markdown under docs/ — enumerating the published subset here meant a
+    # newly-published doc silently never triggered a rebuild. Rebuilding on an
+    # unpublished doc is cheap; not rebuilding on a published one is a stale site.
     paths:
-      - docs/ARCHITECTURE.md
-      - docs/ARCHITECTURE-DEEP-DIVE.md
-      - docs/LOCAL-DEMO.md
-      - docs/cookbook-new-org-ingest.md
-      - docs/model-registry.md
+      - "docs/**/*.md"
       - docs/build_docs.py
       - .github/workflows/pages.yml
   workflow_dispatch:
@@ -44,18 +43,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install markdown
-      - run: python docs/build_docs.py
-      - name: Assemble site
-        run: |
-          mkdir -p _site
-          cp docs/index.html \
-             docs/architecture.html \
-             docs/architecture-deep-dive.html \
-             docs/cookbook-new-org-ingest.html \
-             docs/local-demo.html \
-             docs/model-registry.html \
-             _site/
-          touch _site/.nojekyll
+      # --site assembles exactly the pages build_docs.py generates. Do not
+      # reintroduce a hardcoded copy list here: the previous one drifted from
+      # PAGES and silently dropped three pages from the deployed site.
+      - run: python docs/build_docs.py --site _site
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
