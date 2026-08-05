@@ -17,7 +17,8 @@ from ragstack.tenancy import readable_tenants, tenant_of
 
 def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     """A chunk matches when every filter holds; a list value matches any entry
-    (MatchAny — used for tenant reads: own + public).
+    (MatchAny — used for tenant reads: own + public; the ``tenant_id`` key is
+    the historical owner field — see tenancy.OWNER_FIELD).
 
     An empty list matches *nothing* rather than lifting the constraint (#196):
     membership in the empty set is false, and reading it as "no constraint" would

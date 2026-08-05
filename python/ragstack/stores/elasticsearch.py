@@ -23,7 +23,9 @@ from ragstack.tenancy import DEFAULT_TENANT
 # on chunk.metadata), so metadata is stored as a nested object and string values
 # are mapped to ``keyword`` for exact term/terms matching. ``content`` is the only
 # analyzed (BM25) field; ``doc_id``/``chunk_id`` stay top-level for delete-by-doc
-# and id round-tripping. ``tenant_id`` lives in metadata only (no duplication).
+# and id round-tripping. ``tenant_id`` lives in metadata only (no duplication);
+# the key name is historical — see tenancy.OWNER_FIELD (owner provenance,
+# ADR-0003).
 _MAPPINGS: dict[str, Any] = {
     "dynamic_templates": [
         {

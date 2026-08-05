@@ -12,7 +12,7 @@ These are **orthogonal** in RAGStack — use both, for different jobs:
 
 | Mechanism | What it is | Isolation? |
 |---|---|---|
-| **Tenant** (`tenant_id`, from the API key) | Shared Qdrant collection + ES index, filtered by `tenant_id` on **every** read/write/delete, enforced **server-side** from the key (`security.py` → `scope_filters`). Point ids are `uuid5("{tenant}:{chunk_id}")` so tenants never overwrite each other. | **Yes — the real boundary.** A caller only ever sees its own tenant + `public`. |
+| **Tenant** (`tenant_id`, from the API key) | Shared Qdrant collection + ES index, filtered by `tenant_id` on **every** read/write/delete, enforced **server-side** from the key (`security.py` → `scope_filters`). Point ids are `uuid5("{tenant}:{chunk_id}")` so tenants never overwrite each other. *Amended by [ADR-0005](adr/0005-tenant-anatomy.md): a tenant is now a **dedicated instance set** (own Qdrant, own ES, own ACL/registry state) — the shared-store filtering above still applies within an instance, but org isolation gets its own stores, provisioned by `new-tenant.sh` (§2).* | **Yes — the real boundary.** A caller only ever sees its own tenant + `public`. |
 | **Collection** (`collection` id) | A **physically separate** Qdrant collection + ES index (own embedding model/dim/chunk). Selected per-request via `collection`. | **Yes — owner/grant enforced** (ADR-0003, #243): reads pass through `resolve_access` at collection resolution (owner, share, or `public` grant); writes and delete are owner-or-admin; `GET /v1/collections` lists only what the caller can read. Pre-existing collections were backfilled `owner=legacy:admin` + public-read, so they behave as before until un-published. |
 
 **Recommendation:** give the org **its own tenant** (per [ADR-0005](adr/0005-tenant-anatomy.md)
@@ -36,12 +36,14 @@ Convention used below (pick your own): `ORG_ID=acme` → `TENANT=acme`,
 . /rag/bin/activate      # ragstack conda env (/rag/envs/ragstack) + HF_HOME=/rag/cache + endpoints
 ```
 
-Bring up infra + an embedding backend (skip whatever is already running):
+Bring up the shared pieces (skip whatever is already running). Per ADR-0005 the org
+gets its **own** Qdrant + ES from the provisioning script in §2 — the shared infra
+stack is only needed for the sidecars/dev stores, not for the new org's data:
 
 ```bash
 cd /rag/repos/ragstack
-make infra-up-apptainer          # Qdrant :6333, Elasticsearch :9200, Neo4j :7687, Postgres, Redis
 make sidecars-up-apptainer       # BGE cross-encoder/embedding sidecar :50053 (CPU)
+./apptainer/pull.sh              # ensure qdrant.sif / elasticsearch.sif exist (shared SIFs, reused per tenant)
 ```
 
 **Embedding choice for 40k docs:** prefer the **GPU vLLM fleet** (`:9001–:9008`,
@@ -62,53 +64,44 @@ Key facts (verified):
 
 ---
 
-## 2. Start a NEW API server for the org
+## 2. Provision the tenant — script, not hand-built steps
 
-Create an env file. If another API is already on `:8000`, pick a free port.
-
-> **JSON values must be single-quoted** (`API_KEYS='[...]'`). They are sourced by the
-> shell below, and unquoted `[`/`{`/`"` get mangled — invalid JSON fails pydantic at
-> startup. Generate real keys, e.g. `openssl rand -hex 32`.
+Per [ADR-0005](adr/0005-tenant-anatomy.md) decision 4, a tenant is created by
+**`apptainer/new-tenant.sh`** — it stamps out everything the hand-rolled version of
+this section used to build (env file, dedicated stores, ports), deterministically and
+idempotently. Hand-built tenants are how the shared-ES isolation gap happened.
 
 ```bash
-cat > /rag/config/acme.env <<'EOF'
-# --- identity / isolation ---
-# Two keys: a researcher key for the org, an admin key for ops (deep health, config).
-API_KEYS='["ACME_API_KEY","ACME_ADMIN_KEY"]'
-API_KEY_TENANTS='{"ACME_API_KEY":"acme","ACME_ADMIN_KEY":"acme"}'   # key -> tenant (the enforced boundary)
-API_KEY_ROLES='{"ACME_API_KEY":"researcher","ACME_ADMIN_KEY":"admin"}'  # researcher = read/query; admin = ops
-DEFAULT_ROLE=researcher
+cd /rag/repos/ragstack
 
-# --- stores ---
-VECTOR_BACKEND=qdrant
-QDRANT_URL=http://localhost:6333
-TEXT_BACKEND=elasticsearch
-ELASTICSEARCH_URL=http://localhost:9200
-GRAPH_BACKEND=disabled                           # enable neo4j only if you want the KG leg
-JOB_STORE_BACKEND=postgres
-POSTGRES_DSN=postgresql+asyncpg://ragstack:ragstack@localhost/ragstack
-REQUIRE_DURABLE_BACKENDS=true                    # fail fast if a store is down (prod)
+# preview the complete plan first (dirs, ports, files, commands) — touches nothing
+./apptainer/new-tenant.sh acme --dry-run
 
-# --- embedding (must MATCH what you ingest with; content-addressed) ---
-EMBEDDING_API=openai                             # vLLM speaks the OpenAI embeddings API
-EMBEDDING_ENDPOINTS='["http://localhost:9001","http://localhost:9002","http://localhost:9003","http://localhost:9004"]'
-EMBEDDING_MODEL=Salesforce/SFR-Embedding-Mistral
-EMBEDDING_MODEL_DIM=4096
+# provision (default: sqlite ACL/registry/job stores under the tenant dir)
+/rag/bin/rag new-tenant-apptainer NAME=acme
+# or, for a per-tenant DATABASE in the existing Postgres server (ADR-0004 amendment):
+./apptainer/new-tenant.sh acme --postgres postgresql://ragstack:PW@localhost:5432/postgres
 
-# --- the org collection registry (so /v1/query can select it) ---
-COLLECTIONS_FILE=/rag/config/acme.collections.json
-
-# --- Phase-1/2 model registry (optional; enables hot-swap + per-request llm/reranker) ---
-MODELS_REGISTRY_FILE=/rag/config/acme.models.json
-MODEL_URL_ALLOWLIST=http://localhost                # widen to real backends explicitly
-EOF
+# start the org's dedicated Qdrant + Elasticsearch (instances qdrant-acme, elasticsearch-acme)
+$RAG_DATA/tenants/acme/bin/up.sh          # stop later with .../bin/down.sh
 ```
 
+The script allocates a stable port block (recorded in `$RAG_DATA/tenants/manifest.tsv`;
+re-runs reuse it verbatim), creates every writable dir under `$RAG_DATA/tenants/acme/`,
+and stamps `$RAG_DATA/tenants/acme/config/tenant.env` with generated API keys, the
+role maps (`user`/`admin` — `researcher` is a deprecated alias), the per-tenant store
+URLs, the shared embedding fleet endpoints, `REQUIRE_DURABLE_BACKENDS=true` and an
+`INGEST_ROOT` confined to the tenant dir. The keys are in the env file — hand the
+user key to the org, keep the admin key for ops.
+
 Register the org collection so queries can address it (the `collection` field must
-match the physical name you ingest into, and the embedding model/dim must match):
+match the physical name you ingest into, and the embedding model/dim must match).
+Write the registry file into the tenant dir and reference it from `tenant.env`
+(uncomment the stamped `# COLLECTIONS_FILE=...` line — operator edits are kept on
+re-runs, without `--force`):
 
 ```bash
-cat > /rag/config/acme.collections.json <<'EOF'
+cat > $RAG_DATA/tenants/acme/config/collections.json <<'EOF'
 [
   {
     "id": "acme",
@@ -130,26 +123,30 @@ EOF
 > `chunk_overlap` field — it would be silently dropped). The *actual* chunking is set by
 > the ingest job (§4.2 / §5), which is what must match; keep the two in sync by hand.
 
-Launch (own port so it can coexist with an existing server). **Source** the env file
-(`set -a` exports every assignment) — do not pipe it through `xargs`, which strips the
-JSON quotes:
+Launch the API on the allocated port (`PORT` is already in the env file — the plan and
+`tenant.env` show it; first tenant gets `:24000`). **Source** the env file (`set -a`
+exports every assignment) — do not pipe it through `xargs`, which strips the JSON quotes:
 
 ```bash
 cd /rag/repos/ragstack/python
-set -a; . /rag/config/acme.env; set +a
-/rag/envs/ragstack/bin/uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8010
+set -a; . $RAG_DATA/tenants/acme/config/tenant.env; set +a
+/rag/envs/ragstack/bin/uvicorn ragstack.api.main:app --host 0.0.0.0 --port $PORT
 ```
 
 Verify (note `/v1/config` and `/v1/health/deep` are **admin-only** — all-or-nothing, so
-use the admin key; the researcher key gets 403 on both):
+use the admin key; the user key gets 403 on both):
 ```bash
-curl -s localhost:8010/health                                          # {"status":"ok"}  (no key)
-curl -s -H "X-API-Key: ACME_ADMIN_KEY" localhost:8010/v1/config         # effective config (admin)
-curl -s -H "X-API-Key: ACME_ADMIN_KEY" localhost:8010/v1/health/deep    # per-store probes (admin)
+curl -s localhost:$PORT/health                                          # {"status":"ok"}  (no key)
+curl -s -H "X-API-Key: ACME_ADMIN_KEY" localhost:$PORT/v1/config         # effective config (admin)
+curl -s -H "X-API-Key: ACME_ADMIN_KEY" localhost:$PORT/v1/health/deep    # per-store probes (admin)
 ```
 
-> Qdrant collection + ES index are **auto-created on first write** (dim-validated). No
-> pre-creation step needed; a dim mismatch is fatal, not silent.
+> Qdrant collection + ES index are **auto-created on first write** (dim-validated) in
+> the **tenant's own instances** — `QDRANT_URL`/`ELASTICSEARCH_URL` in `tenant.env`
+> already point at them. No pre-creation step needed; a dim mismatch is fatal, not silent.
+
+> The ops architecture reference artifact still shows the pre-ADR shared ES; it is
+> updated when the existing tenants migrate (#246), not now.
 
 ---
 
@@ -246,6 +243,13 @@ embedding_url:
 EOF
 ```
 
+> **Per-tenant stores (ADR-0005):** `ingest-bulk.cwl` does not yet expose the store
+> URLs as workflow inputs — its `ingest_shard` step falls back to the defaults
+> (`:6333`/`:9200`), i.e. the *shared* stack, not the tenant's own instances.
+> `ingest_shard.py` itself accepts `--qdrant-url`/`--es-url`, so until the CWL grows
+> those inputs, add them to the step's `arguments` (with the ports from the tenant's
+> plan) or use the direct CLI path in §5, which takes them on the command line.
+
 ### 4.3 Submit to the live GoWe engine
 
 GoWe auth is a **BV-BRC token** (anonymous is disabled). Mint one with the BV-BRC CLI —
@@ -308,7 +312,9 @@ Notes (verified):
 ## 5. (Alternative) direct CLI ingest — simplest single-node baseline
 
 If you don't need cluster scatter, `ingest_jsonl.py` does the whole run in-process with
-built-in checkpoint/resume — good for a first load or a rerun. Same tenant/collection knobs:
+built-in checkpoint/resume — good for a first load or a rerun. Same tenant/collection
+knobs; `--qdrant-url`/`--es-url` must point at the **tenant's own instances** (the ports
+below are the first tenant's block from §2 — read yours from the plan / `tenant.env`):
 
 ```bash
 cd /rag/repos/ragstack/python
@@ -319,7 +325,8 @@ cd /rag/repos/ragstack/python
   --embedding-url http://localhost:9001 http://localhost:9002 http://localhost:9003 http://localhost:9004 \
   --embedding-model Salesforce/SFR-Embedding-Mistral \
   --chunk-method fixed_token --chunk-size 256 --chunk-overlap 32 \
-  --text-backend elasticsearch --es-url http://localhost:9200 --es-index acme_sfr_tok256 \
+  --qdrant-url http://localhost:24001 \
+  --text-backend elasticsearch --es-url http://localhost:24003 --es-index acme_sfr_tok256 \
   --batch-size 128 --concurrency 4 --embedding-max-concurrency 8 \
   --batch-retries 3 \
   --resume --checkpoint /rag/cache/acme_40k.ckpt
@@ -331,12 +338,14 @@ Re-run with the same `--checkpoint` to resume after an interruption (out-of-orde
 
 ## 6. Verify + query as the org
 
+Use the API port from §2's plan (`$PORT` in `tenant.env`; first tenant gets `:24000`):
+
 ```bash
 # collection shows up with tenant-scoped counts
-curl -s -H "X-API-Key: ACME_API_KEY" localhost:8010/v1/collections
+curl -s -H "X-API-Key: ACME_API_KEY" localhost:$PORT/v1/collections
 
 # query — automatically scoped to tenant "acme" + public (server-side, from the key)
-curl -s -X POST localhost:8010/v1/query \
+curl -s -X POST localhost:$PORT/v1/query \
   -H "X-API-Key: ACME_API_KEY" -H "Content-Type: application/json" \
   -d '{"query":"…","collection":"acme","top_k":5}'
 ```

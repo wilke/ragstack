@@ -25,13 +25,16 @@ from qdrant_client.models import (
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import VectorDimMismatch
-from ragstack.tenancy import DEFAULT_TENANT, tenant_of
+from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
 
 log = logging.getLogger(__name__)
 
 # Payload field carrying the tenant on every point. Indexed so tenant-filtered
 # counts and searches use the index instead of scanning the whole collection.
-_TENANT_FIELD = "tenant_id"
+# The payload key records the chunk's writer/owner — see tenancy.OWNER_FIELD
+# and ADR-0003 decision 1; access is decided at the collection (resolve_access),
+# this filter is defence in depth.
+_TENANT_FIELD = OWNER_FIELD
 # Upper bound (seconds) on a tenant-filtered count, so an unindexed large
 # collection degrades to "unavailable" fast instead of hanging the read.
 _COUNT_TIMEOUT_S = 5
