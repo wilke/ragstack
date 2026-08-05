@@ -50,11 +50,13 @@ def _h(who: str) -> dict:
     return {"X-API-Key": KEYS[who]}
 
 
-def _entry(cid: str, default: bool = False, owner: str = "") -> CollectionEntry:
+def _entry(
+    cid: str, default: bool = False, owner: str = "", collection: str | None = None
+) -> CollectionEntry:
     from tests.api.conftest import _StateRetriever
 
     return CollectionEntry(
-        id=cid, label=cid, collection=cid, model="test-model", dim=4,
+        id=cid, label=cid, collection=collection or cid, model="test-model", dim=4,
         chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
         is_default=default, retriever=_StateRetriever(),
         vector_store=app.state.vector_store, text_index=app.state.text_index,
@@ -137,6 +139,66 @@ async def test_shared_read_widens_retrieval_scope_to_owner_tenant(client, monkey
     assert "owner" in tids  # the owner's writer-tenant, added by the share
     assert "stranger" in tids  # the caller's own
     assert "public" in tids
+
+
+async def test_share_widening_does_not_leak_a_co_resident_collection(client, monkeypatch):
+    # Independent review finding: the store filters by tenant_id ONLY (no
+    # collection_id predicate). If two collections share one physical store and the
+    # owner shares just ONE, widening the grantee's scope to the owner's tenant
+    # would also surface the owner's chunks in the UNSHARED co-resident collection.
+    # Widening must therefore be suppressed on a shared store.
+    shared = _entry("shared-x", collection="phys")
+    other = _entry("shared-y", collection="phys")  # same physical store, NOT shared
+    _register(shared, other)
+    await _own("shared-x", "owner")
+    await _own("shared-y", "owner")
+    await get_acl_store().grant(
+        "shared-x", GRANTEE_USER, "stranger", PERM_READ, granted_by="owner"
+    )
+
+    captured: dict = {}
+
+    class _Capture:
+        async def retrieve(self, *args, **kwargs):
+            captured["filters"] = kwargs.get("filters")
+            return []
+
+    monkeypatch.setattr(app.state, "retriever", _Capture())
+    r = await client.post(
+        "/v1/retrieve", json={"query": "x", "collection": "shared-x"}, headers=_h("stranger")
+    )
+    assert r.status_code == 200, r.text
+    # No owner-tenant widening on a co-resident store — the grantee sees only its
+    # own + public, so the owner's private chunks (in either collection) stay hidden.
+    assert "owner" not in captured["filters"]["tenant_id"]
+
+
+async def test_share_widening_is_suppressed_on_the_default_collection(client, monkeypatch):
+    # The default collection is the multi-tenant shared surface (tenant_id IS the
+    # isolation) and is owned by the backfill owner. Widening there would inject the
+    # backfill owner's tenant into EVERY caller's scope. It must not. is_default
+    # short-circuits _shared_scope before owner_of, so only readability is needed.
+    store = get_acl_store()
+    if await store.owner_of("default") is None:
+        await _own("default", "legacy:admin")
+    try:
+        await store.grant(
+            "default", GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="system:backfill"
+        )
+    except Exception:  # noqa: BLE001 — already public in this fixture is fine
+        pass
+
+    captured: dict = {}
+
+    class _Capture:
+        async def retrieve(self, *args, **kwargs):
+            captured["filters"] = kwargs.get("filters")
+            return []
+
+    monkeypatch.setattr(app.state, "retriever", _Capture())
+    r = await client.post("/v1/retrieve", json={"query": "x"}, headers=_h("stranger"))
+    assert r.status_code == 200, r.text
+    assert "legacy:admin" not in captured["filters"]["tenant_id"]
 
 
 async def test_owner_query_scope_is_not_widened(client, monkeypatch):
