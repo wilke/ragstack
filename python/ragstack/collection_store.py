@@ -77,6 +77,16 @@ class CollectionSpec(BaseModel):
 
     id: str
     label: str = ""
+    # Subject that created (and therefore owns) the collection, recorded in the
+    # SAME durable write as the spec itself so ownership survives anything the
+    # ACL database does not (a memory ACL backend restarting, a crash between
+    # the registry write and the owner-row grant). '' = the spec predates
+    # ownership (a legacy/hand-authored entry) — exactly the positive marker the
+    # startup backfill needs: only an ownerless collection whose spec ALSO
+    # records no creator is legacy (world-readable per ADR-0004 decision 4); an
+    # ownerless one WITH a recorded creator gets its owner row repaired to that
+    # creator and stays private.
+    owner: str = ""
     collection: str  # Qdrant collection name (BM25 index defaults to the same)
     text_index: str = ""  # ES index; "" → same as `collection`
     embedding_api: str = "openai"  # sidecar | openai
@@ -436,7 +446,8 @@ _COLLECTIONS_DDL = (
     "  chunk_params TEXT NOT NULL DEFAULT '{}',"
     "  spec_hash TEXT NOT NULL DEFAULT '',"
     "  created_at TEXT NOT NULL DEFAULT '',"
-    "  updated_at TEXT NOT NULL DEFAULT ''"
+    "  updated_at TEXT NOT NULL DEFAULT '',"
+    "  owner TEXT NOT NULL DEFAULT ''"
     ")"
 )
 
@@ -460,13 +471,14 @@ _COLLECTIONS_COLUMNS: dict[str, str] = {
     "spec_hash": "TEXT NOT NULL DEFAULT ''",
     "created_at": "TEXT NOT NULL DEFAULT ''",
     "updated_at": "TEXT NOT NULL DEFAULT ''",
+    "owner": "TEXT NOT NULL DEFAULT ''",
 }
 
 _COLUMNS = (
     "id", "label", "collection", "text_index", "embedding_api", "embedding_model",
     "embedding_model_dim", "embedding_endpoints", "embedding_sidecar_url",
     "chunk_method", "chunk_size", "chunk_overlap", "chunk_params",
-    "spec_hash", "created_at", "updated_at",
+    "spec_hash", "created_at", "updated_at", "owner",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM collections"
 # Stable registration order: created_at ascends with insertion, id breaks ties
@@ -499,18 +511,19 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
         s.id, s.label, s.collection, s.text_index, s.embedding_api, s.embedding_model,
         s.embedding_model_dim, json.dumps(s.embedding_endpoints), s.embedding_sidecar_url,
         s.chunk_method, s.chunk_size, s.chunk_overlap, json.dumps(s.chunk_params),
-        rec.spec_hash, rec.created_at, rec.updated_at,
+        rec.spec_hash, rec.created_at, rec.updated_at, s.owner,
     )
 
 
 def _row_to_record(row: Any) -> CollectionRecord:
     (
         rid, label, collection, text_index, api, model, dim, endpoints, sidecar,
-        method, size, overlap, params, shash, created, updated,
+        method, size, overlap, params, shash, created, updated, owner,
     ) = tuple(row)
     return CollectionRecord(
         spec=CollectionSpec(
-            id=rid, label=label, collection=collection, text_index=text_index,
+            id=rid, label=label, owner=owner or "", collection=collection,
+            text_index=text_index,
             embedding_api=api, embedding_model=model, embedding_model_dim=dim,
             embedding_endpoints=json.loads(endpoints or "[]"),
             embedding_sidecar_url=sidecar, chunk_method=method,

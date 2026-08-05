@@ -579,6 +579,21 @@ resolve server-side to a principal (tenant + role); the tenant is never read fro
 request body. <code>/health</code> is open; all <code>/v1/*</code> require a credential when auth is configured.
 The authoritative definition is <code>contracts/openapi.yaml</code>; per-field reference is
 <a href="https://github.com/wilke/ragstack/blob/main/docs/API.md">docs/API.md</a>.</p>
+<p>The <strong>Auth</strong> column reads: <code>principal</code> = any authenticated caller; <code>read-owner</code> =
+the caller must additionally be able to <em>read</em> the resolved collection (owner, an
+active read grant, or <code>public</code>) — a listing endpoint filters to what it may read;
+<code>owner-or-admin</code> = it must <em>own</em> the collection (or be admin) — ingest into a
+named non-default collection, and collection delete. Document-level ops on the
+<strong>default</strong> collection (ingest without a <code>collection</code>, <code>DELETE /v1/documents</code>)
+are <code>read-owner</code>: it is the shared pre-ownership surface where the per-chunk
+tenant stamp isolates writers. Every collection decision runs through the one
+seam (<code>ragstack.authz.resolve_access</code>, reached via <code>ragstack.api.access</code>);
+<code>admin</code> bypasses it as a named branch logged on every bypass (ADR-0003 §5). A
+read denial is a 404 (existence not leaked); a write/owner denial is a 403 only
+when the caller can read the collection, and the same 404 otherwise (no
+existence oracle via the write endpoints); an ACL-store outage is a 503 (fail
+closed). Underneath, the per-chunk <code>tenant_id</code> filter and the
+<code>TENANT_COLLECTIONS</code> allowlist stay in force — defence in depth (ADR-0003 §3).</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -603,7 +618,7 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>POST</td>
 <td><code>/v1/query</code></td>
 <td>Full RAG: rewrite → retrieve → rerank → generate</td>
-<td>principal</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -611,7 +626,7 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>POST</td>
 <td><code>/v1/retrieve</code></td>
 <td>Hybrid retrieval, no generation</td>
-<td>principal</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -619,22 +634,22 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>GET</td>
 <td><code>/v1/chunks</code></td>
 <td>Fetch chunks by id (context expansion)</td>
-<td>principal</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/v1/collections</code></td>
-<td>List collections + counts + provenance</td>
-<td>principal</td>
+<td>List collections + counts + provenance (owner-filtered)</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/v1/collections</code></td>
-<td>Create a collection (server-default build spec; supplying <code>embedding</code>/<code>chunk</code> is admin-only)</td>
+<td>Create a collection (private to creator; supplying <code>embedding</code>/<code>chunk</code> is admin-only)</td>
 <td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
@@ -643,7 +658,7 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>DELETE</td>
 <td><code>/v1/collections/{id}</code></td>
 <td>Unregister; <code>?purge=true</code> destroys data</td>
-<td>admin</td>
+<td>owner-or-admin</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -651,7 +666,7 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>POST</td>
 <td><code>/v1/ingest</code></td>
 <td>Async ingest of a server-side path → <code>job_id</code></td>
-<td>principal</td>
+<td>read-owner (default) · owner-or-admin (named)</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -659,7 +674,7 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>POST</td>
 <td><code>/v1/ingest/upload</code></td>
 <td>Multipart upload → stage → ingest</td>
-<td>principal</td>
+<td>read-owner (default) · owner-or-admin (named)</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -683,15 +698,15 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <td>GET</td>
 <td><code>/v1/documents</code></td>
 <td>List indexed documents</td>
-<td>principal</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
 <tr>
 <td>DELETE</td>
 <td><code>/v1/documents/{doc_id}</code></td>
-<td>Delete a doc from vector + text legs</td>
-<td>principal</td>
+<td>Delete a doc from vector + text legs (own tenant only)</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -730,8 +745,8 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <tr>
 <td>GET</td>
 <td><code>/v1/stats/tenants</code></td>
-<td>Tenant × collection breakdown</td>
-<td>principal</td>
+<td>Tenant × collection breakdown (owner-filtered)</td>
+<td>principal · read-owner</td>
 <td>✅</td>
 <td>❌</td>
 </tr>

@@ -460,6 +460,16 @@ class Settings(BaseSettings):
     user_store_backend: str = "memory"  # memory | sqlite | postgres
     user_store_path: str = "ragstack_users.db"
     user_store_dsn: str = ""
+    # Subject that OWNS every LEGACY collection at startup (issue #243 backfill,
+    # ADR-0004 decision 4). On each boot, a registry collection whose durable
+    # spec records NO creator (it predates ownership / was hand-authored) and
+    # whose owner row was never written is granted `owner` to this subject AND
+    # `read` to the built-in `public` group — preserving the world-readable
+    # behaviour those corpora always had (un-publishing later is a single
+    # revoke, never resurrected). A collection whose spec DOES record a creator
+    # is never published: a missing owner row is repaired to that creator and it
+    # stays private. Reassignable: transfer ownership once real owners are known.
+    acl_backfill_owner: str = "legacy:admin"
 
     # Per-tenant collection allowlist: tenant -> [collection ids] it may read/query
     # (and ingest into). A tenant ABSENT from the map is UNRESTRICTED — so an

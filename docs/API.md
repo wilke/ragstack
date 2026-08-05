@@ -23,6 +23,47 @@ the request body, so a client cannot widen its own scope.
   caller's own tenant **plus** the shared world-readable **`public`** tenant.
 - **Writes/deletes** (`/v1/ingest`, `DELETE /v1/documents/...`) affect only the
   caller's own tenant.
+
+**Collection ownership** (ADR-0003 §2, ADR-0004). On top of the per-chunk tenant
+filter above, every collection carries an owner and is gated at resolution by the
+one authorization seam (`resolve_access`):
+
+- A **new** collection (`POST /v1/collections`) is **private to its creator** —
+  the creator is its owner; nobody else can read it until it is shared. Sharing a
+  `read` grant (or a `public` grant) re-opens it.
+- **Pre-existing (legacy)** collections — those whose durable spec records **no
+  creator** — are **backfilled** at startup as owned by `ACL_BACKFILL_OWNER`
+  (default `legacy:admin`) **plus `read` to `public`**, so they stay
+  world-readable exactly as before ownership existed. A collection whose spec
+  *does* record a creator is never published: if its owner row is missing (a
+  crash, or a restart of a non-durable ACL backend) the backfill **repairs** it
+  to the recorded creator and it stays private. The backfill is idempotent (runs
+  every boot, each ACL row keyed on its own history — a revoked row is never
+  resurrected, so un-publishing sticks) and ownership is reassignable.
+- **Reads** need owner, an active read grant, or the `public` grant; a denied read
+  is a **404** (indistinguishable from an unknown id, so a private collection's
+  existence isn't leaked).
+- **Ingest into a named (non-default) collection** is **owner-or-admin** (write
+  shares are deferred): a caller who can *read* the collection but not write it
+  gets a **403**; one who cannot read it gets the same **404** as an unknown id —
+  a 403 there would make the write endpoints an existence oracle for private
+  collections.
+- **Ingest into the default collection and `DELETE /v1/documents/{id}`** need
+  **read** access to the (shared, backfilled-public) default collection: it is
+  the pre-ownership multi-tenant surface, where the per-chunk tenant stamp — not
+  collection ownership — isolates writers (each write/delete only ever touches
+  the caller's own tenant's chunks).
+- **`DELETE /v1/collections/{id}`** also **revokes every ACL row** of the
+  collection (softly — audit history survives), so a later collection reusing
+  the same id never inherits the deleted one's owner row or `public` grant.
+- **`DELETE /v1/collections/{id}`** is **owner-or-admin** — no longer admin-only:
+  a user manages its own private collections. `admin` bypasses every check (a
+  named, logged branch), for purge/migration/support.
+- When authentication is unconfigured (keyless dev), collection-ownership
+  enforcement is a no-op — the open dev path, exactly as tenant auth is; production
+  (`REQUIRE_DURABLE_BACKENDS`) forbids keyless and requires a durable ACL store
+  (`USER_STORE_BACKEND` ≠ `memory`).
+- An authorization-store outage is a **503** (fail closed) — never a silent allow.
 - A key absent from the map resolves to the `default` tenant. If no API keys are
   configured at all (dev mode), requests are unauthenticated and use `default`.
 - A request with an unknown key returns **401**.
@@ -109,6 +150,15 @@ time, so later default changes never re-identify an existing collection). Supply
 `embedding` or `chunk` is an **admin-only** override → `403` otherwise. `409` when the
 spec collides with an existing collection; `403` when the `max_collections` cap is
 reached. Full schema: `contracts/schemas/collection_create_request.json`.
+
+The new collection is **owned by its creator and private by default** — no other
+caller can read it until it is shared (see *Collection ownership* above). The
+creator is recorded on the durable spec itself and the owner row is written right
+after the registry write; if the owner row cannot be recorded the create is
+**rolled back** (409 for residual ACL state under the id, 503 for a store outage)
+rather than returning a 201 whose ownership silently never landed. A crash inside
+that window self-heals: the startup backfill repairs the owner row from the
+spec-recorded creator (privately — it never publishes a spec-owned collection).
 
 ```bash
 curl -s http://localhost:8000/v1/collections \

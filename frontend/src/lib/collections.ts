@@ -53,8 +53,9 @@ export function collectionDeleteMessage(status: number | null, body: string): st
     return detail || "The default collection can't be deleted.";
   }
   if (status === 404) return "That collection is already gone from the registry.";
-  if (status === 401 || status === 403)
-    return "Deleting a collection needs an admin API key.";
+  if (status === 401) return "Deleting a collection needs a valid API key or login.";
+  if (status === 403)
+    return "Only the collection's owner (or an admin) can delete it.";
   return `Could not delete the collection (error ${status}).`;
 }
 
@@ -75,8 +76,10 @@ export function collectionPurgeMessage(status: number | null, body: string): str
   }
   if (status === 404)
     return "That collection is already gone from the registry. Its physical store, if any, was not touched.";
-  if (status === 401 || status === 403)
-    return "Permanently deleting a collection needs an admin API key.";
+  if (status === 401)
+    return "Permanently deleting a collection needs a valid API key or login.";
+  if (status === 403)
+    return "Only the collection's owner (or an admin) can permanently delete it.";
   return `Could not permanently delete the collection (error ${status}).`;
 }
 

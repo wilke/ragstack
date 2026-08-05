@@ -77,6 +77,11 @@ class CollectionEntry:
     # boundaries with a different model than the one storing the vectors).
     embedding_api: str = ""
     embedding_endpoints: list[str] = field(default_factory=list)
+    # The creator recorded on the durable spec (``CollectionSpec.owner``); ''
+    # for legacy/hand-authored specs and the settings-derived default entry.
+    # The startup ACL backfill reads this to tell "predates ownership → publish
+    # world-readable" apart from "owner row lost → repair, stay private".
+    owner: str = ""
     # The ES index name behind ``text_index`` (the field above holds the store
     # *object*, which doesn't advertise its name). Needed by the purge guard: two
     # registry entries may deliberately share one physical store (``CollectionSpec.

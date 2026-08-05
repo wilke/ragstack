@@ -13,19 +13,20 @@ These are **orthogonal** in RAGStack — use both, for different jobs:
 | Mechanism | What it is | Isolation? |
 |---|---|---|
 | **Tenant** (`tenant_id`, from the API key) | Shared Qdrant collection + ES index, filtered by `tenant_id` on **every** read/write/delete, enforced **server-side** from the key (`security.py` → `scope_filters`). Point ids are `uuid5("{tenant}:{chunk_id}")` so tenants never overwrite each other. | **Yes — the real boundary.** A caller only ever sees its own tenant + `public`. |
-| **Collection** (`collection` id) | A **physically separate** Qdrant collection + ES index (own embedding model/dim/chunk). Selected per-request via `collection`. | **No access control.** `_resolve_entry` does *not* check tenant→collection; `GET /v1/collections` lists every id to any authenticated caller. Physical/routing separation only. |
+| **Collection** (`collection` id) | A **physically separate** Qdrant collection + ES index (own embedding model/dim/chunk). Selected per-request via `collection`. | **Yes — owner/grant enforced** (ADR-0003, #243): reads pass through `resolve_access` at collection resolution (owner, share, or `public` grant); writes and delete are owner-or-admin; `GET /v1/collections` lists only what the caller can read. Pre-existing collections were backfilled `owner=legacy:admin` + public-read, so they behave as before until un-published. |
 
-**Recommendation:** give the org **its own tenant** (the enforced boundary) **and** its own
-collection (clean physical separation + independent lifecycle: own embedding model, own
-re-index/delete, own stats). Do **not** rely on the collection prefix alone as security —
-it is not enforced.
+**Recommendation:** give the org **its own tenant** (per [ADR-0005](adr/0005-tenant-anatomy.md)
+a full instance set for hard isolation) **and** its own collection (clean physical separation +
+independent lifecycle: own embedding model, own re-index/delete, own stats). Collection
+ownership is now enforced, but the tenant remains the hard boundary.
 
 Convention used below (pick your own): `ORG_ID=acme` → `TENANT=acme`,
 `COLLECTION=acme_sfr_tok256`, one API key mapped to that tenant.
 
-> Per-tenant *collection restriction* is not in the codebase — if you need "tenant X may
-> only query collection Y" enforced, that's a small follow-up PR (`api_key_allowed_collections`
-> + a check in `_resolve_entry`), not available today.
+> Per-tenant *collection confinement* exists as `TENANT_COLLECTIONS` (#187) — an operator
+> env map confining a tenant to a set of collection ids — and since #243 it **intersects**
+> with ownership/grants rather than replacing them: a caller needs to survive the allowlist
+> *and* hold read access.
 
 ---
 

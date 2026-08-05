@@ -36,8 +36,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryResponse"
+        "404":
+          description: >-
+            Unknown collection, or one the caller may not read — a read denial is
+            reported as 404, not 403, so a private collection's existence is not
+            leaked (ADR-0003 §2).
         "422":
           description: Validation error
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/retrieve:
     post:
@@ -57,8 +64,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RetrieveResponse"
+        "404":
+          description: >-
+            Unknown collection, or one the caller may not read (a read denial is a
+            404, not a 403 — collection existence is not leaked, ADR-0003 §2).
         "422":
           description: Validation error
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/ingest:
     post:
@@ -99,12 +112,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
+        "403":
+          description: >-
+            The caller can read the named non-default collection but does not own
+            it — ingest there is owner-or-admin (ADR-0003; write shares
+            deferred). Ingest into the default collection needs read access only
+            (writes there are isolated per-tenant by chunk stamping).
+        "404":
+          description: >-
+            Unknown collection, one out of the caller's allowlist, or one the
+            caller may not read — an unreadable collection is reported exactly
+            like an unknown one so its existence is not leaked (ADR-0003 §2).
         "422":
           description: Validation error
         "503":
           description: >
             Ingest is disabled — the server has no INGEST_ROOT configured, so
-            `source` cannot be confined.
+            `source` cannot be confined — OR the authorization store is
+            unavailable (fail closed).
 
   /v1/ingest/upload:
     post:
@@ -152,6 +177,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/IngestResponse"
+        "403":
+          description: >-
+            The caller can read the named non-default collection but does not own
+            it — ingest there is owner-or-admin (ADR-0003; write shares
+            deferred). Ingest into the default collection needs read access only
+            (writes there are isolated per-tenant by chunk stamping).
+        "404":
+          description: >-
+            Unknown collection, one out of the caller's allowlist, or one the
+            caller may not read (unreadable == unknown, so existence is not
+            leaked — ADR-0003 §2).
         "413":
           description: A file exceeds max_document_bytes, or too many files.
         "415":
@@ -161,7 +197,8 @@ paths:
         "503":
           description: >
             Ingest is disabled — the server has no INGEST_ROOT configured, so
-            uploads cannot be confined.
+            uploads cannot be confined — OR the authorization store is
+            unavailable (fail closed).
 
   /v1/ingest/{job_id}:
     get:
@@ -230,11 +267,22 @@ paths:
                   $ref: "#/components/schemas/DocumentInfo"
         "400":
           description: Malformed pagination cursor
+        "404":
+          description: >-
+            The caller may not read the (default) collection the listing targets
+            — reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/documents/{doc_id}:
     delete:
       operationId: deleteDocument
       summary: Delete a document and all its chunks
+      description: >-
+        Scoped to the caller's own tenant — one tenant can never delete
+        another's document, even by id. Targets the default collection's stores;
+        like ingest into it, the gate is READ access to that shared collection
+        (the per-tenant chunk stamp is the write isolation there, ADR-0003 §3).
       tags: [Documents]
       parameters:
         - name: doc_id
@@ -245,6 +293,12 @@ paths:
       responses:
         "204":
           description: Document deleted
+        "404":
+          description: >-
+            The caller may not read the (default) collection the delete targets —
+            reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/graph/entities:
     get:
@@ -474,6 +528,11 @@ paths:
                 $ref: "#/components/schemas/TenantsResponse"
         "401":
           description: Missing or invalid API key
+        "503":
+          description: >-
+            Authorization store unavailable — the per-collection breakdown is
+            owner-filtered, so it refuses rather than risk hiding a readable
+            collection (fail closed).
 
   /v1/collections:
     get:
@@ -497,6 +556,11 @@ paths:
                 $ref: "#/components/schemas/CollectionsResponse"
         "401":
           description: Missing or invalid API key
+        "503":
+          description: >-
+            Authorization store unavailable — the listing is owner-filtered
+            (each entry the caller may read), so it refuses rather than risk
+            hiding a readable collection (fail closed).
     post:
       operationId: createCollection
       summary: Create a content-addressed collection (build-time model selection)
@@ -546,14 +610,24 @@ paths:
         "404":
           description: Referenced embedding model is not registered
         "409":
-          description: A collection with the resolved id already exists
+          description: >-
+            A collection with the resolved id already exists, or the id carries
+            residual access-control state owned by another subject (the create
+            is rolled back rather than inheriting it)
+        "503":
+          description: >-
+            Authorization store unavailable — ownership could not be recorded,
+            so the create is rolled back (fail closed).
 
   /v1/collections/{collection_id}:
     delete:
       operationId: deleteCollection
       summary: Unregister a collection, optionally purging its data
       description: >-
-        Removes a collection registry entry. Admin only.
+        Removes a collection registry entry. Owner-or-admin: a user manages its
+        own private collections (ADR-0003 §2), so this is no longer admin-only —
+        the caller must own the collection, or be an admin (whose bypass is
+        logged).
 
 
         By default (`purge=false`) this drops the *binding* only: the underlying
@@ -576,6 +650,12 @@ paths:
         collection whose physical store is still referenced by another registry
         entry (content-addressed collections built from an identical spec share
         one store) — the 409 message names the other collections.
+
+
+        Deleting also revokes every ACL row of the collection (owner row and all
+        shares — softly, so audit history survives): a later collection reusing
+        the same id starts with a clean slate instead of inheriting the deleted
+        one's owner or `public` grant.
       tags: [Documents]
       security:
         - ApiKeyAuth: []
@@ -606,13 +686,18 @@ paths:
         "401":
           description: Missing or invalid API key
         "403":
-          description: Caller is not an admin
+          description: >-
+            Caller can read the collection but is neither its owner nor an admin
         "404":
-          description: Unknown collection id
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked — ADR-0003 §2)
         "409":
           description: >-
             The default collection, or (with `purge=true`) a collection whose
             physical store is shared with other registry entries
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/models/available:
     get:
@@ -671,7 +756,9 @@ paths:
         "401":
           description: Missing or invalid API key
         "404":
-          description: Unknown collection
+          description: Unknown collection, or one the caller may not read (read denial → 404).
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
 
   /v1/graph/stats:
     get:

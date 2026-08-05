@@ -69,8 +69,9 @@ describe("collectionDeleteMessage", () => {
     expect(collectionDeleteMessage(404, "")).toContain("already gone");
   });
 
-  it("says admin for 403", () => {
-    expect(collectionDeleteMessage(403, "")).toContain("admin");
+  it("names ownership, not admin keys, for 403 (owner-or-admin delete per #243)", () => {
+    expect(collectionDeleteMessage(403, "")).toContain("owner");
+    expect(collectionDeleteMessage(401, "")).toContain("API key or login");
   });
 });
 
@@ -94,9 +95,9 @@ describe("collectionPurgeMessage", () => {
     expect(collectionPurgeMessage(404, "")).toMatch(/not touched/i);
   });
 
-  it("says admin for 401/403", () => {
-    expect(collectionPurgeMessage(403, "")).toContain("admin");
-    expect(collectionPurgeMessage(401, "")).toContain("admin");
+  it("names ownership, not admin keys, for 403 (owner-or-admin purge per #243)", () => {
+    expect(collectionPurgeMessage(403, "")).toContain("owner");
+    expect(collectionPurgeMessage(401, "")).toContain("API key or login");
   });
 
   it("distinguishes an unreachable API from an HTTP status", () => {

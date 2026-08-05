@@ -8,6 +8,7 @@ exercised without standing up any services.
 from __future__ import annotations
 
 import tempfile
+import uuid
 
 import httpx
 import pytest
@@ -57,6 +58,49 @@ def _isolate_qdrant(monkeypatch):
     from ragstack.config import settings
 
     monkeypatch.setattr(settings, "qdrant_url", "http://localhost:6399")
+
+
+@pytest.fixture(autouse=True)
+def _acl_store():
+    """A fresh in-memory ACL store per test, seeded exactly like the startup
+    backfill would for the conftest's pre-existing ``default`` collection: owned
+    by ``legacy:admin`` and ``read``-granted to the ``public`` group (so it stays
+    world-readable, the pre-ownership behaviour). ASGITransport skips the lifespan,
+    so nothing else installs or backfills the store.
+
+    Seeded synchronously (writing the rows directly) so this stays a plain sync
+    fixture usable by both async and sync tests without touching an event loop."""
+    from ragstack.acl_store import (
+        GRANTEE_GROUP,
+        GRANTEE_USER,
+        PERM_OWNER,
+        PERM_READ,
+        PUBLIC_GROUP,
+        InMemoryAclStore,
+        ShareRecord,
+        reset_acl_store,
+        set_acl_store,
+    )
+
+    store = InMemoryAclStore()
+
+    def _seed(grantee_type: str, grantee_id: str, permission: str) -> None:
+        rec = ShareRecord(
+            id=uuid.uuid4().hex,
+            collection_id="default",
+            grantee_type=grantee_type,
+            grantee_id=grantee_id,
+            permission=permission,
+            granted_by="system:backfill",
+            granted_at="2020-01-01T00:00:00+00:00",
+        )
+        store._shares[rec.id] = rec
+
+    _seed(GRANTEE_USER, "legacy:admin", PERM_OWNER)
+    _seed(GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ)
+    set_acl_store(store)
+    yield store
+    reset_acl_store()
 
 
 @pytest.fixture(autouse=True)

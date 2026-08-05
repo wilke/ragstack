@@ -17,6 +17,13 @@ def _tenants(monkeypatch):
         "api_key_tenants",
         {"ka": "alice", "kb": "bob", "kp": "public"},
     )
+    # This suite exercises per-chunk `tenant_id` isolation (defence in depth,
+    # ADR-0003 decision 3) on the shared `default` collection, which the
+    # conftest's ACL fixture seeds exactly as the startup backfill would
+    # (public read). Document-level writes there are tenant-stamped and open to
+    # any principal that can READ the collection — so plain (non-admin) callers
+    # exercise the real gate; ownership of NON-default collections is covered in
+    # test_collection_ownership.
 
 
 def _h(tenant: str) -> dict:

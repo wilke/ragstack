@@ -20,6 +20,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
+from ragstack.api.access import enforce_access
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
     BuildSpecMismatch,
@@ -31,7 +32,7 @@ from ragstack.api.deps import (
     get_text_index,
     get_vector_store,
 )
-from ragstack.api.security import resolve_tenant
+from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
 from ragstack.ingestion.manifest import build_manifest
@@ -116,9 +117,9 @@ async def _run_ingest(
             write_ingest_manifest(source=source, chunk_count=chunks or None)
 
 
-def _resolve_ingest_target(
+async def _resolve_ingest_target(
     collection_id: str | None,
-    tenant: str,
+    principal: Principal,
     collections: CollectionRegistry,
     app_state: Any,
     prebuilt: ShardedIngestor,
@@ -126,11 +127,28 @@ def _resolve_ingest_target(
     """Resolve an optional target collection to ``(entry, ingestor)``.
 
     Shared by ``POST /v1/ingest`` and ``POST /v1/ingest/upload`` so the routing
-    into a collection's bound embedder/chunker/stores — and its tenant allowlist
-    check, and the build-spec guard — cannot drift between the two entry points.
-    Omitting the collection (or naming the default id) keeps the prebuilt app
-    ingestor. An id the tenant may not access, or an unknown id, is a 404 (never a
-    silent write elsewhere).
+    into a collection's bound embedder/chunker/stores — its tenant allowlist
+    check, the OWNERSHIP check, and the build-spec guard — cannot drift between
+    the two entry points. Omitting the collection (or naming the default id)
+    keeps the prebuilt app ingestor. An id the tenant may not access, or an
+    unknown id, is a 404 (never a silent write elsewhere). A non-default
+    collection the caller can read but does not OWN is a 403
+    (:func:`enforce_access`, write action): ingest there is owner-or-admin
+    (ADR-0003; write shares deferred); one it cannot even read is the same 404
+    as an unknown id (no existence oracle).
+
+    The DEFAULT collection is the exception, deliberately: it is the shared
+    pre-ownership multi-tenant surface (backfilled ``public read``, synthetic
+    ``acl_backfill_owner``), where per-chunk ``tenant_id`` stamping — not
+    collection ownership — is what isolates writers, exactly as before ownership
+    existed. Requiring ownership there would lock every non-admin out of the
+    flagship shared corpus (and break the conformance contract: core data ops
+    need auth, not a role). So the default branch enforces READ on the default
+    collection — still the one seam, still 404 for a tenant that may not see it
+    (e.g. an operator who revoked its ``public`` row) — and the write lands
+    tenant-stamped. The gate has to run on this branch too: a tenant confined
+    *away* from the default can still be handed the prebuilt default ingestor by
+    omitting ``collection``.
 
     Both branches run :func:`check_ingest_build_spec` against the collection the
     write will land in, including the default one: a pinned
@@ -139,9 +157,13 @@ def _resolve_ingest_target(
     quietly append incoherent data to a 25M-point index.
     """
     if not collection_id or collection_id == collections.default_id:
-        _guard(collections.resolve(collections.default_id))
+        default = collections.resolve(collections.default_id)
+        _guard(default)
+        # READ, not write — the default collection is the shared tenant-stamped
+        # surface (docstring above); write stays owner-or-admin everywhere else.
+        await enforce_access(principal, default.id, "read")
         return None, prebuilt
-    allowed = allowed_collection_ids(tenant, settings.tenant_collections)
+    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     if allowed is not None and collection_id not in allowed:
         raise HTTPException(
             status_code=404,
@@ -155,6 +177,7 @@ def _resolve_ingest_target(
             detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
         ) from None
     _guard(target)
+    await enforce_access(principal, target.id, "write")
     try:
         run_ingestor = build_ingestor_for(app_state, target)
     except ValueError as e:
@@ -206,6 +229,7 @@ async def ingest(
     http_request: Request,
     background_tasks: BackgroundTasks,
     tenant: str = Depends(resolve_tenant),
+    principal: Principal = Depends(resolve_principal),
     ingestor: ShardedIngestor = Depends(get_ingestor),
     job_store: JobStore = Depends(get_job_store),
     collections: CollectionRegistry = Depends(get_collections),
@@ -263,8 +287,8 @@ async def ingest(
     # collection's bound embedder/chunker/stores (so vectors match its model and
     # land in its index). Omitted — or the default id — keeps the prebuilt app
     # ingestor (backward compatible). An unknown id is a 404, not a silent default.
-    target, run_ingestor = _resolve_ingest_target(
-        request.collection, tenant, collections, http_request.app.state, ingestor
+    target, run_ingestor = await _resolve_ingest_target(
+        request.collection, principal, collections, http_request.app.state, ingestor
     )
 
     job = await job_store.create(source=request.source)
@@ -357,6 +381,7 @@ async def ingest_upload(
     files: list[UploadFile] = File(..., description="One or more PDF files."),
     collection: str | None = Form(default=None),
     tenant: str = Depends(resolve_tenant),
+    principal: Principal = Depends(resolve_principal),
     ingestor: ShardedIngestor = Depends(get_ingestor),
     job_store: JobStore = Depends(get_job_store),
     collections: CollectionRegistry = Depends(get_collections),
@@ -399,8 +424,8 @@ async def ingest_upload(
             ),
         )
 
-    target, run_ingestor = _resolve_ingest_target(
-        collection, tenant, collections, http_request.app.state, ingestor
+    target, run_ingestor = await _resolve_ingest_target(
+        collection, principal, collections, http_request.app.state, ingestor
     )
 
     job = await job_store.create(source="upload")
@@ -489,6 +514,8 @@ async def list_documents(
         "X-Next-Cursor header; omit for the first page.",
     ),
     tenant: str = Depends(resolve_tenant),
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
     text_index=Depends(get_text_index),
 ) -> list[DocumentInfo]:
     """List indexed documents visible to the caller (own tenant + ``public``).
@@ -499,7 +526,13 @@ async def list_documents(
     ``X-Next-Cursor`` header; the header is absent on the last page. Empty when
     nothing visible is indexed. ``metadata`` carries the document-level fields
     (title, doc_type, doi, …) plus ``chunk_count``.
+
+    Listing targets the default collection's text index today (there is no
+    per-collection document endpoint yet), so the ownership seam runs against the
+    default collection: a caller who may not READ it gets the same 404 as an
+    unknown collection.
     """
+    await enforce_access(principal, registry.default_id, "read")
     try:
         docs, next_cursor = await text_index.list_documents(
             readable_tenants(tenant), limit=limit, cursor=cursor
@@ -534,11 +567,22 @@ async def list_documents(
 async def delete_document(
     doc_id: str,
     tenant: str = Depends(resolve_tenant),
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
     vector_store=Depends(get_vector_store),
     text_index=Depends(get_text_index),
 ) -> None:
     """Delete a document and its chunks — scoped to the caller's tenant, so one
     tenant cannot delete another's document even by id. Purge both retrieval
-    legs (vector + text) so a deleted doc can't resurface via BM25."""
+    legs (vector + text) so a deleted doc can't resurface via BM25.
+
+    The route targets the default collection's stores today, and the default
+    collection is the shared tenant-stamped surface — so, exactly like ingest
+    into it (see :func:`_resolve_ingest_target`), the seam enforces READ on the
+    default collection and the per-tenant scoping below does the write isolation:
+    the delete can only ever remove the caller's own tenant's chunks. Deleting
+    from a non-default collection (when a per-collection document endpoint
+    exists) stays owner-or-admin."""
+    await enforce_access(principal, registry.default_id, "read")
     await vector_store.delete(doc_id, tenant_id=tenant)
     await text_index.delete(doc_id, tenant_id=tenant)
