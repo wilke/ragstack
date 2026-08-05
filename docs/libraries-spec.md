@@ -1,5 +1,29 @@
 # Spec — user-owned libraries (RAGStack ⇄ BV-BRC)
 
+> **Superseded as a design by [ADR-0003](adr/0003-access-control.md) (2026-08-04). Do not
+> implement the library entity.**
+>
+> ADR-0003 collapses *library* into *collection* one-to-one: access is asserted at the
+> collection, a tenant is a Qdrant **instance**, and `library_id` payload partitioning is
+> deferred until the ~100–150 collections-per-instance budget binds. Two things changed
+> underneath this spec after it was written — Qdrant **removed** payload filters from its
+> JWT/RBAC in v1.16 (stated alternative: *"prefer collection-based access control"*), and
+> v1.16 shipped **tiered multitenancy**, which is upstream's own answer to the problem §4
+> solves by hand. Evaluate that first if the budget ever binds.
+>
+> **Still authoritative, because shipped code cites these sections:** §1 and §5.0
+> (identity interfaces — `identity/base.py:19`); §8.1 (state-store DDL conventions —
+> `collection_store.py:11`, for the `collections` table only, *not* `libraries` /
+> `library_shares` / `library_runs`); §-1 G1/G2 and §16 (retrieval-quality gates and
+> corpus sizes, independent of the library entity — see
+> [g1-retrieval-protocol.md](g1-retrieval-protocol.md)).
+>
+> §0's naming table is superseded by [ARCHITECTURE.md](ARCHITECTURE.md) §3; frontend
+> comments still pointing at §0 should be repointed. Everything else — §2 sharing, §3
+> library keys, §4 the two library kinds, §6 library ingest, §7 manifests, §9 the
+> `/v1/libraries` surface, §13, §15 — is retained as the design of record for the
+> deferred option, not as work to do.
+
 Rev 4. MUST/MUST NOT are normative. Target: implementable without inventing decisions.
 
 **What changed in rev 4.** Eight decisions taken after rev 3 merged, folded into the sections they

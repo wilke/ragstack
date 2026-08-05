@@ -66,6 +66,16 @@ PAGES = [
         label="ADR 0002", card="ADR 0002 — Collection identity",
         blurb="Content-addressed physical stores plus a durable registry, and the two production failures that forced them.",
     ),
+    dict(
+        src="adr/0003-access-control.md", out="adr-0003-access-control.html",
+        label="ADR 0003", card="ADR 0003 — Access control",
+        blurb="A tenant is a Qdrant instance, ownership sits on the collection instead of the chunk, and a library is just a collection.",
+    ),
+    dict(
+        src="adr/0004-users-groups-shares.md", out="adr-0004-users-groups-shares.html",
+        label="ADR 0004", card="ADR 0004 — Users, groups, shares",
+        blurb="Profile rows on first auth, pending shares by verified email, public as a built-in group, and WITH GRANT OPTION instead of rwx.",
+    ),
 ]
 
 # Relative .md links in the sources point at repo paths; on the built site they must point

@@ -10,12 +10,11 @@ import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 
 // Inline "New collection" panel: name + chunk strategy.
 //
-// NAMING (docs/libraries-spec.md §0): this creates a **collection** — a registry
-// entry binding (embedding model + dim + chunker) to a physical index. It is NOT
-// a "library" (a user-owned, access-controlled document set *inside* a collection,
-// isolated by `library_id`), which is not implemented yet — see #230. This form
-// used to be called NewLibraryForm while posting to /v1/collections; the two
-// concepts must not collide again.
+// NAMING (docs/ARCHITECTURE.md §3): this creates a **collection** — a registry
+// entry binding (embedding model + dim + chunker) to a physical index. "Library"
+// is not a separate concept; ADR-0003 makes it one-to-one with a collection, so
+// "collection" is the only correct word. This form used to be called
+// NewLibraryForm while posting to /v1/collections; do not bring that name back.
 //
 // Chunking is build-time identity for a collection — it can't be edited later —
 // so it is chosen HERE rather than inherited from a server default the user

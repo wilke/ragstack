@@ -2,14 +2,14 @@
 // and the Ops admin panel), kept out of the components so both say the same
 // thing and so the wording can be unit-tested.
 //
-// TERMINOLOGY — see docs/libraries-spec.md §0:
+// TERMINOLOGY — see docs/ARCHITECTURE.md §3 and docs/adr/0003-access-control.md:
 //   index      = one physical Qdrant collection + matching ES index
 //   collection = registry entry binding (model + dim + chunker) → index  [SHIPPED]
-//   library    = an access-controlled, user-owned document set inside a
-//                collection, isolated by `library_id`                   [NOT BUILT — #230]
+//   library    = not a separate concept — one-to-one with a collection
+//   tenant     = a Qdrant instance (hard isolation for orgs, not for users)
 // Everything in this module and in the UI that calls POST /v1/collections is a
-// *collection*. The demo UI used to call it a "library", which collides head-on
-// with the not-yet-implemented concept; do not reintroduce that name here.
+// *collection*. The demo UI used to call it a "library"; there is no separate
+// concept for that name to mean, so do not reintroduce it here.
 
 import { apiDetail } from "./chunkers";
 

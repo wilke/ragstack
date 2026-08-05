@@ -405,11 +405,11 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
 // places. The demo Collection tab keeps its own one-click create (name + chunker
 // against the demo's embedder) because that is a *demo flow*, not administration.
 //
-// NAMING (docs/libraries-spec.md §0): a **collection** is the registry entry
+// NAMING (docs/ARCHITECTURE.md §3): a **collection** is the registry entry
 // binding (embedding model + dim + chunker) to an **index** (one physical Qdrant
-// collection + matching ES index). A **library** — a user-owned document set
-// inside a collection, isolated by `library_id` — is NOT implemented (#230).
-// Nothing on this panel is a library.
+// collection + matching ES index). "Library" is not a separate concept —
+// ADR-0003 makes it one-to-one with a collection — so everything on this panel
+// is a collection and says so.
 
 // Vector count vs text (BM25) count for a collection. They should match — both
 // legs index the same chunks — so a drift flags a half-broken ingest (one store

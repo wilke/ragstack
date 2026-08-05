@@ -29,13 +29,12 @@ import { EmptyState } from "./states/EmptyState";
 // strategy) that mints a fresh named collection (POST /v1/collections) and
 // selects it.
 //
-// NAMING (docs/libraries-spec.md §0): index = the physical Qdrant collection + ES
+// NAMING (docs/ARCHITECTURE.md §3): index = the physical Qdrant collection + ES
 // index; **collection** = the registry entry binding (model + dim + chunker) to an
-// index, which is what this view creates and selects; **library** = a user-owned,
-// access-controlled document set *inside* a collection, isolated by `library_id`
-// - NOT implemented (#230). This view was called "Library" while calling
-// POST /v1/collections, which is exactly the collision #230 has to avoid; every
-// user-facing string here says "collection" now, and should keep saying it.
+// index, which is what this view creates and selects. "Library" is not a separate
+// concept — ADR-0003 makes it one-to-one with a collection. This view was called
+// "Library" while calling POST /v1/collections; every user-facing string here says
+// "collection" now, and should keep saying it.
 //
 // Collection administration proper - choosing the embedding model, inspecting a
 // collection's build spec/provenance, deleting a registry binding - lives in the

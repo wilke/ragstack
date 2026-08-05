@@ -79,7 +79,8 @@ The distinction below is normative; the terms are used precisely throughout the 
 |---|---|
 | **index** | A *physical* store — one Qdrant collection plus one Elasticsearch index of the same name. |
 | **collection** | A *registry entry* binding an embedding model, dimension, and chunking strategy to an index. What users create and query. **Shipped.** |
-| **library** | A user-owned document set *inside* a collection, isolated by a `library_id` payload filter. **Not yet implemented** (#230). |
+| **library** | Not a separate entity. [ADR-0003](adr/0003-access-control.md) makes it one-to-one with a collection; the word survives only as the `lib` marker in a named collection's derived store name. |
+| **tenant** | A Qdrant *instance*. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users. |
 
 A collection's physical name is derived deterministically from its build spec. Corpora are
 content-addressed over `(model, dim, chunk_descriptor)` so that re-ingesting an identical
@@ -418,5 +419,5 @@ selecting it by config — not editing the pipeline. Most live in
 | HTTP reference | [API.md](API.md) |
 | Ingest paths and when to use each | [ingest-paths.md](ingest-paths.md) |
 | Model registry design | [model-registry.md](model-registry.md) |
-| User-owned libraries (planned) | [libraries-spec.md](libraries-spec.md) |
+| User-owned libraries (deferred design, superseded by ADR-0003) | [libraries-spec.md](libraries-spec.md) |
 | Running it somewhere | [DEPLOYMENT.md](DEPLOYMENT.md) |
