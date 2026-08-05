@@ -135,6 +135,7 @@ The canonical deployed stack runs out of `/rag/` (see [STATUS.md § Production l
 ├── repos/ragstack/      # git checkout (code = source of truth)
 ├── apptainer/images/    # SIFs
 ├── data/                # all service persistence
+│   └── tenants/         # per-tenant stores + manifest.tsv (ADR-0005, see below)
 ├── documents/           # input corpus
 ├── config/rag.env       # RAG_DATA, RAG_IMAGES, RAG_REPO, NEO4J_PASSWORD
 ├── envs/ragstack/       # shared conda env (Python 3.12)
@@ -143,6 +144,92 @@ The canonical deployed stack runs out of `/rag/` (see [STATUS.md § Production l
 ```
 
 Operators use `/rag/bin/rag <make-target>` (sources `rag.env`, forwards to `make`).
+
+---
+
+## Tenants (ADR-0005)
+
+Per [ADR-0005](adr/0005-tenant-anatomy.md), a tenant is **one API endpoint bound to a
+dedicated set of stateful stores, sharing only stateless compute and the host**:
+
+| Inside the tenant (dedicated) | Shared plumbing |
+|---|---|
+| API server process + its env (identity config, role maps) | embedding fleet |
+| Qdrant instance | reranker sidecar |
+| Elasticsearch instance | LLM endpoint |
+| collection registry + job store + ACL database | frontend (backend switcher) |
+| ingest staging directories | the host, GPUs |
+
+Index-name separation inside a shared ES is **not** isolation; every tenant gets its own
+single-node ES exactly as it gets its own Qdrant. The ES JVM heap is the dominant
+per-tenant cost — size it with `--es-heap` below.
+
+### Provisioning a tenant
+
+Tenant creation is a **script, not an API** (ADR-0005 decision 4):
+
+```bash
+# preview the full plan (dirs, ports, files, commands) — touches nothing
+./apptainer/new-tenant.sh acme --dry-run
+
+# provision (sqlite ACL/registry/job stores under the tenant dir — the default)
+make new-tenant-apptainer NAME=acme            # or /rag/bin/rag new-tenant-apptainer NAME=acme
+
+# provision with a per-tenant DATABASE in an existing Postgres server instead
+./apptainer/new-tenant.sh acme --postgres postgresql://ragstack:PW@localhost:5432/postgres
+
+# size the ES heap for a large tenant (default 512m; persisted in the tenant's
+# config/provision.env so later flagless re-runs keep it)
+./apptainer/new-tenant.sh acme --es-heap 8g
+```
+
+Port allocation is tunable via `TENANT_PORT_BASE` (default `24000`, must be
+≥ 10000) and `TENANT_PORT_STRIDE` (default `20`, must be ≥ 6) — set them only
+before the first tenant; existing manifest rows are reused verbatim.
+
+What the script stamps out, following the persistence conventions (every writable path
+enumerated and bind-mounted; no tmpfs overlays):
+
+- `$RAG_DATA/tenants/<name>/` — `qdrant/{storage,snapshots}`, `elasticsearch/{data,logs,config}`,
+  `state/` (sqlite ACL/registry/jobs), `manifests/`, `ingest/`, `config/`, `bin/`
+- a deterministic **port block** recorded in `$RAG_DATA/tenants/manifest.tsv`
+  (one row per tenant: `name<TAB>index<TAB>base_port`; base `24000 + index*20`;
+  offsets: +0 API, +1/+2 Qdrant http/grpc, +3/+4 ES http/transport, +5 reserved) —
+  existing rows are reused verbatim, so re-runs and restarts never move a tenant's
+  ports; concurrent runs are serialized with a flock on `manifest.tsv.lock`
+- `config/tenant.env` — generated API keys/role maps, `DEFAULT_ROLE=user`,
+  `MAX_COLLECTIONS=100`, per-tenant store URLs, shared `EMBEDDING_ENDPOINTS`,
+  `REQUIRE_DURABLE_BACKENDS=true`, `INGEST_ROOT` confined to the tenant dir
+- `bin/up.sh` / `bin/down.sh` — per-tenant start/stop wrappers in `up.sh`/`down.sh`
+  style (instances `qdrant-<name>`, `elasticsearch-<name>`; shared SIFs reused —
+  run `./apptainer/pull.sh` first)
+
+The script is **idempotent**: re-running completes missing pieces. What is preserved
+vs. regenerated:
+
+- `config/tenant.env` — the one operator-editable file; an edited copy is **kept**
+  (diff printed) unless `--force`
+- `config/secrets.env` — generated once, never rotated by a re-run
+- `config/provision.env` — persists `--es-heap` and the store kind, so a flagless
+  re-run keeps them
+- `bin/up.sh` / `bin/down.sh` — **derived artifacts, regenerated deterministically
+  on every run**; hand edits to them do not survive (they say "do not edit")
+
+If the tenant's `manifest.tsv` row was lost and a re-run would allocate a different
+port block than the kept `tenant.env` uses, the script **dies** with restore
+instructions instead of splitting the tenant across two blocks. It does not start
+services unless `--start`.
+
+Start the API against the stamped env:
+
+```bash
+set -a; . $RAG_DATA/tenants/acme/config/tenant.env; set +a
+uvicorn ragstack.api.main:app --host 0.0.0.0 --port <api port from the plan>
+```
+
+> The two pre-ADR production tenants stay untouched until their migration (#246); the
+> **ops architecture reference artifact still shows the shared ES** and is updated at
+> migration time, not now.
 
 ---
 

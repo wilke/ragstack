@@ -32,7 +32,7 @@ contract.
 | **Grounded answer generation** | Synthesise a cited answer from retrieved sources via an OpenAI-compatible LLM | ✅ Python |
 | **Collections** | Named, registered bindings of `(model, dim, chunker)` → physical stores, with an immutable build spec and provenance — see [§3](#3-the-collection-model) | ✅ Python |
 | **Knowledge graph** | LLM triple extraction → Neo4j; entity/neighbour queries scoped by tenant *and* collection | ✅ Python (opt-in) |
-| **Multi-tenancy** | Every chunk carries a `tenant_id`; reads scope to `own + public`; tenant is resolved server-side and cannot be spoofed | ✅ Python |
+| **Multi-tenancy** | Access is asserted at the collection (`resolve_access`, [ADR-0003](adr/0003-access-control.md)); the per-chunk `tenant_id`/owner stamp is writer provenance, kept enforced as defence in depth (reads scope to `own + public`, resolved server-side); tenant-as-instance is ADR-0005 | ✅ Python |
 | **Identity & RBAC** | API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; two roles — `admin`, `user` (`researcher` accepted as a deprecated alias; see [ADR-0003](adr/0003-access-control.md)) | ✅ Python |
 | **Runtime model registry** | Register models and hot-swap task assignments (embedding / LLM / reranker) without a restart; per-request overrides | ✅ Python |
 | **Resumable bulk ingest** | Checkpointed, crash-safe, out-of-order-aware ingestion that scales 1 → 500k docs and resumes without re-embedding completed work | ✅ Python |
@@ -81,6 +81,7 @@ The distinction below is normative; the terms are used precisely throughout the 
 | **collection** | A *registry entry* binding an embedding model, dimension, and chunking strategy to an index. What users create and query. **Shipped.** |
 | **library** | Not a separate entity. [ADR-0003](adr/0003-access-control.md) makes it one-to-one with a collection; the word survives only as the `lib` marker in a named collection's derived store name. |
 | **tenant** | A Qdrant *instance*. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users. |
+| **owner_id / `tenant_id` (payload key)** | The per-chunk stamp recording who ingested it. Provenance + defence in depth, not the authorization mechanism ([ADR-0003](adr/0003-access-control.md) decision 1: renamed `owner_id` and demoted to provenance). The rename is a code-level alias only (#246): the physical key stays `tenant_id` because renaming storage would rewrite every point. |
 
 A collection's physical name is derived deterministically from its build spec. Corpora are
 content-addressed over `(model, dim, chunk_descriptor)` so that re-ingesting an identical

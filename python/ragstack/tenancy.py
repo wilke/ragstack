@@ -4,6 +4,16 @@ Every stored chunk carries a ``tenant_id``. A caller may *read* its own tenant
 plus the shared ``public`` corpus (e.g. public-good document sets), but may only
 *write* and *delete* within its own tenant. The tenant is always derived
 server-side from the API key — never trusted from the request body.
+
+Conceptually (ADR-0003 decision 1), the per-chunk ``tenant_id`` payload key is
+an **owner_id**: it records who *wrote* the chunk. It is provenance plus
+defence in depth — since #243 access is asserted at the *collection*
+(``resolve_access``), not by this filter. "Tenant" as a *deployment* concept
+now means a whole Qdrant instance (ADR-0005). The rename is a code-level
+alias ONLY (per the #246 migration checklist, not the ADR): the physical key
+name is historical and stays ``tenant_id`` forever, because renaming storage
+would rewrite every point (it is indexed in Qdrant and baked into ES ids and
+point ids). See :data:`OWNER_FIELD`.
 """
 from __future__ import annotations
 
@@ -16,6 +26,14 @@ if TYPE_CHECKING:
 PUBLIC_TENANT = "public"
 # Tenant for callers when auth is disabled (dev/tests) or a key has no mapping.
 DEFAULT_TENANT = "default"
+# Historical payload key stamped on every chunk; records who wrote it (owner
+# provenance, ADR-0003 §1). Never rename the stored key (#246: code-level
+# alias only) — it is indexed in Qdrant and baked into ES ids and point ids.
+# Single conceptual home for the stores' tenant-field
+# comments: _TENANT_FIELD in stores/qdrant.py, the
+# ``metadata.tenant_id`` mapping in stores/elasticsearch.py, _matches in
+# stores/memory.py.
+OWNER_FIELD = "tenant_id"
 
 
 def readable_tenants(tenant: str, extra: list[str] | None = None) -> list[str]:
@@ -51,7 +69,9 @@ def allowed_collection_ids(
 
 def tenant_of(chunk: Chunk) -> str:
     """The tenant that owns a chunk: its stamped ``tenant_id`` (in metadata), or
-    the default when unstamped. Single source for the fallback across stores."""
+    the default when unstamped. Single source for the fallback across stores.
+    The stamped ``tenant_id`` is conceptually the chunk's *owner_id* — see the
+    module docstring and :data:`OWNER_FIELD` (ADR-0003 decision 1)."""
     return str(chunk.metadata.get("tenant_id", DEFAULT_TENANT))
 
 

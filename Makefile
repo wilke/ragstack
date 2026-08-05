@@ -5,6 +5,7 @@
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
+       new-tenant-apptainer \
        frontend-install frontend-dev frontend-build frontend-gen-api \
        test-all
 
@@ -127,6 +128,9 @@ sidecars-up-apptainer: ## Start ML sidecars via Apptainer
 
 sidecars-down-apptainer: ## Stop the Apptainer sidecars
 	./apptainer/sidecars-down.sh
+
+new-tenant-apptainer: ## Provision a tenant (ADR-0005): NAME=acme [ARGS="--dry-run"]
+	./apptainer/new-tenant.sh $(NAME) $(ARGS)
 
 # ---------------------------------------------------------------------------
 # All
