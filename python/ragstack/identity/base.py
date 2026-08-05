@@ -60,6 +60,16 @@ class Identity:
     expires_at: int | None
     #: Future-proofing for scoped credentials; unused in v1.
     scopes: frozenset[str] = field(default_factory=frozenset)
+    #: Profile metadata (ADR-0004), NEVER identity: an email is reassignable and
+    #: must not key the subject/tenant. ``""`` means the credential carried no
+    #: such claim. ``email`` is only meaningful alongside ``email_verified`` —
+    #: both are carried verbatim; nothing is decided here.
+    email: str = ""
+    #: The issuer's claim about the *mailbox*, not the account. ``False`` both
+    #: when the claim is absent and when the issuer says unverified.
+    email_verified: bool = False
+    #: Human-legible display name (OIDC ``name``; BV-BRC ``un``), or ``""``.
+    display_name: str = ""
 
 
 @runtime_checkable

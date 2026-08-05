@@ -501,15 +501,24 @@ paths:
       operationId: createCollection
       summary: Create a content-addressed collection (build-time model selection)
       description: >-
-        Binds a registered embedding model (`embedding` → a model whose task is
-        `embedding`) and a chunk strategy into a new content-addressed
-        collection, returning its `CollectionInfo`. The collection is created
-        empty; populate it via POST /v1/ingest with the returned id. Build-time
-        config is collection identity — this mints a new collection rather than
-        editing an existing one. Admin only.
+        Binds an embedding model and a chunk strategy into a new
+        content-addressed collection, returning its `CollectionInfo`. The
+        collection is created empty; populate it via POST /v1/ingest with the
+        returned id. Build-time config is collection identity — this mints a new
+        collection rather than editing an existing one.
+
+
+        Creation is open to any authenticated principal (ADR-0003: a library is
+        a collection users create directly). The `embedding` and `chunk` fields
+        are admin-only build-spec overrides: omit them (the common case) and the
+        server's default build spec is resolved into concrete values before the
+        collection's identity is derived — so a later change of server defaults
+        never changes an existing collection. A non-admin supplying either field
+        gets a 403.
       tags: [Documents]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       requestBody:
         required: true
         content:
@@ -528,7 +537,12 @@ paths:
         "401":
           description: Missing or invalid API key
         "403":
-          description: Caller is not an admin
+          description: >-
+            Caller supplied the admin-only `embedding`/`chunk` build-spec
+            overrides without the admin role (omit both to create from the
+            server-default build spec), or the server's collection cap
+            (`MAX_COLLECTIONS`) is reached — each collection costs physical
+            store resources, so the count is enforced, not just monitored
         "404":
           description: Referenced embedding model is not registered
         "409":
@@ -792,7 +806,8 @@ components:
       name: X-API-Key
       description: >-
         Per-caller key mapped server-side to a tenant (data isolation) and an
-        RBAC role (admin | engineer | manager | researcher). Roles are enforced
+        RBAC role (admin | user; `researcher` is accepted as a deprecated alias
+        for `user`). Roles are enforced
         per-endpoint server-side; some routes (e.g. /v1/config, /v1/admin/*)
         require the admin role and return 403 otherwise.
     BearerIdentity:
@@ -812,7 +827,7 @@ components:
         public key from a **pinned** issuer allowlist, and an OIDC ID token's
         `sub` only after RS256 verification against the issuer's JWKS with `iss`
         and `aud` pinned. The caller's tenant is `{issuer}:{subject}` and the
-        role is always `researcher` (never the deployment's default role).
+        role is always `user` (never the deployment's default role).
 
 
         Presenting this header together with `X-API-Key` is a **400**: which
@@ -1235,12 +1250,14 @@ components:
 
     CollectionCreateRequest:
       type: object
-      required: [embedding, chunk]
       properties:
         embedding:
           description: >-
             Id of a registered model whose task is `embedding`. Its base_urls are
             SSRF-checked at registration; the model must declare a positive `dim`.
+            Optional — omitted, the server's default embedding backend (model,
+            dim and endpoints from server config) is resolved in. Supplying it
+            is an admin-only build-spec override (403 otherwise).
           type: string
           minLength: 1
         chunk:
@@ -1248,6 +1265,9 @@ components:
             Chunk strategy — part of the collection's build identity, so it is
             fixed at creation and cannot be edited later. An unknown `method`, or
             a size/overlap the chosen chunker cannot advance through, is a 400.
+            Optional — omitted, the server's default chunk strategy (method,
+            size, overlap from server config) is resolved in. Supplying it is
+            an admin-only build-spec override (403 otherwise).
           type: object
           required: [method]
           properties:
@@ -1290,8 +1310,10 @@ components:
             aliasing one store. Omitted → both the id and the physical name are
             derived from the content-addressed (model, dim, chunk) signature.
           type: string
+          maxLength: 128
         label:
           type: string
+          maxLength: 256
       additionalProperties: false
 
     CollectionsResponse:

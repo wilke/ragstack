@@ -103,7 +103,9 @@ JSONL (bulk/GoWe) or one-off local PDFs via `/v1/ingest` (PyMuPDF, as today). Se
   just display labels. (Closes the gap the cookbook review flagged.) Backfill defaults so
   existing `collections.json` still loads.
 
-**Step 3 — `POST /v1/collections` handler** (`api/routers/collections.py`, admin-gated)
+**Step 3 — `POST /v1/collections` handler** (`api/routers/collections.py`; admin-gated as
+built — since superseded by ADR-0003: creation is open to any principal, only the
+`embedding`/`chunk` overrides stay admin-only)
 - Resolve `embedding` via `get_model_registry` → assert `task=="embedding"` and `dim>0`;
   unknown → 404, wrong-task → 400 (reuse Phase-1 `RegistryError` taxonomy + SSRF
   allowlist). Validate `chunk` against `make_chunker`'s accepted methods.

@@ -68,3 +68,4 @@ apptainer/images/*.sif
 *.sqlite3
 ragstack_collections.db
 ragstack_jobs.db
+ragstack_users.db

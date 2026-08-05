@@ -39,8 +39,9 @@ export function collectionCreateMessage(status: number | null, body: string): st
       ? `The collection config didn't validate: ${detail}`
       : "The collection config didn't validate (422).";
   }
-  if (status === 401 || status === 403)
-    return "Creating a collection needs an admin API key.";
+  if (status === 401) return "Creating a collection needs a valid API key or login.";
+  if (status === 403)
+    return "Choosing a chunk strategy or embedding model is admin-only — pick “Server default” (or enter an admin key) and try again.";
   return `Could not create the collection (error ${status}).`;
 }
 

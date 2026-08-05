@@ -48,8 +48,10 @@ export CHUNK_METHOD=fixed_token
 export CHUNK_SIZE=512
 export CHUNK_OVERLAP=64
 export RERANK_ENABLED=false
-export DEFAULT_ROLE=admin                         # demo convenience; collection/model
-                                                  # admin endpoints require the admin role
+export DEFAULT_ROLE=admin                         # demo convenience; needed for the
+                                                  # embedding/chunk overrides + model admin.
+                                                  # Plain collection creation (server-default
+                                                  # build spec) works for any principal.
 
 uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8030
 ```

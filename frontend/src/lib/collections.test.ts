@@ -39,9 +39,13 @@ describe("collectionCreateMessage", () => {
     expect(collectionCreateMessage(422, body)).toContain("field required; not a number");
   });
 
-  it("says admin for 401/403", () => {
-    expect(collectionCreateMessage(403, "")).toContain("admin");
-    expect(collectionCreateMessage(401, "")).toContain("admin");
+  it("explains the 403 as the admin-only build-spec override, not creation itself", () => {
+    // Creation is open to any principal (ADR-0003); the only create-path 403 is
+    // supplying embedding/chunk without the admin role — the message must steer
+    // toward the server-default path, not claim creation needs an admin key.
+    expect(collectionCreateMessage(403, "")).toContain("admin-only");
+    expect(collectionCreateMessage(403, "")).toContain("Server default");
+    expect(collectionCreateMessage(401, "")).toContain("API key or login");
   });
 
   it("reports a transport failure distinctly from an HTTP status", () => {

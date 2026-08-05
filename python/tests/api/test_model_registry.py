@@ -188,7 +188,7 @@ async def test_assign_build_time_task_is_422(client):
 
 
 async def test_registry_requires_admin(client, monkeypatch):
-    from ragstack.api.security import ROLE_RESEARCHER
+    from ragstack.api.security import ROLE_USER
 
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     assert (await client.get("/v1/admin/models/registry")).status_code == 403

@@ -45,6 +45,7 @@ keys are configured.
 | GET | `/health` | Liveness check |
 | POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate |
 | POST | `/v1/retrieve` | Retrieve chunks only (no answer) |
+| POST | `/v1/collections` | Create a collection (any principal; `embedding`/`chunk` overrides admin-only) |
 | POST | `/v1/ingest` | Ingest a file/directory (async job) |
 | GET | `/v1/ingest/{job_id}` | Poll ingest job status |
 | GET | `/v1/documents` | List indexed documents |
@@ -100,6 +101,21 @@ curl -s http://localhost:8000/v1/retrieve \
        "filters": {"doc_type": "article"}}'
 ```
 
+### POST /v1/collections
+
+Create a collection. `id` and `label` are optional; omitting `embedding` and `chunk`
+builds from the **server-default build spec** (resolved to concrete values at create
+time, so later default changes never re-identify an existing collection). Supplying
+`embedding` or `chunk` is an **admin-only** override → `403` otherwise. `409` when the
+spec collides with an existing collection; `403` when the `max_collections` cap is
+reached. Full schema: `contracts/schemas/collection_create_request.json`.
+
+```bash
+curl -s http://localhost:8000/v1/collections \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"id": "my-papers", "label": "My papers"}'
+```
+
 ### POST /v1/ingest
 
 Accepts a file or directory `source` (resolved within `INGEST_ROOT`) and processes
@@ -117,6 +133,7 @@ fails the job and leaves the prior version intact.
 > endpoints, and bypasses the per-file size guard. See [Bulk ingestion](#bulk-ingestion).
 
 **Request** (`IngestRequest`): `source` (required), `metadata` (`{}`).
+
 **Response** (`IngestResponse`): `{ job_id, status, chunk_ids[], items? }`.
 
 ```bash

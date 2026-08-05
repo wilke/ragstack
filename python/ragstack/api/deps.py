@@ -1160,6 +1160,11 @@ async def lifespan(app: FastAPI):
     from ragstack.identity import validate_identity_settings
 
     validate_identity_settings()
+    # And the user-profile store (ADR-0004): a typo'd backend would silently
+    # record users in memory and lose them on restart.
+    from ragstack.user_store import validate_user_store_settings
+
+    validate_user_store_settings()
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()
@@ -1318,6 +1323,23 @@ async def lifespan(app: FastAPI):
     await seed_from_json(collection_store, settings)
     app.state.collection_store = collection_store
 
+    # The user-profile store (ADR-0004 decision 1). Built here — not lazily on
+    # the auth path — so the sqlite backend's synchronous DDL never blocks the
+    # request loop. The module singleton is what the auth hook resolves, so
+    # installing this instance keeps the two views of the store identical.
+    from ragstack.user_store import get_user_store, set_user_store
+
+    user_store = get_user_store()
+    set_user_store(user_store)
+    # Probe the backend NOW and fail startup on error. validate_user_store_settings
+    # only catches backend-name typos, and the postgres store creates its pool
+    # lazily on first use — so a mistyped/unreachable USER_STORE_DSN would
+    # otherwise boot clean while every auth-path profile write fails silently
+    # (they are fire-and-forget). This keeps postgres on the same fail-fast
+    # footing as sqlite, whose DDL already runs synchronously right here.
+    await user_store.list_users(limit=1)
+    app.state.user_store = user_store
+
     # Multi-collection registry: the pinned/derived collection is the "default"
     # entry; the store's specs add cross-model / per-chunker entries. With no
     # config this is a one-entry registry equal to the default (unchanged).
@@ -1379,6 +1401,18 @@ async def lifespan(app: FastAPI):
         await job_store.close()
         # Same for the collection store (only the postgres backend holds a pool).
         await collection_store.close()
+        # And the user store — but FIRST drain any in-flight fire-and-forget
+        # profile upserts: one that outlived its request would otherwise run
+        # against a closed store, or rebuild a fresh one via get_user_store()
+        # after the reset below (an asyncpg pool nobody ever closes). Then
+        # reset the module singleton so nothing resolves a closed store after
+        # shutdown (tests re-enter the lifespan).
+        from ragstack.api.security import drain_profile_upserts
+        from ragstack.user_store import reset_user_store
+
+        await drain_profile_upserts()
+        await user_store.close()
+        reset_user_store()
         # Close the ES client if the text index holds one.
         if hasattr(text_index, "close"):
             await text_index.close()

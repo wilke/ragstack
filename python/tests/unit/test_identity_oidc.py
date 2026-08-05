@@ -300,3 +300,35 @@ async def test_explicit_jwks_uri_skips_discovery():
     provider = make_provider(server, jwks_uri=JWKS_URI)
     await provider.authenticate(id_token(KEY, **google_claims()))
     assert DISCOVERY not in server.hits
+
+
+# -- profile claims (ADR-0004) ------------------------------------------------ #
+
+
+async def test_profile_claims_are_extracted_after_verification():
+    """google_claims already carries email/email_verified; `name` rides along.
+    They land on Identity as metadata — the subject stays `sub`."""
+    identity = await make_provider(make_server()).authenticate(
+        id_token(KEY, **google_claims(name="Alice Example"))
+    )
+    assert identity.email == "alice@example.org"
+    assert identity.email_verified is True
+    assert identity.display_name == "Alice Example"
+
+
+async def test_missing_profile_claims_default_to_empty_and_false():
+    claims = google_claims()
+    del claims["email"], claims["email_verified"]
+    identity = await make_provider(make_server()).authenticate(id_token(KEY, **claims))
+    assert identity.email == ""
+    assert identity.email_verified is False
+    assert identity.display_name == ""
+
+
+async def test_email_verified_is_false_unless_the_claim_is_literally_true():
+    # A string "true" (or any other non-bool) is not a verified mailbox.
+    identity = await make_provider(make_server()).authenticate(
+        id_token(KEY, **google_claims(email_verified="true"))
+    )
+    assert identity.email_verified is False
+    assert identity.email == "alice@example.org"  # still carried, still unverified

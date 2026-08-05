@@ -33,7 +33,7 @@ contract.
 | **Collections** | Named, registered bindings of `(model, dim, chunker)` → physical stores, with an immutable build spec and provenance — see [§3](#3-the-collection-model) | ✅ Python |
 | **Knowledge graph** | LLM triple extraction → Neo4j; entity/neighbour queries scoped by tenant *and* collection | ✅ Python (opt-in) |
 | **Multi-tenancy** | Every chunk carries a `tenant_id`; reads scope to `own + public`; tenant is resolved server-side and cannot be spoofed | ✅ Python |
-| **Identity & RBAC** | API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; four roles — `admin`, `engineer`, `manager`, `researcher` | ✅ Python |
+| **Identity & RBAC** | API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; two roles — `admin`, `user` (`researcher` accepted as a deprecated alias; see [ADR-0003](adr/0003-access-control.md)) | ✅ Python |
 | **Runtime model registry** | Register models and hot-swap task assignments (embedding / LLM / reranker) without a restart; per-request overrides | ✅ Python |
 | **Resumable bulk ingest** | Checkpointed, crash-safe, out-of-order-aware ingestion that scales 1 → 500k docs and resumes without re-embedding completed work | ✅ Python |
 | **Workflow-engine ingest** | Submit sharded ingest to a CWL workflow engine (GoWe) instead of running in-process — see [ADR-0001](adr/0001-execution-topology.md) | ✅ Python |
@@ -334,7 +334,7 @@ The authoritative definition is `contracts/openapi.yaml`; per-field reference is
 | POST | `/v1/retrieve` | Hybrid retrieval, no generation | principal | ✅ | ⚠️ stub |
 | GET | `/v1/chunks` | Fetch chunks by id (context expansion) | principal | ✅ | ⚠️ stub |
 | GET | `/v1/collections` | List collections + counts + provenance | principal | ✅ | ⚠️ stub |
-| POST | `/v1/collections` | Create a collection (model + chunker) | admin | ✅ | ⚠️ stub |
+| POST | `/v1/collections` | Create a collection (server-default build spec; supplying `embedding`/`chunk` is admin-only) | principal | ✅ | ⚠️ stub |
 | DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | admin | ✅ | ⚠️ stub |
 | POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | principal | ✅ | ⚠️ stub |
 | POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | principal | ✅ | ⚠️ stub |
@@ -356,8 +356,9 @@ The authoritative definition is `contracts/openapi.yaml`; per-field reference is
 | GET | `/v1/config` | Allowlisted config, secrets redacted | admin | ✅ | ❌ |
 | GET | `/v1/health/deep` | Deep dependency probe + latencies | admin | ✅ | ❌ |
 
-**RBAC roles:** `admin` (superuser) · `engineer` (data ops) · `manager` (dashboard reads) ·
-`researcher` (read-only).
+**RBAC roles:** `admin` (superuser) · `user` (everything not admin-gated). `researcher` is a
+deprecated alias for `user`, normalized at startup with a warning; `engineer`/`manager` were
+removed ([ADR-0003](adr/0003-access-control.md)) and are rejected at startup.
 
 > The `stream` field exists on the query request model but there is **no** separate
 > streaming endpoint yet. Go request models still lack `rerank` / `rerank_candidates` (#27).

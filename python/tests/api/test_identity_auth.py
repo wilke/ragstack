@@ -63,7 +63,7 @@ async def test_bearer_credential_authenticates_as_an_issuer_scoped_tenant(client
     # Namespaced, so a BV-BRC alice is not a Google alice — and neither collides
     # with the reserved `public` / `default` tenants.
     assert body["tenant"] == "bvbrc:alice@patricbrc.org"
-    assert body["role"] == "researcher"
+    assert body["role"] == "user"
 
 
 async def test_bearer_prefix_is_optional(client, identity):
@@ -81,7 +81,7 @@ async def test_role_never_falls_through_to_default_role(client, identity, monkey
     tenants = await client.get(
         "/v1/stats/tenants", headers={"Authorization": "Bearer good-token"}
     )
-    assert tenants.json()["role"] == "researcher"
+    assert tenants.json()["role"] == "user"
 
     # And the admin surface is actually closed to them.
     admin = await client.get("/v1/config", headers={"Authorization": "Bearer good-token"})
@@ -179,7 +179,7 @@ async def test_authorization_header_is_inert_while_the_flag_is_off(client, monke
 
 def test_principal_repr_redacts_the_token():
     principal = security.Principal(
-        tenant="bvbrc:alice", role="researcher", token="un=alice|sig=deadbeef",
+        tenant="bvbrc:alice", role="user", token="un=alice|sig=deadbeef",
         token_id="tok-1", token_exp=123,
     )
     rendered = repr(principal)

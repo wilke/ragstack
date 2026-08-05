@@ -91,7 +91,7 @@ async def test_no_credential_at_all_is_not_authenticated_as_a_bearer_user(
 async def test_real_google_id_token_authenticates(client: httpx.AsyncClient):
     """The positive path: a genuine Google ID token minted for the server's
     configured client id resolves to an issuer-scoped tenant with the explicit
-    researcher role — never the deployment's default role."""
+    user role — never the deployment's default role."""
     resp = await client.get(
         "/v1/stats/tenants", headers={"Authorization": f"Bearer {ID_TOKEN}"}
     )
@@ -100,7 +100,7 @@ async def test_real_google_id_token_authenticates(client: httpx.AsyncClient):
     assert body["tenant"].startswith(f"{ISSUER_LABEL}:")
     # The identity is `sub`, never `email`: emails are reassignable.
     assert "@" not in body["tenant"].split(":", 1)[1]
-    assert body["role"] == "researcher"
+    assert body["role"] == "user"
 
 
 @pytest.mark.skipif(not ID_TOKEN, reason="no RAGSTACK_GOOGLE_ID_TOKEN configured")

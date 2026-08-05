@@ -104,6 +104,15 @@ class Settings(BaseSettings):
     collection_store_backend: str = "json"  # json | memory | sqlite | postgres
     collection_store_path: str = "ragstack_collections.db"
     collection_store_dsn: str = ""
+    # Hard cap on registered collections, enforced at POST /v1/collections.
+    # ADR-0003: the collection count is the binding constraint — each collection
+    # costs a physical Qdrant collection + ES index (budget ~100-150 per
+    # instance, thread exhaustion near ~1000, crash-on-create ~2000) — and
+    # creation is open to any authenticated principal, so without enforcement a
+    # single caller looping the endpoint is an instance-wide denial of service.
+    # Applies to admins too (the limit is physical, not an authorization tier).
+    # 0 disables the cap; the default matches the ADR's "alert at 100" line.
+    max_collections: int = 100
     # Refuse an ingest whose build spec differs from the target collection's
     # recorded provenance (spec_hash over model|dim|chunk descriptor). Writing
     # vectors from a different embedder, or chunks from a different chunker, into
@@ -373,20 +382,22 @@ class Settings(BaseSettings):
     api_key_tenants: dict[str, str] = Field(default_factory=dict)
     # Maps an API key to its RBAC role (authz for the dashboard/admin surface).
     # Keys absent from the map (and the keyless dev path) get ``default_role``.
-    # Roles: admin (superuser) | engineer | manager | researcher. Enforced
-    # server-side per endpoint via ``require_role`` — never trusted from the client.
+    # Roles: admin (superuser) | user. "researcher" is a deprecated alias for
+    # "user" (normalized with a warning); engineer/manager were removed per
+    # ADR-0003 and are rejected at startup. Enforced server-side per endpoint
+    # via ``require_role`` — never trusted from the client.
     api_key_roles: dict[str, str] = Field(default_factory=dict)
     # Role for an authenticated-but-unmapped key and the keyless dev path. Least
     # privilege by default: the admin/config/stats surface stays closed unless a
     # key is explicitly granted a higher role (or this is raised in dev).
-    default_role: str = "researcher"
+    default_role: str = "user"
 
     # --- Identity (bearer credentials) ------------------------------------- #
     # OFF by default. "none" means the Authorization header is not an
     # authentication input at all and every existing deployment behaves exactly
     # as before. Turning this on makes `Authorization: Bearer <credential>` a
     # second way in, resolving to tenant f"{issuer}:{subject}" with the explicit
-    # ROLE_RESEARCHER role — never default_role, which is `admin` on the demo box.
+    # ROLE_USER role — never default_role, which is `admin` on the demo box.
     identity_provider: str = "none"          # none | bvbrc | oidc
     # HARD PIN for BV-BRC tokens: the only SigningSubject URLs whose keys may
     # verify a token. BV-BRC's own validateToken.js fetches the key from whatever
@@ -435,6 +446,20 @@ class Settings(BaseSettings):
     @classmethod
     def _split_identity_oidc_lists(cls, value: object) -> object:
         return _split_list_env(value)
+
+    # --- User profile store (ADR-0004 decision 1) --------------------------- #
+    # The first verified bearer authentication upserts a profile row
+    # users(subject, issuer, email, display_name, first_seen_at, last_seen_at),
+    # keyed on the tenant string f"{issuer}:{sub}" — never an email. The write
+    # is fire-and-forget on the auth path: auth never fails because it did.
+    #   memory   (default) process-local; nothing persists (dev/tests).
+    #   sqlite   a durable `users` table in `user_store_path`.
+    #   postgres the same table in `user_store_dsn` (falls back to
+    #            `postgres_dsn`) — the multi-process source of truth, and the
+    #            backend ADR-0004's groups/shares will FK onto.
+    user_store_backend: str = "memory"  # memory | sqlite | postgres
+    user_store_path: str = "ragstack_users.db"
+    user_store_dsn: str = ""
 
     # Per-tenant collection allowlist: tenant -> [collection ids] it may read/query
     # (and ingest into). A tenant ABSENT from the map is UNRESTRICTED — so an

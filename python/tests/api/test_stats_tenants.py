@@ -12,7 +12,7 @@ import pytest
 from ragstack.api import security
 from ragstack.api.main import app
 from ragstack.api.routers import stats
-from ragstack.api.security import ROLE_ADMIN, ROLE_RESEARCHER
+from ragstack.api.security import ROLE_ADMIN, ROLE_USER
 from ragstack.models import Chunk
 
 pytestmark = pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def _seed() -> None:
     await app.state.text_index.index(chunks)
 
 
-def _configure_keys(monkeypatch, role: str = ROLE_RESEARCHER) -> None:
+def _configure_keys(monkeypatch, role: str = ROLE_USER) -> None:
     monkeypatch.setattr(security.settings, "api_keys", ["k-acme", "k-admin"])
     monkeypatch.setattr(
         security.settings, "api_key_tenants", {"k-acme": "acme", "k-admin": "acme"}
@@ -81,12 +81,12 @@ async def test_other_tenants_corpus_never_listed(client, monkeypatch):
 async def test_policy_map_is_admin_only(client, monkeypatch):
     _configure_keys(monkeypatch)
     monkeypatch.setattr(stats.settings, "tenant_collections", {"acme": ["default"]})
-    researcher = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-acme"})
+    user = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-acme"})
     admin = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-admin"})
-    # The map names OTHER tenants, so a researcher gets null while still learning
+    # The map names OTHER tenants, so a plain user gets null while still learning
     # its own confinement via restricted_to.
-    assert researcher.json()["policy"] is None
-    assert researcher.json()["restricted_to"] == ["default"]
+    assert user.json()["policy"] is None
+    assert user.json()["restricted_to"] == ["default"]
     assert admin.json()["policy"] == {"acme": ["default"]}
 
 

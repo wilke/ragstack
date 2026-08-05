@@ -172,7 +172,7 @@ async def test_shared_store_still_unregisters_with_purge_false(client, manifests
 async def test_purge_requires_admin(client, monkeypatch, manifests):
     _, vs, _ = _add("phys_guarded", cid="guarded")
     await _populate(vs, InMemoryTextIndex())
-    monkeypatch.setattr(security.settings, "default_role", "researcher")
+    monkeypatch.setattr(security.settings, "default_role", "user")
     r = await client.delete("/v1/collections/guarded?purge=true")
     assert r.status_code == 403
     assert await vs.count_tenants(["default"]) == 1

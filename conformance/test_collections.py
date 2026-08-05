@@ -171,9 +171,48 @@ async def test_create_collection_go_scaffold(
     _validate_info(resp.json(), schemas)
 
 
-async def test_create_missing_fields_is_422(client: httpx.AsyncClient) -> None:
-    """Both impls validate the request body (embedding + chunk required)."""
-    resp = await client.post("/v1/collections", json={"chunk": {"method": "fixed"}}, headers=_headers())
+async def test_create_malformed_body_is_422(client: httpx.AsyncClient) -> None:
+    """Both impls validate the request body. `embedding` and `chunk` are now
+    OPTIONAL (omitted → the server-default build spec, ADR-0003), so a body
+    without them is valid — but a mistyped field is still rejected."""
+    resp = await client.post(
+        "/v1/collections", json={"chunk": {"method": 123}}, headers=_headers()
+    )
     if resp.status_code in (401, 403):
-        pytest.skip("caller lacks admin access to the create surface")
+        pytest.skip("caller lacks access to the create surface")
     assert resp.status_code == 422, resp.text
+
+
+async def test_create_without_build_spec_python(
+    client: httpx.AsyncClient, impl: str, schemas: dict[str, dict]
+) -> None:
+    """POST /v1/collections with only {id, label}: creation is open to any
+    authenticated principal, and the server resolves its default build spec into
+    the collection (ADR-0003 decision 3). A black-box test cannot know WHICH
+    defaults the server runs with — only that concrete values were resolved in
+    (non-empty model, positive dim, a chunk method) rather than echoed back null.
+
+    Python-gated: the Go scaffold echoes the request without resolving defaults."""
+    if impl != "python":
+        pytest.skip("server-default build-spec resolution is python-authoritative in phase 3")
+    cid = "conf-default-spec"
+    resp = await client.post(
+        "/v1/collections", json={"id": cid, "label": "Server default spec"}, headers=_headers()
+    )
+    if resp.status_code == 401:
+        pytest.skip("caller is unauthenticated")
+    if resp.status_code == 409:
+        # Leftover from an earlier run whose caller lacked admin for the cleanup
+        # delete below; the id already existing still means creation worked once.
+        pytest.skip("collection already exists from a previous run (cleanup needs admin)")
+    assert resp.status_code == 201, resp.text
+    info = resp.json()
+    _validate_info(info, schemas)
+    assert info["id"] == cid
+    assert info["model"], "server default embedding model must be resolved, not empty"
+    assert info["dim"] > 0
+    assert info["chunk_method"], "server default chunk method must be resolved, not null"
+    # Cleanup is admin-only; tolerate a non-admin creator (the 409-skip above
+    # keeps re-runs honest in that case).
+    deleted = await client.delete(f"/v1/collections/{cid}", headers=_headers())
+    assert deleted.status_code in (204, 401, 403), deleted.text

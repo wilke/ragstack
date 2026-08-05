@@ -403,9 +403,12 @@ export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
   return get<CollectionsResponse>("/v1/collections", apiKey);
 }
 
-// Create a new (empty) collection bound to a registered embedding model + chunk
-// strategy. Admin-only server-side; returns the created CollectionInfo (201).
-// 409 = id already exists · 404 = unknown embedding model · 400 = bad model/chunk.
+// Create a new (empty) collection. Open to any authenticated principal
+// (ADR-0003); the `embedding`/`chunk` build-spec overrides are ADMIN-ONLY —
+// omit both (the common case) and the server resolves its default build spec
+// into the collection. Returns the created CollectionInfo (201).
+// 409 = id already exists · 404 = unknown embedding model · 400 = bad model/chunk
+// · 403 = build-spec override without the admin role.
 export interface ChunkConfig {
   method: string;
   size?: number | null;
@@ -414,8 +417,8 @@ export interface ChunkConfig {
 }
 
 export interface CollectionCreateRequest {
-  embedding: string; // id of a registered embedding model (e.g. "sfr")
-  chunk: ChunkConfig;
+  embedding?: string; // id of a registered embedding model; omit → server default (admin-only to supply)
+  chunk?: ChunkConfig; // omit → server default chunk strategy (admin-only to supply)
   id?: string; // explicit collection id; omit → content-addressed
   label?: string;
 }

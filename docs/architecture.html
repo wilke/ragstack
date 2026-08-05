@@ -240,7 +240,7 @@ contract.</p>
 </tr>
 <tr>
 <td><strong>Identity &amp; RBAC</strong></td>
-<td>API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; four roles — <code>admin</code>, <code>engineer</code>, <code>manager</code>, <code>researcher</code></td>
+<td>API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; two roles — <code>admin</code>, <code>user</code> (<code>researcher</code> accepted as a deprecated alias; see <a href="adr-0003-access-control.html">ADR-0003</a>)</td>
 <td>✅ Python</td>
 </tr>
 <tr>
@@ -634,8 +634,8 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 <tr>
 <td>POST</td>
 <td><code>/v1/collections</code></td>
-<td>Create a collection (model + chunker)</td>
-<td>admin</td>
+<td>Create a collection (server-default build spec; supplying <code>embedding</code>/<code>chunk</code> is admin-only)</td>
+<td>principal</td>
 <td>✅</td>
 <td>⚠️ stub</td>
 </tr>
@@ -801,8 +801,9 @@ The authoritative definition is <code>contracts/openapi.yaml</code>; per-field r
 </tr>
 </tbody>
 </table></div>
-<p><strong>RBAC roles:</strong> <code>admin</code> (superuser) · <code>engineer</code> (data ops) · <code>manager</code> (dashboard reads) ·
-<code>researcher</code> (read-only).</p>
+<p><strong>RBAC roles:</strong> <code>admin</code> (superuser) · <code>user</code> (everything not admin-gated). <code>researcher</code> is a
+deprecated alias for <code>user</code>, normalized at startup with a warning; <code>engineer</code>/<code>manager</code> were
+removed (<a href="adr-0003-access-control.html">ADR-0003</a>) and are rejected at startup.</p>
 <blockquote>
 <p>The <code>stream</code> field exists on the query request model but there is <strong>no</strong> separate
 streaming endpoint yet. Go request models still lack <code>rerank</code> / <code>rerank_candidates</code> (#27).</p>

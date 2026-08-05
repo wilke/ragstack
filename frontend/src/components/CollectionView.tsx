@@ -42,13 +42,12 @@ import { EmptyState } from "./states/EmptyState";
 
 const MAX_MB = 50; // advisory only; the server is authoritative (returns 413).
 
-// Embedding model for a new collection - matches the demo's SFR collection so a
-// user-created collection is queryable with the same embedder as the default.
-// (The Ops admin panel lets an admin pick any registered embedding model; this
-// demo path keeps one fewer decision in the way.) The CHUNK strategy is no longer
-// hardcoded here: it is chosen per collection in NewCollectionForm (defaults still
-// fixed_token/512/64).
-const NEW_COLLECTION_EMBEDDING = "sfr";
+// No embedding model is sent for a new collection: the server resolves its
+// default build spec (ADR-0003 — supplying `embedding` is an admin-only
+// override, and the old hardcoded "sfr" ref 404'd on servers without that
+// registered model). The Ops admin panel is where an admin picks a specific
+// registered embedding model. The CHUNK strategy comes from NewCollectionForm,
+// which defaults to "Server default" (no chunk field sent at all).
 
 // Create errors are worded once, in lib/collections.ts, so this view and the Ops
 // admin panel explain the same 409/404/400 the same way.
@@ -116,10 +115,12 @@ export function CollectionView({
   // strategy, then select it once the registry refetch has it as an option.
   // Errors surface via createErrorMessage (which unwraps the server's `detail`).
   const [creating, setCreating] = useState(false);
-  const create = useMutation<CollectionInfo, Error, { name: string; chunk: ChunkConfigBody }>({
+  const create = useMutation<CollectionInfo, Error, { name: string; chunk?: ChunkConfigBody }>({
     mutationFn: ({ name, chunk }) =>
       createCollection(
-        { embedding: NEW_COLLECTION_EMBEDDING, chunk, id: name, label: name },
+        // `chunk` is only present when the user actively picked a concrete
+        // strategy (admin-only override); omitted → server default build spec.
+        { id: name, label: name, ...(chunk ? { chunk } : {}) },
         apiKey || undefined,
       ),
     onSuccess: async (info) => {

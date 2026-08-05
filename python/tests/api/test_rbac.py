@@ -1,6 +1,6 @@
 """RBAC (Principal + role) and the admin /v1/config allowlist.
 
-Authorization is enforced server-side: a researcher (or keyless dev) is refused
+Authorization is enforced server-side: a plain user (or keyless dev) is refused
 the admin surface even though tenant auth succeeds, and /v1/config never
 serializes a secret regardless of how settings grow.
 """
@@ -12,6 +12,7 @@ from ragstack.api import security
 from ragstack.api.security import (
     ROLE_ADMIN,
     ROLE_RESEARCHER,
+    ROLE_USER,
     Principal,
     _principal_from_key,
     require_role,
@@ -35,19 +36,19 @@ _SECRET_RE = re.compile(r"(password|passwd|secret|_dsn|dsn$|api_?key|_key$|crede
 
 def test_keyless_is_default_tenant_and_default_role(monkeypatch):
     monkeypatch.setattr(security.settings, "api_keys", [])
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     p = _principal_from_key(None)
-    assert p == Principal(tenant="default", role=ROLE_RESEARCHER)
+    assert p == Principal(tenant="default", role=ROLE_USER)
 
 
 def test_mapped_key_resolves_tenant_and_role(monkeypatch):
     monkeypatch.setattr(security.settings, "api_keys", ["adm", "res"])
     monkeypatch.setattr(security.settings, "api_key_tenants", {"adm": "acme"})
     monkeypatch.setattr(security.settings, "api_key_roles", {"adm": ROLE_ADMIN})
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     assert _principal_from_key("adm") == Principal(tenant="acme", role=ROLE_ADMIN)
     # A valid-but-unmapped key gets the default tenant + default role.
-    assert _principal_from_key("res") == Principal(tenant="default", role=ROLE_RESEARCHER)
+    assert _principal_from_key("res") == Principal(tenant="default", role=ROLE_USER)
 
 
 def test_bad_key_raises_401(monkeypatch):
@@ -64,10 +65,10 @@ def test_bad_key_raises_401(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_config_keyless_is_forbidden_not_admin(client, monkeypatch):
-    # Keyless dev resolves to the default role (researcher), which is NOT admin —
+    # Keyless dev resolves to the default role (user), which is NOT admin —
     # the admin surface stays closed by default (least privilege).
     monkeypatch.setattr(security.settings, "api_keys", [])
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     assert (await client.get("/v1/config")).status_code == 403
 
 
@@ -75,7 +76,7 @@ async def test_config_keyless_is_forbidden_not_admin(client, monkeypatch):
 async def test_config_requires_admin_role(client, monkeypatch):
     monkeypatch.setattr(security.settings, "api_keys", ["adm", "res"])
     monkeypatch.setattr(security.settings, "api_key_roles", {"adm": ROLE_ADMIN})
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
 
     # No key -> 401 (auth), valid non-admin -> 403 (authz), admin -> 200.
     assert (await client.get("/v1/config")).status_code == 401
@@ -131,7 +132,7 @@ def test_validate_role_settings_rejects_bad_default_role(monkeypatch):
 
 
 def test_validate_role_settings_rejects_bad_mapped_role_without_leaking_key(monkeypatch):
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     monkeypatch.setattr(security.settings, "api_key_roles", {"SECRET-KEY": "wizard"})
     with pytest.raises(RuntimeError) as exc:
         validate_role_settings()
@@ -140,9 +141,67 @@ def test_validate_role_settings_rejects_bad_mapped_role_without_leaking_key(monk
 
 
 def test_validate_role_settings_passes_on_valid_config(monkeypatch):
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
     monkeypatch.setattr(security.settings, "api_key_roles", {"k": ROLE_ADMIN})
     validate_role_settings()  # no raise
+
+
+# --------------------------------------------------------------------------- #
+# ADR-0003 role vocabulary: researcher is an alias, engineer/manager are gone
+# --------------------------------------------------------------------------- #
+
+def test_researcher_alias_normalizes_to_user_with_a_warning(monkeypatch, caplog):
+    """Configs written against the old four-role world keep working: a key (or
+    default_role) that says `researcher` resolves to the `user` role — loudly,
+    once, so the operator learns the vocabulary moved."""
+    import logging
+
+    monkeypatch.setattr(security.settings, "api_keys", ["legacy"])
+    monkeypatch.setattr(security.settings, "api_key_roles", {"legacy": ROLE_RESEARCHER})
+    monkeypatch.setattr(security, "_warned_researcher_alias", False)
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.security"):
+        p = _principal_from_key("legacy")
+    assert p.role == ROLE_USER  # normalized, never the literal alias
+    assert any("deprecated alias" in r.message for r in caplog.records)
+
+    # ...and the warning fires once per process, not once per request.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.security"):
+        assert _principal_from_key("legacy").role == ROLE_USER
+    assert not [r for r in caplog.records if "deprecated alias" in r.message]
+
+
+def test_researcher_default_role_normalizes_too(monkeypatch):
+    monkeypatch.setattr(security.settings, "api_keys", [])
+    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    assert _principal_from_key(None).role == ROLE_USER
+
+
+def test_validate_role_settings_accepts_the_researcher_alias(monkeypatch):
+    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "api_key_roles", {"k": ROLE_RESEARCHER})
+    validate_role_settings()  # no raise — the alias still maps to a real role
+
+
+@pytest.mark.parametrize("removed", ["engineer", "manager"])
+def test_validate_role_settings_rejects_removed_roles_at_startup(monkeypatch, removed):
+    """engineer/manager no longer map to any surface (ADR-0003); a config that
+    grants them must fail boot with a pointer at the ADR, not silently 403."""
+    monkeypatch.setattr(security.settings, "default_role", removed)
+    monkeypatch.setattr(security.settings, "api_key_roles", {})
+    with pytest.raises(RuntimeError, match="0003"):
+        validate_role_settings()
+
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    monkeypatch.setattr(security.settings, "api_key_roles", {"k": removed})
+    with pytest.raises(RuntimeError, match="0003"):
+        validate_role_settings()
+
+
+def test_require_role_accepts_the_researcher_alias_but_not_removed_roles():
+    assert require_role(ROLE_RESEARCHER) is not None  # normalized to `user`
+    with pytest.raises(ValueError, match="unknown role"):
+        require_role("engineer")
 
 
 @pytest.mark.asyncio

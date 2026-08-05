@@ -16,36 +16,43 @@ import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 // "collection" is the only correct word. This form used to be called
 // NewLibraryForm while posting to /v1/collections; do not bring that name back.
 //
-// Chunking is build-time identity for a collection — it can't be edited later —
-// so it is chosen HERE rather than inherited from a server default the user
-// can't see. The defaults reproduce the previous hardcoded behaviour
-// (fixed_token / 512 / 64), so the common path is still: type a name, Create.
+// Chunking is build-time identity for a collection — it can't be edited later.
+// The DEFAULT choice is "Server default": no `chunk` field is sent at all, and
+// the server resolves its configured default build spec into the collection
+// (ADR-0003 — supplying a concrete `chunk` is an admin-only override, so the
+// default path is also the one every authenticated user is allowed to take).
+// The form does NOT pretend to know what the server default is (the client-side
+// DEFAULT_CHUNK_FORM fixed_token/512/64 is a guess, not the server's fixed/512/64);
+// the created collection reports its resolved chunking after the fact.
 //
-// The chunk controls come from the shared ChunkStrategyPicker, which the Ops
-// admin panel also uses — one definition of what a collection's chunking is.
+// Picking a concrete strategy shows the shared ChunkStrategyPicker, which the
+// Ops admin panel also uses — one definition of what a collection's chunking is.
 export function NewCollectionForm({
   onCreate,
   onCancel,
   pending,
   error,
 }: {
-  onCreate: (name: string, chunk: ChunkConfigBody) => void;
+  // `chunk` is undefined when the user kept "Server default" — the caller must
+  // then OMIT the field from the request body entirely.
+  onCreate: (name: string, chunk?: ChunkConfigBody) => void;
   onCancel: () => void;
   pending: boolean;
   error: string | null;
 }) {
   const [name, setName] = useState("");
+  const [useServerDefault, setUseServerDefault] = useState(true);
   const [form, setForm] = useState<ChunkForm>(DEFAULT_CHUNK_FORM);
   const [touched, setTouched] = useState(false);
 
-  const chunkProblem = validateChunkForm(form);
+  const chunkProblem = useServerDefault ? null : validateChunkForm(form);
   const nameProblem = name.trim() === "" ? "Give the collection a name." : null;
   const problem = nameProblem ?? chunkProblem;
 
   const submit = () => {
     setTouched(true);
     if (problem) return;
-    onCreate(name.trim(), buildChunkConfig(form));
+    onCreate(name.trim(), useServerDefault ? undefined : buildChunkConfig(form));
   };
 
   return (
@@ -74,7 +81,31 @@ export function NewCollectionForm({
         </p>
       </div>
 
-      <ChunkStrategyPicker idPrefix="new-col" form={form} onChange={setForm} />
+      <div className="mb-3">
+        <label htmlFor="new-col-chunk-mode" className="mb-1 block text-xs font-medium text-gray-500">
+          Chunking
+        </label>
+        <select
+          id="new-col-chunk-mode"
+          value={useServerDefault ? "server" : "custom"}
+          onChange={(e) => setUseServerDefault(e.target.value === "server")}
+          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-sm"
+        >
+          <option value="server">Server default (recommended)</option>
+          <option value="custom">Choose a strategy (admin only)</option>
+        </select>
+        {useServerDefault ? (
+          <p className="mt-1 text-[11px] leading-snug text-gray-400">
+            The server&apos;s configured chunker is used and recorded in the collection&apos;s
+            build spec. Anyone can create a collection this way; picking a specific strategy
+            is an admin-only override.
+          </p>
+        ) : null}
+      </div>
+
+      {useServerDefault ? null : (
+        <ChunkStrategyPicker idPrefix="new-col" form={form} onChange={setForm} />
+      )}
 
       {touched && problem ? (
         <p role="alert" className="mt-3 rounded bg-amber-50 p-2 text-sm text-amber-800">
