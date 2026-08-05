@@ -111,6 +111,93 @@ export function collectionShareRevokeMessage(status: number | null, body: string
   return `Could not revoke the share (error ${status}).`;
 }
 
+/**
+ * The grantee string that shares a collection with a RAGStack group (issue #245):
+ * `@group:<id>`, mirroring the server's `_resolve_grantee`. Kept here (with the
+ * `@public` literal) so the share dialog's group picker and the API agree on the
+ * one spelling the server parses as a group target.
+ */
+export function groupGrantee(groupId: string): string {
+  return `@group:${groupId.trim()}`;
+}
+
+/**
+ * What went wrong CREATING a group (`POST /v1/groups`).
+ *
+ * Group create is open to any authenticated caller — the only failures are a
+ * name collision / the reserved `public` name (409, the server names which), an
+ * empty name (422), a missing key (401), or the authorization store being down
+ * (503, fail closed). `apiDetail` unwraps the server's own sentence for 409/422;
+ * the raw body is never returned.
+ */
+export function groupCreateMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not create the group — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "You already have a group with that name (and “public” is reserved).";
+  }
+  if (status === 422) {
+    const detail = apiDetail(body);
+    return detail
+      ? `The server rejected that group: ${detail}`
+      : "A group needs a non-empty name.";
+  }
+  if (status === 401) return "Creating a group needs a valid API key or login.";
+  if (status === 503)
+    return "The authorization store is unavailable, so groups can't be created right now — try again shortly.";
+  return `Could not create the group (error ${status}).`;
+}
+
+/** Same, for deleting a group (`DELETE /v1/groups/{id}`). Owner-or-admin. */
+export function groupDeleteMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not delete the group — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "The built-in “public” group can't be deleted.";
+  }
+  if (status === 404) return "That group is already gone (or you can't see it).";
+  if (status === 401) return "Deleting a group needs a valid API key or login.";
+  if (status === 403)
+    return "Only the group's owner (or an admin) can delete it.";
+  if (status === 503)
+    return "The authorization store is unavailable, so deleting is refused right now — try again shortly.";
+  return `Could not delete the group (error ${status}).`;
+}
+
+/** What went wrong ADDING a member (`POST /v1/groups/{id}/members`). Owner-or-admin. */
+export function groupMemberAddMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not add the member — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "That user is already an active member of this group.";
+  }
+  if (status === 422) {
+    const detail = apiDetail(body);
+    return detail
+      ? `The server rejected that member: ${detail}`
+      : "A group member must be a user, not a group (no nesting), and can't be blank.";
+  }
+  if (status === 404) return "That group was not found (or you can't see it).";
+  if (status === 401) return "Adding a member needs a valid API key or login.";
+  if (status === 403)
+    return "Only the group's owner (or an admin) can change its membership.";
+  if (status === 503)
+    return "The authorization store is unavailable, so membership can't change right now — try again shortly.";
+  return `Could not add the member (error ${status}).`;
+}
+
+/** Same, for removing a member (`DELETE /v1/groups/{id}/members/{subject}`). */
+export function groupMemberRemoveMessage(status: number | null, _body: string): string {
+  if (status == null) return "Could not remove the member — could not reach the API.";
+  if (status === 404) return "That group was not found (or you can't see it).";
+  if (status === 401) return "Removing a member needs a valid API key or login.";
+  if (status === 403)
+    return "Only the group's owner (or an admin) can change its membership.";
+  if (status === 503)
+    return "The authorization store is unavailable, so membership can't change right now — try again shortly.";
+  return `Could not remove the member (error ${status}).`;
+}
+
 //: The literals that mean "share with everyone" — both are accepted by the API;
 //: the UI sends the canonical `@public`. Kept here so the toggle and the grant
 //: form agree on one spelling.

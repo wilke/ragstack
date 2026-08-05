@@ -150,10 +150,38 @@ blanket.</em> Decision 5 says "revoking a grantor also revokes everything they g
 onward"; the implementation computes a grounded least-fixpoint — an onward grant
 survives if its grantee retains access through an independent grounded share, and
 mutual-grant cycles collapse rather than protecting each other. This is strictly safer
-than the literal wording. (2) <em>Grant-option enforcement is deferred to #244.</em> "A grantor
-can never delegate more than they hold" is not yet enforced (nothing writes non-owner
-grants until the shares API lands); it MUST be enforced when #244 exposes granting, and
-the DDL-as-contract note in #243 flags this for any second consumer.</p>
+than the literal wording. (2) <em>Grant-option delegation is not yet exposed.</em> #244 shipped the
+shares API but deliberately scopes it to <code>read</code> grants by an owner-or-admin only —
+<code>grant_option</code>, <code>write</code>, and non-owner delegation are not exposed, so "a grantor can never
+delegate more than they hold" has nothing to enforce against yet. It MUST be enforced when a
+later unit exposes delegated granting; the DDL-as-contract note in #243 flags this for any
+second consumer coding against the shares table before then.</p>
+<p><strong>Implementation notes (added 2026-08-05 as #244 shipped the shares API/UI):</strong></p>
+<h1 id="244-exposed-granting-but-deliberately-kept-it-read-only-and-owner-or-admin">244 exposed granting but deliberately kept it <strong>read-only and owner-or-admin</strong>:</h1>
+<p><code>POST /v1/collections/{id}/shares</code> accepts <code>permission: read</code> only, only the owner
+(or an admin) may grant, and <code>grant_option</code> is <strong>not writable</strong> (always false). So no
+caller can yet write a non-owner or delegable grant, and the grant-option enforcement
+refinement note (2) above anticipated at #244 did <strong>not</strong> land — "a grantor can never
+delegate more than they hold" is still unenforced because nothing writes a delegable
+grant. It moves to the later issue that exposes <code>grant_option</code>/<code>write</code>; until then the</p>
+<h1 id="243-ddl-as-contract-flag-stands-for-any-second-consumer-making-a-collection-public-is">243 DDL-as-contract flag stands for any second consumer. Making a collection public is</h1>
+<p><code>GRANT read TO @public</code> and un-publishing is <code>DELETE</code> of that share, replacing the
+ADR-0003 <code>visibility</code> field as decided above.</p>
+<p><strong>Implementation notes (added 2026-08-05 as #245 shipped groups natively):</strong></p>
+<h1 id="245-realizes-decision-3-and-completes-the-public-as-built-in-group-half-of">245 realizes <strong>decision 3</strong> and completes the <code>public</code>-as-built-in-group half of</h1>
+<p><strong>decision 4</strong>. Groups are now first-class RAGStack-native rows (<code>group_store.py</code>,
+memory/sqlite/postgres backends): <code>POST/GET /v1/groups</code>, <code>GET/DELETE
+/v1/groups/{id}</code>, and <code>POST/DELETE /v1/groups/{id}/members</code> — create, list, view,
+soft-delete, and flat (no-nesting) membership. The built-in <code>public</code> group is a real,
+listable, viewable row that is <strong>never member-editable and never deletable</strong> (the
+store refuses both; the API surfaces the refusal as 409). Group grants are honoured
+through the <strong>same</strong> <code>grants_for_subject</code> seam as user grants — the store overrides it
+to union a subject's direct shares with the shares to every group they actively belong
+to (plus <code>public</code>) — so a <code>GRANT read TO @group:&lt;id&gt;</code> reaches every active member at
+read time with no per-router SQL. <strong>Grant-option / write / owner delegation is still
+deferred:</strong> #245 exposes no delegable grant, so refinement note (2) above — "a grantor
+can never delegate more than they hold … MUST be enforced when a later unit exposes
+delegated granting" — remains correctly unfulfilled and moves past the MVP.</p>
 </blockquote>
 <h2 id="context">Context</h2>
 <p>ADR-0003 put access on the collection — an owner, a visibility, a share list — but that

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "group_detail_response.json",
+  "title": "GroupDetailResponse",
+  "description": "A single group plus its active membership (GET /v1/groups/{id}). Owner, an active member, or an admin may view it; anyone else gets a leak-safe 404. The built-in 'public' group returns an empty members list (its membership is constant-true and never materialized).",
+  "type": "object",
+  "required": ["group", "members"],
+  "properties": {
+    "group": { "$ref": "group_record.json" },
+    "members": {
+      "type": "array",
+      "items": { "$ref": "group_member_record.json" }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "group_create_request.json",
+  "title": "GroupCreateRequest",
+  "description": "Create a group (POST /v1/groups body). Any authenticated user may create a group they own; the caller becomes owner_subject. The name must be non-empty, is unique per owner among active groups, and may not be the reserved literal 'public'.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "name": {
+      "description": "Human-readable group name. Non-empty; unique per owner among active groups; 'public' is reserved.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

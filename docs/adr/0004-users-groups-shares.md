@@ -34,6 +34,22 @@
 > `GRANT read TO @public` and un-publishing is `DELETE` of that share, replacing the
 > ADR-0003 `visibility` field as decided above.
 
+> **Implementation notes (added 2026-08-05 as #245 shipped groups natively):**
+> #245 realizes **decision 3** and completes the `public`-as-built-in-group half of
+> **decision 4**. Groups are now first-class RAGStack-native rows (`group_store.py`,
+> memory/sqlite/postgres backends): `POST/GET /v1/groups`, `GET/DELETE
+> /v1/groups/{id}`, and `POST/DELETE /v1/groups/{id}/members` — create, list, view,
+> soft-delete, and flat (no-nesting) membership. The built-in `public` group is a real,
+> listable, viewable row that is **never member-editable and never deletable** (the
+> store refuses both; the API surfaces the refusal as 409). Group grants are honoured
+> through the **same** `grants_for_subject` seam as user grants — the store overrides it
+> to union a subject's direct shares with the shares to every group they actively belong
+> to (plus `public`) — so a `GRANT read TO @group:<id>` reaches every active member at
+> read time with no per-router SQL. **Grant-option / write / owner delegation is still
+> deferred:** #245 exposes no delegable grant, so refinement note (2) above — "a grantor
+> can never delegate more than they hold … MUST be enforced when a later unit exposes
+> delegated granting" — remains correctly unfulfilled and moves past the MVP.
+
 ## Context
 
 ADR-0003 put access on the collection — an owner, a visibility, a share list — but that

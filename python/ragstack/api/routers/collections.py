@@ -50,6 +50,7 @@ from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
 from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
+from ragstack.group_store import get_group_store
 from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
@@ -722,6 +723,11 @@ _PUBLIC_LITERALS = frozenset({"@public", "public"})
 #: subject from a bare username (bare names are BV-BRC only).
 _DEFAULT_ISSUER = "bvbrc"
 
+#: Reserved prefixes naming a RAGStack group by id as a grantee. Intercepted
+#: BEFORE the generic ``':' → user`` branch so a bare ``group:<id>`` cannot be
+#: mis-parsed as an ``issuer='group'`` user subject. Mirrors ``@public``.
+_GROUP_PREFIXES = ("@group:", "group:")
+
 
 class ShareGrantRequest(BaseModel):
     """POST body for granting a share. v1 is deliberately minimal and read-only:
@@ -791,17 +797,30 @@ def _resolve_grantee(grantee: str, issuer: str) -> tuple[str, str]:
     """Map a grantee input to ``(grantee_type, grantee_id)``.
 
     - '@public'/'public' → (group, 'public'); never prefixed.
+    - '@group:<id>'/'group:<id>' → (group, '<id>'); a named group by id.
     - contains ':' → (user, <verbatim full subject>).
     - otherwise → (user, '<issuer>:<username>').
 
-    Raises :class:`HTTPException` 422 on an empty/whitespace grantee, a blank
-    issuer for a bare username, or a full 'issuer:subject' whose issuer or subject
-    half is empty (':', 'bvbrc:', ':alice' — a degenerate, unclaimable grant)."""
+    Raises :class:`HTTPException` 422 on an empty/whitespace grantee, an empty
+    group id, a blank issuer for a bare username, or a full 'issuer:subject' whose
+    issuer or subject half is empty (':', 'bvbrc:', ':alice' — a degenerate,
+    unclaimable grant). Group *existence* is validated by the caller
+    (:func:`create_share`), not here — this stays a pure string mapping."""
     g = grantee.strip()
     if not g:
         raise HTTPException(422, "grantee must not be empty or whitespace")
     if g in _PUBLIC_LITERALS:
         return GRANTEE_GROUP, PUBLIC_GROUP
+    # A named group by id — intercepted before the generic ':' user branch so a
+    # bare 'group:<id>' is never parsed as an issuer='group' user subject.
+    for pref in _GROUP_PREFIXES:
+        if g.startswith(pref):
+            gid = g[len(pref):].strip()
+            if not gid:
+                raise HTTPException(
+                    422, "a '@group:<id>' grantee must name a non-empty group id"
+                )
+            return GRANTEE_GROUP, gid
     if ":" in g:
         # Already a full 'issuer:subject' string (a UI share dialog may still send
         # a bare username, handled below) — keep it verbatim, but reject a
@@ -911,6 +930,25 @@ async def create_share(
     grantee_type, grantee_id = _resolve_grantee(req.grantee, req.issuer)
 
     store = get_acl_store()
+
+    if grantee_type == GRANTEE_GROUP and grantee_id != PUBLIC_GROUP:
+        # A group grantee is RAGStack-native and therefore verifiable — unlike a
+        # BV-BRC username. Validate it exists (and is active) so a typo'd id is a
+        # 422 echoing the resolved id, not an unclaimable grant nobody belongs to.
+        # (The store keeps group grants read-only via the API perm check above;
+        # write/owner resolution is owner-only regardless — authz.py.)
+        try:
+            group = await get_group_store().get_group(grantee_id)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — fail closed on any store outage
+            raise HTTPException(
+                503, "authorization store unavailable; refusing to serve (fail closed)"
+            ) from e
+        if group is None or not group.active:
+            raise HTTPException(
+                422, f"unknown group {grantee_id!r}; create it via POST /v1/groups first"
+            )
 
     if grantee_type == GRANTEE_USER:
         # A read grant to the collection's own owner is a trivial no-op (the owner

@@ -536,6 +536,112 @@ export function deleteShare(id: string, shareId: string, apiKey?: string): Promi
   );
 }
 
+// --- Groups (issue #245) — RAGStack-native named bags of user subjects that a
+// share can target via `@group:<id>`. Group create is open to any authenticated
+// caller (they own what they create); view is owner-or-member (a non-member gets
+// a leak-safe 404); manage (delete, add/remove members) is owner-or-admin. ---
+
+// One group row. Mirrors the server's GroupInfo and the GroupRecord contract
+// schema. `active` is derived server-side from `deleted_at` (empty string ==
+// active); `deleted_by`/`deleted_at` are "" while the group is active. The
+// built-in world-readable `public` group has id "public", `built_in` true and an
+// empty `owner_subject` — but it is never returned by listGroups.
+export interface GroupRecord {
+  id: string;
+  name: string;
+  owner_subject: string; // "issuer:sub" of the creating user; "" for the public group
+  built_in: boolean;
+  created_at: string;
+  deleted_by: string; // "" while active
+  deleted_at: string; // "" while active
+  active: boolean;
+}
+
+// One membership row. `subject` is always a resolved user subject ("issuer:sub"),
+// never a group id (no nesting). `active` is derived from `removed_at`.
+export interface GroupMemberRecord {
+  id: string;
+  group_id: string;
+  subject: string;
+  added_by: string;
+  added_at: string;
+  removed_by: string; // "" while active
+  removed_at: string; // "" while active
+  active: boolean;
+}
+
+export interface GroupsResponse {
+  groups: GroupRecord[];
+}
+
+export interface GroupDetailResponse {
+  group: GroupRecord;
+  members: GroupMemberRecord[];
+}
+
+// POST /v1/groups body. `name` is non-empty, unique per owner among active
+// groups, and may not be the reserved literal "public".
+export interface GroupCreateRequest {
+  name: string;
+}
+
+// POST /v1/groups/{id}/members body. `subject` is resolved server-side exactly
+// like a share grantee — a value containing ":" is kept verbatim, a bare username
+// is prefixed to "<issuer>:<username>" (issuer defaults to "bvbrc"). The resolved
+// subject is echoed back so a typo is visible.
+export interface GroupMemberAddRequest {
+  subject: string;
+  issuer?: string;
+}
+
+// The groups the caller owns or is an active member of (the built-in `public`
+// group is not listed). Any authenticated caller may read this; 503 on a store
+// outage (fail closed).
+export function listGroups(apiKey?: string): Promise<GroupsResponse> {
+  return get<GroupsResponse>("/v1/groups", apiKey);
+}
+
+// Create a group owned by the caller (201). 409 = name collision for this owner
+// (or the reserved "public") · 422 = empty/whitespace name · 503 = store outage.
+export function createGroup(req: GroupCreateRequest, apiKey?: string): Promise<GroupRecord> {
+  return post<GroupRecord>("/v1/groups", req, apiKey);
+}
+
+// A group and its active membership (owner-or-member-or-admin). A non-member gets
+// a leak-safe 404. 503 on a store outage.
+export function getGroup(id: string, apiKey?: string): Promise<GroupDetailResponse> {
+  return get<GroupDetailResponse>(`/v1/groups/${encodeURIComponent(id)}`, apiKey);
+}
+
+// Soft-delete a group (owner-or-admin, 204). Shares granted to it become inert
+// immediately. 409 = the built-in `public` group · 404 = unknown/unviewable · 403
+// = a member who is not the owner · 503 = store outage.
+export function deleteGroup(id: string, apiKey?: string): Promise<void> {
+  return del(`/v1/groups/${encodeURIComponent(id)}`, apiKey);
+}
+
+// Add a user to a group (owner-or-admin, 201). Returns the resolved membership row
+// so a typo'd subject is visible. 409 = duplicate active membership (or the public
+// group) · 422 = a group-target form (no nesting) · 404 = unknown group · 403 =
+// non-owner member · 503 = store outage.
+export function addGroupMember(
+  id: string,
+  req: GroupMemberAddRequest,
+  apiKey?: string,
+): Promise<GroupMemberRecord> {
+  return post<GroupMemberRecord>(`/v1/groups/${encodeURIComponent(id)}/members`, req, apiKey);
+}
+
+// Remove a member (owner-or-admin, 204). `subject` is the resolved subject as
+// stored ("issuer:sub"). Removing a non-member is a 204 no-op. 404 = unknown group
+// · 403 = non-owner member · 503 = store outage.
+export function removeGroupMember(id: string, subject: string, apiKey?: string): Promise<void> {
+  return del(
+    `/v1/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(subject)}`,
+    apiKey,
+  );
+}
+
 // --- Model registry (admin-only) ---
 
 // One registered model. Mirrors ragstack.api.model_registry.ModelEntry. Note

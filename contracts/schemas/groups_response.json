@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "groups_response.json",
+  "title": "GroupsResponse",
+  "description": "The groups the caller owns or is an active member of (GET /v1/groups). The implicit built-in 'public' group is not listed here.",
+  "type": "object",
+  "required": ["groups"],
+  "properties": {
+    "groups": {
+      "type": "array",
+      "items": { "$ref": "group_record.json" }
+    }
+  },
+  "additionalProperties": false
+}
