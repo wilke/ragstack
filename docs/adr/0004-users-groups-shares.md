@@ -1,7 +1,7 @@
 # ADR 0004 — Users, groups, and shares: Postgres ACLs with grant-option delegation
 
-- **Status:** Proposed
-- **Date:** 2026-08-04
+- **Status:** Accepted
+- **Date:** 2026-08-05
 - **Deciders:** @wilke
 - **Amends:** [ADR-0003](0003-access-control.md) decision 2 — the `visibility` field is
   replaced by a share to the built-in `public` group, so one mechanism answers "who may
