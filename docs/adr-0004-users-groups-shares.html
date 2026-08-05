@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0004 — Users, groups, and shares: Postgres ACLs with grant-option delegation · RAGStack</title>
+<style>
+  :root {
+    --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
+    --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
+
+  header.hero { border-bottom:1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      var(--paper);
+  }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
+  .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent-2); margin:0 0 .7rem; }
+  h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
+  .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .chip a { color:var(--accent); text-decoration:none; }
+
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
+  .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
+    display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
+  nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
+  ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
+  ul.toc > li { margin:.1rem 0; }
+  ul.toc > li > a { display:block; padding:.28rem .6rem; border-radius:6px; color:var(--ink);
+    text-decoration:none; font-weight:550; border-left:2px solid transparent; }
+  ul.toc-sub { margin:.1rem 0 .5rem; }
+  ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
+    text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
+  nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
+  main { padding:1.6rem 0 5rem; min-width:0; }
+  .content { max-width:60rem; }
+  .content code { font-size:.85em; }
+  h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
+    line-height:1.2; scroll-margin-top:1rem; }
+  h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
+    border-radius:2px; margin-bottom:.9rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
+  h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
+  p { margin:.7rem 0; }
+  strong { font-weight:650; color:#0d1620; }
+  hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
+  .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
+    opacity:0; font-size:.8em; }
+  h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
+  a code { color:var(--accent); background:var(--accent-soft); }
+  ul, ol { padding-left:1.3rem; margin:.6rem 0; }
+  li { margin:.28rem 0; }
+  li::marker { color:var(--faint); }
+  blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
+    background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
+  blockquote p { margin:.3rem 0; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
+  .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  td code, th code { white-space:nowrap; }
+  thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
+  .diagram pre.mermaid { margin:0; text-align:center; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
+  .foot-inner code { font-size:.8rem; }
+  @media (max-width:920px) {
+    .wrap { grid-template-columns:1fr; gap:0; }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
+    main { padding-top:1rem; }
+  }
+</style>
+</head>
+<body>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">ADR 0004 — Users, groups, and shares: Postgres ACLs with grant-option delegation</h1>
+  <p class="tagline">Profile rows on first auth, pending shares by verified email, public as a built-in group, and WITH GRANT OPTION instead of rwx.</p>
+  <div class="chips">
+      <span class="chip">ADR 0004</span>
+      <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
+<li><a href="#context">Context</a>
+</li>
+<li><a href="#decision">Decision</a>
+<ul class="toc-sub">
+<li><a href="#schema-sketch-normative-shape-not-final-ddl">Schema sketch (normative shape, not final DDL)</a></li>
+</ul>
+</li>
+<li><a href="#consequences">Consequences</a>
+</li>
+<li><a href="#alternatives-considered">Alternatives considered</a>
+</li>
+</ul>
+  </nav>
+  <main><article class="content" id="content">
+<ul>
+<li><strong>Status:</strong> Proposed</li>
+<li><strong>Date:</strong> 2026-08-04</li>
+<li><strong>Deciders:</strong> @wilke</li>
+<li><strong>Amends:</strong> <a href="adr-0003-access-control.html">ADR-0003</a> decision 2 — the <code>visibility</code> field is
+  replaced by a share to the built-in <code>public</code> group, so one mechanism answers "who may
+  read" instead of two.</li>
+<li><strong>Related:</strong> <a href="https://github.com/wilke/ragstack/issues/197">#197</a>, the GoWe engine
+  (intended second consumer of the group service)</li>
+</ul>
+<h2 id="context">Context</h2>
+<p>ADR-0003 put access on the collection — an owner, a visibility, a share list — but that
+is a shape, not a design. Underneath it, nothing exists:</p>
+<ul>
+<li><strong>There is no user table.</strong> Identities are minted per-request from a verified token
+  (<code>f"{issuer}:{subject}"</code>) and never persisted. Users cannot be enumerated, a share
+  dialog cannot autocomplete, and nobody can be granted anything before their first login.</li>
+<li><strong>The grantee cannot be named.</strong> OIDC's <code>sub</code> is an opaque provider string no colleague
+  can type; only BV-BRC's <code>un</code> is human-legible. Sharing is structurally impossible for
+  OIDC identities as built.</li>
+<li><strong>BV-BRC has no group concept</strong>, so groups cannot be delegated to the IdP.</li>
+<li><strong>Two mechanisms answered one question</strong> in ADR-0003 as written: a <code>visibility</code> enum
+  <em>and</em> a share list both decide who may read. Two mechanisms means two code paths and
+  two revocation stories.</li>
+</ul>
+<p>A Postgres instance is already deployed in the infra stack, and <code>CollectionStore</code> already
+has a <code>postgres</code> backend, so a relational ACL store adds no new service.</p>
+<h2 id="decision">Decision</h2>
+<p><strong>1. A profile row on first authentication.</strong> The first verified token for a subject
+upserts <code>users(subject, issuer, email, display_name, first_seen_at, last_seen_at)</code>.
+<code>subject</code> is the tenant string <code>issuer:sub</code> — the same key the rest of the system uses.
+This makes users enumerable and shares FK-checkable; it grants nothing by itself.</p>
+<p><strong>2. Pending shares keyed on a verified email claim.</strong> A share to someone who has never
+logged in is stored as <code>pending_shares(email, collection_id, permission, grant_option,
+granted_by, …)</code> and converted to a real share on the first login whose token carries a
+<strong>verified</strong> matching email (<code>email_verified=true</code> for OIDC; BV-BRC usernames are shared
+directly, no pending row needed). An unverified email claim never claims a pending share —
+otherwise registering a colleague's address at any accepted IdP steals their grants.</p>
+<p><strong>3. Groups are RAGStack-native, in Postgres, designed as a reusable service.</strong>
+<code>groups(id, name, owner_subject, built_in)</code> + <code>group_members(group_id, subject, added_by,
+added_at)</code>. BV-BRC emits no group claims, so this cannot be delegated. The schema and its
+API live behind their own seam so GoWe can consume the same service rather than grow a
+second membership table.</p>
+<p><strong>4. <code>public</code> is a built-in group, not a user and not a field.</strong> One reserved row,
+<code>built_in=true</code>, whose membership test short-circuits to <em>true</em> for every caller —
+the same shape as Postgres's <code>PUBLIC</code> pseudo-role and Unix's <code>other</code>. A fake user row was
+rejected (users authenticate, own things, and have emails; every enumeration would need to
+exclude it forever) and a sentinel string was rejected (it forfeits the FK and lets a typo
+grant to nobody, silently). Making a collection public <em>is</em> <code>GRANT read TO public</code>;
+un-publishing is revoking that row. <strong>The public group can hold <code>read</code> only</strong> — a write
+grant to it is rejected at the API, not warned about.</p>
+<p><strong>5. Permissions are <code>read &lt; write &lt; owner</code>, with delegation as a grant option — not
+<code>rwx</code>.</strong> Share-further is orthogonal to read/write (a steward may re-share what they
+cannot edit; a collaborator may edit what they must not re-share), so it is a boolean
+<code>grant_option</code> on the share row — SQL's <code>WITH GRANT OPTION</code> — not an <code>x</code> level. A grantor
+can never delegate more than they hold, and never with <code>grant_option</code> unless their own
+grant carries it. Every row records <code>granted_by</code>; <strong>revocation follows the chain</strong>, so
+revoking a grantor also revokes everything they granted onward. <code>owner</code> is a permission
+level like the others, constrained to exactly one active row per collection — which makes
+admin reassignment an ordinary revoke+grant pair in the same audited table, per ADR-0003's
+admin-bypass decision, rather than a special-cased column.</p>
+<p><strong>6. Revocation is soft.</strong> <code>revoked_at</code> + <code>revoked_by</code>, never DELETE. The performance
+objection is answered by a partial index:</p>
+<pre><code class="language-sql">CREATE UNIQUE INDEX shares_active
+  ON shares (collection_id, grantee_type, grantee_id, permission)
+  WHERE revoked_at IS NULL;
+</code></pre>
+<p>Access checks read only this index, which contains only active rows — lookup cost scales
+with <em>active</em> shares regardless of history. The partial-unique form also permits re-grant
+after revoke, which a plain unique constraint would block. Hard delete was rejected
+because it buys nothing: an audit requirement would then recreate the same rows in a
+separate log table.</p>
+<h3 id="schema-sketch-normative-shape-not-final-ddl">Schema sketch (normative shape, not final DDL)</h3>
+<pre><code class="language-sql">users          (subject PK, issuer, email, display_name, first_seen_at, last_seen_at)
+groups         (id PK, name, owner_subject → users, built_in)
+group_members  (group_id → groups, subject → users, added_by, added_at)
+shares         (id PK, collection_id, grantee_type user|group, grantee_id,
+                permission read|write|owner, grant_option,
+                granted_by → users, granted_at, revoked_by, revoked_at)
+pending_shares (email, collection_id, permission, grant_option,
+                granted_by, granted_at, claimed_by, claimed_at)
+</code></pre>
+<p>Effective permission of caller <em>C</em> on collection <em>K</em> =
+max over active rows granted to <em>C</em>, to any group containing <em>C</em>, or to <code>public</code> —
+then ADR-0003's admin bypass applies on top, as its own logged branch.</p>
+<h2 id="consequences">Consequences</h2>
+<p><strong>Accepted:</strong></p>
+<ul>
+<li><strong>Postgres becomes mandatory for any deployment that enables sharing.</strong> The JSON
+  <code>CollectionStore</code> backend stays for single-user dev, but concurrent grant/revoke under
+  <code>flock</code> is not a story worth writing. Sharing off ⇒ no new requirement.</li>
+<li><strong>First-login upsert puts a write on the auth path.</strong> It must be fire-and-forget
+  (auth never fails because the profile write did) and idempotent.</li>
+<li><strong>Pending shares depend on IdP email hygiene.</strong> The <code>email_verified</code> gate is
+  non-negotiable and must be tested against each accepted issuer, not assumed.</li>
+<li><strong>Grant chains add a recursive revoke.</strong> Cheap in Postgres (<code>WITH RECURSIVE</code> over
+  <code>granted_by</code>), but <code>granted_by</code> must be captured from the first row ever written — it
+  cannot be retrofitted.</li>
+<li><strong>Group membership changes are instant access changes.</strong> Adding someone to a group
+  grants them every collection shared to it, with no per-collection event. Group
+  membership edits therefore need the same audit columns as shares.</li>
+<li><strong>The OIDC provider must start extracting <code>email</code> / <code>email_verified</code> / <code>name</code> claims</strong>
+  (<code>oidc.py</code> currently reads <code>sub</code> only) — a small, contained change.</li>
+</ul>
+<p><strong>Gained:</strong> shares can name a person before they exist in the system; one mechanism from
+"share with a colleague" through "make it public" to "transfer ownership"; delegation
+without an ungoverned re-share free-for-all; and a permanent, queryable answer to <em>who
+could read this corpus in a given month, and who granted it</em> — provenance that licensed
+content may actually demand.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<ul>
+<li><strong>Share links / capability tokens.</strong> Far less machinery and handles never-logged-in
+  users natively. Rejected: a bearer link is access without identity — no per-user audit,
+  and revocation is all-or-nothing per link. Unacceptable for licensed corpora.</li>
+<li><strong>Delegating groups and ACLs to the BV-BRC Workspace</strong> (the <code>libraries-spec.md</code> §2
+  model). Rejected on fact: BV-BRC has no group concept, and a per-request remote ACL
+  probe puts an external service on the hot path of every query, failing closed on
+  someone else's downtime.</li>
+<li><strong>A <code>visibility</code> enum alongside shares</strong> (ADR-0003 as literally written). Rejected as
+  two mechanisms for one question; superseded by the <code>public</code> group grant.</li>
+<li><strong><code>rwx</code> with x = re-share.</strong> The semantics survive (as <code>grant_option</code>); the encoding
+  does not — an ordered ladder cannot express "may re-share but not write" or "may write
+  but not re-share", both of which have concrete owners' use cases here.</li>
+</ul>
+  </article></main>
+</div>
+
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
+
+<script>
+  (function () {
+    var content = document.getElementById("content");
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
+      var a = document.createElement("a");
+      a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
+    });
+    var links = {};
+    document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
+      links[a.getAttribute("href").slice(1)] = a;
+    });
+    var current = null;
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
+        if (current) current.classList.remove("active");
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
+      });
+    }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });
+  })();
+</script>
+</body>
+</html>
