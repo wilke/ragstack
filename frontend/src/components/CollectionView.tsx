@@ -82,7 +82,9 @@ function uploadErrorMessage(error: Error): string {
     if (error.status === 415) return "Rejected: one or more files are not PDFs (415).";
     if (error.status === 413) return `Rejected: a file is too large or too many files (413).`;
     if (error.status === 503) return "Ingest is disabled on this server (no INGEST_ROOT).";
-    if (error.status === 401 || error.status === 403) return "Check your API key.";
+    if (error.status === 401) return "Check your API key.";
+    if (error.status === 403)
+      return "Only the collection's owner (or an admin) can upload into it.";
     return `Upload failed (error ${error.status}).`;
   }
   return "Upload failed — could not reach the API.";

@@ -9,6 +9,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ragstack.api.access import enforce_access
 from ragstack.api.collections import CollectionRegistry
 from ragstack.api.deps import (
     build_generator_for,
@@ -22,7 +23,7 @@ from ragstack.api.deps import (
     get_tenant_quota,
 )
 from ragstack.api.model_registry import ModelRegistry, RegistryError
-from ragstack.api.security import resolve_tenant
+from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
@@ -314,24 +315,33 @@ def _effective_collection(
     return sorted(present)[0]
 
 
-def _resolve_entry(registry: CollectionRegistry, collection: str | None, tenant: str):
+async def _resolve_entry(
+    registry: CollectionRegistry, collection: str | None, principal: Principal
+):
     """The registry entry for the selected collection (the caller's default when
-    None), after applying the per-tenant allowlist. An unknown or out-of-scope id
-    is a 404 — explicit selection fails loudly rather than serving the wrong (or a
-    forbidden) corpus."""
-    effective = _effective_collection(registry, collection, tenant)
+    None), after applying the per-tenant allowlist AND the ownership check.
+
+    An unknown or out-of-scope id is a 404 — explicit selection fails loudly
+    rather than serving the wrong corpus. A collection the caller may not READ is
+    a 404 too (the ownership seam, :func:`enforce_access`): membership is never
+    leaked, so "you can't read it" is indistinguishable from "it doesn't exist"."""
+    effective = _effective_collection(registry, collection, principal.tenant)
     try:
-        return registry.resolve(effective)
+        entry = registry.resolve(effective)
     except KeyError:
         raise HTTPException(
             status_code=404,
             detail=f"unknown collection {collection!r}; see GET /v1/collections",
         ) from None
+    await enforce_access(principal, entry.id, "read")
+    return entry
 
 
-def _resolve_retriever(registry: CollectionRegistry, collection: str | None, tenant: str):
+async def _resolve_retriever(
+    registry: CollectionRegistry, collection: str | None, principal: Principal
+):
     """The retriever for the selected registry collection (caller's default when None)."""
-    return _resolve_entry(registry, collection, tenant).retriever
+    return (await _resolve_entry(registry, collection, principal)).retriever
 
 
 def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
@@ -355,6 +365,7 @@ def _override_model(builder, models: ModelRegistry, http, model_id: str | None, 
 async def retrieve(
     request: RetrieveRequest,
     tenant: str = Depends(tenant_slot),
+    principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
     reranker=Depends(get_reranker),
     models: ModelRegistry = Depends(get_model_registry),
@@ -363,7 +374,7 @@ async def retrieve(
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
-    retriever = _resolve_retriever(registry, request.collection, tenant)
+    retriever = await _resolve_retriever(registry, request.collection, principal)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
@@ -386,6 +397,7 @@ async def get_chunks(
     ids: str = "",
     collection: str | None = None,
     tenant: str = Depends(tenant_slot),
+    principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
 ) -> ChunksResponse:
     """Fetch chunks by id from a collection's vector store (tenant-scoped).
@@ -398,7 +410,7 @@ async def get_chunks(
     id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
     if not id_list:
         return ChunksResponse(chunks=[])
-    store = _resolve_entry(registry, collection, tenant).vector_store
+    store = (await _resolve_entry(registry, collection, principal)).vector_store
     if store is None:  # pragma: no cover - all wired entries carry a store
         return ChunksResponse(chunks=[])
     chunks = await store.get_chunks(id_list, scope_filters({}, tenant))
@@ -425,6 +437,7 @@ def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str
 async def query(
     request: QueryRequest,
     tenant: str = Depends(tenant_slot),
+    principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
     generator=Depends(get_generator),
     rewriters=Depends(get_rewriters),
@@ -443,7 +456,7 @@ async def query(
     """
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    retriever = _resolve_retriever(registry, request.collection, tenant)
+    retriever = await _resolve_retriever(registry, request.collection, principal)
     filters = scope_filters(request.filters, tenant)
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(

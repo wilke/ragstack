@@ -54,7 +54,20 @@ def test_production_settings_pass_when_set(monkeypatch, tmp_path):
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
     monkeypatch.setattr(deps.settings, "api_keys", ["k"])
     monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+    # The ACL database (users + shares) must be durable in production too (#243).
+    monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
     deps._validate_production_settings()  # must not raise
+
+
+def test_production_requires_durable_acl_store(monkeypatch, tmp_path):
+    # Everything else set, but an in-memory ACL store would lose every owner row
+    # and share on restart — refuse to boot (#243).
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    monkeypatch.setattr(deps.settings, "api_keys", ["k"])
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+    monkeypatch.setattr(deps.settings, "user_store_backend", "memory")
+    with pytest.raises(RuntimeError, match="user_store_backend"):
+        deps._validate_production_settings()
 
 
 def test_dev_skips_production_validation(monkeypatch):

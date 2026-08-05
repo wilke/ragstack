@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from ragstack.api.access import filter_readable
 from ragstack.api.collections import CollectionRegistry, confined_collection_name
 from ragstack.api.deps import (
     get_collections,
@@ -156,6 +157,10 @@ async def stats_tenants(
     tenants = readable_tenants(principal.tenant)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     entries = [e for e in registry.entries() if allowed is None or e.id in allowed]
+    # Same owner-aware visibility filter as GET /v1/collections: the allowlist
+    # gates WHICH collections a tenant may see, ownership gates whether it may READ
+    # each — the two intersect. Admin sees all; keyless dev is a no-op.
+    entries = await filter_readable(principal, entries)
     # One count per (tenant, collection, store) — each probe is filtered to a
     # SINGLE tenant, which is what makes the split meaningful. Gathered so the
     # latency is one round-trip rather than 2·|tenants|·|collections|; each probe

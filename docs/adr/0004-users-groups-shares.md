@@ -9,6 +9,17 @@
 - **Related:** [#197](https://github.com/wilke/ragstack/issues/197), the GoWe engine
   (intended second consumer of the group service)
 
+> **Implementation notes (added 2026-08-05 as #243 shipped the enforcement layer):**
+> Two refinements the accepted text does not state. (1) *Revocation is grounded, not
+> blanket.* Decision 5 says "revoking a grantor also revokes everything they granted
+> onward"; the implementation computes a grounded least-fixpoint — an onward grant
+> survives if its grantee retains access through an independent grounded share, and
+> mutual-grant cycles collapse rather than protecting each other. This is strictly safer
+> than the literal wording. (2) *Grant-option enforcement is deferred to #244.* "A grantor
+> can never delegate more than they hold" is not yet enforced (nothing writes non-owner
+> grants until the shares API lands); it MUST be enforced when #244 exposes granting, and
+> the DDL-as-contract note in #243 flags this for any second consumer.
+
 ## Context
 
 ADR-0003 put access on the collection — an owner, a visibility, a share list — but that

@@ -167,20 +167,21 @@ with the GoWe workflow. Grounded in the code on <code>main</code> (2026-07-07). 
 <tr>
 <td><strong>Collection</strong> (<code>collection</code> id)</td>
 <td>A <strong>physically separate</strong> Qdrant collection + ES index (own embedding model/dim/chunk). Selected per-request via <code>collection</code>.</td>
-<td><strong>No access control.</strong> <code>_resolve_entry</code> does <em>not</em> check tenant→collection; <code>GET /v1/collections</code> lists every id to any authenticated caller. Physical/routing separation only.</td>
+<td><strong>Yes — owner/grant enforced</strong> (ADR-0003, #243): reads pass through <code>resolve_access</code> at collection resolution (owner, share, or <code>public</code> grant); writes and delete are owner-or-admin; <code>GET /v1/collections</code> lists only what the caller can read. Pre-existing collections were backfilled <code>owner=legacy:admin</code> + public-read, so they behave as before until un-published.</td>
 </tr>
 </tbody>
 </table></div>
-<p><strong>Recommendation:</strong> give the org <strong>its own tenant</strong> (the enforced boundary) <strong>and</strong> its own
-collection (clean physical separation + independent lifecycle: own embedding model, own
-re-index/delete, own stats). Do <strong>not</strong> rely on the collection prefix alone as security —
-it is not enforced.</p>
+<p><strong>Recommendation:</strong> give the org <strong>its own tenant</strong> (per <a href="adr-0005-tenant-anatomy.html">ADR-0005</a>
+a full instance set for hard isolation) <strong>and</strong> its own collection (clean physical separation +
+independent lifecycle: own embedding model, own re-index/delete, own stats). Collection
+ownership is now enforced, but the tenant remains the hard boundary.</p>
 <p>Convention used below (pick your own): <code>ORG_ID=acme</code> → <code>TENANT=acme</code>,
 <code>COLLECTION=acme_sfr_tok256</code>, one API key mapped to that tenant.</p>
 <blockquote>
-<p>Per-tenant <em>collection restriction</em> is not in the codebase — if you need "tenant X may
-only query collection Y" enforced, that's a small follow-up PR (<code>api_key_allowed_collections</code>
-+ a check in <code>_resolve_entry</code>), not available today.</p>
+<p>Per-tenant <em>collection confinement</em> exists as <code>TENANT_COLLECTIONS</code> (#187) — an operator
+env map confining a tenant to a set of collection ids — and since #243 it <strong>intersects</strong>
+with ownership/grants rather than replacing them: a caller needs to survive the allowlist
+<em>and</em> hold read access.</p>
 </blockquote>
 <hr />
 <h2 id="1-prerequisites-host-coconut">1. Prerequisites (host: coconut)</h2>

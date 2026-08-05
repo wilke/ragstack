@@ -111,6 +111,11 @@ unregisters the binding; `?purge=true` also destroys the data.
 providers. `security.py` implements constant-time API-key auth, server-side tenant
 resolution, and `require_role()` RBAC gating. `collections.py` resolves a request's
 collection to a concrete store pair; `model_registry.py` holds the runtime model registry.
+Access control lives in one seam: `ragstack/authz.py` (`resolve_access` — a sterile,
+store-only decision function, the future ACL-sidecar API), `ragstack/acl_store.py` (the
+per-tenant shares/ownership store beside the user store), and `api/access.py` (the HTTP
+mapping — 404 for read-deny, 403 for write-deny-when-readable, 503 fail-closed, plus
+`filter_readable` for listings and the startup ownership backfill).
 Routers: `query`, `documents`, `collections`, `graph`, `stats`, `jobs`, `models`,
 `models_registry`, `admin`, `health`, `health_deep`.
 
@@ -327,26 +332,42 @@ request body. `/health` is open; all `/v1/*` require a credential when auth is c
 The authoritative definition is `contracts/openapi.yaml`; per-field reference is
 [docs/API.md](API.md).
 
+The **Auth** column reads: `principal` = any authenticated caller; `read-owner` =
+the caller must additionally be able to *read* the resolved collection (owner, an
+active read grant, or `public`) — a listing endpoint filters to what it may read;
+`owner-or-admin` = it must *own* the collection (or be admin) — ingest into a
+named non-default collection, and collection delete. Document-level ops on the
+**default** collection (ingest without a `collection`, `DELETE /v1/documents`)
+are `read-owner`: it is the shared pre-ownership surface where the per-chunk
+tenant stamp isolates writers. Every collection decision runs through the one
+seam (`ragstack.authz.resolve_access`, reached via `ragstack.api.access`);
+`admin` bypasses it as a named branch logged on every bypass (ADR-0003 §5). A
+read denial is a 404 (existence not leaked); a write/owner denial is a 403 only
+when the caller can read the collection, and the same 404 otherwise (no
+existence oracle via the write endpoints); an ACL-store outage is a 503 (fail
+closed). Underneath, the per-chunk `tenant_id` filter and the
+`TENANT_COLLECTIONS` allowlist stay in force — defence in depth (ADR-0003 §3).
+
 | Method | Path | Purpose | Auth | Python | Go |
 |---|---|---|---|---|---|
 | GET | `/health` | Liveness probe | none | ✅ | ✅ |
-| POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate | principal | ✅ | ⚠️ stub |
-| POST | `/v1/retrieve` | Hybrid retrieval, no generation | principal | ✅ | ⚠️ stub |
-| GET | `/v1/chunks` | Fetch chunks by id (context expansion) | principal | ✅ | ⚠️ stub |
-| GET | `/v1/collections` | List collections + counts + provenance | principal | ✅ | ⚠️ stub |
-| POST | `/v1/collections` | Create a collection (server-default build spec; supplying `embedding`/`chunk` is admin-only) | principal | ✅ | ⚠️ stub |
-| DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | admin | ✅ | ⚠️ stub |
-| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | principal | ✅ | ⚠️ stub |
-| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | principal | ✅ | ⚠️ stub |
+| POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate | principal · read-owner | ✅ | ⚠️ stub |
+| POST | `/v1/retrieve` | Hybrid retrieval, no generation | principal · read-owner | ✅ | ⚠️ stub |
+| GET | `/v1/chunks` | Fetch chunks by id (context expansion) | principal · read-owner | ✅ | ⚠️ stub |
+| GET | `/v1/collections` | List collections + counts + provenance (owner-filtered) | principal · read-owner | ✅ | ⚠️ stub |
+| POST | `/v1/collections` | Create a collection (private to creator; supplying `embedding`/`chunk` is admin-only) | principal | ✅ | ⚠️ stub |
+| DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | owner-or-admin | ✅ | ⚠️ stub |
+| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | read-owner (default) · owner-or-admin (named) | ✅ | ⚠️ stub |
+| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | read-owner (default) · owner-or-admin (named) | ✅ | ⚠️ stub |
 | GET | `/v1/ingest/{job_id}` | Poll job status + per-item progress | principal | ✅ | ⚠️ stub |
 | GET | `/v1/jobs` | List ingest jobs | admin | ✅ | ❌ |
-| GET | `/v1/documents` | List indexed documents | principal | ✅ | ⚠️ stub |
-| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs | principal | ✅ | ⚠️ stub |
+| GET | `/v1/documents` | List indexed documents | principal · read-owner | ✅ | ⚠️ stub |
+| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs (own tenant only) | principal · read-owner | ✅ | ⚠️ stub |
 | GET | `/v1/graph/entities` | List graph entities (own + public) | principal | ✅ | ⚠️ stub |
 | GET | `/v1/graph/neighbors/{entity}` | Neighbourhood triples (depth 1–5) | principal | ✅ | ⚠️ stub |
 | GET | `/v1/graph/stats` | Entity / relationship counts | principal | ✅ | ❌ |
 | GET | `/v1/stats/stores` | Per-store counts (vector/text/graph) | principal | ✅ | ❌ |
-| GET | `/v1/stats/tenants` | Tenant × collection breakdown | principal | ✅ | ❌ |
+| GET | `/v1/stats/tenants` | Tenant × collection breakdown (owner-filtered) | principal · read-owner | ✅ | ❌ |
 | GET | `/v1/stats/models` | Per-endpoint liveness, latency, in-flight | admin | ✅ | ❌ |
 | POST | `/v1/stats/models/benchmark` | On-demand throughput probe | admin | ✅ | ❌ |
 | GET | `/v1/models/available` | Models assignable per-request | principal | ✅ | ⚠️ stub |

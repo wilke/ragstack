@@ -23,6 +23,10 @@ def _prod(monkeypatch, tmp_path):
     # so production fixtures point it at a real temp dir, not a literal path.
     monkeypatch.setattr(deps.settings, "require_durable_backends", True)
     monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+    # The ACL database must be durable in production too (#243); these fixtures
+    # exercise the tenant-map rule, so give them a durable store to get past the
+    # ACL-durability check.
+    monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
 
 
 def test_partial_tenant_map_rejected_in_production(monkeypatch, tmp_path):

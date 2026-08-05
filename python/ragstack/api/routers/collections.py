@@ -15,6 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ragstack.acl_store import get_acl_store
+from ragstack.api.access import (
+    enforce_access,
+    filter_readable,
+    revoke_collection_acl,
+    write_owner_row,
+)
 from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
@@ -29,7 +36,8 @@ from ragstack.api.deps import (
     probe_tenant_count,
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
-from ragstack.api.security import ROLE_ADMIN, Principal, require_role, resolve_principal
+from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
+from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
 from ragstack.ingestion.chunkers import CHUNK_METHODS
@@ -143,6 +151,12 @@ async def list_collections(
     entries = [
         e for e in registry.entries() if allowed is None or e.id in allowed
     ]
+    # ...then drop the ones the caller may not READ (owner / grant / public), on
+    # top of the allowlist — ownership INTERSECTS confinement, never replaces it
+    # (ADR-0003 decision 3). Admin sees all (admin bypass inside resolve_access);
+    # keyless dev is a no-op. A store outage here 503s rather than silently hiding
+    # a readable collection.
+    entries = await filter_readable(principal, entries)
     # Per-collection vector + text counts are independent store round-trips —
     # gather them all concurrently so latency is one round-trip, not 2N (the ops
     # dashboard polls this, and Explore/Compare call it on load). Both probes share
@@ -155,7 +169,11 @@ async def list_collections(
         _collection_info(e, vc, tc)
         for e, vc, tc in zip(entries, vec_counts, txt_counts, strict=True)
     ]
-    if allowed is None or registry.default_id in allowed:
+    # The reported default must be one of the listed ids: the registry default
+    # when the caller can actually see it (allowlist AND readable), else its first
+    # visible collection.
+    visible_ids = {i.id for i in infos}
+    if registry.default_id in visible_ids:
         default = registry.default_id
     else:
         default = infos[0].id if infos else registry.default_id
@@ -377,7 +395,20 @@ async def create_collection(
     )
     cid = body.id or physical
     if registry.has(cid):
-        raise HTTPException(409, f"collection {cid!r} already exists")
+        # "already exists" confirms the id to the caller — an enumeration oracle
+        # for a stranger's private, unreadable named library. Only say so to a
+        # caller who can already read it (owner / grant / public / admin); to
+        # everyone else the id is merely "unavailable", matching the read path's
+        # leak-safe posture and the residual-ACL message in write_owner_row.
+        try:
+            decision = await resolve_access(
+                principal.tenant, principal.role, cid, "read", get_acl_store()
+            )
+        except AuthzUnavailable:
+            raise HTTPException(503, "authorization store unavailable") from None
+        if decision.allowed:
+            raise HTTPException(409, f"collection {cid!r} already exists")
+        raise HTTPException(409, f"collection id {cid!r} is unavailable; choose a different id")
     if not body.id:
         # `not body.id`, NOT `body.id is None`: an empty-string id is treated as
         # omitted everywhere else (`cid = body.id or physical` above,
@@ -403,6 +434,10 @@ async def create_collection(
     spec = CollectionSpec(
         id=cid,
         label=body.label,
+        # The creator, recorded in the SAME durable write as the spec: the
+        # startup backfill reads it to repair a lost owner row to THIS subject
+        # (private) instead of publishing the collection as legacy.
+        owner=principal.tenant,
         collection=physical,
         text_index=physical,
         embedding_api=emb_api,
@@ -436,6 +471,33 @@ async def create_collection(
             "lost on restart", cid
         )
     materialize_config_manifest_for_spec(spec)
+
+    # 6. Ownership (ADR-0004 decision 4): the creator OWNS the new collection,
+    # which is private by default (no public grant — unlike a backfilled legacy
+    # one). Written AFTER the durable registry write so the FK-by-convention holds;
+    # keyed on principal.tenant (the subject for bearer callers, the deployment
+    # tenant for API-key callers). A failure ROLLS THE CREATE BACK (409 residual
+    # ACL state / 503 store outage): a 201 whose ownership silently never landed
+    # would leave a durable-but-ownerless collection — exactly the shape a later
+    # startup could mis-handle. (A crash inside this window self-heals instead:
+    # the backfill repairs the owner row from the spec-recorded creator above.)
+    try:
+        await write_owner_row(get_acl_store(), cid, principal.tenant)
+    except HTTPException:
+        registry.remove(cid)
+        try:
+            await store.delete(cid)
+        except Exception:  # noqa: BLE001 — rollback is best-effort; backfill repairs
+            log.warning(
+                "create %r: rollback of the durable spec failed; the startup "
+                "backfill will repair ownership from the recorded creator", cid,
+                exc_info=True,
+            )
+        try:
+            delete_manifest(settings.collection_manifest_dir, spec.collection)
+        except Exception:  # noqa: BLE001 — a stale config manifest is harmless
+            pass
+        raise
 
     tenants = readable_tenants(principal.tenant)
     count = await probe_tenant_count(built.vector_store, tenants)
@@ -536,10 +598,10 @@ async def _purge_physical(entry: CollectionEntry, report: PurgeReport) -> None:
         200: {"model": PurgeReport, "description": "Purged — see the report for what was removed"},
         204: {"description": "Registry binding removed; physical stores untouched"},
     },
-    dependencies=[Depends(require_role(ROLE_ADMIN))],
 )
 async def delete_collection(
     collection_id: str,
+    principal: Principal = Depends(resolve_principal),
     purge: bool = Query(
         False,
         description=(
@@ -550,7 +612,12 @@ async def delete_collection(
     registry: CollectionRegistry = Depends(get_collections),
     store: CollectionStore = Depends(get_collection_store),
 ) -> Response:
-    """Remove a collection registry entry (admin only).
+    """Remove a collection registry entry (owner or admin).
+
+    ADR-0003: a user manages their own private collections, so this is no longer
+    admin-only — the caller must OWN the collection, or be an admin (whose bypass
+    is the one logged branch in :func:`resolve_access`). The gate runs through the
+    ownership seam like every other, with the ``owner`` action.
 
     ``purge=false`` (the default) drops the *binding* only — the underlying Qdrant
     collection and ES index survive with all their chunks. 204, no body.
@@ -564,7 +631,13 @@ async def delete_collection(
 
     Purge is refused (409) for the default collection, and for a collection whose
     physical store is still referenced by another registry entry — that entry's
-    data is not this caller's to destroy.
+    data is not this caller's to destroy (owning a registry id is not owning the
+    physical store it may share content-addressed with others).
+
+    Deleting also revokes every ACL row of the collection (the owner row and all
+    shares, softly — audit history survives), so a later collection reusing the
+    same id starts with a clean slate instead of inheriting the deleted one's
+    owner or ``public`` grant.
     """
     if collection_id == registry.default_id:
         raise HTTPException(409, "cannot delete the default collection")
@@ -572,6 +645,9 @@ async def delete_collection(
         entry = registry.resolve(collection_id)
     except KeyError:
         raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    # Owner-or-admin: 403 for a non-owner, 503 if the ACL store can't answer.
+    await enforce_access(principal, entry.id, "owner")
 
     if purge:
         sharers = _shared_store_users(registry, entry)
@@ -583,6 +659,14 @@ async def delete_collection(
                 f"and purging would destroy their data too. Unregister it instead "
                 f"(purge=false), or purge the other collections first.",
             )
+
+    # Revoke the collection's ACL rows (owner + every share) BEFORE the registry
+    # entry goes away: the id namespace is reusable, so a stale active owner row
+    # would hand ownership of the NEXT collection minted under this id to today's
+    # owner (hijack), and a stale `public read` row would silently publish it.
+    # A store outage 503s here and aborts with the registry intact (fail closed);
+    # retrying the delete is safe.
+    await revoke_collection_acl(get_acl_store(), entry.id, principal.tenant)
 
     if not registry.remove(collection_id):  # pragma: no cover — resolve() just succeeded
         raise HTTPException(404, f"unknown collection {collection_id!r}")
