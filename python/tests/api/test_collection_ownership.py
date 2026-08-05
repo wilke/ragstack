@@ -270,6 +270,27 @@ async def test_create_over_residual_foreign_acl_state_is_refused(client):
     assert await get_acl_store().owner_of("ghost") == "owner"  # untouched
 
 
+async def test_create_over_existing_private_id_does_not_leak_existence(client):
+    # Independent review finding #1: query returns 404 for an unreadable
+    # collection, but POST /v1/collections must not confirm the id via a
+    # "already exists" 409 — that would be an enumeration oracle. A stranger
+    # gets a generic "unavailable"; the owner, who may read it, gets the
+    # informative "already exists".
+    _register(_entry("secret"))
+    await _own("secret", "owner")
+    stranger = await client.post(
+        "/v1/collections", json={"id": "secret"}, headers=_h("stranger")
+    )
+    assert stranger.status_code == 409, stranger.text
+    assert "already exists" not in stranger.text
+    assert "unavailable" in stranger.text.lower()
+    owner = await client.post(
+        "/v1/collections", json={"id": "secret"}, headers=_h("owner")
+    )
+    assert owner.status_code == 409
+    assert "already exists" in owner.text
+
+
 async def test_admin_delete_bypasses_and_logs(client, caplog):
     _register(_entry("mine"))
     await _own("mine", "owner")
@@ -426,3 +447,26 @@ async def test_backfill_retries_a_missed_public_grant_but_never_resurrects():
         r for r in await store.shares_for("legacy")
         if r.grantee_type == GRANTEE_GROUP and r.grantee_id == PUBLIC_GROUP
     ] == []
+
+
+async def test_backfill_never_publishes_a_real_owner_whose_spec_owner_was_lost():
+    """Defence in depth (independent review finding #2): a collection with a REAL
+    active owner but a blank spec.owner — a future backend that dropped the field,
+    or a hand-edit — must be treated as owned, never republished world-readable.
+    The legacy branch is gated on the active owner being the backfill owner (or
+    none), not merely on owner-row absence."""
+    from ragstack.acl_store import GRANTEE_USER as GU
+    from ragstack.acl_store import InMemoryAclStore, set_acl_store
+    from ragstack.api.access import backfill_collection_owners
+
+    store = InMemoryAclStore()
+    set_acl_store(store)
+    # Blank spec.owner (legacy-looking) but bob genuinely owns it.
+    reg = CollectionRegistry([_entry("default", True), _entry("bobs")], default_id="default")
+    await store.grant("bobs", GU, "bvbrc:bob", PERM_OWNER, granted_by="bvbrc:bob")
+    await backfill_collection_owners(reg, store, "legacy:admin")
+    assert await store.owner_of("bobs") == "bvbrc:bob"  # untouched
+    assert [
+        r for r in await store.shares_for("bobs")
+        if r.grantee_type == GRANTEE_GROUP and r.grantee_id == PUBLIC_GROUP
+    ] == []  # NOT published

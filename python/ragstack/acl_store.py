@@ -95,7 +95,7 @@ class ShareRecord(BaseModel):
     grantee_id: str  # subject (user) or group id; 'public' is the built-in group
     permission: str  # 'read' | 'write' | 'owner'
     grant_option: bool = False  # stored as INTEGER 0/1
-    granted_by: str = ""  # subject of the grantor ('' for system backfill)
+    granted_by: str = ""  # subject of the grantor ('system:backfill' for startup backfill)
     granted_at: str = ""  # ISO-8601 UTC
     revoked_by: str = ""
     revoked_at: str = ""  # '' = active (partial indexes filter on this)

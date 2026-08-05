@@ -111,6 +111,11 @@ unregisters the binding; `?purge=true` also destroys the data.
 providers. `security.py` implements constant-time API-key auth, server-side tenant
 resolution, and `require_role()` RBAC gating. `collections.py` resolves a request's
 collection to a concrete store pair; `model_registry.py` holds the runtime model registry.
+Access control lives in one seam: `ragstack/authz.py` (`resolve_access` — a sterile,
+store-only decision function, the future ACL-sidecar API), `ragstack/acl_store.py` (the
+per-tenant shares/ownership store beside the user store), and `api/access.py` (the HTTP
+mapping — 404 for read-deny, 403 for write-deny-when-readable, 503 fail-closed, plus
+`filter_readable` for listings and the startup ownership backfill).
 Routers: `query`, `documents`, `collections`, `graph`, `stats`, `jobs`, `models`,
 `models_registry`, `admin`, `health`, `health_deep`.
 

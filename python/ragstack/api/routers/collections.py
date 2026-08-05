@@ -37,6 +37,7 @@ from ragstack.api.deps import (
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
+from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
 from ragstack.ingestion.chunkers import CHUNK_METHODS
@@ -394,7 +395,20 @@ async def create_collection(
     )
     cid = body.id or physical
     if registry.has(cid):
-        raise HTTPException(409, f"collection {cid!r} already exists")
+        # "already exists" confirms the id to the caller — an enumeration oracle
+        # for a stranger's private, unreadable named library. Only say so to a
+        # caller who can already read it (owner / grant / public / admin); to
+        # everyone else the id is merely "unavailable", matching the read path's
+        # leak-safe posture and the residual-ACL message in write_owner_row.
+        try:
+            decision = await resolve_access(
+                principal.tenant, principal.role, cid, "read", get_acl_store()
+            )
+        except AuthzUnavailable:
+            raise HTTPException(503, "authorization store unavailable") from None
+        if decision.allowed:
+            raise HTTPException(409, f"collection {cid!r} already exists")
+        raise HTTPException(409, f"collection id {cid!r} is unavailable; choose a different id")
     if not body.id:
         # `not body.id`, NOT `body.id is None`: an empty-string id is treated as
         # omitted everywhere else (`cid = body.id or physical` above,

@@ -383,6 +383,11 @@ unregisters the binding; <code>?purge=true</code> also destroys the data.</p>
 providers. <code>security.py</code> implements constant-time API-key auth, server-side tenant
 resolution, and <code>require_role()</code> RBAC gating. <code>collections.py</code> resolves a request's
 collection to a concrete store pair; <code>model_registry.py</code> holds the runtime model registry.
+Access control lives in one seam: <code>ragstack/authz.py</code> (<code>resolve_access</code> — a sterile,
+store-only decision function, the future ACL-sidecar API), <code>ragstack/acl_store.py</code> (the
+per-tenant shares/ownership store beside the user store), and <code>api/access.py</code> (the HTTP
+mapping — 404 for read-deny, 403 for write-deny-when-readable, 503 fail-closed, plus
+<code>filter_readable</code> for listings and the startup ownership backfill).
 Routers: <code>query</code>, <code>documents</code>, <code>collections</code>, <code>graph</code>, <code>stats</code>, <code>jobs</code>, <code>models</code>,
 <code>models_registry</code>, <code>admin</code>, <code>health</code>, <code>health_deep</code>.</p>
 <h3 id="42-identity-pythonragstackidentity">4.2 Identity (<code>python/ragstack/identity/</code>)</h3>

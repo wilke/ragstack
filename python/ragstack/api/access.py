@@ -192,11 +192,14 @@ async def write_owner_row(store: AclStore, collection_id: str, owner_subject: st
             "refusing the create",
             collection_id, existing, owner_subject,
         )
+        # Do not reveal WHO owns the residual state, nor that it belonged to a
+        # since-deleted collection — that would turn create into an ownership
+        # oracle. The caller only learns the id is unavailable to them.
         raise HTTPException(
             status_code=409,
             detail=(
-                f"collection id {collection_id!r} carries residual access-control "
-                "state owned by another subject; choose a different id"
+                f"collection id {collection_id!r} is unavailable; choose a "
+                "different id"
             ),
         ) from None
     except Exception as e:  # noqa: BLE001 — store outage: fail the create, closed
@@ -318,13 +321,32 @@ async def backfill_collection_owners(
                 )
                 touched = True
         else:
-            # Legacy collection: world-readable before ownership existed.
-            if not ever_owner:
-                await _try_grant(store, entry.id, GRANTEE_USER, owner_subject, PERM_OWNER)
-                touched = True
-            if not ever_public_read:
-                await _try_grant(store, entry.id, GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ)
-                touched = True
+            # No recorded creator. Distinguish a genuinely pre-ownership legacy
+            # collection from an owned one whose spec.owner was lost: a REAL
+            # subject actively owning it (anyone other than the backfill owner)
+            # means the collection is owned, not legacy — publishing it would be a
+            # fail-open, so leave it entirely alone.
+            active_owner = next(
+                (r.grantee_id for r in history
+                 if r.permission == PERM_OWNER and not r.revoked_at),
+                None,
+            )
+            is_legacy = active_owner in (None, owner_subject)
+            if is_legacy:
+                # World-readable before ownership existed. Grant the backfill owner
+                # if it has none yet, and (re)grant public read unless it was ever
+                # granted — the `history`-over-all-rows check never resurrects a
+                # deliberately revoked (un-published) grant.
+                if not ever_owner:
+                    await _try_grant(
+                        store, entry.id, GRANTEE_USER, owner_subject, PERM_OWNER
+                    )
+                    touched = True
+                if not ever_public_read:
+                    await _try_grant(
+                        store, entry.id, GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ
+                    )
+                    touched = True
         if touched:
             backfilled += 1
     if backfilled:

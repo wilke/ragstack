@@ -296,7 +296,8 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
 | `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
 | `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003) |
-| `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | profile store for authenticated users (`memory` \| `sqlite` \| `postgres`) — per tenant, like every stateful store (ADR-0005) |
+| `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
+| `ACL_BACKFILL_OWNER` | subject that inherits ownership of pre-existing (creator-less) collections at first startup after the ACL rollout (default `legacy:admin`); those collections also get a `public` read grant so they stay world-readable exactly as before |
 
 ---
 
@@ -327,6 +328,9 @@ extracted citation list); `--no-index` produces the catalog without embedding.
 | `200` | success — **including** graceful degradation (LLM/rewrite/rerank failure returns sources with a note) |
 | `204` | document deleted |
 | `401` | unknown/invalid API key |
+| `403` | authenticated but not permitted — supplying an admin-only build-spec override, or writing/deleting a collection you don't own (only when you *can* read it; otherwise `404`) |
+| `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed) |
 | `422` | request body fails validation |
+| `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open |
 
 Error responses never leak filesystem paths or upstream exception text.

@@ -402,6 +402,20 @@ def validate_role_settings() -> None:
     for role in set(settings.api_key_roles.values()):
         _check(role, "api_key_roles")
 
+    # An API-key tenant string IS the authz subject (authz.resolve_access). When a
+    # bearer identity provider is also on, a bearer subject is "{issuer}:{sub}";
+    # an API-key tenant literally shaped like "google:alice" would collide with
+    # that bearer user's ownership identity. Reject the shape at startup rather
+    # than let a misconfiguration hand one caller another's collections.
+    if settings.identity_provider not in ("", "none"):
+        for tenant in set(settings.api_key_tenants.values()):
+            if ":" in tenant:
+                raise RuntimeError(
+                    f"api_key_tenants maps a key to tenant {tenant!r}, whose "
+                    "':' collides with a bearer subject 'issuer:sub' while an "
+                    "identity provider is enabled; use a colon-free tenant name"
+                )
+
 
 async def resolve_tenant(
     request: Request,
