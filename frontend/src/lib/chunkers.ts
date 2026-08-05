@@ -4,13 +4,14 @@
 // panel via components/ChunkStrategyPicker.
 //
 // NAMING: these build *collections* (registry entry: model + dim + chunker -> an
-// index), never "libraries" — see docs/libraries-spec.md §0 and #230.
+// index), never "libraries" — a library is one-to-one with a collection, so
+// "collection" is the only word. See docs/adr/0003-access-control.md.
 //
 // SOURCE OF TRUTH for the method list: python/ragstack/ingestion/chunkers.py ::
 // CHUNK_METHODS. The API validates `chunk.method` against that tuple and returns
 // 400 for anything else, so the list below must mirror it exactly. It is NOT
 // served by any endpoint today, so it is mirrored here rather than fetched —
-// python/tests/api/test_chunk_method_parity.py parses THIS file and fails if the
+// python/tests/api/test_chunk_choice.py parses THIS file and fails if the
 // two ever drift, so a chunker added (or removed) server-side cannot silently go
 // missing from the picker.
 export const CHUNK_METHODS = [

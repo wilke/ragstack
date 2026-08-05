@@ -13,9 +13,9 @@ import { OpsDashboard } from "./components/OpsDashboard";
 // across modules.
 //
 // The "Collection" tab was called "Library" until it was renamed to match what it
-// actually creates (POST /v1/collections). Per docs/libraries-spec.md §0 a
-// *library* is a user-owned document set INSIDE a collection and does not exist
-// yet (#230) — when it does, it gets its own name back.
+// actually creates (POST /v1/collections). Per docs/adr/0003-access-control.md a
+// library IS a collection, one-to-one — there is no separate concept, so
+// "collection" is simply the right word and the old name does not come back.
 
 type View = "explore" | "collection" | "compare" | "ops";
 
