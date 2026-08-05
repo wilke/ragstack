@@ -76,6 +76,11 @@ PAGES = [
         label="ADR 0004", card="ADR 0004 — Users, groups, shares",
         blurb="Profile rows on first auth, pending shares by verified email, public as a built-in group, and WITH GRANT OPTION instead of rwx.",
     ),
+    dict(
+        src="adr/0005-tenant-anatomy.md", out="adr-0005-tenant-anatomy.html",
+        label="ADR 0005", card="ADR 0005 — Anatomy of a tenant",
+        blurb="A tenant is one API endpoint plus dedicated stateful stores — including its own Elasticsearch — provisioned by script, sharing only stateless compute.",
+    ),
 ]
 
 # Relative .md links in the sources point at repo paths; on the built site they must point

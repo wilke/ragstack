@@ -244,6 +244,9 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard. `INGEST_ROOT` unset → `POST /v1/ingest` returns **503** (an unset root would make it an arbitrary server-side file read); logged as a warning at startup. `INGEST_ROOT=/`, or a path that is not an existing directory, is **refused at startup**. Additionally required non-empty when `REQUIRE_DURABLE_BACKENDS=true` |
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
+| `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
+| `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003) |
+| `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | profile store for authenticated users (`memory` \| `sqlite` \| `postgres`) — per tenant, like every stateful store (ADR-0005) |
 
 ---
 
