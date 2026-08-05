@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ragstack.api.collections import (
     CollectionEntry,
@@ -242,13 +242,21 @@ def _validate_chunk(chunk: ChunkConfig) -> None:
 
 
 class CollectionCreateRequest(BaseModel):
-    embedding: str  # id of a registered embedding model
-    chunk: ChunkConfig
+    # Both build-spec fields are OPTIONAL (ADR-0003 decision 3): omitted → the
+    # server's default build spec is resolved into concrete values at create
+    # time. Supplying either is an admin-only override (403 for other roles) —
+    # they change what every future ingest into the collection produces.
+    embedding: str | None = None  # id of a registered embedding model
+    chunk: ChunkConfig | None = None
     # Explicit id → a *named library*: the id is folded into the physical store name
     # so same-spec libraries stay isolated. Omitted → a *corpus*: content-addressed
     # over (model, dim, chunk), so re-creating the same spec is idempotent.
-    id: str | None = None
-    label: str = ""
+    # max_length: the id is persisted verbatim as the registry key and folded
+    # (slugged + hashed) into physical store names — creation is open to any
+    # authenticated principal, so an unbounded string here would be an
+    # unbounded caller-controlled write into the shared registry.
+    id: str | None = Field(default=None, max_length=128)
+    label: str = Field(default="", max_length=256)
     model_config = ConfigDict(extra="forbid")
 
 
@@ -256,7 +264,6 @@ class CollectionCreateRequest(BaseModel):
     "/collections",
     response_model=CollectionInfo,
     status_code=201,
-    dependencies=[Depends(require_role(ROLE_ADMIN))],
 )
 async def create_collection(
     body: CollectionCreateRequest,
@@ -266,34 +273,97 @@ async def create_collection(
     registry: CollectionRegistry = Depends(get_collections),
     store: CollectionStore = Depends(get_collection_store),
 ) -> CollectionInfo:
-    """Create a collection bound to a registered embedding model and a chunk
-    strategy (build-time model selection). Admin only. The collection is created
-    empty; populate it via POST /v1/ingest with the returned id.
+    """Create a collection bound to an embedding model and a chunk strategy
+    (build-time model selection). Open to any authenticated principal
+    (ADR-0003: a library *is* a collection, created directly by users); the
+    ``embedding``/``chunk`` build-spec overrides are admin-only. The collection
+    is created empty; populate it via POST /v1/ingest with the returned id.
 
     Build-time config *is* collection identity, so this mints a new collection
     rather than editing one — you cannot re-point an index at a new embedder.
+    An omitted ``embedding``/``chunk`` is resolved from the server-default build
+    spec *before* the identity is derived, so the collection carries concrete
+    values: a later change of server defaults never changes an existing
+    collection (it mints a new one on the next omitted-spec create).
 
     Omit ``id`` for a *corpus*: the physical store is content-addressed over
     (model, dim, chunk), so the same spec is idempotent (409 on a repeat). Supply
     ``id`` for a *named library*: the id is part of the physical name, so two
     libraries with identical build specs stay isolated from each other.
     """
-    # 1. Resolve the embedding model-ref against the Phase-1 registry.
-    entry = models.get(body.embedding)
-    if entry is None:
+    # 0. Authorization: creation itself is open, but the build-spec fields stay
+    # admin-only — they change what every future ingest into the collection
+    # produces (and `embedding` names admin-registered infra).
+    if principal.role != ROLE_ADMIN and (body.embedding is not None or body.chunk is not None):
         raise HTTPException(
-            404, f"unknown model {body.embedding!r}; see GET /v1/admin/models/registry"
+            403,
+            "build-spec overrides ('embedding', 'chunk') are admin-only; omit both "
+            "fields to create a collection from the server-default build spec",
         )
-    if entry.task != "embedding":
-        raise HTTPException(
-            400, f"model {body.embedding!r} is a {entry.task!r} model, not an embedding model"
-        )
-    if not (entry.dim and entry.dim > 0):
-        raise HTTPException(400, f"embedding model {body.embedding!r} has no positive dim")
 
-    # 2. Validate the chunk strategy (identity input; unknown method or a
-    # size/overlap that can't chunk → 400 with a message the UI can show).
-    _validate_chunk(body.chunk)
+    # 0b. Capacity. ADR-0003: the collection count is the binding constraint
+    # (Qdrant budget ~100-150 per instance; thread exhaustion near ~1000, crash
+    # on create ~2000). Creation is open and each create mints a physical Qdrant
+    # collection + ES index, so without this cap any caller could loop the
+    # endpoint into an instance-wide denial of service. Applies to admins too —
+    # the limit is physical, not an authorization tier; raise MAX_COLLECTIONS
+    # deliberately if the budget genuinely grows.
+    limit = settings.max_collections
+    if limit > 0 and len(registry.entries()) >= limit:
+        raise HTTPException(
+            403,
+            f"collection limit reached ({limit}): the server caps registered "
+            "collections because each one costs physical Qdrant/Elasticsearch "
+            "resources (ADR-0003). Delete unused collections or have the "
+            "operator raise MAX_COLLECTIONS",
+        )
+
+    # 1. Resolve the embedding backend: an explicit model-ref against the Phase-1
+    # registry (admin path), or the server-default embedder when omitted. The
+    # default path resolves CONCRETE values from settings here, not at ingest,
+    # so the content-address, the persisted spec and the manifest all record what
+    # was actually built (and the ingest-time spec guard keeps enforcing).
+    if body.embedding is not None:
+        entry = models.get(body.embedding)
+        if entry is None:
+            raise HTTPException(
+                404, f"unknown model {body.embedding!r}; see GET /v1/admin/models/registry"
+            )
+        if entry.task != "embedding":
+            raise HTTPException(
+                400, f"model {body.embedding!r} is a {entry.task!r} model, not an embedding model"
+            )
+        if not (entry.dim and entry.dim > 0):
+            raise HTTPException(400, f"embedding model {body.embedding!r} has no positive dim")
+        # The embedder API/model/urls come from the registered model, SSRF-checked
+        # at registration; vLLM speaks the OpenAI embeddings API.
+        emb_api = "sidecar" if entry.provider == "sidecar" else "openai"
+        emb_model = entry.model
+        emb_dim = entry.dim
+        emb_endpoints = list(entry.base_urls)
+    else:
+        emb_api = settings.embedding_api  # already "sidecar" | "openai"
+        emb_model = settings.embedding_model
+        emb_dim = settings.embedding_model_dim
+        # Same fallback as deps.embedding_urls(): fan-out endpoints override the
+        # single sidecar URL.
+        emb_endpoints = settings.embedding_endpoints or [settings.embedding_sidecar_url]
+
+    # 2. Resolve the chunk strategy. Supplied → validate it (identity input;
+    # unknown method or a size/overlap that can't chunk → 400 with a message the
+    # UI can show). Omitted → the server-default chunker, resolved to concrete
+    # values NOW so `chunk omitted` and `chunk == explicit server defaults`
+    # content-address to the same physical store (chunk_descriptor renders None
+    # slots as empty strings, which would otherwise split them).
+    if body.chunk is not None:
+        _validate_chunk(body.chunk)
+        chunk = body.chunk
+    else:
+        chunk = ChunkConfig(
+            method=settings.chunk_method,
+            size=settings.chunk_size,
+            overlap=settings.chunk_overlap,
+        )
 
     # 3. Derive the physical name. With no explicit id this is content-addressed
     # over (model, dim, chunk): the same build spec re-maps to the same store, which
@@ -301,32 +371,48 @@ async def create_collection(
     # naming a *library*, and two libraries that happen to share a build spec are
     # still different data — so the id is folded into the physical name and they get
     # separate Qdrant collections / ES indices instead of aliasing one store.
-    desc = chunk_descriptor(
-        body.chunk.method, body.chunk.size, body.chunk.overlap, body.chunk.params or None
-    )
+    desc = chunk_descriptor(chunk.method, chunk.size, chunk.overlap, chunk.params or None)
     physical = collection_name(
-        settings.qdrant_collection, entry.model, entry.dim, chunk=desc, name=body.id or None
+        settings.qdrant_collection, emb_model, emb_dim, chunk=desc, name=body.id or None
     )
     cid = body.id or physical
     if registry.has(cid):
         raise HTTPException(409, f"collection {cid!r} already exists")
+    if not body.id:
+        # `not body.id`, NOT `body.id is None`: an empty-string id is treated as
+        # omitted everywhere else (`cid = body.id or physical` above,
+        # `name=body.id or None` in the physical name), so it must also take the
+        # content-addressed guard below — otherwise {"id": ""} would skip the
+        # alias check this branch exists for.
+        # A content-addressed create whose physical store is already served under
+        # another registry id (e.g. the default collection, whose derived name
+        # folds in the same server defaults) would silently alias that entry's
+        # data — refuse instead, and name the way out.
+        sharers = sorted(e.id for e in registry.entries() if e.collection == physical)
+        if sharers:
+            raise HTTPException(
+                409,
+                f"a collection with this exact build spec already exists as "
+                f"{', '.join(repr(s) for s in sharers)} (content-addressed creates share "
+                f"one physical store per spec); supply an explicit 'id' to mint a "
+                f"separate named library",
+            )
 
-    # 4. Build the spec (the embedder API/model/urls come from the registered model,
-    # SSRF-checked at registration; vLLM speaks the OpenAI embeddings API).
-    api = "sidecar" if entry.provider == "sidecar" else "openai"
+    # 4. Build the spec from the RESOLVED values (never None for an omitted
+    # field), so spec_hash/409 ingest guarding and the manifest stay concrete.
     spec = CollectionSpec(
         id=cid,
         label=body.label,
         collection=physical,
         text_index=physical,
-        embedding_api=api,
-        embedding_model=entry.model,
-        embedding_model_dim=entry.dim,
-        embedding_endpoints=list(entry.base_urls),
-        chunk_method=body.chunk.method,
-        chunk_size=body.chunk.size,
-        chunk_overlap=body.chunk.overlap,
-        chunk_params=body.chunk.params,
+        embedding_api=emb_api,
+        embedding_model=emb_model,
+        embedding_model_dim=emb_dim,
+        embedding_endpoints=emb_endpoints,
+        chunk_method=chunk.method,
+        chunk_size=chunk.size,
+        chunk_overlap=chunk.overlap,
+        chunk_params=chunk.params,
     )
 
     # 5. Build the live entry (stores + retriever), register it, write-through to

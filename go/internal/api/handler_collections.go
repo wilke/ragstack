@@ -36,33 +36,36 @@ func HandleListCollections(w http.ResponseWriter, _ *http.Request) {
 // exist in both impls. The Python implementation is authoritative for actually
 // resolving the embedding model, deriving the content-addressed name, and
 // persisting the collection.
+//
+// Per the contract (ADR-0003), `embedding` and `chunk` are OPTIONAL: an omitted
+// field is filled from the server-default build spec. The scaffold has no
+// configured defaults to resolve, so it echoes a placeholder model ref and
+// leaves the chunk fields null; Python is authoritative for the resolved values.
 func HandleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	var req CollectionCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeValidationError(w, "invalid request body")
 		return
 	}
-	if req.Embedding == "" {
-		writeValidationError(w, "field 'embedding' is required")
-		return
-	}
-	if req.Chunk.Method == "" {
-		writeValidationError(w, "field 'chunk.method' is required")
-		return
-	}
 	id := "pending"
 	if req.ID != nil && *req.ID != "" {
 		id = *req.ID
 	}
-	chunkMethod := req.Chunk.Method
+	model := req.Embedding // the model ref; Python resolves it to the real model
+	if model == "" {
+		model = "server-default" // omitted → the server-default build spec
+	}
 	resp := CollectionInfo{
-		ID:          id,
-		Label:       req.Label,
-		Model:       req.Embedding, // the model ref; Python resolves it to the real model
-		Dim:         0,
-		ChunkMethod: &chunkMethod,
-		ChunkSize:   req.Chunk.Size,
-		Default:     false,
+		ID:      id,
+		Label:   req.Label,
+		Model:   model,
+		Dim:     0,
+		Default: false,
+	}
+	if req.Chunk != nil && req.Chunk.Method != "" {
+		chunkMethod := req.Chunk.Method
+		resp.ChunkMethod = &chunkMethod
+		resp.ChunkSize = req.Chunk.Size
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }

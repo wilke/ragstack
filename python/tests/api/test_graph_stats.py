@@ -8,7 +8,7 @@ import pytest
 
 from ragstack.api import security
 from ragstack.api.main import app
-from ragstack.api.security import ROLE_RESEARCHER
+from ragstack.api.security import ROLE_USER
 from ragstack.models import Triple
 
 pytestmark = pytest.mark.asyncio
@@ -20,7 +20,7 @@ def _configure_keys(monkeypatch) -> None:
         security.settings, "api_key_tenants", {"k-acme": "acme", "k-other": "other"}
     )
     monkeypatch.setattr(security.settings, "api_key_roles", {})
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
 
 
 async def _seed() -> None:

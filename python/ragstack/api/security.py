@@ -16,18 +16,30 @@ Two layers come out of that:
   distinct from a Google ``alice`` and both clear of the reserved ``public`` /
   ``default``.
 - **Role** (authz) — what surface the caller may use: ``admin`` (superuser) |
-  ``engineer`` | ``manager`` | ``researcher``. ``require_role`` gates an endpoint;
+  ``user``. ``researcher`` is a deprecated alias for ``user`` (normalized with a
+  warning wherever roles are read); ``engineer``/``manager`` were removed per
+  ADR-0003 and are rejected at startup. ``require_role`` gates an endpoint;
   a UI role-gate is UX only — authorization is always re-checked here. A bearer
-  identity always gets the explicit ``ROLE_RESEARCHER`` and **never**
+  identity always gets the explicit ``ROLE_USER`` and **never**
   ``default_role``: prod runs ``DEFAULT_ROLE=admin``, so falling through would
   make every authenticated end user a superuser.
+
+A verified bearer authentication also schedules a fire-and-forget profile
+upsert (ADR-0004 decision 1) — ``users(subject, …)`` keyed on the tenant
+string. It must never fail, slow, or 500 the auth path, so the task is wrapped
+and every exception is logged at debug. API-key principals get no user row: a
+key is a deployment credential, not a person.
 
 Presenting both credentials is a **400**, not a silent precedence rule: which one
 authenticated you would otherwise be invisible in the logs and in the tenant.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+import re
 import secrets
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
@@ -37,12 +49,15 @@ from fastapi.security import APIKeyHeader
 
 from ragstack.config import settings
 from ragstack.identity import (
+    Identity,
     IdentityInvalid,
     IdentityProvider,
     IdentityUnavailable,
     get_identity_provider,
 )
 from ragstack.tenancy import DEFAULT_TENANT
+
+logger = logging.getLogger(__name__)
 
 API_KEY_HEADER = "X-API-Key"
 AUTHORIZATION_HEADER = "Authorization"
@@ -59,10 +74,34 @@ _authorization_header = APIKeyHeader(
 
 # RBAC roles. ``admin`` is a superuser: it satisfies every ``require_role`` check.
 ROLE_ADMIN = "admin"
-ROLE_ENGINEER = "engineer"
-ROLE_MANAGER = "manager"
+ROLE_USER = "user"
+#: Deprecated alias for :data:`ROLE_USER` (pre-ADR-0003 vocabulary). Accepted
+#: wherever roles are read and normalized to ``user`` with a warning; the
+#: ``engineer``/``manager`` roles were removed outright (startup rejects them).
 ROLE_RESEARCHER = "researcher"
-VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_ENGINEER, ROLE_MANAGER, ROLE_RESEARCHER})
+VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_USER})
+#: Roles that existed pre-ADR-0003 but no longer do. Named in the startup
+#: rejection so an operator knows this is a deliberate removal, not a typo.
+_REMOVED_ROLES = frozenset({"engineer", "manager"})
+
+_warned_researcher_alias = False
+
+
+def normalize_role(role: str) -> str:
+    """Map the deprecated ``researcher`` alias to ``user`` (warning once per
+    process). Every place a role is *read* — ``api_key_roles`` values,
+    ``default_role``, the bearer path — goes through this, so a config written
+    against the old vocabulary keeps working while announcing its own age."""
+    global _warned_researcher_alias
+    if role == ROLE_RESEARCHER:
+        if not _warned_researcher_alias:
+            logger.warning(
+                "role 'researcher' is a deprecated alias for 'user' (ADR-0003); "
+                "update DEFAULT_ROLE / API_KEY_ROLES"
+            )
+            _warned_researcher_alias = True
+        return ROLE_USER
+    return role
 
 
 @dataclass(frozen=True)
@@ -105,13 +144,15 @@ def _principal_from_key(api_key: str | None) -> Principal:
     """
     keys = settings.api_keys
     if not keys:
-        return Principal(tenant=DEFAULT_TENANT, role=settings.default_role)
+        return Principal(tenant=DEFAULT_TENANT, role=normalize_role(settings.default_role))
     # sum() over the generator evaluates every compare_digest (no short-circuit),
     # so total time doesn't reveal which key matched or how far down the list.
     if api_key is not None and sum(secrets.compare_digest(api_key, k) for k in keys) > 0:
         return Principal(
             tenant=settings.api_key_tenants.get(api_key, DEFAULT_TENANT),
-            role=settings.api_key_roles.get(api_key, settings.default_role),
+            role=normalize_role(
+                settings.api_key_roles.get(api_key, settings.default_role)
+            ),
         )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -132,6 +173,119 @@ def _bearer_credential(authorization: str | None) -> str:
     if value[:7].lower() == "bearer ":
         value = value[7:].strip()
     return value
+
+
+# Strong references to in-flight profile-upsert tasks: a bare fire-and-forget
+# task is GC-able mid-flight, and a dropped one dies silently.
+_pending: set[asyncio.Task] = set()
+
+# Per-subject debounce for the profile upsert. resolve_principal memoizes only
+# per *request*, and the identity provider's cache caches verification — not
+# this hook — so without a debounce every bearer-authenticated request would
+# emit a users-table write transaction (a per-request write hotspot under a
+# polling UI, and an unbounded _pending set under a burst with a slow store).
+# One write per subject per window is plenty: the row is idempotent and
+# last_seen_at at minute granularity is all ADR-0004 needs.
+_UPSERT_DEBOUNCE_SECONDS = 300.0
+_upsert_last: dict[str, float] = {}
+# Prune trigger only — the dict stays bounded by subjects active in one window.
+_UPSERT_LAST_PRUNE_AT = 10_000
+
+# Profile claims are caller-influenced (OIDC `name`/`email` pass only
+# isinstance(str) checks upstream), so bound what gets persisted: a
+# validly-signed token carrying a multi-megabyte `name` must not become an
+# unbounded users-table row, and control characters must not reach whatever
+# later renders display_name. 254 is the RFC 5321 address ceiling; 256 is a
+# generous human-name budget.
+_PROFILE_CLAIM_MAX = 256
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_claim(value: str, limit: int = _PROFILE_CLAIM_MAX) -> str:
+    return _CONTROL_CHARS.sub("", value)[:limit]
+
+
+async def _upsert_profile(identity: Identity) -> None:
+    """Record the verified authentication in the user store (ADR-0004).
+
+    The row is keyed on the tenant string ``f"{issuer}:{sub}"`` — never an
+    email. An *unverified* email claim is not written: it would later be
+    indistinguishable from a verified one in the row, and ADR-0004's pending
+    shares must never be claimable by an unverified address.
+    """
+    from ragstack.user_store import get_user_store  # lazy: avoid import cycles
+
+    await get_user_store().upsert_seen(
+        subject=f"{identity.issuer}:{identity.subject}",
+        issuer=identity.issuer,
+        email=_clean_claim(identity.email) if identity.email_verified else "",
+        display_name=_clean_claim(identity.display_name),
+    )
+
+
+def _should_upsert(subject: str) -> bool:
+    """True when ``subject`` has not had an upsert scheduled this window.
+
+    Records the attempt immediately (not on completion): a failing store must
+    not turn the debounce off and hammer itself once per request.
+    """
+    now = time.monotonic()
+    last = _upsert_last.get(subject)
+    if last is not None and now - last < _UPSERT_DEBOUNCE_SECONDS:
+        return False
+    if len(_upsert_last) >= _UPSERT_LAST_PRUNE_AT:
+        cutoff = now - _UPSERT_DEBOUNCE_SECONDS
+        for key, stamp in list(_upsert_last.items()):
+            if stamp < cutoff:
+                del _upsert_last[key]
+    _upsert_last[subject] = now
+    return True
+
+
+# Warn once per process when profile writes start failing, then drop to debug:
+# a misconfigured/unreachable user store would otherwise be invisible at the
+# default INFO level while silently recording nobody.
+_upsert_failure_warned = False
+
+
+def _schedule_profile_upsert(identity: Identity) -> None:
+    """Fire-and-forget the profile upsert, debounced per subject.
+
+    Authentication must never fail, slow, or 500 because the profile write did —
+    ANY exception (scheduling or execution) is swallowed. The first failure is
+    logged at WARNING (an operator must be able to see a dead user store at the
+    default log level); repeats drop to debug."""
+    if not _should_upsert(f"{identity.issuer}:{identity.subject}"):
+        return
+
+    async def _run() -> None:
+        try:
+            await _upsert_profile(identity)
+        except Exception:  # noqa: BLE001 — never let a profile write hurt auth
+            global _upsert_failure_warned
+            level = logging.DEBUG if _upsert_failure_warned else logging.WARNING
+            _upsert_failure_warned = True
+            logger.log(level, "user profile upsert failed", exc_info=True)
+
+    try:
+        task = asyncio.get_running_loop().create_task(_run())
+        _pending.add(task)
+        task.add_done_callback(_pending.discard)
+    except Exception:  # noqa: BLE001 — e.g. no running loop in a sync test
+        logger.debug("user profile upsert could not be scheduled", exc_info=True)
+
+
+async def drain_profile_upserts() -> None:
+    """Await every in-flight profile upsert (idempotent; exceptions already
+    handled inside the tasks).
+
+    Called at shutdown BEFORE the user store closes: a fire-and-forget write
+    that outlives the lifespan would otherwise run against a closed store — or
+    worse, rebuild a fresh one through ``get_user_store()`` after
+    ``reset_user_store()`` (an asyncpg pool nobody closes; sqlite DDL on the
+    event loop)."""
+    while _pending:
+        await asyncio.gather(*list(_pending), return_exceptions=True)
 
 
 async def _principal_from_bearer(provider: IdentityProvider, credential: str) -> Principal:
@@ -161,10 +315,17 @@ async def _principal_from_bearer(provider: IdentityProvider, credential: str) ->
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or expired bearer credential",
         )
+    # First-auth profile upsert (ADR-0004): scheduled, never awaited — the
+    # request continues regardless of what the user store does. Debounced per
+    # subject (``_should_upsert``): this hook runs on every bearer request
+    # (the provider's cache caches *verification*, not this call), so the
+    # debounce — not the cache — is what keeps the users table from becoming a
+    # per-request write. The store's upsert semantics stay idempotent anyway.
+    _schedule_profile_upsert(identity)
     return Principal(
         tenant=f"{identity.issuer}:{identity.subject}",
         # Explicit, NOT settings.default_role: prod sets DEFAULT_ROLE=admin.
-        role=ROLE_RESEARCHER,
+        role=ROLE_USER,
         token=credential,
         token_id=identity.token_id,
         token_exp=identity.expires_at,
@@ -218,18 +379,28 @@ def validate_role_settings() -> None:
     otherwise silently 403 every affected caller — a hard-to-debug runtime
     failure. Raise a clear error instead. Never logs the keys themselves, only
     the offending role values.
+
+    The deprecated ``researcher`` alias passes (normalized to ``user`` with a
+    warning wherever roles are read); the removed ``engineer``/``manager``
+    roles are rejected with a pointer at ADR-0003 — they no longer map to any
+    surface, so a config granting them would silently 403 those callers.
     """
-    if settings.default_role not in VALID_ROLES:
-        raise RuntimeError(
-            f"default_role={settings.default_role!r} is not a valid role; "
-            f"valid roles are {sorted(VALID_ROLES)}"
-        )
-    bad_roles = {r for r in settings.api_key_roles.values() if r not in VALID_ROLES}
-    if bad_roles:
-        raise RuntimeError(
-            f"api_key_roles maps key(s) to invalid role(s) {sorted(bad_roles)}; "
-            f"valid roles are {sorted(VALID_ROLES)}"
-        )
+
+    def _check(role: str, where: str) -> None:
+        if role in _REMOVED_ROLES:
+            raise RuntimeError(
+                f"{where} uses role {role!r}, which was removed: the role "
+                "vocabulary is now admin | user (see docs/adr/0003-access-control.md)"
+            )
+        if normalize_role(role) not in VALID_ROLES:
+            raise RuntimeError(
+                f"{where}={role!r} is not a valid role; "
+                f"valid roles are {sorted(VALID_ROLES)}"
+            )
+
+    _check(settings.default_role, "default_role")
+    for role in set(settings.api_key_roles.values()):
+        _check(role, "api_key_roles")
 
 
 async def resolve_tenant(
@@ -258,17 +429,21 @@ def require_role(
     superuser and always passes). Returns the :class:`Principal` on success, 403s
     otherwise. Use at router-include level to gate a whole surface, or per route.
 
+    The role vocabulary is ``admin`` | ``user`` (ADR-0003); the deprecated
+    ``researcher`` alias is normalized to ``user`` here just as it is where
+    roles are read, so an old call site keeps gating the same callers.
+
     Validates ``roles`` against :data:`VALID_ROLES` at build time, so a typo like
-    ``require_role("admn")`` fails loudly at import — not as a silent, permanent
-    403 at runtime.
+    ``require_role("admn")`` — or one of the removed ``engineer``/``manager``
+    roles — fails loudly at import, not as a silent, permanent 403 at runtime.
     """
-    unknown = set(roles) - VALID_ROLES
+    allowed = {normalize_role(r) for r in roles}
+    unknown = allowed - VALID_ROLES
     if unknown:
         raise ValueError(
             f"require_role got unknown role(s) {sorted(unknown)}; "
             f"valid roles are {sorted(VALID_ROLES)}"
         )
-    allowed = set(roles)
 
     async def _dependency(
         principal: Principal = Depends(resolve_principal),

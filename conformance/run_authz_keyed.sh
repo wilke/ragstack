@@ -37,7 +37,7 @@ trap cleanup EXIT
 
 echo "[authz-conf] booting keyed in-memory API on $HOST:$PORT ..."
 API_KEYS="[\"$ADMIN_KEY\",\"$USER_KEY\"]" \
-API_KEY_ROLES="{\"$ADMIN_KEY\":\"admin\",\"$USER_KEY\":\"researcher\"}" \
+API_KEY_ROLES="{\"$ADMIN_KEY\":\"admin\",\"$USER_KEY\":\"user\"}" \
 VECTOR_BACKEND=memory TEXT_BACKEND=memory GRAPH_BACKEND=memory \
 REQUIRE_DURABLE_BACKENDS=false INGEST_ROOT="$INGEST_ROOT" \
   "$PYTHON" -m uvicorn ragstack.api.main:app --host "$HOST" --port "$PORT" \

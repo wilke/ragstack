@@ -143,6 +143,11 @@ class BvbrcSignedToken:
             issuer=ISSUER,
             token_id=token_id,
             expires_at=expires_at,
+            # The token format carries no profile claims. `un` is the only
+            # human-legible handle, so it doubles as the display name; it is
+            # email-shaped but carries no verified-email flag, so
+            # email/email_verified stay at their empty/False defaults.
+            display_name=subject,
         )
 
     async def aclose(self) -> None:

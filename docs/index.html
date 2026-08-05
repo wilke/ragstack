@@ -81,6 +81,7 @@
       <a class="doc-card" href="adr-0002-collection-identity.html"><span class="card-tag">ADR 0002</span><h2>ADR 0002 — Collection identity</h2><p>Content-addressed physical stores plus a durable registry, and the two production failures that forced them.</p><span class="card-go">Read &rarr;</span></a>
       <a class="doc-card" href="adr-0003-access-control.html"><span class="card-tag">ADR 0003</span><h2>ADR 0003 — Access control</h2><p>A tenant is a Qdrant instance, ownership sits on the collection instead of the chunk, and a library is just a collection.</p><span class="card-go">Read &rarr;</span></a>
       <a class="doc-card" href="adr-0004-users-groups-shares.html"><span class="card-tag">ADR 0004</span><h2>ADR 0004 — Users, groups, shares</h2><p>Profile rows on first auth, pending shares by verified email, public as a built-in group, and WITH GRANT OPTION instead of rwx.</p><span class="card-go">Read &rarr;</span></a>
+      <a class="doc-card" href="adr-0005-tenant-anatomy.html"><span class="card-tag">ADR 0005</span><h2>ADR 0005 — Anatomy of a tenant</h2><p>A tenant is one API endpoint plus dedicated stateful stores — including its own Elasticsearch — provisioned by script, sharing only stateless compute.</p><span class="card-go">Read &rarr;</span></a>
 </div></div>
 
 <footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>

@@ -59,9 +59,12 @@ type ChunkConfig struct {
 }
 
 // CollectionCreateRequest is the request body for POST /v1/collections.
+// `embedding` and `chunk` are optional (ADR-0003): omitted → the server's
+// default build spec fills them in. Chunk is a pointer so "omitted" is
+// distinguishable from an empty object.
 type CollectionCreateRequest struct {
-	Embedding string      `json:"embedding"`
-	Chunk     ChunkConfig `json:"chunk"`
-	ID        *string     `json:"id,omitempty"`
-	Label     string      `json:"label,omitempty"`
+	Embedding string       `json:"embedding,omitempty"`
+	Chunk     *ChunkConfig `json:"chunk,omitempty"`
+	ID        *string      `json:"id,omitempty"`
+	Label     string       `json:"label,omitempty"`
 }

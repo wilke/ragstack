@@ -1,0 +1,118 @@
+# ADR 0005 — Anatomy of a tenant: dedicated stateful stores, scripted provisioning
+
+- **Status:** Accepted
+- **Date:** 2026-08-05
+- **Deciders:** @wilke
+- **Amends:** [ADR-0004](0004-users-groups-shares.md) — the users/groups/shares store is
+  **per tenant**, not a shared instance; "the Postgres instance already deployed" becomes
+  "each tenant's own database".
+- **Related:** [ADR-0003](0003-access-control.md) (tenant = instance),
+  [#246](https://github.com/wilke/ragstack/issues/246) (release migration checklist),
+  [cookbook-new-org-ingest.md](../cookbook-new-org-ingest.md)
+
+## Context
+
+ADR-0003 declared *where* the tenant boundary is — the instance — but never defined what
+a tenant *is*. The deployment shows the cost of leaving that implicit: the one org
+provisioned for hard isolation has a dedicated Qdrant but its **text index sits in the
+shared Elasticsearch**, separated from every other tenant's data by nothing but an index
+name — no ES security layer in between. Half of every hybrid query for the "isolated"
+tenant runs through shared infrastructure. Nothing in code, config schema, or registry
+knows the word tenant; a tenant exists because an operator wrote an env file.
+
+ADR-0004 forced the question: it creates new stateful ACL data (users, groups, shares)
+and did not say which side of the tenant boundary that data lives on.
+
+## Decision
+
+**1. Definition.** A tenant is **one API endpoint bound to a dedicated set of stateful
+stores, sharing only stateless compute and the host**. Data at rest defines tenancy;
+compute passing through does not.
+
+| Inside the tenant (dedicated) | Shared plumbing |
+|---|---|
+| API server process + its env (identity config, role maps) | embedding fleet |
+| Qdrant instance | reranker sidecar |
+| Elasticsearch instance | LLM endpoint |
+| collection registry + job store + ACL database | frontend (backend switcher) |
+| ingest staging directories | the host, GPUs |
+
+**2. Every tenant gets a dedicated Elasticsearch**, exactly as it already gets a
+dedicated Qdrant. Index-name separation inside a shared ES is not isolation — it is a
+naming convention enforced by nothing.
+
+**3. The ACL/user store is per tenant** (this amends ADR-0004). The **schema and service
+code are shared; the database instance is not** — the same rule as reusing the group
+service elsewhere: another system runs its *own* instance against its *own* tables. The
+`issuer:sub` subject string is globally stable by construction, so one person appearing
+in several tenants is rows in several databases describing the same human, with nothing
+to sync. Consequences stated plainly: there is **no global user directory**, **no
+cross-tenant sharing**, and **`public` means public within this tenant**.
+
+**4. Provisioning is a script, not an API.** Creating a tenant creates infrastructure —
+store instances, data directories, an env file, service entries, port assignments — an
+operator act with resource consequences, parallel to build-spec overrides being
+admin-only. A `new-tenant` script stamps all of it out following the persistence
+conventions (every writable path enumerated and bind-mounted; no opaque overlays). A
+runtime tenant-management API is deferred until tenant creation is frequent enough that
+scripted ops is the bottleneck; at a handful of orgs it never is. The new-org onboarding
+cookbook and the ops architecture reference must be updated to match the script.
+
+**5. `max_collections` (default 100) applies within each tenant, to every role including
+admin.** The cap is physical protection for the store instances (ADR-0003's budget), not
+an authorization tier, so there is no bypass role. `0` disables it. Because the budget is
+per store instance and stores are per tenant, the cap multiplies with tenants exactly as
+ADR-0003 intended.
+
+## Migration
+
+Only two real tenants exist; everything else in the shared stores is test/demo. Both run
+the pre-ADR API and stay **untouched now** — they migrate together with their API upgrade.
+When that happens, **invert the obvious move**: after the smaller tenant's text index
+(~1.5M docs; snapshot/restore, or re-ingest from Qdrant payloads) and the test/demo
+indices leave the current shared ES, what remains *is* the large tenant's data — the
+existing instance is **relabeled as that tenant's dedicated ES** and its tens of millions
+of documents never move. Tracked in #246.
+
+## Deferred: federated tenancy
+
+At some point a global view may be wanted — one query across every tenant a person
+belongs to. The shape is known and recorded so it isn't re-derived: a **tenant registry**,
+a **cross-tenant scope carried on the identity**, and a **gateway API** that routes
+per-tenant requests and fuses results (the same N-leg RRF machinery as multi-collection
+search). It is deferred deliberately, not just for effort: the gateway **re-centralizes
+exactly what physical tenancy decentralizes** — it must hold trust for every tenant, so
+its compromise crosses all boundaries at once. If and when it is built, it gets its own
+ADR and its own threat model; nothing in this ADR blocks it, because subjects are already
+globally stable and every tenant speaks the same API.
+
+## Consequences
+
+**Accepted:**
+
+- **A tenant costs a process set** — Qdrant, an ES JVM (heap is the dominant line item),
+  a Postgres database, an API process, plus a backup target and a port block. This is why
+  tenants are for *organizations needing hard isolation*, a handful, never per-user.
+- **More instances to operate** — upgrades, snapshots, and monitoring multiply by tenant
+  count. The provisioning script is what keeps this tractable; hand-built tenants are how
+  the current ES gap happened.
+- **No cross-tenant anything** by construction. A person with roles in two tenants logs
+  into each; their collections cannot be fused until the federation layer exists.
+- **The collection budget is genuinely per tenant** — one org's growth cannot exhaust
+  another's headroom, completing the ADR-0003 argument.
+
+**Gained:** the word tenant now means one thing; the isolation actually matches what
+ADR-0003 claimed; ADR-0004's store placement is decided instead of accidental; and
+provisioning is reproducible instead of archaeological.
+
+## Alternatives considered
+
+- **Shared ES with index-name separation** (the status quo). Rejected: no security
+  boundary between indices, and it silently made the flagship isolation guarantee false
+  for half of every hybrid query.
+- **A shared ACL/user store.** One user list, simpler ops. Rejected: it drives a hole
+  through the instance boundary — every tenant's membership and sharing graph in one
+  database reachable from every tenant's API process.
+- **A tenant-management API now.** Rejected as premature: creation is an infrastructure
+  act at a frequency of a few per year; a script is auditable, versioned, and cannot be
+  invoked by a compromised API process.

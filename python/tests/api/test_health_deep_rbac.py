@@ -10,7 +10,7 @@ import pytest
 
 from ragstack.api import security
 from ragstack.api.main import app
-from ragstack.api.security import ROLE_ADMIN, ROLE_ENGINEER, ROLE_MANAGER, ROLE_RESEARCHER
+from ragstack.api.security import ROLE_ADMIN, ROLE_RESEARCHER, ROLE_USER
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,7 +37,7 @@ _BACKEND_LEAK_RE = re.compile(
 def _configure(monkeypatch, roles: dict[str, str]) -> None:
     monkeypatch.setattr(security.settings, "api_keys", list(roles))
     monkeypatch.setattr(security.settings, "api_key_roles", dict(roles))
-    monkeypatch.setattr(security.settings, "default_role", ROLE_RESEARCHER)
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
 
 
 async def test_no_key_is_401(client, monkeypatch):
@@ -45,7 +45,9 @@ async def test_no_key_is_401(client, monkeypatch):
     assert (await client.get("/v1/health/deep")).status_code == 401
 
 
-@pytest.mark.parametrize("role", [ROLE_RESEARCHER, ROLE_MANAGER, ROLE_ENGINEER])
+# `user` is the only non-admin role (ADR-0003); the deprecated `researcher`
+# alias must land on the same 403, not on a different surface.
+@pytest.mark.parametrize("role", [ROLE_USER, ROLE_RESEARCHER])
 async def test_non_admin_is_403_and_leaks_no_backend_detail(client, monkeypatch, role):
     _configure(monkeypatch, {"k": role})
     resp = await client.get("/v1/health/deep", headers={"X-API-Key": "k"})

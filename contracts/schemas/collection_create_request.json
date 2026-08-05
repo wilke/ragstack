@@ -2,17 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "collection_create_request.json",
   "title": "CollectionCreateRequest",
-  "description": "Create a collection bound to a registered embedding model and a chunk strategy. Build-time config is collection identity, so this mints a new collection rather than editing one. The collection is created empty; populate it via POST /v1/ingest with the returned collection id. Omit `id` for a corpus (content-addressed over the build spec, so re-creating the same spec is idempotent); supply `id` for a named library (its own isolated store, even when another library shares the build spec).",
+  "description": "Create a collection bound to an embedding model and a chunk strategy. Build-time config is collection identity, so this mints a new collection rather than editing one. The collection is created empty; populate it via POST /v1/ingest with the returned collection id. Both `embedding` and `chunk` are optional: an omitted field is filled from the server's default build spec, and the resolved (concrete) values — not the omission — become the collection's identity and provenance, so a later change of server defaults never changes an already-created collection. Supplying either field is an admin-only build-spec override; creation itself is open to any authenticated principal (ADR-0003). Omit `id` for a corpus (content-addressed over the resolved build spec, so re-creating the same spec is idempotent); supply `id` for a named library (its own isolated store, even when another library shares the build spec).",
   "type": "object",
-  "required": ["embedding", "chunk"],
   "properties": {
     "embedding": {
-      "description": "Id of a registered model whose task is `embedding` (see GET /v1/admin/models/registry). Its base_urls are SSRF-checked at registration; the model must declare a positive `dim`.",
+      "description": "Id of a registered model whose task is `embedding` (see GET /v1/admin/models/registry). Its base_urls are SSRF-checked at registration; the model must declare a positive `dim`. Optional: omitted → the server's default embedding backend (model, dim and endpoints from server config) is resolved in. Supplying it is admin-only (403 otherwise).",
       "type": "string",
       "minLength": 1
     },
     "chunk": {
-      "description": "Chunk strategy — part of the collection's build identity, so it is fixed at creation and cannot be edited later. An unknown `method`, or a size/overlap the chosen chunker cannot advance through, is a 400.",
+      "description": "Chunk strategy — part of the collection's build identity, so it is fixed at creation and cannot be edited later. An unknown `method`, or a size/overlap the chosen chunker cannot advance through, is a 400. Optional: omitted → the server's default chunk strategy (method, size, overlap from server config) is resolved in. Supplying it is admin-only (403 otherwise).",
       "type": "object",
       "required": ["method"],
       "properties": {
@@ -38,12 +37,14 @@
       "additionalProperties": false
     },
     "id": {
-      "description": "Optional explicit collection id, naming a *library*. When given, the id is also folded into the physical store name, so two libraries built from the same (model, dim, chunk) spec are isolated from each other rather than aliasing one store. Omitted → both the id and the physical name are derived from the content-addressed (model, dim, chunk) signature.",
-      "type": "string"
+      "description": "Optional explicit collection id, naming a *library*. When given, the id is also folded into the physical store name, so two libraries built from the same (model, dim, chunk) spec are isolated from each other rather than aliasing one store. An empty string is treated as omitted. Omitted → both the id and the physical name are derived from the content-addressed (model, dim, chunk) signature.",
+      "type": "string",
+      "maxLength": 128
     },
     "label": {
       "description": "Optional human-readable label for pickers.",
-      "type": "string"
+      "type": "string",
+      "maxLength": 256
     }
   },
   "additionalProperties": false

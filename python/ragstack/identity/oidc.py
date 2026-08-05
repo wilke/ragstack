@@ -134,12 +134,23 @@ class OidcIdentityProvider:
             else hashlib.sha256(credential.encode("utf-8")).hexdigest()
         )
         scopes = claims.get("scope")
+        # Profile claims (ADR-0004): read only after _check_claims — before the
+        # signature verified they were attacker-supplied JSON. `email` is
+        # metadata, never the subject/tenant key (module docstring); it is only
+        # meaningful alongside `email_verified`, so both are carried verbatim
+        # and nothing is decided here.
+        email = claims.get("email")
+        email_verified = claims.get("email_verified")
+        name = claims.get("name")
         return Identity(
             subject=subject,
             issuer=self._issuer_label,
             token_id=token_id,
             expires_at=int(exp) if isinstance(exp, int | float) else None,
             scopes=frozenset(scopes.split()) if isinstance(scopes, str) else frozenset(),
+            email=email if isinstance(email, str) else "",
+            email_verified=email_verified is True,
+            display_name=name if isinstance(name, str) else "",
         )
 
     async def aclose(self) -> None:

@@ -263,3 +263,13 @@ async def test_bad_signatures_cannot_hammer_the_key_server():
         with pytest.raises(IdentityInvalid):
             await provider.authenticate(bvbrc_token(OTHER_KEY))
     assert server.total_hits() == 1
+
+
+async def test_un_doubles_as_display_name_but_never_a_verified_email():
+    """The token format carries no profile claims; `un` is the only
+    human-legible handle. It is email-shaped, but BV-BRC asserts nothing about
+    the mailbox — so email_verified must stay False (ADR-0004: an unverified
+    email never claims a pending share)."""
+    identity = await make_provider(make_server()).authenticate(bvbrc_token(KEY))
+    assert identity.display_name == "alice@patricbrc.org"
+    assert identity.email_verified is False

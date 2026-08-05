@@ -1524,7 +1524,7 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
         {health.isError ? (
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
             {healthErr?.status === 403
-              ? "Deep health is admin-only. Start the API with DEFAULT_ROLE=admin (keyless callers default to 'researcher'), or enter an admin key above."
+              ? "Deep health is admin-only. Start the API with DEFAULT_ROLE=admin (keyless callers default to 'user'), or enter an admin key above."
               : `Unavailable: ${(health.error as Error).message}`}
           </div>
         ) : (
