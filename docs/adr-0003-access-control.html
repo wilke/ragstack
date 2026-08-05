@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADR 0003 — Access control: physical tenancy, collection-level ownership, two roles · RAGStack</title>
+<style>
+  :root {
+    --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
+    --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
+
+  header.hero { border-bottom:1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      var(--paper);
+  }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
+  .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent-2); margin:0 0 .7rem; }
+  h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
+  .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .chip a { color:var(--accent); text-decoration:none; }
+
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
+  .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
+    display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
+  nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
+  ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
+  ul.toc > li { margin:.1rem 0; }
+  ul.toc > li > a { display:block; padding:.28rem .6rem; border-radius:6px; color:var(--ink);
+    text-decoration:none; font-weight:550; border-left:2px solid transparent; }
+  ul.toc-sub { margin:.1rem 0 .5rem; }
+  ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
+    text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
+  nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
+  main { padding:1.6rem 0 5rem; min-width:0; }
+  .content { max-width:60rem; }
+  .content code { font-size:.85em; }
+  h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
+    line-height:1.2; scroll-margin-top:1rem; }
+  h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
+    border-radius:2px; margin-bottom:.9rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
+  h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
+  p { margin:.7rem 0; }
+  strong { font-weight:650; color:#0d1620; }
+  hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
+  .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
+    opacity:0; font-size:.8em; }
+  h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
+  a code { color:var(--accent); background:var(--accent-soft); }
+  ul, ol { padding-left:1.3rem; margin:.6rem 0; }
+  li { margin:.28rem 0; }
+  li::marker { color:var(--faint); }
+  blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
+    background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
+  blockquote p { margin:.3rem 0; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
+  .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  td code, th code { white-space:nowrap; }
+  thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
+  .diagram pre.mermaid { margin:0; text-align:center; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
+  .foot-inner code { font-size:.8rem; }
+  @media (max-width:920px) {
+    .wrap { grid-template-columns:1fr; gap:0; }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
+    main { padding-top:1rem; }
+  }
+</style>
+</head>
+<body>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">ADR 0003 — Access control: physical tenancy, collection-level ownership, two roles</h1>
+  <p class="tagline">A tenant is a Qdrant instance, ownership sits on the collection instead of the chunk, and a library is just a collection.</p>
+  <div class="chips">
+      <span class="chip">ADR 0003</span>
+      <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
+<li><a href="#context">Context</a>
+</li>
+<li><a href="#decision">Decision</a>
+</li>
+<li><a href="#consequences">Consequences</a>
+</li>
+<li><a href="#alternatives-considered">Alternatives considered</a>
+</li>
+<li><a href="#follow-up">Follow-up</a>
+</li>
+</ul>
+  </nav>
+  <main><article class="content" id="content">
+<ul>
+<li><strong>Status:</strong> Accepted</li>
+<li><strong>Date:</strong> 2026-08-04</li>
+<li><strong>Deciders:</strong> @wilke</li>
+<li><strong>Related:</strong> <a href="https://github.com/wilke/ragstack/issues/230">#230</a> (library_id payload partitioning),
+  <a href="https://github.com/wilke/ragstack/issues/197">#197</a> (<code>get_chunks</code> drops filter keys),
+  <a href="adr-0002-collection-identity.html">ADR-0002</a>, <a href="https://github.com/wilke/ragstack/blob/main/docs/libraries-spec.md">libraries-spec.md</a></li>
+</ul>
+<h2 id="context">Context</h2>
+<p>Three things in the tree look like access control. Only one works, none expresses
+ownership, and the word <em>tenant</em> means two incompatible things.</p>
+<ul>
+<li><strong>Per-chunk <code>tenant_id</code></strong> is genuinely enforced — stamped at ingest, injected last into
+  every filter so a caller cannot widen it, fail-closed on an empty list across all three
+  store backends. But because access <em>is</em> a payload filter, every filter bug is a security
+  bug: <code>get_chunks</code> silently drops every key except <code>tenant_id</code> (#197); <code>delete_except</code>
+  computes its keep-set under the wrong tenant; <code>count_tenants</code> / <code>list_documents</code> /
+  <code>delete</code> accept no filter dict at all.</li>
+<li><strong>Roles</strong> are four constants of which exactly one is ever gated on — <code>require_role</code> is
+  called with <code>ROLE_ADMIN</code> and nothing else in the entire tree. <code>engineer</code> and <code>manager</code>
+  are validated at startup and assignable, but no route distinguishes them from
+  <code>researcher</code>. A bearer identity is hard-coded to <code>ROLE_RESEARCHER</code>, so <strong>every
+  authenticated user carries the identical role</strong> and the axis conveys nothing about real
+  users.</li>
+<li><strong><code>TENANT_COLLECTIONS</code></strong> confines a tenant to a set of collection ids but defaults to
+  <code>{}</code> — feature off — and is an operator-authored env map, not a property of the resource.</li>
+</ul>
+<p>No resource carries an owner. <code>CollectionSpec</code> is twelve fields of pure build spec; a grep
+for <code>owner|created_by|visibility|acl|shared_with</code> across <code>python/ragstack/</code> returns one
+hit, a comment about job leases. So <code>DELETE /v1/collections/{id}?purge=true</code> checks the
+admin role and nothing else — any admin may destroy any collection, because who created it
+was never recorded.</p>
+<p>Meanwhile the <em>deployment</em> already practises a stronger tenancy than the code knows about:
+one Qdrant instance holds the shared corpora, a second serves an isolated org. Two
+meanings of "tenant" — a payload value and a process — share one name.</p>
+<p>Upstream settled the underlying question while <code>libraries-spec.md</code> was being written.
+Qdrant <strong>removed payload-based filters from its JWT/RBAC in v1.16</strong> (deprecated 1.15,
+PR #7450), stating <em>"payload based filters are inconsistent for read/write operations"</em> and
+naming the alternative: <em>"prefer collection-based access control."</em> Qdrant will not enforce
+payload-level tenant isolation; the collection is its only server-enforced boundary below
+the instance.</p>
+<h2 id="decision">Decision</h2>
+<p><strong>1. A tenant is a Qdrant instance, not a payload value.</strong> Organisations needing hard
+isolation get their own instance — the only absolute boundary available, since Qdrant has
+no namespace above the collection and no longer enforces anything below it. The per-chunk
+<code>tenant_id</code> is renamed <strong><code>owner_id</code></strong> and demoted to provenance: it records who ingested a
+chunk and is no longer an authorization mechanism. It stays stamped, and stays enforced in
+filters for at least one release as defence in depth.</p>
+<p><strong>2. Access is asserted at the collection.</strong> One check at collection resolution, before any
+store call. A collection carries an owner, a visibility (<code>public</code> | <code>private</code>), and a share
+list. This aligns with Qdrant's own RBAC direction and removes security from the filter
+path entirely.</p>
+<p><strong>3. A library is a collection.</strong> One-to-one, no separate entity — already true in the code
+since #228, where a named collection <em>is</em> one Qdrant collection plus one ES index and
+"library" survives only as the <code>lib</code> marker in the derived store name. Users create
+collections directly; <code>collection_create_request</code> currently requires <code>embedding</code> and
+<code>chunk</code>, so a server-configured <strong>default build spec</strong> must supply them, with those fields
+admin-only. A <code>user</code> may create and share private collections and read public ones.</p>
+<p><strong>4. Two roles: <code>admin</code> and <code>user</code>.</strong> Drop <code>engineer</code> and <code>manager</code> — both inert. Rename
+<code>researcher</code> → <code>user</code> (coordinated: hardcoded at <code>security.py:166</code>, and present in
+<code>api_key_roles</code> on deployed servers). <code>maintainer</code> is deliberately <strong>not</strong> added: the only
+endpoint exclusive to admin under that split would be <code>GET /v1/config</code>, a read-only
+allowlist that already excludes <code>api_keys</code>, <code>*_password</code> and <code>postgres_dsn</code> and redacts URL
+userinfo. The real admin/maintainer boundary — editing <code>rag.env</code>, restarting units,
+managing images — is outside the API and already enforced by shell access. Add the role
+when a <em>write</em> operation separates it; the likely trigger is delegating corpus curation
+without granting model-registry writes, since those change what every future ingest
+produces.</p>
+<p><strong>5. Admin bypasses ownership</strong> — explicitly, as a named branch in the authorization check,
+and logged. Required for purge, migration and support. Today the bypass exists only because
+there is nothing to bypass; it must become a decision the code states rather than an
+absence the code implies.</p>
+<h2 id="consequences">Consequences</h2>
+<p><strong>Accepted:</strong></p>
+<ul>
+<li><strong>The collection count is now a budget, and it is the binding constraint.</strong> Qdrant's own
+  docs call a collection-per-user an <em>"antipattern"</em> and warn against <em>"hundreds and
+  thousands"</em>; Cloud enforces a cap stated as 200 by maintainers and 1000 in the docs.
+  Measured here: an empty collection already costs 8 segments, ~104 files and ~496 KB, and
+  17 collections drive 1,561 threads and 61,219 mmaps. <strong>Budget ~100–150 per instance,
+  alert at 100.</strong> Reported failure order as the count grows: RAM → restart time and
+  consensus load → thread exhaustion (~1000) → crash on create (~2000). Elasticsearch is
+  not the constraint — default <code>cluster.max_shards_per_node</code> is 1000 against 11 in use.</li>
+<li><strong>The budget is per instance</strong>, so decision 1 multiplies it. An org with 30 researchers
+  holding 3 collections each fits comfortably on its own Qdrant.</li>
+<li><strong>Creation has user-visible latency</strong> — two physical stores must be created. Rules out
+  ephemeral or per-query sets.</li>
+<li><strong>Empty collections are not free.</strong> Five created, one filled, still costs five index
+  structures.</li>
+<li><strong>"Search everything I can see" becomes N-way fan-out plus RRF</strong>, capped. Not a
+  regression — a payload filter could never span physical collections either — but work
+  that must exist before the feature does.</li>
+<li><strong>Sharing shares the build spec.</strong> Harmless for read; the reason write and delete stay
+  owner-only.</li>
+<li><strong>An instance per org costs a process, RAM, a port and a backup target</strong>, and makes
+  cross-org search impossible. For orgs that is the point; it is why this scales to a
+  handful, not to per-user.</li>
+</ul>
+<p><strong>Gained:</strong> security stops depending on filter correctness, so #197 and its siblings become
+ordinary bugs; revocation is a row update, not a payload rewrite; isolation holds even when
+filter code is wrong; three concepts collapse to two; and the enforcement boundary matches
+the one Qdrant itself supports.</p>
+<p><strong>The escape hatch stays open.</strong> The physical store name is derived and never exposed — the
+API surfaces only <code>id</code>. A collection can later be backed by a shared store without an API
+change, which is what makes deferring #230 safe rather than merely cheap.</p>
+<h2 id="alternatives-considered">Alternatives considered</h2>
+<ul>
+<li><strong>A separate <code>library</code> entity partitioned by <code>library_id</code></strong> (<a href="https://github.com/wilke/ragstack/blob/main/docs/libraries-spec.md">libraries-spec.md</a>, #230).
+  Instant creation, thousands of sets, cheap document re-homing. Rejected: <code>library_id</code>
+  carries no descriptive value — unlike author, year or DOI it is a <em>security label</em> the
+  server injects and the caller cannot widen — so it earns its keep only once the
+  collection budget above is exhausted, and nothing else. It also returns enforcement to
+  the payload layer that Qdrant deprecated in 1.15 and removed in 1.16. The spec is
+  retained for the day the budget binds, with one correction pending: it predates Qdrant
+  1.16 <strong>tiered multitenancy</strong> (custom sharding with a fallback shard, plus tenant
+  promotion via <code>replicate_points</code>), which is upstream's own supported answer to the same
+  problem and should be evaluated before any bespoke <code>library_id</code> work.</li>
+<li><strong>Three roles (<code>admin</code> / <code>maintainer</code> / <code>user</code>).</strong> Matches how the team is organised — an
+  admin and a production engineer. Rejected because the API cannot express the distinction
+  today: every operation a maintainer would perform is already permitted to admin, and the
+  one endpoint left exclusively to admin is read-only and secret-free. Revisit on a
+  concrete write operation, not on org structure.</li>
+<li><strong>Keeping per-chunk <code>tenant_id</code> as the authorization mechanism.</strong> Zero migration.
+  Rejected: it makes the correctness of <code>get_chunks</code>, <code>delete_except</code>, <code>count_tenants</code> and
+  every future store method a security property, and it forces a payload rewrite to publish
+  or unpublish a corpus because <code>tenant_id</code> conflates "who owns this row" with "who may
+  read it".</li>
+</ul>
+<h2 id="follow-up">Follow-up</h2>
+<p><code>#199</code>'s conclusion that <code>is_tenant=true</code> degraded filtered recall should be re-checked
+before it hardens into received wisdom. Qdrant documents <code>is_tenant</code> as a <strong>disk-layout</strong>
+hint that co-locates a tenant's vectors for sequential reads, and a maintainer responding
+to an identical report said he would not expect it to affect recall at all. The documented
+causes of that symptom are the companion setting <code>m: 0</code>, which makes the global HNSW graph
+disjoint, or a stale graph — toggling <code>is_tenant</code> on an existing collection does not trigger
+a rebuild.</p>
+  </article></main>
+</div>
+
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
+
+<script>
+  (function () {
+    var content = document.getElementById("content");
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
+      var a = document.createElement("a");
+      a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
+    });
+    var links = {};
+    document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
+      links[a.getAttribute("href").slice(1)] = a;
+    });
+    var current = null;
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
+        if (current) current.classList.remove("active");
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
+      });
+    }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });
+  })();
+</script>
+</body>
+</html>

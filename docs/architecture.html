@@ -350,7 +350,11 @@ side is the bug.</p>
 </tr>
 <tr>
 <td><strong>library</strong></td>
-<td>A user-owned document set <em>inside</em> a collection, isolated by a <code>library_id</code> payload filter. <strong>Not yet implemented</strong> (#230).</td>
+<td>Not a separate entity. <a href="adr-0003-access-control.html">ADR-0003</a> makes it one-to-one with a collection; the word survives only as the <code>lib</code> marker in a named collection's derived store name.</td>
+</tr>
+<tr>
+<td><strong>tenant</strong></td>
+<td>A Qdrant <em>instance</em>. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users.</td>
 </tr>
 </tbody>
 </table></div>
@@ -990,7 +994,7 @@ selecting it by config — not editing the pipeline. Most live in
 <td><a href="model-registry.html">model-registry.md</a></td>
 </tr>
 <tr>
-<td>User-owned libraries (planned)</td>
+<td>User-owned libraries (deferred design, superseded by ADR-0003)</td>
 <td><a href="https://github.com/wilke/ragstack/blob/main/docs/libraries-spec.md">libraries-spec.md</a></td>
 </tr>
 <tr>
