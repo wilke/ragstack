@@ -5,8 +5,13 @@ import {
   collectionCreateMessage,
   collectionDeleteMessage,
   collectionPurgeMessage,
+  collectionShareMessage,
+  collectionShareRevokeMessage,
+  isPublicShare,
+  normalizeGranteeSubject,
   purgeConfirmed,
   purgeReportSummary,
+  shareGranteeLabel,
 } from "./collections";
 
 describe("collectionCreateMessage", () => {
@@ -103,6 +108,112 @@ describe("collectionPurgeMessage", () => {
   it("distinguishes an unreachable API from an HTTP status", () => {
     expect(collectionPurgeMessage(null, "")).toContain("could not reach the API");
     expect(collectionPurgeMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("collectionShareMessage", () => {
+  it("names ownership, not admin keys, for 403 (owner-or-admin share per #243)", () => {
+    expect(collectionShareMessage(403, "")).toContain("owner");
+    expect(collectionShareMessage(401, "")).toContain("API key or login");
+  });
+
+  it("treats 404 as not-found/not-visible rather than leaking existence", () => {
+    const msg = collectionShareMessage(404, "");
+    expect(msg).toMatch(/not found|can't see/i);
+  });
+
+  it("says a duplicate grant already exists on a bare 409", () => {
+    expect(collectionShareMessage(409, "")).toContain("already exists");
+  });
+
+  it("unwraps the server's sentence for a 409, not the raw body", () => {
+    const body = '{"detail":"\'bvbrc:alice\' already has an active read grant"}';
+    const msg = collectionShareMessage(409, body);
+    expect(msg).toContain("already has an active read grant");
+    expect(msg).not.toContain("{");
+  });
+
+  it("surfaces the server's own 422 reason (empty grantee / non-read permission)", () => {
+    const body = '{"detail":"v1 shares are read-only; permission \'write\' is not allowed"}';
+    const msg = collectionShareMessage(422, body);
+    expect(msg).toContain("read-only");
+    expect(msg).not.toContain("{");
+  });
+
+  it("names the store outage for a 503 (fail closed)", () => {
+    expect(collectionShareMessage(503, "")).toMatch(/authorization store|unavailable/i);
+  });
+
+  it("reports a transport failure distinctly from an HTTP status", () => {
+    expect(collectionShareMessage(null, "")).toContain("could not reach the API");
+    expect(collectionShareMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("collectionShareRevokeMessage", () => {
+  it("names ownership for a 403", () => {
+    expect(collectionShareRevokeMessage(403, "")).toContain("owner");
+    expect(collectionShareRevokeMessage(401, "")).toContain("API key or login");
+  });
+
+  it("treats 404 as already gone", () => {
+    expect(collectionShareRevokeMessage(404, "")).toContain("already gone");
+  });
+
+  it("passes a 409 detail (the owner row can't be revoked) through, unwrapped", () => {
+    const body = '{"detail":"the owner row is not revocable via the share API"}';
+    const msg = collectionShareRevokeMessage(409, body);
+    expect(msg).toContain("owner row is not revocable");
+    expect(msg).not.toContain("{");
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(collectionShareRevokeMessage(null, "")).toContain("could not reach the API");
+    expect(collectionShareRevokeMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("normalizeGranteeSubject", () => {
+  // Mirrors the server's _resolve_grantee so the dialog can preview the stored
+  // subject before the round-trip; the server stays authoritative.
+  it("prefixes a bare username with the default bvbrc issuer", () => {
+    expect(normalizeGranteeSubject("alice")).toBe("bvbrc:alice");
+  });
+
+  it("keeps a full issuer:subject string verbatim", () => {
+    expect(normalizeGranteeSubject("oidc:alice@example.org")).toBe("oidc:alice@example.org");
+  });
+
+  it("maps the public literals to the canonical @public, never issuer-prefixed", () => {
+    expect(normalizeGranteeSubject("@public")).toBe("@public");
+    expect(normalizeGranteeSubject("public")).toBe("@public");
+  });
+
+  it("honours an explicit issuer for a bare username", () => {
+    expect(normalizeGranteeSubject("alice", "oidc")).toBe("oidc:alice");
+  });
+
+  it("forgives surrounding whitespace from a paste", () => {
+    expect(normalizeGranteeSubject("  alice\n")).toBe("bvbrc:alice");
+  });
+
+  it("resolves empty/whitespace input to the empty string (blocks the Grant button)", () => {
+    expect(normalizeGranteeSubject("")).toBe("");
+    expect(normalizeGranteeSubject("   ")).toBe("");
+  });
+});
+
+describe("isPublicShare / shareGranteeLabel", () => {
+  it("recognises the public group row and labels it for humans", () => {
+    const pub = { grantee_type: "group", grantee_id: "public" };
+    expect(isPublicShare(pub)).toBe(true);
+    expect(shareGranteeLabel(pub)).toContain("Everyone");
+  });
+
+  it("treats a user grant as non-public and shows its subject", () => {
+    const user = { grantee_type: "user", grantee_id: "bvbrc:alice" };
+    expect(isPublicShare(user)).toBe(false);
+    expect(shareGranteeLabel(user)).toBe("bvbrc:alice");
   });
 });
 

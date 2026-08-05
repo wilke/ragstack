@@ -9,8 +9,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from ragstack.api.access import enforce_access
-from ragstack.api.collections import CollectionRegistry
+from ragstack.acl_store import get_acl_store
+from ragstack.api.access import auth_configured, enforce_access
+from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
     build_generator_for,
     build_reranker_for,
@@ -337,11 +338,52 @@ async def _resolve_entry(
     return entry
 
 
-async def _resolve_retriever(
-    registry: CollectionRegistry, collection: str | None, principal: Principal
-):
-    """The retriever for the selected registry collection (caller's default when None)."""
-    return (await _resolve_entry(registry, collection, principal)).retriever
+async def _shared_scope(
+    entry: CollectionEntry, registry: CollectionRegistry, principal: Principal
+) -> list[str]:
+    """Extra readable writer-tenants for a collection the caller reaches through a
+    share (or the ``public`` grant) rather than owning.
+
+    Read authorization (the ACL share) and data visibility (the per-chunk
+    ``tenant_id`` vector scope) are two independent gates. A private collection's
+    chunks are stamped with the OWNER's tenant at ingest, so a grantee whose scope
+    is only ``{own, public}`` passes the read gate but sees zero of the shared
+    chunks. This closes that gap: read access to ``entry.id`` was already enforced
+    (:func:`_resolve_entry`), so exposing the owner's tenant — which stamps exactly
+    this collection's chunks — for this query is precisely the grant, no wider.
+
+    Two collections that share one physical store break that "no wider": the store
+    filters by ``tenant_id`` alone (no ``collection_id`` predicate), so widening to
+    the owner's tenant would also surface the owner's chunks in a *co-resident*
+    collection that was never shared. So widening is confined to a collection whose
+    store is exclusively its own. The ``default`` collection is likewise excluded:
+    it is the shared multi-tenant surface where ``tenant_id`` IS the isolation and
+    its ownership is only a backfill artifact — widening there would inject the
+    backfill owner's tenant into every caller's scope.
+
+    A no-op when auth is unconfigured (the single open dev tenant) or when the
+    caller already is the owner. Fail-soft: a store hiccup returns no extra tenant
+    (the caller still sees own + public) — it never widens scope on error."""
+    if not auth_configured():
+        return []
+    # The default collection is the multi-tenant shared surface — never widen it.
+    if entry.is_default:
+        return []
+    # Co-resident store (another registry entry points at the same physical
+    # collection): widening by tenant_id would cross the collection boundary the
+    # filter can't express. Under-expose (safe) rather than leak the neighbour.
+    if any(e.collection == entry.collection for e in registry.entries() if e.id != entry.id):
+        return []
+    try:
+        owner = await get_acl_store().owner_of(entry.id)
+    except Exception:  # noqa: BLE001 — never widen scope on a store hiccup
+        log.warning(
+            "scope: owner_of(%r) failed; not widening read scope", entry.id, exc_info=True
+        )
+        return []
+    if owner and owner != principal.tenant:
+        return [owner]
+    return []
 
 
 def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
@@ -374,7 +416,8 @@ async def retrieve(
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
-    retriever = await _resolve_retriever(registry, request.collection, principal)
+    entry = await _resolve_entry(registry, request.collection, principal)
+    retriever = entry.retriever
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
@@ -382,7 +425,7 @@ async def retrieve(
         request.query,
         [request.query],
         request.top_k,
-        scope_filters(request.filters, tenant),
+        scope_filters(request.filters, tenant, await _shared_scope(entry, registry, principal)),
         request.use_graph,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
@@ -410,10 +453,13 @@ async def get_chunks(
     id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
     if not id_list:
         return ChunksResponse(chunks=[])
-    store = (await _resolve_entry(registry, collection, principal)).vector_store
+    entry = await _resolve_entry(registry, collection, principal)
+    store = entry.vector_store
     if store is None:  # pragma: no cover - all wired entries carry a store
         return ChunksResponse(chunks=[])
-    chunks = await store.get_chunks(id_list, scope_filters({}, tenant))
+    chunks = await store.get_chunks(
+        id_list, scope_filters({}, tenant, await _shared_scope(entry, registry, principal))
+    )
     return ChunksResponse(
         chunks=[
             ChunkOut(doc_id=c.doc_id, chunk_id=c.id, content=c.content, metadata=c.metadata)
@@ -456,8 +502,11 @@ async def query(
     """
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    retriever = await _resolve_retriever(registry, request.collection, principal)
-    filters = scope_filters(request.filters, tenant)
+    entry = await _resolve_entry(registry, request.collection, principal)
+    retriever = entry.retriever
+    filters = scope_filters(
+        request.filters, tenant, await _shared_scope(entry, registry, principal)
+    )
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(
         retriever,

@@ -87,6 +87,9 @@ keys are configured.
 | POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate |
 | POST | `/v1/retrieve` | Retrieve chunks only (no answer) |
 | POST | `/v1/collections` | Create a collection (any principal; `embedding`/`chunk` overrides admin-only) |
+| GET | `/v1/collections/{id}/shares` | List a collection's shares + owner (owner-or-admin) |
+| POST | `/v1/collections/{id}/shares` | Grant a read share (or publish via `@public`) — owner-or-admin |
+| DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (un-publish) — owner-or-admin |
 | POST | `/v1/ingest` | Ingest a file/directory (async job) |
 | GET | `/v1/ingest/{job_id}` | Poll ingest job status |
 | GET | `/v1/documents` | List indexed documents |
@@ -165,6 +168,64 @@ curl -s http://localhost:8000/v1/collections \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"id": "my-papers", "label": "My papers"}'
 ```
+
+### Collection shares
+
+`GET`/`POST`/`DELETE /v1/collections/{id}/shares` manage who may **read** a
+collection (see *Collection ownership* above). All three are **owner-or-admin**,
+gated through the same authorization seam as `DELETE /v1/collections`: a non-owner
+who can read the collection gets **403**, one who cannot gets **404** (unreadable
+== unknown, so a private collection's existence and grantee list never leak), and
+an authorization-store outage is **503** (fail closed).
+
+**Grantee resolution** (`POST` body `grantee`, resolved server-side and echoed
+back in the response so a typo — an unclaimable grant — is visible):
+
+| Input | Resolves to |
+|---|---|
+| `@public` or `public` | the built-in world-readable **public group** (read-only) |
+| a value containing `:` | a full `issuer:subject` string, kept **verbatim** (issuer/subject halves must both be non-empty) |
+| a bare username | prefixed with `issuer` (default `bvbrc`) → `bvbrc:<username>` |
+
+v1 is **read-only**: `permission` accepts `read` only (`owner` → **400**, it is
+transferred not granted; `write`/anything else → **422**). `grant_option` is not
+exposed (always false, delegation deferred). Sharing with a user who has never
+logged in pre-provisions their row so the grant is claimed on first login (there
+is no BV-BRC username-existence check). **Making a collection public** is
+`POST {grantee: "@public"}`; **un-publishing** is `DELETE` of that `public` share.
+
+Once granted, a read share also **widens the grantee's retrieval scope** for that
+collection: its chunks are stamped with the owner's per-writer `tenant_id` at
+ingest, so a query/retrieve against the shared collection includes the owner's
+tenant alongside the caller's own + `public` — the grant makes the data readable,
+not just the ACL.
+
+```bash
+# Grant read to a BV-BRC user, then publish, then list, then un-publish
+curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"grantee": "alice"}'                 # -> 201, grantee_id "bvbrc:alice"
+curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
+  -H 'X-API-Key: kp' -d '{"grantee": "@public"}'   # publish (read to everyone)
+curl -s http://localhost:8000/v1/collections/my-papers/shares -H 'X-API-Key: kp'
+curl -s -X DELETE http://localhost:8000/v1/collections/my-papers/shares/<share_id> \
+  -H 'X-API-Key: kp'                        # -> 204 (un-publish / revoke)
+```
+
+**`POST`** (`ShareGrantRequest`): `{ grantee (required), permission?="read",
+issuer?="bvbrc" }` → **201** `ShareRecord`. Also: **409** on a duplicate active
+grant, a no-op grant to the current owner, or a public write.
+
+**`GET`** → `SharesResponse`: `{ shares: ShareRecord[], owner }`.
+`?include_revoked=true` adds soft-revoked rows (audit history: `active:false`,
+`revoked_by`/`revoked_at` set).
+
+**`DELETE`** → **204**. The `share_id` must belong to `{id}` (a foreign or
+unknown id is **404**, never a cross-collection revoke). Revocation is soft
+(audit history survives) and cascades along the `granted_by` chain (ADR-0004).
+The active **owner** row is not revocable here (**409** — transfer or delete the
+collection instead). Schemas: `contracts/schemas/share_grant_request.json`,
+`share_record.json`, `shares_response.json`.
 
 ### POST /v1/ingest
 

@@ -15,7 +15,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from ragstack.acl_store import get_acl_store
+from ragstack.acl_store import (
+    GRANTEE_GROUP,
+    GRANTEE_USER,
+    PERM_OWNER,
+    PERM_READ,
+    PUBLIC_GROUP,
+    ShareInvariantError,
+    ShareNotFoundError,
+    ShareRecord,
+    get_acl_store,
+)
 from ragstack.api.access import (
     enforce_access,
     filter_readable,
@@ -693,6 +703,326 @@ async def delete_collection(
         [f.target for f in report.failed],
     )
     return JSONResponse(status_code=200, content=report.model_dump())
+
+
+# --------------------------------------------------------------------------- #
+# Collection shares (issue #244) — grant / list / revoke, owner-or-admin
+# --------------------------------------------------------------------------- #
+
+#: Reserved literals that expand to the built-in world-readable ``public`` group
+#: server-side. Sharing with everyone is ``GRANT read TO public`` (ADR-0004
+#: decision 4); it is never a user grantee and is never prefixed with an issuer.
+_PUBLIC_LITERALS = frozenset({"@public", "public"})
+
+#: Default issuer for a bare (unprefixed) grantee username. A share dialog sends
+#: an email-shaped BV-BRC username (e.g. ``alice@patricbrc.org``); the stored
+#: subject MUST be ``bvbrc:<username>`` or it will never match the caller's
+#: principal at read time. A grantee that already contains ``':'`` is taken to be
+#: a full ``issuer:subject`` string as-is — the server does NOT guess an OIDC
+#: subject from a bare username (bare names are BV-BRC only).
+_DEFAULT_ISSUER = "bvbrc"
+
+
+class ShareGrantRequest(BaseModel):
+    """POST body for granting a share. v1 is deliberately minimal and read-only:
+    ``grant_option`` (WITH GRANT OPTION) and ``owner`` grants are NOT exposed —
+    ownership is transferred, never granted, through its own flow."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    grantee: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Who to share with. Either the literal '@public'/'public' (→ the "
+            "built-in public group, read-only), a full 'issuer:subject' string "
+            "(kept verbatim), or a bare BV-BRC username which is prefixed to "
+            "'bvbrc:<username>'. The resolved subject is echoed back so a typo is "
+            "visible — a typo'd grantee is otherwise an unclaimable grant."
+        ),
+    )
+    permission: str = Field(
+        PERM_READ,
+        description="v1 accepts 'read' only; 'write'/'owner' are rejected.",
+    )
+    issuer: str = Field(
+        _DEFAULT_ISSUER,
+        description="Issuer used to qualify a bare username (default 'bvbrc').",
+    )
+
+
+class ShareInfo(BaseModel):
+    """One share row, as surfaced by the API. ``grant_option`` is omitted (not
+    settable in v1); ``active`` is derived from ``revoked_at``."""
+
+    id: str
+    collection_id: str
+    grantee_type: str  # 'user' | 'group'
+    grantee_id: str  # subject (user) or group id ('public' for the public group)
+    permission: str
+    granted_by: str
+    granted_at: str
+    revoked_by: str
+    revoked_at: str
+    active: bool
+
+
+class SharesResponse(BaseModel):
+    shares: list[ShareInfo]
+    owner: str | None = None
+
+
+def _share_info(rec: ShareRecord) -> ShareInfo:
+    return ShareInfo(
+        id=rec.id,
+        collection_id=rec.collection_id,
+        grantee_type=rec.grantee_type,
+        grantee_id=rec.grantee_id,
+        permission=rec.permission,
+        granted_by=rec.granted_by,
+        granted_at=rec.granted_at,
+        revoked_by=rec.revoked_by,
+        revoked_at=rec.revoked_at,
+        active=rec.active,
+    )
+
+
+def _resolve_grantee(grantee: str, issuer: str) -> tuple[str, str]:
+    """Map a grantee input to ``(grantee_type, grantee_id)``.
+
+    - '@public'/'public' → (group, 'public'); never prefixed.
+    - contains ':' → (user, <verbatim full subject>).
+    - otherwise → (user, '<issuer>:<username>').
+
+    Raises :class:`HTTPException` 422 on an empty/whitespace grantee, a blank
+    issuer for a bare username, or a full 'issuer:subject' whose issuer or subject
+    half is empty (':', 'bvbrc:', ':alice' — a degenerate, unclaimable grant)."""
+    g = grantee.strip()
+    if not g:
+        raise HTTPException(422, "grantee must not be empty or whitespace")
+    if g in _PUBLIC_LITERALS:
+        return GRANTEE_GROUP, PUBLIC_GROUP
+    if ":" in g:
+        # Already a full 'issuer:subject' string (a UI share dialog may still send
+        # a bare username, handled below) — keep it verbatim, but reject a
+        # degenerate half: an empty issuer or subject can never match a principal
+        # at read time, so it would silently create an unclaimable grant (the exact
+        # failure the resolved-subject echo exists to prevent).
+        issuer_part, _, subject_part = g.partition(":")
+        if not issuer_part.strip() or not subject_part.strip():
+            raise HTTPException(
+                422,
+                "a full 'issuer:subject' grantee must have a non-empty issuer and "
+                "subject",
+            )
+        return GRANTEE_USER, g
+    iss = issuer.strip()
+    if not iss:
+        raise HTTPException(422, "issuer must not be empty for a bare username")
+    return GRANTEE_USER, f"{iss}:{g}"
+
+
+@router.get(
+    "/collections/{collection_id}/shares",
+    response_model=SharesResponse,
+)
+async def list_shares(
+    collection_id: str,
+    principal: Principal = Depends(resolve_principal),
+    include_revoked: bool = Query(
+        False,
+        description="Include soft-revoked rows (audit history). Default: active only.",
+    ),
+    registry: CollectionRegistry = Depends(get_collections),
+) -> SharesResponse:
+    """List a collection's shares (owner-or-admin).
+
+    Gated on the ``owner`` action through the ONE seam — only the owner (or an
+    admin, whose bypass is logged) may enumerate a collection's grantees, so the
+    share list never leaks who a private collection is shared with. A non-owner
+    who can read it gets 403; one who cannot gets 404 (existence not leaked); a
+    store outage is 503 (fail closed)."""
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    await enforce_access(principal, entry.id, "owner")
+
+    store = get_acl_store()
+    try:
+        rows = await store.shares_for(entry.id, include_revoked=include_revoked)
+        owner = await store.owner_of(entry.id)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — fail closed on any store outage
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+    return SharesResponse(shares=[_share_info(r) for r in rows], owner=owner)
+
+
+@router.post(
+    "/collections/{collection_id}/shares",
+    response_model=ShareInfo,
+    status_code=201,
+)
+async def create_share(
+    collection_id: str,
+    req: ShareGrantRequest,
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
+) -> ShareInfo:
+    """Grant a share on a collection (owner-or-admin).
+
+    v1 rules, enforced server-side:
+
+    - ``permission`` is ``read`` only. ``owner`` is rejected (ownership is
+      transferred, not granted); ``write`` and anything else is rejected too.
+    - a user grantee may be a full ``issuer:subject`` string OR a bare BV-BRC
+      username (prefixed to ``bvbrc:<username>``); the literal ``@public`` /
+      ``public`` maps to the built-in public group (read-only).
+    - sharing with a user who has never logged in pre-provisions a users row
+      (``ensure_provisional``) so the FK-by-convention holds; there is NO way to
+      verify a BV-BRC username exists first, so the grant is best-effort on an
+      unverifiable identifier — the resolved subject is echoed back so a typo is
+      visible.
+
+    ``grant_option`` is not exposed (defaults false). A duplicate active grant is
+    a 409. A 404 hides an unknown/unreadable collection; 403 a readable non-owned
+    one; 503 a store outage."""
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    await enforce_access(principal, entry.id, "owner")
+
+    perm = (req.permission or PERM_READ).strip()
+    if perm == PERM_OWNER:
+        raise HTTPException(
+            400, "ownership is transferred, not granted; use the transfer flow"
+        )
+    if perm != PERM_READ:
+        raise HTTPException(
+            422, f"v1 shares are read-only; permission {perm!r} is not allowed"
+        )
+
+    grantee_type, grantee_id = _resolve_grantee(req.grantee, req.issuer)
+
+    store = get_acl_store()
+
+    if grantee_type == GRANTEE_USER:
+        # A read grant to the collection's own owner is a trivial no-op (the owner
+        # already holds every permission) — reject it so it isn't a redundant row.
+        try:
+            owner = await store.owner_of(entry.id)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001 — fail closed
+            raise HTTPException(
+                503, "authorization store unavailable; refusing to serve (fail closed)"
+            ) from e
+        if owner is not None and owner == grantee_id:
+            raise HTTPException(
+                409, f"{grantee_id!r} already owns collection {entry.id!r}"
+            )
+        # Pre-provision the grantee's users row so shares.grantee/granted_by
+        # resolve to a real row (mirror write_owner_row). The issuer is taken from
+        # the subject itself (e.g. 'bvbrc' for 'bvbrc:alice@…'); an absent user row
+        # is not fatal to the grant. There is NO BV-BRC existence check to reuse —
+        # a typo'd username is stored as a provisional user that never matches.
+        ep = getattr(store, "ensure_provisional", None)
+        if ep is not None:
+            grantee_issuer = grantee_id.split(":", 1)[0] or _DEFAULT_ISSUER
+            try:
+                await ep(grantee_id, grantee_issuer)
+            except Exception:  # noqa: BLE001 — provisioning is best-effort
+                log.warning(
+                    "share: ensure_provisional(%s) failed", grantee_id, exc_info=True
+                )
+
+    try:
+        rec = await store.grant(
+            entry.id, grantee_type, grantee_id, perm, granted_by=principal.tenant
+        )
+    except ShareInvariantError as e:
+        # Duplicate active grant / public-write / owner-to-group / unknown
+        # vocabulary all surface here as an invariant violation.
+        raise HTTPException(409, str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — fail closed on any store outage
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+    return _share_info(rec)
+
+
+@router.delete(
+    "/collections/{collection_id}/shares/{share_id}",
+    status_code=204,
+    response_model=None,
+)
+async def revoke_share(
+    collection_id: str,
+    share_id: str,
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
+) -> Response:
+    """Revoke a share (owner-or-admin). Soft + recursive via the store.
+
+    The un-publish of a public collection is just DELETE of its ``public`` share.
+    Revocation cascades along ``granted_by`` chains (ADR-0004 decision 5); the row
+    count revoked is logged, and 204 is returned.
+
+    The store's ``revoke`` looks a share up by id ALONE — it is not scoped to the
+    collection — so the share is first verified to belong to ``{collection_id}``;
+    a mismatch (or unknown id) is a 404, never a cross-collection revoke. The
+    active owner row is not revocable through this endpoint (that would strip
+    ownership; use delete/transfer)."""
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    await enforce_access(principal, entry.id, "owner")
+
+    store = get_acl_store()
+    try:
+        history = await store.shares_for(entry.id, include_revoked=True)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — fail closed
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+    match = next((s for s in history if s.id == share_id), None)
+    if match is None:
+        # Unknown id, OR a share of a DIFFERENT collection — both 404 so this
+        # endpoint can never revoke another collection's share via a mismatched
+        # path (the store itself does not scope by collection).
+        raise HTTPException(
+            404, f"unknown share {share_id!r} on collection {collection_id!r}"
+        )
+    if match.permission == PERM_OWNER and match.active:
+        raise HTTPException(
+            409,
+            "the owner row is not revocable via the share API; "
+            "delete the collection or transfer ownership instead",
+        )
+
+    try:
+        revoked = await store.revoke(share_id, revoked_by=principal.tenant)
+    except ShareNotFoundError:
+        raise HTTPException(
+            404, f"unknown share {share_id!r} on collection {collection_id!r}"
+        ) from None
+    log.info(
+        "revoked share %s on %r (cascade revoked %d row(s)) by %s",
+        share_id, entry.id, len(revoked), principal.tenant,
+    )
+    return Response(status_code=204)
 
 
 class AvailableModel(BaseModel):

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shares_response.json",
+  "title": "SharesResponse",
+  "description": "A collection's shares plus its current owner subject (GET /v1/collections/{id}/shares).",
+  "type": "object",
+  "required": ["shares", "owner"],
+  "properties": {
+    "shares": {
+      "type": "array",
+      "items": { "$ref": "share_record.json" }
+    },
+    "owner": {
+      "description": "Subject of the collection's active owner row, or null.",
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false
+}

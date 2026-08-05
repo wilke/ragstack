@@ -15,10 +15,24 @@
 > onward"; the implementation computes a grounded least-fixpoint — an onward grant
 > survives if its grantee retains access through an independent grounded share, and
 > mutual-grant cycles collapse rather than protecting each other. This is strictly safer
-> than the literal wording. (2) *Grant-option enforcement is deferred to #244.* "A grantor
-> can never delegate more than they hold" is not yet enforced (nothing writes non-owner
-> grants until the shares API lands); it MUST be enforced when #244 exposes granting, and
-> the DDL-as-contract note in #243 flags this for any second consumer.
+> than the literal wording. (2) *Grant-option delegation is not yet exposed.* #244 shipped the
+> shares API but deliberately scopes it to `read` grants by an owner-or-admin only —
+> `grant_option`, `write`, and non-owner delegation are not exposed, so "a grantor can never
+> delegate more than they hold" has nothing to enforce against yet. It MUST be enforced when a
+> later unit exposes delegated granting; the DDL-as-contract note in #243 flags this for any
+> second consumer coding against the shares table before then.
+
+> **Implementation notes (added 2026-08-05 as #244 shipped the shares API/UI):**
+> #244 exposed granting but deliberately kept it **read-only and owner-or-admin**:
+> `POST /v1/collections/{id}/shares` accepts `permission: read` only, only the owner
+> (or an admin) may grant, and `grant_option` is **not writable** (always false). So no
+> caller can yet write a non-owner or delegable grant, and the grant-option enforcement
+> refinement note (2) above anticipated at #244 did **not** land — "a grantor can never
+> delegate more than they hold" is still unenforced because nothing writes a delegable
+> grant. It moves to the later issue that exposes `grant_option`/`write`; until then the
+> #243 DDL-as-contract flag stands for any second consumer. Making a collection public is
+> `GRANT read TO @public` and un-publishing is `DELETE` of that share, replacing the
+> ADR-0003 `visibility` field as decided above.
 
 ## Context
 

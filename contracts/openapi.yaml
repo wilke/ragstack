@@ -701,6 +701,163 @@ paths:
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
+  /v1/collections/{collection_id}/shares:
+    get:
+      operationId: listCollectionShares
+      summary: List a collection's shares (owner-or-admin)
+      description: >-
+        Enumerate the active shares of a collection: who it is shared with
+        (`grantee_type` + `grantee_id`), at what `permission`, by whom and when.
+        Owner-or-admin only — a non-owner must not learn who a private collection
+        is shared with, so the same seam and leak-safe status mapping as
+        `DELETE /v1/collections` applies (403 for a readable non-owned
+        collection, 404 for an unknown/unreadable one). The response also reports
+        the current `owner`. Pass `include_revoked=true` for the full audit
+        history (revoked rows carry `revoked_by`/`revoked_at` and `active:false`).
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: include_revoked
+          in: query
+          required: false
+          description: Include soft-revoked rows (audit history). Default false (active only).
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: The collection's shares and its current owner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharesResponse"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller can read the collection but is neither its owner nor an admin
+        "404":
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked)
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+    post:
+      operationId: grantCollectionShare
+      summary: Grant a share on a collection (owner-or-admin)
+      description: >-
+        Share a collection with a user or with everyone. v1 is read-only and
+        owner-or-admin. `permission` accepts `read` only: `owner` is rejected
+        (ownership is transferred, not granted) and `write` is deferred.
+
+
+        The `grantee` is resolved server-side: the literal `@public` (or `public`)
+        maps to the built-in world-readable **public group** (read-only —
+        making a collection public is `GRANT read TO public`, and un-publishing is
+        `DELETE` of that share); a value containing `:` is taken as a full
+        `issuer:subject` string and stored verbatim; a bare BV-BRC username is
+        prefixed to `bvbrc:<username>`. The resolved subject is echoed back in the
+        response so a typo is visible — a typo'd grantee is otherwise an
+        unclaimable grant. There is no BV-BRC username-existence check; sharing
+        with a user who has never logged in pre-provisions their row so the grant
+        is claimed on their first login. `grant_option` is not exposed (false).
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShareGrantRequest"
+      responses:
+        "201":
+          description: The share was granted; the resolved row is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ShareRecord"
+        "400":
+          description: A `permission` of `owner` was requested (transfer, not grant)
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller can read the collection but is neither its owner nor an admin
+        "404":
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked)
+        "409":
+          description: >-
+            The grant violates an invariant — a duplicate active grant, a
+            no-op grant to the current owner, a public write, or an unknown
+            grantee vocabulary
+        "422":
+          description: An empty grantee, a bare username with a blank issuer, or a non-read permission
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
+  /v1/collections/{collection_id}/shares/{share_id}:
+    delete:
+      operationId: revokeCollectionShare
+      summary: Revoke a share (owner-or-admin)
+      description: >-
+        Soft-revoke a share (never deleted; audit history survives). Revocation
+        cascades along the `granted_by` chain per ADR-0004 decision 5, so
+        revoking a grantor also revokes what they granted onward. Un-publishing a
+        collection is just revoking its `public` share.
+
+
+        Owner-or-admin, gated through the same seam as the other share endpoints.
+        The `share_id` must belong to `{collection_id}` — the store looks a share
+        up by id alone, so a `share_id` from another collection (or an unknown id)
+        is a 404, never a cross-collection revoke. The active **owner** row is not
+        revocable here (that would strip ownership — delete the collection or
+        transfer ownership instead): 409. Returns 204 with no body.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: share_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The share (and any cascade) was revoked
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller can read the collection but is neither its owner nor an admin
+        "404":
+          description: >-
+            Unknown collection, unknown share, or a share that does not belong to
+            this collection (existence not leaked)
+        "409":
+          description: The referenced share is the active owner row (not revocable here)
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
   /v1/models/available:
     get:
       operationId: listAvailableModels
@@ -1335,6 +1492,94 @@ components:
         ok:
           description: True when `failed` is empty — the collection and its data are fully gone.
           type: boolean
+      additionalProperties: false
+
+    ShareGrantRequest:
+      type: object
+      description: >-
+        Grant a share on a collection (POST body). v1 is read-only. `grant_option`
+        is not exposed (defaults false) and `owner` cannot be granted here
+        (ownership is transferred, not granted).
+      required: [grantee]
+      properties:
+        grantee:
+          description: >-
+            Who to share with. The literal `@public`/`public` maps to the built-in
+            public group (read-only); a value containing `:` is a full
+            `issuer:subject` string kept verbatim; a bare BV-BRC username is
+            prefixed to `bvbrc:<username>`. The resolved subject is echoed back in
+            the response so a typo (an unclaimable grant) is visible.
+          type: string
+          minLength: 1
+        permission:
+          description: v1 accepts `read` only; `write`/`owner` are rejected.
+          type: string
+          default: read
+        issuer:
+          description: Issuer used to qualify a bare username (default `bvbrc`). Ignored for `@public` and for a value that already contains `:`.
+          type: string
+          default: bvbrc
+      additionalProperties: false
+
+    ShareRecord:
+      type: object
+      description: >-
+        One share row as surfaced by the API. `grant_option` is not exposed in v1
+        (always false, so it is omitted). `active` is derived from `revoked_at`
+        (empty string == active). `grantee_id` is the resolved subject (`user`) or
+        group id (`public` for the built-in group).
+      required:
+        - id
+        - collection_id
+        - grantee_type
+        - grantee_id
+        - permission
+        - granted_by
+        - granted_at
+        - revoked_by
+        - revoked_at
+        - active
+      properties:
+        id: { type: string }
+        collection_id: { type: string }
+        grantee_type:
+          description: '`user` or `group`.'
+          type: string
+        grantee_id:
+          description: Resolved subject (`issuer:sub`) for a user, or the group id (`public`) for a group.
+          type: string
+        permission:
+          description: '`read` in v1 (the API rejects the rest); `owner` may appear on the owner row surfaced in a listing.'
+          type: string
+        granted_by:
+          description: Subject of the grantor (the caller's tenant), or `system:backfill` for a startup-seeded row.
+          type: string
+        granted_at:
+          description: ISO-8601 UTC timestamp.
+          type: string
+        revoked_by:
+          description: Subject that revoked the row; empty string while active.
+          type: string
+        revoked_at:
+          description: ISO-8601 UTC timestamp of revocation; empty string while active.
+          type: string
+        active:
+          description: True when the row has not been revoked (`revoked_at` is empty).
+          type: boolean
+      additionalProperties: false
+
+    SharesResponse:
+      type: object
+      description: A collection's shares plus its current owner subject.
+      required: [shares, owner]
+      properties:
+        shares:
+          type: array
+          items:
+            $ref: "#/components/schemas/ShareRecord"
+        owner:
+          description: Subject of the collection's active owner row, or null.
+          type: [string, "null"]
       additionalProperties: false
 
     CollectionCreateRequest:

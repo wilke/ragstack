@@ -60,6 +60,103 @@ export function collectionDeleteMessage(status: number | null, body: string): st
 }
 
 /**
+ * What went wrong GRANTING a share (`POST /v1/collections/{id}/shares`).
+ *
+ * Owner-or-admin, matching #243: a caller who can read a collection but does not
+ * own it gets 403; one who cannot read it gets 404 (existence not leaked); a
+ * duplicate/no-op grant is 409; a bad grantee/permission is 422; a store outage
+ * is 503 (fail closed). `apiDetail` unwraps the server's own sentence for the
+ * cases where it carries actionable text (409/422/400); the raw body is never
+ * returned.
+ */
+export function collectionShareMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not share the collection — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "That grant already exists.";
+  }
+  if (status === 422) {
+    const detail = apiDetail(body);
+    return detail
+      ? `The server rejected that grant: ${detail}`
+      : "That grantee or permission didn't validate — v1 shares are read-only, and the grantee can't be blank.";
+  }
+  if (status === 400) {
+    const detail = apiDetail(body);
+    return detail || "Ownership is transferred, not granted — that permission can't be shared.";
+  }
+  if (status === 404)
+    return "That collection was not found (or you can't see it), so it can't be shared.";
+  if (status === 401) return "Sharing a collection needs a valid API key or login.";
+  if (status === 403)
+    return "Only the owner (or an admin) can share this collection.";
+  if (status === 503)
+    return "The authorization store is unavailable, so sharing is refused right now — try again shortly.";
+  return `Could not share the collection (error ${status}).`;
+}
+
+/** Same, for revoking a share (`DELETE /v1/collections/{id}/shares/{share_id}`). */
+export function collectionShareRevokeMessage(status: number | null, body: string): string {
+  if (status == null) return "Could not revoke the share — could not reach the API.";
+  if (status === 409) {
+    const detail = apiDetail(body);
+    return detail || "That grant can't be revoked here.";
+  }
+  if (status === 404) return "That share is already gone (or was never on this collection).";
+  if (status === 401) return "Revoking a share needs a valid API key or login.";
+  if (status === 403)
+    return "Only the owner (or an admin) can change who this collection is shared with.";
+  if (status === 503)
+    return "The authorization store is unavailable, so revoking is refused right now — try again shortly.";
+  return `Could not revoke the share (error ${status}).`;
+}
+
+//: The literals that mean "share with everyone" — both are accepted by the API;
+//: the UI sends the canonical `@public`. Kept here so the toggle and the grant
+//: form agree on one spelling.
+export const PUBLIC_GRANTEE = "@public";
+const PUBLIC_LITERALS = new Set(["@public", "public"]);
+
+//: The stored grantee_id of the built-in public group (never issuer-prefixed).
+const PUBLIC_GROUP_ID = "public";
+
+/**
+ * Resolve what the operator typed into the subject the API will store, mirroring
+ * the server's `_resolve_grantee`: `@public`/`public` → `@public` (the public
+ * literal, never issuer-prefixed); a value already containing `:` is a full
+ * `issuer:subject` string kept verbatim; a bare username is prefixed to
+ * `<issuer>:<username>` (issuer defaults to `bvbrc`). Surrounding whitespace is
+ * forgiven (people paste); an empty/whitespace input resolves to `""`, the
+ * signal to block the Grant button before a request is even sent.
+ *
+ * This is advisory (a preview) — the server is authoritative and re-resolves the
+ * raw grantee — but keeping the rule in one tested place lets the dialog show
+ * "grants read to bvbrc:alice" before the round-trip, so a typo is visible early.
+ */
+export function normalizeGranteeSubject(typed: string, issuer = "bvbrc"): string {
+  const g = typed.trim();
+  if (g === "") return "";
+  if (PUBLIC_LITERALS.has(g)) return PUBLIC_GRANTEE;
+  if (g.includes(":")) return g;
+  const iss = issuer.trim() || "bvbrc";
+  return `${iss}:${g}`;
+}
+
+/** Whether a share row is the grant-to-everyone (public group) row. */
+export function isPublicShare(rec: { grantee_type: string; grantee_id: string }): boolean {
+  return rec.grantee_type === "group" && rec.grantee_id === PUBLIC_GROUP_ID;
+}
+
+/**
+ * A human label for one share row: "Everyone (public)" for the public group, the
+ * resolved subject for a user. Rendered as text, never markup.
+ */
+export function shareGranteeLabel(rec: { grantee_type: string; grantee_id: string }): string {
+  if (isPublicShare(rec)) return "Everyone (public)";
+  return rec.grantee_id;
+}
+
+/**
  * Same, for the DESTRUCTIVE `DELETE /v1/collections/{id}?purge=true`.
  *
  * Split from `collectionDeleteMessage` because the 409s mean different things: an

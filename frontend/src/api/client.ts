@@ -474,6 +474,68 @@ export function purgeCollection(id: string, apiKey?: string): Promise<Collection
   );
 }
 
+// --- Collection shares (issue #244) — grant / list / revoke, owner-or-admin ---
+
+// One share row as surfaced by GET/POST /v1/collections/{id}/shares. Mirrors the
+// server's ShareInfo and the ShareRecord contract schema. `active` is derived
+// server-side from `revoked_at` (empty string == active); `revoked_by`/
+// `revoked_at` are "" while the row is active. A user grantee's `grantee_id` is a
+// resolved `issuer:subject` string; the built-in public group's is `public`.
+export interface ShareRecord {
+  id: string;
+  collection_id: string;
+  grantee_type: string; // "user" | "group"
+  grantee_id: string; // resolved subject ("issuer:sub") or group id ("public")
+  permission: string; // "read" in v1; "owner" on the surfaced owner row
+  granted_by: string;
+  granted_at: string;
+  revoked_by: string; // "" while active
+  revoked_at: string; // "" while active
+  active: boolean;
+}
+
+export interface SharesResponse {
+  shares: ShareRecord[];
+  owner: string | null; // active owner subject, or null
+}
+
+// POST body. v1 is read-only: `permission` defaults to (and only accepts) "read".
+// `grantee` is resolved server-side — the literal "@public"/"public" → the public
+// group, a value containing ":" is kept verbatim as a full issuer:subject, and a
+// bare username is prefixed to "<issuer>:<username>" (issuer defaults to "bvbrc").
+export interface ShareGrantRequest {
+  grantee: string;
+  permission?: string;
+  issuer?: string;
+}
+
+// List a collection's shares + its current owner (owner-or-admin; 403 for a
+// readable non-owned collection, 404 for an unknown/unreadable one).
+export function getShares(id: string, apiKey?: string): Promise<SharesResponse> {
+  return get<SharesResponse>(`/v1/collections/${encodeURIComponent(id)}/shares`, apiKey);
+}
+
+// Grant a share (owner-or-admin). Returns the resolved row (201) so a typo'd
+// grantee is visible. 409 = duplicate/no-op-owner · 422 = empty grantee or
+// non-read permission · 403/404 as above.
+export function createShare(
+  id: string,
+  req: ShareGrantRequest,
+  apiKey?: string,
+): Promise<ShareRecord> {
+  return post<ShareRecord>(`/v1/collections/${encodeURIComponent(id)}/shares`, req, apiKey);
+}
+
+// Revoke a share (owner-or-admin, soft + cascading, 204). Un-publishing a public
+// collection is revoking its `public` share. A share_id from another collection
+// (or an unknown id) is a 404; the active owner row is not revocable here (409).
+export function deleteShare(id: string, shareId: string, apiKey?: string): Promise<void> {
+  return del(
+    `/v1/collections/${encodeURIComponent(id)}/shares/${encodeURIComponent(shareId)}`,
+    apiKey,
+  );
+}
+
 // --- Model registry (admin-only) ---
 
 // One registered model. Mirrors ragstack.api.model_registry.ModelEntry. Note

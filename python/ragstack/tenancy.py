@@ -18,11 +18,18 @@ PUBLIC_TENANT = "public"
 DEFAULT_TENANT = "default"
 
 
-def readable_tenants(tenant: str) -> list[str]:
-    """Tenants a caller may read: its own plus the public corpus."""
-    if tenant == PUBLIC_TENANT:
-        return [PUBLIC_TENANT]
-    return [tenant, PUBLIC_TENANT]
+def readable_tenants(tenant: str, extra: list[str] | None = None) -> list[str]:
+    """Tenants a caller may read: its own plus the public corpus, plus any
+    ``extra`` writer-tenants the caller has been authorized to read for a
+    *specific* collection (e.g. the owner's tenant of a collection shared with the
+    caller — the owner's ``tenant_id`` is what stamps that collection's chunks).
+    Order-preserving and de-duplicated."""
+    base = [PUBLIC_TENANT] if tenant == PUBLIC_TENANT else [tenant, PUBLIC_TENANT]
+    if extra:
+        for t in extra:
+            if t and t not in base:
+                base.append(t)
+    return base
 
 
 def allowed_collection_ids(
@@ -48,7 +55,10 @@ def tenant_of(chunk: Chunk) -> str:
     return str(chunk.metadata.get("tenant_id", DEFAULT_TENANT))
 
 
-def scope_filters(filters: dict[str, Any], tenant: str) -> dict[str, Any]:
-    """Scope a filter dict to the tenants a caller may read (own + public).
+def scope_filters(
+    filters: dict[str, Any], tenant: str, extra: list[str] | None = None
+) -> dict[str, Any]:
+    """Scope a filter dict to the tenants a caller may read (own + public, plus any
+    ``extra`` collection-scoped tenants — see :func:`readable_tenants`).
     ``tenant_id`` is set last so a client (or a ``--filter``) can't widen it."""
-    return {**filters, "tenant_id": readable_tenants(tenant)}
+    return {**filters, "tenant_id": readable_tenants(tenant, extra)}

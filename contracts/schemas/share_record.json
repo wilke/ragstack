@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "share_record.json",
+  "title": "ShareRecord",
+  "description": "One share row as surfaced by the API. grant_option is not exposed in v1 (always false, so it is omitted). `active` is derived from `revoked_at` (empty string == active). `grantee_id` is the resolved subject (user) or group id ('public' for the built-in group).",
+  "type": "object",
+  "required": [
+    "id",
+    "collection_id",
+    "grantee_type",
+    "grantee_id",
+    "permission",
+    "granted_by",
+    "granted_at",
+    "revoked_by",
+    "revoked_at",
+    "active"
+  ],
+  "properties": {
+    "id": { "type": "string" },
+    "collection_id": { "type": "string" },
+    "grantee_type": {
+      "description": "'user' or 'group'.",
+      "type": "string"
+    },
+    "grantee_id": {
+      "description": "Resolved subject ('issuer:sub') for a user, or the group id ('public') for a group.",
+      "type": "string"
+    },
+    "permission": {
+      "description": "'read' in v1 (the API rejects the rest); 'owner' may appear on the owner row surfaced in a listing.",
+      "type": "string"
+    },
+    "granted_by": {
+      "description": "Subject of the grantor (the caller's tenant), or 'system:backfill' for a startup-seeded row.",
+      "type": "string"
+    },
+    "granted_at": {
+      "description": "ISO-8601 UTC timestamp.",
+      "type": "string"
+    },
+    "revoked_by": {
+      "description": "Subject that revoked the row; empty string while active.",
+      "type": "string"
+    },
+    "revoked_at": {
+      "description": "ISO-8601 UTC timestamp of revocation; empty string while active.",
+      "type": "string"
+    },
+    "active": {
+      "description": "True when the row has not been revoked (`revoked_at` is empty).",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

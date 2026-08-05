@@ -16,6 +16,7 @@ import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
 import { collectionCreateMessage } from "../lib/collections";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { ResultsPanel } from "./ResultsPanel";
+import { ShareDialog } from "./ShareDialog";
 import { SearchForm } from "./SearchForm";
 import { EmptyState } from "./states/EmptyState";
 
@@ -117,6 +118,12 @@ export function CollectionView({
   // strategy, then select it once the registry refetch has it as an option.
   // Errors surface via createErrorMessage (which unwraps the server's `detail`).
   const [creating, setCreating] = useState(false);
+  // "Share": open the inline ShareDialog for the selected collection. Owner-or-
+  // admin is enforced server-side (#243); GET /v1/collections does not expose
+  // ownership, so the button shows for any selected collection and a non-owner's
+  // actions fail with a 403 the dialog explains (the smaller correct change —
+  // no is_owner field was added to the collections list).
+  const [sharing, setSharing] = useState(false);
   const create = useMutation<CollectionInfo, Error, { name: string; chunk?: ChunkConfigBody }>({
     mutationFn: ({ name, chunk }) =>
       createCollection(
@@ -246,6 +253,15 @@ export function CollectionView({
           >
             {create.isPending ? "Creating…" : creating ? "Cancel" : "＋ New collection"}
           </button>
+          <button
+            type="button"
+            onClick={() => setSharing((v) => !v)}
+            disabled={!selected}
+            title={selected ? undefined : "Pick a collection to share"}
+            className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+          >
+            {sharing ? "Cancel" : "Share"}
+          </button>
           <span className="text-xs text-gray-400">upload target &amp; query source</span>
         </div>
 
@@ -286,6 +302,16 @@ export function CollectionView({
           <div role="alert" className="mb-3 rounded bg-red-50 p-2 text-sm text-red-700">
             {createErrorMessage(create.error)}
           </div>
+        )}
+
+        {sharing && selected && (
+          <ShareDialog
+            key={selected.id}
+            collectionId={selected.id}
+            collectionLabel={selected.label}
+            apiKey={apiKey}
+            onClose={() => setSharing(false)}
+          />
         )}
 
         {/* Drop zone */}
