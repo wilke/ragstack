@@ -1,5 +1,50 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-08-05 — access-control MVP: users → ownership → sharing → groups (ADR-0003/0004/0005)
+
+Started from a design conversation that turned three loose concepts (tenant, collection,
+library) into a decided model, then built it in five sequential units. The design work first:
+
+- **libraries** collapse into **collections** one-to-one — `library_id` is a security label,
+  not metadata; it only earns its keep once the ~100–150 collections-per-instance Qdrant
+  budget binds, and Qdrant 1.16 removed payload filters from its own RBAC ("prefer
+  collection-based access control"). `libraries-spec.md` deprecated in place (shipped code
+  still cites §1/§5.0/§8.1/§-1/§16); #230 closed as superseded. → **ADR-0003**.
+- **tenant = a Qdrant instance**, not a payload value; the per-chunk `tenant_id` becomes
+  provenance. A tenant is one API endpoint + dedicated stateful stores (Qdrant, **its own
+  ES**, its own ACL DB); provisioning is a script, not an API. → **ADR-0005** (+ #247).
+- **users/groups/shares**: per-tenant Postgres ACLs, `public` a built-in group, `read<write<
+  owner` + grant-option, soft revocation via a partial index. → **ADR-0004**.
+
+Then implementation, each unit as a multi-agent workflow (map → implement → 3-lens
+adversarial verify → fix) followed by an **independent** security review before merge:
+
+- **#241/#242 → PR #248**: `user_store.py` + first-auth upsert; open collection creation
+  from a server default spec; roles → `admin`/`user` (+ `researcher` alias). 7 pre-merge
+  review fixes incl. an unbounded-creation DoS → `MAX_COLLECTIONS`.
+- **#243 → PR #249**: `acl_store.py` + `authz.py` — the single `resolve_access` seam;
+  ownership at collection resolution; behavior-preserving `legacy:admin`+public backfill.
+  Independent review caught an **id-reuse ownership hijack** (delete left ACL rows; a reused
+  id inherited a stranger's owner row → could purge their data) — fixed + regression-tested.
+- **#244 → PR #250**: share API + ShareDialog. Independent review caught a **data leak** the
+  build + a first re-verify both missed: `_shared_scope` widened a grantee to the owner's
+  `tenant_id`, but the store filter has no `collection_id` predicate, so two collections
+  sharing one physical store leaked across the boundary (and the default collection amplified
+  it universally). Fixed: widen only on a non-default, store-exclusive collection.
+- **#245 → PR #251**: `group_store.py` — native groups, membership unioned into
+  `grants_for_subject` so `authz.py` needed no change. Independent review verified the #244
+  leak does **not** reappear through the group path (`_shared_scope` is grant-agnostic).
+
+Recurring lesson, three units running: the multi-agent *build* is fast and mostly right; the
+independent *adversarial verify* is where correctness actually gets enforced — every review
+found something real. Workflows twice finished their fix round without recording the result
+(looked unfinished; wasn't) — verified the tree directly rather than resuming blind.
+
+Deferred + recorded (see STATUS + #246): grant_option/write/delegated shares; group owner ≠
+member; graph leg lacks `_shared_scope` widening; the `new-tenant` script + shared→per-tenant
+ES migration for the two prod tenants (untouched, old API); federated global-tenant view.
+
+
 ## Session 2026-07-01 — semantic ingest: fan-out review + #66/#65 producer & checkpoint fixes
 
 Reviewed and merged **PR #67** (semantic breakpoint-embed fan-out across the pool: 2.06×, all 8 GPUs
