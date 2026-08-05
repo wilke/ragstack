@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "group_member_record.json",
+  "title": "GroupMemberRecord",
+  "description": "One row of the group_members table as surfaced by the API (ADR-0004 decision 3). `subject` is always a user subject ('issuer:sub') — never a group id (no nesting). `active` is derived from `removed_at` (empty string == active); membership changes are instant access changes, so removal is soft and audited rather than deleted.",
+  "type": "object",
+  "required": [
+    "id",
+    "group_id",
+    "subject",
+    "added_by",
+    "added_at",
+    "removed_by",
+    "removed_at",
+    "active"
+  ],
+  "properties": {
+    "id": {
+      "description": "Opaque membership-row id (a uuid4 hex).",
+      "type": "string"
+    },
+    "group_id": {
+      "description": "Id of the group this membership belongs to.",
+      "type": "string"
+    },
+    "subject": {
+      "description": "Resolved subject ('issuer:sub') of the member user.",
+      "type": "string"
+    },
+    "added_by": {
+      "description": "Subject that added the member (the group owner or an admin).",
+      "type": "string"
+    },
+    "added_at": {
+      "description": "ISO-8601 UTC timestamp.",
+      "type": "string"
+    },
+    "removed_by": {
+      "description": "Subject that removed the member; empty string while active.",
+      "type": "string"
+    },
+    "removed_at": {
+      "description": "ISO-8601 UTC timestamp of removal; empty string while active.",
+      "type": "string"
+    },
+    "active": {
+      "description": "True when the membership has not been removed (`removed_at` is empty).",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

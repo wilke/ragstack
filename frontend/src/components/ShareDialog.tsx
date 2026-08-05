@@ -5,6 +5,7 @@ import {
   createShare,
   deleteShare,
   getShares,
+  listGroups,
   type ShareRecord,
   type SharesResponse,
 } from "../api/client";
@@ -12,6 +13,7 @@ import {
   PUBLIC_GRANTEE,
   collectionShareMessage,
   collectionShareRevokeMessage,
+  groupGrantee,
   isPublicShare,
   normalizeGranteeSubject,
   shareGranteeLabel,
@@ -58,6 +60,7 @@ export function ShareDialog({
   const shareKey = ["collection-shares", collectionId, apiKey];
 
   const [grantee, setGrantee] = useState("");
+  const [groupId, setGroupId] = useState("");
 
   // retry:false so a 401/403/404 fails fast (owner-or-admin) rather than a retry
   // storm against an endpoint the caller isn't allowed to read.
@@ -66,6 +69,20 @@ export function ShareDialog({
     queryFn: () => getShares(collectionId, apiKey || undefined),
     retry: false,
   });
+
+  // The caller's own groups — the pool the "Share with a group" picker draws
+  // from. Independent of collection ownership (any authenticated caller may list
+  // their groups), so it loads even when the shares read above 403s; a store
+  // outage (503) just leaves the picker empty with a hint. Doubles as a group
+  // id → name map so a group share row reads as its name, not an opaque id.
+  const groups = useQuery({
+    queryKey: ["groups", apiKey],
+    queryFn: () => listGroups(apiKey || undefined),
+    retry: false,
+  });
+  const groupOptions = groups.data?.groups ?? [];
+  const groupName = (id: string): string =>
+    groupOptions.find((g) => g.id === id)?.name ?? id;
 
   const refetchShares = () => queryClient.invalidateQueries({ queryKey: shareKey });
 
@@ -103,6 +120,16 @@ export function ShareDialog({
     grant.mutate(grantee.trim());
   };
 
+  // Grant read to one of the caller's groups. The picker defaults to the first
+  // group until one is chosen; we send the canonical `@group:<id>` target and the
+  // server resolves + validates it (a stale/deleted id round-trips as a 422).
+  const chosenGroup = groupId || groupOptions[0]?.id || "";
+  const canGrantGroup = chosenGroup !== "" && !grant.isPending;
+  const submitGroupGrant = () => {
+    if (!canGrantGroup) return;
+    grant.mutate(groupGrantee(chosenGroup));
+  };
+
   const togglePublic = () => {
     if (grant.isPending || revoke.isPending) return;
     if (publicRow) {
@@ -113,6 +140,16 @@ export function ShareDialog({
   };
 
   const listBlocked = shares.isError ? (shares.error as Error) : null;
+
+  // A human label for one row: the public row and user rows fall to the shared
+  // helper; a named-group row shows the group's name (from the groups query) with
+  // its id as a fallback, so a grant reads as "Group: lab-team", not an opaque id.
+  const rowLabel = (s: ShareRecord): string => {
+    if (s.grantee_type === "group" && !isPublicShare(s)) {
+      return `Group: ${groupName(s.grantee_id)}`;
+    }
+    return shareGranteeLabel(s);
+  };
 
   return (
     <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
@@ -205,6 +242,49 @@ export function ShareDialog({
         ) : null}
       </div>
 
+      {/* Share with a group — a grant to @group:<id>, reaching every active member. */}
+      <div className="mb-4">
+        <label htmlFor="share-group" className="mb-1 block text-xs font-medium text-gray-500">
+          Share with a group
+        </label>
+        {groupOptions.length === 0 ? (
+          <p className="text-[11px] leading-snug text-gray-400">
+            {groups.isLoading
+              ? "Loading your groups…"
+              : groups.isError
+                ? "Couldn’t load your groups right now — try again shortly."
+                : "You don’t own or belong to any groups yet. Create one in the Ops tab’s Groups section, then share it here."}
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              id="share-group"
+              value={chosenGroup}
+              onChange={(e) => setGroupId(e.target.value)}
+              className="min-w-[16rem] flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {groupOptions.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={submitGroupGrant}
+              disabled={!canGrantGroup || listBlocked != null}
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white transition-opacity hover:bg-blue-700 disabled:opacity-50"
+            >
+              {grant.isPending ? "Granting…" : "Grant to group (read)"}
+            </button>
+          </div>
+        )}
+        <p className="mt-1 text-[11px] leading-snug text-gray-400">
+          Every active member of the group can then read this collection; managing who’s in a
+          group is done in the Ops tab.
+        </p>
+      </div>
+
       {/* Current shares. */}
       <div>
         <h4 className="mb-1 text-xs font-medium text-gray-500">Current shares</h4>
@@ -228,7 +308,7 @@ export function ShareDialog({
               >
                 <span className="truncate">
                   <span className={isPublicShare(s) ? "font-medium text-green-700" : "text-gray-800"}>
-                    {shareGranteeLabel(s)}
+                    {rowLabel(s)}
                   </span>
                   <span className="ml-2 text-xs text-gray-400">{s.permission}</span>
                 </span>
@@ -237,7 +317,7 @@ export function ShareDialog({
                   onClick={() => revoke.mutate(s.id)}
                   disabled={revoke.isPending}
                   className="ml-3 shrink-0 text-xs text-gray-400 hover:text-red-600 disabled:opacity-50"
-                  aria-label={`Revoke ${shareGranteeLabel(s)}`}
+                  aria-label={`Revoke ${rowLabel(s)}`}
                 >
                   Revoke
                 </button>

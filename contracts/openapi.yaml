@@ -806,7 +806,9 @@ paths:
             no-op grant to the current owner, a public write, or an unknown
             grantee vocabulary
         "422":
-          description: An empty grantee, a bare username with a blank issuer, or a non-read permission
+          description: >-
+            An empty grantee, a bare username with a blank issuer, an unknown
+            group id (`@group:<id>` that does not exist), or a non-read permission
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
@@ -855,6 +857,242 @@ paths:
             this collection (existence not leaked)
         "409":
           description: The referenced share is the active owner row (not revocable here)
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
+  /v1/groups:
+    get:
+      operationId: listGroups
+      summary: List the groups the caller owns or belongs to
+      description: >-
+        The active groups the caller owns (`owner_subject` == the caller) or is
+        an active member of. The implicit built-in `public` group is not listed
+        (its membership is "everyone" and constant-true). Any authenticated
+        caller; a store outage is 503 (fail closed).
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      responses:
+        "200":
+          description: The groups the caller owns or belongs to
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupsResponse"
+        "401":
+          description: Missing or invalid API key
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+    post:
+      operationId: createGroup
+      summary: Create a group (any authenticated caller)
+      description: >-
+        Create an active group owned by the caller. The `name` is non-empty,
+        unique per owner among active groups, and may not be the reserved
+        literal `public`. The caller becomes `owner_subject` and may add/remove
+        members and delete the group.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupCreateRequest"
+      responses:
+        "201":
+          description: The group was created; the resolved row is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupRecord"
+        "401":
+          description: Missing or invalid API key
+        "409":
+          description: >-
+            An active group with that name already exists for this owner, or the
+            reserved `public` name was requested
+        "422":
+          description: An empty or whitespace name
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
+  /v1/groups/{group_id}:
+    get:
+      operationId: getGroup
+      summary: Group details and members (owner-or-member)
+      description: >-
+        The group and its active membership. Owner, an active member, or an
+        admin may view it; anyone else gets a leak-safe 404 (a group's existence
+        and membership never leak to a non-member). The built-in `public` group
+        is viewable and returns an empty members list.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The group and its active members
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupDetailResponse"
+        "401":
+          description: Missing or invalid API key
+        "404":
+          description: >-
+            Unknown group id, or one the caller may not view (a non-member —
+            existence is not leaked)
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+    delete:
+      operationId: deleteGroup
+      summary: Delete a group (owner-or-admin)
+      description: >-
+        Soft-delete a group (audit history survives). Owner-or-admin only; a
+        member who is not the owner gets 403, a non-member gets a leak-safe 404.
+        The built-in `public` group is not deletable (409). The group's member
+        rows and any shares granted to it are left intact for audit but become
+        inert immediately — a share to a deleted group grants nothing. Returns
+        204 with no body.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The group was soft-deleted
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller is an active member but is neither the owner nor an admin
+        "404":
+          description: Unknown group, or one the caller may not view (existence not leaked)
+        "409":
+          description: The group is the reserved built-in `public` group (not deletable)
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
+  /v1/groups/{group_id}/members:
+    post:
+      operationId: addGroupMember
+      summary: Add a member to a group (owner-or-admin)
+      description: >-
+        Add a user to the group. Owner-or-admin only (a non-owner member gets
+        403, a non-member 404). The `subject` is resolved server-side like a
+        share grantee: a value containing `:` is a full `issuer:subject` kept
+        verbatim, a bare BV-BRC username is prefixed to `bvbrc:<username>`; the
+        resolved subject is echoed back so a typo is visible. A never-logged-in
+        user is pre-provisioned so the membership is claimed on first login.
+        Membership is a flat list of users — a group id cannot be a member (no
+        nesting, 422/409). Adding to the built-in `public` group is refused
+        (409). A duplicate active membership is a 409.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GroupMemberAddRequest"
+      responses:
+        "201":
+          description: The member was added; the resolved membership row is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GroupMemberRecord"
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller is an active member but is neither the owner nor an admin
+        "404":
+          description: Unknown group, or one the caller may not view (existence not leaked)
+        "409":
+          description: >-
+            A duplicate active membership, or the built-in `public` group
+            (not member-editable)
+        "422":
+          description: An empty subject, a group-target form, or a bare username with a blank issuer
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
+  /v1/groups/{group_id}/members/{subject}:
+    delete:
+      operationId: removeGroupMember
+      summary: Remove a member from a group (owner-or-admin)
+      description: >-
+        Soft-remove a member (audit history survives). Owner-or-admin only (a
+        non-owner member gets 403, a non-member 404). The removal is an instant
+        access change: any collection shared to the group is no longer readable
+        by the removed user on the next request. `subject` is resolved the SAME
+        way as on add — a bare username is qualified to `issuer:sub` (using the
+        `issuer` query, default `bvbrc`) so removing with the identifier used to
+        add reliably matches; a full `issuer:sub` string is taken verbatim. A
+        group-target form (`@public` / `@group:`) is rejected (422). Removing a
+        non-member is a 204 no-op. Returns 204 with no body.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: group_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: subject
+          in: path
+          required: true
+          description: >-
+            The member subject to remove. A full `issuer:sub` string is taken
+            verbatim; a bare username is qualified to `issuer:sub` using the
+            `issuer` query — exactly as on add.
+          schema:
+            type: string
+        - name: issuer
+          in: query
+          required: false
+          description: >-
+            Issuer used to qualify a bare `subject` (default `bvbrc`). Ignored
+            when `subject` is already a full `issuer:sub` string.
+          schema:
+            type: string
+            default: bvbrc
+      responses:
+        "204":
+          description: The member was removed (or was not a member — idempotent)
+        "401":
+          description: Missing or invalid API key
+        "403":
+          description: Caller is an active member but is neither the owner nor an admin
+        "404":
+          description: Unknown group, or one the caller may not view (existence not leaked)
+        "422":
+          description: A group-target form (`@public` / `@group:`) — members are users, no nesting
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
@@ -1505,10 +1743,12 @@ components:
         grantee:
           description: >-
             Who to share with. The literal `@public`/`public` maps to the built-in
-            public group (read-only); a value containing `:` is a full
-            `issuer:subject` string kept verbatim; a bare BV-BRC username is
-            prefixed to `bvbrc:<username>`. The resolved subject is echoed back in
-            the response so a typo (an unclaimable grant) is visible.
+            public group (read-only); the form `@group:<id>` (or `group:<id>`)
+            maps to a named group by id (read-only, must exist — else 422); a
+            value containing `:` is a full `issuer:subject` string kept verbatim;
+            a bare BV-BRC username is prefixed to `bvbrc:<username>`. The resolved
+            subject is echoed back in the response so a typo (an unclaimable
+            grant) is visible.
           type: string
           minLength: 1
         permission:
@@ -1580,6 +1820,129 @@ components:
         owner:
           description: Subject of the collection's active owner row, or null.
           type: [string, "null"]
+      additionalProperties: false
+
+    GroupRecord:
+      type: object
+      description: >-
+        One row of the groups table (ADR-0004 decision 3). `active` is derived
+        from `deleted_at`. The built-in 'public' group has id 'public',
+        built_in true, and an empty owner_subject.
+      required:
+        [id, name, owner_subject, built_in, created_at, deleted_by, deleted_at, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        owner_subject:
+          description: Subject of the owning user; empty for the built-in public group.
+          type: string
+        built_in:
+          description: True only for the reserved built-in 'public' group.
+          type: boolean
+        created_at:
+          description: ISO-8601 UTC timestamp.
+          type: string
+        deleted_by:
+          description: Subject that soft-deleted the group; empty while active.
+          type: string
+        deleted_at:
+          description: ISO-8601 UTC timestamp of the soft delete; empty while active.
+          type: string
+        active:
+          description: True when the group has not been soft-deleted.
+          type: boolean
+      additionalProperties: false
+
+    GroupMemberRecord:
+      type: object
+      description: >-
+        One row of the group_members table. `subject` is always a user subject
+        ('issuer:sub'), never a group id (no nesting). `active` is derived from
+        `removed_at`.
+      required:
+        [id, group_id, subject, added_by, added_at, removed_by, removed_at, active]
+      properties:
+        id:
+          type: string
+        group_id:
+          type: string
+        subject:
+          description: Resolved subject ('issuer:sub') of the member user.
+          type: string
+        added_by:
+          type: string
+        added_at:
+          description: ISO-8601 UTC timestamp.
+          type: string
+        removed_by:
+          description: Subject that removed the member; empty while active.
+          type: string
+        removed_at:
+          description: ISO-8601 UTC timestamp of removal; empty while active.
+          type: string
+        active:
+          description: True when the membership has not been removed.
+          type: boolean
+      additionalProperties: false
+
+    GroupCreateRequest:
+      type: object
+      description: >-
+        Create a group (POST /v1/groups body). The caller becomes owner_subject.
+      required: [name]
+      properties:
+        name:
+          description: >-
+            Non-empty group name, unique per owner among active groups; 'public'
+            is reserved.
+          type: string
+          minLength: 1
+      additionalProperties: false
+
+    GroupMemberAddRequest:
+      type: object
+      description: >-
+        Add a member to a group (POST /v1/groups/{id}/members body). The subject
+        is resolved server-side like a share grantee.
+      required: [subject]
+      properties:
+        subject:
+          description: >-
+            A full 'issuer:subject' string (kept verbatim) or a bare BV-BRC
+            username (prefixed to 'bvbrc:<username>'). Group-target forms are
+            rejected (no nesting).
+          type: string
+          minLength: 1
+        issuer:
+          description: Issuer used to qualify a bare username (default 'bvbrc').
+          type: string
+          default: bvbrc
+      additionalProperties: false
+
+    GroupsResponse:
+      type: object
+      description: The groups the caller owns or is an active member of.
+      required: [groups]
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupRecord"
+      additionalProperties: false
+
+    GroupDetailResponse:
+      type: object
+      description: A single group plus its active membership.
+      required: [group, members]
+      properties:
+        group:
+          $ref: "#/components/schemas/GroupRecord"
+        members:
+          type: array
+          items:
+            $ref: "#/components/schemas/GroupMemberRecord"
       additionalProperties: false
 
     CollectionCreateRequest:

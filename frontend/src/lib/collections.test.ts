@@ -7,6 +7,11 @@ import {
   collectionPurgeMessage,
   collectionShareMessage,
   collectionShareRevokeMessage,
+  groupCreateMessage,
+  groupDeleteMessage,
+  groupGrantee,
+  groupMemberAddMessage,
+  groupMemberRemoveMessage,
   isPublicShare,
   normalizeGranteeSubject,
   purgeConfirmed,
@@ -280,6 +285,123 @@ describe("purgeReportSummary", () => {
     expect(msg).toContain("ConnectionError: refused");
     expect(msg).toMatch(/rolled back/);
     expect(msg).toMatch(/by hand/);
+  });
+});
+
+describe("groupGrantee", () => {
+  // The share dialog's group picker turns a group id into the exact target the
+  // server's _resolve_grantee parses as a group (not an issuer='group' user).
+  it("wraps an id in the @group: form", () => {
+    expect(groupGrantee("abc123")).toBe("@group:abc123");
+  });
+
+  it("forgives surrounding whitespace from a paste", () => {
+    expect(groupGrantee("  abc123\n")).toBe("@group:abc123");
+  });
+});
+
+describe("groupCreateMessage", () => {
+  it("unwraps the server's own 409 (name collision / reserved public), not the raw body", () => {
+    const body = '{"detail":"a group named \'team\' already exists for this owner"}';
+    const msg = groupCreateMessage(409, body);
+    expect(msg).toContain("already exists");
+    expect(msg).not.toContain("{");
+  });
+
+  it("has a fallback for a bare 409 that mentions the reserved name", () => {
+    expect(groupCreateMessage(409, "")).toMatch(/name|public/i);
+  });
+
+  it("surfaces the 422 empty-name reason", () => {
+    const body = '{"detail":"group name must not be empty or whitespace"}';
+    expect(groupCreateMessage(422, body)).toContain("empty");
+  });
+
+  it("names the store outage for a 503 (fail closed)", () => {
+    expect(groupCreateMessage(503, "")).toMatch(/authorization store|unavailable/i);
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(groupCreateMessage(null, "")).toContain("could not reach the API");
+    expect(groupCreateMessage(500, "")).toContain("error 500");
+    expect(groupCreateMessage(401, "")).toContain("API key or login");
+  });
+});
+
+describe("groupDeleteMessage", () => {
+  it("names ownership, not admin keys, for a 403 (owner-or-admin)", () => {
+    expect(groupDeleteMessage(403, "")).toContain("owner");
+    expect(groupDeleteMessage(401, "")).toContain("API key or login");
+  });
+
+  it("treats 404 as already gone / not visible", () => {
+    expect(groupDeleteMessage(404, "")).toMatch(/already gone|can't see/i);
+  });
+
+  it("explains the public-group 409, unwrapping the server's sentence", () => {
+    const body = '{"detail":"the built-in public group cannot be deleted"}';
+    expect(groupDeleteMessage(409, body)).toContain("public group cannot be deleted");
+    expect(groupDeleteMessage(409, "")).toMatch(/public/i);
+  });
+
+  it("names the store outage for a 503", () => {
+    expect(groupDeleteMessage(503, "")).toMatch(/unavailable/i);
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(groupDeleteMessage(null, "")).toContain("could not reach the API");
+    expect(groupDeleteMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("groupMemberAddMessage", () => {
+  it("says a duplicate member already belongs on a bare 409", () => {
+    expect(groupMemberAddMessage(409, "")).toMatch(/already an active member|already/i);
+  });
+
+  it("surfaces the no-nesting 422 reason", () => {
+    const body = '{"detail":"a group member must be a user, not a group (no nesting)"}';
+    const msg = groupMemberAddMessage(422, body);
+    expect(msg).toContain("no nesting");
+    expect(msg).not.toContain("{");
+  });
+
+  it("treats 404 as unknown/unviewable group", () => {
+    expect(groupMemberAddMessage(404, "")).toMatch(/not found|can't see/i);
+  });
+
+  it("names ownership for a 403 (owner-or-admin membership)", () => {
+    expect(groupMemberAddMessage(403, "")).toContain("owner");
+    expect(groupMemberAddMessage(401, "")).toContain("API key or login");
+  });
+
+  it("names the store outage for a 503", () => {
+    expect(groupMemberAddMessage(503, "")).toMatch(/unavailable/i);
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(groupMemberAddMessage(null, "")).toContain("could not reach the API");
+    expect(groupMemberAddMessage(500, "")).toContain("error 500");
+  });
+});
+
+describe("groupMemberRemoveMessage", () => {
+  it("names ownership for a 403 (owner-or-admin)", () => {
+    expect(groupMemberRemoveMessage(403, "")).toContain("owner");
+    expect(groupMemberRemoveMessage(401, "")).toContain("API key or login");
+  });
+
+  it("treats 404 as unknown/unviewable group", () => {
+    expect(groupMemberRemoveMessage(404, "")).toMatch(/not found|can't see/i);
+  });
+
+  it("names the store outage for a 503", () => {
+    expect(groupMemberRemoveMessage(503, "")).toMatch(/unavailable/i);
+  });
+
+  it("distinguishes an unreachable API from an HTTP status", () => {
+    expect(groupMemberRemoveMessage(null, "")).toContain("could not reach the API");
+    expect(groupMemberRemoveMessage(500, "")).toContain("error 500");
   });
 });
 

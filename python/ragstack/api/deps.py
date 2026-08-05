@@ -1343,14 +1343,23 @@ async def lifespan(app: FastAPI):
     # loop.
     from typing import cast
 
-    from ragstack.acl_store import get_acl_store, reset_acl_store, set_acl_store
+    from ragstack.acl_store import AclStore, reset_acl_store, set_acl_store
+    from ragstack.group_store import get_group_store, reset_group_store, set_group_store
     from ragstack.user_store import UserStore, set_user_store
 
-    acl_store = get_acl_store()
+    # ONE store object governs FOUR tables (users + shares + groups +
+    # group_members): a GroupStore is-an AclStore is-a UserStore over the same
+    # sqlite file / asyncpg pool. Build it once and install it as all three
+    # singletons so the group a share names, the membership authz expands, and
+    # the profile the auth hook upserts are the same rows in one database — one
+    # close(), no drift (issue #245 part 2 / group_store.get_group_store note).
+    # The three protocols are declared separately but coincide on the concrete
+    # object, so cast to each view for the type checker.
+    group_store = get_group_store()
+    set_group_store(group_store)
+    acl_store = cast(AclStore, group_store)
     set_acl_store(acl_store)
-    # Every AclStore also satisfies UserStore (same object, both tables) — the
-    # protocols are declared separately, so tell the type checker they coincide.
-    user_view = cast(UserStore, acl_store)
+    user_view = cast(UserStore, group_store)
     set_user_store(user_view)
     # Probe the backend NOW and fail startup on error. validate_user_store_settings
     # only catches backend-name typos, and the postgres store creates its pool
@@ -1453,6 +1462,7 @@ async def lifespan(app: FastAPI):
         await acl_store.close()
         reset_user_store()
         reset_acl_store()
+        reset_group_store()
         # Close the ES client if the text index holds one.
         if hasattr(text_index, "close"):
             await text_index.close()

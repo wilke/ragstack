@@ -90,6 +90,12 @@ keys are configured.
 | GET | `/v1/collections/{id}/shares` | List a collection's shares + owner (owner-or-admin) |
 | POST | `/v1/collections/{id}/shares` | Grant a read share (or publish via `@public`) — owner-or-admin |
 | DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (un-publish) — owner-or-admin |
+| POST | `/v1/groups` | Create a group (any authenticated caller owns what they create) |
+| GET | `/v1/groups` | List the groups the caller owns or belongs to |
+| GET | `/v1/groups/{id}` | Group details + members (owner-or-member; non-member 404) |
+| DELETE | `/v1/groups/{id}` | Delete a group (owner-or-admin; `public` not deletable) |
+| POST | `/v1/groups/{id}/members` | Add a member (owner-or-admin) |
+| DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member (owner-or-admin) |
 | POST | `/v1/ingest` | Ingest a file/directory (async job) |
 | GET | `/v1/ingest/{job_id}` | Poll ingest job status |
 | GET | `/v1/documents` | List indexed documents |
@@ -184,6 +190,7 @@ back in the response so a typo — an unclaimable grant — is visible):
 | Input | Resolves to |
 |---|---|
 | `@public` or `public` | the built-in world-readable **public group** (read-only) |
+| `@group:<id>` or `group:<id>` | a named **group** by id (read-only; the group must exist — else **422** echoing the id) |
 | a value containing `:` | a full `issuer:subject` string, kept **verbatim** (issuer/subject halves must both be non-empty) |
 | a bare username | prefixed with `issuer` (default `bvbrc`) → `bvbrc:<username>` |
 
@@ -226,6 +233,53 @@ unknown id is **404**, never a cross-collection revoke). Revocation is soft
 The active **owner** row is not revocable here (**409** — transfer or delete the
 collection instead). Schemas: `contracts/schemas/share_grant_request.json`,
 `share_record.json`, `shares_response.json`.
+
+### Groups
+
+`/v1/groups` manages **RAGStack-native named groups of users** — a group is a
+share target, so `POST /v1/collections/{id}/shares {grantee: "@group:<id>"}`
+grants **read** to every active member at once. Group membership is unioned into
+read authorization through the same seam as direct and `public` shares
+(`grants_for_subject`), so a membership change is an **instant access change**:
+adding a member immediately opens every collection shared to the group, removing
+one immediately closes them — evaluated at request time, no caching.
+
+- **`POST /v1/groups`** (`GroupCreateRequest` `{ name }`) → **201** `GroupRecord`.
+  Any authenticated caller creates a group they own. Empty/whitespace name →
+  **422**; the reserved `public` name or an active name collision for this owner
+  → **409**.
+- **`GET /v1/groups`** → `GroupsResponse` `{ groups: GroupRecord[] }` — the
+  groups the caller owns or is an active member of (the implicit `public` group
+  is not listed).
+- **`GET /v1/groups/{id}`** → `GroupDetailResponse` `{ group, members:
+  GroupMemberRecord[] }`. **Owner-or-member** may view; anyone else gets a
+  leak-safe **404** (a private group's existence and membership never leak).
+  The built-in `public` group is viewable and returns an empty member list.
+- **`DELETE /v1/groups/{id}`** → **204**. **Owner-or-admin** (a non-owner member
+  → **403**, a non-member → **404**). Soft delete (audit survives); shares to the
+  group become inert immediately. The built-in `public` group is **not deletable**
+  (**409**).
+- **`POST /v1/groups/{id}/members`** (`GroupMemberAddRequest` `{ subject,
+  issuer?="bvbrc" }`) → **201** `GroupMemberRecord`. **Owner-or-admin**. The
+  `subject` resolves exactly like a share grantee (full `issuer:subject` verbatim,
+  or a bare BV-BRC username → `bvbrc:<username>`) and is echoed back; a
+  never-logged-in user is pre-provisioned. Membership is a **flat list of users**
+  — a group id (any `@group:`/`@public` form) is rejected (**422**, no nesting); a
+  duplicate active membership or the built-in `public` group → **409**.
+- **`DELETE /v1/groups/{id}/members/{subject}`** (optional `?issuer=` query,
+  default `bvbrc`) → **204**. **Owner-or-admin**. `subject` resolves the **same
+  way as on add** — a full `issuer:sub` string verbatim, a bare BV-BRC username →
+  `bvbrc:<username>` (or the given `issuer`) — so removing with the identifier
+  used to add reliably matches. A group-target form (`@group:`/`@public`) is
+  rejected (**422**, no nesting). Removing a non-member is a no-op (**204**). Soft
+  removal (audit survives).
+
+Group grants stay **read-only** in v1 (the share API rejects `write`/`owner`
+grantees for a group, and `write`/`owner` resolution is owner-only regardless).
+An outage of the authorization store is **503** (fail closed) on every route.
+Schemas: `contracts/schemas/group_record.json`, `group_member_record.json`,
+`group_create_request.json`, `group_member_add_request.json`,
+`groups_response.json`, `group_detail_response.json`.
 
 ### POST /v1/ingest
 

@@ -10,22 +10,30 @@ import {
 } from "react";
 import {
   ApiError,
+  addGroupMember,
   createCollection,
+  createGroup,
   deleteCollection,
+  deleteGroup,
   getCollections,
   getConfig,
   getDeepHealth,
+  getGroup,
   getJobs,
   getModelsRegistry,
   getModelsStatus,
   getStoreStats,
   getTenants,
+  listGroups,
   purgeCollection,
+  removeGroupMember,
   runModelBenchmark,
   type AppConfig,
   type BenchmarkResult,
   type CollectionInfo,
   type CollectionPurgeReport,
+  type GroupMemberRecord,
+  type GroupRecord,
   type JobSummary,
   type ModelStatus,
   type Provenance,
@@ -43,6 +51,10 @@ import {
   collectionCreateMessage,
   collectionDeleteMessage,
   collectionPurgeMessage,
+  groupCreateMessage,
+  groupDeleteMessage,
+  groupMemberAddMessage,
+  groupMemberRemoveMessage,
   purgeConfirmed,
   purgeReportSummary,
 } from "../lib/collections";
@@ -73,6 +85,7 @@ const SECTIONS = [
   { id: "stores", label: "Stores" },
   { id: "config", label: "Config" },
   { id: "collections", label: "Collections" },
+  { id: "groups", label: "Groups" },
   { id: "tenants", label: "Tenants" },
   { id: "models", label: "Models" },
   { id: "jobs", label: "Ingest jobs" },
@@ -1228,6 +1241,398 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   );
 }
 
+// --- Groups (#245) --------------------------------------------------------
+//
+// RAGStack-native named bags of user subjects. A group is a share target
+// (`GRANT read TO @group:<id>` via the ShareDialog's group picker), so managing
+// membership here is how a shared collection reaches a set of people at once.
+//
+// WHY HERE: this mirrors the Collections section's home on the Ops surface —
+// groups and collection sharing are the same access-control story, so the place
+// you audit "who can read what" is the place you edit the groups those grants
+// name. Unlike the collection writes on this page, group create/manage is NOT
+// admin-only (ADR-0004): any authenticated caller owns the groups they create,
+// and view is owner-or-member — so this panel works with a plain key, and its
+// only degraded state is a 503 (the authorization store being down), never a 403
+// on the listing itself.
+//
+// Vocabulary matches the shares flow: managing a group (delete, add/remove
+// members) is owner-or-admin, and the error copy in lib/collections.ts says so.
+
+function fmtDay(iso: string): string {
+  return iso ? iso.slice(0, 10) : "—";
+}
+
+// The expandable membership editor for one group: its active members, a remove
+// button per row (owner-or-admin), and an add-a-user input. `subject` is resolved
+// server-side exactly like a share grantee, so the input mirrors ShareDialog's.
+function GroupMembers({ groupId, apiKey }: { groupId: string; apiKey?: string }) {
+  const queryClient = useQueryClient();
+  const detailKey = ["group-detail", groupId, apiKey];
+  const [subject, setSubject] = useState("");
+
+  const detail = useQuery({
+    queryKey: detailKey,
+    queryFn: () => getGroup(groupId, apiKey || undefined),
+    retry: false,
+  });
+
+  const refetch = () => queryClient.invalidateQueries({ queryKey: detailKey });
+
+  const add = useMutation<GroupMemberRecord, Error, string>({
+    mutationFn: (subj) => addGroupMember(groupId, { subject: subj }, apiKey || undefined),
+    onSuccess: async () => {
+      await refetch();
+      setSubject("");
+    },
+  });
+
+  const remove = useMutation<void, Error, string>({
+    mutationFn: (subj) => removeGroupMember(groupId, subj, apiKey || undefined),
+    onSuccess: () => refetch(),
+  });
+
+  const members = (detail.data?.members ?? []).filter((m) => m.active);
+  const canAdd = subject.trim() !== "" && !add.isPending;
+  const submitAdd = () => {
+    if (canAdd) add.mutate(subject.trim());
+  };
+
+  const listErr = detail.isError ? (detail.error as Error) : null;
+
+  return (
+    <div className="bg-gray-50 px-4 py-3 text-sm">
+      {listErr ? (
+        <p role="alert" className="mb-2 rounded bg-red-50 p-2 text-sm text-red-700">
+          {groupMemberRemoveMessage(
+            listErr instanceof ApiError ? listErr.status : null,
+            listErr.message,
+          )}
+        </p>
+      ) : null}
+
+      <div className="mb-3">
+        <label
+          htmlFor={`group-add-${groupId}`}
+          className="mb-1 block text-xs font-medium text-gray-500"
+        >
+          Add a user
+        </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id={`group-add-${groupId}`}
+            type="text"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submitAdd();
+            }}
+            placeholder="e.g. alice or bvbrc:alice"
+            className="min-w-[14rem] flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+            type="button"
+            onClick={submitAdd}
+            disabled={!canAdd || listErr != null}
+            className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white transition-opacity hover:bg-blue-700 disabled:opacity-50"
+          >
+            {add.isPending ? "Adding…" : "Add member"}
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] leading-snug text-gray-400">
+          A BV-BRC username, or a full subject like{" "}
+          <span className="font-mono">bvbrc:alice</span>. Groups can't nest — a member is
+          always a user.
+        </p>
+        {add.isError && add.error ? (
+          <p role="alert" className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">
+            {groupMemberAddMessage(
+              add.error instanceof ApiError ? add.error.status : null,
+              add.error.message,
+            )}
+          </p>
+        ) : null}
+      </div>
+
+      <h4 className="mb-1 text-xs font-medium text-gray-500">Members</h4>
+      {detail.isLoading ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : members.length === 0 && !listErr ? (
+        <p className="text-sm text-gray-400">
+          No members yet — add a user above. An empty group grants no one anything.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {members.map((m) => (
+            <li
+              key={m.id}
+              className="flex items-center justify-between rounded border border-gray-200 bg-white px-3 py-1.5 text-sm"
+            >
+              <span className="truncate font-mono text-xs text-gray-800" title={m.subject}>
+                {m.subject}
+              </span>
+              <button
+                type="button"
+                onClick={() => remove.mutate(m.subject)}
+                disabled={remove.isPending}
+                className="ml-3 shrink-0 text-xs text-gray-400 hover:text-red-600 disabled:opacity-50"
+                aria-label={`Remove ${m.subject}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {remove.isError && remove.error ? (
+        <p role="alert" className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">
+          {groupMemberRemoveMessage(
+            remove.error instanceof ApiError ? remove.error.status : null,
+            remove.error.message,
+          )}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function GroupsPanel({ apiKey }: { apiKey?: string }) {
+  const queryClient = useQueryClient();
+  const groupsKey = ["groups", apiKey];
+  const groups = useQuery({
+    queryKey: groupsKey,
+    queryFn: () => listGroups(apiKey || undefined),
+    retry: false,
+  });
+  const rows = groups.data?.groups ?? [];
+
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: groupsKey });
+
+  const create = useMutation<GroupRecord, Error, string>({
+    mutationFn: (n) => createGroup({ name: n }, apiKey || undefined),
+    onSuccess: async (g) => {
+      await refresh();
+      setName("");
+      setCreating(false);
+      setExpanded(g.id);
+    },
+  });
+
+  const del = useMutation<void, Error, string>({
+    mutationFn: (id) => deleteGroup(id, apiKey || undefined),
+    onSuccess: async () => {
+      await refresh();
+      setConfirmDelete(null);
+      setExpanded(null);
+    },
+  });
+
+  const canCreate = name.trim() !== "" && !create.isPending;
+  const submitCreate = () => {
+    if (canCreate) create.mutate(name.trim());
+  };
+
+  // listGroups is open to any authenticated caller, so its only failure is a 503
+  // (store down); surface it, but the section stays "available" for the TOC.
+  const listErr = groups.isError ? (groups.error as Error) : null;
+
+  return (
+    <>
+      <SectionHeading id="groups">
+        <button
+          type="button"
+          onClick={() => {
+            create.reset();
+            setCreating((v) => !v);
+          }}
+          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+        >
+          {creating ? "Cancel" : "＋ New group"}
+        </button>
+      </SectionHeading>
+
+      {creating ? (
+        <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+          <label htmlFor="ops-group-name" className="mb-1 block text-xs font-medium text-gray-500">
+            Group name
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              id="ops-group-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitCreate();
+              }}
+              placeholder="e.g. lab-team"
+              className="min-w-[14rem] flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <button
+              type="button"
+              onClick={submitCreate}
+              disabled={!canCreate}
+              className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white transition-opacity hover:bg-blue-700 disabled:opacity-50"
+            >
+              {create.isPending ? "Creating…" : "Create group"}
+            </button>
+          </div>
+          <p className="mt-1 text-[11px] leading-snug text-gray-400">
+            You own the group; add members below, then share a collection with it from the
+            Collection tab’s Share panel (“Share with a group”). “public” is reserved.
+          </p>
+          {create.isError && create.error ? (
+            <p role="alert" className="mt-2 rounded bg-red-50 p-2 text-sm text-red-700">
+              {groupCreateMessage(
+                create.error instanceof ApiError ? create.error.status : null,
+                create.error.message,
+              )}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {listErr ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+          {groupCreateMessage(
+            listErr instanceof ApiError ? listErr.status : null,
+            listErr.message,
+          )}
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+          You don’t own or belong to any groups yet. Create one to share a collection with a
+          set of people at once.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-lg border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">Group</th>
+                <th className="px-3 py-2 font-medium">Owner</th>
+                <th className="px-3 py-2 font-medium">Created</th>
+                <th className="px-3 py-2 text-right font-medium">Manage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((g) => {
+                const open = expanded === g.id;
+                return (
+                  <Fragment key={g.id}>
+                    <tr className="border-t border-gray-100">
+                      <td className="px-3 py-2 font-medium text-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => setExpanded(open ? null : g.id)}
+                          aria-expanded={open}
+                          className="text-left hover:underline"
+                          title="Show and edit this group's members"
+                        >
+                          <span className="mr-1 text-gray-400">{open ? "▾" : "▸"}</span>
+                          {g.name}
+                        </button>
+                        <span className="ml-2 font-mono text-[11px] text-gray-400" title={g.id}>
+                          {g.id.slice(0, 8)}
+                        </span>
+                      </td>
+                      <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={g.owner_subject}>
+                        {g.owner_subject || "—"}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-gray-500">{fmtDay(g.created_at)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <span className="inline-flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setExpanded(open ? null : g.id)}
+                            className="text-xs text-gray-400 hover:text-gray-700"
+                          >
+                            {open ? "Hide members" : "Members"}
+                          </button>
+                          <span className="text-gray-200">|</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              del.reset();
+                              setConfirmDelete(confirmDelete === g.id ? null : g.id);
+                            }}
+                            className="text-xs text-red-500 hover:text-red-700"
+                            title="Delete this group. Shares granted to it become inert immediately."
+                          >
+                            Delete
+                          </button>
+                        </span>
+                      </td>
+                    </tr>
+                    {open ? (
+                      <tr className="border-t border-gray-100">
+                        <td colSpan={4} className="p-0">
+                          <GroupMembers groupId={g.id} apiKey={apiKey} />
+                        </td>
+                      </tr>
+                    ) : null}
+                    {confirmDelete === g.id ? (
+                      <tr className="border-t border-gray-100">
+                        <td colSpan={4} className="p-0">
+                          <div className="border-l-4 border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+                            <p className="font-medium">Delete group “{g.name}”?</p>
+                            <p className="mt-1 text-xs">
+                              Any collection shared with this group stops being readable through
+                              it immediately. Members and the group row are kept as an audited
+                              soft-delete, not erased. Only the owner (or an admin) can do this.
+                            </p>
+                            {del.isError && del.error ? (
+                              <p role="alert" className="mt-2 rounded bg-white p-2 text-red-700">
+                                {groupDeleteMessage(
+                                  del.error instanceof ApiError ? del.error.status : null,
+                                  del.error.message,
+                                )}
+                              </p>
+                            ) : null}
+                            <div className="mt-2 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => del.mutate(g.id)}
+                                disabled={del.isPending}
+                                className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                              >
+                                {del.isPending ? "Deleting…" : "Delete group"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDelete(null)}
+                                disabled={del.isPending}
+                                className="rounded border border-red-300 bg-white px-3 py-1 text-xs text-red-700 hover:bg-red-100 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-2 text-xs text-gray-400">
+        Groups you own or belong to. Expand one to add or remove members — a member is always a
+        user (groups don’t nest). Share a collection with a group from the Collection tab’s Share
+        panel; every active member then reads it, and removing a member revokes their access on
+        their next request. Managing a group is owner-or-admin.
+      </p>
+    </>
+  );
+}
+
 // --- Tenancy --------------------------------------------------------------
 
 // /v1/stats/stores reports one number per store for the UNION of readable tenants
@@ -1513,6 +1918,8 @@ export function OpsDashboard({ apiKey }: { apiKey?: string }) {
         <ConfigPanel apiKey={apiKey} />
 
         <CollectionsPanel apiKey={apiKey} />
+
+        <GroupsPanel apiKey={apiKey} />
 
         <TenantsPanel apiKey={apiKey} />
 

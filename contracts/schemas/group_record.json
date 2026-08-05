@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "group_record.json",
+  "title": "GroupRecord",
+  "description": "One row of the groups table as surfaced by the API (ADR-0004 decision 3). A group is a named, owned, flat bag of user subjects. `active` is derived from `deleted_at` (empty string == active). The built-in world-readable 'public' group has id 'public', built_in true and an empty owner_subject; it is never member-editable and never deletable.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "owner_subject",
+    "built_in",
+    "created_at",
+    "deleted_by",
+    "deleted_at",
+    "active"
+  ],
+  "properties": {
+    "id": {
+      "description": "Opaque group id (a uuid4 hex for user-created groups; the fixed literal 'public' for the built-in group).",
+      "type": "string"
+    },
+    "name": {
+      "description": "Human-readable group name, unique per owner among active groups.",
+      "type": "string"
+    },
+    "owner_subject": {
+      "description": "Subject ('issuer:sub') of the creating user, who owns and manages the group. Empty string for the built-in public group.",
+      "type": "string"
+    },
+    "built_in": {
+      "description": "True only for the reserved built-in 'public' group.",
+      "type": "boolean"
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp.",
+      "type": "string"
+    },
+    "deleted_by": {
+      "description": "Subject that soft-deleted the group; empty string while active.",
+      "type": "string"
+    },
+    "deleted_at": {
+      "description": "ISO-8601 UTC timestamp of the soft delete; empty string while active.",
+      "type": "string"
+    },
+    "active": {
+      "description": "True when the group has not been soft-deleted (`deleted_at` is empty).",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

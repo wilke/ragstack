@@ -10,6 +10,7 @@ from ragstack.api.routers import (
     collections,
     documents,
     graph,
+    groups,
     health,
     health_deep,
     jobs,
@@ -61,6 +62,12 @@ app.include_router(
 )
 app.include_router(
     collections.router, prefix="/v1", tags=["Query"], dependencies=[Depends(resolve_principal)]
+)
+# Groups: RAGStack-native named groups of users, share targets (issue #245).
+# Any authenticated caller creates/lists; owner-or-admin manages; membership is
+# unioned into read authorization through the ONE seam (grants_for_subject).
+app.include_router(
+    groups.router, prefix="/v1", tags=["Query"], dependencies=[Depends(resolve_principal)]
 )
 # Admin surface: gated at the router level by the ``admin`` role (require_role also
 # performs auth), so every route under it is admin-only by construction. /v1/health/deep
