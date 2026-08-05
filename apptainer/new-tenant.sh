@@ -200,7 +200,9 @@ port_in_use() {  # 0 = occupied
     if command -v ss >/dev/null 2>&1; then
         ss -ltn "sport = :$p" 2>/dev/null | grep -q LISTEN && return 0
     elif command -v netstat >/dev/null 2>&1; then
-        netstat -ltn 2>/dev/null | grep -qE "[:.]$p[[:space:]]" && return 0
+        # Braces required: bare $p followed by '[' parses as an array subscript,
+        # so the pattern would never match the port (shellcheck SC1087).
+        netstat -ltn 2>/dev/null | grep -qE "[:.]${p}[[:space:]]" && return 0
     else
         return 1  # no probe available — cannot assert, do not block
     fi
