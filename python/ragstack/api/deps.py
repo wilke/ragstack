@@ -1162,9 +1162,16 @@ async def lifespan(app: FastAPI):
     _validate_production_settings()
     # Fail fast on a misconfigured RBAC setup (unknown default_role / api_key_roles)
     # rather than silently 403-ing affected callers at runtime.
-    from ragstack.api.security import validate_role_settings
+    from ragstack.api.security import (
+        validate_role_settings,
+        validate_service_account_settings,
+    )
 
     validate_role_settings()
+    # And the one runtime revocation lever there is (#258): its cache TTL is the
+    # revocation lag, so it is capped at startup exactly like the identity
+    # cache's — an uncapped value silently keeps a leaked key working.
+    validate_service_account_settings()
     # Same idea for the identity layer: an unknown provider name, an empty
     # BV-BRC issuer allowlist or an OIDC client with no pinned `aud` are all
     # silent-and-permanent failures (the last one being a silent *acceptance*).
@@ -1455,12 +1462,16 @@ async def lifespan(app: FastAPI):
         # get_user_store()/get_acl_store() after the reset below (an asyncpg pool
         # nobody ever closes). Then reset BOTH module singletons so nothing
         # resolves a closed store after shutdown (tests re-enter the lifespan).
-        from ragstack.api.security import drain_profile_upserts
+        from ragstack.api.security import drain_profile_upserts, reset_disabled_cache
         from ragstack.user_store import reset_user_store
 
         await drain_profile_upserts()
         await acl_store.close()
         reset_user_store()
+        # The auth path memoizes "is this subject a disabled service account?"
+        # against the store we just closed (#258). Drop it with the singleton so
+        # a re-entered lifespan (tests) starts from the new store's answers.
+        reset_disabled_cache()
         reset_acl_store()
         reset_group_store()
         # Close the ES client if the text index holds one.

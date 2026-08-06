@@ -27,8 +27,12 @@ Two layers come out of that:
 A verified bearer authentication also schedules a fire-and-forget profile
 upsert (ADR-0004 decision 1) — ``users(subject, …)`` keyed on the tenant
 string. It must never fail, slow, or 500 the auth path, so the task is wrapped
-and every exception is logged at debug. API-key principals get no user row: a
-key is a deployment credential, not a person.
+and every exception is logged at debug. API-key principals still get no user row
+WRITTEN here: a key is a deployment credential, not a person, and nothing on the
+key path upserts. The key path does perform one READ (issue #258): a key whose
+tenant is a *registered and disabled* service account is rejected with 401 — the
+only way to revoke a leaked key without an env edit and a restart. That read is
+cached per subject and FAILS OPEN; see :func:`_service_account_disabled`.
 
 Presenting both credentials is a **400**, not a silent precedence rule: which one
 authenticated you would otherwise be invisible in the logs and in the tenant.
@@ -147,6 +151,15 @@ def _principal_from_key(api_key: str | None) -> Principal:
         return Principal(tenant=DEFAULT_TENANT, role=normalize_role(settings.default_role))
     # sum() over the generator evaluates every compare_digest (no short-circuit),
     # so total time doesn't reveal which key matched or how far down the list.
+    # compare_digest raises TypeError on a non-ASCII str, and Starlette decodes
+    # header bytes as latin-1 — so one high byte in X-API-Key used to escape as a
+    # 500 from an unauthenticated caller. A key that cannot match any ASCII key
+    # is simply invalid.
+    if api_key is not None and not api_key.isascii():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid API key",
+        )
     if api_key is not None and sum(secrets.compare_digest(api_key, k) for k in keys) > 0:
         return Principal(
             tenant=settings.api_key_tenants.get(api_key, DEFAULT_TENANT),
@@ -158,6 +171,160 @@ def _principal_from_key(api_key: str | None) -> Principal:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="missing or invalid API key",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Service-account revocation on the API-key path (issue #258)
+# --------------------------------------------------------------------------- #
+#
+# ``settings.api_keys`` / ``api_key_tenants`` / ``api_key_roles`` are read from
+# the environment at import and have no writer anywhere in the tree, so
+# rotating or withdrawing a credential is an env edit plus a restart. That is
+# the operational gap issue #258 names: a leaked key cannot be stopped at
+# runtime. The registered-service-account record closes it — an admin disables
+# the account, and this check turns the still-valid key into a 401.
+#
+# Per-subject memoization, mirroring the identity cache's discipline (and its
+# honest framing: ``identity_cache_ttl_seconds`` is capped precisely because the
+# TTL *is* the revocation lag). Without it this read would run on every single
+# API-key request, coupling a path that was pure CPU — a dict lookup and a
+# constant-time compare — to the ACL database's p99.
+_disabled_cache: dict[str, tuple[float, bool]] = {}
+#: Bumped by :func:`reset_disabled_cache`. A lookup samples this BEFORE its
+#: store read and refuses to write its verdict back if the value changed while
+#: it was in flight: otherwise a request that started before an operator's
+#: ``/disable`` resumes afterwards and re-installs its stale "enabled" verdict,
+#: silently voiding the flush for a full TTL (found in review of #258).
+_disabled_cache_gen = 0
+# Prune trigger only; the dict stays bounded by subjects active in one window.
+_DISABLED_CACHE_MAX = 10_000
+# Warn once per OUTAGE when the lookup starts failing, then drop to debug — an
+# operator must be able to see at INFO that revocation has stopped working,
+# without a dead store spamming a line per request. Re-armed on the next
+# successful lookup (and a recovery is logged), so this is once per outage
+# rather than once per process: without that, a single blip during boot would
+# demote every later real outage to DEBUG, hiding "revocation is off" for the
+# rest of the process's life. That is the opposite of the intent, and unlike
+# ``_upsert_failure_warned`` — which guards a best-effort profile write — the
+# thing failing here is a revocation control that fails OPEN.
+_disabled_lookup_failure_warned = False
+
+
+def _disabled_cache_ttl() -> float:
+    """Cache lifetime in seconds; 0 (or negative, clamped) disables caching."""
+    return max(0.0, float(settings.service_account_disabled_cache_ttl_seconds))
+
+
+def reset_disabled_cache() -> None:
+    """Drop the memoized disabled-lookups (tests, and any deliberate flush).
+
+    Bumping the generation is what makes the flush hold: a lookup already
+    awaiting its store read would otherwise finish and re-install the verdict
+    it read *before* the flush, keeping a just-revoked key alive for a full TTL.
+    """
+    global _disabled_cache_gen
+    _disabled_cache.clear()
+    _disabled_cache_gen += 1
+
+
+async def _service_account_disabled(subject: str) -> bool:
+    """Is ``subject`` a REGISTERED service account that an admin has DISABLED?
+
+    **Failure policy: FAIL OPEN.** Any store error is swallowed and answered
+    ``False`` — the request proceeds. This is deliberate and is the opposite of
+    how *authorization* behaves in this codebase (``authz.AuthzUnavailable`` →
+    503, ``groups._unavailable``): the API key is the primary authentication
+    factor and it has *already* been verified by a constant-time compare, so the
+    caller is authenticated regardless of what the user store can say. The
+    disable flag is a revocation convenience layered on top of that. Failing
+    closed would trade a working authentication path for it — in this deployment
+    the API-key path is the ingest path and the whole production surface, so a
+    partitioned or slow ACL database would lock out every API-key caller,
+    including all the accounts nobody ever disabled. That is a bad bargain, and
+    the honest consequence is written down rather than hidden:
+
+        **DISABLING IS A SOFT, BEST-EFFORT REVOKE. THE AUTHORITATIVE REVOKE IS
+        REMOVING THE KEY FROM ``API_KEYS`` AND RESTARTING.**
+
+    An UNREGISTERED subject (no users row) is ``False``: registration is opt-in
+    and never becomes a requirement for an existing key. A ``human`` row is
+    ``False`` too — only ``kind='service'`` rows carry this flag, and a bearer
+    identity never reaches this path anyway.
+
+    The answer is cached per subject for
+    ``settings.service_account_disabled_cache_ttl_seconds``, so **revocation
+    takes effect within that TTL** (per process). Fail-open answers are cached
+    on the same terms: during an outage that bounds the store hammering to one
+    attempt per subject per window instead of one per request, and it cannot
+    make the revoke any weaker than fail-open already made it.
+    """
+    ttl = _disabled_cache_ttl()
+    now = time.monotonic()
+    # Sampled BEFORE the await; compared after. A flush that lands mid-flight
+    # must invalidate this lookup's verdict, not be overwritten by it.
+    gen = _disabled_cache_gen
+    if ttl > 0:
+        hit = _disabled_cache.get(subject)
+        if hit is not None and now < hit[0]:
+            return hit[1]
+
+    disabled = False
+    global _disabled_lookup_failure_warned
+    try:
+        from ragstack.user_store import get_user_store  # lazy: avoid import cycles
+
+        rec = await get_user_store().get(subject)
+        disabled = rec is not None and rec.is_service and not rec.enabled
+        if _disabled_lookup_failure_warned:
+            # Re-arm: the NEXT outage warns at WARNING again, and the operator
+            # who saw the fail-open warning gets the matching all-clear.
+            _disabled_lookup_failure_warned = False
+            logger.warning(
+                "service-account disabled check recovered; revocation is being "
+                "enforced again"
+            )
+    except Exception:  # noqa: BLE001 — fail OPEN; see the docstring
+        level = logging.DEBUG if _disabled_lookup_failure_warned else logging.WARNING
+        _disabled_lookup_failure_warned = True
+        logger.log(
+            level,
+            "service-account disabled check failed; failing open — API-key auth "
+            "proceeds on the verified key alone, so a disabled account is NOT "
+            "revoked while this persists",
+            exc_info=True,
+        )
+        disabled = False
+
+    # Only memoize if no flush landed while the store read was in flight. On a
+    # stale generation the verdict still applies to THIS request (it is the
+    # freshest read we have) but must not be cached for the next one.
+    if ttl > 0 and gen == _disabled_cache_gen:
+        if len(_disabled_cache) >= _DISABLED_CACHE_MAX:
+            for key, (expiry, _) in list(_disabled_cache.items()):
+                if expiry <= now:
+                    del _disabled_cache[key]
+            if len(_disabled_cache) >= _DISABLED_CACHE_MAX:
+                _disabled_cache.clear()
+        _disabled_cache[subject] = (now + ttl, disabled)
+    return disabled
+
+
+async def _principal_from_key_checked(api_key: str | None) -> Principal:
+    """:func:`_principal_from_key` plus the disabled-service-account gate.
+
+    Kept as a wrapper rather than folded into ``_principal_from_key`` so that
+    function stays SYNC and I/O-free: it is the pure "does this key verify, and
+    what does the env map it to" step, unit-tested directly as such, and the
+    tenant/role it returns remain env-derived and authoritative. Nothing the
+    store says can *change* a principal here — the lookup may only refuse one.
+    """
+    principal = _principal_from_key(api_key)
+    if await _service_account_disabled(principal.tenant):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="service account is disabled",
+        )
+    return principal
 
 
 def _bearer_credential(authorization: str | None) -> str:
@@ -201,7 +368,15 @@ _PROFILE_CLAIM_MAX = 256
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 
 
-def _clean_claim(value: str, limit: int = _PROFILE_CLAIM_MAX) -> str:
+def clean_stored_text(value: str, limit: int = _PROFILE_CLAIM_MAX) -> str:
+    """Strip control characters, then truncate — the one sanitizer for any
+    caller-supplied string this process persists into the users table.
+
+    Public because the service-account router stores an admin-supplied
+    ``purpose`` in the same table and must apply the same rule, not just the
+    length half of it (both values are echoed back by a GET and reach logs and
+    terminals, where a raw ESC is an output-context injection).
+    """
     return _CONTROL_CHARS.sub("", value)[:limit]
 
 
@@ -218,8 +393,8 @@ async def _upsert_profile(identity: Identity) -> None:
     await get_user_store().upsert_seen(
         subject=f"{identity.issuer}:{identity.subject}",
         issuer=identity.issuer,
-        email=_clean_claim(identity.email) if identity.email_verified else "",
-        display_name=_clean_claim(identity.display_name),
+        email=clean_stored_text(identity.email) if identity.email_verified else "",
+        display_name=clean_stored_text(identity.display_name),
     )
 
 
@@ -338,8 +513,9 @@ async def _authenticate(api_key: str | None, authorization: str | None) -> Princ
     if provider is None:
         # Identity layer off: `Authorization` is not an authentication input, so
         # it is neither honoured nor a conflict. Behaviour is byte-for-byte what
-        # it was before this layer existed.
-        return _principal_from_key(api_key)
+        # it was before this layer existed — except that a key whose tenant is a
+        # registered-and-disabled service account is refused (#258).
+        return await _principal_from_key_checked(api_key)
     credential = _bearer_credential(authorization)
     if credential and api_key is not None:
         raise HTTPException(
@@ -349,7 +525,9 @@ async def _authenticate(api_key: str | None, authorization: str | None) -> Princ
             ),
         )
     if not credential:
-        return _principal_from_key(api_key)
+        return await _principal_from_key_checked(api_key)
+    # Bearer is untouched by #258: a federated identity is revoked at its issuer
+    # (or by its expiry), never by a service-account row.
     return await _principal_from_bearer(provider, credential)
 
 
@@ -384,6 +562,10 @@ def validate_role_settings() -> None:
     warning wherever roles are read); the removed ``engineer``/``manager``
     roles are rejected with a pointer at ADR-0003 — they no longer map to any
     surface, so a config granting them would silently 403 those callers.
+
+    It also checks the ``api_key_tenants`` VALUES, because a tenant string is an
+    authorization subject: blank/whitespace-padded values are rejected outright,
+    and a colon-bearing one is rejected whenever an identity provider is on.
     """
 
     def _check(role: str, where: str) -> None:
@@ -402,6 +584,25 @@ def validate_role_settings() -> None:
     for role in set(settings.api_key_roles.values()):
         _check(role, "api_key_roles")
 
+    # A tenant value is used VERBATIM on the auth path (``api_key_tenants.get``)
+    # but every admin surface that names a subject normalizes it
+    # (``service_accounts._clean_subject`` strips, share/group grantees strip).
+    # So a value with leading/trailing whitespace is a subject nothing can name:
+    # disabling "loader " through the API 204s against the stored "loader" while
+    # the padded key keeps authenticating, and the account lists as inactive with
+    # a live credential. Reject the shape at startup instead of silently
+    # normalizing here, which would change which tenant an existing deployment's
+    # data belongs to.
+    for key_tenant in set(settings.api_key_tenants.values()):
+        if key_tenant != key_tenant.strip() or not key_tenant:
+            raise RuntimeError(
+                f"api_key_tenants maps a key to tenant {key_tenant!r}, which is "
+                "blank or has leading/trailing whitespace; the tenant string is "
+                "the authorization subject and every admin surface names it "
+                "stripped, so this one could never be shared with, added to a "
+                "group, or revoked"
+            )
+
     # An API-key tenant string IS the authz subject (authz.resolve_access). When a
     # bearer identity provider is also on, a bearer subject is "{issuer}:{sub}";
     # an API-key tenant literally shaped like "google:alice" would collide with
@@ -415,6 +616,37 @@ def validate_role_settings() -> None:
                     "':' collides with a bearer subject 'issuer:sub' while an "
                     "identity provider is enabled; use a colon-free tenant name"
                 )
+
+
+#: Hard ceiling on ``service_account_disabled_cache_ttl_seconds``, mirroring the
+#: identity layer's cap on ``identity_cache_ttl_seconds``
+#: (``identity/factory.py``) for exactly the same reason: THE CACHE TTL IS THE
+#: REVOCATION LAG. Disabling an account is the only runtime revocation lever
+#: there is, and an operator raising this to cut ACL-database load would
+#: otherwise silently buy a revocation window measured in hours or days, with no
+#: warning at any log level. Five minutes is the same bound the identity cache
+#: gets.
+_DISABLED_CACHE_TTL_MAX = 300
+
+
+def validate_service_account_settings() -> None:
+    """Fail fast on a service-account revocation setup that cannot revoke.
+
+    Call at startup, next to :func:`validate_role_settings`. The TTL is clamped
+    at read time for the negative end (``_disabled_cache_ttl``); this is the
+    other end, and it is a hard failure rather than a clamp because silently
+    honouring a *different* TTL than the one configured is how an operator ends
+    up believing revocation is faster than it is.
+    """
+    ttl = settings.service_account_disabled_cache_ttl_seconds
+    if ttl > _DISABLED_CACHE_TTL_MAX:
+        raise RuntimeError(
+            f"service_account_disabled_cache_ttl_seconds={ttl} exceeds the "
+            f"{_DISABLED_CACHE_TTL_MAX}s cap: this TTL is the revocation lag for "
+            "disabled service accounts (the only revoke that does not need a "
+            "restart), so a larger value silently keeps a leaked key working for "
+            "that long — the same cap identity_cache_ttl_seconds gets"
+        )
 
 
 async def resolve_tenant(

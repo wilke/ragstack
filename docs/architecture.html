@@ -235,7 +235,7 @@ contract.</p>
 </tr>
 <tr>
 <td><strong>Multi-tenancy</strong></td>
-<td>Every chunk carries a <code>tenant_id</code>; reads scope to <code>own + public</code>; tenant is resolved server-side and cannot be spoofed</td>
+<td>Access is asserted at the collection (<code>resolve_access</code>, <a href="adr-0003-access-control.html">ADR-0003</a>); the per-chunk <code>tenant_id</code>/owner stamp is writer provenance, kept enforced as defence in depth (reads scope to <code>own + public</code>, resolved server-side); tenant-as-instance is ADR-0005</td>
 <td>✅ Python</td>
 </tr>
 <tr>
@@ -355,6 +355,10 @@ side is the bug.</p>
 <tr>
 <td><strong>tenant</strong></td>
 <td>A Qdrant <em>instance</em>. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users.</td>
+</tr>
+<tr>
+<td><strong>owner_id / <code>tenant_id</code> (payload key)</strong></td>
+<td>The per-chunk stamp recording who ingested it. Provenance + defence in depth, not the authorization mechanism (<a href="adr-0003-access-control.html">ADR-0003</a> decision 1: renamed <code>owner_id</code> and demoted to provenance). The rename is a code-level alias only (#246): the physical key stays <code>tenant_id</code> because renaming storage would rewrite every point.</td>
 </tr>
 </tbody>
 </table></div>

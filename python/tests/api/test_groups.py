@@ -277,6 +277,52 @@ async def test_group_grant_lets_member_query_and_hides_from_non_member(client):
     ).status_code == 404
 
 
+async def test_a_service_account_can_be_a_group_member_end_to_end(client, monkeypatch):
+    """A service account (#258) authenticates as its COLON-FREE API-key tenant.
+    Added by a bare subject it would be stored as ``bvbrc:<subject>`` — a
+    federated identity that never authenticates, so the membership would expand
+    for nobody and the group grant would never reach the machine account.
+    ``@service:<subject>`` keeps it colon-free; asserted through the grant."""
+    monkeypatch.setattr(security.settings, "api_keys", [*KEYS.values(), "k-svc"])
+    monkeypatch.setattr(
+        security.settings,
+        "api_key_tenants",
+        {
+            "k-owner": "owner", "k-bob": BOB_SUBJECT, "k-outsider": "outsider",
+            "k-admin": "admin", "k-svc": "svc-askclark",
+        },
+    )
+    svc_h = {"X-API-Key": "k-svc"}
+    _register(_entry("priv"))
+    await _own("priv", "owner")
+    gid = await _make_group(client)
+
+    add = await client.post(
+        f"/v1/groups/{gid}/members",
+        json={"subject": "@service:svc-askclark"},
+        headers=_h("owner"),
+    )
+    assert add.status_code == 201, add.text
+    assert add.json()["subject"] == "svc-askclark"  # NOT 'bvbrc:svc-askclark'
+
+    await _grant_group_read(client, "priv", gid)
+    ok = await client.post(
+        "/v1/retrieve", json={"query": "x", "collection": "priv"}, headers=svc_h
+    )
+    assert ok.status_code == 200, ok.text
+
+    # Removal resolves identically, so the membership stays manageable.
+    rm = await client.delete(
+        f"/v1/groups/{gid}/members/@service:svc-askclark", headers=_h("owner")
+    )
+    assert rm.status_code == 204, rm.text
+    assert (
+        await client.post(
+            "/v1/retrieve", json={"query": "x", "collection": "priv"}, headers=svc_h
+        )
+    ).status_code == 404
+
+
 async def test_removing_member_revokes_access_immediately(client):
     _register(_entry("priv"))
     await _own("priv", "owner")

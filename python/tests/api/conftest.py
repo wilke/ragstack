@@ -104,6 +104,20 @@ def _acl_store():
 
 
 @pytest.fixture(autouse=True)
+def _clear_disabled_cache():
+    """The API-key auth path memoizes "is this tenant a disabled service
+    account?" in process-wide module state (issue #258), keyed on subject with a
+    TTL. Tests reuse subjects like ``default``/``owner`` across modules and swap
+    the user-store singleton underneath them, so a cached answer from one test
+    would silently decide the next one. Clear on both setup and teardown."""
+    from ragstack.api.security import reset_disabled_cache
+
+    reset_disabled_cache()
+    yield
+    reset_disabled_cache()
+
+
+@pytest.fixture(autouse=True)
 def _enable_ingest(monkeypatch):
     """``POST /v1/ingest`` fails closed with 503 when ``ingest_root`` is unset — an
     unconfined ``source`` is an arbitrary server-side file read. Unset is the

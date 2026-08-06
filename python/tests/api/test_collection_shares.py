@@ -236,6 +236,78 @@ async def test_grant_to_full_subject_is_kept_verbatim(client):
     assert r.json()["grantee_id"] == "oidc:bob"
 
 
+async def test_service_account_grant_stays_colon_free_and_is_claimable(
+    client, monkeypatch
+):
+    """A service account (#258) authenticates as a COLON-FREE subject — its
+    API-key tenant. Every other grantee form qualifies a bare value with the
+    default issuer, which would store ``bvbrc:svc-askclark``: a federated
+    identity the machine account can never authenticate as, i.e. a grant that
+    silently never applies. ``@service:<subject>`` is the form that keeps it in
+    the machine namespace, and this asserts the whole loop — grant, then read
+    with the key itself."""
+    monkeypatch.setattr(
+        security.settings, "api_keys", [*KEYS.values(), "k-svc"]
+    )
+    monkeypatch.setattr(
+        security.settings,
+        "api_key_tenants",
+        {
+            "k-owner": "owner", "k-stranger": "stranger", "k-admin": "admin",
+            "k-svc": "svc-askclark",
+        },
+    )
+    _register(_entry("priv"))
+    await _own("priv", "owner")
+    svc_h = {"X-API-Key": "k-svc"}
+
+    denied = await client.post(
+        "/v1/retrieve", json={"query": "x", "collection": "priv"}, headers=svc_h
+    )
+    assert denied.status_code == 404, denied.text
+
+    r = await client.post(
+        "/v1/collections/priv/shares",
+        json={"grantee": "@service:svc-askclark"},
+        headers=_h("owner"),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["grantee_type"] == GRANTEE_USER
+    assert r.json()["grantee_id"] == "svc-askclark"  # NOT 'bvbrc:svc-askclark'
+
+    allowed = await client.post(
+        "/v1/retrieve", json={"query": "x", "collection": "priv"}, headers=svc_h
+    )
+    assert allowed.status_code == 200, allowed.text
+
+    # Contrast: the bare form is still a FEDERATED grantee, and still inert for
+    # this account — the echo is what makes that visible.
+    bare = await client.post(
+        "/v1/collections/priv/shares",
+        json={"grantee": "svc-askclark"},
+        headers=_h("owner"),
+    )
+    assert bare.status_code == 201
+    assert bare.json()["grantee_id"] == "bvbrc:svc-askclark"
+
+
+@pytest.mark.parametrize("grantee", ["@service:", "@service:   ", "@service:bvbrc:al"])
+async def test_malformed_service_grantee_is_422(client, grantee):
+    """An empty service subject is unclaimable; a coloned one would forge a
+    FEDERATED grantee through the machine-namespace door
+    ('@service:bvbrc:alice' -> 'bvbrc:alice')."""
+    _register(_entry("priv"))
+    await _own("priv", "owner")
+    r = await client.post(
+        "/v1/collections/priv/shares",
+        json={"grantee": grantee},
+        headers=_h("owner"),
+    )
+    assert r.status_code == 422, r.text
+    rows = await get_acl_store().shares_for("priv")
+    assert all(s.permission == PERM_OWNER for s in rows)
+
+
 async def test_bare_username_with_blank_issuer_is_422(client):
     _register(_entry("priv"))
     await _own("priv", "owner")

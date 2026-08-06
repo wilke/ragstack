@@ -55,6 +55,7 @@ from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
+from ragstack.user_store import RESERVED_SERVICE_SUBJECTS
 
 log = logging.getLogger(__name__)
 
@@ -728,6 +729,22 @@ _DEFAULT_ISSUER = "bvbrc"
 #: mis-parsed as an ``issuer='group'`` user subject. Mirrors ``@public``.
 _GROUP_PREFIXES = ("@group:", "group:")
 
+#: Reserved prefix naming a SERVICE ACCOUNT (issue #258) as a user grantee: the
+#: subject after it is kept verbatim and, being colon-free, stays in the machine
+#: namespace instead of being qualified to ``bvbrc:<value>``.
+#:
+#: It has to be explicit. A service subject is colon-free by construction, and a
+#: bare colon-free grantee is exactly what the share dialog sends for a BV-BRC
+#: username — so without a prefix the two are indistinguishable strings, and the
+#: default-issuer rule (which the UI depends on) would qualify every service
+#: grant into a federated subject that can never authenticate: an inert grant.
+#:
+#: Only the ``@``-sigil form is accepted, unlike ``@group:``/``group:``. A bare
+#: ``service:x`` would shadow a federated subject whose issuer is literally
+#: ``service`` and silently retarget the grant into the machine namespace, and
+#: nothing needs the bare spelling.
+_SERVICE_PREFIX = "@service:"
+
 
 class ShareGrantRequest(BaseModel):
     """POST body for granting a share. v1 is deliberately minimal and read-only:
@@ -741,10 +758,12 @@ class ShareGrantRequest(BaseModel):
         min_length=1,
         description=(
             "Who to share with. Either the literal '@public'/'public' (→ the "
-            "built-in public group, read-only), a full 'issuer:subject' string "
-            "(kept verbatim), or a bare BV-BRC username which is prefixed to "
-            "'bvbrc:<username>'. The resolved subject is echoed back so a typo is "
-            "visible — a typo'd grantee is otherwise an unclaimable grant."
+            "built-in public group, read-only), '@group:<id>' (a RAGStack group), "
+            "'@service:<subject>' (a service account, kept colon-free), a full "
+            "'issuer:subject' string (kept verbatim), or a bare BV-BRC username "
+            "which is prefixed to 'bvbrc:<username>'. The resolved subject is "
+            "echoed back so a typo is visible — a typo'd grantee is otherwise an "
+            "unclaimable grant."
         ),
     )
     permission: str = Field(
@@ -798,14 +817,24 @@ def _resolve_grantee(grantee: str, issuer: str) -> tuple[str, str]:
 
     - '@public'/'public' → (group, 'public'); never prefixed.
     - '@group:<id>'/'group:<id>' → (group, '<id>'); a named group by id.
+    - '@service:<subject>' → (user, '<subject>'); a service account, kept
+      COLON-FREE. This is the only input that yields a colon-free user subject,
+      and it is what makes a service account (#258) reachable as a grantee at
+      all: its subject IS its API-key tenant, so qualifying it with an issuer
+      would produce a federated subject nothing ever authenticates as — a grant
+      that silently never applies.
     - contains ':' → (user, <verbatim full subject>).
     - otherwise → (user, '<issuer>:<username>').
 
     Raises :class:`HTTPException` 422 on an empty/whitespace grantee, an empty
-    group id, a blank issuer for a bare username, or a full 'issuer:subject' whose
-    issuer or subject half is empty (':', 'bvbrc:', ':alice' — a degenerate,
-    unclaimable grant). Group *existence* is validated by the caller
-    (:func:`create_share`), not here — this stays a pure string mapping."""
+    group id, an empty or colon-bearing service subject, a blank issuer for a
+    bare username, or a full 'issuer:subject' whose issuer or subject half is
+    empty (':', 'bvbrc:', ':alice' — a degenerate, unclaimable grant). Group
+    *existence* is validated by the caller (:func:`create_share`), not here —
+    this stays a pure string mapping. Service-account *registration* is NOT
+    validated either: registration is opt-in, so an operator may share with a
+    configured API-key tenant that was never registered, exactly as a share may
+    name a user who has never logged in."""
     g = grantee.strip()
     if not g:
         raise HTTPException(422, "grantee must not be empty or whitespace")
@@ -821,6 +850,40 @@ def _resolve_grantee(grantee: str, issuer: str) -> tuple[str, str]:
                     422, "a '@group:<id>' grantee must name a non-empty group id"
                 )
             return GRANTEE_GROUP, gid
+    # A service account by subject — also before the ':' branch, and the one
+    # place a user subject stays unqualified.
+    if g.startswith(_SERVICE_PREFIX):
+        svc = g[len(_SERVICE_PREFIX):].strip()
+        if not svc:
+            raise HTTPException(
+                422, f"a '{_SERVICE_PREFIX}<subject>' grantee must name a "
+                "non-empty service subject"
+            )
+        if ":" in svc:
+            # Would forge a federated grantee through the machine-namespace
+            # door ('@service:bvbrc:alice' → 'bvbrc:alice'). Service subjects
+            # are colon-free; say so rather than quietly crossing namespaces.
+            raise HTTPException(
+                422,
+                f"service subject {svc!r} must be colon-free: ':' is reserved for "
+                "federated 'issuer:sub' identities; grant to one of those by "
+                "passing the full subject instead",
+            )
+        if svc in RESERVED_SERVICE_SUBJECTS:
+            # This branch is the ONLY input that yields a colon-free user
+            # grantee, so without this check '@service:default' would grant to
+            # the fallback tenant EVERY unmapped API key resolves to — an
+            # unrestricted '@public' wearing a single-account name, and one the
+            # share dialog would echo back as an innocuous 'default'. Registration
+            # refuses these subjects in two places; granting must too.
+            raise HTTPException(
+                422,
+                f"{svc!r} is a reserved tenant, not a service account: "
+                f"{sorted(RESERVED_SERVICE_SUBJECTS)} are the shared fallback "
+                "tenants unmapped keys resolve to, so granting to one would share "
+                "with every such caller. Use '@public' if that is the intent",
+            )
+        return GRANTEE_USER, svc
     if ":" in g:
         # Already a full 'issuer:subject' string (a UI share dialog may still send
         # a bare username, handled below) — keep it verbatim, but reject a
@@ -901,6 +964,11 @@ async def create_share(
     - a user grantee may be a full ``issuer:subject`` string OR a bare BV-BRC
       username (prefixed to ``bvbrc:<username>``); the literal ``@public`` /
       ``public`` maps to the built-in public group (read-only).
+    - a **service account** (#258) is named ``@service:<subject>``, which keeps
+      the subject colon-free. Without that prefix a bare subject would be
+      qualified to ``bvbrc:<subject>`` — a federated identity the machine
+      account can never authenticate as, i.e. a grant that silently never
+      applies. The echoed ``grantee_id`` shows which namespace it landed in.
     - sharing with a user who has never logged in pre-provisions a users row
       (``ensure_provisional``) so the FK-by-convention holds; there is NO way to
       verify a BV-BRC username exists first, so the grant is best-effort on an
@@ -972,7 +1040,15 @@ async def create_share(
         # a typo'd username is stored as a provisional user that never matches.
         ep = getattr(store, "ensure_provisional", None)
         if ep is not None:
-            grantee_issuer = grantee_id.split(":", 1)[0] or _DEFAULT_ISSUER
+            # A colon-free subject is a SERVICE account (@service:…): we are its
+            # issuer, so the row's issuer is '' — exactly what
+            # ``_new_service_account`` writes. Splitting on ':' would otherwise
+            # record the subject itself as its own issuer.
+            grantee_issuer = (
+                (grantee_id.split(":", 1)[0] or _DEFAULT_ISSUER)
+                if ":" in grantee_id
+                else ""
+            )
             try:
                 await ep(grantee_id, grantee_issuer)
             except Exception:  # noqa: BLE001 — provisioning is best-effort

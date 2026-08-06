@@ -96,6 +96,10 @@ keys are configured.
 | DELETE | `/v1/groups/{id}` | Delete a group (owner-or-admin; `public` not deletable) |
 | POST | `/v1/groups/{id}/members` | Add a member (owner-or-admin) |
 | DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member (owner-or-admin) |
+| POST | `/v1/admin/service-accounts` | Register a machine identity (admin only) |
+| GET | `/v1/admin/service-accounts` | List registered service accounts (admin only) |
+| POST | `/v1/admin/service-accounts/{subject}/disable` | Soft-revoke an account's key (admin only) |
+| POST | `/v1/admin/service-accounts/{subject}/enable` | Re-enable a disabled account (admin only) |
 | POST | `/v1/ingest` | Ingest a file/directory (async job) |
 | GET | `/v1/ingest/{job_id}` | Poll ingest job status |
 | GET | `/v1/documents` | List indexed documents |
@@ -191,8 +195,17 @@ back in the response so a typo — an unclaimable grant — is visible):
 |---|---|
 | `@public` or `public` | the built-in world-readable **public group** (read-only) |
 | `@group:<id>` or `group:<id>` | a named **group** by id (read-only; the group must exist — else **422** echoing the id) |
+| `@service:<subject>` | a **service account** (#258) — the subject is kept **colon-free**, i.e. exactly the string its API key authenticates as |
 | a value containing `:` | a full `issuer:subject` string, kept **verbatim** (issuer/subject halves must both be non-empty) |
 | a bare username | prefixed with `issuer` (default `bvbrc`) → `bvbrc:<username>` |
+
+`@service:` is **required** for a machine identity, not a convenience: a bare
+subject falls into the last row and is qualified to `bvbrc:<subject>` — a
+*federated* identity the service account can never authenticate as, so the grant
+is created, echoed, and silently never applies. The echoed `grantee_id` is how
+you check which namespace it landed in. `@service:` with a colon in the subject
+is **422** (it would forge a federated grantee through the machine-namespace
+door); the account need not be registered, since registration is opt-in.
 
 v1 is **read-only**: `permission` accepts `read` only (`owner` → **400**, it is
 transferred not granted; `write`/anything else → **422**). `grant_option` is not
@@ -212,6 +225,9 @@ not just the ACL.
 curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"grantee": "alice"}'                 # -> 201, grantee_id "bvbrc:alice"
+curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"grantee": "@service:svc-askclark"}' # -> 201, grantee_id "svc-askclark"
 curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
   -H 'X-API-Key: kp' -d '{"grantee": "@public"}'   # publish (read to everyone)
 curl -s http://localhost:8000/v1/collections/my-papers/shares -H 'X-API-Key: kp'
@@ -261,14 +277,16 @@ one immediately closes them — evaluated at request time, no caching.
   (**409**).
 - **`POST /v1/groups/{id}/members`** (`GroupMemberAddRequest` `{ subject,
   issuer?="bvbrc" }`) → **201** `GroupMemberRecord`. **Owner-or-admin**. The
-  `subject` resolves exactly like a share grantee (full `issuer:subject` verbatim,
-  or a bare BV-BRC username → `bvbrc:<username>`) and is echoed back; a
+  `subject` resolves exactly like a share grantee (full `issuer:subject`
+  verbatim, `@service:<subject>` for a service account → kept colon-free, or a
+  bare BV-BRC username → `bvbrc:<username>`) and is echoed back; a
   never-logged-in user is pre-provisioned. Membership is a **flat list of users**
   — a group id (any `@group:`/`@public` form) is rejected (**422**, no nesting); a
   duplicate active membership or the built-in `public` group → **409**.
 - **`DELETE /v1/groups/{id}/members/{subject}`** (optional `?issuer=` query,
   default `bvbrc`) → **204**. **Owner-or-admin**. `subject` resolves the **same
-  way as on add** — a full `issuer:sub` string verbatim, a bare BV-BRC username →
+  way as on add** — a full `issuer:sub` string (and an `@service:` form)
+  verbatim, a bare BV-BRC username →
   `bvbrc:<username>` (or the given `issuer`) — so removing with the identifier
   used to add reliably matches. A group-target form (`@group:`/`@public`) is
   rejected (**422**, no nesting). Removing a non-member is a no-op (**204**). Soft
@@ -280,6 +298,117 @@ An outage of the authorization store is **503** (fail closed) on every route.
 Schemas: `contracts/schemas/group_record.json`, `group_member_record.json`,
 `group_create_request.json`, `group_member_add_request.json`,
 `groups_response.json`, `group_detail_response.json`.
+
+### Service accounts
+
+`/v1/admin/service-accounts` registers **machine identities** — the callers that
+authenticate with an `X-API-Key` secret rather than a token an external issuer
+signed. A service account's **`subject` is its API-key tenant string and its
+authorization subject**, so a registered account can own collections, receive
+shares and join groups under that one identifier. Subjects are **colon-free**
+(`:` is reserved for federated `issuer:sub` identities, keeping the two namespaces
+disjoint), and the reserved `default` / `public` tenants are refused (**400**) —
+they are shared fallback tenants, not one caller's identity. Admin only, on every
+route.
+
+> **Naming a service account as a grantee or member takes the explicit
+> `@service:<subject>` form.** Those surfaces qualify a bare, colon-free value
+> with the default issuer, so `{"grantee": "svc-askclark"}` stores
+> `bvbrc:svc-askclark` — a federated subject the machine account never
+> authenticates as, i.e. a grant that silently never applies. Check the echoed
+> `grantee_id` / `subject`: it must come back **colon-free**.
+
+**Two subject namespaces, one authorization seam.** Every subject the
+authorization code sees (`resolve_access`, share grantees, group members,
+collection owners) comes from one of exactly two namespaces, and they differ in
+*who vouches for the identity*:
+
+| | Service account (API key) | Federated user (bearer) |
+|---|---|---|
+| Subject shape | **colon-free** (`svc-something`) | **`issuer:sub`** (`bvbrc:alice`) |
+| Who issues it | **us** — the operator mints the key locally | an **external** identity provider |
+| The credential | **the key itself is the secret**; authentication is a `secrets.compare_digest` constant-time compare against `API_KEYS`, nothing else | a signed token, **verified against the provider** (signature/introspection) |
+| Where it is configured | `API_KEYS` + `API_KEY_TENANTS` + `API_KEY_ROLES` in the tenant env | nothing per-user; the row is created on first successful auth |
+| Revocation | disable (soft, within cache TTL) or remove from env + restart (authoritative) | at the provider, plus `IDENTITY_CACHE_TTL_SECONDS` |
+
+Because an API-key tenant string *is* the authz subject, a key mapped to a tenant
+literally spelled `bvbrc:alice` would hand its holder Alice's collections. The
+**#243 startup guard keeps the namespaces disjoint**: whenever an identity
+provider is enabled, `validate_role_settings()` refuses to boot if any
+`API_KEY_TENANTS` value contains a `:`. The service-account API enforces the same
+rule from the other side (a colon-bearing `subject` is **400**), so a service
+account can never collide with — or be impersonated by — a federated identity.
+
+- **`POST /v1/admin/service-accounts`** (`ServiceAccountCreateRequest`
+  `{ subject, purpose? }`) → **201** `ServiceAccountRecord`. A colon-bearing,
+  blank, over-long (>128 chars) or reserved (`default`/`public`) subject is
+  **400**; a subject that already exists as a **human** account is **409**
+  (converting a person's row into a machine credential is a privilege event and is
+  refused). Re-registering an existing service account returns the stored row
+  **unchanged** — a provisioning script is re-runnable, and a re-create is not a
+  re-enable.
+- **`GET /v1/admin/service-accounts`** (optional `?created_by=`, `?limit=`) →
+  `ServiceAccountsResponse`. Oldest first, **disabled accounts included** (soft
+  state, never a deletion).
+- **`POST /v1/admin/service-accounts/{subject}/disable`** / **`/enable`** → **204**,
+  idempotent. **404** for an unknown subject, **409** for a human one — or, on
+  `disable`, for **the account the caller is authenticating as**: the disabled
+  check runs on that same API-key path, so it would 401 the caller out of the
+  `/enable` that undoes it, with no way back through the API. Use another admin
+  credential.
+- **Enabling never erases the disable.** `disabled_by`/`disabled_at` record the
+  last revocation and survive a re-enable; `enabled_by`/`enabled_at` record who
+  reversed it (ADR-0004 decision 6). `active` is the state — do not infer it from
+  `disabled_at`.
+
+> **This surface manages the account record, never the credential.** `API_KEYS`,
+> `API_KEY_TENANTS` and `API_KEY_ROLES` are environment settings with no writer in
+> the server. **Provisioning a key is an operator env edit plus a restart, and the
+> key AND its tenant mapping must go in the same edit** — startup fails in
+> production if `API_KEY_TENANTS` is set and any configured key is unmapped. No
+> response here ever carries key material, a key prefix, or a key count.
+
+**Disabling is what makes a leaked key stoppable without that restart.** Once an
+account is disabled, its key is rejected with **401** on the API-key path. Two
+properties of that check are deliberate and are contract, not implementation
+detail (ADR-0004 decision 7):
+
+- It **fails open**. If the user store cannot answer, the request proceeds — the key
+  was already verified by a constant-time compare, and locking out every API-key
+  caller (the ingest path, and the whole production surface) to enforce a
+  revocation convenience is a worse outcome than the revocation lapsing. So
+  **disabling is a soft, best-effort revoke; the authoritative revoke is removing
+  the key from `API_KEYS` and restarting.**
+- It is **cached per subject** for `SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS`
+  (default `30`; `0` disables the cache at the cost of a store read on every
+  API-key request), so **the TTL is the revocation lag**, per worker process — the
+  same trade `IDENTITY_CACHE_TTL_SECONDS` makes, and it carries the **same hard
+  cap: > 300 fails startup**. Raising it to cut ACL-database load would otherwise
+  silently buy a revocation window of hours, on the only revoke that works without
+  a restart. The worker that serves the disable flushes its own cached answer
+  immediately; its siblings wait out the TTL.
+
+**Rotation vs. disable** — the two operations are not the same lever, and the
+difference is what an operator has to plan for:
+
+| | Mechanism | Takes effect | Needs a restart? |
+|---|---|---|---|
+| **Rotate a credential** (new key, retire old) | edit `API_KEYS` / `API_KEY_TENANTS` / `API_KEY_ROLES` in the tenant env | **at restart** — the settings are read once at import | **yes** |
+| **Disable an account** (stop a leaked key now) | `POST /v1/admin/service-accounts/{subject}/disable` | **within `SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS`**, per worker process | no |
+
+So a planned rotation is a scheduled env edit + restart (overlap both keys so the
+consumer swaps without downtime), while an emergency is *disable first* — it
+lands within the TTL and needs no maintenance window — *then* rotate to make it
+authoritative. Step-by-step: **[Provisioning a service account
+(`svc-askclark`)](DEPLOYMENT.md#provisioning-a-service-account-svc-askclark-on-the-asm-tenant)**
+in the deployment runbook.
+
+Registration is **opt-in**: an API key whose tenant has no record keeps working
+exactly as before, and nothing on the key path ever writes a user row. Bearer
+authentication is untouched. Schemas:
+`contracts/schemas/service_account_record.json`,
+`service_accounts_response.json`, `service_account_create_request.json`.
+Python only — the Go implementation has no `X-API-Key` authentication path.
 
 ### POST /v1/ingest
 

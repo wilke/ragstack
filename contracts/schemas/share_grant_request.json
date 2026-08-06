@@ -4,10 +4,12 @@
   "title": "ShareGrantRequest",
   "description": "Grant a share on a collection (POST /v1/collections/{id}/shares body). v1 is read-only. grant_option is not exposed (defaults false) and owner cannot be granted here (ownership is transferred, not granted).",
   "type": "object",
-  "required": ["grantee"],
+  "required": [
+    "grantee"
+  ],
   "properties": {
     "grantee": {
-      "description": "Who to share with. The literal '@public'/'public' maps to the built-in public group (read-only); a value containing ':' is a full 'issuer:subject' string kept verbatim; a bare BV-BRC username is prefixed to 'bvbrc:<username>'. The resolved subject is echoed back in the response so a typo (an unclaimable grant) is visible.",
+      "description": "Who to share with. The literal '@public'/'public' maps to the built-in public group (read-only); '@group:<id>' (or 'group:<id>') maps to a named group by id; a value containing ':' is a full 'issuer:subject' string kept verbatim; the form '@service:<subject>' names a SERVICE ACCOUNT and keeps its subject colon-free — required for a machine identity, because a bare subject would be qualified to 'bvbrc:<subject>', a federated identity the account can never authenticate as (an inert grant); a bare BV-BRC username is prefixed to 'bvbrc:<username>'. The resolved subject is echoed back in the response so a typo (an unclaimable grant) is visible.",
       "type": "string",
       "minLength": 1
     },
@@ -17,7 +19,7 @@
       "default": "read"
     },
     "issuer": {
-      "description": "Issuer used to qualify a bare username (default 'bvbrc'). Ignored for '@public' and for a value that already contains ':'.",
+      "description": "Issuer used to qualify a bare username (default 'bvbrc'). Ignored for '@public', '@group:', '@service:' and for a value that already contains ':'.",
       "type": "string",
       "default": "bvbrc"
     }

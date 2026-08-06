@@ -17,6 +17,7 @@ from ragstack.api.routers import (
     models,
     models_registry,
     query,
+    service_accounts,
     stats,
 )
 from ragstack.api.security import (
@@ -79,4 +80,11 @@ app.include_router(models.router, prefix="/v1", tags=["Stats"], dependencies=_ad
 app.include_router(jobs.router, prefix="/v1", tags=["Stats"], dependencies=_admin)
 app.include_router(
     models_registry.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
+)
+# Service accounts (issue #258): register/list/disable machine identities. Admin
+# only by the same include-time gate. Manages the account RECORD, never the key —
+# API_KEYS is env, so rotation stays an operator edit plus a restart; disabling is
+# what makes a leaked key stoppable without one.
+app.include_router(
+    service_accounts.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
 )

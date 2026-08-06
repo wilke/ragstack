@@ -64,12 +64,21 @@ class GroupCreateRequest(BaseModel):
 
 class MemberAddRequest(BaseModel):
     """POST body for adding a member. ``subject`` is resolved exactly like a
-    share grantee (a full ``issuer:subject`` kept verbatim, or a bare BV-BRC
-    username prefixed to ``bvbrc:<username>``)."""
+    share grantee (a full ``issuer:subject`` kept verbatim, a bare BV-BRC
+    username prefixed to ``bvbrc:<username>``, or ``@service:<subject>`` for a
+    service account, whose subject stays colon-free)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    subject: str = Field(..., min_length=1, description="A user to add to the group.")
+    subject: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "A user to add to the group: a full 'issuer:subject', a bare BV-BRC "
+            "username (qualified with `issuer`), or '@service:<subject>' for a "
+            "service account. The resolved subject is echoed back."
+        ),
+    )
     issuer: str = Field(
         "bvbrc", description="Issuer used to qualify a bare username (default 'bvbrc')."
     )
@@ -290,7 +299,12 @@ async def add_member(
     """Add a user to a group (owner-or-admin). The subject is resolved like a
     share grantee and echoed back; a never-logged-in user is pre-provisioned. A
     group-target form (``@public`` / ``@group:``) is rejected (no nesting, 422);
-    a duplicate active membership or the built-in ``public`` group is 409."""
+    a duplicate active membership or the built-in ``public`` group is 409.
+
+    A **service account** goes in as ``@service:<subject>`` — a bare subject
+    would be qualified to ``bvbrc:<subject>``, adding a federated identity that
+    will never authenticate rather than the machine account (the echoed
+    ``subject`` is how you check)."""
     store = get_group_store()
     await _authorize_group(store, group_id, principal, manage=True)
     grantee_type, subject = _resolve_grantee(req.subject, req.issuer)
@@ -322,7 +336,7 @@ async def remove_member(
         description=(
             "Issuer used to qualify a bare username, exactly as on add "
             "(default 'bvbrc'). Ignored when ``subject`` is already a full "
-            "'issuer:sub' string."
+            "'issuer:sub' string or an '@service:<subject>' form."
         ),
     ),
     principal: Principal = Depends(resolve_principal),
@@ -330,9 +344,10 @@ async def remove_member(
     """Soft-remove a member (owner-or-admin). Instant access change: a
     collection shared to the group is no longer readable by the removed user on
     the next request. ``subject`` is resolved the SAME way as on add — a bare
-    username is qualified to ``issuer:sub`` — so removing with the identifier
-    that was used to add reliably matches. A group-target form (``@public`` /
-    ``@group:``) is rejected (422). Removing a non-member is a 204 no-op."""
+    username is qualified to ``issuer:sub``, ``@service:<subject>`` stays
+    colon-free — so removing with the identifier that was used to add reliably
+    matches. A group-target form (``@public`` / ``@group:``) is rejected (422).
+    Removing a non-member is a 204 no-op."""
     store = get_group_store()
     await _authorize_group(store, group_id, principal, manage=True)
     grantee_type, resolved = _resolve_grantee(subject, issuer)

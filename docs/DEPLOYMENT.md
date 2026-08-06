@@ -233,6 +233,247 @@ uvicorn ragstack.api.main:app --host 0.0.0.0 --port <api port from the plan>
 
 ---
 
+## Service accounts
+
+A **service account** is a machine identity authenticated by an `X-API-Key` secret
+*we* mint, as opposed to a human identity authenticated by a token an external
+issuer signed. Its `subject` **is** the `API_KEY_TENANTS` value for its key **and**
+its authorization subject, so it can own collections, receive shares and join
+groups under that one identifier — named on those surfaces with the explicit
+**`@service:<subject>`** grantee/member form, which is what keeps the subject
+colon-free (a bare value is qualified to `bvbrc:<value>`, a federated identity the
+account never authenticates as). See
+[API.md § Service accounts](API.md#service-accounts) for the two-namespace model
+and the endpoint contracts.
+
+Two rules that shape every runbook below:
+
+- **The API never mints or stores key material.** `API_KEYS`, `API_KEY_TENANTS`
+  and `API_KEY_ROLES` are environment settings with no writer in the server, so
+  **credential changes are an env edit plus a restart**. The key and its tenant
+  mapping must land in the **same** edit — with `REQUIRE_DURABLE_BACKENDS=true`
+  startup fails if `API_KEY_TENANTS` is set and a configured key is unmapped.
+- **`.../disable` is the only lever that works without a restart**, and it takes
+  effect within `SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS` (default `30`, hard
+  capped at `300` — startup fails above it) per worker process, failing open if
+  the user store is unreachable.
+- **Disable somebody else's account, never your own.** The disabled check runs on
+  the API-key path, so disabling the subject your own key maps to would 401 you
+  out of the `/enable` that undoes it; the API refuses it with a **409**. For the
+  same reason the reserved `default` / `public` tenants cannot be registered as
+  service accounts at all — every unmapped key resolves to `default`.
+
+### Provisioning a service account (`svc-askclark`) on the ASM tenant
+
+Copy-pasteable with placeholders. Substitute your own values for every
+`UPPERCASE` token; nothing below contains real hostnames, ports or key material.
+
+| Placeholder | Meaning |
+|---|---|
+| `API_BASE` | base URL of the ASM tenant's API endpoint (scheme + host + port) |
+| `TENANT_ENV` | path to that tenant's `config/tenant.env` |
+| `ADMIN_KEY` | an existing key mapped to role `admin` on that tenant |
+| `SVC_KEY` | the newly generated service-account key |
+| `ASM_COLLECTION` | the collection id `svc-askclark` must read |
+
+```bash
+export API_BASE=https://API_HOST:API_PORT
+export TENANT_ENV=/PATH/TO/TENANTS/ASM/config/tenant.env
+export ADMIN_KEY=ADMIN_KEY_VALUE
+```
+
+#### 1. Generate the key and put it in the tenant env (restart required)
+
+```bash
+# Generate a key. Print it once, hand it to the consumer over a secure channel,
+# and do not commit it or paste it into a ticket.
+python3 -c 'import secrets; print("svc-askclark-" + secrets.token_urlsafe(32))'
+```
+
+Edit `$TENANT_ENV` and extend **all three** maps in the **same** edit — the key
+must appear in `API_KEYS` *and* be mapped in `API_KEY_TENANTS`, or the API refuses
+to start. These are **JSON values in a shell-sourced file** — keep the single
+quotes and do not pipe them through `xargs` (the tenant-env header says the same):
+
+```dotenv
+# append SVC_KEY to the existing list
+API_KEYS='["EXISTING_KEY_USER","EXISTING_KEY_ADMIN","SVC_KEY"]'
+# the tenant string IS the authz subject; it must be colon-free
+API_KEY_TENANTS='{"EXISTING_KEY_USER":"ASM_TENANT","EXISTING_KEY_ADMIN":"ASM_TENANT","SVC_KEY":"svc-askclark"}'
+# role `user`, NEVER `admin` — admin bypasses every ownership and share check
+API_KEY_ROLES='{"EXISTING_KEY_USER":"user","EXISTING_KEY_ADMIN":"admin","SVC_KEY":"user"}'
+```
+
+Restart the tenant's **API process** so the new settings are read (the stores keep
+running; only the API reads these):
+
+```bash
+# stop the running API for this tenant, then start it against the stamped env
+set -a; . "$TENANT_ENV"; set +a
+uvicorn ragstack.api.main:app --host BIND_ADDR --port TENANT_API_PORT
+```
+
+Startup is the check: under `REQUIRE_DURABLE_BACKENDS=true` (what
+`new-tenant.sh` stamps), a key present in `API_KEYS` but missing from
+`API_KEY_TENANTS` makes the process refuse to boot, rather than silently landing
+that caller in the shared `default` tenant.
+
+> `svc-askclark` has no colon **by design**: `:` is reserved for federated
+> `issuer:sub` subjects, and the #243 startup guard rejects a coloned
+> `API_KEY_TENANTS` value whenever an identity provider is enabled, so a service
+> account can never collide with a federated identity.
+
+#### 2. Register the account
+
+```bash
+curl -sS -X POST "$API_BASE/v1/admin/service-accounts" \
+  -H "X-API-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"subject": "svc-askclark",
+       "purpose": "AskClark retrieval backend — read-only ASM query traffic"}'
+# -> 201 {"subject":"svc-askclark", ..., "active":true}
+```
+
+Re-running returns the stored row unchanged (safe in a provisioning script). This
+records the **account**, not the credential — step 1 is what makes the key work.
+
+#### 3. Grant it `read` on the ASM collection(s) — not owner, not write
+
+Use the **`@service:`** grantee form. It is required, not decorative:
+
+```bash
+curl -sS -X POST "$API_BASE/v1/collections/ASM_COLLECTION/shares" \
+  -H "X-API-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+  -d '{"grantee": "@service:svc-askclark", "permission": "read"}'
+```
+
+**Check the echoed `grantee_id` before you trust the grant.** The response echoes
+the *resolved* subject precisely so an unclaimable grant is visible:
+
+- `"grantee_id": "svc-askclark"` — correct, the account can read the collection.
+- `"grantee_id": "bvbrc:svc-askclark"` — **the grant is inert; you dropped the
+  `@service:` prefix.** A bare, colon-free grantee is qualified with the default
+  issuer, so that grant belongs to a *federated* subject that will never
+  authenticate. Revoke it (`DELETE .../shares/<share_id>`), re-issue it with
+  `@service:`, and do **not** work around it by passing a coloned value: a
+  coloned subject is a different namespace and is not this service account.
+
+Verify with a read as the service key (step 4a) before dropping the backfilled
+`public` grant described under *Interaction with the ownership migration* below —
+that grant is what keeps the collection readable in the meantime, which is why
+dropping it is sequenced **after** this step verifies clean.
+
+Repeat per collection. **Do not** transfer ownership to `svc-askclark` and **do
+not** grant `write`: a read share is exactly what a query consumer needs, and it
+leaves ingest and deletion impossible for that key by construction.
+
+#### 4. Verify — it can read, and it cannot write or delete
+
+```bash
+export SVC_KEY=SVC_KEY_VALUE
+
+# (a) queries the collection            -> 200
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$API_BASE/v1/query" \
+  -H "X-API-Key: $SVC_KEY" -H 'Content-Type: application/json' \
+  -d '{"query": "smoke test", "collection": "ASM_COLLECTION", "top_k": 1}'
+
+# (b) cannot ingest into it             -> 403 (readable but not writable)
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$API_BASE/v1/ingest" \
+  -H "X-API-Key: $SVC_KEY" -H 'Content-Type: application/json' \
+  -d '{"source": "SOME_PATH", "collection": "ASM_COLLECTION"}'
+
+# (c) cannot delete it                  -> 403
+curl -sS -o /dev/null -w '%{http_code}\n' -X DELETE \
+  "$API_BASE/v1/collections/ASM_COLLECTION" -H "X-API-Key: $SVC_KEY"
+
+# (d) is not an admin                   -> 403
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  "$API_BASE/v1/admin/service-accounts" -H "X-API-Key: $SVC_KEY"
+```
+
+If (b), (c) or (d) returns `2xx`, the key is over-privileged — almost certainly
+`API_KEY_ROLES` says `admin`, or the account was made owner instead of a grantee.
+Fix and restart before handing the key over.
+
+#### 5. Rotation (planned)
+
+Rotation is an **env edit + restart**, so overlap the two keys and the consumer
+never sees an outage:
+
+```bash
+# 1. generate NEW_SVC_KEY
+python3 -c 'import secrets; print("svc-askclark-" + secrets.token_urlsafe(32))'
+
+# 2. add it alongside the old one — both map to the SAME subject and role
+#    API_KEYS='[...,"OLD_SVC_KEY","NEW_SVC_KEY"]'
+#    API_KEY_TENANTS='{...,"OLD_SVC_KEY":"svc-askclark","NEW_SVC_KEY":"svc-askclark"}'
+#    API_KEY_ROLES='{...,"OLD_SVC_KEY":"user","NEW_SVC_KEY":"user"}'
+# 3. restart  -> both keys now valid; no share or account change is needed
+#    (the subject is unchanged, so every grant carries over untouched)
+# 4. swap the consumer to NEW_SVC_KEY and confirm traffic on it
+# 5. remove OLD_SVC_KEY from all three maps
+# 6. restart  -> old key is now rejected
+```
+
+#### 6. Emergency revoke (leaked key)
+
+```bash
+# Stops the key WITHOUT a restart; effective within
+# SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS per worker process.
+curl -sS -X POST "$API_BASE/v1/admin/service-accounts/svc-askclark/disable" \
+  -H "X-API-Key: $ADMIN_KEY"      # -> 204
+
+# Use an ADMIN_KEY that is NOT this account's own key: disabling the subject you
+# authenticated as is refused (409), because it would 401 you out of /enable.
+#
+# Then make it authoritative: remove the leaked key from API_KEYS /
+# API_KEY_TENANTS / API_KEY_ROLES, restart, and re-enable the account once the
+# replacement key is in place. The re-enable records enabled_by/enabled_at and
+# KEEPS disabled_by/disabled_at, so the incident stays on the record.
+curl -sS -X POST "$API_BASE/v1/admin/service-accounts/svc-askclark/enable" \
+  -H "X-API-Key: $ADMIN_KEY"      # -> 204
+```
+
+Disable is **soft and best-effort**: the check fails open when the user store is
+unreachable, so it buys you the window to do the env edit — it does not replace it.
+
+### The attribution consequence
+
+Every request behind `svc-askclark` authenticates as **one subject**. The API sees
+the service account, never the person who asked the question, so for that consumer:
+
+- **per-user attribution is impossible** — logs, audit rows and `created_by`
+  fields all read `svc-askclark`;
+- **per-user authorization is impossible** — every end user of that consumer gets
+  exactly the union of what `svc-askclark` can read, which is why the grant must
+  be the narrowest read set that works, and why `admin` is never the right role.
+
+This is accepted deliberately for a backend that has no way to pass end-user
+identity through. It stops being true only when the consumer **propagates end-user
+identity** — i.e. calls with the end user's own bearer token (or an on-behalf-of
+exchange), at which point authorization is evaluated per user again and the
+service account is no longer the subject.
+
+### Interaction with the ownership migration (#246)
+
+The #243 startup backfill gives **pre-existing** collections `owner=ACL_BACKFILL_OWNER`
+(default `legacy:admin`) **plus a `read` grant to `public`** — deliberately
+behaviour-preserving, so collections that were world-readable before ownership
+existed stay world-readable.
+
+That means a freshly backfilled ASM collection is already readable by everyone,
+and step 3's grant is **belt-and-braces, not the thing that opens it**. Tightening
+ASM to *a real owner + a grant to `svc-askclark` only*, dropping the `public`
+grant, is a **deliberate follow-on decision under [#246](https://github.com/wilke/ragstack/issues/246)** —
+it is a visible access change for every current reader and the backfill does not
+and will not do it for you. Sequence it explicitly: register + grant
+(steps 1–3) → verify the service account reads the collection **on its own grant**
+→ only then `DELETE` the `public` share. If step 3's echo showed
+`bvbrc:svc-askclark` (the `@service:` prefix was omitted), the service account has
+**no grant of its own** and dropping `public` would cut it off — revoke that row
+and re-grant with `@service:` first.
+
+---
+
 ## Configuration
 
 Copy `.env.example` → `.env` (compose loads it via `env_file`). Key variables:

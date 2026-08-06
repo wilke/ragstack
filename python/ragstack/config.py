@@ -391,6 +391,19 @@ class Settings(BaseSettings):
     # privilege by default: the admin/config/stats surface stays closed unless a
     # key is explicitly granted a higher role (or this is raised in dev).
     default_role: str = "user"
+    # How long the API-key auth path memoizes "is this tenant a DISABLED service
+    # account?" (issue #258). The check is a user-store read on a path that was
+    # otherwise pure CPU, so it is cached per subject — and, exactly as with
+    # ``identity_cache_ttl_seconds`` below, THIS TTL IS THE REVOCATION LAG:
+    # disabling a service account takes effect within this many seconds, per
+    # process. 0 disables the cache (a store read on every API-key request:
+    # instant revocation, worst hot-path cost). Negative values are clamped to 0,
+    # and values above 300 FAIL STARTUP (security.validate_service_account_settings)
+    # — the same hard cap identity_cache_ttl_seconds gets, for the same reason:
+    # this is the only revoke that does not need a restart, so an unbounded TTL
+    # would silently keep a leaked key working for hours.
+    # Small by default because the lookup is cheap and the lag is the point.
+    service_account_disabled_cache_ttl_seconds: int = 30
 
     # --- Identity (bearer credentials) ------------------------------------- #
     # OFF by default. "none" means the Authorization header is not an

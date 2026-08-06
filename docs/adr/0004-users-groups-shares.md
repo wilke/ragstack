@@ -128,10 +128,97 @@ after revoke, which a plain unique constraint would block. Hard delete was rejec
 because it buys nothing: an audit requirement would then recreate the same rows in a
 separate log table.
 
+**7. Service accounts are `users` rows with `kind='service'`, and disabling one is a
+*soft* revoke that fails open** (issue #258). A machine identity authenticated by an
+`X-API-Key` secret we mint is the same kind of thing as a person for every purpose the
+rest of this ADR cares about — it owns collections, receives shares, joins groups — so it
+is a row in the same table on the same connection, not a fourth store. Two properties
+make it safe to share the table:
+
+- **The subject namespaces are disjoint.** A bearer subject is always `f"{issuer}:{sub}"`;
+  a service subject is **colon-free**. The data layer enforces the colon rule on create,
+  which is the same partition the startup guard already enforces on `api_key_tenants`
+  values when an identity provider is enabled. A service account therefore cannot collide
+  with, or be impersonated by, a federated identity. The price of that disjointness is
+  that a colon-free grantee is *ambiguous at the API surface* — it is also how the share
+  dialog spells a bare BV-BRC username, which resolves to `bvbrc:<name>`. So naming a
+  service account as a share grantee or a group member takes the explicit
+  **`@service:<subject>`** form, alongside `@public` and `@group:<id>`: it is the only
+  input that yields a colon-free grantee, and without it every grant to a machine
+  identity would be created, echoed, and silently never apply.
+- **The reserved tenants are not identities.** `default` (what every valid-but-unmapped
+  API key and the whole keyless path resolve to) and `public` (the shared corpus) are
+  refused as service subjects. Registering one and disabling it would 401 every such
+  caller at once — including the admin key needed to re-enable — turning a per-account
+  revoke into an unrecoverable deployment-wide lockout. For the same reason, disabling
+  the account *you are authenticating as* is refused.
+- **`upsert_seen` can never mint or reclassify one.** The first-auth hook carries the
+  identity-class columns through unchanged, and the SQL backends narrow their
+  `ON CONFLICT` assignment list so the invariant survives a lost race. Registering an
+  account is an explicit, admin-only, audited call (`created_by`/`created_at`), and it
+  refuses to convert an existing human row (409) — that is a privilege event.
+
+**The API manages the account record, never the credential.** `API_KEYS` /
+`API_KEY_TENANTS` / `API_KEY_ROLES` are environment settings with no writer in the
+process; an in-process mutation would not reach a sibling worker and would vanish on
+restart. Provisioning a key stays an operator edit plus a restart, and the key *and* its
+tenant mapping must land in the same edit or the next boot fails its production settings
+check.
+
+**The decision that needed making: the auth-time disabled check FAILS OPEN.** A disabled
+account's key is rejected with 401 on the API-key path — that is the point of the record,
+and the only way to stop a leaked credential without a restart. But when the user store
+cannot answer, the request **proceeds**. This deliberately splits from how *authorization*
+behaves here (an unavailable ACL store is a 503, fail closed) and sits with how
+*authentication* side effects already behave (the first-auth profile upsert is
+fire-and-forget). The reasoning: the key is the primary authentication factor and has
+already been verified by a constant-time compare, so the caller is authenticated no matter
+what the store says; the disable flag is a revocation convenience layered on top. Failing
+closed would promote the ACL database to a hard availability dependency of *every*
+API-key request — in this deployment, the ingest path and the entire production surface —
+so a partition, a full disk, or a DoS on the database would lock out every machine
+account including the ones nobody ever disabled. Trading a working authentication path for
+a revocation convenience is a bad bargain.
+
+The honest consequences, which belong in the runbook and not only in a code comment:
+
+- **Disabling is a soft, best-effort revoke. The authoritative revoke is removing the key
+  from `API_KEYS` and restarting.**
+- The check is memoized per subject for `SERVICE_ACCOUNT_DISABLED_CACHE_TTL_SECONDS`
+  (default 30, `0` = no cache), so **the TTL is the revocation lag**, per process — the
+  same framing, and the same tradeoff, as `IDENTITY_CACHE_TTL_SECONDS`. The worker that
+  serves the disable flushes its own cached answer; its siblings wait out the TTL.
+- While the store is unreachable, a disabled account is not revoked at all. The first
+  such failure logs at WARNING and the flag re-arms on recovery, so every *outage* is
+  visible at the default level rather than only the first one in a process's life.
+- **A re-enable never erases the disable.** `disabled_by`/`disabled_at` are the record of
+  the last revocation and survive; `enabled_by`/`enabled_at` record who reversed it. State
+  therefore lives in its own `disabled` column rather than in "is `disabled_at` empty" —
+  the audit trail is the point (decision 6), and a row that was revoked once must never
+  read back identical to one that never was. This is the `users`-table analogue of
+  revoke-keeps-`revoked_by`/re-grant-inserts-a-new-row in `shares`; the table is one row
+  per subject, so it keeps the last event of each kind rather than a full history.
+- Registration is **opt-in**: an API key whose tenant has no row keeps authenticating
+  exactly as before, and nothing on the key path ever *writes* a row (the `default` tenant
+  of the keyless dev path and of an unmapped key would otherwise pollute the table).
+
+Rejected: fail closed (above); and the hybrid "fail closed for subjects this process has
+already observed as registered, fail open otherwise" — it is strictly better than fail-open
+against a DoS-the-database attack, but it is still not airtight across a cold process start,
+and it makes the revocation semantics depend on a process's history, which is a much harder
+property to explain to an operator than "the TTL is the lag".
+
 ### Schema sketch (normative shape, not final DDL)
 
 ```sql
-users          (subject PK, issuer, email, display_name, first_seen_at, last_seen_at)
+users          (subject PK, issuer, email, display_name, first_seen_at, last_seen_at,
+                kind human|service, created_by, purpose,
+                disabled, disabled_by, disabled_at, enabled_by, enabled_at)
+                -- service: colon-free subject, minted by an admin, never by first-auth
+                -- disabled: THE state; soft revoke, the auth-path check is cached
+                --   and fails open. The two by/at pairs are append-only audit and
+                --   are never cleared — a re-enable must not erase the fact that a
+                --   revocation happened (decision 6), so state is its own column
 groups         (id PK, name, owner_subject → users, built_in)
 group_members  (group_id → groups, subject → users, added_by, added_at)
 shares         (id PK, collection_id, grantee_type user|group, grantee_id,
