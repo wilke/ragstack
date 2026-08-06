@@ -76,6 +76,7 @@ from ragstack.ingestion.chunkers import link_neighbors_by_document
 from ragstack.ingestion.embed_bridge import SyncEmbedBridge
 from ragstack.ingestion.enrich import EMPTY, enrich, index_metadata, resolve_profile
 from ragstack.ingestion.loaders import deterministic_doc_id
+from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
@@ -476,63 +477,9 @@ def _write_run_metrics(
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-# Transient-error classification for --batch-retries. A flapping endpoint (a
-# remote vLLM replica dropping a connection, a store 5xx/timeout) raises these and
-# can self-heal on a retry; a 4xx / bad-input is NOT transient and must surface so
-# the batch fails and --resume re-feeds it rather than silently spinning.
-_TRANSIENT_ERROR_NAMES = frozenset({
-    "ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout",
-    "ConnectError", "ReadError", "WriteError", "RemoteProtocolError",
-    "ConnectionError", "ConnectionResetError", "ConnectionTimeout",
-    "ResponseHandlingException", "UnexpectedResponse", "ServiceException",
-    "TimeoutError",
-})
-_TRANSIENT_ERROR_SUBSTRINGS = (
-    "disconnect", "timed out", "timeout", "connection reset",
-    "connection refused", "temporarily unavailable", "broken pipe",
-    "server disconnected", "502", "503", "504",
-    # PooledEmbedder raises this when every endpoint is momentarily down; it
-    # chains the real (transient) fault as __cause__, which the walk below also
-    # catches — the phrase is an explicit backstop.
-    "all embedding endpoints failed",
-)
-
-
-def _is_transient_error(exc: BaseException) -> bool:
-    """True if ``exc`` (or a chained cause) looks like a transient network/store
-    blip worth retrying.
-
-    Walks ``__cause__``/``__context__`` because a fanned-out embed wraps the real
-    fault: ``PooledEmbedder`` raises ``RuntimeError('all embedding endpoints
-    failed') from last_exc``, so the retriable httpx/timeout error is one level
-    down. Inspecting only the top exception would miss the multi-endpoint flap
-    this feature exists to survive."""
-
-    def _one(e: BaseException) -> bool:
-        if isinstance(e, (TimeoutError, ConnectionError)):
-            return True
-        if type(e).__name__ in _TRANSIENT_ERROR_NAMES:
-            return True
-        status = getattr(getattr(e, "response", None), "status_code", None)
-        if isinstance(status, int) and 500 <= status < 600:
-            return True
-        return any(s in str(e).lower() for s in _TRANSIENT_ERROR_SUBSTRINGS)
-
-    seen: set[int] = set()
-    cur: BaseException | None = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
-        if _one(cur):
-            return True
-        cur = cur.__cause__ or cur.__context__
-    return False
-
-
-def _retry_delay(attempt: int, base: float = 1.0, cap: float = 30.0) -> float:
-    """Exponential backoff for --batch-retries; ``attempt`` is 1-based (1,2,4,…)."""
-    return min(base * (2.0 ** (attempt - 1)), cap)
-
-
+# Transient-error classification + backoff moved to ragstack.ingestion.retry:
+# library code rather than CLI-private, so a second retriable caller inherits it
+# instead of growing its own. The shared version also jitters the delay.
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
@@ -803,9 +750,9 @@ async def run(args: argparse.Namespace) -> None:
                                 kept, surviving = await _store_batch(chunks)
                                 break
                             except Exception as e:
-                                if attempt < batch_retries and _is_transient_error(e):
+                                if attempt < batch_retries and is_transient_error(e):
                                     attempt += 1
-                                    delay = _retry_delay(attempt)
+                                    delay = retry_delay(attempt)
                                     print(f"  batch seq={seq} transient "
                                           f"{type(e).__name__} (retry {attempt}/"
                                           f"{batch_retries} in {delay:.1f}s): {e}",
@@ -912,6 +859,7 @@ async def run(args: argparse.Namespace) -> None:
         # frontier is unaffected regardless of the order chunk() calls finish in.
         # Default 1 ≈ the prior single-in-flight behaviour (one doc prefetched).
         chunk_concurrency = max(1, args.chunk_concurrency)
+        _max_doc_chars = max(0, int(getattr(args, "max_doc_chars", 0) or 0))
         chunk_sem = asyncio.Semaphore(chunk_concurrency)
 
         async def _chunk_task(doc: Document) -> list[Chunk]:
@@ -998,7 +946,26 @@ async def run(args: argparse.Namespace) -> None:
                     last_line = line_no
                     stats["seen"] += 1
                     enriched = enrich(record, profile=profile)
-                    if not _kept(enriched, keep_types):
+                    if _max_doc_chars and len(record.get("text", "") or "") > _max_doc_chars:
+                        # A multi-MB data-table doc fans its semantic segmentation
+                        # out into thousands of embeds, fails on every endpoint, and
+                        # stalls the checkpoint — blocking every following doc in the
+                        # file. Skip it like a filtered doc so the frontier advances.
+                        stats["skipped"] += 1
+                        n_chars = len(record.get("text", "") or "")
+                        print(
+                            f"  skip oversized doc at line {line_no}: {n_chars:,} chars "
+                            f"> --max-doc-chars={_max_doc_chars:,}",
+                            file=sys.stderr,
+                        )
+                        d_id = d_src = None
+                        if doc_metrics is not None:
+                            d_src = record.get("path", "") or ""
+                            d_id = deterministic_doc_id(
+                                _doc_id_key(record, record.get("text", "") or "")
+                            )
+                        inflight.append(("skip", line_no, d_id, d_src))
+                    elif not _kept(enriched, keep_types):
                         # Filtered (doc_type/empty): no batch; a zero-chunk skipped
                         # metrics row (folded in file order).
                         stats["skipped"] += 1
@@ -1317,6 +1284,13 @@ def main() -> None:
                    help="write a provenance manifest for the collection here "
                         "(defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set "
                         "or under --no-index)")
+    p.add_argument("--max-doc-chars", type=int, default=0,
+                   help="skip (do not embed) any document whose text exceeds this many "
+                        "characters. 0 = no limit (default). Guards against multi-MB "
+                        "data-table docs whose semantic segmentation fans out thousands "
+                        "of embeds, fails on every endpoint, and stalls the checkpoint — "
+                        "blocking all following docs in the file. Skipped docs are counted "
+                        "and the checkpoint advances past them, like a filtered doc.")
     # resume
     p.add_argument("--resume", action="store_true", help="skip lines up to the checkpoint")
     p.add_argument("--checkpoint", type=Path, default=None,

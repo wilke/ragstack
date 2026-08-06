@@ -75,7 +75,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
-        "batch_retries": 0,
+        "batch_retries": 0, "max_doc_chars": 0,
         # Semantic breakpoint / segmentation-cache / concurrency knobs (match main()'s
         # argparse defaults so production code uses plain attribute access).
         "breakpoint_embedding_api": None, "breakpoint_embedding_url": None,
@@ -647,10 +647,10 @@ class _FlakyEmbedder:
 
 
 def test_is_transient_error_classification():
-    assert ingest_jsonl._is_transient_error(ConnectionError("x"))
-    assert ingest_jsonl._is_transient_error(TimeoutError("x"))
-    assert ingest_jsonl._is_transient_error(RuntimeError("Server disconnected mid-stream"))
-    assert ingest_jsonl._is_transient_error(RuntimeError("Connection timed out"))
+    assert ingest_jsonl.is_transient_error(ConnectionError("x"))
+    assert ingest_jsonl.is_transient_error(TimeoutError("x"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("Server disconnected mid-stream"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("Connection timed out"))
 
     class _Resp:
         status_code = 503
@@ -658,30 +658,33 @@ def test_is_transient_error_classification():
     class _HTTPish(Exception):
         response = _Resp()
 
-    assert ingest_jsonl._is_transient_error(_HTTPish("bad gateway"))
+    assert ingest_jsonl.is_transient_error(_HTTPish("bad gateway"))
     # A genuine bad-input / 4xx must NOT be treated as transient.
-    assert not ingest_jsonl._is_transient_error(ValueError("bad input"))
-    assert not ingest_jsonl._is_transient_error(RuntimeError("dimension mismatch"))
+    assert not ingest_jsonl.is_transient_error(ValueError("bad input"))
+    assert not ingest_jsonl.is_transient_error(RuntimeError("dimension mismatch"))
 
     # Chained cause: PooledEmbedder raises RuntimeError('all embedding endpoints
     # failed') from the real transient fault — the walk must see through it, so a
     # multi-endpoint fan-out flap is retried, not misread as a hard failure.
     wrapped = RuntimeError("all embedding endpoints failed")
     wrapped.__cause__ = ConnectionError("Server disconnected without sending a response")
-    assert ingest_jsonl._is_transient_error(wrapped)
+    assert ingest_jsonl.is_transient_error(wrapped)
     # The aggregate message alone is enough (explicit backstop), even with no cause.
-    assert ingest_jsonl._is_transient_error(RuntimeError("all embedding endpoints failed"))
+    assert ingest_jsonl.is_transient_error(RuntimeError("all embedding endpoints failed"))
     # But a wrapper over a genuine bad-input cause stays non-transient.
     hard = RuntimeError("batch failed")
     hard.__cause__ = ValueError("dimension mismatch")
-    assert not ingest_jsonl._is_transient_error(hard)
+    assert not ingest_jsonl.is_transient_error(hard)
 
 
 def test_retry_delay_is_capped_exponential():
-    assert ingest_jsonl._retry_delay(1) == 1.0
-    assert ingest_jsonl._retry_delay(2) == 2.0
-    assert ingest_jsonl._retry_delay(3) == 4.0
-    assert ingest_jsonl._retry_delay(99) == 30.0  # capped
+    # The shared ragstack.ingestion.retry version jitters by +/-25% so N workers
+    # retrying the same flap do not re-collide in lockstep, so these are ranges
+    # rather than exact values. The exponential shape and the cap still hold.
+    for attempt, base in ((1, 1.0), (2, 2.0), (3, 4.0)):
+        d = ingest_jsonl.retry_delay(attempt)
+        assert base * 0.75 <= d <= base * 1.25, (attempt, d)
+    assert ingest_jsonl.retry_delay(99) <= 30.0 * 1.25  # capped (then jittered)
 
 
 @pytest.mark.asyncio
@@ -693,7 +696,7 @@ async def test_batch_retries_lets_transient_flap_converge(tmp_path, monkeypatch)
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)  # no real sleeps
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)  # no real sleeps
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
@@ -719,7 +722,7 @@ async def test_batch_retries_exhausted_still_stalls(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
@@ -740,7 +743,7 @@ async def test_non_transient_error_is_not_retried(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True)])
@@ -767,7 +770,7 @@ async def test_batch_retries_converge_on_wrapped_pool_failure(tmp_path, monkeypa
     monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
     monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: emb)
     monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
-    monkeypatch.setattr(ingest_jsonl, "_retry_delay", lambda *a, **k: 0.0)
+    monkeypatch.setattr(ingest_jsonl, "retry_delay", lambda *a, **k: 0.0)
 
     corpus = tmp_path / "c.jsonl"
     _write_records(corpus, [_article(1), _article(2), _article(3, poison=True),
@@ -878,3 +881,54 @@ async def test_chunk_failure_propagates_without_hang(tmp_path, monkeypatch):
         await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
                                      concurrency=2, chunk_concurrency=3,
                                      checkpoint=tmp_path / "c.ckpt"))
+
+
+# --------------------------------------------------------------------------- #
+# --max-doc-chars (cherry-pick 3/4)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_oversized_doc_is_skipped_and_the_following_docs_still_ingest(
+    tmp_path, monkeypatch
+):
+    """One multi-MB data-table row fans its segmentation into thousands of embeds,
+    fails on every endpoint, and stalls the checkpoint — blocking every FOLLOWING
+    document in the file. The skip must behave exactly like a doc_type filter: the
+    oversized doc is never embedded, and the rest of the file still lands."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    records = [
+        {"text": "alpha beta gamma delta. " * 40, "path": f"/c/{i}.pdf", "metadata": {}}
+        for i in range(1, 6)
+    ]
+    records[2]["text"] = "x" * 200_000  # the poison row, line 3 of 5
+    _write_records(corpus, records)
+
+    await ingest_jsonl.run(
+        _args(corpus, checkpoint=tmp_path / "a.ckpt", max_doc_chars=50_000)
+    )
+
+    # The four in-bounds documents landed; the oversized one contributed nothing.
+    doc_ids = {c.doc_id for c in store.points.values()}
+    assert len(doc_ids) == 4, f"expected 4 docs indexed, got {len(doc_ids)}"
+    # And no chunk anywhere near the poison row survived into the store.
+    assert all(len(c.content) < 50_000 for c in store.points.values())
+
+
+@pytest.mark.asyncio
+async def test_max_doc_chars_zero_is_off(tmp_path, monkeypatch):
+    """Default 0 = no limit, so behaviour is unchanged unless asked for."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [{"text": "y " * 40_000, "path": "/c/big.pdf", "metadata": {}}])
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "b.ckpt"))
+    assert store.points, "with the guard off the large doc must still be ingested"
