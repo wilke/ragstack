@@ -61,18 +61,20 @@ class CollectionHealth:
     status: str
     optimizer_ok: bool
     segments_count: int
-    #: Points stored vs. vectors actually indexed. Their difference is the
-    #: optimizer's BACKLOG, which is what tracks toward VMA exhaustion (#140) —
-    #: a collection can sit at ``green`` with a large unindexed tail, so status
-    #: alone is not a sufficient throttle signal. Default 0 keeps every existing
-    #: constructor call valid.
+    #: Points stored vs. vectors actually indexed, as OBSERVABILITY only — do not
+    #: derive a backlog from their difference. Measured on live collections, that
+    #: difference is unsound in both regimes:
+    #:
+    #: - below Qdrant's ``indexing_threshold`` no HNSW is built, so
+    #:   ``indexed_vectors_count`` is 0 *by design, forever* — a permanent phantom
+    #:   backlog exactly during the ramp-up of every bulk load;
+    #: - on a mature collection ``indexed`` routinely EXCEEDS ``points`` (observed
+    #:   +125,051 on a 24.8M-point production collection), so any clamped
+    #:   difference pins to 0 precisely where a backlog signal would matter.
+    #:
+    #: Both default to 0, so every existing constructor call stays valid.
     points_count: int = 0
     indexed_vectors_count: int = 0
-
-    @property
-    def unindexed(self) -> int:
-        """Vectors written but not yet indexed — the optimizer's backlog."""
-        return max(0, self.points_count - self.indexed_vectors_count)
 
 
 def _slug(s: str, n: int = 40) -> str:
