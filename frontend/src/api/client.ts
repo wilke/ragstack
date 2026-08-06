@@ -15,7 +15,12 @@
 // must NOT be used to slice `content`. Intra-passage highlighting waits on a
 // backend `match_start`/`match_end` that is chunk-relative; until then the whole
 // passage is framed as the match. See lib/highlight.ts.
-import { apiUrl } from "./config";
+import { apiUrl, getStoredCredential, getStoredToken } from "./config";
+import {
+  credentialHeaders,
+  sendableCredential,
+  type CredentialInput,
+} from "../lib/auth";
 
 export interface SourceMetadata {
   title?: string;
@@ -74,12 +79,34 @@ export class ApiError extends Error {
   }
 }
 
+// The ONE place a credential becomes a header. Every request helper below calls
+// it, so the exclusivity rule the server enforces (X-API-Key or Authorization,
+// never both — a 400) is satisfied by construction, and an empty credential
+// produces NO header rather than an empty one (an empty X-API-Key still counts
+// as "present" server-side and would 400 a good bearer request).
+//
+// The credential VALUE is still passed in per call, never read from storage; the
+// MODE and the token→base binding are read HERE, at call time, the way apiUrl()
+// reads getApiBase() — and `sendableCredential` refuses to emit a header when
+// the two disagree. That check is what makes the token→base binding real: a
+// backend switch (or another tab's) changes storage while every already-created
+// react-query closure still holds the old token, and without it those refetches
+// would carry it to the new host. A call site may pass an explicit {mode, value}
+// to pin the kind for one request — see CompareView's per-lane keys.
+function authHeaders(apiKey?: CredentialInput): Record<string, string> {
+  return credentialHeaders(
+    sendableCredential(apiKey, getStoredCredential(), getStoredToken()),
+  );
+}
+
 // Same-origin by default (dev: Vite proxies /v1 → the API; prod: the API serves
-// the SPA). The API key is held in memory by the caller and passed per request —
-// never persisted to localStorage (session/SSO replaces it in a later phase).
-async function post<T>(path: string, body: unknown, apiKey?: string): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["X-API-Key"] = apiKey;
+// the SPA). The credential is held by the caller (App.tsx owns it, config.ts
+// persists it) and passed per request.
+async function post<T>(path: string, body: unknown, apiKey?: CredentialInput): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...authHeaders(apiKey),
+  };
   const res = await fetch(apiUrl(path), {
     method: "POST",
     headers,
@@ -92,7 +119,7 @@ async function post<T>(path: string, body: unknown, apiKey?: string): Promise<T>
   return (await res.json()) as T;
 }
 
-export function queryRag(req: QueryRequest, apiKey?: string): Promise<QueryResponse> {
+export function queryRag(req: QueryRequest, apiKey?: CredentialInput): Promise<QueryResponse> {
   return post<QueryResponse>("/v1/query", req, apiKey);
 }
 
@@ -127,13 +154,12 @@ export function isTerminalIngestStatus(status: string): boolean {
 export async function uploadPdfs(
   files: File[],
   collection?: string,
-  apiKey?: string,
+  apiKey?: CredentialInput,
 ): Promise<IngestResponse> {
   const form = new FormData();
   for (const f of files) form.append("files", f);
   if (collection) form.append("collection", collection);
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-API-Key"] = apiKey;
+  const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl("/v1/ingest/upload"), {
     method: "POST",
     headers,
@@ -147,15 +173,14 @@ export async function uploadPdfs(
 }
 
 // Poll a single ingest job. An unknown job_id returns status "unknown" (HTTP 200).
-export function getIngestJob(jobId: string, apiKey?: string): Promise<IngestResponse> {
+export function getIngestJob(jobId: string, apiKey?: CredentialInput): Promise<IngestResponse> {
   return get<IngestResponse>(`/v1/ingest/${encodeURIComponent(jobId)}`, apiKey);
 }
 
 // --- Ops dashboard read endpoints (#85) ---
 
-async function get<T>(path: string, apiKey?: string): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-API-Key"] = apiKey;
+async function get<T>(path: string, apiKey?: CredentialInput): Promise<T> {
+  const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { headers });
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
@@ -166,9 +191,8 @@ async function get<T>(path: string, apiKey?: string): Promise<T> {
 
 // DELETE with no response body (204). Errors carry the raw body like get/post so
 // the caller can unwrap FastAPI's `detail`.
-async function del(path: string, apiKey?: string): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-API-Key"] = apiKey;
+async function del(path: string, apiKey?: CredentialInput): Promise<void> {
+  const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { method: "DELETE", headers });
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
@@ -178,9 +202,8 @@ async function del(path: string, apiKey?: string): Promise<void> {
 
 // DELETE that answers 200 + a body (the collection purge report). Same error
 // handling as `del`; separate so the 204 callers keep a `Promise<void>`.
-async function delJson<T>(path: string, apiKey?: string): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-API-Key"] = apiKey;
+async function delJson<T>(path: string, apiKey?: CredentialInput): Promise<T> {
+  const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { method: "DELETE", headers });
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
@@ -214,7 +237,7 @@ export interface DeepHealth {
   checks: DeepCheck[];
 }
 
-export function getStoreStats(apiKey?: string): Promise<StoreStats> {
+export function getStoreStats(apiKey?: CredentialInput): Promise<StoreStats> {
   return get<StoreStats>("/v1/stats/stores", apiKey);
 }
 
@@ -245,11 +268,11 @@ export interface TenantsInfo {
   tenants: TenantRow[];
 }
 
-export function getTenants(apiKey?: string): Promise<TenantsInfo> {
+export function getTenants(apiKey?: CredentialInput): Promise<TenantsInfo> {
   return get<TenantsInfo>("/v1/stats/tenants", apiKey);
 }
 
-export function getDeepHealth(apiKey?: string): Promise<DeepHealth> {
+export function getDeepHealth(apiKey?: CredentialInput): Promise<DeepHealth> {
   return get<DeepHealth>("/v1/health/deep", apiKey);
 }
 
@@ -293,12 +316,12 @@ export interface BenchmarkResult {
   llm: BenchResult;
 }
 
-export function getModelsStatus(apiKey?: string): Promise<ModelsStatus> {
+export function getModelsStatus(apiKey?: CredentialInput): Promise<ModelsStatus> {
   return get<ModelsStatus>("/v1/stats/models", apiKey);
 }
 
 // Runs a small real workload on the serving fleet — call on demand, not on a poll.
-export function runModelBenchmark(apiKey?: string): Promise<BenchmarkResult> {
+export function runModelBenchmark(apiKey?: CredentialInput): Promise<BenchmarkResult> {
   return post<BenchmarkResult>("/v1/stats/models/benchmark", {}, apiKey);
 }
 
@@ -333,7 +356,7 @@ export interface AppConfig {
   [key: string]: unknown;
 }
 
-export function getConfig(apiKey?: string): Promise<AppConfig> {
+export function getConfig(apiKey?: CredentialInput): Promise<AppConfig> {
   return get<AppConfig>("/v1/config", apiKey);
 }
 
@@ -358,7 +381,7 @@ export interface JobsResponse {
   jobs: JobSummary[];
 }
 
-export function getJobs(limit = 25, apiKey?: string): Promise<JobsResponse> {
+export function getJobs(limit = 25, apiKey?: CredentialInput): Promise<JobsResponse> {
   return get<JobsResponse>(`/v1/jobs?limit=${limit}`, apiKey);
 }
 
@@ -399,7 +422,7 @@ export interface CollectionsResponse {
   default: string;
 }
 
-export function getCollections(apiKey?: string): Promise<CollectionsResponse> {
+export function getCollections(apiKey?: CredentialInput): Promise<CollectionsResponse> {
   return get<CollectionsResponse>("/v1/collections", apiKey);
 }
 
@@ -425,7 +448,7 @@ export interface CollectionCreateRequest {
 
 export function createCollection(
   req: CollectionCreateRequest,
-  apiKey?: string,
+  apiKey?: CredentialInput,
 ): Promise<CollectionInfo> {
   return post<CollectionInfo>("/v1/collections", req, apiKey);
 }
@@ -434,7 +457,7 @@ export function createCollection(
 // collection and Elasticsearch index are deliberately NOT dropped — the server
 // documents this, and callers must say so out loud before confirming.
 // 409 = it's the default collection · 404 = unknown id.
-export function deleteCollection(id: string, apiKey?: string): Promise<void> {
+export function deleteCollection(id: string, apiKey?: CredentialInput): Promise<void> {
   return del(`/v1/collections/${encodeURIComponent(id)}`, apiKey);
 }
 
@@ -467,7 +490,7 @@ export interface CollectionPurgeReport {
 // them back. Never call this without a typed-confirmation gate in front of it.
 // 409 = the default collection, or a physical store shared with other registry
 // entries (the detail names them) · 404 = unknown id.
-export function purgeCollection(id: string, apiKey?: string): Promise<CollectionPurgeReport> {
+export function purgeCollection(id: string, apiKey?: CredentialInput): Promise<CollectionPurgeReport> {
   return delJson<CollectionPurgeReport>(
     `/v1/collections/${encodeURIComponent(id)}?purge=true`,
     apiKey,
@@ -511,7 +534,7 @@ export interface ShareGrantRequest {
 
 // List a collection's shares + its current owner (owner-or-admin; 403 for a
 // readable non-owned collection, 404 for an unknown/unreadable one).
-export function getShares(id: string, apiKey?: string): Promise<SharesResponse> {
+export function getShares(id: string, apiKey?: CredentialInput): Promise<SharesResponse> {
   return get<SharesResponse>(`/v1/collections/${encodeURIComponent(id)}/shares`, apiKey);
 }
 
@@ -521,7 +544,7 @@ export function getShares(id: string, apiKey?: string): Promise<SharesResponse> 
 export function createShare(
   id: string,
   req: ShareGrantRequest,
-  apiKey?: string,
+  apiKey?: CredentialInput,
 ): Promise<ShareRecord> {
   return post<ShareRecord>(`/v1/collections/${encodeURIComponent(id)}/shares`, req, apiKey);
 }
@@ -529,7 +552,7 @@ export function createShare(
 // Revoke a share (owner-or-admin, soft + cascading, 204). Un-publishing a public
 // collection is revoking its `public` share. A share_id from another collection
 // (or an unknown id) is a 404; the active owner row is not revocable here (409).
-export function deleteShare(id: string, shareId: string, apiKey?: string): Promise<void> {
+export function deleteShare(id: string, shareId: string, apiKey?: CredentialInput): Promise<void> {
   return del(
     `/v1/collections/${encodeURIComponent(id)}/shares/${encodeURIComponent(shareId)}`,
     apiKey,
@@ -597,26 +620,26 @@ export interface GroupMemberAddRequest {
 // The groups the caller owns or is an active member of (the built-in `public`
 // group is not listed). Any authenticated caller may read this; 503 on a store
 // outage (fail closed).
-export function listGroups(apiKey?: string): Promise<GroupsResponse> {
+export function listGroups(apiKey?: CredentialInput): Promise<GroupsResponse> {
   return get<GroupsResponse>("/v1/groups", apiKey);
 }
 
 // Create a group owned by the caller (201). 409 = name collision for this owner
 // (or the reserved "public") · 422 = empty/whitespace name · 503 = store outage.
-export function createGroup(req: GroupCreateRequest, apiKey?: string): Promise<GroupRecord> {
+export function createGroup(req: GroupCreateRequest, apiKey?: CredentialInput): Promise<GroupRecord> {
   return post<GroupRecord>("/v1/groups", req, apiKey);
 }
 
 // A group and its active membership (owner-or-member-or-admin). A non-member gets
 // a leak-safe 404. 503 on a store outage.
-export function getGroup(id: string, apiKey?: string): Promise<GroupDetailResponse> {
+export function getGroup(id: string, apiKey?: CredentialInput): Promise<GroupDetailResponse> {
   return get<GroupDetailResponse>(`/v1/groups/${encodeURIComponent(id)}`, apiKey);
 }
 
 // Soft-delete a group (owner-or-admin, 204). Shares granted to it become inert
 // immediately. 409 = the built-in `public` group · 404 = unknown/unviewable · 403
 // = a member who is not the owner · 503 = store outage.
-export function deleteGroup(id: string, apiKey?: string): Promise<void> {
+export function deleteGroup(id: string, apiKey?: CredentialInput): Promise<void> {
   return del(`/v1/groups/${encodeURIComponent(id)}`, apiKey);
 }
 
@@ -627,7 +650,7 @@ export function deleteGroup(id: string, apiKey?: string): Promise<void> {
 export function addGroupMember(
   id: string,
   req: GroupMemberAddRequest,
-  apiKey?: string,
+  apiKey?: CredentialInput,
 ): Promise<GroupMemberRecord> {
   return post<GroupMemberRecord>(`/v1/groups/${encodeURIComponent(id)}/members`, req, apiKey);
 }
@@ -635,7 +658,7 @@ export function addGroupMember(
 // Remove a member (owner-or-admin, 204). `subject` is the resolved subject as
 // stored ("issuer:sub"). Removing a non-member is a 204 no-op. 404 = unknown group
 // · 403 = non-owner member · 503 = store outage.
-export function removeGroupMember(id: string, subject: string, apiKey?: string): Promise<void> {
+export function removeGroupMember(id: string, subject: string, apiKey?: CredentialInput): Promise<void> {
   return del(
     `/v1/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(subject)}`,
     apiKey,
@@ -665,7 +688,7 @@ export interface ModelsRegistryResponse {
 // The full registry — the only place the *embedding* models are listed, and so
 // the only source for "which embedder can a new collection bind to?". Admin-only:
 // a non-admin caller gets 403, which the UI degrades to an advisory.
-export function getModelsRegistry(apiKey?: string): Promise<ModelsRegistryResponse> {
+export function getModelsRegistry(apiKey?: CredentialInput): Promise<ModelsRegistryResponse> {
   return get<ModelsRegistryResponse>("/v1/admin/models/registry", apiKey);
 }
 
@@ -683,7 +706,7 @@ export interface AvailableModelsResponse {
 }
 
 // Models the Compare per-lane pickers can select (base_urls are not exposed).
-export function getAvailableModels(apiKey?: string): Promise<AvailableModelsResponse> {
+export function getAvailableModels(apiKey?: CredentialInput): Promise<AvailableModelsResponse> {
   return get<AvailableModelsResponse>("/v1/models/available", apiKey);
 }
 
@@ -705,7 +728,7 @@ export interface ChunksResponse {
 export function fetchChunks(
   ids: string[],
   collection?: string,
-  apiKey?: string,
+  apiKey?: CredentialInput,
 ): Promise<ChunksResponse> {
   const params = new URLSearchParams({ ids: ids.join(",") });
   if (collection) params.set("collection", collection);

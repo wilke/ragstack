@@ -15,6 +15,7 @@ converted into a service account silently, and disabling is soft state
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from types import SimpleNamespace
@@ -24,12 +25,16 @@ import pytest
 from ragstack.user_store import (
     KIND_HUMAN,
     KIND_SERVICE,
+    USER_ROLE_ADMIN,
+    USER_ROLE_USER,
     InMemoryUserStore,
+    LastAdminError,
     PostgresUserStore,
     SqliteUserStore,
     UserInvariantError,
     UserNotFoundError,
     UserRecord,
+    UserRoleError,
     make_user_store,
 )
 
@@ -442,6 +447,260 @@ async def test_a_row_disabled_before_the_state_column_existed_stays_disabled(tmp
 
 
 # --------------------------------------------------------------------------- #
+# the role column — the bearer path's stored admin source
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_grants_and_records_who_did_it(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    rec = await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    assert rec.role == USER_ROLE_ADMIN and rec.is_admin is True
+    assert rec.role_set_by == ADMIN and rec.role_set_at
+    assert (await store.get(SUBJECT)) == rec
+    assert await store.count_admins() == 1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_fresh_row_is_not_admin(tmp_path, backend):
+    """'' is the "never set" sentinel, and it must read as NOT admin — the only
+    safe direction for a privilege column."""
+    store = _stores(tmp_path)[backend]
+    rec = await store.upsert_seen(SUBJECT, ISSUER)
+    assert rec.role == "" and rec.is_admin is False
+    assert await store.count_admins() == 0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_revokes_without_erasing_the_audit(tmp_path, backend):
+    """ADR-0004 decision 6: a revoke records who revoked; it never blanks the
+    fact that a change happened."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    off = await store.set_role(SUBJECT, USER_ROLE_USER, actor="bvbrc:second-admin")
+    assert off.role == USER_ROLE_USER and off.is_admin is False
+    assert off.role_set_by == "bvbrc:second-admin" and off.role_set_at
+    assert await store.count_admins() == 0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_is_idempotent_and_does_not_re_stamp(tmp_path, backend):
+    """The audit answers "who last CHANGED this"; a no-op re-grant overwriting
+    it would erase the real granter."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    first = await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    again = await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor="bvbrc:someone-else")
+    assert again.role_set_by == ADMIN and again.role_set_at == first.role_set_at
+    # And revoking a row that never had a role is a no-op too: '' and 'user' are
+    # the same state, so it must not manufacture an audit event.
+    await store.upsert_seen(ADMIN, ISSUER)
+    plain = await store.set_role(ADMIN, USER_ROLE_USER, actor=SUBJECT)
+    assert plain.role == "" and plain.role_set_by == ""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_rejects_an_unknown_role_with_its_own_error(tmp_path, backend):
+    """A typo is a malformed REQUEST (400 at the router), which must stay
+    distinguishable from a refused state change (409)."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    for bad in ("wizard", "ADMIN", "researcher", ""):
+        with pytest.raises(UserRoleError, match="not one of"):
+            await store.set_role(SUBJECT, bad, actor=ADMIN)
+    assert (await store.get(SUBJECT)).role == ""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_requires_an_existing_row_and_an_actor(tmp_path, backend):
+    """Never a create: minting a row from a subject string would let a typo'd
+    issuer prefix create a permanent admin nobody can authenticate as, and hide
+    the real mistake."""
+    store = _stores(tmp_path)[backend]
+    with pytest.raises(UserNotFoundError):
+        await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    assert (await store.get(SUBJECT)) is None
+    await store.upsert_seen(SUBJECT, ISSUER)
+    with pytest.raises(UserInvariantError, match="actor"):
+        await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor="")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_set_role_refuses_a_service_account(tmp_path, backend):
+    """An API-key principal's role comes from API_KEY_ROLES; this column is read
+    only on the bearer path, so writing it here would be an inert grant that
+    blurs the two disjoint namespaces."""
+    store = _stores(tmp_path)[backend]
+    await store.create_service_account(SVC, ADMIN)
+    with pytest.raises(UserInvariantError, match="API_KEY_ROLES"):
+        await store.set_role(SVC, USER_ROLE_ADMIN, actor=ADMIN)
+    assert (await store.get(SVC)).role == ""
+
+
+# --------------------------------------------------------------------------- #
+# the last-admin guard: a refusal about the whole TABLE, so it lives in the write
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_the_last_admin_guard_refuses_and_writes_nothing(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    with pytest.raises(LastAdminError, match="last stored admin"):
+        await store.set_role(
+            SUBJECT, USER_ROLE_USER, actor=ADMIN, require_remaining_admin=True
+        )
+    # The whole transaction rolled back, not just the refusal.
+    rec = await store.get(SUBJECT)
+    assert rec is not None and rec.is_admin is True
+    assert await store.count_admins() == 1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_the_guard_is_opt_in_and_only_covers_a_real_demotion(tmp_path, backend):
+    """Everything the guard must NOT refuse: it is off by default, a grant can
+    never strand a deployment, a penultimate admin is revocable, and revoking
+    somebody who was never admin is not a demotion at all."""
+    store = _stores(tmp_path)[backend]
+    never_admin = "bvbrc:carol@patricbrc.org"
+    for subject in (SUBJECT, ADMIN, never_admin):
+        await store.upsert_seen(subject, ISSUER)
+    # A grant, under the guard: allowed.
+    await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN, require_remaining_admin=True)
+    # Revoking a never-admin row, under the guard: not a demotion.
+    await store.set_role(
+        never_admin, USER_ROLE_USER, actor=ADMIN, require_remaining_admin=True
+    )
+    # A penultimate admin: one is left, so the revoke stands.
+    await store.set_role(ADMIN, USER_ROLE_ADMIN, actor=SUBJECT, require_remaining_admin=True)
+    await store.set_role(ADMIN, USER_ROLE_USER, actor=SUBJECT, require_remaining_admin=True)
+    assert await store.count_admins() == 1
+    # ...and without the flag the last admin goes, which is what makes the
+    # refusal a caller's decision rather than a store policy.
+    await store.set_role(SUBJECT, USER_ROLE_USER, actor=ADMIN)
+    assert await store.count_admins() == 0
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_the_role_vocabulary_is_checked_before_the_guard(tmp_path, backend):
+    """A typo'd role targeting the last admin is a malformed REQUEST (400), not
+    a refusal of a revoke the caller never asked for."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    with pytest.raises(UserRoleError, match="not one of"):
+        await store.set_role(
+            SUBJECT, "wizard", actor=ADMIN, require_remaining_admin=True
+        )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_concurrent_revokes_cannot_strand_the_deployment(tmp_path, backend):
+    """The reason the guard is inside the write. Two revokes of DIFFERENT rows
+    race; a check-then-write would have both observe the other's admin, both
+    pass, and land on zero. Exactly one must be refused."""
+    store = _stores(tmp_path)[backend]
+    for subject in (SUBJECT, ADMIN):
+        await store.upsert_seen(subject, ISSUER)
+        await store.set_role(subject, USER_ROLE_ADMIN, actor="bvbrc:root")
+
+    async def revoke(subject: str):
+        # Yield first, so both coroutines are in flight before either writes —
+        # which is what a real backend does anyway (sqlite hops to a thread,
+        # postgres to a socket).
+        await asyncio.sleep(0)
+        return await store.set_role(
+            subject, USER_ROLE_USER, actor="bvbrc:root", require_remaining_admin=True
+        )
+
+    results = await asyncio.gather(
+        revoke(SUBJECT), revoke(ADMIN), return_exceptions=True
+    )
+    refused = [r for r in results if isinstance(r, LastAdminError)]
+    assert len(refused) == 1, results
+    assert await store.count_admins() == 1
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_upsert_seen_never_resets_a_role(tmp_path, backend):
+    """THE invariant: ``upsert_seen`` is the first-auth hook and runs on every
+    login. If it could assign ``role``, an admin would be demoted by their own
+    next sign-in, in both dialects, with no error anywhere."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)
+    granted = await store.set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+
+    seen = await store.upsert_seen(SUBJECT, ISSUER, email="a@x.org", display_name="A")
+    assert seen.role == USER_ROLE_ADMIN
+    assert seen.role_set_by == ADMIN and seen.role_set_at == granted.role_set_at
+    assert seen.email == "a@x.org"  # the profile half DID update
+    stored = await store.get(SUBJECT)
+    assert stored is not None and stored.is_admin is True
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_role_bearing_placeholder_cannot_become_a_service_account(
+    tmp_path, backend
+):
+    """An admin can be granted before first login. Converting that pending
+    grant into a machine credential would carry a bearer role onto an API-key
+    identity through a door ``set_role`` deliberately refuses."""
+    store = _stores(tmp_path)[backend]
+    await store.ensure_provisional(SVC, "")
+    await store.set_role(SVC, USER_ROLE_ADMIN, actor=ADMIN)
+    with pytest.raises(UserInvariantError, match="revoke it"):
+        await store.create_service_account(SVC, ADMIN)
+    rec = await store.get(SVC)
+    assert rec is not None and rec.kind == KIND_HUMAN
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_upgrading_a_placeholder_writes_an_empty_role(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    await store.ensure_provisional(SVC, "")
+    rec = await store.create_service_account(SVC, ADMIN)
+    assert rec.kind == KIND_SERVICE and rec.role == "" and rec.role_set_by == ""
+
+
+async def test_sqlite_role_survives_a_reopen(tmp_path):
+    path = str(tmp_path / "role.db")
+    await SqliteUserStore(path).upsert_seen(SUBJECT, ISSUER)
+    await SqliteUserStore(path).set_role(SUBJECT, USER_ROLE_ADMIN, actor=ADMIN)
+    rec = await SqliteUserStore(path).get(SUBJECT)
+    assert rec is not None and rec.is_admin is True and rec.role_set_by == ADMIN
+    assert await SqliteUserStore(path).count_admins() == 1
+
+
+async def test_a_legacy_row_widened_with_the_role_column_is_not_admin(tmp_path):
+    """Additive migration must backfill role='' — any other default would mean
+    an upgrade silently made every existing user a superuser."""
+    path = str(tmp_path / "old-role.db")
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE users (subject TEXT PRIMARY KEY, issuer TEXT)")
+        conn.execute("INSERT INTO users (subject, issuer) VALUES ('bvbrc:legacy', 'bvbrc')")
+    store = SqliteUserStore(path)  # runs ensure_columns
+    rec = await store.get("bvbrc:legacy")
+    assert rec == UserRecord(subject="bvbrc:legacy", issuer="bvbrc")
+    assert rec is not None and rec.role == "" and rec.is_admin is False
+    assert await store.count_admins() == 0
+    # ...and the widened row is still grantable.
+    granted = await store.set_role("bvbrc:legacy", USER_ROLE_ADMIN, actor=ADMIN)
+    assert granted.is_admin is True
+
+
+async def test_the_store_role_vocabulary_matches_the_api_one():
+    """user_store cannot import ragstack.api.security (that would be a cycle),
+    so the two spellings are pinned equal here instead."""
+    from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+
+    assert USER_ROLE_ADMIN == ROLE_ADMIN
+    assert USER_ROLE_USER == ROLE_USER
+
+
+# --------------------------------------------------------------------------- #
 # postgres — schema parity without a server, round-trip with one
 # --------------------------------------------------------------------------- #
 
@@ -467,6 +726,10 @@ async def test_postgres_store_shares_the_sqlite_schema():
         {
             "subject", "kind", "created_by", "purpose",
             "disabled", "disabled_by", "disabled_at", "enabled_by", "enabled_at",
+            # ``role`` most of all: the first-auth hook runs on EVERY login, so
+            # a role in this list would blank an admin's grant minutes after
+            # they signed in, in both dialects, with no error anywhere.
+            "role", "role_set_by", "role_set_at",
         }
     )
     assert set(us._SEEN_ASSIGN_COLUMNS) < set(us._COLUMNS)
@@ -475,6 +738,10 @@ async def test_postgres_store_shares_the_sqlite_schema():
     assert len(us._service_update_args(UserRecord(subject="x"))) == len(
         us._SERVICE_SET_COLUMNS
     ) + 1
+    assert len(us._role_update_args(UserRecord(subject="x"))) == len(
+        us._ROLE_SET_COLUMNS
+    ) + 1
+    assert set(us._ROLE_SET_COLUMNS) < set(us._COLUMNS)
 
 
 @pytest.mark.skipif(

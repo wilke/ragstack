@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "user_role_record.json",
+  "title": "UserRoleRecord",
+  "description": "A federated user's role state after a grant/revoke. 'role' is what is STORED in the users table; 'env_admin' is whether the ADMIN_SUBJECTS environment allowlist also names this subject, in which case the caller is admin regardless of 'role' — the allowlist is evaluated first on the auth path and short-circuits, which is what makes it a break-glass path no database write can revoke.",
+  "type": "object",
+  "required": [
+    "subject",
+    "role",
+    "role_set_by",
+    "role_set_at",
+    "env_admin"
+  ],
+  "properties": {
+    "subject": {
+      "description": "The federated 'issuer:subject' string this row is keyed on.",
+      "type": "string",
+      "minLength": 1
+    },
+    "role": {
+      "description": "The stored role: 'admin', 'user', or '' for a row whose role has never been set. '' is the table's 'not set' sentinel, not a role; it resolves to 'user' at the auth path.",
+      "type": "string"
+    },
+    "role_set_by": {
+      "description": "Subject of the admin who LAST changed this role; empty if never set. Append-only audit (ADR-0004 decision 6): a later change overwrites it, a revoke never blanks it.",
+      "type": "string"
+    },
+    "role_set_at": {
+      "description": "ISO-8601 UTC timestamp of that last change; empty if never set.",
+      "type": "string"
+    },
+    "env_admin": {
+      "description": "True when ADMIN_SUBJECTS names this subject. The caller is then admin on the auth path no matter what 'role' says, and revoking the stored role does NOT take the admin away — that is an environment edit plus a restart.",
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

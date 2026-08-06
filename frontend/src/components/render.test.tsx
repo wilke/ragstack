@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 import { CollectionView } from "./CollectionView";
+import { LoginPanel } from "./LoginPanel";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
 
@@ -29,6 +30,37 @@ describe("static render", () => {
     const html = render(createElement(CollectionView, { apiKey: "", setApiKey: () => {} }));
     expect(html).toContain("New collection");
     expect(html.toLowerCase()).not.toContain("librar");
+  });
+
+  // The login panel must never render the token itself into the DOM, must say
+  // out loud where the credential is stored, and must not claim a sign-in it
+  // hasn't confirmed with the server.
+  it("mounts the login panel: password input, honest storage copy, no token in the markup", () => {
+    const html = render(
+      createElement(LoginPanel, {
+        credential: { mode: "bearer" as const, value: "un=alice|expiry=1|sig=ab" },
+        setCredential: () => {},
+        base: "/be/asm",
+      }),
+    );
+    expect(html).toContain("Paste a BV-BRC token");
+    expect(html).toContain("p3-login");
+    expect(html).toContain("localStorage"); // the XSS-exposure warning
+    expect(html).toContain("wired up yet"); // the OIDC seam, stated not promised
+    expect(html).toMatch(/<input[^>]*type="password"/);
+    expect(html).not.toContain("un=alice|expiry=1|sig=ab"); // never the credential itself
+  });
+
+  it("shows the API-key box, not the token box, in key mode", () => {
+    const html = render(
+      createElement(LoginPanel, {
+        credential: { mode: "apikey" as const, value: "" },
+        setCredential: () => {},
+        base: "",
+      }),
+    );
+    expect(html).toContain("X-API-Key");
+    expect(html).not.toContain("Paste a BV-BRC token");
   });
 
   it("mounts the new-collection form", () => {

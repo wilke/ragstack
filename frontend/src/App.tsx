@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { getStoredApiKey, setStoredApiKey } from "./api/config";
+import { getStoredCredential, setStoredCredential } from "./api/config";
+import type { Credential } from "./lib/auth";
 import { BackendSwitcher } from "./components/BackendSwitcher";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
@@ -34,13 +35,23 @@ const SUBTITLE: Record<View, string> = {
 };
 
 export function App() {
-  // Seed the key from localStorage (set via the backend switcher) so it survives
-  // reloads; persist every change so all tabs share one admin key.
-  const [apiKey, setApiKeyState] = useState(getStoredApiKey);
-  const setApiKey = (v: string) => {
-    setApiKeyState(v);
-    setStoredApiKey(v);
+  // The app's ONE credential: a value plus the kind of header it becomes
+  // (X-API-Key, or a bearer token pasted in the login panel). Seeded from
+  // localStorage so it survives reloads, and persisted here — config.ts is the
+  // single writer, so mode and value can never drift apart.
+  //
+  // Children still receive the opaque credential STRING as `apiKey` and forward
+  // it to the client unchanged; api/client.ts resolves which header it becomes
+  // from the stored mode. Typing into one of the transient key boxes therefore
+  // means "I'm using an API key" and switches the mode accordingly — those boxes
+  // hide themselves while a token is active (see SIGNED_IN_HINT).
+  const [credential, setCredentialState] = useState<Credential>(getStoredCredential);
+  const setCredential = (c: Credential) => {
+    setCredentialState(c);
+    setStoredCredential(c);
   };
+  const apiKey = credential.value;
+  const setApiKey = (v: string) => setCredential({ mode: "apikey", value: v });
   const [view, setView] = useState<View>("explore");
 
   // Compare needs width for side-by-side columns; the others read best narrow.
@@ -52,7 +63,7 @@ export function App() {
         <h1 className="text-2xl font-semibold">RAGStack Explorer</h1>
         <p className="text-sm text-gray-500">{SUBTITLE[view]}</p>
 
-        <BackendSwitcher apiKey={apiKey} setApiKey={setApiKey} />
+        <BackendSwitcher credential={credential} setCredential={setCredential} />
 
         <nav className="mt-4 flex gap-1 border-b border-gray-200" aria-label="Modules">
           {TABS.map((t) => (

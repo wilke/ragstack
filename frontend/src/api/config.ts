@@ -13,6 +13,8 @@
 // the API's permissive CORS). Convenient for local dev, but it does NOT traverse
 // a port forward — prefer a preset (or point VITE_API_TARGET at your backend).
 
+import { bearerAppliesToBase, type AuthMode, type Credential } from "../lib/auth";
+
 export interface BackendPreset {
   id: string;
   label: string;
@@ -52,6 +54,12 @@ export const BACKEND_PRESETS: BackendPreset[] = [
 
 const BASE_STORAGE_KEY = "ragstack.apiBase";
 const KEY_STORAGE_KEY = "ragstack.apiKey";
+// Login (#…): which credential is active, the bearer token itself, and the
+// backend base that token was saved for. Same dotted namespace, same read()/
+// write() wrappers — writing "" removes the key.
+const MODE_STORAGE_KEY = "ragstack.authMode";
+const TOKEN_STORAGE_KEY = "ragstack.bearerToken";
+const TOKEN_BASE_STORAGE_KEY = "ragstack.bearerBase";
 
 function read(key: string): string {
   try {
@@ -87,6 +95,99 @@ export function getStoredApiKey(): string {
 
 export function setStoredApiKey(key: string): void {
   write(KEY_STORAGE_KEY, key);
+}
+
+// --- Login: the stored credential has a KIND ------------------------------
+//
+// `getStoredApiKey`/`setStoredApiKey` above are unchanged and still mean "the
+// X-API-Key". Everything below adds the second kind (a pasted bearer token) and
+// the mode that says which one is active. api/client.ts reads only
+// `getStoredAuthMode()` (at call time, like getApiBase) — the credential VALUE
+// is still passed explicitly into every request function, never read from here.
+
+/** Which credential the app is currently sending. Anything unrecognized is a key. */
+export function getStoredAuthMode(): AuthMode {
+  return read(MODE_STORAGE_KEY) === "bearer" ? "bearer" : "apikey";
+}
+
+export function setStoredAuthMode(mode: AuthMode): void {
+  // "apikey" is the default, so store it as absence rather than a literal.
+  write(MODE_STORAGE_KEY, mode === "bearer" ? "bearer" : "");
+}
+
+export function getStoredToken(): string {
+  return read(TOKEN_STORAGE_KEY);
+}
+
+/** The API base this token was saved for; see `bearerAppliesToBase`. */
+export function getStoredTokenBase(): string {
+  return read(TOKEN_BASE_STORAGE_KEY);
+}
+
+/**
+ * Persist a bearer token, BOUND to a backend base (defaulting to the selected
+ * one). The binding is the mitigation for the switcher cross-sending an
+ * audience-less token to another deployment: after a base change the token stays
+ * on disk but stops being sent until the user re-confirms it for the new target.
+ */
+export function setStoredToken(token: string, base: string = getApiBase()): void {
+  write(TOKEN_STORAGE_KEY, token);
+  write(TOKEN_BASE_STORAGE_KEY, token ? base : "");
+}
+
+export function clearStoredToken(): void {
+  setStoredToken("");
+}
+
+/**
+ * The credential the app should actually send right now.
+ *
+ * In bearer mode a token that is bound to a DIFFERENT base resolves to an empty
+ * value — the request goes out anonymous (and 401s) rather than leaking the
+ * token to a backend the user never confirmed. The login panel reads
+ * `getStoredToken()`/`getStoredTokenBase()` directly to explain that state.
+ */
+export function getStoredCredential(): Credential {
+  if (getStoredAuthMode() === "bearer") {
+    const token = getStoredToken();
+    const usable = token && bearerAppliesToBase(getStoredTokenBase(), getApiBase());
+    return { mode: "bearer", value: usable ? token : "" };
+  }
+  return { mode: "apikey", value: getStoredApiKey() };
+}
+
+/**
+ * Write the active credential back. The single writer — see App.tsx.
+ *
+ * An EMPTY bearer value means "no usable token right now" (e.g. the saved one is
+ * bound to another base), NOT "forget the token": it must not wipe storage, or
+ * switching backends and back would silently sign the user out. Deleting a token
+ * is `clearStoredToken()`, called explicitly by the sign-out control.
+ */
+export function setStoredCredential(cred: Credential): void {
+  setStoredAuthMode(cred.mode);
+  if (cred.mode === "bearer") {
+    // Persist a NEW token, bound to the base selected right now. Never MOVE an
+    // existing token's binding here: setStoredToken defaults its base to the
+    // live getApiBase(), so re-persisting the same token would silently re-bind
+    // it to whatever base storage currently names. A second tab holds its base
+    // in React state from mount, so "switch to bearer mode" there would hand the
+    // token to a backend that tab never displayed — defeating the binding that
+    // is the whole mitigation. Re-binding is an explicit, user-confirmed act:
+    // see bindTokenToBase.
+    if (cred.value && cred.value !== getStoredToken()) setStoredToken(cred.value);
+  } else setStoredApiKey(cred.value);
+}
+
+/**
+ * Re-bind the already-saved token to `base` — the user-confirmed "yes, send my
+ * token to this other backend too" action. Separate from setStoredCredential so
+ * that merely persisting the active credential can never move the binding; the
+ * caller must have just shown the user which base they are confirming.
+ */
+export function bindTokenToBase(base: string): void {
+  const token = getStoredToken();
+  if (token) setStoredToken(token, base);
 }
 
 // Resolve a request path against the selected backend. Relative ("") stays

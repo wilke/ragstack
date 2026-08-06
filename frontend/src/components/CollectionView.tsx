@@ -12,6 +12,8 @@ import {
   type IngestResponse,
   type QueryResponse,
 } from "../api/client";
+import { getStoredAuthMode } from "../api/config";
+import { SIGNED_IN_HINT } from "../lib/auth";
 import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
 import { collectionCreateMessage } from "../lib/collections";
 import { NewCollectionForm } from "./NewCollectionForm";
@@ -204,15 +206,21 @@ export function CollectionView({
           {stageBadge(1, "Upload PDFs", jobId == null, jobId != null)}
         </div>
 
-        <input
-          type="password"
-          placeholder="X-API-Key (leave blank if the API is keyless in dev)"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          className="mb-3 w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          aria-label="API key"
-          autoComplete="off"
-        />
+        {/* Bound to the app's single credential slot — hidden while a bearer
+            token is active so typing here can't switch auth kinds mid-flow. */}
+        {getStoredAuthMode() === "bearer" ? (
+          <p className="mb-3 text-xs text-gray-500">{SIGNED_IN_HINT}</p>
+        ) : (
+          <input
+            type="password"
+            placeholder="X-API-Key (leave blank if the API is keyless in dev)"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            className="mb-3 w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            aria-label="API key"
+            autoComplete="off"
+          />
+        )}
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <label htmlFor="target-collection" className="text-xs font-medium text-gray-500">

@@ -362,6 +362,7 @@ paths:
       tags: [Admin]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Allowlisted operational config
@@ -370,7 +371,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ConfigResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Authenticated but insufficient role (admin required)
 
@@ -383,14 +384,14 @@ paths:
         (embedding, tokenizer, llm, reranker) plus the current hot-swappable
         assignments (llm / reranker). Admin only.
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       responses:
         "200":
           description: Registry snapshot
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ModelsRegistryResponse" }
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
     post:
       operationId: registerModel
@@ -399,7 +400,7 @@ paths:
         Register a model for a task. `base_urls` must pass the server's SSRF
         allowlist. A duplicate id is a 400 (use PUT to update).
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       requestBody:
         required: true
         content:
@@ -412,7 +413,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ModelEntry" }
         "400": { description: Invalid entry (bad task/provider, SSRF, duplicate id) }
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
 
   /v1/admin/models/registry/{model_id}:
@@ -420,7 +421,7 @@ paths:
       operationId: updateRegisteredModel
       summary: Replace a registered model (admin only)
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       parameters:
         - { name: model_id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -440,7 +441,7 @@ paths:
       operationId: deleteRegisteredModel
       summary: Remove a registered model (admin only)
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       parameters:
         - { name: model_id, in: path, required: true, schema: { type: string } }
       responses:
@@ -467,14 +468,14 @@ paths:
         Python-only in v1: the Go implementation has no `X-API-Key`
         authentication path, so it serves no service-account surface.
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       responses:
         "200":
           description: The registered service accounts
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ServiceAccountsResponse" }
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
         "503":
           description: User/authorization store unavailable — refused (fail closed).
@@ -508,7 +509,7 @@ paths:
         qualified to `bvbrc:<subject>` and would create a grant for a federated
         identity that never authenticates.
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       requestBody:
         required: true
         content:
@@ -524,7 +525,7 @@ paths:
           description: >-
             A colon-bearing, empty, over-long or whitespace-only subject, or one
             of the reserved `default` / `public` tenants
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
         "409":
           description: >-
@@ -560,13 +561,13 @@ paths:
 
         Idempotent: disabling an already-disabled account is a 204 no-op.
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       parameters:
         - { name: subject, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: The account is disabled }
         "400": { description: A colon-bearing, empty, over-long or whitespace-only subject }
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
         "404": { description: No service account with that subject }
         "409":
@@ -591,17 +592,109 @@ paths:
         last revocation, and a re-enable that blanked them would leave a row
         indistinguishable from one nobody ever disabled (ADR-0004 decision 6).
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       parameters:
         - { name: subject, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: The account is active }
         "400": { description: A colon-bearing, empty, over-long or whitespace-only subject }
-        "401": { description: Missing or invalid API key }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
         "403": { description: Admin role required }
         "404": { description: No service account with that subject }
         "409":
           description: The subject exists but is a human account — only service accounts toggle here
+        "503":
+          description: User/authorization store unavailable — refused (fail closed).
+
+  /v1/admin/users/{subject}/role:
+    patch:
+      operationId: setUserRole
+      summary: Grant or revoke the admin role for a federated user (admin only)
+      description: >-
+        Set the stored RBAC role of a **federated (bearer) user** row. This is
+        the only in-API way a bearer identity becomes `admin`: the bearer auth
+        path never inherits `DEFAULT_ROLE`, and nothing in a token — no claim,
+        no header — can elevate the caller presenting it. The two admin sources
+        are both server-side: this row, and the `ADMIN_SUBJECTS` environment
+        allowlist.
+
+
+        Precedence is one-directional: `ADMIN_SUBJECTS` is checked FIRST and
+        short-circuits, so a stored `user` role can never demote an
+        env-allowlisted subject. That is what keeps the allowlist a break-glass
+        path a database write cannot revoke — and what makes admin reachable on
+        an empty users table, which is how a deployment bootstraps its first
+        admin at all.
+
+
+        `subject` must be a federated `issuer:subject` string with both halves
+        non-empty (**400** otherwise). Service accounts are refused (**409**):
+        an API-key principal's role comes from `API_KEY_ROLES`, and letting this
+        surface write it would dissolve the disjoint-namespace invariant. The
+        target must already have a row — a user who has never authenticated (and
+        was never named as a share grantee or group member) is a **404**.
+
+
+        Revoking the last STORED admin is a **409** — but only when this row is
+        the deployment's last admin source of any kind, because the refusal
+        exists to prevent an unrecoverable lockout and nothing else. Two sources
+        outlive any write here and stand the guard down: a usable
+        `ADMIN_SUBJECTS` entry (the break-glass path — an entry whose issuer
+        half no configured provider can produce does NOT count, since it can
+        never match), and an API key that maps to `admin` through
+        `API_KEY_ROLES`/`DEFAULT_ROLE` — which is very often the credential
+        making this exact call. Where the 409 does fire, the only ways back are
+        a direct users-table write or an environment edit plus a restart.
+
+
+        An unknown role is a **400** even when it targets the last admin: the
+        role vocabulary is validated before the lockout guard, so a typo is
+        never answered with a revoke refusal for a revoke nobody asked for.
+
+
+        The change lands on the auth path within the role-cache TTL
+        (`ADMIN_ROLE_CACHE_TTL_SECONDS`) — which is the DEMOTION lag, so it is
+        capped at startup. This process flushes its cache immediately; sibling
+        workers wait out the TTL.
+
+
+        Python-only in v1: the Go implementation serves no bearer identity
+        surface.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserRoleRequest" }
+      responses:
+        "200":
+          description: The stored role after the change
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserRoleRecord" }
+        "400":
+          description: >-
+            An unknown role, or a subject that is empty, over-long, control-bearing
+            or not of the federated `issuer:subject` shape. A service account
+            lands here rather than on 409: its subject is colon-free by
+            invariant, so it fails the federated-subject rule before any store
+            call (its role comes from `API_KEY_ROLES`).
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
+        "403": { description: Admin role required }
+        "404": { description: No user row with that subject }
+        "409":
+          description: >-
+            The change would revoke the last stored admin of a deployment that
+            has no other admin source. "Other source" is judged on liveness, not
+            just configuration: an `ADMIN_SUBJECTS` entry whose issuer half the
+            configured identity provider cannot produce does not count, nor does
+            an admin API key whose tenant is a disabled service account, and a
+            store that cannot answer the latter is treated as no source at all
+            (a retryable refusal beats an irreversible lockout).
+        "422": { description: A malformed body (missing `role`, unknown field) }
         "503":
           description: User/authorization store unavailable — refused (fail closed).
 
@@ -616,7 +709,7 @@ paths:
         task to its settings default. Build-time tasks (embedding/chunking) are
         rejected (422) — those changes build a new collection.
       tags: [Admin]
-      security: [{ ApiKeyAuth: [] }]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
       requestBody:
         required: true
         content:
@@ -654,7 +747,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/StoreStatsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
 
   /v1/stats/tenants:
     get:
@@ -684,7 +777,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TenantsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "503":
           description: >-
             Authorization store unavailable — the per-collection breakdown is
@@ -714,7 +807,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CollectionsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "503":
           description: >-
             Authorization store unavailable — the listing is owner-filtered
@@ -758,7 +851,7 @@ paths:
         "400":
           description: Referenced model is not an embedding model, or chunk config is invalid
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: >-
             Caller supplied the admin-only `embedding`/`chunk` build-spec
@@ -818,6 +911,7 @@ paths:
       tags: [Documents]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       parameters:
         - name: collection_id
           in: path
@@ -843,7 +937,7 @@ paths:
         "204":
           description: Unregistered (`purge=false`) — physical stores left intact
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: >-
             Caller can read the collection but is neither its owner nor an admin
@@ -896,7 +990,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/SharesResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller can read the collection but is neither its owner nor an admin
         "404":
@@ -954,7 +1048,7 @@ paths:
         "400":
           description: A `permission` of `owner` was requested (transfer, not grant)
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller can read the collection but is neither its owner nor an admin
         "404":
@@ -1009,7 +1103,7 @@ paths:
         "204":
           description: The share (and any cascade) was revoked
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller can read the collection but is neither its owner nor an admin
         "404":
@@ -1042,7 +1136,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GroupsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "503":
           description: Authorization store unavailable — refused (fail closed).
     post:
@@ -1071,7 +1165,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GroupRecord"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "409":
           description: >-
             An active group with that name already exists for this owner, or the
@@ -1108,7 +1202,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GroupDetailResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "404":
           description: >-
             Unknown group id, or one the caller may not view (a non-member —
@@ -1139,7 +1233,7 @@ paths:
         "204":
           description: The group was soft-deleted
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller is an active member but is neither the owner nor an admin
         "404":
@@ -1188,7 +1282,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GroupMemberRecord"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller is an active member but is neither the owner nor an admin
         "404":
@@ -1249,7 +1343,7 @@ paths:
         "204":
           description: The member was removed (or was not a member — idempotent)
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Caller is an active member but is neither the owner nor an admin
         "404":
@@ -1279,7 +1373,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AvailableModelsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
 
   /v1/chunks:
     get:
@@ -1314,7 +1408,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChunksResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "404":
           description: Unknown collection, or one the caller may not read (read denial → 404).
         "503":
@@ -1340,7 +1434,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/GraphStatsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
 
   /v1/health/deep:
     get:
@@ -1353,6 +1447,7 @@ paths:
       tags: [Health]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Per-dependency health
@@ -1361,7 +1456,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeepHealthResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Authenticated but insufficient role (admin required)
 
@@ -1376,6 +1471,7 @@ paths:
       tags: [Jobs]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       parameters:
         - name: limit
           in: query
@@ -1389,7 +1485,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JobsResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Authenticated but insufficient role (admin required)
 
@@ -1404,6 +1500,7 @@ paths:
       tags: [Stats]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       responses:
         "200":
           description: Per-model endpoint status
@@ -1412,7 +1509,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ModelsStatusResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Authenticated but insufficient role (admin required)
 
@@ -1427,6 +1524,7 @@ paths:
       tags: [Stats]
       security:
         - ApiKeyAuth: []
+        - BearerIdentity: []
       requestBody:
         required: false
         content:
@@ -1441,7 +1539,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BenchmarkResponse"
         "401":
-          description: Missing or invalid API key
+          description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: Authenticated but insufficient role (admin required)
 
@@ -1457,6 +1555,14 @@ components:
         for `user`). Roles are enforced
         per-endpoint server-side; some routes (e.g. /v1/config, /v1/admin/*)
         require the admin role and return 403 otherwise.
+
+
+        Every authenticated route accepts EITHER scheme (never both in one
+        request — that is a 400). Admin-only routes are no exception: the role
+        gate tests the authenticated principal's role, not which credential
+        produced it, so a bearer identity named by an admin source reaches all
+        of `/v1/admin/*`. An `admin`-gated operation therefore lists both
+        schemes and its 401 means "no usable credential", of either kind.
     BearerIdentity:
       type: apiKey
       in: header
@@ -1474,7 +1580,20 @@ components:
         public key from a **pinned** issuer allowlist, and an OIDC ID token's
         `sub` only after RS256 verification against the issuer's JWKS with `iss`
         and `aud` pinned. The caller's tenant is `{issuer}:{subject}` and the
-        role is always `user` (never the deployment's default role).
+        role is `user` **unless an explicit server-side admin source names this
+        subject** — never the deployment's default role.
+
+
+        The only two admin sources are server-side and unreachable by the
+        caller: the `ADMIN_SUBJECTS` environment allowlist (colon-bearing
+        `issuer:subject` entries, checked first, with no store read — the
+        break-glass path that works on an empty users table and survives a
+        store outage), and a `users.role` of `admin` written by an existing
+        admin through `PATCH /v1/admin/users/{subject}/role`. Nothing in the
+        credential itself — no claim, no header — is an input to the role
+        decision, so a token can never self-elevate. If the store cannot be
+        read, the role resolves to `user` (elevation fails CLOSED); the
+        request still authenticates.
 
 
         Presenting this header together with `X-API-Key` is a **400**: which
@@ -2222,6 +2341,63 @@ components:
           description: Free text — what this credential is for (audit aid).
           type: string
           default: ""
+      additionalProperties: false
+
+    UserRoleRequest:
+      type: object
+      description: >-
+        Set a federated user's stored RBAC role (PATCH
+        /v1/admin/users/{subject}/role body). The role is server-side state
+        written by an existing admin — it is never read from a token, a claim or
+        a header, so no caller can elevate the credential it presents.
+      required: [role]
+      properties:
+        role:
+          description: >-
+            `admin` (superuser across the whole deployment: every collection,
+            all of /v1/admin/*, /v1/config, the model registry) or `user`. Any
+            other value is a 400 — `researcher` included: it is a deprecated
+            alias accepted only where legacy config is READ, never written here.
+          type: string
+          enum: [admin, user]
+      additionalProperties: false
+
+    UserRoleRecord:
+      type: object
+      description: >-
+        A federated user's role state after a grant/revoke. `role` is what is
+        STORED; `env_admin` is whether `ADMIN_SUBJECTS` also names this subject,
+        in which case the caller is admin regardless of `role` — the env
+        allowlist is checked first and short-circuits, so a stored demotion
+        cannot override it.
+      required: [subject, role, role_set_by, role_set_at, env_admin]
+      properties:
+        subject:
+          description: The federated `issuer:subject` string this row is keyed on.
+          type: string
+          minLength: 1
+        role:
+          description: >-
+            The stored role: `admin`, `user`, or `""` for a row whose role has
+            never been set (equivalent to `user` at the auth path — `""` is the
+            table's "not set" sentinel, not a role).
+          type: string
+        role_set_by:
+          description: >-
+            Subject of the admin who LAST changed this role; empty if it was
+            never set. Append-only audit: a later change overwrites it, a
+            revoke never blanks it.
+          type: string
+        role_set_at:
+          description: ISO-8601 UTC timestamp of that last change; empty if never set.
+          type: string
+        env_admin:
+          description: >-
+            True when `ADMIN_SUBJECTS` names this subject. Then the caller is
+            admin on the auth path no matter what `role` says, and revoking the
+            stored role does NOT take the admin away — that is an environment
+            edit plus a restart.
+          type: boolean
       additionalProperties: false
 
     CollectionCreateRequest:

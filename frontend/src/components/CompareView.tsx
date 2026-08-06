@@ -11,6 +11,8 @@ import {
   type QueryResponse,
   type Source,
 } from "../api/client";
+import { getStoredAuthMode } from "../api/config";
+import { laneCredential, SIGNED_IN_HINT } from "../lib/auth";
 
 // Compare module: run ONE query across several lanes — each a (collection,
 // optional API key) pair — and lay the answers out side by side so retrieval
@@ -1028,7 +1030,11 @@ export function CompareView({
           llm: eff.llm || undefined,
           reranker: eff.reranker || undefined,
         },
-        lane.apiKey || apiKey || undefined,
+        // Exactly ONE credential. A lane key is pinned to X-API-Key even when
+        // the app is signed in with a bearer token; a lane without its own key
+        // passes the app credential through as the opaque string, so client.ts
+        // still checks it against storage before it becomes a header.
+        laneCredential(lane.apiKey, apiKey),
       )
         .then((data) =>
           setResults((r) => ({
@@ -1147,13 +1153,17 @@ export function CompareView({
           >
             + Lane
           </button>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="API key (optional)"
-            className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs"
-          />
+          {getStoredAuthMode() === "bearer" ? (
+            <span className="text-xs text-gray-500">{SIGNED_IN_HINT}</span>
+          ) : (
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="API key (optional)"
+              className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs"
+            />
+          )}
         </div>
 
         {/* Leaderboard */}

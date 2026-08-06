@@ -104,17 +104,22 @@ def _acl_store():
 
 
 @pytest.fixture(autouse=True)
-def _clear_disabled_cache():
-    """The API-key auth path memoizes "is this tenant a disabled service
-    account?" in process-wide module state (issue #258), keyed on subject with a
-    TTL. Tests reuse subjects like ``default``/``owner`` across modules and swap
-    the user-store singleton underneath them, so a cached answer from one test
-    would silently decide the next one. Clear on both setup and teardown."""
-    from ragstack.api.security import reset_disabled_cache
+def _clear_auth_caches():
+    """The auth path memoizes two per-subject verdicts in process-wide module
+    state, each with a TTL: "is this tenant a disabled service account?" (the
+    API-key path, issue #258) and "does this subject's users row say admin?"
+    (the bearer path). Tests reuse subjects like ``default``/``owner`` across
+    modules and swap the user-store singleton underneath them, so a cached
+    answer from one test would silently decide the next one — and for the role
+    cache that means one test's admin leaking into another's assertions. Clear
+    both on setup and teardown."""
+    from ragstack.api.security import reset_disabled_cache, reset_role_cache
 
     reset_disabled_cache()
+    reset_role_cache()
     yield
     reset_disabled_cache()
+    reset_role_cache()
 
 
 @pytest.fixture(autouse=True)

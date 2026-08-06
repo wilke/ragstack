@@ -19,6 +19,14 @@ Auth is an API key passed in the **`X-API-Key`** header. The key maps to a
 **tenant** server-side (via `API_KEY_TENANTS`); the tenant is **never** taken from
 the request body, so a client cannot widen its own scope.
 
+With an identity provider enabled (`IDENTITY_PROVIDER=bvbrc|oidc`) an end user
+may instead present an **`Authorization`** credential; the tenant is then
+`{issuer}:{subject}`. Presenting both in one request is a **400**. The two are
+interchangeable everywhere, **including `/v1/admin/*`**: the role gate tests the
+authenticated principal's role, not which header produced it, so a bearer
+identity that an admin source names reaches every admin route (see
+[PATCH /v1/admin/users/{subject}/role](#patch-v1adminuserssubjectrole--bearer-admins)).
+
 - **Reads** (`/v1/query`, `/v1/retrieve`, `/v1/documents`, graph) return the
   caller's own tenant **plus** the shared world-readable **`public`** tenant.
 - **Writes/deletes** (`/v1/ingest`, `DELETE /v1/documents/...`) affect only the
@@ -100,6 +108,7 @@ keys are configured.
 | GET | `/v1/admin/service-accounts` | List registered service accounts (admin only) |
 | POST | `/v1/admin/service-accounts/{subject}/disable` | Soft-revoke an account's key (admin only) |
 | POST | `/v1/admin/service-accounts/{subject}/enable` | Re-enable a disabled account (admin only) |
+| PATCH | `/v1/admin/users/{subject}/role` | Grant/revoke the admin role for a federated user (admin only) |
 | POST | `/v1/ingest` | Ingest a file/directory (async job) |
 | GET | `/v1/ingest/{job_id}` | Poll ingest job status |
 | GET | `/v1/documents` | List indexed documents |
@@ -329,7 +338,8 @@ collection owners) comes from one of exactly two namespaces, and they differ in
 | Who issues it | **us** — the operator mints the key locally | an **external** identity provider |
 | The credential | **the key itself is the secret**; authentication is a `secrets.compare_digest` constant-time compare against `API_KEYS`, nothing else | a signed token, **verified against the provider** (signature/introspection) |
 | Where it is configured | `API_KEYS` + `API_KEY_TENANTS` + `API_KEY_ROLES` in the tenant env | nothing per-user; the row is created on first successful auth |
-| Revocation | disable (soft, within cache TTL) or remove from env + restart (authoritative) | at the provider, plus `IDENTITY_CACHE_TTL_SECONDS` |
+| Where its **role** comes from | `API_KEY_ROLES` (falling back to `DEFAULT_ROLE`) | `ADMIN_SUBJECTS` **or** a `users.role` of `admin`, else `user`. **Never `DEFAULT_ROLE`** — it is `admin` in production, and inheriting it would make every authenticated end user a superuser |
+| Revocation | disable (soft, within cache TTL) or remove from env + restart (authoritative) | at the provider, plus `IDENTITY_CACHE_TTL_SECONDS`; the admin role separately via `PATCH /v1/admin/users/{subject}/role` (within `ADMIN_ROLE_CACHE_TTL_SECONDS`) or by editing `ADMIN_SUBJECTS` + restart |
 
 Because an API-key tenant string *is* the authz subject, a key mapped to a tenant
 literally spelled `bvbrc:alice` would hand its holder Alice's collections. The
@@ -409,6 +419,81 @@ authentication is untouched. Schemas:
 `contracts/schemas/service_account_record.json`,
 `service_accounts_response.json`, `service_account_create_request.json`.
 Python only — the Go implementation has no `X-API-Key` authentication path.
+
+### PATCH /v1/admin/users/{subject}/role — bearer admins
+
+A bearer identity **can** be an admin, but only by deliberate assignment. There
+are exactly two admin sources, both server-side, so **a token can never elevate
+the caller presenting it** — no claim, no header, and nothing in `DEFAULT_ROLE`
+is an input:
+
+1. **`ADMIN_SUBJECTS`** — an env allowlist of `issuer:subject` strings.
+   Evaluated **first**, as a pure set membership test with **no store read**.
+   That is what makes it usable to *bootstrap* (this route is itself
+   admin-gated, so a store-only design would 403 the very operator creating the
+   first admin), what keeps admin working through a user-store outage, and what
+   makes it **break-glass that no database write can revoke**. Entries must be
+   colon-**bearing** — a colon-free entry names an API-key tenant and is refused
+   at startup, pointing at `API_KEY_ROLES` instead.
+2. **`users.role = 'admin'`** — written only here, by an existing admin.
+
+Precedence is **one-directional**: a stored `user` role does not demote an
+allowlisted subject. The response's `env_admin` says whether that applies, so a
+revoke that changes nothing visible is not mistaken for one that worked.
+
+**The last-admin refusal is scoped to a real lockout, and is decided inside the
+write.** It fires only when the users table is the deployment's *last* admin
+source: a usable `ADMIN_SUBJECTS` entry stands it down, and so does an API key
+mapped to `admin` (`API_KEY_ROLES`/`DEFAULT_ROLE`) — which is very often the
+credential making the call, so counting stored admins alone would refuse a
+revoke to somebody who can grant it straight back. An `ADMIN_SUBJECTS` entry
+whose issuer half no configured provider can produce is **not** a way back (it
+can never match; startup warns about it) and does not relax the guard. The check
+runs in the same transaction as the write, because "is this the last admin" is a
+claim about the whole table: two concurrent revokes evaluated outside it would
+each see the other's admin, both pass, and land on zero.
+
+- **`PATCH /v1/admin/users/{subject}/role`** (`UserRoleRequest` `{ role }`) →
+  **200** `UserRoleRecord`. **400** for an unknown role or a subject that is not
+  a federated `issuer:sub` string (a colon-free subject is an API-key tenant —
+  its role lives in `API_KEY_ROLES`); **404** when the subject has no users row
+  (the route never mints one: a typo'd issuer prefix would otherwise create a
+  permanent admin nobody can authenticate as); **409** for **revoking the last
+  stored admin of a deployment that has no other admin source** (an
+  unrecoverable lockout — promote somebody else first, map an API key to
+  `admin`, or set the allowlist); **503** on a store outage. An unknown role
+  stays a **400** even when it targets the last admin: the vocabulary is checked
+  before the lockout guard. A service account is a **400**, not a 409 — its
+  subject is colon-free by invariant, so it fails the federated-subject rule
+  above before any store call.
+- **What counts as "another admin source"** is a liveness question, not just a
+  configuration one: an `ADMIN_SUBJECTS` entry whose issuer half the *configured*
+  provider cannot produce does not count (and startup warns about it), and
+  neither does an admin API key whose tenant is a **disabled** service account,
+  because that key now 401s. If the store cannot answer whether it is disabled,
+  the revoke is refused rather than allowed — a retryable 409 beats an
+  irreversible lockout.
+- `role_set_by`/`role_set_at` are the audit trail and are never blanked; an
+  idempotent re-grant does not re-stamp them (ADR-0004 decision 6).
+
+Two properties of the auth-time read are contract, not implementation detail:
+
+- It **fails closed**. If the user store cannot answer, the caller resolves to
+  `user` — the request still authenticates on its verified token, only the
+  elevation is withheld. This is the deliberate **mirror image** of the
+  service-account disabled check above, which fails *open*: that one can only
+  refuse an already-verified credential, while this one can only *grant*
+  privilege. `ADMIN_SUBJECTS` is unaffected by an outage.
+- It is **cached per subject** for `ADMIN_ROLE_CACHE_TTL_SECONDS` (default `30`,
+  capped at `300`, `0` disables), so **the TTL is the demotion lag** — a revoked
+  admin keeps admin for that long per worker. The worker serving the PATCH
+  flushes its own cache immediately; its siblings wait out the TTL.
+
+**Admin is a hard superuser, not a UI tier**: read/write on every collection in
+the deployment (ownership is bypassed with a logged `admin-bypass` decision),
+plus all of `/v1/admin/*`, `/v1/config`, `/v1/health/deep`, the model registry
+and `stats.policy`. Schemas: `contracts/schemas/user_role_request.json`,
+`user_role_record.json`. Python only — Go serves no bearer identity surface.
 
 ### POST /v1/ingest
 
@@ -539,7 +624,9 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
 | `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
-| `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003) |
+| `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003). **Never applies to a bearer identity** — see `ADMIN_SUBJECTS` |
+| `ADMIN_SUBJECTS` | **bearer** subjects that are admin by operator fiat, as `issuer:subject` strings (a colon-free entry is refused at startup: it would name an API-key tenant — use `API_KEY_ROLES`). The break-glass admin source: checked first, no store read, works on an empty users table, survives a store outage, and no database write can revoke it. Only the count is logged |
+| `ADMIN_ROLE_CACHE_TTL_SECONDS` | how long the bearer path memoizes the stored `users.role` (default **30**, capped at **300**, `0` disables). **This TTL is the demotion lag** — a revoked admin keeps admin for that long per worker; the granting process flushes its own cache. The lookup **fails closed** (a store outage withholds elevation) |
 | `COLLECTION_STORE_BACKEND`, `COLLECTION_STORE_PATH` | collection registry (`memory` \| `json` \| `sqlite` \| `postgres`). **There is no `*_SQLITE_PATH` variant** — a wrong name silently falls back to a *relative* default that resolves against the working directory, so two servers in one checkout share one registry. `REQUIRE_DURABLE_BACKENDS=true` refuses a relative path |
 | `JOB_STORE_BACKEND`, `JOB_STORE_PATH` | ingest job store; same relative-path rule |
 | `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
