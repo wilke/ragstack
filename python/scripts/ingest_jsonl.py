@@ -477,9 +477,9 @@ def _write_run_metrics(
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-# Transient-error classification + backoff now live in ragstack.ingestion.retry so
-# the coupled ingester and any other retriable ingest caller share ONE definition
-# (they had drifted as private copies). The shared version also jitters the delay.
+# Transient-error classification + backoff moved to ragstack.ingestion.retry:
+# library code rather than CLI-private, so a second retriable caller inherits it
+# instead of growing its own. The shared version also jitters the delay.
 async def run(args: argparse.Namespace) -> None:
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for

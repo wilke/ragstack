@@ -1,7 +1,9 @@
 """Transient-error classification + backoff for retriable ingest operations.
 
-Shared by the coupled ingester (``scripts/ingest_jsonl.py``) and the decoupled
-backpressured ingest agent (``scripts/qdrant_ingest_agent.py``). A flapping
+Extracted from ``scripts/ingest_jsonl.py`` so the classification lives in the
+library rather than in one CLI, and any future retriable ingest caller shares
+this definition instead of growing a second one. Today ``ingest_jsonl.py`` is
+its only importer. A flapping
 endpoint (a remote vLLM replica dropping a connection, a store 5xx/timeout, and
 crucially a capped-Qdrant ``ResponseHandlingException`` upsert drop — see
 ``/rag/documents/vma-exhaustion-incident-2026-07-04.md``) raises these and can
@@ -77,7 +79,10 @@ def retry_delay(
     delay is then multiplied by a random factor in ``[1-jitter, 1+jitter]`` so
     processes that failed together don't retry in lockstep (a thundering retry
     herd straight back into the same contention). ``jitter=0`` restores the old
-    deterministic schedule for tests."""
+    deterministic schedule for tests.
+
+    The cap applies BEFORE jitter, so a returned delay can exceed ``cap`` by up
+    to the jitter fraction (30s cap -> at most 37.5s at the default 0.25)."""
     delay = min(base * (2.0 ** (attempt - 1)), cap)
     if jitter:
         delay *= 1.0 + jitter * (2.0 * _JITTER.random() - 1.0)

@@ -75,7 +75,7 @@ def _args(input_path: Path, **over) -> argparse.Namespace:
         "embedding_max_concurrency": 4, "collection": "test", "qdrant_url": "http://q",
         "text_backend": "memory", "es_url": "http://es", "es_index": "i",
         "qdrant_timeout": 120.0, "replace": False, "delete_concurrency": 4,
-        "batch_retries": 0,
+        "batch_retries": 0, "max_doc_chars": 0,
         # Semantic breakpoint / segmentation-cache / concurrency knobs (match main()'s
         # argparse defaults so production code uses plain attribute access).
         "breakpoint_embedding_api": None, "breakpoint_embedding_url": None,
@@ -881,3 +881,54 @@ async def test_chunk_failure_propagates_without_hang(tmp_path, monkeypatch):
         await ingest_jsonl.run(_args(corpus, chunk_method="fixed", batch_size=2,
                                      concurrency=2, chunk_concurrency=3,
                                      checkpoint=tmp_path / "c.ckpt"))
+
+
+# --------------------------------------------------------------------------- #
+# --max-doc-chars (cherry-pick 3/4)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_oversized_doc_is_skipped_and_the_following_docs_still_ingest(
+    tmp_path, monkeypatch
+):
+    """One multi-MB data-table row fans its segmentation into thousands of embeds,
+    fails on every endpoint, and stalls the checkpoint — blocking every FOLLOWING
+    document in the file. The skip must behave exactly like a doc_type filter: the
+    oversized doc is never embedded, and the rest of the file still lands."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    records = [
+        {"text": "alpha beta gamma delta. " * 40, "path": f"/c/{i}.pdf", "metadata": {}}
+        for i in range(1, 6)
+    ]
+    records[2]["text"] = "x" * 200_000  # the poison row, line 3 of 5
+    _write_records(corpus, records)
+
+    await ingest_jsonl.run(
+        _args(corpus, checkpoint=tmp_path / "a.ckpt", max_doc_chars=50_000)
+    )
+
+    # The four in-bounds documents landed; the oversized one contributed nothing.
+    doc_ids = {c.doc_id for c in store.points.values()}
+    assert len(doc_ids) == 4, f"expected 4 docs indexed, got {len(doc_ids)}"
+    # And no chunk anywhere near the poison row survived into the store.
+    assert all(len(c.content) < 50_000 for c in store.points.values())
+
+
+@pytest.mark.asyncio
+async def test_max_doc_chars_zero_is_off(tmp_path, monkeypatch):
+    """Default 0 = no limit, so behaviour is unchanged unless asked for."""
+    store = _FakeStore()
+    monkeypatch.setattr(ingest_jsonl, "QdrantVectorStore", lambda **kw: store)
+    monkeypatch.setattr(ingest_jsonl, "make_embedder", lambda **kw: _FakeEmbedder())
+    monkeypatch.setattr(ingest_jsonl, "collection_name", lambda *a, **kw: "test")
+
+    corpus = tmp_path / "c.jsonl"
+    _write_records(corpus, [{"text": "y " * 40_000, "path": "/c/big.pdf", "metadata": {}}])
+    await ingest_jsonl.run(_args(corpus, checkpoint=tmp_path / "b.ckpt"))
+    assert store.points, "with the guard off the large doc must still be ingested"
