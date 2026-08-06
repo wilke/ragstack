@@ -7,6 +7,7 @@ import {
   bearerBaseWarning,
   credentialHeaders,
   identityView,
+  insecureContextWarning,
   isTokenExpired,
   laneCredential,
   OIDC_SEAM_NOTE,
@@ -424,9 +425,26 @@ describe("account identity display", () => {
 describe("login page providers", () => {
   it("offers BV-BRC and an API key, and lists Google as unavailable", () => {
     const byId = Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.id, p]));
-    expect(byId.bearer.available).toBe(true);
+    expect(byId.bvbrc.available).toBe(true);
     expect(byId.apikey.available).toBe(true);
     expect(byId.google.available).toBe(false);
+  });
+
+  it("offers BV-BRC a real username/password sign-in, not just a paste", () => {
+    const bvbrc = AUTH_PROVIDERS.find((p) => p.id === "bvbrc");
+    expect(bvbrc?.methods).toContain("password");
+    // Paste stays as the fallback for anyone who already ran p3-login.
+    expect(bvbrc?.methods).toContain("paste");
+  });
+
+  it("never claims a password sign-in for a provider that has none", () => {
+    // Google does not accept passwords from third-party sites, by design; a
+    // password form there would be a phishing pattern, not a feature.
+    const google = AUTH_PROVIDERS.find((p) => p.id === "google");
+    expect(google?.methods).not.toContain("password");
+    for (const p of AUTH_PROVIDERS) {
+      if (!p.available) expect(p.methods).toHaveLength(0);
+    }
   });
 
   it("says WHY Google cannot be chosen rather than hiding it", () => {
@@ -441,5 +459,22 @@ describe("login page providers", () => {
     for (const p of AUTH_PROVIDERS) {
       if (!p.available) expect(p.unavailable, `${p.id} needs a reason`).toBeTruthy();
     }
+  });
+});
+
+describe("password entry requires a secure page", () => {
+  it("refuses to reassure on a plaintext page", () => {
+    const warn = insecureContextWarning(false);
+    expect(warn).toBeTruthy();
+    // The reason must name the real risk: the form itself can be rewritten, so
+    // "we post it over TLS" is not a defence.
+    expect(warn).toMatch(/rewritten|captured/i);
+    expect(warn).toMatch(/HTTPS/);
+    // ...and it must offer the way that still works.
+    expect(warn).toMatch(/p3-login|token/i);
+  });
+
+  it("says nothing on HTTPS or localhost", () => {
+    expect(insecureContextWarning(true)).toBeNull();
   });
 });

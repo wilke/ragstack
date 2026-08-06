@@ -310,11 +310,24 @@ export function accountIssuer(tenant: string): string | null {
   return t.slice(0, t.indexOf(":"));
 }
 
+/**
+ * How you prove who you are for a given provider.
+ *
+ * `password` — username + password, exchanged with the PROVIDER by the browser
+ * for a token (see api/identity.ts). `paste` — you already hold a token.
+ * `redirect` — an OAuth/OIDC authorization-code round trip. `key` — an API key,
+ * which identifies a configured tenant rather than a person.
+ */
+export type SignInMethod = "password" | "paste" | "redirect" | "key";
+
 /** One way in, as offered on the login page. */
 export interface AuthProviderOption {
-  id: AuthMode | "google";
+  id: "bvbrc" | "google" | "apikey";
   label: string;
   blurb: string;
+  /** The credential kind this provider ultimately produces. */
+  mode: AuthMode;
+  methods: SignInMethod[];
   available: boolean;
   /** Why it cannot be chosen — shown in place of the control. */
   unavailable?: string;
@@ -333,23 +346,34 @@ export interface AuthProviderOption {
  */
 export const AUTH_PROVIDERS: AuthProviderOption[] = [
   {
-    id: "bearer",
+    id: "bvbrc",
     label: "BV-BRC",
-    blurb: "Sign in with your BV-BRC account token.",
+    blurb: "Sign in with your BV-BRC username and password.",
+    mode: "bearer",
+    methods: ["password", "paste"],
     available: true,
   },
+  // MG-RAST is intentionally NOT listed yet. It needs work on both sides before
+  // it can be more than a dead entry: its public API exposes no
+  // username/password exchange (it issues a webkey from the account page), and
+  // this deployment has no MG-RAST identity provider, so even a valid MG-RAST
+  // token could not be verified. Add it here once both exist.
   {
     id: "google",
     label: "Google",
     blurb: "Sign in with a Google account.",
+    mode: "bearer",
+    methods: [],
     available: false,
     unavailable:
-      "Not available yet. The server can verify a Google ID token, but the browser sign-in flow (authorization code + PKCE, a per-deployment client id, silent renew) is not built — so there is nothing to click.",
+      "Not available yet. The server can verify a Google ID token, but the browser half — an authorization-code + PKCE redirect with a per-deployment client id and registered redirect URI, plus silent renew — is not built. A password form cannot stand in for it: Google does not accept passwords from third-party sites, by design.",
   },
   {
     id: "apikey",
     label: "API key",
-    blurb: "For operators and scripts: paste a configured API key.",
+    blurb: "For operators and scripts: a configured key, not a person.",
+    mode: "apikey",
+    methods: ["key"],
     available: true,
   },
 ];
@@ -445,6 +469,28 @@ export function isAbsoluteBase(base: string): boolean {
   // https://evil.example/v1/x — cross-origin, but a `^https?://` test calls it
   // relative and suppresses the warning shown before a token is bound.
   return /^(https?:)?\/\//i.test((base ?? "").trim());
+}
+
+/**
+ * Why a password must not be typed into this page right now, or null.
+ *
+ * A password form is only as safe as the page serving it. Over plain HTTP an
+ * on-path attacker can rewrite the form to post the password anywhere — the
+ * fact that OUR code would have sent it to the provider over TLS is no defence,
+ * because our code is exactly what they replace. `isSecureContext` is the
+ * browser's own verdict (true for HTTPS and for localhost, false otherwise).
+ *
+ * A pasted token is not held to this bar: it expires and is scoped to what the
+ * token grants, whereas a password is reusable everywhere and forever.
+ */
+export function insecureContextWarning(secure: boolean): string | null {
+  if (secure) return null;
+  return (
+    "This page was loaded over plain HTTP, so a password typed here could be " +
+    "captured or the form itself rewritten before it reaches BV-BRC. Open the " +
+    "site over HTTPS to sign in with a password — or paste a token from " +
+    "p3-login instead, which expires and is limited to what the token allows."
+  );
 }
 
 /** Extra warning shown before binding a token to a base, or null. */

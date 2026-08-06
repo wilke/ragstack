@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { BVBRC_EXCHANGE, exchangePassword, SignInError } from "../api/identity";
 import {
   bindTokenToBase,
   getApiBase,
@@ -11,7 +12,7 @@ import {
   AUTH_PROVIDERS,
   bearerAppliesToBase,
   bearerBaseWarning,
-  OIDC_SEAM_NOTE,
+  insecureContextWarning,
   parseBvbrcToken,
   TOKEN_STORAGE_HINT,
   tokenExpiryNote,
@@ -19,70 +20,25 @@ import {
   type Credential,
 } from "../lib/auth";
 
-// The sign-in PAGE (as opposed to LoginPanel, the inline control in the backend
-// switcher). A centered card, a provider to choose, then the credential that
-// provider needs.
+// The sign-in PAGE. Pick a provider, give it what it asks for.
 //
-// Why a provider CHOICE when only one federated provider works today: the choice
-// is the honest shape of the problem — the deployment decides which identity
-// provider is enabled, and a user arriving at this page needs to know which one
-// applies to them. Google is listed and visibly unavailable rather than hidden,
-// so the seam is discoverable instead of a surprise. See AUTH_PROVIDERS.
+// WHERE THE PASSWORD GOES — the thing to know before changing anything here:
+// the browser posts it STRAIGHT TO THE PROVIDER (api/identity.ts) and gets back
+// the same signed token `p3-login` writes to ~/.patric_token. RAGStack never
+// sees it. Do not add a "just proxy it through the API" convenience: that would
+// put user passwords through a service that has no business holding them, and
+// make our request logs credential-bearing. The API deliberately has no
+// endpoint that accepts a password, and should never gain one.
 //
-// This page never claims a sign-in. It hands the credential to the app and the
-// header's UserMenu reports what the SERVER says, because with
-// IDENTITY_PROVIDER=none a pasted token is ignored and every caller is the
-// default tenant — which in production carries DEFAULT_ROLE=admin.
+// The token that comes back is stored and bound exactly like a pasted one, and
+// is equally untrusted — the server verifies its signature offline either way.
+// This page never claims a sign-in; the header reports what the server says.
 
 const INPUT =
   "w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm focus:border-gray-900 focus:outline-none";
 
 function baseLabel(base: string): string {
   return base || "the default backend";
-}
-
-function ProviderCard({
-  provider,
-  selected,
-  onSelect,
-}: {
-  provider: AuthProviderOption;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const disabled = !provider.available;
-  return (
-    <button
-      type="button"
-      onClick={disabled ? undefined : onSelect}
-      disabled={disabled}
-      aria-pressed={selected}
-      className={`w-full rounded-lg border p-3 text-left transition ${
-        disabled
-          ? "cursor-not-allowed border-gray-200 bg-gray-50 opacity-70"
-          : selected
-            ? "border-gray-900 bg-white shadow-sm"
-            : "border-gray-300 bg-white hover:border-gray-400"
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-900">{provider.label}</span>
-        {disabled ? (
-          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
-            not available
-          </span>
-        ) : selected ? (
-          <span aria-hidden="true" className="text-gray-900">
-            ✓
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-1 text-xs text-gray-500">{provider.blurb}</p>
-      {disabled && provider.unavailable ? (
-        <p className="mt-2 text-xs text-gray-500">{provider.unavailable}</p>
-      ) : null}
-    </button>
-  );
 }
 
 export function LoginView({
@@ -92,24 +48,37 @@ export function LoginView({
   setCredential: (c: Credential) => void;
   onDone: () => void;
 }) {
-  const [choice, setChoice] = useState<AuthProviderOption["id"]>("bearer");
+  const [providerId, setProviderId] = useState<AuthProviderOption["id"]>("bvbrc");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [tokenDraft, setTokenDraft] = useState("");
   const [keyDraft, setKeyDraft] = useState(getStoredApiKey);
+  const [showPaste, setShowPaste] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const provider =
+    AUTH_PROVIDERS.find((p) => p.id === providerId) ?? AUTH_PROVIDERS[0];
   const base = getApiBase();
   const savedToken = getStoredToken();
   const boundHere = !!savedToken && bearerAppliesToBase(getStoredTokenBase(), base);
-  const parsed = parseBvbrcToken(tokenDraft || savedToken);
+  const parsed = parseBvbrcToken(tokenDraft);
   const expiry = tokenExpiryNote(tokenDraft || savedToken, Date.now());
   const baseWarning = bearerBaseWarning(base);
+  // The browser's own verdict: HTTPS or localhost is secure, anything else is
+  // not. A password form on a plaintext page can be rewritten in transit.
+  const insecure = insecureContextWarning(
+    typeof window !== "undefined" ? window.isSecureContext : true,
+  );
 
-  function useToken(raw: string) {
+  /** Store a token we just obtained (or the user pasted) and leave. */
+  function acceptToken(raw: string): boolean {
     const token = raw.trim();
-    if (!token) return;
-    // Confirm against the LIVE base — another tab may have switched backends
+    if (!token) return false;
+    // Confirm against the LIVE base: another tab may have switched backends
     // since this page rendered, and binding to a backend the user was never
-    // shown is precisely the leak the binding exists to prevent.
+    // shown is the leak the binding exists to prevent.
     const live = getApiBase();
     if (live !== base) {
       setCredential(getStoredCredential());
@@ -117,13 +86,37 @@ export function LoginView({
         `The selected backend changed to ${baseLabel(live)} while this page was open, ` +
           "so nothing was saved. Confirm again to send your token there.",
       );
-      return;
+      return false;
     }
     setNotice(null);
     setCredential({ mode: "bearer", value: token });
     bindTokenToBase(live);
-    setTokenDraft("");
-    onDone();
+    return true;
+  }
+
+  async function signInWithPassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (!username.trim() || !password) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const token = await exchangePassword(BVBRC_EXCHANGE, username.trim(), password);
+      // Drop the password the instant it has been exchanged — it must not sit
+      // in component state waiting for a re-render or a crash dump.
+      setPassword("");
+      if (acceptToken(token)) {
+        setTokenDraft("");
+        onDone();
+      }
+    } catch (err) {
+      setError(
+        err instanceof SignInError
+          ? err.message
+          : "Sign-in failed for an unexpected reason.",
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -131,83 +124,39 @@ export function LoginView({
       <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-gray-900">Sign in</h2>
         <p className="mt-1 text-sm text-gray-500">
-          Choose how you want to authenticate to{" "}
-          <span className="font-medium text-gray-700">{baseLabel(base)}</span>.
+          to <span className="font-medium text-gray-700">{baseLabel(base)}</span>
         </p>
 
-        <div className="mt-5 space-y-2">
-          {AUTH_PROVIDERS.map((p) => (
-            <ProviderCard
-              key={p.id}
-              provider={p}
-              selected={choice === p.id}
-              onSelect={() => setChoice(p.id)}
-            />
-          ))}
+        <div className="mt-5">
+          <label htmlFor="login-provider" className="block text-sm font-medium text-gray-700">
+            Identity provider
+          </label>
+          <select
+            id="login-provider"
+            value={providerId}
+            onChange={(e) => {
+              setProviderId(e.target.value as AuthProviderOption["id"]);
+              setError(null);
+              setPassword("");
+            }}
+            className="mt-1 w-full rounded border border-gray-300 bg-white px-3 py-2 text-sm"
+          >
+            {AUTH_PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.available ? "" : " — not available"}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">{provider.blurb}</p>
         </div>
 
-        <div className="mt-6 border-t border-gray-100 pt-5">
-          {choice === "bearer" ? (
-            <div className="space-y-3">
-              <label htmlFor="login-token" className="block text-sm font-medium text-gray-700">
-                BV-BRC token
-              </label>
-              <input
-                id="login-token"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="un=you@patricbrc.org|tokenid=…|sig=…"
-                value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") useToken((e.target as HTMLInputElement).value);
-                }}
-                className={INPUT}
-              />
-              <p className="text-xs text-gray-500">
-                Run <code>p3-login</code> and copy the contents of{" "}
-                <code>~/.patric_token</code>. Paste the whole pipe-delimited string; a
-                leading <code>Bearer </code> is optional.
-              </p>
-              {parsed ? (
-                <p className="text-xs text-gray-600">
-                  Token says: <span className="font-medium">{parsed.username}</span>
-                  {parsed.signingSubject ? ` · signed by ${parsed.signingSubject}` : ""} —
-                  read from the token for display only; the server is the verifier.
-                </p>
-              ) : null}
-              {expiry ? <p className="text-xs text-amber-700">{expiry}</p> : null}
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => useToken(tokenDraft)}
-                  disabled={!tokenDraft.trim()}
-                  className="rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-40"
-                >
-                  Sign in
-                </button>
-                {savedToken && !boundHere ? (
-                  <button
-                    type="button"
-                    onClick={() => useToken(savedToken)}
-                    className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800"
-                  >
-                    Send my saved token to {baseLabel(base)}
-                  </button>
-                ) : null}
-              </div>
-              {savedToken && !boundHere ? (
-                <p className="text-xs text-amber-800">
-                  A saved token is bound to a different backend and is not being sent
-                  here. A BV-BRC token has no audience, so it only goes to a backend you
-                  confirmed.
-                </p>
-              ) : null}
-              {baseWarning ? <p className="text-xs text-amber-700">{baseWarning}</p> : null}
-              <p className="text-xs text-gray-500">{TOKEN_STORAGE_HINT}</p>
-            </div>
-          ) : choice === "apikey" ? (
+        <div className="mt-5 border-t border-gray-100 pt-5">
+          {!provider.available ? (
+            <p className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600">
+              {provider.unavailable}
+            </p>
+          ) : provider.id === "apikey" ? (
             <div className="space-y-3">
               <label htmlFor="login-key" className="block text-sm font-medium text-gray-700">
                 API key
@@ -217,7 +166,6 @@ export function LoginView({
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="configured API key"
                 value={keyDraft}
                 onChange={(e) => setKeyDraft(e.target.value)}
                 className={INPUT}
@@ -238,7 +186,138 @@ export function LoginView({
               </button>
             </div>
           ) : (
-            <p className="text-sm text-gray-500">{OIDC_SEAM_NOTE}</p>
+            <>
+              {insecure ? (
+                <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-xs text-red-800">
+                  <p className="font-medium">Not a secure connection</p>
+                  <p className="mt-1">{insecure}</p>
+                </div>
+              ) : null}
+              <form onSubmit={signInWithPassword} className="space-y-3">
+                <div>
+                  <label
+                    htmlFor="login-username"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Username
+                  </label>
+                  <input
+                    id="login-username"
+                    type="text"
+                    autoComplete="username"
+                    spellCheck={false}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className={`${INPUT} mt-1`}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="login-password"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Password
+                  </label>
+                  <input
+                    id="login-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className={`${INPUT} mt-1`}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={busy || !username.trim() || !password}
+                  className="w-full rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800 disabled:opacity-40"
+                >
+                  {busy ? "Signing in…" : "Sign in"}
+                </button>
+              </form>
+
+              {error ? (
+                <p
+                  role="alert"
+                  className="mt-3 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-800"
+                >
+                  {error}
+                </p>
+              ) : null}
+
+              <p className="mt-3 text-xs text-gray-500">
+                Your password goes directly from this browser to {provider.label} over
+                HTTPS and is exchanged for a token. It is never sent to RAGStack, and
+                RAGStack stores nothing but the token — the same one{" "}
+                <code>p3-login</code> writes.
+              </p>
+
+              <div className="mt-4 border-t border-gray-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPaste((s) => !s)}
+                  aria-expanded={showPaste}
+                  className="text-xs text-gray-600 underline hover:text-gray-900"
+                >
+                  {showPaste ? "Hide" : "Already have a token? Paste it instead"}
+                </button>
+                {showPaste ? (
+                  <div className="mt-3 space-y-2">
+                    <input
+                      id="login-token"
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="un=you@patricbrc.org|tokenid=…|sig=…"
+                      value={tokenDraft}
+                      onChange={(e) => setTokenDraft(e.target.value)}
+                      className={INPUT}
+                    />
+                    {parsed ? (
+                      <p className="text-xs text-gray-600">
+                        Token says: <span className="font-medium">{parsed.username}</span>{" "}
+                        — for display only; the server is the verifier.
+                      </p>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (acceptToken(tokenDraft)) {
+                          setTokenDraft("");
+                          onDone();
+                        }
+                      }}
+                      disabled={!tokenDraft.trim()}
+                      className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 hover:bg-gray-100 disabled:opacity-40"
+                    >
+                      Use this token
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+
+              {savedToken && !boundHere ? (
+                <div className="mt-4 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+                  A saved token is bound to a different backend and is not being sent
+                  here. A BV-BRC token has no audience, so it only goes to a backend you
+                  confirmed.{" "}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (acceptToken(savedToken)) onDone();
+                    }}
+                    className="underline"
+                  >
+                    Send it to {baseLabel(base)}
+                  </button>
+                </div>
+              ) : null}
+              {expiry ? <p className="mt-2 text-xs text-amber-700">{expiry}</p> : null}
+              {baseWarning ? (
+                <p className="mt-2 text-xs text-amber-700">{baseWarning}</p>
+              ) : null}
+              <p className="mt-2 text-xs text-gray-500">{TOKEN_STORAGE_HINT}</p>
+            </>
           )}
 
           {notice ? (
