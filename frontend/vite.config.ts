@@ -34,9 +34,11 @@ export default defineConfig(({ mode }) => {
   // host, not localhost, so the dev server 403s with "This host is not allowed"
   // before any routing happens. Allow the gateway host (and, via the leading dot,
   // any *.cels.anl.gov) — localhost/127.0.0.1 are always allowed regardless.
-  // VITE_ALLOWED_HOSTS overrides for another deployment; "true" disables the check
-  // entirely (do NOT do that on a reachable network).
-  const allowedRaw = env.VITE_ALLOWED_HOSTS ?? "coconut.cels.anl.gov,.cels.anl.gov";
+  // Empty by default: hardcoding one deployment's hostname would widen every other
+  // user's DNS-rebinding exposure. Each deployment sets VITE_ALLOWED_HOSTS (a leading
+  // dot matches subdomains, e.g. ".example.org"); "true" disables the check entirely
+  // (do NOT do that on a reachable network). localhost/127.0.0.1 are always allowed.
+  const allowedRaw = env.VITE_ALLOWED_HOSTS ?? "";
   const allowedHosts =
     allowedRaw.trim() === "true"
       ? true

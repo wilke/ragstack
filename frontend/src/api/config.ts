@@ -33,7 +33,9 @@ export interface BackendPreset {
 function gatewayApiBase(): string | null {
   const base = import.meta.env.BASE_URL || "/";
   const m = base.match(/^(.*)\/ui\/?$/);
-  return m && m[1] ? `${m[1]}/api` : null;
+  // m[1] is legitimately EMPTY for a gateway that mounts a tenant at '/ui/'
+  // (-> '/api'); the regex already excludes a bare '/', so test m, not m[1].
+  return m ? `${m[1]}/api` : null;
 }
 
 const GATEWAY_BASE = gatewayApiBase();
@@ -69,7 +71,10 @@ function write(key: string, value: string): void {
 }
 
 export function getApiBase(): string {
-  return read(BASE_STORAGE_KEY);
+  // Fall back to the gateway base when nothing is stored: served under
+  // /ragstack/<tenant>/ui/ the app would otherwise call /v1/... absolute, which
+  // resolves to the gateway ROOT and 404s until someone opens the switcher.
+  return read(BASE_STORAGE_KEY) || GATEWAY_BASE || "";
 }
 
 export function setApiBase(url: string): void {

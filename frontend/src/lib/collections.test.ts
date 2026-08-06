@@ -422,3 +422,28 @@ describe("id hints", () => {
     expect(ID_BLANK_HINT).toMatch(/shares the same physical store/i);
   });
 });
+
+// --- gateway API base derivation (PR #272 review) --------------------------
+// The preset is derived from Vite's --base so a base-aware instance points at
+// its own tenant's API without hardcoding a tenant. Review found the original
+// dropped a gateway that mounts a tenant at the ROOT ("/ui/" -> "/api").
+describe("gatewayApiBase derivation", () => {
+  const derive = (base: string): string | null => {
+    const m = base.match(/^(.*)\/ui\/?$/);
+    return m ? `${m[1]}/api` : null;
+  };
+
+  it("maps a tenant-prefixed base to its sibling api", () => {
+    expect(derive("/ragstack/asm/ui/")).toBe("/ragstack/asm/api");
+    expect(derive("/ragstack/lucid-next/ui/")).toBe("/ragstack/lucid-next/api");
+  });
+
+  it("handles a root-mounted ui (empty prefix is legitimate)", () => {
+    expect(derive("/ui/")).toBe("/api");
+  });
+
+  it("returns null when not served under a /ui/ base", () => {
+    expect(derive("/")).toBeNull();
+    expect(derive("/gui/")).toBeNull();
+  });
+});

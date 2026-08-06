@@ -1160,7 +1160,7 @@ def _validate_production_settings() -> None:
             ("USER_STORE_PATH", settings.user_store_backend, settings.user_store_path),
             ("JOB_STORE_PATH", settings.job_store_backend, settings.job_store_path),
         )
-        if (backend or "").lower() == "sqlite" and path and not os.path.isabs(path)
+        if (backend or "").lower() == "sqlite" and not os.path.isabs(path or "")
     ]
     if _relative:
         raise RuntimeError(
@@ -1188,6 +1188,26 @@ def _validate_production_settings() -> None:
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
     _validate_production_settings()
+    # Same hazard OUTSIDE production, where the guard above does not run: the
+    # documented local recipe starts uvicorn from the repo checkout, so a relative
+    # sqlite path lands in the source tree and a second server started the same way
+    # silently shares it. Only ONE side of a collision has to be unguarded, which is
+    # how the observed cross-tenant seeding happened. Warn rather than refuse — dev
+    # convenience is the point of the relative default.
+    if not settings.require_durable_backends:
+        for _name, _backend, _path in (
+            ("COLLECTION_STORE_PATH", settings.collection_store_backend,
+             settings.collection_store_path),
+            ("USER_STORE_PATH", settings.user_store_backend, settings.user_store_path),
+            ("JOB_STORE_PATH", settings.job_store_backend, settings.job_store_path),
+        ):
+            if (_backend or "").lower() == "sqlite" and not os.path.isabs(_path or ""):
+                log.warning(
+                    "%s=%r is RELATIVE — it resolves against the working directory "
+                    "(%s), so another server started from here shares this database. "
+                    "Set an absolute path.",
+                    _name, _path, os.getcwd(),
+                )
     # Fail fast on a misconfigured RBAC setup (unknown default_role / api_key_roles)
     # rather than silently 403-ing affected callers at runtime.
     from ragstack.api.security import (
