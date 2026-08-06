@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  accountIssuer,
+  accountName,
+  AUTH_PROVIDERS,
   bearerAppliesToBase,
   bearerBaseWarning,
   credentialHeaders,
@@ -394,5 +397,49 @@ describe("UI copy", () => {
   it("does not promise an OIDC flow that isn't built", () => {
     expect(OIDC_SEAM_NOTE).toMatch(/isn't wired up|not available/i);
     expect(OIDC_SEAM_NOTE).toMatch(/BV-BRC/);
+  });
+});
+
+describe("account identity display", () => {
+  it("shows the subject, not the issuer plumbing", () => {
+    expect(accountName("bvbrc:awilke@bvbrc")).toBe("awilke@bvbrc");
+    expect(accountIssuer("bvbrc:awilke@bvbrc")).toBe("bvbrc");
+  });
+
+  it("splits on the FIRST colon only, so a subject may contain one", () => {
+    // An OIDC `sub` is opaque and may legitimately contain a colon; splitting
+    // on the last (or on every) colon would display a truncated name.
+    expect(accountName("oidc:https://accounts.google.com/123")).toBe(
+      "https://accounts.google.com/123",
+    );
+    expect(accountIssuer("oidc:https://accounts.google.com/123")).toBe("oidc");
+  });
+
+  it("treats an API-key tenant as having no issuer", () => {
+    expect(accountName("demo-ops")).toBe("demo-ops");
+    expect(accountIssuer("demo-ops")).toBeNull();
+  });
+});
+
+describe("login page providers", () => {
+  it("offers BV-BRC and an API key, and lists Google as unavailable", () => {
+    const byId = Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.id, p]));
+    expect(byId.bearer.available).toBe(true);
+    expect(byId.apikey.available).toBe(true);
+    expect(byId.google.available).toBe(false);
+  });
+
+  it("says WHY Google cannot be chosen rather than hiding it", () => {
+    // A greyed-out provider with no reason reads as a bug; the seam is real and
+    // the page should name it.
+    const google = AUTH_PROVIDERS.find((p) => p.id === "google");
+    expect(google?.unavailable).toBeTruthy();
+    expect(google?.unavailable).toMatch(/PKCE|authorization code|not built/i);
+  });
+
+  it("never marks an unavailable provider without an explanation", () => {
+    for (const p of AUTH_PROVIDERS) {
+      if (!p.available) expect(p.unavailable, `${p.id} needs a reason`).toBeTruthy();
+    }
   });
 });

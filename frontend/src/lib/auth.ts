@@ -291,6 +291,70 @@ export function isFederatedTenant(tenant: string): boolean {
 }
 
 /**
+ * The part of a federated tenant a person recognizes as their name.
+ *
+ * A tenant is `issuer:subject`; the issuer is deployment plumbing, so the header
+ * shows the subject alone ("awilke@bvbrc") and the account page shows both. Only
+ * the FIRST colon splits — a subject may legitimately contain more.
+ */
+export function accountName(tenant: string): string {
+  const t = (tenant ?? "").trim();
+  if (!isFederatedTenant(t)) return t;
+  return t.slice(t.indexOf(":") + 1);
+}
+
+/** The issuer half of a federated tenant, or null for an API-key tenant. */
+export function accountIssuer(tenant: string): string | null {
+  const t = (tenant ?? "").trim();
+  if (!isFederatedTenant(t)) return null;
+  return t.slice(0, t.indexOf(":"));
+}
+
+/** One way in, as offered on the login page. */
+export interface AuthProviderOption {
+  id: AuthMode | "google";
+  label: string;
+  blurb: string;
+  available: boolean;
+  /** Why it cannot be chosen — shown in place of the control. */
+  unavailable?: string;
+}
+
+/**
+ * The providers the login page offers.
+ *
+ * Google/OIDC is listed but NOT selectable, deliberately and visibly: the server
+ * can verify an OIDC ID token, but a browser can only obtain one through an
+ * authorization-code + PKCE redirect with a per-deployment client id and a
+ * registered redirect URI, plus silent renew. None of that exists yet, and
+ * nothing in the API mints or exchanges tokens. Listing it greyed-out with the
+ * reason is honest; hiding it would make the seam invisible, and enabling it
+ * would be a button that cannot work.
+ */
+export const AUTH_PROVIDERS: AuthProviderOption[] = [
+  {
+    id: "bearer",
+    label: "BV-BRC",
+    blurb: "Sign in with your BV-BRC account token.",
+    available: true,
+  },
+  {
+    id: "google",
+    label: "Google",
+    blurb: "Sign in with a Google account.",
+    available: false,
+    unavailable:
+      "Not available yet. The server can verify a Google ID token, but the browser sign-in flow (authorization code + PKCE, a per-deployment client id, silent renew) is not built — so there is nothing to click.",
+  },
+  {
+    id: "apikey",
+    label: "API key",
+    blurb: "For operators and scripts: paste a configured API key.",
+    available: true,
+  },
+];
+
+/**
  * Turn a /v1/stats/tenants answer into what the header should say.
  *
  * The trap this exists for: `IDENTITY_PROVIDER` defaults to `none`, and with it
