@@ -17,8 +17,6 @@ from ragstack.stores.elasticsearch import (
     ElasticsearchTextIndex,
 )
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_metadata_keyword_template_bounds_the_term_length():
     tmpl = _MAPPINGS["dynamic_templates"][0]["metadata_strings_as_keyword"]
@@ -72,6 +70,7 @@ def _store(exists: bool) -> tuple[ElasticsearchTextIndex, _FakeES]:
     return idx, es
 
 
+@pytest.mark.asyncio
 async def test_a_new_index_is_created_with_the_bounded_template():
     idx, es = _store(exists=False)
     await idx.ensure_index()
@@ -79,10 +78,13 @@ async def test_a_new_index_is_created_with_the_bounded_template():
     assert es.indices.put_mapping_calls == []  # nothing to migrate
 
 
+@pytest.mark.asyncio
 async def test_an_existing_index_gets_the_template_pushed_to_it():
-    """The branch this came from stopped at `create`, so every index built before
-    the change kept the unbounded template forever — worthless on exactly the
-    large, long-lived corpora that hit the 32 KB limit."""
+    """The branch this came from stopped at `create`, so an existing index never
+    received the template at all and even NEW metadata fields stayed unbounded.
+
+    Scope note: this covers newly-encountered fields only. Fields already mapped
+    as bare keyword keep that mapping — see the comment in ensure_index."""
     idx, es = _store(exists=True)
     await idx.ensure_index()
     assert not es.indices.created
@@ -91,3 +93,18 @@ async def test_an_existing_index_gets_the_template_pushed_to_it():
     assert tmpl["metadata_strings_as_keyword"]["mapping"]["ignore_above"] == (
         _METADATA_KEYWORD_IGNORE_ABOVE
     )
+
+
+@pytest.mark.asyncio
+async def test_a_transport_error_during_the_mapping_update_does_not_escape():
+    """elasticsearch.ConnectionError is a TransportError, NOT an ApiError. A
+    narrow `except ApiError` would let a connection blip escape ensure_index()
+    where it previously returned cleanly — aborting startup under
+    require_durable_backends."""
+    idx, es = _store(exists=True)
+
+    async def boom(index, body):  # noqa: ARG001
+        raise ConnectionError("connection refused")
+
+    es.indices.put_mapping = boom  # type: ignore[assignment]
+    await idx.ensure_index()  # must not raise

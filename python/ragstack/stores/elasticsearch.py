@@ -125,19 +125,25 @@ class ElasticsearchTextIndex:
             if "resource_already_exists_exception" not in str(e):
                 raise
 
-        # The index already existed, so `create` never applied _MAPPINGS to it —
-        # which would leave every index built before a mapping change permanently
-        # on the old template. That is not hypothetical: the ignore_above guard
-        # above is worthless on exactly the large, long-lived corpora that hit the
-        # 32 KB term limit. Push the template with a mapping update.
+        # The index already existed, so `create` never applied _MAPPINGS to it.
+        # Push them so a NEWLY-ENCOUNTERED metadata field on an existing index
+        # picks up the bounded template instead of a bare keyword.
         #
-        # Only ADDITIVE mapping changes are legal in Elasticsearch; adding
-        # `ignore_above` to a keyword is one. A rejected update is logged and
-        # swallowed: an unwritable mapping must not stop a read-only caller from
-        # constructing the store.
+        # SCOPE, precisely: a dynamic template governs fields it maps for the
+        # FIRST time. Fields already concretely mapped as bare `keyword` keep that
+        # mapping and stay vulnerable to the 32 KB term limit — verified against a
+        # live ES 8.13.4: after this update, an existing `metadata.title` still
+        # rejects a 40 KB value while a brand-new field accepts one. Retrofitting
+        # existing fields needs an explicit per-field `properties` update (it IS a
+        # legal, updatable parameter) — tracked in #270, not done here.
+        #
+        # Catches Exception, not ApiError: elasticsearch.ConnectionError is a
+        # TransportError, NOT an ApiError, so a narrow catch would let a transient
+        # connection blip escape ensure_index() where it previously returned
+        # cleanly — and abort startup under require_durable_backends.
         try:
             await self._es.indices.put_mapping(index=self._index, body=_MAPPINGS)
-        except ApiError:
+        except Exception:  # noqa: BLE001 — see above; never block store construction
             log.warning(
                 "could not update mappings on existing index %r; it keeps its "
                 "current template (see stores/elasticsearch.py)",
