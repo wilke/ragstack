@@ -27,6 +27,9 @@ def _prod(monkeypatch, tmp_path):
     # exercise the tenant-map rule, so give them a durable store to get past the
     # ACL-durability check.
     monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
+    # Absolute: a relative sqlite path is refused under
+    # require_durable_backends (two servers in one CWD would share it).
+    monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
 
 
 def test_partial_tenant_map_rejected_in_production(monkeypatch, tmp_path):

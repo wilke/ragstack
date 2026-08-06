@@ -8,6 +8,7 @@ fallback keeps unit tests and demo runs functional without infra.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, TypedDict
@@ -1143,6 +1144,33 @@ def _validate_production_settings() -> None:
             "ACL database (users + shares) must be durable — set USER_STORE_BACKEND "
             "to 'sqlite' or 'postgres'."
         )
+    # A RELATIVE sqlite path resolves against the process working directory, so two
+    # servers launched from the same checkout silently SHARE a registry / ACL / job
+    # database no matter what their env says — observed live: a demo server's
+    # collection registry landed in the repo tree and seeded another tenant's ACL
+    # database with a foreign collection. In production the path must be absolute.
+    #
+    # Only checked for stores actually selected as sqlite; postgres carries its
+    # location in the DSN, and memory is already refused above.
+    _relative = [
+        (name, path)
+        for name, backend, path in (
+            ("COLLECTION_STORE_PATH", settings.collection_store_backend,
+             settings.collection_store_path),
+            ("USER_STORE_PATH", settings.user_store_backend, settings.user_store_path),
+            ("JOB_STORE_PATH", settings.job_store_backend, settings.job_store_path),
+        )
+        if (backend or "").lower() == "sqlite" and not os.path.isabs(path or "")
+    ]
+    if _relative:
+        raise RuntimeError(
+            "require_durable_backends is set but these sqlite store paths are "
+            "RELATIVE, so they resolve against the working directory and two "
+            "servers started from one checkout would share them: "
+            + ", ".join(f"{n}={v!r}" for n, v in _relative)
+            + ". Set an absolute path per tenant (see ADR-0005)."
+        )
+
     # Fail closed on a partial tenant map: if any key→tenant mapping is set, every
     # configured key must be mapped. Otherwise an unmapped key silently collapses
     # into the shared "default" tenant and loses isolation. (Keys are not logged.)
@@ -1160,6 +1188,26 @@ def _validate_production_settings() -> None:
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
     _validate_production_settings()
+    # Same hazard OUTSIDE production, where the guard above does not run: the
+    # documented local recipe starts uvicorn from the repo checkout, so a relative
+    # sqlite path lands in the source tree and a second server started the same way
+    # silently shares it. Only ONE side of a collision has to be unguarded, which is
+    # how the observed cross-tenant seeding happened. Warn rather than refuse — dev
+    # convenience is the point of the relative default.
+    if not settings.require_durable_backends:
+        for _name, _backend, _path in (
+            ("COLLECTION_STORE_PATH", settings.collection_store_backend,
+             settings.collection_store_path),
+            ("USER_STORE_PATH", settings.user_store_backend, settings.user_store_path),
+            ("JOB_STORE_PATH", settings.job_store_backend, settings.job_store_path),
+        ):
+            if (_backend or "").lower() == "sqlite" and not os.path.isabs(_path or ""):
+                log.warning(
+                    "%s=%r is RELATIVE — it resolves against the working directory "
+                    "(%s), so another server started from here shares this database. "
+                    "Set an absolute path.",
+                    _name, _path, os.getcwd(),
+                )
     # Fail fast on a misconfigured RBAC setup (unknown default_role / api_key_roles)
     # rather than silently 403-ing affected callers at runtime.
     from ragstack.api.security import (

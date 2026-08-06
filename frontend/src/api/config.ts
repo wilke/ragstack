@@ -19,7 +19,31 @@ export interface BackendPreset {
   url: string; // "/be/<name>" proxy prefix, or "" for the default proxy
 }
 
+/**
+ * When this UI is served under a path prefix by the front proxy
+ * (`/ragstack/<tenant>/ui/`), the sibling API is `/ragstack/<tenant>/api`.
+ * Derive it from Vite's own base rather than hardcoding a tenant, so every
+ * base-aware instance gets a correct preset for free.
+ *
+ * It has to be a preset at all because the app calls `/v1/...` absolute — behind
+ * the gateway that resolves to the gateway ROOT, which is a 404, not to the
+ * tenant's API. Returns null when served at "/" (plain dev), where the Vite
+ * proxy already handles `/v1`.
+ */
+function gatewayApiBase(): string | null {
+  const base = import.meta.env.BASE_URL || "/";
+  const m = base.match(/^(.*)\/ui\/?$/);
+  // m[1] is legitimately EMPTY for a gateway that mounts a tenant at '/ui/'
+  // (-> '/api'); the regex already excludes a bare '/', so test m, not m[1].
+  return m ? `${m[1]}/api` : null;
+}
+
+const GATEWAY_BASE = gatewayApiBase();
+
 export const BACKEND_PRESETS: BackendPreset[] = [
+  ...(GATEWAY_BASE
+    ? [{ id: "gateway", label: `Gateway (${GATEWAY_BASE})`, url: GATEWAY_BASE }]
+    : []),
   { id: "proxy", label: "Default (Vite proxy)", url: "" },
   { id: "unified", label: "Unified explorer · :8020", url: "/be/unified" },
   { id: "asm", label: "asm (prod) · :8000", url: "/be/asm" },
@@ -47,7 +71,10 @@ function write(key: string, value: string): void {
 }
 
 export function getApiBase(): string {
-  return read(BASE_STORAGE_KEY);
+  // Fall back to the gateway base when nothing is stored: served under
+  // /ragstack/<tenant>/ui/ the app would otherwise call /v1/... absolute, which
+  // resolves to the gateway ROOT and 404s until someone opens the switcher.
+  return read(BASE_STORAGE_KEY) || GATEWAY_BASE || "";
 }
 
 export function setApiBase(url: string): void {

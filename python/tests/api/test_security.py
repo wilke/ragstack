@@ -56,6 +56,9 @@ def test_production_settings_pass_when_set(monkeypatch, tmp_path):
     monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
     # The ACL database (users + shares) must be durable in production too (#243).
     monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
+    # Absolute: a relative sqlite path is refused under
+    # require_durable_backends (two servers in one CWD would share it).
+    monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
     deps._validate_production_settings()  # must not raise
 
 
