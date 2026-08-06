@@ -8,6 +8,7 @@ this backend is actually selected.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ragstack.documents import (
@@ -19,6 +20,8 @@ from ragstack.documents import (
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.tenancy import DEFAULT_TENANT
 
+log = logging.getLogger(__name__)
+
 # Filters target chunk *metadata* keys (matching the vector store, which filters
 # on chunk.metadata), so metadata is stored as a nested object and string values
 # are mapped to ``keyword`` for exact term/terms matching. ``content`` is the only
@@ -26,13 +29,28 @@ from ragstack.tenancy import DEFAULT_TENANT
 # and id round-tripping. ``tenant_id`` lives in metadata only (no duplication);
 # the key name is historical — see tenancy.OWNER_FIELD (owner provenance,
 # ADR-0003).
+#
+# ``ignore_above`` is REQUIRED on the keyword template: a keyword indexes the whole
+# value as one Lucene term, and a term over ~32 KB raises a document_parsing_exception
+# that aborts the whole bulk ingest (``index()`` raises on the first item error, which
+# is not in the transient set — so the batch fails, the checkpoint stalls, the run
+# exits nonzero). Real corpora contain poison rows: a paper's entire reference list
+# mis-extracted into ``metadata.title``, observed at ~38 KB in production. With
+# ignore_above set, an over-long value is simply not indexed for exact match — it is
+# still stored in _source and still returned. 8191 chars is the largest bound that
+# stays under Lucene's 32766-BYTE limit even for 4-byte UTF-8.
+_METADATA_KEYWORD_IGNORE_ABOVE = 8191
+
 _MAPPINGS: dict[str, Any] = {
     "dynamic_templates": [
         {
             "metadata_strings_as_keyword": {
                 "path_match": "metadata.*",
                 "match_mapping_type": "string",
-                "mapping": {"type": "keyword"},
+                "mapping": {
+                    "type": "keyword",
+                    "ignore_above": _METADATA_KEYWORD_IGNORE_ABOVE,
+                },
             }
         }
     ],
@@ -102,9 +120,30 @@ class ElasticsearchTextIndex:
 
         try:
             await self._es.indices.create(index=self._index, mappings=_MAPPINGS)
+            return
         except ApiError as e:
             if "resource_already_exists_exception" not in str(e):
                 raise
+
+        # The index already existed, so `create` never applied _MAPPINGS to it —
+        # which would leave every index built before a mapping change permanently
+        # on the old template. That is not hypothetical: the ignore_above guard
+        # above is worthless on exactly the large, long-lived corpora that hit the
+        # 32 KB term limit. Push the template with a mapping update.
+        #
+        # Only ADDITIVE mapping changes are legal in Elasticsearch; adding
+        # `ignore_above` to a keyword is one. A rejected update is logged and
+        # swallowed: an unwritable mapping must not stop a read-only caller from
+        # constructing the store.
+        try:
+            await self._es.indices.put_mapping(index=self._index, body=_MAPPINGS)
+        except ApiError:
+            log.warning(
+                "could not update mappings on existing index %r; it keeps its "
+                "current template (see stores/elasticsearch.py)",
+                self._index,
+                exc_info=True,
+            )
 
     async def index(self, chunks: list[Chunk]) -> None:
         if not chunks:
