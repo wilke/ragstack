@@ -94,8 +94,13 @@ class BackpressuredVectorStore:
             optimizer_ok = getattr(h, "optimizer_ok", True)
             if status == self._ready_status and optimizer_ok:
                 if held:
-                    log.info("qdrant ready (status=%s, segments=%s) — resuming upserts",
-                             status, getattr(h, "segments_count", "?"))
+                    log.info(
+                        "qdrant ready (status=%s, segments=%s, points=%s, indexed=%s)"
+                        " — resuming upserts",
+                        status, getattr(h, "segments_count", "?"),
+                        getattr(h, "points_count", "?"),
+                        getattr(h, "indexed_vectors_count", "?"),
+                    )
                 return
             held = True
             # Compute the next sleep so total wait never exceeds max_wait, and the

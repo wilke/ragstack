@@ -61,6 +61,20 @@ class CollectionHealth:
     status: str
     optimizer_ok: bool
     segments_count: int
+    #: Points stored vs. vectors actually indexed, as OBSERVABILITY only — do not
+    #: derive a backlog from their difference. Measured on live collections, that
+    #: difference is unsound in both regimes:
+    #:
+    #: - below Qdrant's ``indexing_threshold`` no HNSW is built, so
+    #:   ``indexed_vectors_count`` is 0 *by design, forever* — a permanent phantom
+    #:   backlog exactly during the ramp-up of every bulk load;
+    #: - on a mature collection ``indexed`` routinely EXCEEDS ``points`` (observed
+    #:   +125,051 on a 24.8M-point production collection), so any clamped
+    #:   difference pins to 0 precisely where a backlog signal would matter.
+    #:
+    #: Both default to 0, so every existing constructor call stays valid.
+    points_count: int = 0
+    indexed_vectors_count: int = 0
 
 
 def _slug(s: str, n: int = 40) -> str:
@@ -381,8 +395,11 @@ class QdrantVectorStore:
         opt = getattr(info, "optimizer_status", "ok")
         optimizer_ok = not bool(getattr(opt, "error", None))
         segments = int(getattr(info, "segments_count", 0) or 0)
+        points = int(getattr(info, "points_count", 0) or 0)
+        indexed = int(getattr(info, "indexed_vectors_count", 0) or 0)
         return CollectionHealth(status=status, optimizer_ok=optimizer_ok,
-                                segments_count=segments)
+                                segments_count=segments, points_count=points,
+                                indexed_vectors_count=indexed)
 
     async def drop_collection(self) -> bool:
         """Delete the entire physical collection — every vector, every tenant.
