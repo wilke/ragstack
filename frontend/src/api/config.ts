@@ -19,7 +19,29 @@ export interface BackendPreset {
   url: string; // "/be/<name>" proxy prefix, or "" for the default proxy
 }
 
+/**
+ * When this UI is served under a path prefix by the front proxy
+ * (`/ragstack/<tenant>/ui/`), the sibling API is `/ragstack/<tenant>/api`.
+ * Derive it from Vite's own base rather than hardcoding a tenant, so every
+ * base-aware instance gets a correct preset for free.
+ *
+ * It has to be a preset at all because the app calls `/v1/...` absolute — behind
+ * the gateway that resolves to the gateway ROOT, which is a 404, not to the
+ * tenant's API. Returns null when served at "/" (plain dev), where the Vite
+ * proxy already handles `/v1`.
+ */
+function gatewayApiBase(): string | null {
+  const base = import.meta.env.BASE_URL || "/";
+  const m = base.match(/^(.*)\/ui\/?$/);
+  return m && m[1] ? `${m[1]}/api` : null;
+}
+
+const GATEWAY_BASE = gatewayApiBase();
+
 export const BACKEND_PRESETS: BackendPreset[] = [
+  ...(GATEWAY_BASE
+    ? [{ id: "gateway", label: `Gateway (${GATEWAY_BASE})`, url: GATEWAY_BASE }]
+    : []),
   { id: "proxy", label: "Default (Vite proxy)", url: "" },
   { id: "unified", label: "Unified explorer · :8020", url: "/be/unified" },
   { id: "asm", label: "asm (prod) · :8000", url: "/be/asm" },

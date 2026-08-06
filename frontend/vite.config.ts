@@ -29,10 +29,24 @@ export default defineConfig(({ mode }) => {
       rewrite: (p: string) => p.replace(new RegExp(`^/be/${name}`), ""),
     },
   });
+  // Vite refuses a request whose Host header it does not recognise (DNS-rebinding
+  // protection). Behind the coconut front proxy the browser's Host is the gateway
+  // host, not localhost, so the dev server 403s with "This host is not allowed"
+  // before any routing happens. Allow the gateway host (and, via the leading dot,
+  // any *.cels.anl.gov) — localhost/127.0.0.1 are always allowed regardless.
+  // VITE_ALLOWED_HOSTS overrides for another deployment; "true" disables the check
+  // entirely (do NOT do that on a reachable network).
+  const allowedRaw = env.VITE_ALLOWED_HOSTS ?? "coconut.cels.anl.gov,.cels.anl.gov";
+  const allowedHosts =
+    allowedRaw.trim() === "true"
+      ? true
+      : allowedRaw.split(",").map((h) => h.trim()).filter(Boolean);
+
   return {
     plugins: [react()],
     server: {
       port: 5173,
+      allowedHosts,
       proxy: {
         ...bePrefix("unified", backends.unified),
         ...bePrefix("asm", backends.asm),
