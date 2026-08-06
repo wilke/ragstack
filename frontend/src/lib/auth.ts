@@ -99,7 +99,15 @@ export function sendableCredential(
     // from the token check. A Compare lane's key box is a plain text input, so a
     // user can paste a BV-BRC token into it — and an apikey pin would then ship
     // that token as `X-API-Key` to whichever base is selected, bound or not.
-    if (input.mode !== "apikey") return input;
+    if (input.mode === "bearer") {
+      // A bearer pin is subject to the SAME binding check as a bare string —
+      // otherwise the one function documented as the last check before a header
+      // has an unguarded hole in it. Nothing constructs a bearer pin today;
+      // this is here so that when something does, it cannot skip the check.
+      const pinned = (input.value ?? "").trim();
+      const sendable = stored.mode === "bearer" && pinned === stored.value.trim();
+      return { mode: "bearer", value: sendable ? pinned : "" };
+    }
     const pinned = (input.value ?? "").trim();
     const pinnedIsToken =
       (savedToken.trim() !== "" && pinned === savedToken.trim()) ||
@@ -368,7 +376,11 @@ export function bearerAppliesToBase(savedBase: string, currentBase: string): boo
 
 /** True for a `Custom…` absolute URL, which leaves the same-origin dev proxy. */
 export function isAbsoluteBase(base: string): boolean {
-  return /^https?:\/\//i.test((base ?? "").trim());
+  // The scheme is OPTIONAL: "//evil.example" is protocol-relative, and
+  // `new URL("//evil.example/v1/x", "https://good.example/ui/")` resolves to
+  // https://evil.example/v1/x — cross-origin, but a `^https?://` test calls it
+  // relative and suppresses the warning shown before a token is bound.
+  return /^(https?:)?\/\//i.test((base ?? "").trim());
 }
 
 /** Extra warning shown before binding a token to a base, or null. */

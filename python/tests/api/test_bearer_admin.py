@@ -596,6 +596,43 @@ async def test_an_allowlist_entry_from_the_wrong_provider_is_not_a_way_back(
     assert security.usable_admin_subjects() == frozenset({ALICE})
 
 
+async def test_a_provider_name_is_normalized_before_the_guard_reads_it(monkeypatch):
+    """`identity/factory.py` strips and lowercases, so IDENTITY_PROVIDER=BVBRC
+    builds a WORKING provider. Comparing the raw string here made that
+    deployment look provider-less: the live allowlist entry went uncounted and
+    the guard refused a legitimate revoke — the guard's own failure mode
+    inverted, with a startup warning calling the working path dead."""
+    monkeypatch.setattr(security.settings, "api_keys", ["k-user"])
+    monkeypatch.setattr(security.settings, "api_key_roles", {"k-user": ROLE_USER})
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    monkeypatch.setattr(security.settings, "admin_subjects", [ALICE])
+    for raw in ("bvbrc", "BVBRC", " bvbrc ", "BvBrc"):
+        monkeypatch.setattr(security.settings, "identity_provider", raw)
+        assert security.usable_admin_subjects() == frozenset({ALICE}), raw
+        assert await security.admin_recovery_sources() == ("ADMIN_SUBJECTS",), raw
+    # ...and a padded "none" still reads as no provider at all.
+    monkeypatch.setattr(security.settings, "identity_provider", " NONE ")
+    assert security.usable_admin_subjects() == frozenset()
+
+
+async def test_an_issuer_label_containing_a_colon_still_matches(monkeypatch):
+    """The label is free-form config. Splitting a subject on its FIRST colon
+    yielded a fragment that matched nothing, so every entry from such a
+    deployment looked inert and the guard refused a legitimate revoke."""
+    monkeypatch.setattr(security.settings, "identity_provider", "oidc")
+    monkeypatch.setattr(security.settings, "identity_oidc_issuer_label", "my:idp")
+    monkeypatch.setattr(security.settings, "api_keys", ["k-user"])
+    monkeypatch.setattr(security.settings, "api_key_roles", {"k-user": ROLE_USER})
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    monkeypatch.setattr(security.settings, "admin_subjects", ["my:idp:alice"])
+    assert security.usable_admin_subjects() == frozenset({"my:idp:alice"})
+    assert await security.admin_recovery_sources() == ("ADMIN_SUBJECTS",)
+
+    # A different label is still correctly inert.
+    monkeypatch.setattr(security.settings, "admin_subjects", ["my:other:alice"])
+    assert security.usable_admin_subjects() == frozenset()
+
+
 async def test_a_disabled_service_account_key_is_not_a_way_back(
     monkeypatch, user_store
 ):

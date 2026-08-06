@@ -64,6 +64,8 @@ export function LoginPanel({
   base: string;
 }) {
   const [draft, setDraft] = useState("");
+  // Set when a confirm was refused because the selected backend moved under us.
+  const [notice, setNotice] = useState<string | null>(null);
   const [keyDraft, setKeyDraft] = useState(getStoredApiKey);
 
   const savedToken = getStoredToken();
@@ -114,10 +116,19 @@ export function LoginPanel({
     // to prevent. When they disagree, re-sync and make them confirm again.
     const live = getApiBase();
     if (live !== base) {
+      // KEEP the draft and say what happened. Silently clearing it left the
+      // user having pasted a long secret, clicked, and received nothing — no
+      // token saved, no message, and the remedy button inside the "not being
+      // sent" banner equally dead.
       setCredential(getStoredCredential());
-      setDraft("");
+      setNotice(
+        `The selected backend changed to ${baseLabel(live)} while this panel was ` +
+          "open, so nothing was saved — your token was not sent anywhere. " +
+          "Confirm again to send it there.",
+      );
       return;
     }
+    setNotice(null);
     setCredential({ mode: "bearer", value: token });
     // Explicit: setStoredCredential deliberately will not move an existing
     // token's binding, and re-pasting the same token to confirm it for this
@@ -206,6 +217,11 @@ export function LoginPanel({
             </p>
           ) : null}
           {expiry ? <p className="text-amber-700">{expiry}</p> : null}
+          {notice ? (
+            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-800">
+              {notice}
+            </p>
+          ) : null}
           {unbound ? (
             <p className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-800">
               The saved token was bound to {baseLabel(savedBase)} and is NOT being sent to{" "}

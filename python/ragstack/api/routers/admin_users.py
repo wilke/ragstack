@@ -20,9 +20,11 @@ column of a ``human`` users row. It does NOT manage:
   is an operator edit plus a restart, and the response says so via
   ``env_admin``.
 * an API-key principal's role — that is ``API_KEY_ROLES`` in the environment.
-  A service account is refused with 409: the ``users.role`` column is read only
-  on the bearer path, so writing it for a machine identity would be an inert
-  grant that blurs the two disjoint subject namespaces (#243).
+  A service account is refused with 400 (its colon-free subject fails the
+  federated-subject rule before any store call; the store's own 409 stays as a
+  data-layer invariant for non-HTTP callers): the ``users.role`` column is read
+  only on the bearer path, so writing it for a machine identity would be an
+  inert grant that blurs the two disjoint subject namespaces (#243).
 * the credential itself. Like ``service_accounts.py``, nothing here mints,
   stores or rotates anything a caller authenticates with.
 

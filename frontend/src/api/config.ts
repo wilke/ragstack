@@ -52,14 +52,30 @@ export const BACKEND_PRESETS: BackendPreset[] = [
   { id: "lucid", label: "lucid (prod) · :8010", url: "/be/lucid" },
 ];
 
-const BASE_STORAGE_KEY = "ragstack.apiBase";
-const KEY_STORAGE_KEY = "ragstack.apiKey";
+/**
+ * localStorage is scoped to the ORIGIN, but the front proxy serves every tenant
+ * from one origin (`/ragstack/<tenant>/ui/`). Unprefixed keys therefore made all
+ * tenants share one stored base, one API key and one bearer token: opening
+ * tenant B's UI would read tenant A's stored base and silently address A's API —
+ * and hand A's backend the token confirmed for it while the user believed they
+ * were on B. Scope the keys to the served path so each tenant's UI has its own.
+ *
+ * Plain dev (BASE_URL="/") keeps the original key names, so nobody's local
+ * settings are disturbed.
+ */
+const KEY_SCOPE = (() => {
+  const base = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
+  return base ? `${base}.` : "";
+})();
+
+const BASE_STORAGE_KEY = `ragstack.${KEY_SCOPE}apiBase`;
+const KEY_STORAGE_KEY = `ragstack.${KEY_SCOPE}apiKey`;
 // Login (#…): which credential is active, the bearer token itself, and the
 // backend base that token was saved for. Same dotted namespace, same read()/
 // write() wrappers — writing "" removes the key.
-const MODE_STORAGE_KEY = "ragstack.authMode";
-const TOKEN_STORAGE_KEY = "ragstack.bearerToken";
-const TOKEN_BASE_STORAGE_KEY = "ragstack.bearerBase";
+const MODE_STORAGE_KEY = `ragstack.${KEY_SCOPE}authMode`;
+const TOKEN_STORAGE_KEY = `ragstack.${KEY_SCOPE}bearerToken`;
+const TOKEN_BASE_STORAGE_KEY = `ragstack.${KEY_SCOPE}bearerBase`;
 
 function read(key: string): string {
   try {
@@ -78,15 +94,32 @@ function write(key: string, value: string): void {
   }
 }
 
+/**
+ * Stored marker for "same-origin, deliberately" — distinct from nothing stored.
+ *
+ * `write` removes a key on an empty value, so an empty base was indistinguishable
+ * from "never chosen" and `getApiBase` fell through to GATEWAY_BASE. The switcher
+ * meanwhile set its own state to the empty string it had just written, and the two
+ * disagreed permanently: `saveToken` compares them and refuses to bind when they
+ * differ, so on a gateway-served build (BASE_URL=/ragstack/<tenant>/ui/) picking
+ * the default preset made signing in silently impossible.
+ */
+const SAME_ORIGIN = "-";
+
 export function getApiBase(): string {
+  const stored = read(BASE_STORAGE_KEY);
+  if (stored === SAME_ORIGIN) return "";
   // Fall back to the gateway base when nothing is stored: served under
   // /ragstack/<tenant>/ui/ the app would otherwise call /v1/... absolute, which
   // resolves to the gateway ROOT and 404s until someone opens the switcher.
-  return read(BASE_STORAGE_KEY) || GATEWAY_BASE || "";
+  return stored || GATEWAY_BASE || "";
 }
 
 export function setApiBase(url: string): void {
-  write(BASE_STORAGE_KEY, url.replace(/\/$/, ""));
+  // Strip EVERY trailing slash: the switcher strips one before calling, so a
+  // pasted "host//" left state and storage one slash apart — the same
+  // disagreement as above, reachable without any gateway.
+  write(BASE_STORAGE_KEY, url.replace(/\/+$/, "") || SAME_ORIGIN);
 }
 
 export function getStoredApiKey(): string {
@@ -175,7 +208,11 @@ export function setStoredCredential(cred: Credential): void {
     // token to a backend that tab never displayed — defeating the binding that
     // is the whole mitigation. Re-binding is an explicit, user-confirmed act:
     // see bindTokenToBase.
-    if (cred.value && cred.value !== getStoredToken()) setStoredToken(cred.value);
+    // Compared TRIMMED, because that is the identity `credentialHeaders` uses
+    // when it builds the header. Raw !== would let a value differing only by a
+    // trailing newline read as "a new token" and re-bind.
+    const value = cred.value.trim();
+    if (value && value !== getStoredToken().trim()) setStoredToken(value);
   } else setStoredApiKey(cred.value);
 }
 

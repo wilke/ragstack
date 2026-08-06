@@ -3,6 +3,7 @@ import { getTenants } from "./client";
 import {
   bindTokenToBase,
   clearStoredToken,
+  getApiBase,
   getStoredCredential,
   setApiBase,
   setStoredCredential,
@@ -151,6 +152,35 @@ describe("credential routing", () => {
     signIn("/be/asm");
     await getTenants({ mode: "apikey", value: "lane-key" });
     expect(sent[0].headers["X-API-Key"]).toBe("lane-key");
+    expect(sent[0].headers.Authorization).toBeUndefined();
+  });
+
+  it("round-trips every base through storage, so sign-in stays possible", async () => {
+    // The switcher sets its state to what getApiBase() REPORTS, and the login
+    // panel refuses to bind when the two disagree. So any base that does not
+    // survive a write/read round-trip silently disables signing in — which is
+    // what an empty base did, because it was stored by deleting the key and
+    // therefore came back as the gateway fallback.
+    for (const url of ["", "/", "/be/asm", "/be/asm/", "http://h:8020//"]) {
+      setApiBase(url);
+      const live = getApiBase();
+      setApiBase(live);
+      expect(getApiBase()).toBe(live); // idempotent: state can track storage
+    }
+    // ...and the empty base really is same-origin, not the gateway fallback.
+    setApiBase("");
+    expect(getApiBase()).toBe("");
+  });
+
+  it("does not re-bind on a token differing only by trailing whitespace", async () => {
+    // The "is this a NEW token?" guard is the whole of the re-bind mitigation,
+    // so it must use the same notion of identity as the header builder, which
+    // trims. Otherwise one pasted newline reads as a different token.
+    signIn("/be/asm");
+    setApiBase("https://evil.example");
+    setStoredCredential({ mode: "bearer", value: `${TOKEN}\n` });
+    await getTenants(getStoredCredential().value);
+    expect(sent[0].url).toBe("https://evil.example/v1/stats/tenants");
     expect(sent[0].headers.Authorization).toBeUndefined();
   });
 });

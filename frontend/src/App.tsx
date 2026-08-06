@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { getStoredCredential, setStoredCredential } from "./api/config";
 import type { Credential } from "./lib/auth";
 import { BackendSwitcher } from "./components/BackendSwitcher";
@@ -46,10 +46,12 @@ export function App() {
   // means "I'm using an API key" and switches the mode accordingly — those boxes
   // hide themselves while a token is active (see SIGNED_IN_HINT).
   const [credential, setCredentialState] = useState<Credential>(getStoredCredential);
-  const setCredential = (c: Credential) => {
+  // Stable identity: BackendSwitcher subscribes a `storage` listener keyed on
+  // this, and a fresh function each render would re-subscribe every render.
+  const setCredential = useCallback((c: Credential) => {
     setCredentialState(c);
     setStoredCredential(c);
-  };
+  }, []);
   const apiKey = credential.value;
   const setApiKey = (v: string) => setCredential({ mode: "apikey", value: v });
   const [view, setView] = useState<View>("explore");

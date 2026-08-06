@@ -50,14 +50,24 @@ export function BackendSwitcher({
       setBase(live);
       setSelectId(presetIdForUrl(live));
       setCredential(getStoredCredential());
+      // Same reason applyBase invalidates: no query key contains the base, so
+      // in API-key mode the key string is unchanged and this tab would keep
+      // rendering the PREVIOUS backend's collections and ids while addressing
+      // the new one. (In bearer mode the credential flips to "" and the keys
+      // change on their own — but relying on that would make correctness here
+      // depend on which credential kind happens to be active.)
+      void queryClient.invalidateQueries();
     }
     window.addEventListener("storage", resync);
     return () => window.removeEventListener("storage", resync);
-  }, [setCredential]);
+  }, [setCredential, queryClient]);
 
   function applyBase(url: string) {
-    const clean = url.replace(/\/$/, "");
-    setApiBase(clean);
+    setApiBase(url);
+    // Read BACK rather than reusing what we wrote: storage normalizes (trailing
+    // slashes, the same-origin marker, the gateway fallback), and state that
+    // disagrees with getApiBase() disables the login panel's binding check.
+    const clean = getApiBase();
     setBase(clean);
     setSelectId(presetIdForUrl(clean));
     // A bearer token is bound to the base it was saved for, so re-resolve the

@@ -628,9 +628,11 @@ paths:
 
 
         `subject` must be a federated `issuer:subject` string with both halves
-        non-empty (**400** otherwise). Service accounts are refused (**409**):
-        an API-key principal's role comes from `API_KEY_ROLES`, and letting this
-        surface write it would dissolve the disjoint-namespace invariant. The
+        non-empty (**400** otherwise). Service accounts are refused by that same
+        rule and are therefore a **400**, not a 409: their subjects are
+        colon-free by invariant, so they never reach the store. An API-key
+        principal's role comes from `API_KEY_ROLES`, and letting this surface
+        write it would dissolve the disjoint-namespace invariant. The
         target must already have a row — a user who has never authenticated (and
         was never named as a share grantee or group member) is a **404**.
 
@@ -694,7 +696,7 @@ paths:
             an admin API key whose tenant is a disabled service account, and a
             store that cannot answer the latter is treated as no source at all
             (a retryable refusal beats an irreversible lockout).
-        "422": { description: A malformed body (missing `role`, unknown field) }
+        "422": { description: "A malformed body (missing `role`, unknown field)" }
         "503":
           description: User/authorization store unavailable — refused (fail closed).
 
@@ -2358,8 +2360,11 @@ components:
             all of /v1/admin/*, /v1/config, the model registry) or `user`. Any
             other value is a 400 — `researcher` included: it is a deprecated
             alias accepted only where legacy config is READ, never written here.
+            Deliberately NOT an `enum`: the server validates the vocabulary and
+            answers 400, and an enum here would make that documented response
+            unreachable from a conformant client. `UserRoleRecord` DOES pin the
+            enum, because there the server is the writer.
           type: string
-          enum: [admin, user]
       additionalProperties: false
 
     UserRoleRecord:

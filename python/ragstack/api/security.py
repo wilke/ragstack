@@ -390,6 +390,19 @@ def admin_subject_allowlist() -> frozenset[str]:
     return frozenset(settings.admin_subjects or ())
 
 
+def _configured_provider() -> str:
+    """``identity_provider``, normalized the way the identity layer reads it.
+
+    ``identity/factory.py`` does ``.strip().lower()`` at every branch, so
+    ``IDENTITY_PROVIDER=BVBRC`` (or a padded value out of a ``.env``) builds a
+    working provider. Comparing the raw string here made such a deployment look
+    like it had NO provider: the live ``ADMIN_SUBJECTS`` break-glass entry became
+    invisible to the last-admin guard, which then refused a legitimate revoke —
+    and the startup warning told the operator their working allowlist was dead.
+    """
+    return (settings.identity_provider or "").strip().lower()
+
+
 def _known_issuer_labels() -> frozenset[str]:
     """Issuer halves the CONFIGURED provider can actually produce.
 
@@ -405,7 +418,7 @@ def _known_issuer_labels() -> frozenset[str]:
     empty one is dropped so an unset ``IDENTITY_OIDC_ISSUER_LABEL`` cannot make
     ``'':sub`` look known.
     """
-    provider = settings.identity_provider
+    provider = _configured_provider()
     if provider == "bvbrc":
         return frozenset({"bvbrc"})
     if provider == "oidc":
@@ -433,10 +446,13 @@ def usable_admin_subjects() -> frozenset[str]:
     route to a new admin.
     """
     entries = admin_subject_allowlist()
-    if not entries or settings.identity_provider in ("", "none"):
+    if not entries or _configured_provider() in ("", "none"):
         return frozenset()
     known = _known_issuer_labels()
-    return frozenset(e for e in entries if e.partition(":")[0] in known)
+    # Prefix match, not a split on the FIRST colon: an issuer label is free-form
+    # config and may itself contain a colon, in which case splitting yields a
+    # fragment that matches nothing and a live allowlist entry looks inert.
+    return frozenset(e for e in entries if any(e.startswith(f"{k}:") for k in known))
 
 
 async def _api_key_admin_source() -> str:
@@ -487,9 +503,11 @@ async def _api_key_admin_source() -> str:
 async def _service_account_disabled_strict(subject: str) -> bool:
     """:func:`_service_account_disabled` without the fail-open swallow.
 
-    The cached happy path is identical; the difference is that a store error
-    propagates instead of answering ``False``. Only the lockout guard wants
-    this — see :func:`_api_key_admin_source` for why the polarity flips.
+    Deliberately uncached: this asks a one-off question on a route that is not
+    hot, and reusing the disabled cache would let a verdict memoized for the
+    auth path decide a lockout refusal. A store error propagates instead of
+    answering ``False`` — see :func:`_api_key_admin_source` for why the polarity
+    flips.
     """
     from ragstack.user_store import get_user_store
 
@@ -1016,7 +1034,7 @@ def validate_admin_subjects_settings() -> None:
 
     if not entries:
         return
-    if settings.identity_provider in ("", "none"):
+    if _configured_provider() in ("", "none"):
         logger.warning(
             "ADMIN_SUBJECTS names %d subject(s) but IDENTITY_PROVIDER is %r: no "
             "caller can present a bearer credential, so the allowlist is inert "
@@ -1030,7 +1048,15 @@ def validate_admin_subjects_settings() -> None:
         # count. Only reached when a provider IS configured — otherwise every
         # entry is unknown and this would just restate the warning above.
         known = _known_issuer_labels()
-        unknown = sorted({e.partition(":")[0] for e in entries} - known)
+        # Same prefix rule as usable_admin_subjects: an entry is "unknown" only
+        # when no configured label is a proper `label:` prefix of it.
+        unknown = sorted(
+            {
+                e.partition(":")[0]
+                for e in entries
+                if not any(e.startswith(f"{k}:") for k in known)
+            }
+        )
         if unknown:
             logger.warning(
                 "ADMIN_SUBJECTS uses issuer prefix(es) %s, but IDENTITY_PROVIDER "
