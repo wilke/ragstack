@@ -61,6 +61,18 @@ class CollectionHealth:
     status: str
     optimizer_ok: bool
     segments_count: int
+    #: Points stored vs. vectors actually indexed. Their difference is the
+    #: optimizer's BACKLOG, which is what tracks toward VMA exhaustion (#140) —
+    #: a collection can sit at ``green`` with a large unindexed tail, so status
+    #: alone is not a sufficient throttle signal. Default 0 keeps every existing
+    #: constructor call valid.
+    points_count: int = 0
+    indexed_vectors_count: int = 0
+
+    @property
+    def unindexed(self) -> int:
+        """Vectors written but not yet indexed — the optimizer's backlog."""
+        return max(0, self.points_count - self.indexed_vectors_count)
 
 
 def _slug(s: str, n: int = 40) -> str:
@@ -381,8 +393,11 @@ class QdrantVectorStore:
         opt = getattr(info, "optimizer_status", "ok")
         optimizer_ok = not bool(getattr(opt, "error", None))
         segments = int(getattr(info, "segments_count", 0) or 0)
+        points = int(getattr(info, "points_count", 0) or 0)
+        indexed = int(getattr(info, "indexed_vectors_count", 0) or 0)
         return CollectionHealth(status=status, optimizer_ok=optimizer_ok,
-                                segments_count=segments)
+                                segments_count=segments, points_count=points,
+                                indexed_vectors_count=indexed)
 
     async def drop_collection(self) -> bool:
         """Delete the entire physical collection — every vector, every tenant.

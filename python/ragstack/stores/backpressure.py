@@ -68,12 +68,18 @@ class BackpressuredVectorStore:
         max_wait: float | None = None,
         ready_status: str = "green",
         max_in_flight: int | None = None,
+        max_unindexed: int | None = None,
         health: HealthFn | None = None,
     ) -> None:
         self._inner = inner
         self._poll_interval = poll_interval
         self._max_wait = max_wait
         self._ready_status = ready_status
+        # Status alone is not a sufficient throttle: a collection sits at `green`
+        # while the optimizer carries a large unindexed BACKLOG, and it is the
+        # backlog — not the status — that tracks toward VMA exhaustion (#140).
+        # None (default) keeps the status-only behaviour unchanged.
+        self._max_unindexed = max_unindexed
         self._sem = asyncio.Semaphore(max_in_flight) if max_in_flight else None
         self._health: HealthFn | None = (
             health if health is not None else getattr(inner, "collection_health", None)
@@ -92,10 +98,17 @@ class BackpressuredVectorStore:
             # its optimizer has failed. Absent (health object without the field) is
             # treated as healthy.
             optimizer_ok = getattr(h, "optimizer_ok", True)
-            if status == self._ready_status and optimizer_ok:
+            # Absent (a health object without the counters) reads as 0 = no
+            # backlog, so a store that cannot report them is never throttled here.
+            backlog = int(getattr(h, "unindexed", 0) or 0)
+            backlog_ok = self._max_unindexed is None or backlog <= self._max_unindexed
+            if status == self._ready_status and optimizer_ok and backlog_ok:
                 if held:
-                    log.info("qdrant ready (status=%s, segments=%s) — resuming upserts",
-                             status, getattr(h, "segments_count", "?"))
+                    log.info(
+                        "qdrant ready (status=%s, segments=%s, unindexed=%s) — "
+                        "resuming upserts",
+                        status, getattr(h, "segments_count", "?"), backlog,
+                    )
                 return
             held = True
             # Compute the next sleep so total wait never exceeds max_wait, and the
