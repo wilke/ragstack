@@ -207,14 +207,21 @@ const PUBLIC_LITERALS = new Set(["@public", "public"]);
 //: The stored grantee_id of the built-in public group (never issuer-prefixed).
 const PUBLIC_GROUP_ID = "public";
 
+//: Prefix naming a service account (a machine identity authenticated by an API
+//: key). Its subject is colon-free, so it must NOT be issuer-qualified.
+const SERVICE_PREFIX = "@service:";
+
 /**
  * Resolve what the operator typed into the subject the API will store, mirroring
  * the server's `_resolve_grantee`: `@public`/`public` → `@public` (the public
- * literal, never issuer-prefixed); a value already containing `:` is a full
- * `issuer:subject` string kept verbatim; a bare username is prefixed to
- * `<issuer>:<username>` (issuer defaults to `bvbrc`). Surrounding whitespace is
- * forgiven (people paste); an empty/whitespace input resolves to `""`, the
- * signal to block the Grant button before a request is even sent.
+ * literal, never issuer-prefixed); `@service:<subject>` → the bare `<subject>`,
+ * kept COLON-FREE (a service account authenticates as its API-key tenant, so
+ * qualifying it with an issuer would produce a grant it can never claim); a
+ * value already containing `:` is a full `issuer:subject` string kept verbatim;
+ * a bare username is prefixed to `<issuer>:<username>` (issuer defaults to
+ * `bvbrc`). Surrounding whitespace is forgiven (people paste); an
+ * empty/whitespace input resolves to `""`, the signal to block the Grant button
+ * before a request is even sent.
  *
  * This is advisory (a preview) — the server is authoritative and re-resolves the
  * raw grantee — but keeping the rule in one tested place lets the dialog show
@@ -224,6 +231,7 @@ export function normalizeGranteeSubject(typed: string, issuer = "bvbrc"): string
   const g = typed.trim();
   if (g === "") return "";
   if (PUBLIC_LITERALS.has(g)) return PUBLIC_GRANTEE;
+  if (g.startsWith(SERVICE_PREFIX)) return g.slice(SERVICE_PREFIX.length).trim();
   if (g.includes(":")) return g;
   const iss = issuer.trim() || "bvbrc";
   return `${iss}:${g}`;

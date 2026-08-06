@@ -2,17 +2,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "group_member_add_request.json",
   "title": "GroupMemberAddRequest",
-  "description": "Add a member to a group (POST /v1/groups/{id}/members body). Owner-or-admin only. The `subject` is resolved server-side exactly like a share grantee: a value containing ':' is a full 'issuer:subject' kept verbatim, a bare BV-BRC username is prefixed to 'bvbrc:<username>'. The resolved subject is echoed back so a typo is visible. A never-logged-in user is pre-provisioned so the membership is claimed on first login. Group ids and the '@public'/'@group:' forms are rejected (no nesting).",
+  "description": "Add a member to a group (POST /v1/groups/{id}/members body). Owner-or-admin only. The `subject` is resolved server-side exactly like a share grantee: a value containing ':' is a full 'issuer:subject' kept verbatim, '@service:<subject>' is a service account kept colon-free, and a bare BV-BRC username is prefixed to 'bvbrc:<username>'. The resolved subject is echoed back so a typo is visible. A never-logged-in user is pre-provisioned so the membership is claimed on first login. Group ids and the '@public'/'@group:' forms are rejected (no nesting).",
   "type": "object",
-  "required": ["subject"],
+  "required": [
+    "subject"
+  ],
   "properties": {
     "subject": {
-      "description": "Who to add. A full 'issuer:subject' string (kept verbatim) or a bare BV-BRC username (prefixed to 'bvbrc:<username>').",
+      "description": "Who to add. A full 'issuer:subject' string (kept verbatim), '@service:<subject>' for a service account (kept colon-free — a bare subject would be qualified to 'bvbrc:<subject>' and the membership would expand for a federated identity that never authenticates), or a bare BV-BRC username (prefixed to 'bvbrc:<username>').",
       "type": "string",
       "minLength": 1
     },
     "issuer": {
-      "description": "Issuer used to qualify a bare username (default 'bvbrc'). Ignored for a value that already contains ':'.",
+      "description": "Issuer used to qualify a bare username (default 'bvbrc'). Ignored for an '@service:<subject>' form and for a value that already contains ':'.",
       "type": "string",
       "default": "bvbrc"
     }

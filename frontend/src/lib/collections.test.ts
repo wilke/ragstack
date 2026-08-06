@@ -194,6 +194,14 @@ describe("normalizeGranteeSubject", () => {
     expect(normalizeGranteeSubject("public")).toBe("@public");
   });
 
+  it("keeps an @service: subject colon-free, ignoring the issuer", () => {
+    // A service account authenticates as its API-key tenant, which is colon-free.
+    // Qualifying it would preview (and the server would store) a federated
+    // subject the machine identity can never claim.
+    expect(normalizeGranteeSubject("@service:svc-askclark")).toBe("svc-askclark");
+    expect(normalizeGranteeSubject("@service: svc-askclark ", "oidc")).toBe("svc-askclark");
+  });
+
   it("honours an explicit issuer for a bare username", () => {
     expect(normalizeGranteeSubject("alice", "oidc")).toBe("oidc:alice");
   });

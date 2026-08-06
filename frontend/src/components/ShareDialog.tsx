@@ -213,7 +213,7 @@ export function ShareDialog({
             onKeyDown={(e) => {
               if (e.key === "Enter") submitGrant();
             }}
-            placeholder="e.g. alice, bvbrc:alice, or @public"
+            placeholder="e.g. alice, bvbrc:alice, @service:svc-name, or @public"
             className="min-w-[16rem] flex-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
           <button
@@ -226,7 +226,8 @@ export function ShareDialog({
           </button>
         </div>
         <p className="mt-1 text-[11px] leading-snug text-gray-400">
-          A BV-BRC username, a full subject like <span className="font-mono">bvbrc:alice</span>, or{" "}
+          A BV-BRC username, a full subject like <span className="font-mono">bvbrc:alice</span>,{" "}
+          <span className="font-mono">@service:&lt;name&gt;</span> for a service account, or{" "}
           <span className="font-mono">@public</span> for everyone.
           {grantee.trim() && previewSubject !== PUBLIC_GRANTEE ? (
             <>

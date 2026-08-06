@@ -306,6 +306,15 @@ async def test_every_group_store_is_also_an_acl_and_user_store(tmp_path):
         assert await store.owner_of(COLL) == OWNER
         g = await store.create_group("team", owner_subject=OWNER)
         assert (await store.get_group(g.id)) is not None
+        # ...AND a service account, three subclass levels down from the users
+        # table that defines it (#258).
+        svc = await store.create_service_account("svc-groups", OWNER, purpose="test")
+        assert svc.is_service and (await store.list_service_accounts()) == [svc]
+        # add_member pre-provisions a users row; naming the service account as
+        # a member must not disturb its kind.
+        await store.add_member(g.id, "svc-groups", added_by=OWNER)
+        still = await store.get("svc-groups")
+        assert still is not None and still.is_service and still.created_by == OWNER
 
 
 # --------------------------------------------------------------------------- #

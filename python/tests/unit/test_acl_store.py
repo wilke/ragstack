@@ -424,6 +424,11 @@ async def test_every_acl_store_is_also_a_user_store(tmp_path):
         assert isinstance(store, UserStore)
         await store.upsert_seen(ALICE, "bvbrc")
         assert (await store.get(ALICE)) is not None
+        # The #258 users columns/methods reach this store through super() —
+        # acl_store adds no users DDL of its own, so this is what proves the
+        # single shared definition actually propagated.
+        svc = await store.create_service_account("svc-acl", ALICE, purpose="test")
+        assert svc.is_service and (await store.list_service_accounts()) == [svc]
 
 
 async def test_backend_selection(tmp_path):

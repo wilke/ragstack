@@ -3,8 +3,13 @@
 The hook lives in ``_principal_from_bearer``: after a credential verifies, a
 fire-and-forget task records the user in the user store. The properties under
 test are the ones auth depends on: a verified bearer login creates the row, a
-broken store never breaks auth, and API-key principals get no row (a key is a
-deployment credential, not a person).
+broken store never breaks auth, and API-key principals get no row WRITTEN (a key
+is a deployment credential, not a person).
+
+The key path does READ the user store since #258 — a key whose tenant is a
+registered *and disabled* service account is refused — but it never writes one,
+so the invariant below is unchanged. That read has its own module,
+``test_service_accounts.py``.
 """
 from __future__ import annotations
 
@@ -200,7 +205,11 @@ async def test_oversized_or_control_character_claims_are_clamped(
 
 
 async def test_api_key_principals_get_no_user_row(client, identity, user_store, monkeypatch):
-    """An API key is a deployment credential, not a person — no profile row."""
+    """An API key is a deployment credential, not a person — no profile row.
+
+    Still true after #258 added a users-table READ to the key path: the read is
+    a lookup, never an upsert. If it ever wrote, the keyless dev path and every
+    unmapped key would mint a bogus ``default`` row on each boot."""
     monkeypatch.setattr(security.settings, "api_keys", ["s3cret"])
     resp = await client.get("/v1/documents", headers={"X-API-Key": "s3cret"})
     assert resp.status_code == 200

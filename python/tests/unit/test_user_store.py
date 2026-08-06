@@ -5,6 +5,13 @@ and the semantics under test are the ones auth depends on: ``upsert_seen`` is
 idempotent (it fires once per identity-cache expiry, not once per session),
 never blanks out profile data a previous token provided, and flips a
 provisional grantee row into a real profile without losing ``first_seen_at``.
+
+Service accounts (issue #258) share the table and add their own invariants: a
+service subject is colon-free (the bearer namespace is ``issuer:sub``, so the
+two can never collide), ``upsert_seen``/``ensure_provisional`` can neither mint
+a service row nor downgrade one to ``human``, a real human row can never be
+converted into a service account silently, and disabling is soft state
+(``disabled_at``), never a DELETE.
 """
 from __future__ import annotations
 
@@ -15,9 +22,13 @@ from types import SimpleNamespace
 import pytest
 
 from ragstack.user_store import (
+    KIND_HUMAN,
+    KIND_SERVICE,
     InMemoryUserStore,
     PostgresUserStore,
     SqliteUserStore,
+    UserInvariantError,
+    UserNotFoundError,
     UserRecord,
     make_user_store,
 )
@@ -26,6 +37,9 @@ pytestmark = pytest.mark.asyncio
 
 SUBJECT = "bvbrc:alice@patricbrc.org"
 ISSUER = "bvbrc"
+SVC = "svc-askclark"
+ADMIN = "bvbrc:admin@patricbrc.org"
+BACKENDS = ["memory", "sqlite"]
 
 
 def _settings(tmp_path, **over):
@@ -170,9 +184,261 @@ async def test_sqlite_tolerates_a_table_created_by_an_older_build(tmp_path):
         conn.execute("INSERT INTO users (subject, issuer) VALUES ('bvbrc:legacy', 'bvbrc')")
     store = SqliteUserStore(path)  # runs ensure_columns
     rec = await store.get("bvbrc:legacy")
+    # Full-model equality pins "SQL column default == pydantic field default"...
     assert rec == UserRecord(subject="bvbrc:legacy", issuer="bvbrc")
+    # ...and, explicitly, a pre-#258 row backfills to an enabled human account
+    # rather than to an empty/NULL kind.
+    assert rec is not None
+    assert rec.kind == KIND_HUMAN and rec.disabled_at == ""
+    assert rec.enabled is True and rec.is_service is False
     await store.upsert_seen(SUBJECT, ISSUER)
     assert len(await store.list_users()) == 2
+
+
+# --------------------------------------------------------------------------- #
+# service accounts (#258) — the machine-identity half of the table
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_records_provenance(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    rec = await store.create_service_account(SVC, ADMIN, purpose="ASM read-only")
+    assert rec.subject == SVC and rec.kind == KIND_SERVICE
+    assert rec.is_service is True and rec.enabled is True
+    assert rec.created_by == ADMIN and rec.purpose == "ASM read-only"
+    # Deliberately created, never "seen": provisional off, never authenticated.
+    assert rec.provisional is False
+    assert rec.first_seen_at and rec.last_seen_at == ""
+    assert (await store.get(SVC)) == rec
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_rejects_a_colon_in_the_subject(tmp_path, backend):
+    """The colon rule IS the namespace partition: a bearer subject is always
+    ``issuer:sub``, so a colon-free service subject can never collide with one
+    (the data-layer form of the #243 startup guard)."""
+    store = _stores(tmp_path)[backend]
+    for bad in ("bvbrc:svc", "svc:", ":svc", "a:b:c"):
+        with pytest.raises(UserInvariantError, match="colon-free"):
+            await store.create_service_account(bad, ADMIN)
+        assert (await store.get(bad)) is None  # and nothing was written
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_rejects_the_reserved_tenants(tmp_path, backend):
+    """``default`` and ``public`` are shared fallback tenants, not one caller's
+    identity: every valid-but-unmapped API key (and the whole keyless dev path)
+    resolves to ``default``. A service row on one would make a single disable a
+    DEPLOYMENT-WIDE 401 — including for the admin key that would call /enable,
+    which is a lockout no API route can undo."""
+    store = _stores(tmp_path)[backend]
+    for bad in ("default", "public"):
+        with pytest.raises(UserInvariantError, match="reserved"):
+            await store.create_service_account(bad, ADMIN)
+        assert (await store.get(bad)) is None  # and nothing was written
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_requires_subject_and_creator(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    with pytest.raises(UserInvariantError, match="subject"):
+        await store.create_service_account("", ADMIN)
+    with pytest.raises(UserInvariantError, match="created_by"):
+        await store.create_service_account(SVC, "")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_is_idempotent_ish(tmp_path, backend):
+    """A re-run of a provisioning script is a no-op — it must not rewrite the
+    purpose, the creation time, or (crucially) a disabled_at somebody set."""
+    store = _stores(tmp_path)[backend]
+    first = await store.create_service_account(SVC, ADMIN, purpose="ASM read-only")
+    await store.disable_service_account(SVC, ADMIN)
+    again = await store.create_service_account(SVC, "someone:else", purpose="hijack")
+    assert again.created_by == ADMIN and again.purpose == "ASM read-only"
+    assert again.first_seen_at == first.first_seen_at
+    assert again.enabled is False  # re-creation did not silently re-enable it
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_refuses_an_existing_human(tmp_path, backend):
+    """A human row cannot be converted into a machine credential silently —
+    that is a privilege event, so it must be a typed error."""
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen("alice", ISSUER, email="a@x.org")  # colon-free human
+    with pytest.raises(UserInvariantError, match="already exists"):
+        await store.create_service_account("alice", ADMIN)
+    rec = await store.get("alice")
+    assert rec is not None and rec.kind == KIND_HUMAN and rec.email == "a@x.org"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_create_service_account_claims_a_never_seen_provisional_row(tmp_path, backend):
+    """``ensure_provisional`` is called opportunistically with arbitrary
+    subjects (share grantee, group member), so naming a service account before
+    creating it must not permanently block creation. Nobody has ever
+    authenticated as that placeholder, so claiming it is a creation."""
+    store = _stores(tmp_path)[backend]
+    placeholder = await store.ensure_provisional(SVC, "")
+    assert placeholder.kind == KIND_HUMAN and placeholder.provisional is True
+
+    rec = await store.create_service_account(SVC, ADMIN, purpose="ASM")
+    assert rec.kind == KIND_SERVICE and rec.provisional is False
+    assert rec.created_by == ADMIN
+    assert rec.first_seen_at == placeholder.first_seen_at  # row-creation time survives
+    assert (await store.get(SVC)) == rec
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_disable_and_enable_are_soft_and_idempotent(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    created = await store.create_service_account(SVC, ADMIN)
+
+    off = await store.disable_service_account(SVC, ADMIN)
+    assert off.enabled is False and off.disabled_at and off.disabled_by == ADMIN
+    assert off.kind == KIND_SERVICE and off.created_by == ADMIN
+    assert (await store.get(SVC)) == off  # the row still exists — soft state
+    assert SVC in [r.subject for r in await store.list_users()]
+
+    again = await store.disable_service_account(SVC, "bvbrc:other")
+    assert again.disabled_at == off.disabled_at  # idempotent: not re-stamped
+
+    on = await store.enable_service_account(SVC, "bvbrc:second-admin")
+    assert on.enabled is True
+    assert on.first_seen_at == created.first_seen_at
+    assert (await store.enable_service_account(SVC, ADMIN)) == on  # idempotent
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_enable_keeps_the_disable_audit_trail(tmp_path, backend):
+    """ADR-0004 decision 6: the audit trail is the point. A re-enable must not
+    leave a row byte-identical to one nobody ever disabled — who revoked the
+    credential, when, and who put it back all survive."""
+    store = _stores(tmp_path)[backend]
+    await store.create_service_account(SVC, ADMIN)
+    off = await store.disable_service_account(SVC, ADMIN)
+
+    on = await store.enable_service_account(SVC, "bvbrc:second-admin")
+    assert on.enabled is True
+    # The disable stamp is history, NOT state: it stays put.
+    assert on.disabled_by == ADMIN and on.disabled_at == off.disabled_at
+    # ...and the enable is recorded against the admin who performed it.
+    assert on.enabled_by == "bvbrc:second-admin" and on.enabled_at
+    assert (await store.get(SVC)) == on  # and it is what was persisted
+
+    # A second disable overwrites only its own pair, and flips the state back.
+    again = await store.disable_service_account(SVC, "bvbrc:third-admin")
+    assert again.enabled is False
+    assert again.disabled_by == "bvbrc:third-admin"
+    assert again.enabled_by == "bvbrc:second-admin"  # the enable is still on record
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_disable_rejects_unknown_and_human_subjects(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    with pytest.raises(UserNotFoundError):
+        await store.disable_service_account("nope", ADMIN)
+    await store.upsert_seen(SUBJECT, ISSUER)
+    with pytest.raises(UserInvariantError, match="only service accounts"):
+        await store.disable_service_account(SUBJECT, ADMIN)
+    with pytest.raises(UserInvariantError, match="actor"):
+        await store.disable_service_account(SVC, "")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_ensure_provisional_never_downgrades_a_service_row(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    svc = await store.create_service_account(SVC, ADMIN, purpose="ASM")
+    assert (await store.ensure_provisional(SVC, "")) == svc  # returned untouched
+    assert (await store.get(SVC)) == svc
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_upsert_seen_never_reclassifies_or_re_enables_a_service_row(tmp_path, backend):
+    """The colon rule means a bearer identity and a service account cannot be
+    the same subject — but the first-auth hook must be structurally unable to
+    flip ``kind`` or clear ``disabled_at`` even if one somehow is."""
+    store = _stores(tmp_path)[backend]
+    await store.create_service_account(SVC, ADMIN, purpose="ASM")
+    await store.disable_service_account(SVC, ADMIN)
+
+    rec = await store.upsert_seen(SVC, "bvbrc", email="attacker@x.org")
+    assert rec.kind == KIND_SERVICE
+    assert rec.created_by == ADMIN and rec.purpose == "ASM"
+    assert rec.disabled_by == ADMIN and rec.disabled_at and rec.enabled is False
+    assert (await store.get(SVC)) == rec  # and that is what actually landed
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_list_service_accounts_filters_by_kind_and_creator(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    await store.upsert_seen(SUBJECT, ISSUER)  # a human, must not appear
+    await store.create_service_account("svc-a", ADMIN)
+    await store.create_service_account("svc-b", ADMIN)
+    await store.create_service_account("svc-c", "bvbrc:other")
+
+    listed = await store.list_service_accounts()
+    assert [r.subject for r in listed] == ["svc-a", "svc-b", "svc-c"]
+    assert all(r.kind == KIND_SERVICE for r in listed)
+    assert [r.subject for r in await store.list_service_accounts(created_by=ADMIN)] == [
+        "svc-a", "svc-b",
+    ]
+    assert len(await store.list_service_accounts(limit=2)) == 2
+
+    # Disabled accounts stay listed — soft state, not a deletion.
+    await store.disable_service_account("svc-a", ADMIN)
+    assert "svc-a" in [r.subject for r in await store.list_service_accounts()]
+
+
+async def test_sqlite_service_account_survives_reopen(tmp_path):
+    """``kind`` and the disabled stamp are durable, not process-local state."""
+    path = str(tmp_path / "svc.db")
+    await SqliteUserStore(path).create_service_account(SVC, ADMIN, purpose="ASM")
+    await SqliteUserStore(path).disable_service_account(SVC, ADMIN)
+    rec = await SqliteUserStore(path).get(SVC)
+    assert rec is not None
+    assert rec.kind == KIND_SERVICE and rec.created_by == ADMIN and rec.purpose == "ASM"
+    assert rec.enabled is False
+    assert [r.subject for r in await SqliteUserStore(path).list_service_accounts()] == [SVC]
+
+
+async def test_sqlite_service_account_on_a_table_created_by_an_older_build(tmp_path):
+    """The #258 columns must arrive additively: a pre-existing users table gets
+    them from ``ensure_columns``, and a service account is creatable there."""
+    path = str(tmp_path / "old-svc.db")
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE users (subject TEXT PRIMARY KEY, issuer TEXT)")
+        conn.execute("INSERT INTO users (subject, issuer) VALUES ('bvbrc:legacy', 'bvbrc')")
+    store = SqliteUserStore(path)  # runs ensure_columns for all five new columns
+    rec = await store.create_service_account(SVC, ADMIN, purpose="ASM")
+    assert rec.kind == KIND_SERVICE
+    assert [r.subject for r in await store.list_service_accounts()] == [SVC]
+    legacy = await store.get("bvbrc:legacy")
+    assert legacy is not None and legacy.kind == KIND_HUMAN
+    assert legacy.enabled is True  # a widened human row is not accidentally off
+
+
+async def test_a_row_disabled_before_the_state_column_existed_stays_disabled(tmp_path):
+    """Upgrade safety: when state lived in ``disabled_at``, a disabled row had
+    no ``disabled`` column. ``ensure_columns`` backfills that flag with 0, so a
+    naive read would silently RESURRECT a revoked credential. It must not."""
+    path = str(tmp_path / "pre-flag.db")
+    store = SqliteUserStore(path)
+    await store.create_service_account(SVC, ADMIN)
+    with sqlite3.connect(path) as conn:  # emulate the old writer exactly
+        conn.execute(
+            "UPDATE users SET disabled = 0, disabled_by = ?, disabled_at = ?, "
+            "enabled_by = '', enabled_at = '' WHERE subject = ?",
+            (ADMIN, "2026-01-01T00:00:00+00:00", SVC),
+        )
+    rec = await store.get(SVC)
+    assert rec is not None and rec.enabled is False
+    # ...while a row that was disabled and then legitimately re-enabled reads
+    # back ENABLED, disable stamp and all.
+    on = await store.enable_service_account(SVC, ADMIN)
+    assert on.enabled is True and on.disabled_at and on.enabled_at
+    assert (await store.get(SVC)) == on
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +460,21 @@ async def test_postgres_store_shares_the_sqlite_schema():
     for name, frag in us._USERS_COLUMNS.items():
         assert "NOT NULL" not in frag or "DEFAULT" in frag, name
     assert isinstance(PostgresUserStore("postgresql://x/y"), object)
+    # The first-auth hook's ON CONFLICT clause is narrowed to profile columns
+    # in BOTH dialects, so it is structurally unable to write the
+    # identity-class ones (#258). This is the DB-level form of the invariant.
+    assert set(us._SEEN_ASSIGN_COLUMNS).isdisjoint(
+        {
+            "subject", "kind", "created_by", "purpose",
+            "disabled", "disabled_by", "disabled_at", "enabled_by", "enabled_at",
+        }
+    )
+    assert set(us._SEEN_ASSIGN_COLUMNS) < set(us._COLUMNS)
+    # The three parallel positional lists stay in lockstep.
+    assert len(us._record_to_row(UserRecord(subject="x"))) == len(us._COLUMNS)
+    assert len(us._service_update_args(UserRecord(subject="x"))) == len(
+        us._SERVICE_SET_COLUMNS
+    ) + 1
 
 
 @pytest.mark.skipif(
@@ -211,6 +492,20 @@ async def test_postgres_round_trip():
         assert rec.first_seen_at == provisional.first_seen_at
         assert (await store.get(subject)) == rec
         assert subject in [r.subject for r in await store.list_users(limit=1000)]
+
+        svc = "svc-pg-roundtrip"
+        created = await store.create_service_account(svc, ADMIN, purpose="pg")
+        assert created.kind == KIND_SERVICE and created.created_by == ADMIN
+        off = await store.disable_service_account(svc, ADMIN)
+        assert off.enabled is False
+        # The narrowed ON CONFLICT list must hold on postgres too.
+        seen = await store.upsert_seen(svc, "bvbrc")
+        assert seen.kind == KIND_SERVICE and seen.enabled is False
+        assert (await store.get(svc)) == seen
+        assert svc in [r.subject for r in await store.list_service_accounts(limit=1000)]
+        assert (await store.enable_service_account(svc, ADMIN)).enabled is True
+        with pytest.raises(UserInvariantError, match="colon-free"):
+            await store.create_service_account("bvbrc:nope", ADMIN)
     finally:
         await store.close()
 

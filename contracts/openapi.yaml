@@ -448,6 +448,163 @@ paths:
         "404": { description: Unknown model }
         "409": { description: Model is assigned to a task; unassign first }
 
+  /v1/admin/service-accounts:
+    get:
+      operationId: listServiceAccounts
+      summary: List registered service accounts (admin only)
+      description: >-
+        Every registered machine identity, oldest first, including disabled ones
+        (disabling is soft state, not a deletion — the audit trail is the point).
+        The response never carries key material, a key prefix, or a key count:
+        the key<->account mapping lives only in the server environment.
+
+
+        Registration is OPT-IN. An API key whose tenant has no record here keeps
+        authenticating exactly as before; this endpoint enumerates the accounts
+        an admin chose to register, not every key the server accepts.
+
+
+        Python-only in v1: the Go implementation has no `X-API-Key`
+        authentication path, so it serves no service-account surface.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      responses:
+        "200":
+          description: The registered service accounts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServiceAccountsResponse" }
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+        "503":
+          description: User/authorization store unavailable — refused (fail closed).
+    post:
+      operationId: createServiceAccount
+      summary: Register a service account (admin only)
+      description: >-
+        Register a machine identity whose `subject` equals the API-key tenant the
+        operator maps its key to. This creates the ACCOUNT RECORD only — it does
+        NOT mint, store, or rotate a credential. `API_KEYS`, `API_KEY_TENANTS`
+        and `API_KEY_ROLES` are environment settings with no writer in the
+        server; provisioning a key is an operator edit plus a restart, and both
+        the key AND its tenant mapping must be added in the SAME edit or the
+        next startup fails its production settings check.
+
+
+        `subject` must be colon-free (a 400 otherwise): ':' is reserved for
+        federated `issuer:sub` identities, which is what keeps a service account
+        structurally unable to collide with — or be impersonated by — a bearer
+        identity. It must also not be one of the reserved tenants `default` /
+        `public` (400): every valid but unmapped API key resolves to `default`,
+        so registering it and disabling it would 401 every such caller at once,
+        including the admin key needed to call `/enable`. Re-registering an
+        existing service account is a no-op that returns the stored row unchanged
+        (201), so a provisioning script is re-runnable; a subject that already
+        exists as a human account is a 409.
+
+
+        To then grant the account read on a collection, or add it to a group, use
+        the `@service:<subject>` grantee/member form — a bare subject is
+        qualified to `bvbrc:<subject>` and would create a grant for a federated
+        identity that never authenticates.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ServiceAccountCreateRequest" }
+      responses:
+        "201":
+          description: The account was registered (or already existed); the row is returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServiceAccountRecord" }
+        "400":
+          description: >-
+            A colon-bearing, empty, over-long or whitespace-only subject, or one
+            of the reserved `default` / `public` tenants
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+        "409":
+          description: >-
+            The subject already exists as a human (federated) account; converting
+            a person's row into a machine credential is refused
+        "422": { description: A malformed body (missing `subject`, unknown field) }
+        "503":
+          description: User/authorization store unavailable — refused (fail closed).
+
+  /v1/admin/service-accounts/{subject}/disable:
+    post:
+      operationId: disableServiceAccount
+      summary: Disable a service account (admin only)
+      description: >-
+        Soft-disable the account: `disabled_by`/`disabled_at` are stamped and the
+        row is kept (never a DELETE). Its API key is then rejected with 401 on
+        the API-key auth path — within the server's disabled-check cache TTL,
+        which IS the revocation lag.
+
+
+        Disabling the account YOU are authenticating as is refused (409): the
+        check runs on the same API-key path, so the next request — including the
+        `/enable` that would undo it — would be a 401 with no way back through
+        the API. Use another admin credential.
+
+
+        This is a SOFT, BEST-EFFORT revoke. The auth-time check FAILS OPEN: if
+        the user store cannot answer, the request proceeds on the strength of the
+        verified key, because trading a total outage of the API-key surface for a
+        revocation convenience is a bad bargain. The AUTHORITATIVE revoke is
+        removing the key from `API_KEYS` (and `API_KEY_TENANTS`) and restarting.
+
+
+        Idempotent: disabling an already-disabled account is a 204 no-op.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: The account is disabled }
+        "400": { description: A colon-bearing, empty, over-long or whitespace-only subject }
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+        "404": { description: No service account with that subject }
+        "409":
+          description: >-
+            The subject exists but is a human account (only service accounts
+            toggle here), or it is the account the caller is authenticating as
+            (self-lockout is refused)
+        "503":
+          description: User/authorization store unavailable — refused (fail closed).
+
+  /v1/admin/service-accounts/{subject}/enable:
+    post:
+      operationId: enableServiceAccount
+      summary: Re-enable a disabled service account (admin only)
+      description: >-
+        Clear the disabled state and stamp `enabled_by`/`enabled_at`. The
+        account's key authenticates again within the disabled-check cache TTL.
+        Idempotent: enabling an already active account is a 204 no-op.
+
+
+        `disabled_by`/`disabled_at` are NOT cleared — they are the record of the
+        last revocation, and a re-enable that blanked them would leave a row
+        indistinguishable from one nobody ever disabled (ADR-0004 decision 6).
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: subject, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: The account is active }
+        "400": { description: A colon-bearing, empty, over-long or whitespace-only subject }
+        "401": { description: Missing or invalid API key }
+        "403": { description: Admin role required }
+        "404": { description: No service account with that subject }
+        "409":
+          description: The subject exists but is a human account — only service accounts toggle here
+        "503":
+          description: User/authorization store unavailable — refused (fail closed).
+
   /v1/admin/config/assignments:
     patch:
       operationId: patchModelAssignments
@@ -761,10 +918,14 @@ paths:
         maps to the built-in world-readable **public group** (read-only —
         making a collection public is `GRANT read TO public`, and un-publishing is
         `DELETE` of that share); a value containing `:` is taken as a full
-        `issuer:subject` string and stored verbatim; a bare BV-BRC username is
-        prefixed to `bvbrc:<username>`. The resolved subject is echoed back in the
-        response so a typo is visible — a typo'd grantee is otherwise an
-        unclaimable grant. There is no BV-BRC username-existence check; sharing
+        `issuer:subject` string and stored verbatim; the form
+        `@service:<subject>` names a **service account** and keeps its subject
+        colon-free; and a bare BV-BRC username is prefixed to `bvbrc:<username>`.
+        The resolved subject is echoed back in the response so a typo is visible
+        — a typo'd grantee is otherwise an unclaimable grant. `@service:` is
+        REQUIRED for a machine identity: a bare subject would be qualified with
+        the default issuer, creating a grant for a federated identity the service
+        account can never authenticate as. There is no BV-BRC username-existence check; sharing
         with a user who has never logged in pre-provisions their row so the grant
         is claimed on their first login. `grant_option` is not exposed (false).
       tags: [Query]
@@ -996,7 +1157,8 @@ paths:
         Add a user to the group. Owner-or-admin only (a non-owner member gets
         403, a non-member 404). The `subject` is resolved server-side like a
         share grantee: a value containing `:` is a full `issuer:subject` kept
-        verbatim, a bare BV-BRC username is prefixed to `bvbrc:<username>`; the
+        verbatim, `@service:<subject>` names a service account (kept colon-free),
+        and a bare BV-BRC username is prefixed to `bvbrc:<username>`; the
         resolved subject is echoed back so a typo is visible. A never-logged-in
         user is pre-provisioned so the membership is claimed on first login.
         Membership is a flat list of users — a group id cannot be a member (no
@@ -1051,7 +1213,8 @@ paths:
         by the removed user on the next request. `subject` is resolved the SAME
         way as on add — a bare username is qualified to `issuer:sub` (using the
         `issuer` query, default `bvbrc`) so removing with the identifier used to
-        add reliably matches; a full `issuer:sub` string is taken verbatim. A
+        add reliably matches; a full `issuer:sub` string and an
+        `@service:<subject>` form are taken verbatim. A
         group-target form (`@public` / `@group:`) is rejected (422). Removing a
         non-member is a 204 no-op. Returns 204 with no body.
       tags: [Query]
@@ -1746,9 +1909,12 @@ components:
             public group (read-only); the form `@group:<id>` (or `group:<id>`)
             maps to a named group by id (read-only, must exist — else 422); a
             value containing `:` is a full `issuer:subject` string kept verbatim;
-            a bare BV-BRC username is prefixed to `bvbrc:<username>`. The resolved
-            subject is echoed back in the response so a typo (an unclaimable
-            grant) is visible.
+            `@service:<subject>` names a service account and keeps the subject
+            colon-free (required for a machine identity — a bare subject would be
+            qualified to `bvbrc:<subject>`, a federated identity it can never
+            authenticate as); a bare BV-BRC username is prefixed to
+            `bvbrc:<username>`. The resolved subject is echoed back in the
+            response so a typo (an unclaimable grant) is visible.
           type: string
           minLength: 1
         permission:
@@ -1756,7 +1922,7 @@ components:
           type: string
           default: read
         issuer:
-          description: Issuer used to qualify a bare username (default `bvbrc`). Ignored for `@public` and for a value that already contains `:`.
+          description: Issuer used to qualify a bare username (default `bvbrc`). Ignored for `@public`, `@group:`, `@service:` and for a value that already contains `:`.
           type: string
           default: bvbrc
       additionalProperties: false
@@ -1910,9 +2076,10 @@ components:
       properties:
         subject:
           description: >-
-            A full 'issuer:subject' string (kept verbatim) or a bare BV-BRC
-            username (prefixed to 'bvbrc:<username>'). Group-target forms are
-            rejected (no nesting).
+            A full 'issuer:subject' string (kept verbatim), '@service:<subject>'
+            for a service account (kept colon-free), or a bare BV-BRC username
+            (prefixed to 'bvbrc:<username>'). Group-target forms are rejected
+            (no nesting).
           type: string
           minLength: 1
         issuer:
@@ -1943,6 +2110,118 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/GroupMemberRecord"
+      additionalProperties: false
+
+    ServiceAccountRecord:
+      type: object
+      description: >-
+        One registered service account (a machine identity authenticated by an
+        X-API-Key secret). The `subject` IS the API-key tenant string and the
+        authorization subject, so a service account can own collections, receive
+        shares and join groups under that one identifier — naming it on those
+        surfaces takes the explicit `@service:<subject>` grantee/member form,
+        which is what keeps the subject colon-free (a bare value is qualified to
+        `bvbrc:<value>`, a federated identity the account can never authenticate
+        as). It is colon-free by construction: ':' is reserved for federated
+        'issuer:sub' identities so the two namespaces stay disjoint. The reserved
+        tenants `default` and `public` are refused as subjects (400) — they are
+        shared fallback tenants, so disabling one would lock out every unmapped
+        key at once. This record NEVER carries key material, a key prefix or a
+        key count — the key<->account mapping lives only in the server
+        environment. `last_seen_at` is deliberately absent: the API-key auth path
+        writes nothing back, so it would be permanently empty.
+      required:
+        [subject, purpose, created_by, created_at, disabled_by, disabled_at,
+         enabled_by, enabled_at, active]
+      properties:
+        subject:
+          description: >-
+            The account's subject: its API-key tenant and its authorization
+            identity. Colon-free.
+          type: string
+          minLength: 1
+        purpose:
+          description: >-
+            Free text recorded at creation: what this credential is for. Empty
+            string when not supplied.
+          type: string
+        created_by:
+          description: Subject of the admin who registered the account.
+          type: string
+        created_at:
+          description: ISO-8601 UTC timestamp of registration.
+          type: string
+        disabled_by:
+          description: >-
+            Subject of the admin who LAST disabled the account; empty if it has
+            never been disabled. History, not state — it SURVIVES a re-enable
+            (ADR-0004 decision 6: the audit trail is the point), so read `active`
+            for the current state, never `disabled_at != ""`.
+          type: string
+        disabled_at:
+          description: >-
+            ISO-8601 UTC timestamp of that last disable; empty if never disabled.
+            Kept across a re-enable — see `disabled_by`.
+          type: string
+        enabled_by:
+          description: >-
+            Subject of the admin who LAST re-enabled the account; empty if it has
+            never been re-enabled.
+          type: string
+        enabled_at:
+          description: >-
+            ISO-8601 UTC timestamp of that last re-enable; empty if never
+            re-enabled.
+          type: string
+        active:
+          description: >-
+            The account's current state — the ONLY field to read for it. True
+            when the account is not disabled. Disabling is a soft,
+            best-effort revoke: the API-key auth path rejects a disabled
+            account's key with 401 within the disabled-check cache TTL, and FAILS
+            OPEN if the store cannot answer. The authoritative revoke is removing
+            the key from the server environment and restarting.
+          type: boolean
+      additionalProperties: false
+
+    ServiceAccountsResponse:
+      type: object
+      description: >-
+        The registered service accounts, oldest first. Disabled accounts are
+        included — disabling is soft state, never a row deletion.
+      required: [service_accounts]
+      properties:
+        service_accounts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceAccountRecord"
+      additionalProperties: false
+
+    ServiceAccountCreateRequest:
+      type: object
+      description: >-
+        Register a machine identity (POST /v1/admin/service-accounts body). This
+        registers the ACCOUNT RECORD only — it does NOT mint, store or rotate a
+        credential; the key itself is an environment edit plus a restart. The
+        body must therefore never carry key material.
+      required: [subject]
+      properties:
+        subject:
+          description: >-
+            The account's subject, which must equal the API-key tenant the
+            operator maps its key to. Colon-free: ':' is reserved for federated
+            'issuer:sub' identities, so a colon here is a 400. The reserved
+            tenants 'default' and 'public' are also a 400 — every valid but
+            unmapped API key resolves to 'default', so a service row on it would
+            turn one disable into a deployment-wide lockout with no way back
+            through the API.
+          type: string
+          minLength: 1
+          maxLength: 128
+        purpose:
+          description: Free text — what this credential is for (audit aid).
+          type: string
+          default: ""
       additionalProperties: false
 
     CollectionCreateRequest:
