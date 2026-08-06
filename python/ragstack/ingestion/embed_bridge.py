@@ -75,9 +75,15 @@ class SyncEmbedBridge:
         # the ingest --batch-size (one buffer ~= one sentence-window, so 64 is a
         # sensible request granularity). <=0 disables splitting (one call).
         self._batch_size = batch_size
-        # Hard cap on concurrent sub-batch embed calls from ONE document's fan-out,
-        # so a heavy doc (thousands of buffers) can't fire hundreds of requests at
-        # once and drown a single-endpoint breakpoint service. See module docstring.
+        # Hard cap on concurrent sub-batch embed calls. The semaphore is created
+        # once per BRIDGE, so this is a bridge-wide ceiling across every
+        # concurrently-chunked document (with --chunk-concurrency > 1, four docs
+        # share this 8, they do not get 8 each) — which is what protects a
+        # single-endpoint breakpoint service from a fan-out storm.
+        #
+        # NOTE: there is no CLI flag for this. --embedding-max-concurrency and
+        # --breakpoint-embedding-max-concurrency (both default 8) are tunable, so
+        # raising either to saturate a GPU fleet is silently re-capped here.
         self._max_inflight = max(1, max_inflight)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
@@ -119,9 +125,10 @@ class SyncEmbedBridge:
         if self._batch_size <= 0 or n <= self._batch_size:
             return await self._embedder.embed(texts)
         # Split into fixed-size sub-batches and embed them concurrently but BOUNDED
-        # by `max_inflight`, so a heavy doc's hundreds of sub-batches don't all fire
-        # at once and drown a single-endpoint breakpoint service. gather preserves
-        # order, so the flattened result matches a single embed(texts).
+        # by `max_inflight` (bridge-wide, shared by all concurrent documents), so a
+        # heavy doc's hundreds of sub-batches don't all fire at once and drown a
+        # single-endpoint breakpoint service. gather preserves argument order, so
+        # the flattened result is identical to a single embed(texts).
         bs = self._batch_size
         embedder = self._embedder
         sem = self._sem
