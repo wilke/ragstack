@@ -405,12 +405,46 @@ class Settings(BaseSettings):
     # Small by default because the lookup is cheap and the lag is the point.
     service_account_disabled_cache_ttl_seconds: int = 30
 
+    # --- Bearer admins ------------------------------------------------------ #
+    # BEARER subjects the operator grants the admin role, verbatim. Entries are
+    # federated 'issuer:subject' strings and MUST contain a ':' — the exact
+    # inverse of the colon-free service-account rule, because a colon-free entry
+    # would name an API-key tenant and silently make a machine credential admin
+    # through the bearer door (use API_KEY_ROLES for those). Startup refuses
+    # blank, padded, colon-free, reserved, control-bearing or over-long entries
+    # (security.validate_admin_subjects_settings), and logs only the COUNT.
+    #
+    # This is the BREAK-GLASS path and it is checked FIRST on the auth path,
+    # with no store read: it works on an empty users table (which is how a
+    # deployment bootstraps its first admin — the grant endpoint is itself
+    # admin-gated), it survives a user-store outage, and no database write can
+    # revoke it. Removing an entry is an env edit plus a restart.
+    #
+    # It never leaks onto the API-key path: _principal_from_key does not consult
+    # it, so the two subject namespaces stay disjoint (#243).
+    admin_subjects: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("admin_subjects", mode="before")
+    @classmethod
+    def _split_admin_subjects(cls, value: object) -> object:
+        return _split_list_env(value)
+    # How long the bearer auth path memoizes "does this subject's users row say
+    # admin?". Same shape as the disabled-check cache above, with the danger
+    # pointing the OTHER way: THIS TTL IS THE DEMOTION LAG. A revoked admin
+    # keeps admin for up to this long (per process), so it is small by default,
+    # values above 300 FAIL STARTUP, and the grant/revoke route flushes this
+    # process's cache immediately. 0 disables the cache (a store read on every
+    # bearer request). The env allowlist above is never cached — it is a
+    # frozenset membership test with no I/O.
+    admin_role_cache_ttl_seconds: int = 30
+
     # --- Identity (bearer credentials) ------------------------------------- #
     # OFF by default. "none" means the Authorization header is not an
     # authentication input at all and every existing deployment behaves exactly
     # as before. Turning this on makes `Authorization: Bearer <credential>` a
     # second way in, resolving to tenant f"{issuer}:{subject}" with the explicit
-    # ROLE_USER role — never default_role, which is `admin` on the demo box.
+    # ROLE_USER role — unless ADMIN_SUBJECTS or the subject's users row names it
+    # an admin, and never default_role, which is `admin` on the demo box.
     identity_provider: str = "none"          # none | bvbrc | oidc
     # HARD PIN for BV-BRC tokens: the only SigningSubject URLs whose keys may
     # verify a token. BV-BRC's own validateToken.js fetches the key from whatever

@@ -76,6 +76,21 @@ upserts `users(subject, issuer, email, display_name, first_seen_at, last_seen_at
 `subject` is the tenant string `issuer:sub` — the same key the rest of the system uses.
 This makes users enumerable and shares FK-checkable; it grants nothing by itself.
 
+*Amended.* The row additionally carries `role` (+ `role_set_by`/`role_set_at`, the same
+append-only audit shape as decision 6), which is the **stored** half of a bearer
+identity's RBAC role — the other half being the `ADMIN_SUBJECTS` env allowlist, which is
+checked first and cannot be revoked from the API. `role` is an **identity-class** column:
+it is excluded from the `upsert_seen` ON CONFLICT assignment list in both SQL dialects, so
+the first-auth hook that runs on every login is *structurally* unable to reset an admin's
+grant. It is written only by `set_role`, which refuses service accounts (an API-key
+principal's role is `API_KEY_ROLES`) and never creates a row. `set_role` also owns the
+last-admin refusal, because that one is a claim about the whole table and has to be
+evaluated in the same transaction as the write it vetoes — a caller-side count would let
+two concurrent revokes each observe the other's admin and both pass. The caller decides
+only *whether to ask for* the refusal: it is skipped when an admin source outside this
+table (a usable `ADMIN_SUBJECTS` entry, an API key mapped to `admin`) would survive the
+write, since the refusal exists to prevent an unrecoverable lockout and nothing else.
+
 **2. Pending shares keyed on a verified email claim.** A share to someone who has never
 logged in is stored as `pending_shares(email, collection_id, permission, grant_option,
 granted_by, …)` and converted to a real share on the first login whose token carries a

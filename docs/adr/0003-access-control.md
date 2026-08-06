@@ -23,7 +23,9 @@ ownership, and the word *tenant* means two incompatible things.
   are validated at startup and assignable, but no route distinguishes them from
   `researcher`. A bearer identity is hard-coded to `ROLE_RESEARCHER`, so **every
   authenticated user carries the identical role** and the axis conveys nothing about real
-  users.
+  users. *(Context = the state that prompted this ADR. The hard-coding is gone: a bearer
+  identity can now be an admin by explicit server-side assignment — see the bearer-admins
+  amendment under decision 4.)*
 - **`TENANT_COLLECTIONS`** confines a tenant to a set of collection ids but defaults to
   `{}` — feature off — and is an operator-authored env map, not a property of the resource.
 
@@ -67,8 +69,9 @@ collections directly; `collection_create_request` currently requires `embedding`
 admin-only. A `user` may create and share private collections and read public ones.
 
 **4. Two roles: `admin` and `user`.** Drop `engineer` and `manager` — both inert. Rename
-`researcher` → `user` (coordinated: hardcoded at `security.py:167`, and present in
-`api_key_roles` on deployed servers). `maintainer` is deliberately **not** added: the only
+`researcher` → `user` (coordinated: the API-key fallback in `security.py`
+`_principal_from_key`, and present in `api_key_roles` on deployed servers; the bearer
+path's role now comes from `_bearer_role` instead of a constant). `maintainer` is deliberately **not** added: the only
 endpoint exclusive to admin under that split would be `GET /v1/config`, a read-only
 allowlist that already excludes `api_keys`, `*_password` and `postgres_dsn` and redacts URL
 userinfo. The real admin/maintainer boundary — editing `rag.env`, restarting units,
@@ -76,6 +79,23 @@ managing images — is outside the API and already enforced by shell access. Add
 when a *write* operation separates it; the likely trigger is delegating corpus curation
 without granting model-registry writes, since those change what every future ingest
 produces.
+
+*Amended (bearer admins).* A bearer identity resolves to `user` unless an **explicit
+server-side source** names it an admin — never `DEFAULT_ROLE`, which is `admin` in
+production. The two sources are `ADMIN_SUBJECTS` (an env allowlist of `issuer:subject`
+strings, evaluated first with no store read, so it bootstraps on an empty users table
+and survives a store outage) and a `users.role` of `admin`, written only through
+`PATCH /v1/admin/users/{subject}/role` by an existing admin. Nothing that travels with
+the credential is an input, so a token cannot self-elevate; the store read fails
+**closed** (an outage withholds elevation, never grants it), which is the deliberate
+mirror of the service-account disabled check's fail-open.
+
+A consequence worth stating, because it changes what "admin only" means on the wire:
+`require_role` tests the authenticated principal's role and not which credential produced
+it, so a bearer admin reaches **every** `/v1/admin/*` route. The contract lists both
+security schemes on those operations for that reason. Third source of the same role,
+unchanged: an API key mapped to `admin` via `API_KEY_ROLES`/`DEFAULT_ROLE` — which is why
+the last-admin revoke refusal counts *all three* sources rather than stored admins alone.
 
 **5. Admin bypasses ownership** — explicitly, as a named branch in the authorization check,
 and logged. Required for purge, migration and support. Today the bypass exists only because

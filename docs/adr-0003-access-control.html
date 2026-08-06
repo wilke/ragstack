@@ -155,7 +155,9 @@ ownership, and the word <em>tenant</em> means two incompatible things.</p>
   are validated at startup and assignable, but no route distinguishes them from
   <code>researcher</code>. A bearer identity is hard-coded to <code>ROLE_RESEARCHER</code>, so <strong>every
   authenticated user carries the identical role</strong> and the axis conveys nothing about real
-  users.</li>
+  users. <em>(Context = the state that prompted this ADR. The hard-coding is gone: a bearer
+  identity can now be an admin by explicit server-side assignment — see the bearer-admins
+  amendment under decision 4.)</em></li>
 <li><strong><code>TENANT_COLLECTIONS</code></strong> confines a tenant to a set of collection ids but defaults to
   <code>{}</code> — feature off — and is an operator-authored env map, not a property of the resource.</li>
 </ul>
@@ -192,8 +194,9 @@ collections directly; <code>collection_create_request</code> currently requires 
 <code>chunk</code>, so a server-configured <strong>default build spec</strong> must supply them, with those fields
 admin-only. A <code>user</code> may create and share private collections and read public ones.</p>
 <p><strong>4. Two roles: <code>admin</code> and <code>user</code>.</strong> Drop <code>engineer</code> and <code>manager</code> — both inert. Rename
-<code>researcher</code> → <code>user</code> (coordinated: hardcoded at <code>security.py:167</code>, and present in
-<code>api_key_roles</code> on deployed servers). <code>maintainer</code> is deliberately <strong>not</strong> added: the only
+<code>researcher</code> → <code>user</code> (coordinated: the API-key fallback in <code>security.py</code>
+<code>_principal_from_key</code>, and present in <code>api_key_roles</code> on deployed servers; the bearer
+path's role now comes from <code>_bearer_role</code> instead of a constant). <code>maintainer</code> is deliberately <strong>not</strong> added: the only
 endpoint exclusive to admin under that split would be <code>GET /v1/config</code>, a read-only
 allowlist that already excludes <code>api_keys</code>, <code>*_password</code> and <code>postgres_dsn</code> and redacts URL
 userinfo. The real admin/maintainer boundary — editing <code>rag.env</code>, restarting units,
@@ -201,6 +204,21 @@ managing images — is outside the API and already enforced by shell access. Add
 when a <em>write</em> operation separates it; the likely trigger is delegating corpus curation
 without granting model-registry writes, since those change what every future ingest
 produces.</p>
+<p><em>Amended (bearer admins).</em> A bearer identity resolves to <code>user</code> unless an <strong>explicit
+server-side source</strong> names it an admin — never <code>DEFAULT_ROLE</code>, which is <code>admin</code> in
+production. The two sources are <code>ADMIN_SUBJECTS</code> (an env allowlist of <code>issuer:subject</code>
+strings, evaluated first with no store read, so it bootstraps on an empty users table
+and survives a store outage) and a <code>users.role</code> of <code>admin</code>, written only through
+<code>PATCH /v1/admin/users/{subject}/role</code> by an existing admin. Nothing that travels with
+the credential is an input, so a token cannot self-elevate; the store read fails
+<strong>closed</strong> (an outage withholds elevation, never grants it), which is the deliberate
+mirror of the service-account disabled check's fail-open.</p>
+<p>A consequence worth stating, because it changes what "admin only" means on the wire:
+<code>require_role</code> tests the authenticated principal's role and not which credential produced
+it, so a bearer admin reaches <strong>every</strong> <code>/v1/admin/*</code> route. The contract lists both
+security schemes on those operations for that reason. Third source of the same role,
+unchanged: an API key mapped to <code>admin</code> via <code>API_KEY_ROLES</code>/<code>DEFAULT_ROLE</code> — which is why
+the last-admin revoke refusal counts <em>all three</em> sources rather than stored admins alone.</p>
 <p><strong>5. Admin bypasses ownership</strong> — explicitly, as a named branch in the authorization check,
 and logged. Required for purge, migration and support. Today the bypass exists only because
 there is nothing to bypass; it must become a decision the code states rather than an

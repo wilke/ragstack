@@ -1,5 +1,12 @@
 // The api-key + query inputs and submit. Labeled, disabled-while-pending,
 // Enter-submits (native <form>).
+//
+// The key box hides itself while a bearer token is active: it is bound to the
+// app's single credential slot, so typing in it would switch the app back to
+// key auth and truncate the token. The header owns the login.
+
+import { getStoredAuthMode } from "../api/config";
+import { SIGNED_IN_HINT } from "../lib/auth";
 
 interface Props {
   apiKey: string;
@@ -11,6 +18,7 @@ interface Props {
 }
 
 export function SearchForm({ apiKey, setApiKey, query, setQuery, onSubmit, pending }: Props) {
+  const bearer = getStoredAuthMode() === "bearer";
   return (
     <form
       onSubmit={(e) => {
@@ -19,15 +27,19 @@ export function SearchForm({ apiKey, setApiKey, query, setQuery, onSubmit, pendi
       }}
       className="space-y-3"
     >
-      <input
-        type="password"
-        placeholder="X-API-Key (leave blank if the API is keyless in dev)"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-        aria-label="API key"
-        autoComplete="off"
-      />
+      {bearer ? (
+        <p className="text-xs text-gray-500">{SIGNED_IN_HINT}</p>
+      ) : (
+        <input
+          type="password"
+          placeholder="X-API-Key (leave blank if the API is keyless in dev)"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          aria-label="API key"
+          autoComplete="off"
+        />
+      )}
       <div className="flex gap-2">
         <input
           type="text"

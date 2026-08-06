@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "user_role_request.json",
+  "title": "UserRoleRequest",
+  "description": "Set a federated user's stored RBAC role (PATCH /v1/admin/users/{subject}/role body). The role is server-side state written by an existing admin: it is never read from a token, a claim or a header, so no caller can elevate the credential it presents. The env allowlist ADMIN_SUBJECTS is the other admin source and takes precedence — it is checked first on the auth path, so a stored 'user' role cannot demote a subject the operator allowlisted.",
+  "type": "object",
+  "required": [
+    "role"
+  ],
+  "properties": {
+    "role": {
+      "description": "'admin' (superuser across the whole deployment: every collection, all of /v1/admin/*, /v1/config, the model registry) or 'user'. Any other value is a 400 — including the deprecated 'researcher' alias, which is accepted only where legacy config is READ, never written here. Deliberately NOT an enum: the server validates the vocabulary and answers 400, and a schema enum would make that documented response unreachable from a conformant client (it would be a client-side 422 instead). The response schema DOES pin the enum, because there the server is the writer.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

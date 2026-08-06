@@ -205,6 +205,20 @@ has a <code>postgres</code> backend, so a relational ACL store adds no new servi
 upserts <code>users(subject, issuer, email, display_name, first_seen_at, last_seen_at)</code>.
 <code>subject</code> is the tenant string <code>issuer:sub</code> — the same key the rest of the system uses.
 This makes users enumerable and shares FK-checkable; it grants nothing by itself.</p>
+<p><em>Amended.</em> The row additionally carries <code>role</code> (+ <code>role_set_by</code>/<code>role_set_at</code>, the same
+append-only audit shape as decision 6), which is the <strong>stored</strong> half of a bearer
+identity's RBAC role — the other half being the <code>ADMIN_SUBJECTS</code> env allowlist, which is
+checked first and cannot be revoked from the API. <code>role</code> is an <strong>identity-class</strong> column:
+it is excluded from the <code>upsert_seen</code> ON CONFLICT assignment list in both SQL dialects, so
+the first-auth hook that runs on every login is <em>structurally</em> unable to reset an admin's
+grant. It is written only by <code>set_role</code>, which refuses service accounts (an API-key
+principal's role is <code>API_KEY_ROLES</code>) and never creates a row. <code>set_role</code> also owns the
+last-admin refusal, because that one is a claim about the whole table and has to be
+evaluated in the same transaction as the write it vetoes — a caller-side count would let
+two concurrent revokes each observe the other's admin and both pass. The caller decides
+only <em>whether to ask for</em> the refusal: it is skipped when an admin source outside this
+table (a usable <code>ADMIN_SUBJECTS</code> entry, an API key mapped to <code>admin</code>) would survive the
+write, since the refusal exists to prevent an unrecoverable lockout and nothing else.</p>
 <p><strong>2. Pending shares keyed on a verified email claim.</strong> A share to someone who has never
 logged in is stored as <code>pending_shares(email, collection_id, permission, grant_option,
 granted_by, …)</code> and converted to a real share on the first login whose token carries a

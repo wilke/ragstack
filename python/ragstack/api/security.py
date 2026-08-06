@@ -20,9 +20,23 @@ Two layers come out of that:
   warning wherever roles are read); ``engineer``/``manager`` were removed per
   ADR-0003 and are rejected at startup. ``require_role`` gates an endpoint;
   a UI role-gate is UX only — authorization is always re-checked here. A bearer
-  identity always gets the explicit ``ROLE_USER`` and **never**
-  ``default_role``: prod runs ``DEFAULT_ROLE=admin``, so falling through would
-  make every authenticated end user a superuser.
+  identity gets the explicit ``ROLE_USER`` unless an explicit server-side admin
+  source names this subject, and **never** ``default_role``: prod runs
+  ``DEFAULT_ROLE=admin``, so falling through would make every authenticated end
+  user a superuser.
+
+There are exactly two admin sources for a bearer identity, and both are
+server-side, so a token can never elevate the caller presenting it:
+
+1. ``ADMIN_SUBJECTS`` — an operator-set env allowlist of ``issuer:subject``
+   strings. Evaluated FIRST, as a pure frozenset membership test with no I/O:
+   that is what makes admin reachable on an empty users table (bootstrap), what
+   keeps it working through a user-store outage, and what makes it break-glass
+   that no database write can revoke.
+2. ``users.role == 'admin'`` — written only by an existing admin through
+   ``PATCH /v1/admin/users/{subject}/role``. A store read, memoized per subject,
+   and it FAILS CLOSED to ``ROLE_USER``: a store outage must never hand out
+   admin, and briefly losing it is the safe direction.
 
 A verified bearer authentication also schedules a fire-and-forget profile
 upsert (ADR-0004 decision 1) — ``users(subject, …)`` keyed on the tenant
@@ -327,6 +341,309 @@ async def _principal_from_key_checked(api_key: str | None) -> Principal:
     return principal
 
 
+# --------------------------------------------------------------------------- #
+# Bearer admin resolution: ADMIN_SUBJECTS, then users.role
+# --------------------------------------------------------------------------- #
+#
+# A bearer identity may be an admin, but ONLY by deliberate assignment. Nothing
+# that travels with the credential — an OIDC claim, a BV-BRC token field, the
+# Authorization header itself — is an input here; ``Identity`` deliberately
+# carries no role. The two admissible sources are an env allowlist the operator
+# set and a users row an existing admin wrote, neither of which is reachable by
+# the caller presenting the token.
+#
+# PRECEDENCE IS ONE-DIRECTIONAL AND DELIBERATE: the env allowlist is evaluated
+# first and short-circuits, so a stored ``user`` role can never demote an
+# allowlisted subject. It is a pure frozenset membership test with no I/O and no
+# failure mode, which is exactly what makes it usable as break-glass — it works
+# on an empty users table (the bootstrap case: the grant route is itself
+# admin-gated, so a store-only design would 403 the very operator trying to
+# create the first admin), it survives a store outage, and no database write can
+# take it away. The auth path never writes it back into the users table either:
+# that would be the login path writing an identity-class column, which
+# ``_SEEN_ASSIGN_COLUMNS`` exists to make impossible.
+
+_role_cache: dict[str, tuple[float, bool]] = {}
+#: Bumped by :func:`reset_role_cache`, and sampled BEFORE the store read for the
+#: same reason as ``_disabled_cache_gen``: a lookup that started before an
+#: operator's revoke must not resume afterwards and re-install its stale
+#: "admin" verdict for a full TTL.
+_role_cache_gen = 0
+# Prune trigger only; the dict stays bounded by subjects active in one window.
+_ROLE_CACHE_MAX = 10_000
+#: Warn once per OUTAGE, then drop to debug, re-arming (and logging recovery) on
+#: the next successful lookup — the ``_disabled_lookup_failure_warned`` shape.
+#: "every admin surface is suddenly 403ing" is an operator-visible symptom and
+#: must be explicable from the logs at the default level.
+_role_lookup_failure_warned = False
+
+
+def admin_subject_allowlist() -> frozenset[str]:
+    """``ADMIN_SUBJECTS`` as a set, read at CALL time.
+
+    Deliberately not frozen at import: a module-level constant would make the
+    setting unmonkeypatchable and silently pin one allowlist for a whole test
+    session (and for any process that reloads settings). The set is tiny — an
+    operator-typed list — so rebuilding it per call is cheaper than the cache
+    invalidation it would need.
+    """
+    return frozenset(settings.admin_subjects or ())
+
+
+def _configured_provider() -> str:
+    """``identity_provider``, normalized the way the identity layer reads it.
+
+    ``identity/factory.py`` does ``.strip().lower()`` at every branch, so
+    ``IDENTITY_PROVIDER=BVBRC`` (or a padded value out of a ``.env``) builds a
+    working provider. Comparing the raw string here made such a deployment look
+    like it had NO provider: the live ``ADMIN_SUBJECTS`` break-glass entry became
+    invisible to the last-admin guard, which then refused a legitimate revoke —
+    and the startup warning told the operator their working allowlist was dead.
+    """
+    return (settings.identity_provider or "").strip().lower()
+
+
+def _known_issuer_labels() -> frozenset[str]:
+    """Issuer halves the CONFIGURED provider can actually produce.
+
+    Keyed off ``identity_provider``, not off the union of every label the code
+    knows: exactly one provider is ever active, so on a ``bvbrc`` deployment an
+    ``oidc:*`` entry is as inert as an ``okta:*`` one — no token this server
+    accepts will ever carry that issuer. Taking the union instead let a
+    cross-provider entry pose as a live break-glass path and stand the
+    last-admin guard down (and, because it also suppressed the startup warning,
+    with no signal to the operator at all).
+
+    ``bvbrc`` is the provider's fixed label; the OIDC one is configurable, and an
+    empty one is dropped so an unset ``IDENTITY_OIDC_ISSUER_LABEL`` cannot make
+    ``'':sub`` look known.
+    """
+    provider = _configured_provider()
+    if provider == "bvbrc":
+        return frozenset({"bvbrc"})
+    if provider == "oidc":
+        return frozenset(
+            label for label in (settings.identity_oidc_issuer_label,) if label
+        )
+    # none / unset: nothing can present a bearer credential, so no issuer half
+    # is producible. usable_admin_subjects() short-circuits on this too.
+    return frozenset()
+
+
+def usable_admin_subjects() -> frozenset[str]:
+    """The ``ADMIN_SUBJECTS`` entries that could actually elevate SOMEBODY here.
+
+    :func:`admin_subject_allowlist` is what the auth path matches against, and it
+    stays deliberately literal. This is the narrower question the last-admin
+    guard has to ask: "is the break-glass path real?" The two conditions that
+    :func:`validate_admin_subjects_settings` only WARNS about at startup —
+    no identity provider (nothing can present a bearer credential at all), and
+    an issuer prefix no accepted token produces — are exactly the ones that make
+    an entry inert, and an inert entry must not be mistaken for a way back in.
+
+    Without this an operator typo (``okta:alice`` on a bvbrc deployment) would
+    silently convert the last-admin 409 into a 200 and remove the only in-API
+    route to a new admin.
+    """
+    entries = admin_subject_allowlist()
+    if not entries or _configured_provider() in ("", "none"):
+        return frozenset()
+    known = _known_issuer_labels()
+    # Prefix match, not a split on the FIRST colon: an issuer label is free-form
+    # config and may itself contain a colon, in which case splitting yields a
+    # fragment that matches nothing and a live allowlist entry looks inert.
+    return frozenset(e for e in entries if any(e.startswith(f"{k}:") for k in known))
+
+
+async def _api_key_admin_source() -> str:
+    """How an API-key caller becomes admin here, or ``""`` if none can.
+
+    Mirrors :func:`_principal_from_key`'s own mapping rather than restating it:
+    keyless means every caller gets ``default_role``, and a configured key gets
+    ``api_key_roles[key]`` falling back to ``default_role``. So an unlisted key
+    IS an admin when ``DEFAULT_ROLE=admin`` (which production runs), and a
+    deployment whose every key is explicitly non-admin has no API-key admin even
+    though ``API_KEY_ROLES`` is non-empty.
+
+    **Liveness matters here, not just configuration.** Since #258 a key whose
+    tenant is a registered-and-disabled service account is 401'd by
+    :func:`_principal_from_key_checked`, so an env mapping alone does not prove
+    anybody can still authenticate as an admin. Counting a dead credential as
+    the way back is how an operator disables the last admin service account,
+    revokes the last stored admin, and finds neither route open.
+
+    Note the deliberate inversion of :func:`_service_account_disabled`'s
+    fail-open policy: there, a store error must not break an already-verified
+    credential. Here the question is "is there a way back in?", so an
+    unanswerable store makes us answer NO — the caller gets a 409 they can
+    retry, instead of an irreversible revoke.
+    """
+    default = normalize_role(settings.default_role)
+    if not settings.api_keys:
+        return "DEFAULT_ROLE=admin (this deployment is keyless)" if default == ROLE_ADMIN else ""
+    for key in settings.api_keys:
+        if normalize_role(settings.api_key_roles.get(key, default)) != ROLE_ADMIN:
+            continue
+        tenant = settings.api_key_tenants.get(key, DEFAULT_TENANT)
+        try:
+            if await _service_account_disabled_strict(tenant):
+                continue  # a key that 401s is not a way back
+        except Exception:  # noqa: BLE001 — unanswerable store => not a way back
+            logger.warning(
+                "could not confirm whether the admin API key's tenant is a "
+                "disabled service account; treating it as NO recovery source so "
+                "a last-admin revoke is refused rather than made irreversible",
+                exc_info=True,
+            )
+            continue
+        return "API_KEY_ROLES" if settings.api_key_roles else "DEFAULT_ROLE=admin"
+    return ""
+
+
+async def _service_account_disabled_strict(subject: str) -> bool:
+    """:func:`_service_account_disabled` without the fail-open swallow.
+
+    Deliberately uncached: this asks a one-off question on a route that is not
+    hot, and reusing the disabled cache would let a verdict memoized for the
+    auth path decide a lockout refusal. A store error propagates instead of
+    answering ``False`` — see :func:`_api_key_admin_source` for why the polarity
+    flips.
+    """
+    from ragstack.user_store import get_user_store
+
+    rec = await get_user_store().get(subject)
+    return rec is not None and rec.is_service and not rec.enabled
+
+
+async def admin_recovery_sources() -> tuple[str, ...]:
+    """Admin sources that a users-table write cannot take away.
+
+    The last-admin guard's real question. Revoking the final stored admin is
+    only a lockout when NOTHING else can produce one, and the users table is not
+    the only source: ``ADMIN_SUBJECTS`` is the break-glass allowlist, and an
+    API-key principal's role comes from ``API_KEY_ROLES``/``DEFAULT_ROLE`` — an
+    API-key admin can call the grant route (and in the standard deployment is
+    the caller doing so). Counting only stored admins refuses a legitimate
+    revoke and prints remediation the operator is already holding.
+
+    Returns the names of the surviving sources, so a refusal can say precisely
+    which ones are missing.
+    """
+    sources = []
+    if usable_admin_subjects():
+        sources.append("ADMIN_SUBJECTS")
+    key_source = await _api_key_admin_source()
+    if key_source:
+        sources.append(key_source)
+    return tuple(sources)
+
+
+def _role_cache_ttl() -> float:
+    """Cache lifetime in seconds; 0 (or negative, clamped) disables caching."""
+    return max(0.0, float(settings.admin_role_cache_ttl_seconds))
+
+
+def reset_role_cache() -> None:
+    """Drop the memoized stored-role lookups (tests, and any deliberate flush).
+
+    Called by the grant/revoke route so a demotion is not waiting out a TTL in
+    THIS process. Every sibling uvicorn worker still does — the TTL is the
+    demotion lag, and this narrows it rather than removing it.
+    """
+    global _role_cache_gen
+    _role_cache.clear()
+    _role_cache_gen += 1
+
+
+async def _stored_role_is_admin(subject: str) -> bool:
+    """Does ``subject``'s users row store ``role='admin'``?
+
+    **Failure policy: FAIL CLOSED.** Any store error answers ``False`` and the
+    caller stays :data:`ROLE_USER`. This is the exact mirror of
+    :func:`_service_account_disabled`, which fails OPEN — and the asymmetry is
+    the whole point. There, the store can only REFUSE an already-verified
+    credential, so failing closed would lock out every API-key caller during an
+    outage for the sake of a revocation convenience. Here the store can only
+    GRANT privilege, so failing open would hand out superuser over every
+    collection in the deployment whenever the ACL database hiccups. Losing admin
+    briefly is recoverable; granting it wrongly is not.
+
+    The request is NOT failed: the caller authenticated on their verified token
+    and keeps their tenant and their own data. Only the elevation is withheld,
+    and ``ADMIN_SUBJECTS`` — which needs no store at all — still elevates,
+    which is why it is evaluated first.
+
+    Memoized per subject for ``settings.admin_role_cache_ttl_seconds``. THAT TTL
+    IS THE DEMOTION LAG (a revoked admin keeps admin for up to that long, per
+    process), which is why it is capped at startup and flushed by the grant
+    route — the opposite direction from the disabled cache, where the TTL only
+    delays a denial.
+    """
+    ttl = _role_cache_ttl()
+    now = time.monotonic()
+    # Sampled BEFORE the await; compared after.
+    gen = _role_cache_gen
+    if ttl > 0:
+        hit = _role_cache.get(subject)
+        if hit is not None and now < hit[0]:
+            return hit[1]
+
+    is_admin = False
+    global _role_lookup_failure_warned
+    try:
+        from ragstack.user_store import get_user_store  # lazy: avoid import cycles
+
+        rec = await get_user_store().get(subject)
+        is_admin = rec is not None and rec.is_admin
+        if _role_lookup_failure_warned:
+            _role_lookup_failure_warned = False
+            logger.warning(
+                "stored admin-role lookup recovered; users.role grants are being "
+                "honoured again"
+            )
+    except Exception:  # noqa: BLE001 — fail CLOSED; see the docstring
+        level = logging.DEBUG if _role_lookup_failure_warned else logging.WARNING
+        _role_lookup_failure_warned = True
+        logger.log(
+            level,
+            "stored admin-role lookup failed; failing closed — bearer callers "
+            "resolve to the 'user' role and every users.role admin grant is "
+            "withheld while this persists (ADMIN_SUBJECTS still applies)",
+            exc_info=True,
+        )
+        is_admin = False
+
+    # Only memoize if no flush landed while the store read was in flight.
+    if ttl > 0 and gen == _role_cache_gen:
+        if len(_role_cache) >= _ROLE_CACHE_MAX:
+            for key, (expiry, _) in list(_role_cache.items()):
+                if expiry <= now:
+                    del _role_cache[key]
+            if len(_role_cache) >= _ROLE_CACHE_MAX:
+                _role_cache.clear()
+        _role_cache[subject] = (now + ttl, is_admin)
+    return is_admin
+
+
+async def _bearer_role(subject: str) -> str:
+    """The RBAC role for a verified bearer ``subject``.
+
+    Written as a POSITIVE branch: :data:`ROLE_ADMIN` is assigned in exactly one
+    place — "an explicit server-side admin source names this subject" — so every
+    other path, including every exception, timeout and store outage inside
+    :func:`_stored_role_is_admin`, structurally lands on the :data:`ROLE_USER`
+    literal. ``settings.default_role`` is not consulted and must never appear in
+    this function or its callers: it is ``admin`` in production, and inheriting
+    it would make every authenticated end user a superuser.
+    """
+    if subject in admin_subject_allowlist():
+        # No store read, no row-existence precondition: the break-glass path.
+        return ROLE_ADMIN
+    if await _stored_role_is_admin(subject):
+        return ROLE_ADMIN
+    return ROLE_USER
+
+
 def _bearer_credential(authorization: str | None) -> str:
     """The credential inside an ``Authorization`` header value.
 
@@ -423,14 +740,16 @@ def _should_upsert(subject: str) -> bool:
 _upsert_failure_warned = False
 
 
-def _schedule_profile_upsert(identity: Identity) -> None:
-    """Fire-and-forget the profile upsert, debounced per subject.
+def _schedule_profile_upsert(identity: Identity, subject: str) -> None:
+    """Fire-and-forget the profile upsert, debounced per ``subject`` (the
+    caller's already-built ``f"{issuer}:{sub}"`` string, so the debounce key and
+    the row key cannot drift from the Principal's tenant).
 
     Authentication must never fail, slow, or 500 because the profile write did —
     ANY exception (scheduling or execution) is swallowed. The first failure is
     logged at WARNING (an operator must be able to see a dead user store at the
     default log level); repeats drop to debug."""
-    if not _should_upsert(f"{identity.issuer}:{identity.subject}"):
+    if not _should_upsert(subject):
         return
 
     async def _run() -> None:
@@ -490,17 +809,25 @@ async def _principal_from_bearer(provider: IdentityProvider, credential: str) ->
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or expired bearer credential",
         )
+    # The one place the tenant/authorization subject is spelled: built once here
+    # and reused for the profile upsert, the role lookup and the Principal, so
+    # the three can never disagree about who this caller is.
+    subject = f"{identity.issuer}:{identity.subject}"
     # First-auth profile upsert (ADR-0004): scheduled, never awaited — the
     # request continues regardless of what the user store does. Debounced per
     # subject (``_should_upsert``): this hook runs on every bearer request
     # (the provider's cache caches *verification*, not this call), so the
     # debounce — not the cache — is what keeps the users table from becoming a
     # per-request write. The store's upsert semantics stay idempotent anyway.
-    _schedule_profile_upsert(identity)
+    _schedule_profile_upsert(identity, subject)
+    # Resolved from an explicit server-side source only (env allowlist first,
+    # then the users row) and never from settings.default_role — prod sets
+    # DEFAULT_ROLE=admin. ROLE_USER is the literal fallback on every other path,
+    # including every failure inside the lookup.
+    role = await _bearer_role(subject)
     return Principal(
-        tenant=f"{identity.issuer}:{identity.subject}",
-        # Explicit, NOT settings.default_role: prod sets DEFAULT_ROLE=admin.
-        role=ROLE_USER,
+        tenant=subject,
+        role=role,
         token=credential,
         token_id=identity.token_id,
         token_exp=identity.expires_at,
@@ -616,6 +943,156 @@ def validate_role_settings() -> None:
                     "':' collides with a bearer subject 'issuer:sub' while an "
                     "identity provider is enabled; use a colon-free tenant name"
                 )
+
+
+#: Upper bound on an ``ADMIN_SUBJECTS`` entry, matching the service-account
+#: router's ``_SUBJECT_MAX``: the value is compared against a users primary key
+#: and lands in log lines, so a paste accident must fail startup, not be stored.
+_ADMIN_SUBJECT_MAX = 128
+
+
+def validate_admin_subjects_settings() -> None:
+    """Fail fast on an ``ADMIN_SUBJECTS`` list that cannot mean what it says.
+
+    Call at startup, next to :func:`validate_role_settings` — same vocabulary,
+    same namespace rules, and it must fail before any request is served: this
+    list is the break-glass admin path, so an entry that silently never matches
+    is an operator who believes they have a way in and does not.
+
+    The rules are :func:`validate_role_settings`'s ``api_key_tenants`` VALUE
+    checks, INVERTED on the colon:
+
+    * Non-empty and equal to its own ``strip()``. The auth path matches the
+      entry verbatim while every admin surface normalizes stripped, so a padded
+      entry would name a subject nothing can revoke or even display.
+    * Contains ``':'`` with BOTH halves non-empty. Entries here are BEARER
+      subjects (``issuer:subject``) — the exact inverse of the colon-free
+      service-account rule. A colon-free entry names an API-key tenant, and
+      honouring it would make a machine credential admin through the bearer
+      door, dissolving the disjoint-namespace invariant the #243 startup guard,
+      ``_check_service_account`` and ``_clean_subject`` all defend. Use
+      ``API_KEY_ROLES`` for those, and the message says so.
+    * Not one of the reserved shared tenants, and no control characters (the
+      value is echoed into logs, where a raw ESC is an output-context
+      injection), and length-capped.
+
+    Two conditions are only WARNED about, following ``_validate_ingest_root``'s
+    precedent of announcing a silently-disabled capability at boot rather than
+    refusing to start: a non-empty allowlist while no identity provider is
+    enabled (nothing can ever present a bearer credential, so the list is
+    inert), and an issuer half matching neither ``bvbrc`` nor
+    ``identity_oidc_issuer_label`` (no token this deployment accepts will ever
+    produce that subject).
+    """
+    from ragstack.user_store import RESERVED_SERVICE_SUBJECTS
+
+    entries = list(settings.admin_subjects or ())
+    for entry in entries:
+        if not entry or entry != entry.strip():
+            raise RuntimeError(
+                f"admin_subjects contains {entry!r}, which is blank or has "
+                "leading/trailing whitespace; the bearer auth path matches this "
+                "value verbatim while every admin surface names subjects "
+                "stripped, so it could never be revoked, listed or displayed"
+            )
+        if len(entry) > _ADMIN_SUBJECT_MAX:
+            raise RuntimeError(
+                "admin_subjects contains an entry of "
+                f"{len(entry)} characters; the cap is {_ADMIN_SUBJECT_MAX} (a "
+                "subject is a users primary key, not a document)"
+            )
+        if any(ord(c) < 0x20 or ord(c) == 0x7F for c in entry):
+            raise RuntimeError(
+                f"admin_subjects contains {entry!r}, which has control "
+                "characters; the value is echoed into logs and terminals"
+            )
+        issuer, _, sub = entry.partition(":")
+        if not issuer or not sub:
+            raise RuntimeError(
+                f"admin_subjects contains {entry!r}, which is not a bearer "
+                "subject: entries must be 'issuer:subject' with BOTH halves "
+                "non-empty (e.g. 'bvbrc:alice'). A colon-free value names an "
+                "API-key TENANT — granting it admin through the bearer "
+                "allowlist would make a machine credential a superuser and "
+                "collapse the two disjoint subject namespaces; use "
+                "API_KEY_ROLES for an API-key principal's role"
+            )
+        if entry in RESERVED_SERVICE_SUBJECTS:
+            # Only the WHOLE entry is checked. The colon rule above already
+            # guarantees a federated subject cannot collide with a (colon-free)
+            # reserved tenant, so also refusing a *subject half* of 'default' or
+            # 'public' — as this once did — blocked a legitimate identity whose
+            # OIDC `sub` happens to be that word, and explained it with a
+            # collision that cannot occur. Kept for the entry itself because the
+            # colon check makes that branch unreachable, and a guard that
+            # documents the invariant costs nothing.
+            raise RuntimeError(
+                f"admin_subjects contains {entry!r}, which names a reserved "
+                f"tenant ({sorted(RESERVED_SERVICE_SUBJECTS)}); those are shared "
+                "fallback/public corpora, not one caller's identity"
+            )
+
+    if not entries:
+        return
+    if _configured_provider() in ("", "none"):
+        logger.warning(
+            "ADMIN_SUBJECTS names %d subject(s) but IDENTITY_PROVIDER is %r: no "
+            "caller can present a bearer credential, so the allowlist is inert "
+            "and this deployment has NO bearer admin",
+            len(entries),
+            settings.identity_provider,
+        )
+    else:
+        # Same rule as usable_admin_subjects(), which is what the last-admin
+        # guard asks: an entry warned about here is one that guard must NOT
+        # count. Only reached when a provider IS configured — otherwise every
+        # entry is unknown and this would just restate the warning above.
+        known = _known_issuer_labels()
+        # Same prefix rule as usable_admin_subjects: an entry is "unknown" only
+        # when no configured label is a proper `label:` prefix of it.
+        unknown = sorted(
+            {
+                e.partition(":")[0]
+                for e in entries
+                if not any(e.startswith(f"{k}:") for k in known)
+            }
+        )
+        if unknown:
+            logger.warning(
+                "ADMIN_SUBJECTS uses issuer prefix(es) %s, but IDENTITY_PROVIDER "
+                "is %r, whose tokens carry issuer %s: no token this deployment "
+                "accepts produces such a subject, so those entries can never "
+                "match and are not counted as a way back by the last-admin guard",
+                unknown,
+                settings.identity_provider,
+                sorted(known) or "(none)",
+            )
+    # The COUNT only — never the values. The list names real people, and it is
+    # exactly the list an attacker reading logs would want.
+    logger.info("ADMIN_SUBJECTS: %d bearer subject(s) allowlisted as admin", len(entries))
+
+
+#: Hard ceiling on ``admin_role_cache_ttl_seconds``. The same cap and the same
+#: reasoning as ``_DISABLED_CACHE_TTL_MAX``, pointing the other way: this TTL is
+#: the DEMOTION lag, so an operator raising it to cut database load would
+#: silently keep a REVOKED admin a superuser for that long.
+_ROLE_CACHE_TTL_MAX = 300
+
+
+def validate_admin_role_cache_settings() -> None:
+    """Fail fast on a role cache whose TTL outlives a demotion (call at
+    startup). A hard failure rather than a clamp, for the same reason as
+    :func:`validate_service_account_settings`: honouring a different TTL than
+    the configured one is how an operator ends up believing a revoke landed."""
+    ttl = settings.admin_role_cache_ttl_seconds
+    if ttl > _ROLE_CACHE_TTL_MAX:
+        raise RuntimeError(
+            f"admin_role_cache_ttl_seconds={ttl} exceeds the "
+            f"{_ROLE_CACHE_TTL_MAX}s cap: this TTL is how long a REVOKED admin "
+            "keeps superuser rights on the bearer path (per process), so a "
+            "larger value silently defers every demotion — the same cap "
+            "identity_cache_ttl_seconds and the disabled-check TTL get"
+        )
 
 
 #: Hard ceiling on ``service_account_disabled_cache_ttl_seconds``, mirroring the

@@ -1211,11 +1211,20 @@ async def lifespan(app: FastAPI):
     # Fail fast on a misconfigured RBAC setup (unknown default_role / api_key_roles)
     # rather than silently 403-ing affected callers at runtime.
     from ragstack.api.security import (
+        validate_admin_role_cache_settings,
+        validate_admin_subjects_settings,
         validate_role_settings,
         validate_service_account_settings,
     )
 
     validate_role_settings()
+    # The bearer admin allowlist lives in the same vocabulary and the same
+    # namespace rules, and it is the break-glass path: an entry that can never
+    # match (colon-free, padded, reserved) is an operator who believes they have
+    # an admin and does not. Must fail before any request is served. Its cache
+    # TTL is the DEMOTION lag, so it is capped just like the disabled check's.
+    validate_admin_subjects_settings()
+    validate_admin_role_cache_settings()
     # And the one runtime revocation lever there is (#258): its cache TTL is the
     # revocation lag, so it is capped at startup exactly like the identity
     # cache's — an uncapped value silently keeps a leaked key working.
@@ -1510,7 +1519,11 @@ async def lifespan(app: FastAPI):
         # get_user_store()/get_acl_store() after the reset below (an asyncpg pool
         # nobody ever closes). Then reset BOTH module singletons so nothing
         # resolves a closed store after shutdown (tests re-enter the lifespan).
-        from ragstack.api.security import drain_profile_upserts, reset_disabled_cache
+        from ragstack.api.security import (
+            drain_profile_upserts,
+            reset_disabled_cache,
+            reset_role_cache,
+        )
         from ragstack.user_store import reset_user_store
 
         await drain_profile_upserts()
@@ -1520,6 +1533,10 @@ async def lifespan(app: FastAPI):
         # against the store we just closed (#258). Drop it with the singleton so
         # a re-entered lifespan (tests) starts from the new store's answers.
         reset_disabled_cache()
+        # Same for "does this subject's row say admin?" — a verdict memoized
+        # against a closed store must not decide a re-entered lifespan's first
+        # request.
+        reset_role_cache()
         reset_acl_store()
         reset_group_store()
         # Close the ES client if the text index holds one.

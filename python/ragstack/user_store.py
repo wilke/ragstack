@@ -20,6 +20,15 @@ layer, the same partition the #243 startup guard enforces at the edge. Service
 rows are created deliberately by :meth:`UserStore.create_service_account`;
 ``upsert_seen`` (the first-auth hook) can never mint or reclassify one.
 
+A ``human`` row also carries a ``role``: the RBAC role the BEARER auth path
+resolves for that subject, and one of exactly two server-side admin sources
+(the other being the ``ADMIN_SUBJECTS`` env allowlist, which is checked first
+and cannot be revoked from here). It is written ONLY by
+:meth:`UserStore.set_role`, an admin-only call, and is excluded from
+``_SEEN_ASSIGN_COLUMNS`` so the login hook that runs on every request is
+structurally unable to touch it. Nothing in a credential is an input to it —
+a token can never elevate the caller presenting it.
+
 This module follows the :mod:`ragstack.collection_store` /
 :mod:`ragstack.jobstore` discipline: one shared-dialect DDL string for sqlite
 and postgres, ``TEXT``/``INTEGER`` columns only (no ``JSONB``, no
@@ -89,11 +98,53 @@ VALID_USER_KINDS = frozenset({KIND_HUMAN, KIND_SERVICE})
 #: create that state.
 RESERVED_SERVICE_SUBJECTS = frozenset({DEFAULT_TENANT, PUBLIC_TENANT})
 
+# Role vocabulary for the ``role`` column. Spelled here rather than imported
+# from ``ragstack.api.security`` because this module MUST NOT import from
+# ``ragstack.api.*`` (security.py imports it from the auth path, and the reverse
+# import is a cycle) — the two spellings are pinned equal by a test.
+#: A superuser across the whole deployment; the only value that elevates.
+USER_ROLE_ADMIN = "admin"
+#: The plain role. Stored explicitly by a revoke so the audit stamps have
+#: something to describe; ``''`` (the column default) means the same thing at
+#: the auth path — "never set" is not a third role.
+USER_ROLE_USER = "user"
+VALID_USER_ROLES = frozenset({USER_ROLE_ADMIN, USER_ROLE_USER})
+
 
 class UserInvariantError(ValueError):
     """A user-row mutation would violate an account invariant (a colon in a
     service subject, converting a real human row into a service account,
-    disabling a non-service row, ...)."""
+    disabling a non-service row, granting a bearer role to a machine
+    credential, ...)."""
+
+
+class UserRoleError(ValueError):
+    """The requested role is not part of the vocabulary.
+
+    Separate from :class:`UserInvariantError` because the two map to different
+    HTTP answers: an unknown role is a malformed REQUEST (400 — the caller
+    typed ``admn``), while an invariant breach is a refused state change (409).
+    Folding them together would make a typo indistinguishable from a
+    last-admin lockout at the router.
+    """
+
+
+class LastAdminError(UserInvariantError):
+    """This role write would demote the only remaining STORED admin.
+
+    Raised by :meth:`UserStore.set_role` — and only when the caller asked for
+    the guard by passing ``require_remaining_admin`` — because it is the one
+    refusal that cannot be decided from the target row alone: it depends on the
+    rest of the table, so it has to be evaluated in the same transaction as the
+    write it vetoes. A router that checked it separately would be a TOCTOU
+    (two concurrent revokes each see the other's admin, both pass, the
+    deployment lands on zero admins), which is the exact unrecoverable state
+    the refusal exists to prevent.
+
+    A subclass of :class:`UserInvariantError` so a caller that only knows the
+    coarse "refused state change" (409) vocabulary still maps it correctly;
+    catch it FIRST to say something more specific.
+    """
 
 
 class UserNotFoundError(KeyError):
@@ -137,6 +188,26 @@ class UserRecord(BaseModel):
     disabled_at: str = ""  # ISO-8601 UTC of that disable (kept across a re-enable)
     enabled_by: str = ""  # subject of the admin who LAST re-enabled it
     enabled_at: str = ""  # ISO-8601 UTC of that re-enable
+    # RBAC role for the BEARER auth path, and one of exactly two server-side
+    # admin sources (the other is the ADMIN_SUBJECTS env allowlist). '' is the
+    # house "not set" sentinel every other TEXT column uses and reads as
+    # ``user``; only the literal 'admin' elevates. This is an IDENTITY-CLASS
+    # column: it is carried through unchanged by ``_merge_seen``, excluded from
+    # :data:`_SEEN_ASSIGN_COLUMNS`, and therefore structurally unwritable by the
+    # first-auth hook that runs on EVERY login. Nothing in a token can set it.
+    role: str = ""
+    role_set_by: str = ""  # subject of the admin who LAST changed the role
+    role_set_at: str = ""  # ISO-8601 UTC of that change (append-only audit)
+
+    @property
+    def is_admin(self) -> bool:
+        """Does the STORED role elevate? ``''`` and ``'user'`` do not.
+
+        The auth path ORs this with the ADMIN_SUBJECTS allowlist and never
+        consults ``settings.default_role``; see
+        ``security._principal_from_bearer``.
+        """
+        return self.role == USER_ROLE_ADMIN
 
     @property
     def enabled(self) -> bool:
@@ -246,6 +317,60 @@ class UserStore(Protocol):
         credential, when, and who put it back."""
         ...
 
+    async def set_role(
+        self,
+        subject: str,
+        role: str,
+        actor: str,
+        *,
+        require_remaining_admin: bool = False,
+    ) -> UserRecord:
+        """Grant or revoke the bearer RBAC role for ``subject``.
+
+        The ONLY writer of the ``role`` column. ``role`` must be ``admin`` or
+        ``user`` (:class:`UserRoleError` otherwise, so a typo stays
+        distinguishable from a refused state change), the row must exist
+        (:class:`UserNotFoundError`), and it must be a ``human`` row
+        (:class:`UserInvariantError` for a service account: an API-key
+        principal's role comes from ``API_KEY_ROLES``, and writing it here
+        would dissolve the disjoint-namespace invariant).
+
+        ``require_remaining_admin`` adds the last-admin refusal
+        (:class:`LastAdminError`): a demotion that would leave the table with
+        zero stored admins is rolled back. It lives HERE, not in the caller,
+        because it is a statement about the whole table and must be evaluated
+        under the same lock/transaction as the write — every implementation
+        below therefore serializes role writes against each other. The caller
+        passes it only when no environment admin source (``ADMIN_SUBJECTS``, an
+        admin ``API_KEY_ROLES`` mapping) would survive the write; the role
+        vocabulary is validated BEFORE it, so a typo'd role stays a
+        :class:`UserRoleError`.
+
+        Stamps ``role_set_by``/``role_set_at`` — append-only audit, in the
+        ADR-0004 decision 6 vocabulary: a revoke records who revoked, it never
+        blanks who granted. Idempotent: setting the role a row already has
+        returns it unchanged rather than re-stamping, so "who last CHANGED
+        this" stays true.
+
+        Note what this method cannot do: it cannot take away an ADMIN_SUBJECTS
+        entry. The env allowlist is checked first on the auth path and
+        short-circuits, so a stored ``user`` role does not demote an
+        allowlisted subject — that is the point of a break-glass path.
+        """
+        ...
+
+    async def count_admins(self) -> int:
+        """How many rows STORE ``role='admin'`` (the env allowlist is not
+        counted — it is not in this table).
+
+        A plain observation, safe to serve from outside a transaction: it
+        reports how many stored admins a deployment has. It is NOT what decides
+        the last-admin refusal — that count has to be taken inside the write's
+        own transaction, so ``set_role(..., require_remaining_admin=True)``
+        takes its own.
+        """
+        ...
+
     async def get(self, subject: str) -> UserRecord | None: ...
 
     async def list_users(self, limit: int = 100) -> list[UserRecord]:
@@ -274,9 +399,11 @@ def _merge_seen(
     it, so "never blank out existing data" cannot drift between dialects.
 
     It is also where the human/service distinction could be lost, so the
-    identity-class columns (``kind``/``created_by``/``purpose``/``disabled_*``)
-    are carried through UNCHANGED on the update branch and defaulted only on
-    create. The SQL backends narrow their ON CONFLICT assignment list to
+    identity-class columns (``kind``/``created_by``/``purpose``/``disabled_*``/
+    ``role*``) are carried through UNCHANGED on the update branch and defaulted
+    only on create. ``role`` matters most of all here: this helper runs on
+    EVERY login, so blanking it would silently demote an admin the next time
+    they signed in. The SQL backends narrow their ON CONFLICT assignment list to
     :data:`_SEEN_ASSIGN_COLUMNS` so the invariant holds even if this helper is
     wrong — belt and braces, because the read-then-merge is not atomic.
     """
@@ -289,6 +416,7 @@ def _merge_seen(
             kind=KIND_HUMAN, created_by="", purpose="",
             disabled=False, disabled_by="", disabled_at="",
             enabled_by="", enabled_at="",
+            role="", role_set_by="", role_set_at="",
         )
     return UserRecord(
         subject=subject,
@@ -308,6 +436,12 @@ def _merge_seen(
         disabled_at=prior.disabled_at,
         enabled_by=prior.enabled_by,
         enabled_at=prior.enabled_at,
+        # A login is not a role event. Carrying these through is what makes
+        # "signing in does not demote an admin" true even before the narrowed
+        # ON CONFLICT list makes it structurally true.
+        role=prior.role,
+        role_set_by=prior.role_set_by,
+        role_set_at=prior.role_set_at,
     )
 
 
@@ -376,6 +510,18 @@ def _check_service_account(prior: UserRecord | None, rec: UserRecord) -> None:
         )
     if prior is None or prior.kind == KIND_SERVICE:
         return
+    if prior.role:
+        # A never-authenticated placeholder that an admin has already given a
+        # ROLE to is not an empty name any more — it is a pending privilege
+        # grant. Silently converting it into a machine credential would carry
+        # that role onto an API-key identity through a door the role surface
+        # deliberately refuses (set_role rejects service rows). Revoke the role
+        # first, deliberately, and the upgrade below becomes available again.
+        raise UserInvariantError(
+            f"{rec.subject!r} carries the stored role {prior.role!r}; revoke it "
+            "before converting the row into a service account — a machine "
+            "credential must never inherit a bearer role grant"
+        )
     if prior.provisional and not prior.last_seen_at:
         # An ensure_provisional placeholder (named as a grantee/member before
         # the account existed). Nobody has ever authenticated as it, so
@@ -418,6 +564,77 @@ def _toggle_service_account(
         )
     return prior.model_copy(
         update={"disabled": False, "enabled_by": actor, "enabled_at": _now()}
+    )
+
+
+def _apply_role(prior: UserRecord | None, subject: str, role: str, actor: str) -> UserRecord:
+    """The one place ``set_role``'s semantics live — every backend calls it, so
+    the rules that decide who is a superuser cannot drift between the memory,
+    sqlite and postgres implementations.
+
+    Returns the row to persist, which is ``prior`` itself when the requested
+    role already holds (idempotent, and deliberately NOT re-stamped: the audit
+    pair answers "who last changed this", and a no-op re-grant overwriting it
+    would erase the real granter).
+
+    Refusals, and the concrete failure each prevents:
+
+    * unknown ``role`` -> :class:`UserRoleError`, so a typo cannot land a value
+      that is neither ``admin`` nor ``user`` in the column and then read as
+      "not admin" forever while the operator believes they granted something.
+    * blank ``actor`` -> :class:`UserInvariantError`: an unattributed privilege
+      grant is exactly the record ADR-0004 decision 6 exists to prevent.
+    * missing row -> :class:`UserNotFoundError`, never a create. Minting a row
+      from a subject string would let a typo'd issuer prefix create a
+      permanent admin nobody can authenticate as — and hide the real mistake.
+    * ``service`` row -> :class:`UserInvariantError`. An API-key principal's
+      role comes from ``API_KEY_ROLES``; this column is read only on the bearer
+      path. Writing it for a machine identity would be an inert grant at best,
+      and at worst the seam through which the two disjoint namespaces (#243)
+      start sharing an authorization concept.
+    """
+    if role not in VALID_USER_ROLES:
+        raise UserRoleError(
+            f"role {role!r} is not one of {sorted(VALID_USER_ROLES)}"
+        )
+    if not actor:
+        raise UserInvariantError("actor must be non-empty")
+    if prior is None:
+        raise UserNotFoundError(subject)
+    if prior.kind == KIND_SERVICE:
+        raise UserInvariantError(
+            f"{subject!r} is a service account; its role comes from API_KEY_ROLES "
+            "in the server environment, and the users.role column is read only on "
+            "the bearer path — granting it here would be inert and would blur the "
+            "two authentication namespaces"
+        )
+    # '' and 'user' are the same state; a row that has never been touched must
+    # not be re-stamped by a revoke that changes nothing.
+    if (prior.role or USER_ROLE_USER) == role:
+        return prior
+    return prior.model_copy(
+        update={"role": role, "role_set_by": actor, "role_set_at": _now()}
+    )
+
+
+def _is_demotion(prior: UserRecord | None, rec: UserRecord) -> bool:
+    """Does this write actually take admin AWAY from a stored admin?
+
+    The last-admin guard is scoped to exactly this: a grant cannot strand the
+    deployment, an idempotent re-grant returns ``prior`` unchanged (so both
+    sides are admin), and a re-revoke of somebody who was never admin is not a
+    demotion — none of those may be refused.
+    """
+    return prior is not None and prior.is_admin and not rec.is_admin
+
+
+def _last_admin_error(subject: str) -> LastAdminError:
+    """The store-level half of the refusal: WHAT was refused, not what to do
+    about it. The remediation depends on settings this module deliberately
+    cannot see (``ADMIN_SUBJECTS``, ``API_KEY_ROLES``), so the router adds it."""
+    return LastAdminError(
+        f"{subject!r} is the last stored admin; demoting it would leave the "
+        "users table with none"
     )
 
 
@@ -482,6 +699,33 @@ class InMemoryUserStore:
     async def enable_service_account(self, subject: str, actor: str) -> UserRecord:
         return await self._set_disabled(subject, actor, False)
 
+    async def set_role(
+        self,
+        subject: str,
+        role: str,
+        actor: str,
+        *,
+        require_remaining_admin: bool = False,
+    ) -> UserRecord:
+        # The lock is this backend's transaction: validate, count the OTHER
+        # admins and write without yielding, so two concurrent revokes cannot
+        # both observe the other's admin.
+        async with self._lock:
+            prior = self._records.get(subject)
+            rec = _apply_role(prior, subject, role, actor)
+            if require_remaining_admin and _is_demotion(prior, rec):
+                others = sum(
+                    1 for s, r in self._records.items() if s != subject and r.is_admin
+                )
+                if others == 0:
+                    raise _last_admin_error(subject)
+            self._records[subject] = rec
+            return rec.model_copy(deep=True)
+
+    async def count_admins(self) -> int:
+        async with self._lock:
+            return sum(1 for r in self._records.values() if r.is_admin)
+
     async def get(self, subject: str) -> UserRecord | None:
         async with self._lock:
             rec = self._records.get(subject)
@@ -530,6 +774,13 @@ class InMemoryUserStore:
 # strings from a verified bearer token; 'service' subjects are colon-free
 # locally-minted machine identities (issue #258). The two namespaces are
 # disjoint by that rule, and the #243 startup guard enforces it at the edge.
+# role in ('', 'admin', 'user') — the RBAC role of a 'human' row on the BEARER
+# auth path, written only by an admin through set_role and never by a login.
+# '' is "never set" and reads as 'user'; only the literal 'admin' elevates, and
+# it grants superuser across the whole deployment. role_set_by/role_set_at are
+# the append-only audit of the last change (ADR-0004 decision 6), never cleared.
+# A 'service' row's role is always '': an API-key principal's role comes from
+# API_KEY_ROLES in the environment, not from this table.
 _USERS_DDL = (
     "CREATE TABLE IF NOT EXISTS users ("
     "  subject TEXT PRIMARY KEY,"
@@ -546,7 +797,10 @@ _USERS_DDL = (
     "  disabled_by TEXT NOT NULL DEFAULT '',"
     "  disabled_at TEXT NOT NULL DEFAULT '',"
     "  enabled_by TEXT NOT NULL DEFAULT '',"
-    "  enabled_at TEXT NOT NULL DEFAULT ''"
+    "  enabled_at TEXT NOT NULL DEFAULT '',"
+    "  role TEXT NOT NULL DEFAULT '',"
+    "  role_set_by TEXT NOT NULL DEFAULT '',"
+    "  role_set_at TEXT NOT NULL DEFAULT ''"
     ")"
 )
 
@@ -577,6 +831,11 @@ _USERS_COLUMNS: dict[str, str] = {
     "disabled_at": "TEXT NOT NULL DEFAULT ''",
     "enabled_by": "TEXT NOT NULL DEFAULT ''",
     "enabled_at": "TEXT NOT NULL DEFAULT ''",
+    # A row widened from a legacy table backfills to role='' — i.e. NOT admin.
+    # Any other default would mean an upgrade silently elevated everyone.
+    "role": "TEXT NOT NULL DEFAULT ''",
+    "role_set_by": "TEXT NOT NULL DEFAULT ''",
+    "role_set_at": "TEXT NOT NULL DEFAULT ''",
 }
 
 # Positional and arity-strict: _COLUMNS, _record_to_row and _row_to_record are
@@ -586,24 +845,63 @@ _COLUMNS = (
     "provisional", "first_seen_at", "last_seen_at",
     "kind", "created_by", "purpose",
     "disabled", "disabled_by", "disabled_at", "enabled_by", "enabled_at",
+    "role", "role_set_by", "role_set_at",
 )
 
 # The ONLY columns upsert_seen's ON CONFLICT clause may assign. Narrowing it
 # (rather than "everything but subject") makes the first-auth hook
-# STRUCTURALLY incapable of writing kind/created_by/purpose/disabled_* in
+# STRUCTURALLY incapable of writing kind/created_by/purpose/disabled_*/role* in
 # either dialect — a DB-level invariant that does not depend on _merge_seen
 # being right, and that survives the non-atomic read-then-merge window.
+#
+# ``role`` is the entry that must never be added here. _upsert_profile is
+# fire-and-forget and debounced 300 s per subject, so a role in this list would
+# blank an admin's grant within minutes of any login, in both dialects, with no
+# error raised anywhere — the failure would look like "admin randomly stopped
+# working".
 _SEEN_ASSIGN_COLUMNS = (
     "issuer", "email", "display_name", "provisional", "first_seen_at", "last_seen_at",
 )
 
 # The identity-class columns, written only by the explicit admin calls
 # (create/disable/enable). Never touched by upsert_seen or ensure_provisional.
+# ``role*`` is here so that upgrading a never-authenticated placeholder into a
+# service account WRITES the fresh row's empty role rather than leaving whatever
+# the placeholder had; _check_service_account already refuses a role-bearing
+# placeholder, so this is the belt to that braces.
 _SERVICE_SET_COLUMNS = (
     "issuer", "provisional", "first_seen_at",
     "kind", "created_by", "purpose",
     "disabled", "disabled_by", "disabled_at", "enabled_by", "enabled_at",
+    "role", "role_set_by", "role_set_at",
 )
+
+# The narrow UPDATE for set_role: the role writer touches these three columns
+# and nothing else, so a role grant can never disturb profile or account state.
+_ROLE_SET_COLUMNS = ("role", "role_set_by", "role_set_at")
+_ROLE_UPDATE_SQLITE = (
+    "UPDATE users SET "
+    + ", ".join(f"{c} = ?" for c in _ROLE_SET_COLUMNS)
+    + " WHERE subject = ?"
+)
+_ROLE_UPDATE_POSTGRES = (
+    "UPDATE users SET "
+    + ", ".join(f"{c} = ${i + 1}" for i, c in enumerate(_ROLE_SET_COLUMNS))
+    + f" WHERE subject = ${len(_ROLE_SET_COLUMNS) + 1}"
+)
+_COUNT_ADMINS_SQLITE = "SELECT COUNT(*) FROM users WHERE role = ?"
+_COUNT_ADMINS_POSTGRES = "SELECT COUNT(*) FROM users WHERE role = $1"
+# The last-admin guard's count: admins OTHER than the row being written. Asked
+# before the UPDATE (and inside its transaction), so it needs no assumption
+# about whether the write has landed yet.
+_COUNT_OTHER_ADMINS_SQLITE = "SELECT COUNT(*) FROM users WHERE role = ? AND subject <> ?"
+_COUNT_OTHER_ADMINS_POSTGRES = (
+    "SELECT COUNT(*) FROM users WHERE role = $1 AND subject <> $2"
+)
+#: Postgres advisory-lock key serializing role writes (see
+#: ``PostgresUserStore.set_role``). An arbitrary constant — 'role' as bytes —
+#: shared by every worker against one database, which is the point.
+_ROLE_WRITE_LOCK = 0x726F6C65
 _SERVICE_UPDATE_SQLITE = (
     "UPDATE users SET "
     + ", ".join(f"{c} = ?" for c in _SERVICE_SET_COLUMNS)
@@ -627,6 +925,7 @@ def _record_to_row(rec: UserRecord) -> tuple:
         rec.kind, rec.created_by, rec.purpose,
         1 if rec.disabled else 0, rec.disabled_by, rec.disabled_at,
         rec.enabled_by, rec.enabled_at,
+        rec.role, rec.role_set_by, rec.role_set_at,
     )
 
 
@@ -638,15 +937,22 @@ def _service_update_args(rec: UserRecord) -> tuple:
         rec.kind, rec.created_by, rec.purpose,
         1 if rec.disabled else 0, rec.disabled_by, rec.disabled_at,
         rec.enabled_by, rec.enabled_at,
+        rec.role, rec.role_set_by, rec.role_set_at,
         rec.subject,
     )
+
+
+def _role_update_args(rec: UserRecord) -> tuple:
+    """Positional args for _ROLE_UPDATE_* — same order as _ROLE_SET_COLUMNS,
+    with ``subject`` last for the WHERE clause."""
+    return (rec.role, rec.role_set_by, rec.role_set_at, rec.subject)
 
 
 def _row_to_record(row: Any) -> UserRecord:
     (
         subject, issuer, email, display_name, provisional, first_seen, last_seen,
         kind, created_by, purpose, disabled, disabled_by, disabled_at,
-        enabled_by, enabled_at,
+        enabled_by, enabled_at, role, role_set_by, role_set_at,
     ) = tuple(row)
     return UserRecord(
         subject=subject, issuer=issuer, email=email, display_name=display_name,
@@ -659,6 +965,9 @@ def _row_to_record(row: Any) -> UserRecord:
         disabled=bool(disabled) or (bool(disabled_at) and not enabled_at),
         disabled_by=disabled_by, disabled_at=disabled_at,
         enabled_by=enabled_by, enabled_at=enabled_at,
+        # No fallback and no coercion: an unrecognised value read back is NOT
+        # admin, which is the only safe direction for a privilege column.
+        role=role, role_set_by=role_set_by, role_set_at=role_set_at,
     )
 
 
@@ -771,6 +1080,41 @@ class SqliteUserStore:
             conn.execute(_SERVICE_UPDATE_SQLITE, _service_update_args(rec))
         return rec
 
+    def _set_role_sync(
+        self,
+        subject: str,
+        role: str,
+        actor: str,
+        require_remaining_admin: bool = False,
+    ) -> UserRecord:
+        # BEGIN IMMEDIATE, not the implicit deferred transaction: a privilege
+        # change reads the table (the row, and — under the guard — how many
+        # OTHER admins exist) and then writes based on what it read. A deferred
+        # transaction takes no lock until its first DML, so those SELECTs would
+        # sit outside any lock and a concurrent revoke could commit between
+        # them and the UPDATE. IMMEDIATE takes the write lock up front, which
+        # makes read-validate-write atomic against every other role writer
+        # (they wait, then see this one's result) and lets a raised
+        # LastAdminError roll the whole thing back via ``with conn``.
+        with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
+            prior_row = conn.execute(_SELECT + " WHERE subject = ?", (subject,)).fetchone()
+            prior = _row_to_record(prior_row) if prior_row is not None else None
+            rec = _apply_role(prior, subject, role, actor)
+            if require_remaining_admin and _is_demotion(prior, rec):
+                row = conn.execute(
+                    _COUNT_OTHER_ADMINS_SQLITE, (USER_ROLE_ADMIN, subject)
+                ).fetchone()
+                if int(row[0] if row is not None else 0) == 0:
+                    raise _last_admin_error(subject)
+            conn.execute(_ROLE_UPDATE_SQLITE, _role_update_args(rec))
+        return rec
+
+    def _count_admins_sync(self) -> int:
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(_COUNT_ADMINS_SQLITE, (USER_ROLE_ADMIN,)).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def _get_sync(self, subject: str) -> UserRecord | None:
         with closing(self._connect()) as conn, conn:
             row = conn.execute(_SELECT + " WHERE subject = ?", (subject,)).fetchone()
@@ -815,6 +1159,21 @@ class SqliteUserStore:
 
     async def enable_service_account(self, subject: str, actor: str) -> UserRecord:
         return await asyncio.to_thread(self._set_disabled_sync, subject, actor, False)
+
+    async def set_role(
+        self,
+        subject: str,
+        role: str,
+        actor: str,
+        *,
+        require_remaining_admin: bool = False,
+    ) -> UserRecord:
+        return await asyncio.to_thread(
+            self._set_role_sync, subject, role, actor, require_remaining_admin
+        )
+
+    async def count_admins(self) -> int:
+        return await asyncio.to_thread(self._count_admins_sync)
 
     async def get(self, subject: str) -> UserRecord | None:
         return await asyncio.to_thread(self._get_sync, subject)
@@ -974,6 +1333,47 @@ class PostgresUserStore:
 
     async def enable_service_account(self, subject: str, actor: str) -> UserRecord:
         return await self._set_disabled(subject, actor, False)
+
+    async def set_role(
+        self,
+        subject: str,
+        role: str,
+        actor: str,
+        *,
+        require_remaining_admin: bool = False,
+    ) -> UserRecord:
+        pool = await self._pool_()
+        # asyncpg autocommits per statement, so the read-validate-write needs an
+        # explicit transaction — a privilege change must not be able to interleave
+        # with a concurrent one and lose the loser's validation.
+        #
+        # The transaction alone is not enough for the last-admin guard: under
+        # READ COMMITTED two concurrent revokes touch DIFFERENT rows, so neither
+        # blocks and each still counts the other as an admin (write skew) — both
+        # commit and the deployment lands on zero admins. The advisory lock is
+        # transaction-scoped and taken by every role write, so role writes are
+        # serialized deployment-wide and the count is taken against a table no
+        # other role writer can be mutating. Role changes are rare; the
+        # contention this costs is nil.
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock($1)", _ROLE_WRITE_LOCK)
+            prior_row = await conn.fetchrow(_SELECT + " WHERE subject = $1", subject)
+            prior = _row_to_record(tuple(prior_row)) if prior_row is not None else None
+            rec = _apply_role(prior, subject, role, actor)
+            if require_remaining_admin and _is_demotion(prior, rec):
+                others = await conn.fetchval(
+                    _COUNT_OTHER_ADMINS_POSTGRES, USER_ROLE_ADMIN, subject
+                )
+                if int(others or 0) == 0:
+                    raise _last_admin_error(subject)
+            await conn.execute(_ROLE_UPDATE_POSTGRES, *_role_update_args(rec))
+        return rec
+
+    async def count_admins(self) -> int:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            value = await conn.fetchval(_COUNT_ADMINS_POSTGRES, USER_ROLE_ADMIN)
+        return int(value or 0)
 
     async def get(self, subject: str) -> UserRecord | None:
         pool = await self._pool_()

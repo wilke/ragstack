@@ -9,10 +9,35 @@ name: CI
 # Postgres service containers). Still out of scope: tests/eval and the conformance
 # suite need the embedding/crossencoder sidecars (model downloads) + a full stack.
 
+# DISABLED 2026-08-06 — GitHub Actions stopped producing runs for this repo
+# (no run object was created for PR #272 at all, through a 10-minute wait, a
+# close/reopen to re-fire the pull_request event, and a further wait; Actions
+# reports {"enabled":true,"allowed_actions":"all"} and PR runs worked earlier
+# the same day, which points at a minutes/spending stop). Rather than leave PRs
+# sitting on checks that never arrive, checks run LOCALLY — see the runbook
+# below — and this workflow is manual-dispatch only.
+#
+# TO RE-ENABLE: restore the push/pull_request triggers below. Nothing else here
+# changed, so re-enabling is a one-line revert once billing is sorted.
+#
+#   push:
+#     branches: [main]
+#   pull_request:
+#
+# LOCAL EQUIVALENT (run all four before merging; this is exactly what the jobs
+# below do, minus the integration services):
+#
+#   cd python
+#   PYTHONPATH=$PWD python -m pytest tests -q      # the `python` job
+#   PYTHONPATH=$PWD python -m ruff check .
+#   PYTHONPATH=$PWD python -m mypy ragstack
+#   cd ../frontend && npm run typecheck && npx vitest run   # the `frontend` job
+#
+# The `integration` job (ES + Postgres containers) has NO local equivalent
+# without those services; on a host that has them, run
+#   PYTHONPATH=$PWD python -m pytest tests/integration -q
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 # A newer push to the same ref cancels the in-flight run.
 concurrency:

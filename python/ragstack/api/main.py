@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ragstack.api.deps import lifespan
 from ragstack.api.routers import (
     admin,
+    admin_users,
     collections,
     documents,
     graph,
@@ -87,4 +88,12 @@ app.include_router(
 # what makes a leaked key stoppable without one.
 app.include_router(
     service_accounts.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
+)
+# Bearer admin grants: PATCH /v1/admin/users/{subject}/role. The only in-API way
+# a federated identity becomes admin — the bearer path never inherits
+# DEFAULT_ROLE and no token can elevate itself. Admin-gated at include time like
+# the rest of /v1/admin; the ADMIN_SUBJECTS env allowlist is the other (and
+# outage-proof) admin source, and it is not writable from here.
+app.include_router(
+    admin_users.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
 )
