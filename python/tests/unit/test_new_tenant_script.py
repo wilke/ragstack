@@ -26,7 +26,11 @@ def run_script(args: list[str], rag_data: Path) -> subprocess.CompletedProcess[s
     env = os.environ.copy()
     env["RAG_DATA"] = str(rag_data)
     env["RAG_IMAGES"] = str(rag_data / "images")
-    env.pop("TENANT_PORT_BASE", None)
+    # Pin a high, unlikely-occupied base. The script probes its allocated ports for
+    # real (a manifest only knows tenants IT provisioned), so leaving the default
+    # 41000 makes these tests fail whenever a real tenant is running on this host —
+    # which is correct behaviour from the script and useless flakiness in a test.
+    env["TENANT_PORT_BASE"] = "41000"
     env.pop("TENANT_PORT_STRIDE", None)
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -121,16 +125,16 @@ def test_dry_run_plan_enumerates_writable_paths(tmp_path):
 
 def test_dry_run_plan_ports_stable_and_offsets(tmp_path):
     plan = dry_run("acme", tmp_path)
-    assert "api:            24000" in plan
-    assert "qdrant http:    24001" in plan
-    assert "qdrant grpc:    24002" in plan
-    assert "es http:        24003" in plan
-    assert "es transport:   24004" in plan
+    assert "api:            41000" in plan
+    assert "qdrant http:    41001" in plan
+    assert "qdrant grpc:    41002" in plan
+    assert "es http:        41003" in plan
+    assert "es transport:   41004" in plan
     assert "new allocation, index 0" in plan
     # env file points at the tenant's own instances
-    assert "QDRANT_URL=http://localhost:24001" in plan
-    assert "ELASTICSEARCH_URL=http://localhost:24003" in plan
-    assert "PORT=24000" in plan
+    assert "QDRANT_URL=http://localhost:41001" in plan
+    assert "ELASTICSEARCH_URL=http://localhost:41003" in plan
+    assert "PORT=41000" in plan
 
 
 def test_dry_run_plan_env_file_keys(tmp_path):
@@ -164,8 +168,8 @@ def test_dry_run_es_uses_native_E_args_not_env(tmp_path):
     # shell-sourced and cannot carry dots), and tini must be bypassed.
     assert "-Ediscovery.type=single-node" in plan
     assert "-Expack.security.enabled=false" in plan
-    assert "-Ehttp.port=24003" in plan
-    assert "-Etransport.port=24004" in plan
+    assert "-Ehttp.port=41003" in plan
+    assert "-Etransport.port=41004" in plan
     assert "/usr/local/bin/docker-entrypoint.sh eswrapper" in plan
     assert "--env discovery.type" not in plan
     assert "--env xpack" not in plan
@@ -181,8 +185,8 @@ def test_dry_run_qdrant_recipe(tmp_path):
     plan = dry_run("acme", tmp_path)
     # no --cwd in apptainer: CMD wrapped in a cd shell
     assert "/bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'" in plan
-    assert "--env QDRANT__SERVICE__HTTP_PORT=24001" in plan
-    assert "--env QDRANT__SERVICE__GRPC_PORT=24002" in plan
+    assert "--env QDRANT__SERVICE__HTTP_PORT=41001" in plan
+    assert "--env QDRANT__SERVICE__GRPC_PORT=41002" in plan
     # per-tenant instance names, suffixed
     assert "start qdrant-acme" in plan
     assert "start elasticsearch-acme" in plan
@@ -222,19 +226,19 @@ def test_existing_manifest_row_reused_verbatim(tmp_path):
 
 
 def test_new_tenant_gets_next_free_disjoint_block(tmp_path):
-    seed_manifest(tmp_path, [("acme", 0, 24000), ("beta", 3, 24060)])
+    seed_manifest(tmp_path, [("acme", 0, 41000), ("beta", 3, 41060)])
     plan = dry_run("gamma", tmp_path)
     assert "new allocation, index 4" in plan
-    assert "api:            24080" in plan
+    assert "api:            41080" in plan
     # no port from the existing blocks leaks into this plan
-    for port in ("24000", "24003", "24060", "24063"):
+    for port in ("41000", "41003", "41060", "41063"):
         assert f"http://localhost:{port}" not in plan
 
 
 def test_manifest_collision_detected(tmp_path):
     # A corrupt/hand-edited manifest whose row collides with another block
     # must be refused, not silently provisioned.
-    seed_manifest(tmp_path, [("acme", 0, 24000), ("evil", 1, 24010)])
+    seed_manifest(tmp_path, [("acme", 0, 41000), ("evil", 1, 41010)])
     proc = run_script(["evil", "--dry-run"], tmp_path)
     assert proc.returncode != 0
     assert "collides" in proc.stderr
@@ -291,7 +295,7 @@ def test_real_run_sqlite_idempotent(tmp_path):
     assert (tdir / "bin" / "down.sh").is_file()
     assert (tdir / "qdrant" / "storage").is_dir()
     assert (tdir / "elasticsearch" / "config").is_dir()
-    assert "acme\t0\t24000" in manifest.read_text()
+    assert "acme\t0\t41000" in manifest.read_text()
 
     env_before = env_file.read_text()
     assert "<GENERATED:" not in env_before  # real secrets stamped
@@ -299,7 +303,7 @@ def test_real_run_sqlite_idempotent(tmp_path):
 
     p2 = run_script(["acme"], tmp_path)
     assert p2.returncode == 0, p2.stderr
-    assert "reusing index 0, base 24000" in p2.stdout
+    assert "reusing index 0, base 41000" in p2.stdout
     assert p2.stdout.count("unchanged") >= 4  # secrets, env, up.sh, down.sh
     # secrets never rotated; env byte-identical
     assert env_file.read_text() == env_before
@@ -328,7 +332,7 @@ def test_concurrent_provisioning_allocates_disjoint_blocks(tmp_path):
     env = os.environ.copy()
     env["RAG_DATA"] = str(tmp_path)
     env["RAG_IMAGES"] = str(tmp_path / "images")
-    env.pop("TENANT_PORT_BASE", None)
+    env["TENANT_PORT_BASE"] = "41000"   # see run_script: the script probes for real
     env.pop("TENANT_PORT_STRIDE", None)
     procs = [
         subprocess.Popen(
@@ -472,13 +476,13 @@ def test_allocation_refuses_a_port_the_manifest_does_not_know_is_taken(tmp_path)
 
     if not shutil.which("ss") and not shutil.which("netstat"):
         pytest.skip("no ss/netstat available to probe ports")
-    # Occupy the API port of the first block (base 24000 + 0).
+    # Occupy the API port of the first block (base 41000 + 0).
     sock = socket.socket()
     try:
         try:
-            sock.bind(("127.0.0.1", 24000))
+            sock.bind(("127.0.0.1", 41000))
         except OSError:
-            pytest.skip("port 24000 not bindable in this environment")
+            pytest.skip("port 41000 not bindable in this environment")
         sock.listen(1)
         proc = run_script(["acme", "--dry-run"], tmp_path)
         assert proc.returncode != 0, "must refuse a block whose port is already in use"

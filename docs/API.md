@@ -540,6 +540,8 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
 | `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
 | `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003) |
+| `COLLECTION_STORE_BACKEND`, `COLLECTION_STORE_PATH` | collection registry (`memory` \| `json` \| `sqlite` \| `postgres`). **There is no `*_SQLITE_PATH` variant** — a wrong name silently falls back to a *relative* default that resolves against the working directory, so two servers in one checkout share one registry. `REQUIRE_DURABLE_BACKENDS=true` refuses a relative path |
+| `JOB_STORE_BACKEND`, `JOB_STORE_PATH` | ingest job store; same relative-path rule |
 | `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
 | `ACL_BACKFILL_OWNER` | subject that inherits ownership of pre-existing (creator-less) collections at first startup after the ACL rollout (default `legacy:admin`); those collections also get a `public` read grant so they stay world-readable exactly as before |
 
