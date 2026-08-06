@@ -151,6 +151,15 @@ def _principal_from_key(api_key: str | None) -> Principal:
         return Principal(tenant=DEFAULT_TENANT, role=normalize_role(settings.default_role))
     # sum() over the generator evaluates every compare_digest (no short-circuit),
     # so total time doesn't reveal which key matched or how far down the list.
+    # compare_digest raises TypeError on a non-ASCII str, and Starlette decodes
+    # header bytes as latin-1 — so one high byte in X-API-Key used to escape as a
+    # 500 from an unauthenticated caller. A key that cannot match any ASCII key
+    # is simply invalid.
+    if api_key is not None and not api_key.isascii():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="missing or invalid API key",
+        )
     if api_key is not None and sum(secrets.compare_digest(api_key, k) for k in keys) > 0:
         return Principal(
             tenant=settings.api_key_tenants.get(api_key, DEFAULT_TENANT),
@@ -181,6 +190,12 @@ def _principal_from_key(api_key: str | None) -> Principal:
 # API-key request, coupling a path that was pure CPU — a dict lookup and a
 # constant-time compare — to the ACL database's p99.
 _disabled_cache: dict[str, tuple[float, bool]] = {}
+#: Bumped by :func:`reset_disabled_cache`. A lookup samples this BEFORE its
+#: store read and refuses to write its verdict back if the value changed while
+#: it was in flight: otherwise a request that started before an operator's
+#: ``/disable`` resumes afterwards and re-installs its stale "enabled" verdict,
+#: silently voiding the flush for a full TTL (found in review of #258).
+_disabled_cache_gen = 0
 # Prune trigger only; the dict stays bounded by subjects active in one window.
 _DISABLED_CACHE_MAX = 10_000
 # Warn once per OUTAGE when the lookup starts failing, then drop to debug — an
@@ -201,8 +216,15 @@ def _disabled_cache_ttl() -> float:
 
 
 def reset_disabled_cache() -> None:
-    """Drop the memoized disabled-lookups (tests, and any deliberate flush)."""
+    """Drop the memoized disabled-lookups (tests, and any deliberate flush).
+
+    Bumping the generation is what makes the flush hold: a lookup already
+    awaiting its store read would otherwise finish and re-install the verdict
+    it read *before* the flush, keeping a just-revoked key alive for a full TTL.
+    """
+    global _disabled_cache_gen
     _disabled_cache.clear()
+    _disabled_cache_gen += 1
 
 
 async def _service_account_disabled(subject: str) -> bool:
@@ -238,6 +260,9 @@ async def _service_account_disabled(subject: str) -> bool:
     """
     ttl = _disabled_cache_ttl()
     now = time.monotonic()
+    # Sampled BEFORE the await; compared after. A flush that lands mid-flight
+    # must invalidate this lookup's verdict, not be overwritten by it.
+    gen = _disabled_cache_gen
     if ttl > 0:
         hit = _disabled_cache.get(subject)
         if hit is not None and now < hit[0]:
@@ -270,7 +295,10 @@ async def _service_account_disabled(subject: str) -> bool:
         )
         disabled = False
 
-    if ttl > 0:
+    # Only memoize if no flush landed while the store read was in flight. On a
+    # stale generation the verdict still applies to THIS request (it is the
+    # freshest read we have) but must not be cached for the next one.
+    if ttl > 0 and gen == _disabled_cache_gen:
         if len(_disabled_cache) >= _DISABLED_CACHE_MAX:
             for key, (expiry, _) in list(_disabled_cache.items()):
                 if expiry <= now:

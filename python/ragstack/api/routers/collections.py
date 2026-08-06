@@ -55,6 +55,7 @@ from ragstack.ingestion.chunkers import CHUNK_METHODS
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
+from ragstack.user_store import RESERVED_SERVICE_SUBJECTS
 
 log = logging.getLogger(__name__)
 
@@ -867,6 +868,20 @@ def _resolve_grantee(grantee: str, issuer: str) -> tuple[str, str]:
                 f"service subject {svc!r} must be colon-free: ':' is reserved for "
                 "federated 'issuer:sub' identities; grant to one of those by "
                 "passing the full subject instead",
+            )
+        if svc in RESERVED_SERVICE_SUBJECTS:
+            # This branch is the ONLY input that yields a colon-free user
+            # grantee, so without this check '@service:default' would grant to
+            # the fallback tenant EVERY unmapped API key resolves to — an
+            # unrestricted '@public' wearing a single-account name, and one the
+            # share dialog would echo back as an innocuous 'default'. Registration
+            # refuses these subjects in two places; granting must too.
+            raise HTTPException(
+                422,
+                f"{svc!r} is a reserved tenant, not a service account: "
+                f"{sorted(RESERVED_SERVICE_SUBJECTS)} are the shared fallback "
+                "tenants unmapped keys resolve to, so granting to one would share "
+                "with every such caller. Use '@public' if that is the intent",
             )
         return GRANTEE_USER, svc
     if ":" in g:

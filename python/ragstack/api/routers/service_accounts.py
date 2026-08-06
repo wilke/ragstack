@@ -209,6 +209,21 @@ def _clean_subject(raw: str) -> str:
             "would lock out every such caller — including the admin key needed to "
             "re-enable it",
         )
+    # Mirrors the store guard so this is a 400 (bad request) rather than the
+    # store's 409: the subject is a URL path segment on the disable route, and
+    # these characters make that route unroutable — the account would register
+    # and then be permanently unrevocable through the API.
+    if any(c in subject for c in "/\\?#%") or subject in (".", ".."):
+        raise HTTPException(
+            400,
+            f"service subject {subject!r} must not contain / \\ ? # % or be "
+            "'.'/'..': the subject is a path segment on the disable route, so "
+            "such an account could never be revoked through the API",
+        )
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in subject):
+        raise HTTPException(
+            400, f"service subject {subject!r} must not contain control characters"
+        )
     return subject
 
 

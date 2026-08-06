@@ -14,6 +14,7 @@ The bearer path is untouched by all of this and is not exercised.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -604,3 +605,71 @@ async def test_disable_through_the_api_flushes_this_process_cache(client, user_s
         assert (await client.get("/v1/documents", headers=_h("svc"))).status_code == 401
     finally:
         settings.service_account_disabled_cache_ttl_seconds = original
+
+
+# --------------------------------------------------------------------------- #
+# Independent-review regressions (PR #259).
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_flush_beats_an_in_flight_lookup(monkeypatch):
+    """A lookup that started BEFORE an operator's /disable must not resume and
+    re-install its stale 'enabled' verdict — that silently voided the flush for
+    a full TTL and defeated exactly the check an operator runs after revoking."""
+    from ragstack.api import security
+
+    security.reset_disabled_cache()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowStore:
+        async def get(self, subject):
+            started.set()
+            await release.wait()
+            return None  # the pre-disable truth: not disabled
+
+    monkeypatch.setattr("ragstack.user_store.get_user_store", lambda: _SlowStore())
+    task = asyncio.create_task(security._service_account_disabled("svc-x"))
+    await started.wait()
+    security.reset_disabled_cache()  # the operator disables mid-flight
+    release.set()
+    assert await task is False  # this request still proceeds (freshest read)
+    # ...but the stale verdict must NOT have been memoized for the next one.
+    assert "svc-x" not in security._disabled_cache
+
+
+async def test_a_subject_that_cannot_be_revoked_is_refused(client):
+    """A '/' in the subject makes the disable route 404 (Starlette decodes %2F
+    before routing), so the account would register and then be permanently
+    unrevocable — the one operation it exists for."""
+    for bad in ["ops/prod", "a/b/c", "..", "svc%2Fx", "svc?x", "svc#x"]:
+        r = await client.post(
+            "/v1/admin/service-accounts",
+            json={"subject": bad, "purpose": "x"},
+            headers=_h("admin"),
+        )
+        assert r.status_code in (400, 422), f"{bad!r} accepted: {r.text}"
+
+
+async def test_control_characters_in_a_subject_are_refused(client):
+    r = await client.post(
+        "/v1/admin/service-accounts",
+        json={"subject": "load\x00er\x1b[31m", "purpose": "x"},
+        headers=_h("admin"),
+    )
+    assert r.status_code in (400, 422), r.text
+
+
+def test_a_non_ascii_api_key_is_401_not_500(monkeypatch):
+    """Starlette decodes header bytes as latin-1 and compare_digest raises on a
+    non-ASCII str — one high byte from an unauthenticated caller escaped as a
+    500. Tested at the function (httpx refuses to encode such a header at all,
+    so it cannot reach the app through the test client)."""
+    from fastapi import HTTPException
+
+    from ragstack.api import security
+
+    monkeypatch.setattr(security.settings, "api_keys", ["k-real"])
+    with pytest.raises(HTTPException) as exc:
+        security._principal_from_key("k\xe9")
+    assert exc.value.status_code == 401

@@ -342,6 +342,24 @@ def _check_service_account(prior: UserRecord | None, rec: UserRecord) -> None:
             "for federated 'issuer:sub' identities, and the two namespaces must "
             "stay disjoint (issue #243 startup guard)"
         )
+    if any(c in rec.subject for c in "/\\?#%") or rec.subject in (".", ".."):
+        # The subject is a PATH SEGMENT on /v1/admin/service-accounts/{subject}/
+        # disable. A '/' (even percent-encoded — Starlette decodes before routing)
+        # makes that route 404, so the account registers fine and can then NEVER
+        # be revoked through the API: the one operation it exists for. Refuse the
+        # characters rather than ship an account with a dead off-switch.
+        raise UserInvariantError(
+            f"service subject {rec.subject!r} must not contain any of / \\ ? # % "
+            "or be '.'/'..': the subject is a URL path segment on the disable "
+            "route, and these make it unaddressable — the account would be "
+            "unrevocable through the API"
+        )
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in rec.subject):
+        # Lands in the users primary key and is echoed by GET; NUL additionally
+        # diverges by backend (asyncpg rejects it, sqlite/memory accept).
+        raise UserInvariantError(
+            f"service subject {rec.subject!r} must not contain control characters"
+        )
     if rec.subject in RESERVED_SERVICE_SUBJECTS:
         raise UserInvariantError(
             f"{rec.subject!r} is a reserved tenant, not one caller's identity: "
