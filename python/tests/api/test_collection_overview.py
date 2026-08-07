@@ -32,7 +32,7 @@ async def test_collection_reports_vector_and_text_counts(client):
             CollectionEntry(
                 id="default", label="d", collection="c", model="m", dim=8,
                 chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
-                is_default=True, retriever=None,
+                is_shared_surface=True, retriever=None,
                 vector_store=_CountStore(1000), text_index=_CountStore(998), embedder=None,
             )
         ],
@@ -52,7 +52,7 @@ async def test_text_count_null_when_index_unavailable(client):
             CollectionEntry(
                 id="default", label="d", collection="c", model="m", dim=8,
                 chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
-                is_default=True, retriever=None,
+                is_shared_surface=True, retriever=None,
                 vector_store=_CountStore(5), text_index=None, embedder=None,
             )
         ],

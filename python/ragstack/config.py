@@ -86,6 +86,21 @@ class Settings(BaseSettings):
     #    "embedding_sidecar_url": "", "chunk_method": "fixed_token", "chunk_size": 512}
     collections_file: str = ""
     collections_json: str = ""
+    # Which collection a request that omits `collection` resolves to — a POINTER
+    # at an existing entry, never a collection that gets created to satisfy it.
+    #
+    # Empty means "the settings-derived entry", which is the historical
+    # behaviour. It exists because `default` used to be SYNTHESISED as a second
+    # registry entry over a physical store that often already had one — two ids
+    # over one dataset, and therefore two independent ACLs, so revoking a grant
+    # on one left the same bytes readable through the other (#275).
+    #
+    # Naming a nonexistent id is fatal at startup: it is an operator typo, and
+    # every no-collection request would otherwise 404 or serve the wrong corpus.
+    # (A *user's* stored preference pointing somewhere they lost access to is
+    # different — that falls back, because stale preferences are guaranteed once
+    # sharing exists.)
+    default_collection_id: str = ""
     # Where that registry actually LIVES. A collection's identity is its build
     # spec (model + dim + chunker), so the mapping id -> {index, model, dim,
     # chunker} has to be durable and authoritative — an ingest that used a

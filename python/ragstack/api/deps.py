@@ -17,6 +17,7 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.api.collections import (
+    RESERVED_COLLECTION_ID,
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
@@ -332,7 +333,7 @@ async def build_collection_entry(
         chunk_size=spec.chunk_size,
         chunk_overlap=spec.chunk_overlap,
         chunk_params=spec.chunk_params,
-        is_default=False,
+        is_shared_surface=False,
         retriever=_hybrid_retriever(
             vs, ti, emb, graph_store=graph_store, collection=spec.collection
         ),
@@ -643,42 +644,57 @@ async def _build_collection_registry(
     ``store`` is the authoritative registry (``collection_store_backend``); it
     defaults to the JSON-file backend, which reads exactly the
     ``collections_file``/``collections_json`` this used to read directly."""
-    entries: list[CollectionEntry] = [
-        CollectionEntry(
-            id="default",
-            label=f"default · {default_collection}",
-            collection=default_collection,
-            model=settings.embedding_model,
-            dim=settings.embedding_model_dim,
-            chunk_method=settings.chunk_method,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-            chunk_params={},
-            is_default=True,
-            retriever=default_retriever,
-            vector_store=default_vector_store,
-            text_index=default_text_index,
-            text_index_name=_es_index_name(),
-            embedder=default_embedder,
-            embedding_api=settings.embedding_api,
-            embedding_endpoints=list(embedding_urls()),
-        )
-    ]
-    _materialize_config_manifest(
-        default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
-        api=settings.embedding_api, endpoints=settings.embedding_endpoints,
-        chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+    derived = CollectionEntry(
+        id="default",
+        label=f"default · {default_collection}",
+        collection=default_collection,
+        model=settings.embedding_model,
+        dim=settings.embedding_model_dim,
+        chunk_method=settings.chunk_method,
+        chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        chunk_params={},
+        is_shared_surface=True,
+        retriever=default_retriever,
+        vector_store=default_vector_store,
+        text_index=default_text_index,
+        text_index_name=_es_index_name(),
+        embedder=default_embedder,
+        embedding_api=settings.embedding_api,
+        embedding_endpoints=list(embedding_urls()),
     )
 
+    # Specs FIRST, so we can tell whether one already claims the physical store
+    # the settings-derived entry would serve.
     specs = await (store or JsonFileCollectionStore(settings)).list_specs()
-    if not specs:
-        return CollectionRegistry(entries, default_id="default")
+    entries: list[CollectionEntry] = []
 
     # Reuse the default embedder for specs that share its backend signature.
     emb_cache: dict[tuple, Any] = {_default_emb_signature(): default_embedder}
 
+    seen_physical: dict[str, str] = {}
     for spec in specs:
+        if spec.id == RESERVED_COLLECTION_ID:
+            raise RuntimeError(
+                f"collection registry: a configured spec uses the reserved id "
+                f"{RESERVED_COLLECTION_ID!r}. That id names the POINTER — which "
+                "collection a request resolves to when it omits 'collection' — "
+                "and a spec claiming it silently shadows the server default."
+            )
+        # ADR-0002, stated positively: a physical index has exactly one registry
+        # entry. Two ids over one store are two independent ACLs over one dataset
+        # (#275) — true whether the second id comes from the synthesised default
+        # or, as here, from another spec.
+        for leg in (spec.collection, spec.es_index()):
+            prior = seen_physical.get(leg)
+            if prior is not None and prior != spec.id:
+                raise RuntimeError(
+                    f"collection registry: {spec.id!r} and {prior!r} both serve "
+                    f"{leg!r}. Two registry ids over one physical store are two "
+                    "independent ACLs over one dataset: revoking a grant on one "
+                    "leaves the same bytes readable through the other."
+                )
+            seen_physical[leg] = spec.id
         sig = spec.emb_signature()
         emb = emb_cache.get(sig)
         if emb is None:
@@ -687,11 +703,88 @@ async def _build_collection_registry(
         entries.append(
             await build_collection_entry(http, graph_store=graph_store, spec=spec, embedder=emb)
         )
+        # Materialized BEFORE the derived entry's manifest below, deliberately:
+        # manifests are keyed by PHYSICAL collection, and
+        # `_materialize_config_manifest` early-returns when one already exists.
+        # Writing the settings-derived spec first meant it always won, so a named
+        # spec's real build spec was never recorded and the ADR-0002 409 guard was
+        # armed with a value describing a different entry (#273).
         materialize_config_manifest_for_spec(spec)
 
-    log.info("collection registry: %d collections (%s)", len(entries),
-             ", ".join(e.id for e in entries))
-    return CollectionRegistry(entries, default_id="default")
+    # THE #275 FIX. Access control is asserted at the collection (ADR-0003), so
+    # two registry ids over one physical store are two INDEPENDENT ACLs over one
+    # dataset: revoking a grant on one leaves the same bytes readable through the
+    # other. An owner who un-publishes a corpus has not un-published it.
+    #
+    # `POST /v1/collections` already refuses this for created collections (the
+    # content-addressed alias guard); the config/implicit path needs the same
+    # rule. Compared on BOTH legs — a shared ES index aliases just as effectively
+    # as a shared Qdrant collection.
+    vec_claim = next((e for e in entries if e.collection == derived.collection), None)
+    es_claim = next((e for e in entries if e.es_index() == derived.es_index()), None)
+    if (vec_claim is None) != (es_claim is None) or (
+        vec_claim is not None and es_claim is not None and vec_claim.id != es_claim.id
+    ):
+        # A spec claims ONE of the derived entry's two legs. Suppressing the
+        # derived entry would close the ACL hole on the claimed leg while
+        # stranding the other: app.state's vector_store/ingestor keep serving a
+        # physical store that no registry entry covers, so nothing authorizes
+        # access to it. Serving it under two ids is the bug we are fixing; serving
+        # it under NO id is worse. This is a misconfiguration, not something to
+        # resolve silently.
+        raise RuntimeError(
+            "collection registry: a configured collection claims only one leg of "
+            f"the server default (vectors={derived.collection!r} claimed by "
+            f"{vec_claim.id if vec_claim else None!r}; text index="
+            f"{derived.es_index()!r} claimed by {es_claim.id if es_claim else None!r}). "
+            "Give the collection BOTH of the default's stores or neither — a "
+            "half-shared default leaves one store served by no registry entry, "
+            "and therefore governed by no ACL."
+        )
+    claimed_by = vec_claim
+    if claimed_by is None:
+        entries.insert(0, derived)
+        _materialize_config_manifest(
+            default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
+            api=settings.embedding_api, endpoints=settings.embedding_endpoints,
+            chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+        )
+    else:
+        log.info(
+            "collection registry: not synthesising a 'default' entry for %r — "
+            "it is already served as %r. Two ids over one store would be two "
+            "ACLs over one dataset (#275); requests that omit 'collection' "
+            "resolve to %r.",
+            derived.collection,
+            claimed_by.id,
+            claimed_by.id,
+        )
+
+    default_id = _resolve_default_id(entries, fallback=(claimed_by or derived).id)
+    log.info("collection registry: %d collections (%s), default=%r", len(entries),
+             ", ".join(e.id for e in entries), default_id)
+    return CollectionRegistry(entries, default_id=default_id)
+
+
+def _resolve_default_id(entries: list[CollectionEntry], *, fallback: str) -> str:
+    """Which id a request that omits ``collection`` resolves to.
+
+    ``DEFAULT_COLLECTION_ID`` wins when set. An unresolvable value is FATAL
+    rather than a silent fallback: it is an operator typo, and quietly serving a
+    different corpus than the one configured is precisely the class of bug this
+    change exists to remove."""
+    configured = (settings.default_collection_id or "").strip()
+    if not configured:
+        return fallback
+    if not any(e.id == configured for e in entries):
+        raise RuntimeError(
+            f"DEFAULT_COLLECTION_ID={configured!r} names no registered collection "
+            f"(have: {sorted(e.id for e in entries)}). It is the collection every "
+            "request that omits 'collection' resolves to, so a typo here would "
+            "serve the wrong corpus or 404 every such request."
+        )
+    return configured
 
 
 def _es_index_name() -> str:

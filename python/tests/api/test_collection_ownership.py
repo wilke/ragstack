@@ -66,7 +66,7 @@ def _entry(cid: str, default: bool = False, owner: str = "") -> CollectionEntry:
     return CollectionEntry(
         id=cid, label=cid, collection=cid, model="test-model", dim=4,
         chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
-        is_default=default, retriever=_StateRetriever(),
+        is_shared_surface=default, retriever=_StateRetriever(),
         vector_store=app.state.vector_store, text_index=app.state.text_index,
         owner=owner,
     )

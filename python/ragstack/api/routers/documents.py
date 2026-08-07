@@ -29,8 +29,6 @@ from ragstack.api.deps import (
     get_collections,
     get_ingestor,
     get_job_store,
-    get_text_index,
-    get_vector_store,
 )
 from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
@@ -159,10 +157,24 @@ async def _resolve_ingest_target(
     if not collection_id or collection_id == collections.default_id:
         default = collections.resolve(collections.default_id)
         _guard(default)
-        # READ, not write — the default collection is the shared tenant-stamped
-        # surface (docstring above); write stays owner-or-admin everywhere else.
-        await enforce_access(principal, default.id, "read")
-        return None, prebuilt
+        # READ-not-write is an exemption for the LEGACY SHARED SURFACE, not for
+        # "whatever default points at". On that surface per-chunk ``tenant_id``
+        # is the isolation and every caller writes into their own stripe, so a
+        # write gate would block the thing it is built for. Once ``default`` is
+        # a configurable pointer (#276) it can name a genuinely OWNED collection
+        # — and there the same exemption would let any reader ingest into
+        # somebody else's corpus just by omitting ``collection``. So the
+        # exemption keys on the surface, and everything else needs write.
+        await enforce_access(
+            principal, default.id, "read" if default.is_shared_surface else "write"
+        )
+        if default.is_shared_surface:
+            # The derived entry IS app.state's ingestor — same stores, no build.
+            return None, prebuilt
+        # The pointer names some OTHER collection. `prebuilt` writes to the
+        # settings-derived stores, so returning it here would authorize against
+        # one collection and land the bytes in another — the #275 shape inverted.
+        return default, build_ingestor_for(app_state, default)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     if allowed is not None and collection_id not in allowed:
         raise HTTPException(
@@ -516,7 +528,6 @@ async def list_documents(
     tenant: str = Depends(resolve_tenant),
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
-    text_index=Depends(get_text_index),
 ) -> list[DocumentInfo]:
     """List indexed documents visible to the caller (own tenant + ``public``).
 
@@ -532,9 +543,16 @@ async def list_documents(
     default collection: a caller who may not READ it gets the same 404 as an
     unknown collection.
     """
-    await enforce_access(principal, registry.default_id, "read")
+    # Authorize AND read the same entry. These used to be the same store by
+    # construction (the pointer was always the settings-derived entry, and
+    # `get_text_index` returns that entry's index). Now that the pointer is
+    # configurable they can differ — and reading `app.state`'s index after
+    # authorizing against the pointer target served one collection's documents
+    # under another collection's ACL.
+    default = registry.resolve(registry.default_id)
+    await enforce_access(principal, default.id, "read")
     try:
-        docs, next_cursor = await text_index.list_documents(
+        docs, next_cursor = await default.text_index.list_documents(
             readable_tenants(tenant), limit=limit, cursor=cursor
         )
     except ValueError as e:
@@ -569,20 +587,22 @@ async def delete_document(
     tenant: str = Depends(resolve_tenant),
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
-    vector_store=Depends(get_vector_store),
-    text_index=Depends(get_text_index),
 ) -> None:
     """Delete a document and its chunks — scoped to the caller's tenant, so one
     tenant cannot delete another's document even by id. Purge both retrieval
     legs (vector + text) so a deleted doc can't resurface via BM25.
 
-    The route targets the default collection's stores today, and the default
-    collection is the shared tenant-stamped surface — so, exactly like ingest
-    into it (see :func:`_resolve_ingest_target`), the seam enforces READ on the
-    default collection and the per-tenant scoping below does the write isolation:
-    the delete can only ever remove the caller's own tenant's chunks. Deleting
-    from a non-default collection (when a per-collection document endpoint
-    exists) stays owner-or-admin."""
-    await enforce_access(principal, registry.default_id, "read")
-    await vector_store.delete(doc_id, tenant_id=tenant)
-    await text_index.delete(doc_id, tenant_id=tenant)
+    The route targets the collection ``default`` points at. READ suffices only on
+    the LEGACY SHARED SURFACE — there per-chunk ``tenant_id`` stamping is the
+    isolation and the delete can only ever remove the caller's own chunks, so a
+    write gate would lock every non-admin out of the shared corpus. Anywhere else
+    this is a mutation of somebody's owned collection and needs write; the
+    exemption must not follow the pointer (see
+    :attr:`CollectionEntry.is_shared_surface`). Stores are taken from the same
+    entry that was authorized, never from ``app.state``."""
+    default = registry.resolve(registry.default_id)
+    await enforce_access(
+        principal, default.id, "read" if default.is_shared_surface else "write"
+    )
+    await default.vector_store.delete(doc_id, tenant_id=tenant)
+    await default.text_index.delete(doc_id, tenant_id=tenant)

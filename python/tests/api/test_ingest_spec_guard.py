@@ -32,7 +32,7 @@ def _entry(**over) -> CollectionEntry:
     base: dict = {
         "id": "acme", "label": "acme", "collection": "phys_acme", "model": "sfr", "dim": 8,
         "chunk_method": "fixed", "chunk_size": 200, "chunk_overlap": 20, "chunk_params": {},
-        "is_default": False, "retriever": object(), "vector_store": object(),
+        "is_shared_surface": False, "retriever": object(), "vector_store": object(),
         "text_index": object(), "embedder": object(), "embedding_api": "openai",
         "embedding_endpoints": ["http://localhost:9001"],
     }

@@ -33,6 +33,7 @@ from ragstack.api.access import (
     write_owner_row,
 )
 from ragstack.api.collections import (
+    RESERVED_COLLECTION_ID,
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
@@ -106,11 +107,21 @@ class CollectionsResponse(BaseModel):
 
 
 def _collection_info(
-    entry: CollectionEntry, count: int | None, text_count: int | None = None
+    entry: CollectionEntry,
+    count: int | None,
+    text_count: int | None = None,
+    *,
+    is_default: bool = False,
 ) -> CollectionInfo:
     """Assemble a CollectionInfo from a built entry + its (tenant-scoped) vector
     and text counts, folding in verified provenance from the manifest when
-    present. Shared by the list and create paths so their shapes can't drift."""
+    present. Shared by the list and create paths so their shapes can't drift.
+
+    ``is_default`` is the POINTER question — ``entry.id == registry.default_id``
+    — supplied by the caller, deliberately NOT read off the entry. The entry's
+    own ``is_shared_surface`` flag answers a different question (legacy
+    tenant-stamped surface) and carries authz exemptions with it; see
+    ``CollectionEntry.is_shared_surface``."""
     m = read_manifest(settings.collection_manifest_dir, entry.collection)
     prov = (
         Provenance(
@@ -139,7 +150,7 @@ def _collection_info(
         dim=entry.dim,
         chunk_method=entry.chunk_method or None,
         chunk_size=entry.chunk_size,
-        default=entry.is_default,
+        default=is_default,
         count=count,
         text_count=text_count,
         provenance=prov,
@@ -178,7 +189,7 @@ async def list_collections(
         asyncio.gather(*(probe_tenant_count(e.text_index, tenants) for e in entries)),
     )
     infos = [
-        _collection_info(e, vc, tc)
+        _collection_info(e, vc, tc, is_default=e.id == registry.default_id)
         for e, vc, tc in zip(entries, vec_counts, txt_counts, strict=True)
     ]
     # The reported default must be one of the listed ids: the registry default
@@ -406,6 +417,19 @@ async def create_collection(
         settings.qdrant_collection, emb_model, emb_dim, chunk=desc, name=body.id or None
     )
     cid = body.id or physical
+    if cid == RESERVED_COLLECTION_ID:
+        # `default` names the POINTER, not a collection. It used to be
+        # unmintable only by accident — the synthetic entry always occupied the
+        # id, so `registry.has(cid)` below happened to 409. Now that the entry is
+        # not synthesised when a spec already serves the store (#275), that
+        # accident is gone on exactly the deployments where a user-minted
+        # `default` would be most confusing.
+        raise HTTPException(
+            400,
+            f"{RESERVED_COLLECTION_ID!r} is reserved: it names the collection a "
+            "request resolves to when it omits 'collection', not a collection "
+            "you can create. Pick another id.",
+        )
     if registry.has(cid):
         # "already exists" confirms the id to the caller — an enumeration oracle
         # for a stranger's private, unreadable named library. Only say so to a
@@ -513,7 +537,9 @@ async def create_collection(
 
     tenants = readable_tenants(principal.tenant)
     count = await probe_tenant_count(built.vector_store, tenants)
-    return _collection_info(built, count)
+    # A just-created collection is never the pointer target: making it one is a
+    # separate, deliberate act (DEFAULT_COLLECTION_ID / a stored preference).
+    return _collection_info(built, count, is_default=False)
 
 
 class PurgeFailure(BaseModel):
@@ -651,8 +677,28 @@ async def delete_collection(
     same id starts with a clean slate instead of inheriting the deleted one's
     owner or ``public`` grant.
     """
+    # TWO guards, because this used to be one by accident. The pointer target and
+    # the legacy shared surface were always the same entry, so `== default_id`
+    # incidentally protected the flagship corpus. Repoint the pointer and that
+    # protection moves with it — leaving the shared surface deletable (and
+    # purgeable: drop_collection on a multi-million-point Qdrant collection and
+    # its ES index).
+    if registry.has(collection_id) and registry.resolve(collection_id).is_shared_surface:
+        raise HTTPException(
+            409,
+            "cannot delete the shared collection: it is the settings-derived "
+            "corpus this server was configured to serve, not a collection this "
+            "API created",
+        )
     if collection_id == registry.default_id:
-        raise HTTPException(409, "cannot delete the default collection")
+        # Name the way out. Before the pointer was configurable this could only
+        # ever be the synthetic entry; now it can be a real, user-owned
+        # collection, and its owner would otherwise have no recourse at all.
+        raise HTTPException(
+            409,
+            f"{collection_id!r} is the collection requests resolve to when they "
+            "omit 'collection'; repoint DEFAULT_COLLECTION_ID before deleting it",
+        )
     try:
         entry = registry.resolve(collection_id)
     except KeyError:

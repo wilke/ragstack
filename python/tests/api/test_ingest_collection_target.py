@@ -17,7 +17,7 @@ def _entry(method: str = "fixed") -> CollectionEntry:
     return CollectionEntry(
         id="acme", label="acme", collection="physical_acme", model="m", dim=8,
         chunk_method=method, chunk_size=200, chunk_overlap=20, chunk_params={},
-        is_default=False, retriever=object(),
+        is_shared_surface=False, retriever=object(),
         vector_store=object(), text_index=object(), embedder=object(),
     )
 
