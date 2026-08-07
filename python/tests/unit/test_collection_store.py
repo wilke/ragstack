@@ -20,6 +20,7 @@ import pytest
 
 from ragstack.collection_store import (
     CollectionSpec,
+    CreateOutcome,
     InMemoryCollectionStore,
     JsonFileCollectionStore,
     PostgresCollectionStore,
@@ -236,6 +237,182 @@ async def test_sqlite_concurrent_writers_lose_nothing(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda cid: store._put_sync(_spec(cid)), ids))
     assert sorted(s.id for s in await store.list_specs()) == sorted(ids)
+
+
+# --------------------------------------------------------------------------- #
+# create() — the capacity reservation (#286)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("backend", ["memory", "json", "sqlite"])
+async def test_create_inserts_if_absent(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    assert await store.create(_spec("a"), limit=None) is CreateOutcome.CREATED
+    rec = await store.get("a")
+    assert rec is not None and rec.spec == _spec("a")
+
+
+@pytest.mark.parametrize("backend", ["memory", "json", "sqlite"])
+async def test_create_duplicate_leaves_the_first_spec_intact(tmp_path, backend):
+    """The regression this method exists to fix. ``put`` UPSERTS, so two
+    processes racing one id left the loser's spec on disk and the winner's
+    physical store claimed by nobody. A create that loses must change NOTHING —
+    the first spec is the one that owns the store."""
+    store = _stores(tmp_path)[backend]
+    assert await store.create(_spec("a", label="first"), limit=None) is CreateOutcome.CREATED
+    second = await store.create(
+        _spec("a", label="second", collection="other_phys"), limit=None
+    )
+    assert second is CreateOutcome.DUPLICATE
+    rec = await store.get("a")
+    assert rec is not None
+    assert rec.spec.label == "first" and rec.spec.collection == "ragstack_lib_a"
+    assert len(await store.list_specs()) == 1
+
+
+@pytest.mark.parametrize("backend", ["memory", "json", "sqlite"])
+async def test_create_refuses_at_the_cap(tmp_path, backend):
+    """``limit == len(specs)`` is full — the boundary, not ``limit + 1``."""
+    store = _stores(tmp_path)[backend]
+    for cid in ("a", "b"):
+        assert await store.create(_spec(cid), limit=3) is CreateOutcome.CREATED
+    assert await store.create(_spec("c"), limit=3) is CreateOutcome.CREATED
+    assert await store.create(_spec("d"), limit=3) is CreateOutcome.AT_CAP
+    assert sorted(s.id for s in await store.list_specs()) == ["a", "b", "c"]
+    # ...and a delete frees the slot again.
+    assert await store.delete("a") is True
+    assert await store.create(_spec("d"), limit=3) is CreateOutcome.CREATED
+
+
+@pytest.mark.parametrize("backend", ["memory", "json", "sqlite"])
+async def test_create_limit_none_disables_the_cap(tmp_path, backend):
+    store = _stores(tmp_path)[backend]
+    for i in range(5):
+        assert await store.create(_spec(f"c{i}"), limit=None) is CreateOutcome.CREATED
+    assert len(await store.list_specs()) == 5
+
+
+@pytest.mark.parametrize("backend", ["memory", "json", "sqlite"])
+async def test_create_limit_zero_refuses_everything(tmp_path, backend):
+    """``limit=0`` is NOT the ``MAX_COLLECTIONS=0`` sentinel — the router
+    translates *that* to ``None``. Reaching the store, 0 means zero slots."""
+    store = _stores(tmp_path)[backend]
+    assert await store.create(_spec("a"), limit=0) is CreateOutcome.AT_CAP
+    assert await store.list_specs() == []
+
+
+async def test_json_create_without_a_file_is_unsupported(tmp_path):
+    """No ``collections_file`` → nothing to reserve in, reported as UNSUPPORTED
+    so the create path can fall back to its in-process count and warn "lost on
+    restart" (the shape ``put`` reports as ``False``)."""
+    store = JsonFileCollectionStore(_settings(tmp_path, collections_file=""))
+    assert await store.create(_spec(), limit=10) is CreateOutcome.UNSUPPORTED
+    assert await store.list_specs() == []
+
+
+async def test_json_create_is_unsupported_for_an_inline_registry(tmp_path):
+    settings = _settings(tmp_path, collections_file="",
+                         collections_json=json.dumps([_spec("inline").model_dump()]))
+    store = JsonFileCollectionStore(settings)
+    assert await store.create(_spec("x"), limit=10) is CreateOutcome.UNSUPPORTED
+
+
+# A capacity-checked writer, as a script. Separate interpreters are the point:
+# an in-process lock proves nothing about the sibling uvicorn that shares the
+# file, and the whole claim of #286 is a CROSS-PROCESS one.
+_CAP_WRITER = """
+import sys
+from ragstack.collection_store import CollectionSpec, create_spec_in_file
+path, prefix, n, limit = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+for i in range(n):
+    create_spec_in_file(path, CollectionSpec(
+        id=f"{prefix}_{i}", collection="phys", embedding_model_dim=8,
+        chunk_method="fixed", chunk_size=200), limit=limit)
+"""
+
+
+async def test_json_cap_holds_across_processes(tmp_path):
+    """Six processes, 48 candidate ids, one shared ``collections_file``, cap 10 —
+    exactly 10 rows survive.
+
+    This is the only test that proves the cross-process claim. Counting in the
+    API process (``len(registry.entries())``) gives each instance its own private
+    tally, so N instances sharing a registry permit ~N x the advertised cap; the
+    count has to happen inside the same flock section as the insert."""
+    path = str(tmp_path / "capped.collections.json")
+    script = tmp_path / "cap_writer.py"
+    script.write_text(_CAP_WRITER)
+    workers, per_worker, limit = 6, 8, 10
+    env = dict(os.environ, PYTHONPATH=str(pathlib.Path(__file__).resolve().parents[2]))
+    procs = [
+        subprocess.Popen(
+            [sys.executable, str(script), path, f"c{w}", str(per_worker), str(limit)],
+            env=env,
+        )
+        for w in range(workers)
+    ]
+    assert [p.wait(timeout=120) for p in procs] == [0] * workers
+
+    stored = json.loads(open(path, encoding="utf-8").read())
+    assert len(stored) == limit, [d["id"] for d in stored]
+    ids = [d["id"] for d in stored]
+    assert len(set(ids)) == limit  # no duplicate rows either
+    assert not [p for p in os.listdir(tmp_path) if p.endswith(".tmp")]
+
+
+async def test_sqlite_cap_holds_under_thread_contention(tmp_path):
+    """8 threads x 40 creates, cap 10 — exactly 10 rows.
+
+    Without ``BEGIN IMMEDIATE`` the count runs outside the write lock and the cap
+    overshoots; without ``PRAGMA busy_timeout`` the losers raise SQLITE_BUSY
+    instead of waiting their turn."""
+    store = SqliteCollectionStore(str(tmp_path / "capped.db"))
+    limit, workers, per_worker = 10, 8, 40
+
+    def run(w: int) -> list[CreateOutcome]:
+        return [
+            store._create_sync(_spec(f"c{w}_{i}"), limit=limit) for i in range(per_worker)
+        ]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        outcomes = [o for batch in pool.map(run, range(workers)) for o in batch]
+
+    assert outcomes.count(CreateOutcome.CREATED) == limit
+    assert outcomes.count(CreateOutcome.AT_CAP) == workers * per_worker - limit
+    assert len(await store.list_specs()) == limit
+
+
+@pytest.mark.skipif(
+    not os.environ.get("RAGSTACK_TEST_POSTGRES_DSN"),
+    reason="set RAGSTACK_TEST_POSTGRES_DSN to exercise the postgres backend",
+)
+async def test_postgres_cap_holds_under_concurrent_creates():
+    """K concurrent creates with ONE slot left → exactly one CREATED.
+
+    The test that fails without ``pg_advisory_xact_lock``: at READ COMMITTED each
+    transaction's uncommitted INSERT is invisible to the others, so all K count
+    ``limit - 1``, all K insert, and all K commit. Serialization has to be
+    explicit — a ``WHERE (SELECT count(*)...) < N`` predicate does not provide it.
+    """
+    import asyncio
+
+    store = PostgresCollectionStore(os.environ["RAGSTACK_TEST_POSTGRES_DSN"])
+    k = 8
+    ids = [f"pgcap_{i}" for i in range(k)]
+    try:
+        # A clean slate under our own id prefix, then a cap of exactly 1.
+        for cid in ids:
+            await store.delete(cid)
+        limit = len(await store.list_specs()) + 1
+        outcomes = await asyncio.gather(
+            *(store.create(_spec(cid), limit=limit) for cid in ids)
+        )
+        assert outcomes.count(CreateOutcome.CREATED) == 1
+        assert outcomes.count(CreateOutcome.AT_CAP) == k - 1
+    finally:
+        for cid in ids:
+            await store.delete(cid)
+        await store.close()
 
 
 # --------------------------------------------------------------------------- #

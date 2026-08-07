@@ -47,6 +47,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -159,6 +160,22 @@ class CollectionRecord(BaseModel):
     updated_at: str = ""
 
 
+class CreateOutcome(StrEnum):
+    """What :meth:`CollectionStore.create` did — the four answers a capacity-
+    checked insert-if-absent can give, kept distinct because the create path maps
+    each to a different HTTP status (201 / 409 / 403 / warn-and-fall-back).
+
+    Deliberately NOT a bool: an insert that did not happen is either "the id is
+    taken" or "the registry is full", and collapsing them (a rowcount-0
+    ``INSERT ... SELECT ... WHERE count < ?``) makes them indistinguishable.
+    """
+
+    CREATED = "created"
+    DUPLICATE = "duplicate"  #: the id was already stored — the FIRST spec survives
+    AT_CAP = "at_cap"  #: the store already holds ``limit`` specs
+    UNSUPPORTED = "unsupported"  #: this store cannot persist; the caller must fall back
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -187,6 +204,29 @@ class CollectionStore(Protocol):
         """Upsert a spec. Returns ``False`` when the store cannot persist (no
         ``collections_file`` configured, or an inline-JSON registry), which the
         create path reports as "in-memory only, lost on restart"."""
+        ...
+
+    async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        """Insert ``spec`` **if absent**, refusing once the store already holds
+        ``limit`` specs. The capacity reservation for ``POST /v1/collections``.
+
+        The count and the insert are ONE atomic operation in every backend — that
+        is the entire point of this method existing next to :meth:`put`. Counting
+        in the caller and inserting afterwards is what #286 is: two round-trips
+        apart, N concurrent creators at ``limit - 1`` all see room and all pass,
+        and across processes ``put``'s upsert silently overwrites a sibling's spec
+        while leaving that sibling's physical store unclaimed (the state ADR-0002
+        decision 5 outlaws).
+
+        ``limit=None`` disables the cap; ``limit=0`` refuses every create. The
+        distinction matters: ``MAX_COLLECTIONS=0`` means *disabled*, while a cap
+        fully consumed by reserved slots must mean *refuse everything*, so the
+        caller cannot encode both in one int.
+
+        On :attr:`CreateOutcome.DUPLICATE` the stored spec is left EXACTLY as it
+        was — never an upsert. A second creator racing the same id must not be
+        able to re-point an existing registry entry at its own physical store.
+        """
         ...
 
     async def delete(self, cid: str) -> bool:
@@ -315,6 +355,28 @@ def append_spec_to_file(path: str, spec: CollectionSpec) -> bool:
     return True
 
 
+def create_spec_in_file(path: str, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+    """Insert-if-absent with a capacity check, both inside ONE flock section.
+
+    The flock is what makes this cross-process: the count, the duplicate check
+    and the ``os.replace`` are a single critical section, so two uvicorns sharing
+    a ``collections_file`` cannot both observe ``limit - 1`` entries. (Without the
+    lock the read-modify-write loses entries outright — see
+    :func:`json_file_lock`.)
+    """
+    if not path:
+        return CreateOutcome.UNSUPPORTED  # inline/unset registry: nothing to reserve in
+    with json_file_lock(path):
+        existing = read_json_file(path)
+        if any(isinstance(d, dict) and d.get("id") == spec.id for d in existing):
+            return CreateOutcome.DUPLICATE
+        if limit is not None and len(existing) >= limit:
+            return CreateOutcome.AT_CAP
+        existing.append(spec.model_dump())
+        write_json_file(path, existing)
+    return CreateOutcome.CREATED
+
+
 def remove_spec_from_file(path: str, cid: str) -> bool:
     """Drop the entry with id ``cid`` from the JSON registry, under the lock."""
     if not path or not os.path.exists(path):
@@ -382,6 +444,14 @@ class JsonFileCollectionStore:
             return False  # inline/unset registry: in-memory only, lost on restart
         return await asyncio.to_thread(append_spec_to_file, path, spec)
 
+    async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        path = self.path
+        if not path:
+            # Mirrors put()'s False: an inline/unset registry cannot hold a
+            # reservation, so the caller falls back to its in-process count.
+            return CreateOutcome.UNSUPPORTED
+        return await asyncio.to_thread(create_spec_in_file, path, spec, limit=limit)
+
     async def delete(self, cid: str) -> bool:
         path = self.path
         if not path:
@@ -420,6 +490,18 @@ class InMemoryCollectionStore:
                 spec, created_at=prior.created_at if prior else ""
             )
         return True
+
+    async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        # The asyncio lock is the whole mechanism: this store is process-local, so
+        # "atomic" here means no other coroutine may run between the count and the
+        # insert — which is exactly what an uncancelled `async with` guarantees.
+        async with self._lock:
+            if spec.id in self._records:
+                return CreateOutcome.DUPLICATE
+            if limit is not None and len(self._records) >= limit:
+                return CreateOutcome.AT_CAP
+            self._records[spec.id] = make_record(spec)
+        return CreateOutcome.CREATED
 
     async def delete(self, cid: str) -> bool:
         async with self._lock:
@@ -490,6 +572,17 @@ _COLUMNS = (
     "spec_hash", "created_at", "updated_at", "owner",
 )
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM collections"
+# Plain inserts (no ON CONFLICT clause) for the create path: a create that finds
+# the id present must NOT upsert, so the "do nothing on conflict" behaviour is a
+# preceding SELECT inside the same serialized unit rather than a clause here.
+_INSERT_SQLITE = (
+    f"INSERT INTO collections ({', '.join(_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(_COLUMNS))})"
+)
+_INSERT_POSTGRES = (
+    f"INSERT INTO collections ({', '.join(_COLUMNS)}) "
+    f"VALUES ({', '.join(f'${i + 1}' for i in range(len(_COLUMNS)))})"
+)
 # Stable registration order: created_at ascends with insertion, id breaks ties
 # for rows seeded in one batch (identical timestamps are possible).
 _ORDER = " ORDER BY created_at, id"
@@ -563,6 +656,11 @@ class SqliteCollectionStore:
         # manager commits but does NOT close (jobstore.py's note).
         conn = sqlite3.connect(self._path)
         conn.execute("PRAGMA journal_mode=WAL")
+        # Wait for a contended write lock instead of raising SQLITE_BUSY
+        # immediately (sqlite's default timeout for a BEGIN IMMEDIATE that loses
+        # the race is effectively zero here). Required now that create() holds a
+        # write transaction across a count and an insert.
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def _list_sync(self) -> list[CollectionRecord]:
@@ -590,6 +688,38 @@ class SqliteCollectionStore:
             )
         return True
 
+    def _create_sync(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        """Count and insert as ONE serialized unit, via ``BEGIN IMMEDIATE``.
+
+        ``BEGIN IMMEDIATE`` takes sqlite's RESERVED write lock *up front*, before
+        the count — a deferred transaction would only acquire it at the INSERT,
+        by which point another writer's row may have landed and the count that
+        authorized this insert is stale. Manual transaction control
+        (``isolation_level = None``) is what makes the explicit BEGIN possible:
+        the default implicit-BEGIN mode would start the transaction at the INSERT
+        instead, i.e. exactly the deferred behaviour this must avoid.
+        """
+        with closing(self._connect()) as conn:
+            conn.isolation_level = None  # manual BEGIN/COMMIT
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if conn.execute(
+                    "SELECT 1 FROM collections WHERE id = ?", (spec.id,)
+                ).fetchone() is not None:
+                    conn.execute("ROLLBACK")
+                    return CreateOutcome.DUPLICATE
+                if limit is not None:
+                    n = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
+                    if n >= limit:
+                        conn.execute("ROLLBACK")
+                        return CreateOutcome.AT_CAP
+                conn.execute(_INSERT_SQLITE, _record_to_row(make_record(spec)))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return CreateOutcome.CREATED
+
     def _delete_sync(self, cid: str) -> bool:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute("DELETE FROM collections WHERE id = ?", (cid,))
@@ -607,11 +737,21 @@ class SqliteCollectionStore:
     async def put(self, spec: CollectionSpec) -> bool:
         return await asyncio.to_thread(self._put_sync, spec)
 
+    async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        return await asyncio.to_thread(self._create_sync, spec, limit=limit)
+
     async def delete(self, cid: str) -> bool:
         return await asyncio.to_thread(self._delete_sync, cid)
 
     async def close(self) -> None:
         """No persistent connection to release."""
+
+
+#: Postgres advisory-lock key serializing capacity-checked creates
+#: (:meth:`PostgresCollectionStore.create`). ``b"rag_coll"`` as an int64 —
+#: distinct from _SHARES_DDL_LOCK_KEY / _USERS_DDL_LOCK_KEY /
+#: _GROUPS_DDL_LOCK_KEY / _ROLE_WRITE_LOCK, which share this namespace.
+_COLLECTIONS_CREATE_LOCK_KEY = 0x7261675F636F6C6C
 
 
 def _normalize_dsn(dsn: str) -> str:
@@ -687,6 +827,31 @@ class PostgresCollectionStore:
                 *_record_to_row(rec),
             )
         return True
+
+    async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
+        """Count and insert under a transaction-scoped advisory lock.
+
+        The lock is not paranoia, it is the only thing that works. At READ
+        COMMITTED (Postgres' default) a concurrent transaction's uncommitted
+        INSERT is invisible, so K creators at ``limit - 1`` each count ``limit -
+        1``, each insert, and all K commit — a plain ``INSERT ... WHERE (SELECT
+        count(*) ...) < N`` has precisely this hole. ``pg_advisory_xact_lock``
+        serializes the whole count-then-insert against every other creator and is
+        released by COMMIT/ROLLBACK, so a crashed backend cannot wedge the cap.
+        """
+        pool = await self._pool_()
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", _COLLECTIONS_CREATE_LOCK_KEY
+            )
+            if await conn.fetchval("SELECT 1 FROM collections WHERE id = $1", spec.id):
+                return CreateOutcome.DUPLICATE
+            if limit is not None:
+                n = await conn.fetchval("SELECT COUNT(*) FROM collections")
+                if n >= limit:
+                    return CreateOutcome.AT_CAP
+            await conn.execute(_INSERT_POSTGRES, *_record_to_row(make_record(spec)))
+        return CreateOutcome.CREATED
 
     async def delete(self, cid: str) -> bool:
         pool = await self._pool_()

@@ -860,7 +860,11 @@ paths:
             overrides without the admin role (omit both to create from the
             server-default build spec), or the server's collection cap
             (`MAX_COLLECTIONS`) is reached — each collection costs physical
-            store resources, so the count is enforced, not just monitored
+            store resources, so the count is enforced, not just monitored.
+            The count is taken over the **durable registry**, atomically with
+            the id reservation: it therefore includes collections registered by
+            a sibling API process, by the bulk CLI, or by hand, and concurrent
+            creates cannot overshoot it
         "404":
           description: Referenced embedding model is not registered
         "409":
