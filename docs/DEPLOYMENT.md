@@ -231,6 +231,49 @@ uvicorn ragstack.api.main:app --host 0.0.0.0 --port <api port from the plan>
 > **ops architecture reference artifact still shows the shared ES** and is updated at
 > migration time, not now.
 
+### Auditing physical stores against the registries
+
+ADR-0002 decision 5 says a physical index has exactly one registry entry. Nothing
+enforces that for stores created outside the API, so the fleet accumulates
+Qdrant collections and ES indices that no registry names. `store_inventory.py`
+measures the gap. It is **report-only and never deletes anything**:
+
+```bash
+cd python
+python scripts/store_inventory.py \
+    --config-dir /rag/config --tenants-dir /rag/data/tenants --exclude rag
+```
+
+Statuses are deliberately not "orphan":
+
+| status | meaning |
+|---|---|
+| `claimed` | a registry passed to this run names it, on this instance |
+| `claimed-name-only` | matched by a registry whose backend could not be determined — the name agrees, the instance is unverified |
+| `unclaimed-by-known-registries` | no registry passed to this run names it |
+| `claimed-but-absent` | a registry entry whose store is missing from a probed backend |
+
+**Pass every registry that shares the backends.** A registry left out — or one
+the tool could not read, which it reports in a block above the store list —
+turns each of its live stores into an `unclaimed` row. Two thirds of the residue
+measured for [#293](https://github.com/wilke/ragstack/issues/293) was production
+corpora whose API was merely stopped, so `unclaimed` is the start of an
+investigation, not a delete list.
+
+Two flags worth knowing:
+
+- `--qdrant-storage URL=PATH` — Qdrant's API exposes no on-disk size, so sizes
+  are blank unless you point at that instance's storage directory. ES sizes come
+  from `_cat/indices` and are always present.
+- `--exclude NAME` — drops a config by stem, for a shared layout env
+  (`/rag/config/rag.env`) that sits beside the deployment configs but configures
+  no API of its own.
+
+Under [ADR-0005 decision 6](adr/0005-tenant-anatomy.md) a tenant exclusively owns
+its stores, so **this report going empty for a tenant is that tenant's migration
+completion signal**. Auto-reclaim stays out of scope until the bulk CLI stops
+minting stores the registry never sees ([#263](https://github.com/wilke/ragstack/issues/263)).
+
 ---
 
 ## Service accounts
