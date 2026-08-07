@@ -1237,6 +1237,23 @@ def _validate_production_settings() -> None:
             "ACL database (users + shares) must be durable — set USER_STORE_BACKEND "
             "to 'sqlite' or 'postgres'."
         )
+    # The COLLECTION registry must be durable too, and for a second reason beyond
+    # losing collections on restart: MAX_COLLECTIONS is enforced as an atomic
+    # reservation against that registry (#286). A json store with nowhere to
+    # write cannot hold a reservation, so the cap silently degrades to a
+    # per-process count of the in-memory registry — blind to sibling workers, to
+    # the bulk CLI, and to the concurrent creates it exists to bound. That
+    # degradation is invisible except in a per-create log line, so refuse it here.
+    if (settings.collection_store_backend or "json").lower() == "json" and not (
+        settings.collections_file or settings.collections_json
+    ):
+        raise RuntimeError(
+            "require_durable_backends is set but collection_store_backend='json' "
+            "with no COLLECTIONS_FILE: created collections are lost on restart, and "
+            "MAX_COLLECTIONS degrades to a per-process count instead of an atomic "
+            "reservation. Set COLLECTIONS_FILE, or COLLECTION_STORE_BACKEND="
+            "'sqlite'|'postgres'."
+        )
     # A RELATIVE sqlite path resolves against the process working directory, so two
     # servers launched from the same checkout silently SHARE a registry / ACL / job
     # database no matter what their env says — observed live: a demo server's

@@ -497,3 +497,30 @@ async def test_a_build_failure_withdraws_the_durable_reservation(
         "the durable reservation survived a failed build — it consumes a cap slot "
         "and has no owner row, so nobody but an admin can remove it"
     )
+
+
+async def test_a_cancelled_build_withdraws_the_reservation(client, monkeypatch, tmp_path):
+    """`asyncio.CancelledError` is a BaseException, so `except Exception` around
+    the build did not catch it — and a cancellation (client disconnect, server
+    timeout) is the MOST likely build failure under load, because the build is
+    the slow part: two network round-trips ensuring the Qdrant collection and the
+    ES index. Catching only Exception left exactly the leak the handler exists to
+    prevent: a spec with no owner row, holding a cap slot nobody but an admin can
+    reclaim."""
+    import json as _json
+
+    from ragstack.api.routers import collections as router_mod
+
+    f = _seed_durable(monkeypatch, tmp_path, 0, name="cancelled.collections.json")
+
+    async def _cancel(*a, **k):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(router_mod, "build_collection_entry", _cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await client.post("/v1/collections", json={"id": "cancelled-build"})
+
+    rows = _json.loads(f.read_text())
+    assert not any(r["id"] == "cancelled-build" for r in rows), (
+        "a cancelled build leaked the durable reservation"
+    )

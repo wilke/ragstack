@@ -21,6 +21,9 @@ def _prod(monkeypatch):
     monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
     monkeypatch.setattr(deps.settings, "user_store_path", "/abs/users.db")
     monkeypatch.setattr(deps.settings, "collection_store_backend", "json")
+    # A json store needs somewhere to write, or the durable-registry guard
+    # fires first and these path assertions never run (#286).
+    monkeypatch.setattr(deps.settings, "collections_file", "/abs/collections.json")
     monkeypatch.setattr(deps.settings, "job_store_backend", "memory")
 
 

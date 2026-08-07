@@ -655,12 +655,13 @@ class SqliteCollectionStore:
         # ``with closing(...) as conn, conn:`` — sqlite3's connection context
         # manager commits but does NOT close (jobstore.py's note).
         conn = sqlite3.connect(self._path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        # Wait for a contended write lock instead of raising SQLITE_BUSY
-        # immediately (sqlite's default timeout for a BEGIN IMMEDIATE that loses
-        # the race is effectively zero here). Required now that create() holds a
+        # busy_timeout FIRST: setting journal_mode=WAL is itself a write that can
+        # lose a race against another process opening the same fresh database, so
+        # it needs the timeout too. Wait for a contended write lock rather than
+        # raising SQLITE_BUSY immediately — required now that create() holds a
         # write transaction across a count and an insert.
         conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _list_sync(self) -> list[CollectionRecord]:

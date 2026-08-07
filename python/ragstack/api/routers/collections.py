@@ -558,10 +558,18 @@ async def create_collection(
             graph_store=request.app.state.graph_store,
             spec=spec,
         )
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: `asyncio.CancelledError` derives from
+        # BaseException, and a cancellation — a client disconnect or a server
+        # timeout — is the MOST likely build failure under load, because the
+        # build is the slow part (two network round-trips ensuring the Qdrant
+        # collection and the ES index). Catching only Exception left exactly the
+        # leak this handler exists to prevent.
         if outcome is CreateOutcome.CREATED:
             try:
-                await store.delete(cid)
+                # Shielded so the same cancellation cannot also kill the
+                # withdrawal it just triggered.
+                await asyncio.shield(store.delete(cid))
             except Exception:  # noqa: BLE001 — best-effort; startup rebuilds from the spec
                 log.warning(
                     "create %r: the build failed and withdrawing the durable "
