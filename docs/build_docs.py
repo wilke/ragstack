@@ -32,6 +32,11 @@ PAGES = [
         blurb="A high-level map — capabilities, components, data-flow diagrams, and the full API + service-script surface.",
     ),
     dict(
+        src="GLOSSARY.md", out="glossary.html", label="Glossary",
+        card="Glossary",
+        blurb="Tenant, collection, store: the words the access-control model rests on, and the failure each one exists to name.",
+    ),
+    dict(
         src="ARCHITECTURE-DEEP-DIVE.md", out="architecture-deep-dive.html", label="Deep-Dive",
         card="Architecture Deep-Dive",
         blurb="Per-capability internals: algorithms, tools & models, scalability, single vs bulk, 33 diagrams, and a duplication audit.",
