@@ -677,8 +677,28 @@ async def delete_collection(
     same id starts with a clean slate instead of inheriting the deleted one's
     owner or ``public`` grant.
     """
+    # TWO guards, because this used to be one by accident. The pointer target and
+    # the legacy shared surface were always the same entry, so `== default_id`
+    # incidentally protected the flagship corpus. Repoint the pointer and that
+    # protection moves with it — leaving the shared surface deletable (and
+    # purgeable: drop_collection on a multi-million-point Qdrant collection and
+    # its ES index).
+    if registry.has(collection_id) and registry.resolve(collection_id).is_shared_surface:
+        raise HTTPException(
+            409,
+            "cannot delete the shared collection: it is the settings-derived "
+            "corpus this server was configured to serve, not a collection this "
+            "API created",
+        )
     if collection_id == registry.default_id:
-        raise HTTPException(409, "cannot delete the default collection")
+        # Name the way out. Before the pointer was configurable this could only
+        # ever be the synthetic entry; now it can be a real, user-owned
+        # collection, and its owner would otherwise have no recourse at all.
+        raise HTTPException(
+            409,
+            f"{collection_id!r} is the collection requests resolve to when they "
+            "omit 'collection'; repoint DEFAULT_COLLECTION_ID before deleting it",
+        )
     try:
         entry = registry.resolve(collection_id)
     except KeyError:

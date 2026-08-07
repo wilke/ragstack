@@ -17,6 +17,7 @@ import httpx
 from fastapi import FastAPI, Request
 
 from ragstack.api.collections import (
+    RESERVED_COLLECTION_ID,
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
@@ -671,7 +672,29 @@ async def _build_collection_registry(
     # Reuse the default embedder for specs that share its backend signature.
     emb_cache: dict[tuple, Any] = {_default_emb_signature(): default_embedder}
 
+    seen_physical: dict[str, str] = {}
     for spec in specs:
+        if spec.id == RESERVED_COLLECTION_ID:
+            raise RuntimeError(
+                f"collection registry: a configured spec uses the reserved id "
+                f"{RESERVED_COLLECTION_ID!r}. That id names the POINTER — which "
+                "collection a request resolves to when it omits 'collection' — "
+                "and a spec claiming it silently shadows the server default."
+            )
+        # ADR-0002, stated positively: a physical index has exactly one registry
+        # entry. Two ids over one store are two independent ACLs over one dataset
+        # (#275) — true whether the second id comes from the synthesised default
+        # or, as here, from another spec.
+        for leg in (spec.collection, spec.es_index()):
+            prior = seen_physical.get(leg)
+            if prior is not None and prior != spec.id:
+                raise RuntimeError(
+                    f"collection registry: {spec.id!r} and {prior!r} both serve "
+                    f"{leg!r}. Two registry ids over one physical store are two "
+                    "independent ACLs over one dataset: revoking a grant on one "
+                    "leaves the same bytes readable through the other."
+                )
+            seen_physical[leg] = spec.id
         sig = spec.emb_signature()
         emb = emb_cache.get(sig)
         if emb is None:
@@ -697,14 +720,28 @@ async def _build_collection_registry(
     # content-addressed alias guard); the config/implicit path needs the same
     # rule. Compared on BOTH legs — a shared ES index aliases just as effectively
     # as a shared Qdrant collection.
-    claimed_by = next(
-        (
-            e
-            for e in entries
-            if e.collection == derived.collection or e.es_index() == derived.es_index()
-        ),
-        None,
-    )
+    vec_claim = next((e for e in entries if e.collection == derived.collection), None)
+    es_claim = next((e for e in entries if e.es_index() == derived.es_index()), None)
+    if (vec_claim is None) != (es_claim is None) or (
+        vec_claim is not None and es_claim is not None and vec_claim.id != es_claim.id
+    ):
+        # A spec claims ONE of the derived entry's two legs. Suppressing the
+        # derived entry would close the ACL hole on the claimed leg while
+        # stranding the other: app.state's vector_store/ingestor keep serving a
+        # physical store that no registry entry covers, so nothing authorizes
+        # access to it. Serving it under two ids is the bug we are fixing; serving
+        # it under NO id is worse. This is a misconfiguration, not something to
+        # resolve silently.
+        raise RuntimeError(
+            "collection registry: a configured collection claims only one leg of "
+            f"the server default (vectors={derived.collection!r} claimed by "
+            f"{vec_claim.id if vec_claim else None!r}; text index="
+            f"{derived.es_index()!r} claimed by {es_claim.id if es_claim else None!r}). "
+            "Give the collection BOTH of the default's stores or neither — a "
+            "half-shared default leaves one store served by no registry entry, "
+            "and therefore governed by no ACL."
+        )
+    claimed_by = vec_claim
     if claimed_by is None:
         entries.insert(0, derived)
         _materialize_config_manifest(

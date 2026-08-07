@@ -131,7 +131,30 @@ async def test_explicit_purge_false_is_also_unregister_only(client, manifests):
 async def test_purging_the_default_is_409(client, manifests):
     r = await client.delete("/v1/collections/default?purge=true")
     assert r.status_code == 409
-    assert "default" in r.json()["detail"]
+    # The SHARED SURFACE guard, not the pointer guard. These used to be the same
+    # check: the pointer always named the settings-derived entry, so `==
+    # default_id` incidentally protected the flagship corpus. Once the pointer is
+    # configurable that protection would move with it and leave a multi-million
+    # point Qdrant collection purgeable, so the surface is guarded on its own.
+    assert "shared collection" in r.json()["detail"]
+
+
+async def test_the_pointer_target_is_also_undeletable_and_says_how_to_free_it(
+    client, manifests, monkeypatch
+):
+    """A repointed default names a REAL, user-owned collection. It must still be
+    protected — a request that omits `collection` would otherwise 404 — but its
+    owner needs to be told how to get out, which the old message never had to
+    say because the target could only ever be the synthetic entry."""
+    target, _, _ = _add("phys_pointer", cid="pointed-at")
+    assert target.is_shared_surface is False
+    monkeypatch.setattr(app.state.collections, "_default_id", target.id)
+
+    r = await client.delete(f"/v1/collections/{target.id}?purge=true")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "omit" in detail
+    assert "DEFAULT_COLLECTION_ID" in detail
 
 
 async def test_purging_a_shared_store_409s_and_names_the_sharer(client, manifests):

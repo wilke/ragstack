@@ -88,18 +88,54 @@ async def test_no_second_entry_when_a_spec_already_serves_the_store(monkeypatch)
     assert reg.resolve(None).id == "lucid"
 
 
-async def test_a_shared_ES_INDEX_also_counts_as_the_same_store(monkeypatch):
-    """Aliasing on the text leg hides the same data under two ids just as
-    effectively as aliasing the Qdrant collection, so both legs are compared."""
-    # Vectors differ; only the ES index collides.
+async def test_a_HALF_shared_default_is_refused_at_startup(monkeypatch):
+    """A spec that claims only ONE of the derived entry's two legs is a
+    misconfiguration, not something to resolve silently.
+
+    Suppressing the derived entry would close the ACL hole on the claimed leg
+    while STRANDING the other: `app.state`'s vector store and ingestor keep
+    serving a physical store that no registry entry covers, so nothing
+    authorizes access to it at all. Serving one store under two ids is the bug
+    this change fixes; serving it under NO id is worse. (This one needs no
+    DEFAULT_COLLECTION_ID to reach — a `collections_file` is enough.)"""
+    with pytest.raises(RuntimeError, match="only one leg"):
+        await _build(
+            monkeypatch,
+            [_spec("named", "other-vectors", text_index="shared-es")],
+            derived="phys-vectors",
+            derived_es="shared-es",
+        )
+
+
+async def test_both_legs_shared_suppresses_the_derived_entry(monkeypatch):
+    """The ordinary case: a spec serving the same vectors AND the same text
+    index is simply that collection, so no second id is minted for it."""
     reg = await _build(
         monkeypatch,
-        [_spec("named", "other-vectors", text_index="shared-es")],
-        derived="phys-vectors",
-        derived_es="shared-es",
+        [_spec("named", "phys", text_index="phys-es")],
+        derived="phys",
+        derived_es="phys-es",
     )
     assert sorted(e.id for e in reg.entries()) == ["named"]
     assert reg.default_id == "named"
+
+
+async def test_two_specs_may_not_alias_each_other(monkeypatch):
+    """The invariant is about PHYSICAL stores, not about the synthesised entry:
+    two specs over one store are the same two-ACLs-over-one-dataset defect,
+    reachable straight from a hand-authored collections_file."""
+    with pytest.raises(RuntimeError, match="both serve"):
+        await _build(
+            monkeypatch, [_spec("a", "shared"), _spec("b", "shared")], derived="phys"
+        )
+
+
+async def test_a_spec_may_not_claim_the_reserved_pointer_id(monkeypatch):
+    """`default` names the pointer. A spec taking that id used to silently shadow
+    the server default (last-wins in the id dict) — with its own stores and
+    without the shared-surface flag."""
+    with pytest.raises(RuntimeError, match="reserved id"):
+        await _build(monkeypatch, [_spec("default", "somewhere-else")], derived="phys")
 
 
 async def test_one_registry_entry_per_physical_store(monkeypatch):
@@ -163,3 +199,60 @@ async def test_the_surviving_entry_keeps_the_shared_surface_exemptions(monkeypat
 
     reg2 = await _build(monkeypatch, [], derived="phys")
     assert reg2.resolve("default").is_shared_surface is True
+
+
+# --- the surfaces that resolve the pointer ---------------------------------- #
+#
+# These are regression tests for a defect this change INTRODUCED and an adversarial
+# review caught: authorization moved to the pointer target while the STORE stayed
+# `app.state`'s. The two were the same object for as long as the pointer could
+# only be the settings-derived entry, so nothing noticed. Once they can differ,
+# authorizing against one collection and reading/writing another is the #275
+# defect inverted — one id's ACL gating another id's data.
+
+
+async def test_list_documents_reads_the_entry_it_authorized(client, monkeypatch):
+    """F2 REGRESSION. `GET /v1/documents` authorized `read` on the pointer target
+    but read `app.state`'s text index. Once those can differ, it served one
+    collection's documents under another collection's ACL."""
+    from ragstack.api.main import app
+    from ragstack.models import Chunk
+    from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+
+    # The app-level index holds a document; the pointer target's does not.
+    app_index = app.state.text_index
+    await app_index.index(
+        [Chunk(id="c1", doc_id="secret-doc", content="x", embedding=[0.1] * 4)]
+    )
+
+    target = deps.CollectionEntry(
+        id="pointed-at", label="pointed-at", collection="other-phys",
+        model="m", dim=4, chunk_method="fixed", chunk_size=256, chunk_overlap=32,
+        chunk_params={}, is_shared_surface=False, retriever=None,
+        vector_store=InMemoryVectorStore(), text_index=InMemoryTextIndex(),
+    )
+    app.state.collections.add(target)
+    monkeypatch.setattr(app.state.collections, "_default_id", target.id)
+
+    r = await client.get("/v1/documents")
+    assert r.status_code == 200, r.text
+    doc_ids = [d["doc_id"] for d in r.json()]
+    assert "secret-doc" not in doc_ids, (
+        "served a document from the app-level index while authorizing against "
+        "the pointer target's collection"
+    )
+
+
+async def test_the_delete_document_exemption_keys_on_the_surface():
+    """F3 REGRESSION. The read-not-write exemption was hardcoded here, and the
+    split that fixed the ingest branch missed its sibling mutation. Checked on
+    the compiled function so a comment cannot satisfy it."""
+    from ragstack.api.routers import documents
+
+    consts = documents.delete_document.__code__.co_consts
+    assert "write" in consts, "delete_document never asks for write access"
+    # ...and it resolves the entry rather than taking app-level stores.
+    params = set(documents.delete_document.__annotations__) | set(
+        documents.delete_document.__code__.co_varnames
+    )
+    assert "text_index" not in params and "vector_store" not in params
