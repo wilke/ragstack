@@ -203,8 +203,8 @@ async def test_admin_can_ingest_anywhere(client):
 async def test_owner_can_delete_own_collection(client):
     _register(_entry("mine"))
     await _own("mine", "owner")
-    r = await client.delete("/v1/collections/mine", headers=_h("owner"))
-    assert r.status_code == 204, r.text
+    r = await client.delete("/v1/collections/mine?purge=true", headers=_h("owner"))
+    assert r.status_code == 200, r.text
 
 
 async def test_non_owner_cannot_delete(client):
@@ -236,8 +236,8 @@ async def test_delete_revokes_the_collections_acl_rows(client):
     await get_acl_store().grant(
         "mine", GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="owner"
     )
-    r = await client.delete("/v1/collections/mine", headers=_h("owner"))
-    assert r.status_code == 204, r.text
+    r = await client.delete("/v1/collections/mine?purge=true", headers=_h("owner"))
+    assert r.status_code == 200, r.text
     store = get_acl_store()
     assert await store.owner_of("mine") is None
     assert await store.shares_for("mine") == []  # no ACTIVE rows survive...
@@ -252,8 +252,8 @@ async def test_reused_id_does_not_inherit_the_deleted_owners_row(client):
     r = await client.post("/v1/collections", json={"id": "fresh"}, headers=_h("owner"))
     assert r.status_code == 201, r.text
     assert await get_acl_store().owner_of("fresh") == "owner"
-    d = await client.delete("/v1/collections/fresh", headers=_h("owner"))
-    assert d.status_code == 204, d.text
+    d = await client.delete("/v1/collections/fresh?purge=true", headers=_h("owner"))
+    assert d.status_code == 200, d.text
     r2 = await client.post("/v1/collections", json={"id": "fresh"}, headers=_h("stranger"))
     assert r2.status_code == 201, r2.text
     assert await get_acl_store().owner_of("fresh") == "stranger"
@@ -295,8 +295,8 @@ async def test_admin_delete_bypasses_and_logs(client, caplog):
     _register(_entry("mine"))
     await _own("mine", "owner")
     with caplog.at_level(logging.INFO, logger="ragstack.authz"):
-        r = await client.delete("/v1/collections/mine", headers=_h("admin"))
-    assert r.status_code == 204, r.text
+        r = await client.delete("/v1/collections/mine?purge=true", headers=_h("admin"))
+    assert r.status_code == 200, r.text
     bypass = [rec for rec in caplog.records if "admin-bypass" in rec.getMessage()]
     assert bypass, "admin bypass must be logged"
     assert any("mine" in rec.getMessage() for rec in bypass)

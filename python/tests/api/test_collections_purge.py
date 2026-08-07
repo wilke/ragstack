@@ -104,25 +104,73 @@ async def test_purge_reports_the_separate_es_index_name(client, manifests):
 # --- purge=false is unchanged ---------------------------------------------- #
 
 
-async def test_default_delete_still_only_unregisters(client, manifests):
-    """The pre-existing contract: no ``purge`` → 204, and every byte survives."""
+async def test_unregistering_a_solo_store_is_refused(client, manifests):
+    """THE FIX (#285). `purge=false` used to drop the binding and leave the
+    Qdrant collection and ES index behind — data no registry entry claimed, and
+    therefore no ACL governed. `create -> delete -> repeat` leaked a physical
+    store pair per iteration while returning the registry count to baseline, so
+    MAX_COLLECTIONS never fired.
+
+    ADR-0002 decision 5 says a physical index has EXACTLY one registry entry.
+    #279 enforced "not two"; this is "not zero"."""
     _, vs, ti = _add("phys_keep", cid="keep-data")
     await _populate(vs, ti)
     _manifest(manifests, "phys_keep")
 
     r = await client.delete("/v1/collections/keep-data")
-    assert r.status_code == 204 and r.content == b""
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert "phys_keep" in detail  # names the store that would be stranded
+    assert "purge=true" in detail  # and the way out
+
+    # ...and NOTHING was mutated on the way to the refusal. A guard that fires
+    # after a partial delete would be worse than no guard.
+    listed = {c["id"] for c in (await client.get("/v1/collections")).json()["collections"]}
+    assert "keep-data" in listed
     assert await vs.count_tenants(["default"]) == 1
     assert await ti.count_tenants(["default"]) == 1
     assert read_manifest(str(manifests), "phys_keep") is not None
 
 
-async def test_explicit_purge_false_is_also_unregister_only(client, manifests):
+async def test_explicit_purge_false_is_refused_the_same_way(client, manifests):
     _, vs, _ = _add("phys_keep2", cid="keep-data-2")
     await _populate(vs, InMemoryTextIndex())
     r = await client.delete("/v1/collections/keep-data-2?purge=false")
-    assert r.status_code == 204
+    assert r.status_code == 409
     assert await vs.count_tenants(["default"]) == 1
+
+
+async def test_the_api_cannot_produce_an_orphan(client, manifests):
+    """The property the guard exists for: whichever delete you choose, you never
+    end up with a physical store that no registry entry claims."""
+    _, vs, ti = _add("phys_prop", cid="prop")
+    await _populate(vs, ti)
+
+    # Unregister-only is refused...
+    assert (await client.delete("/v1/collections/prop")).status_code == 409
+    assert await vs.count_tenants(["default"]) == 1  # still claimed, still there
+
+    # ...and the delete that IS allowed takes the data with it.
+    r = await client.delete("/v1/collections/prop?purge=true")
+    assert r.status_code == 200, r.text
+    assert await vs.count_tenants(["default"]) == 0
+    assert await ti.count_tenants(["default"]) == 0
+
+
+async def test_a_non_owner_gets_the_ownership_error_not_the_orphan_error(client, manifests):
+    """Ordering matters: the new 409 must never fire for a caller who cannot
+    read the collection, or it becomes an existence oracle for a private id."""
+    from ragstack.api import security
+    from ragstack.api.security import ROLE_USER
+
+    _add("phys_private", cid="private-thing")
+    security.settings.default_role = ROLE_USER  # drop out of the admin bypass
+    try:
+        r = await client.delete("/v1/collections/private-thing")
+    finally:
+        security.settings.default_role = ROLE_ADMIN
+    assert r.status_code in (403, 404), r.text
+    assert "purge=true" not in r.text
 
 
 # --- guards ---------------------------------------------------------------- #
@@ -276,3 +324,27 @@ async def test_backend_without_drop_support_is_reported_not_crashed(client, mani
     assert body["ok"] is False
     assert body["failed"][0]["target"] == "vectors"
     assert "does not support" in body["failed"][0]["error"]
+
+
+async def test_the_two_forms_are_exact_complements(client, manifests):
+    """The property the guards rest on: for ANY collection, exactly one of
+    purge/unregister is permitted — never both, never neither.
+
+    An earlier version tested the two legs with `and` here while
+    `_shared_store_users` uses `or`, so a HALF-shared entry (one leg claimed,
+    one not) was refused both ways and became permanently undeletable. Both
+    branches now ask the same question."""
+    # Half-shared: same ES index, different Qdrant collections. Reachable at
+    # runtime, because the create path's alias guard only checks the vector leg.
+    _add("phys_a", cid="half-a", text_index="shared_es")
+    _add("phys_b", cid="half-b", text_index="shared_es")
+
+    for cid in ("half-a", "half-b"):
+        unreg = await client.delete(f"/v1/collections/{cid}")
+        purge = await client.delete(f"/v1/collections/{cid}?purge=true")
+        allowed = [r.status_code for r in (unreg, purge) if r.status_code < 300]
+        assert len(allowed) == 1, (
+            f"{cid}: expected exactly one permitted form, got "
+            f"unregister={unreg.status_code} purge={purge.status_code}"
+        )
+        break  # the first delete mutates the registry; one pass is the assertion

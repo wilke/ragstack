@@ -134,8 +134,8 @@ async def test_create_collection_python(
     listed = (await client.get("/v1/collections", headers=_headers())).json()
     assert cid in {c["id"] for c in listed["collections"]}
 
-    deleted = await client.delete(f"/v1/collections/{cid}", headers=_headers())
-    assert deleted.status_code == 204, deleted.text
+    deleted = await client.delete(f"/v1/collections/{cid}?purge=true", headers=_headers())
+    assert deleted.status_code == 200, deleted.text
     after = (await client.get("/v1/collections", headers=_headers())).json()
     assert cid not in {c["id"] for c in after["collections"]}
 
@@ -214,5 +214,5 @@ async def test_create_without_build_spec_python(
     assert info["chunk_method"], "server default chunk method must be resolved, not null"
     # Cleanup is admin-only; tolerate a non-admin creator (the 409-skip above
     # keeps re-runs honest in that case).
-    deleted = await client.delete(f"/v1/collections/{cid}", headers=_headers())
-    assert deleted.status_code in (204, 401, 403), deleted.text
+    deleted = await client.delete(f"/v1/collections/{cid}?purge=true", headers=_headers())
+    assert deleted.status_code in (200, 401, 403), deleted.text

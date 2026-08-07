@@ -320,8 +320,8 @@ async def test_delete_drops_binding(client):
     cid = (
         await client.post("/v1/collections", json={"embedding": "emb-sfr", "chunk": CHUNK})
     ).json()["id"]
-    d = await client.delete(f"/v1/collections/{cid}")
-    assert d.status_code == 204
+    d = await client.delete(f"/v1/collections/{cid}?purge=true")
+    assert d.status_code == 200
     listed = {c["id"] for c in (await client.get("/v1/collections")).json()["collections"]}
     assert cid not in listed
 
