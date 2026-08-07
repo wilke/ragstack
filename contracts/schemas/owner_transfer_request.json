@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "owner_transfer_request.json",
+  "title": "OwnerTransferRequest",
+  "description": "Transfer ownership of a collection to another user (POST /v1/collections/{id}/owner body). Ownership is transferred, never granted: there is exactly one active owner row per collection, so the handover is an atomic revoke+grant pair rather than an extra share. The subject takes the same vocabulary as a share grantee, minus the group forms.",
+  "type": "object",
+  "required": [
+    "subject"
+  ],
+  "properties": {
+    "subject": {
+      "description": "The new owner. A value containing ':' is a full 'issuer:subject' string kept verbatim; the form '@service:<subject>' names a SERVICE ACCOUNT and keeps its subject colon-free; a bare BV-BRC username is prefixed to 'bvbrc:<username>'. The group forms ('@public', '@group:<id>') parse but are rejected with 400 — ownership is grantable to users only, never to a group. The resolved subject is echoed back as 'owner' so a typo is visible before it becomes an unreachable collection.",
+      "type": "string",
+      "minLength": 1
+    },
+    "issuer": {
+      "description": "Issuer used to qualify a bare username (default 'bvbrc'). Ignored for '@service:' and for a value that already contains ':'.",
+      "type": "string",
+      "default": "bvbrc"
+    }
+  },
+  "additionalProperties": false
+}
