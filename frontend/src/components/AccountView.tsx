@@ -1,4 +1,5 @@
 import { clearStoredToken, getApiBase, getStoredToken, getStoredTokenBase } from "../api/config";
+import { BackendSwitcher } from "./BackendSwitcher";
 import {
   accountIssuer,
   accountName,
@@ -34,11 +35,14 @@ export function AccountView({
   identity,
   onSignIn,
   onSignedOut,
+  onCredentialChange,
 }: {
   credential: Credential;
   identity: IdentitySummary | null;
   onSignIn: () => void;
   onSignedOut: (c: Credential) => void;
+  /** Re-resolve the app credential after a backend change. */
+  onCredentialChange: (c: Credential) => void;
 }) {
   const view = identityView(credential.mode, identity);
   const base = getApiBase();
@@ -62,6 +66,16 @@ export function AccountView({
         >
           Sign in
         </button>
+        {/* Reachable while signed OUT too: picking the wrong backend is a
+            common reason a sign-in appears not to work, and the fix has to be
+            available without first signing in. */}
+        <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 text-left">
+          <h3 className="text-sm font-medium text-gray-700">API backend</h3>
+          <p className="mb-2 mt-1 text-xs text-gray-500">
+            Which deployment this UI talks to.
+          </p>
+          <BackendSwitcher setCredential={onCredentialChange} />
+        </div>
       </div>
     );
   }
@@ -134,16 +148,28 @@ export function AccountView({
 
       <section className="rounded-xl border border-gray-200 bg-white p-5">
         <h2 className="text-base font-semibold text-gray-900">Preferences</h2>
-        <p className="mt-2 text-sm text-gray-600">
-          There are no account preferences yet. The backend selection and your
-          credential live in this browser only — nothing on this page is stored against
-          your account, because the API has no user-preference resource.
-        </p>
-        <p className="mt-2 text-xs text-gray-500">
-          The first one will be a <span className="font-medium">default collection</span>{" "}
-          — the collection a query uses when you name none. It is deliberately not built
-          yet.
-        </p>
+
+        <div className="mt-4">
+          <h3 className="text-sm font-medium text-gray-700">API backend</h3>
+          <p className="mb-2 mt-1 text-xs text-gray-500">
+            Which deployment this UI talks to. Switching it stops a bearer token from
+            being sent until you confirm it for the new backend on the sign-in page.
+          </p>
+          <BackendSwitcher setCredential={onCredentialChange} />
+        </div>
+
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          <p className="text-sm text-gray-600">
+            There are no <em>account</em> preferences yet. The backend selection and your
+            credential live in this browser only — nothing on this page is stored against
+            your account, because the API has no user-preference resource.
+          </p>
+          <p className="mt-2 text-xs text-gray-500">
+            The first one will be a{" "}
+            <span className="font-medium">default collection</span> — the collection a
+            query uses when you name none. It is deliberately not built yet.
+          </p>
+        </div>
       </section>
     </div>
   );

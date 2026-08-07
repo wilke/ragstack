@@ -7,18 +7,21 @@ import {
   setApiBase,
 } from "../api/config";
 import { type Credential } from "../lib/auth";
-import { LoginPanel } from "./LoginPanel";
 
-// Header control: pick which API the whole UI talks to (asm / lucid / demo /
-// custom) and carry a credential — both persisted to localStorage. Changing
-// either invalidates every react-query cache so all panels refetch against the
-// new target. This makes the "admin-only" / "Not Found" states self-serviceable
-// from the browser instead of needing a separate Vite instance or env var.
+// Which API the whole UI talks to. Persisted to localStorage; changing it
+// invalidates every react-query cache so no panel keeps rendering the previous
+// deployment's data.
 //
-// It also owns the sign-in: the credential can be an API key (the inline box,
-// unchanged) or a pasted bearer token (the LoginPanel below). Both live in the
-// app's ONE credential slot, so exactly one is ever sent — presenting both is a
-// 400 server-side.
+// CREDENTIALS ARE NOT HERE. This used to carry an API-key box, a token badge and
+// a Sign in button, which meant two places to sign in and two places to get it
+// wrong. Signing in belongs to the login page (reachable from the account menu);
+// this control answers only "which backend". The one credential concern that
+// remains is re-resolving the stored credential after a base change, because a
+// bearer token is bound to the backend it was confirmed for and must stop being
+// sent when that changes.
+//
+// It lives in Account & preferences rather than the app header: picking a
+// backend is a setting, not something to carry on every screen.
 
 const CUSTOM = "__custom__";
 
@@ -27,35 +30,39 @@ function presetIdForUrl(url: string): string {
   return hit ? hit.id : CUSTOM;
 }
 
+/** How the selected base is actually reached, in words. */
+function effectiveLabel(base: string): string {
+  if (!base) return "same origin (default proxy)";
+  if (base.startsWith("/be/")) return `dev proxy → ${base.slice(4)}`;
+  // Any other relative base is a path on this origin — typically the gateway
+  // mount (/ragstack/<tenant>/api). Calling that "direct" would be wrong: it is
+  // same-origin and goes through the front proxy.
+  if (base.startsWith("/")) return `same origin → ${base}`;
+  return `cross-origin → ${base}`;
+}
+
 export function BackendSwitcher({
-  credential,
   setCredential,
 }: {
-  credential: Credential;
   setCredential: (c: Credential) => void;
 }) {
   const queryClient = useQueryClient();
   const [base, setBase] = useState(getApiBase());
   const [selectId, setSelectId] = useState(presetIdForUrl(getApiBase()));
-  const [loginOpen, setLoginOpen] = useState(false);
 
   // localStorage is shared across tabs, but this component's `base` is seeded
-  // once at mount — so a switch in another tab left this header naming a backend
-  // that is no longer selected, and the login panel confirming a token against
-  // it. Requests already fail closed (client.ts re-reads storage per request),
-  // but the label must not lie about where a token would go.
+  // once at mount — so a switch in another tab left this control naming a
+  // backend that is no longer selected. Requests already fail closed (client.ts
+  // re-reads storage per request); the label must not lie either.
   useEffect(() => {
     function resync() {
       const live = getApiBase();
       setBase(live);
       setSelectId(presetIdForUrl(live));
       setCredential(getStoredCredential());
-      // Same reason applyBase invalidates: no query key contains the base, so
-      // in API-key mode the key string is unchanged and this tab would keep
-      // rendering the PREVIOUS backend's collections and ids while addressing
-      // the new one. (In bearer mode the credential flips to "" and the keys
-      // change on their own — but relying on that would make correctness here
-      // depend on which credential kind happens to be active.)
+      // No query key contains the base, so in API-key mode the key string is
+      // unchanged and this tab would keep rendering the previous backend's
+      // collections and ids while addressing the new one.
       void queryClient.invalidateQueries();
     }
     window.addEventListener("storage", resync);
@@ -66,29 +73,14 @@ export function BackendSwitcher({
     setApiBase(url);
     // Read BACK rather than reusing what we wrote: storage normalizes (trailing
     // slashes, the same-origin marker, the gateway fallback), and state that
-    // disagrees with getApiBase() disables the login panel's binding check.
+    // disagrees with getApiBase() disables the login page's binding check.
     const clean = getApiBase();
     setBase(clean);
     setSelectId(presetIdForUrl(clean));
-    // A bearer token is bound to the base it was saved for, so re-resolve the
-    // credential: after a switch the token stops being sent until the user
-    // confirms it for the new target (see config.getStoredCredential).
-    //
-    // This is the UI half only. It cannot be the enforcement, because the
-    // invalidateQueries() below refires every already-registered observer whose
-    // queryFn still closes over the OLD token value — before React re-renders
-    // with this one. The binding is enforced per request in client.ts
-    // (`sendableCredential`), which re-reads storage as the header is built.
+    // A bearer token is bound to the base it was saved for: after a switch it
+    // stops being sent until the user re-confirms it on the login page.
     setCredential(getStoredCredential());
     // Same-key queries won't re-run on a base-only change, so force a refetch.
-    void queryClient.invalidateQueries();
-  }
-
-  // Identity is not always part of a query key (a token can change while the
-  // key string stays ""), so invalidate explicitly on every credential change —
-  // otherwise one principal can be shown another's cached collection list.
-  function applyCredential(c: Credential) {
-    setCredential(c);
     void queryClient.invalidateQueries();
   }
 
@@ -99,95 +91,40 @@ export function BackendSwitcher({
     if (preset) applyBase(preset.url);
   }
 
-  function onKey(v: string) {
-    // One writer only: App.tsx persists through config.setStoredCredential.
-    // No explicit invalidation here — the key value is part of every query key,
-    // so it refetches on its own (and invalidating per keystroke would storm).
-    setCredential({ mode: "apikey", value: v });
-  }
-
-  const effective = !base
-    ? "default proxy"
-    : base.startsWith("/be/")
-      ? `proxy → ${base.slice(4)}`
-      : `direct → ${base}`;
-
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs">
-      <span className="font-medium text-gray-500">API</span>
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          aria-label="API backend"
+          value={selectId}
+          onChange={(e) => onSelect(e.target.value)}
+          className="rounded border border-gray-300 bg-white px-2 py-1.5 text-sm"
+        >
+          {BACKEND_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+          <option value={CUSTOM}>Custom…</option>
+        </select>
 
-      <select
-        aria-label="API backend"
-        value={selectId}
-        onChange={(e) => onSelect(e.target.value)}
-        className="rounded border border-gray-300 bg-white px-2 py-1 text-xs"
-      >
-        {BACKEND_PRESETS.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.label}
-          </option>
-        ))}
-        <option value={CUSTOM}>Custom…</option>
-      </select>
+        {selectId === CUSTOM ? (
+          <input
+            type="url"
+            placeholder="http://host:port (called directly — local only)"
+            title="Absolute URL, called directly (relies on CORS). Does not traverse a port forward — use a preset for that."
+            defaultValue={base}
+            aria-label="Custom API URL"
+            onBlur={(e) => applyBase(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") applyBase((e.target as HTMLInputElement).value);
+            }}
+            className="w-64 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm"
+          />
+        ) : null}
+      </div>
 
-      {selectId === CUSTOM ? (
-        <input
-          type="url"
-          placeholder="http://host:port (direct — local only)"
-          title="Absolute URL, called directly (relies on CORS). Does not traverse a port forward — use a preset for that."
-          defaultValue={base}
-          aria-label="Custom API URL"
-          onBlur={(e) => applyBase(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") applyBase((e.target as HTMLInputElement).value);
-          }}
-          className="w-56 rounded border border-gray-300 bg-white px-2 py-1 text-xs"
-        />
-      ) : null}
-
-      {credential.mode === "bearer" ? (
-        credential.value ? (
-          <span className="rounded border border-gray-300 bg-white px-2 py-1 text-gray-600">
-            bearer token
-          </span>
-        ) : (
-          // Bearer mode with nothing sendable: the saved token is bound to a
-          // different backend. Requests are going out anonymous, which reads as
-          // a broken backend unless the header says otherwise. Sign in re-binds.
-          <span
-            className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-800"
-            title="The saved token was confirmed for a different backend and is not being sent to this one. Open Sign in to send it here."
-          >
-            token not sent here
-          </span>
-        )
-      ) : (
-        <input
-          type="password"
-          placeholder="admin key (optional)"
-          value={credential.value}
-          aria-label="Admin API key"
-          onChange={(e) => onKey(e.target.value)}
-          className="w-44 rounded border border-gray-300 bg-white px-2 py-1 text-xs"
-        />
-      )}
-
-      <button
-        type="button"
-        onClick={() => setLoginOpen((o) => !o)}
-        aria-expanded={loginOpen}
-        className="rounded border border-gray-300 bg-white px-2 py-1 text-xs hover:bg-gray-100"
-      >
-        {loginOpen ? "Close sign-in" : "Sign in"}
-      </button>
-
-      <span className="ml-auto truncate text-gray-400" title={effective}>
-        → {effective}
-      </span>
-
-      {loginOpen ? (
-        <LoginPanel credential={credential} setCredential={applyCredential} base={base} />
-      ) : null}
+      <p className="text-xs text-gray-500">{effectiveLabel(base)}</p>
     </div>
   );
 }

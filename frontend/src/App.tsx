@@ -11,7 +11,6 @@ import type { Credential } from "./lib/auth";
 import { AccountView } from "./components/AccountView";
 import { LoginView } from "./components/LoginView";
 import { UserMenu } from "./components/UserMenu";
-import { BackendSwitcher } from "./components/BackendSwitcher";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
 import { CollectionView } from "./components/CollectionView";
@@ -125,7 +124,9 @@ export function App() {
           />
         </div>
 
-        <BackendSwitcher credential={credential} setCredential={setCredential} />
+        {/* The backend selector lives in Account & preferences, not here:
+            picking a deployment is a setting, and carrying it on every screen
+            put a second sign-in entry point beside the first. */}
 
         <nav className="mt-4 flex gap-1 border-b border-gray-200" aria-label="Modules">
           {TABS.map((t) => (
@@ -157,6 +158,7 @@ export function App() {
             applyCredential(c);
             setView("explore");
           }}
+          onCredentialChange={setCredential}
         />
       ) : view === "explore" ? (
         <ExploreView apiKey={apiKey} setApiKey={setApiKey} />

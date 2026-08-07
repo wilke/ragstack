@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 import { CollectionView } from "./CollectionView";
-import { LoginPanel } from "./LoginPanel";
+import { LoginView } from "./LoginView";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
 
@@ -32,35 +32,30 @@ describe("static render", () => {
     expect(html.toLowerCase()).not.toContain("librar");
   });
 
-  // The login panel must never render the token itself into the DOM, must say
-  // out loud where the credential is stored, and must not claim a sign-in it
-  // hasn't confirmed with the server.
-  it("mounts the login panel: password input, honest storage copy, no token in the markup", () => {
+  // The login page must never render a credential into the DOM, must say out
+  // loud where the token is stored, and must not claim a sign-in it has not
+  // confirmed with the server.
+  it("mounts the login page: provider dropdown, password fields, honest storage copy", () => {
     const html = render(
-      createElement(LoginPanel, {
-        credential: { mode: "bearer" as const, value: "un=alice|expiry=1|sig=ab" },
-        setCredential: () => {},
-        base: "/be/asm",
-      }),
+      createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
     );
-    expect(html).toContain("Paste a BV-BRC token");
-    expect(html).toContain("p3-login");
+    expect(html).toContain("Identity provider");
+    expect(html).toContain("BV-BRC");
+    expect(html).toContain("Username");
     expect(html).toContain("localStorage"); // the XSS-exposure warning
-    expect(html).toContain("wired up yet"); // the OIDC seam, stated not promised
     expect(html).toMatch(/<input[^>]*type="password"/);
-    expect(html).not.toContain("un=alice|expiry=1|sig=ab"); // never the credential itself
+    // The password must never reach RAGStack, and the page says so.
+    expect(html).toContain("never sent to RAGStack");
   });
 
-  it("shows the API-key box, not the token box, in key mode", () => {
+  it("lists Google as unavailable rather than hiding the seam", () => {
     const html = render(
-      createElement(LoginPanel, {
-        credential: { mode: "apikey" as const, value: "" },
-        setCredential: () => {},
-        base: "",
-      }),
+      createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
     );
-    expect(html).toContain("X-API-Key");
-    expect(html).not.toContain("Paste a BV-BRC token");
+    expect(html).toContain("Google");
+    expect(html).toContain("not available");
+    // MG-RAST is deliberately absent until it can actually work.
+    expect(html).not.toContain("MG-RAST");
   });
 
   it("mounts the new-collection form", () => {
