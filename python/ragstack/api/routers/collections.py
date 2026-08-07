@@ -707,6 +707,27 @@ async def delete_collection(
     # Owner-or-admin: 403 for a non-owner, 503 if the ACL store can't answer.
     await enforce_access(principal, entry.id, "owner")
 
+    # BOTH guards sit AFTER the owner gate, deliberately: a 409 that fires for a
+    # caller who cannot read the collection would be an existence oracle for a
+    # stranger's private id (see api/access.py's leak-safe posture).
+    #
+    # Between them they make ADR-0002 decision 5 — "a physical index has exactly
+    # one registry entry" — TOTAL. #279 enforced the "not two" half at registry
+    # build. This is the "not zero" half: unregistering the last entry for a
+    # store leaves data that no entry claims, and therefore that no ACL governs.
+    # deps.py already refuses that state at startup ("serving it under NO id is
+    # worse"); the delete path used to manufacture it at runtime, on request.
+    #
+    # Exactly one of the two branches is legal for any given collection, so
+    # nothing becomes undeletable:
+    #   * store shared with another entry  -> purge refused, unregister allowed
+    #   * store claimed by this entry only -> unregister refused, purge allowed
+    vec_shared = any(
+        e.id != entry.id and e.collection == entry.collection for e in registry.entries()
+    )
+    es_shared = any(
+        e.id != entry.id and e.es_index() == entry.es_index() for e in registry.entries()
+    )
     if purge:
         sharers = _shared_store_users(registry, entry)
         if sharers:
@@ -717,6 +738,19 @@ async def delete_collection(
                 f"and purging would destroy their data too. Unregister it instead "
                 f"(purge=false), or purge the other collections first.",
             )
+    # `and`, not `or`: a half-shared entry (one leg claimed, one not) would be
+    # undeletable by either branch — but registry build refuses that shape at
+    # startup, so it cannot occur on a running server.
+    elif not (vec_shared and es_shared):
+        raise HTTPException(
+            409,
+            f"cannot unregister collection {collection_id!r} without purging: no "
+            f"other registry entry claims its physical store ({entry.collection}) "
+            f"or text index ({entry.es_index()}), so dropping the binding would "
+            "leave that data with no registry entry — and therefore no ACL "
+            "governing who may read it (ADR-0002 decision 5). Delete the data too "
+            "with ?purge=true, or leave the collection registered.",
+        )
 
     # Revoke the collection's ACL rows (owner + every share) BEFORE the registry
     # entry goes away: the id namespace is reusable, so a stale active owner row

@@ -827,9 +827,14 @@ function DeleteConfirm({
             </>
           ) : null}{" "}
           and its Elasticsearch index survive with all{" "}
-          {c.count != null ? c.count.toLocaleString() : "their"} chunks, and keep using disk. This
-          is documented behaviour, not a bug — dropping data is a separate, heavier operation you
-          must run against Qdrant/ES yourself.
+          {c.count != null ? c.count.toLocaleString() : "their"} chunks, and keep using disk.
+          {" "}
+          <strong>
+            This only works while another collection still uses that store.
+          </strong>{" "}
+          Otherwise the server refuses (409), because unregistering the last one would
+          leave the data with no collection claiming it — and so no permissions
+          governing who can read it. Use Purge to delete the data as well.
         </li>
         <li>Nothing about the model registry or any other collection changes.</li>
       </ul>

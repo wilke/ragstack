@@ -884,10 +884,19 @@ paths:
         logged).
 
 
-        By default (`purge=false`) this drops the *binding* only: the underlying
-        Qdrant collection and Elasticsearch index survive with every chunk, and a
-        later collection built from the same spec re-attaches to them. This is
-        why repeated create/delete cycles accumulate orphaned physical stores.
+        `purge=false` drops the *binding* only, leaving the Qdrant collection and
+        Elasticsearch index intact — and is therefore **refused (409) unless
+        another registry entry still claims that store**. Dropping the last entry
+        would leave data no entry claims and no ACL governs, which is ADR-0002
+        decision 5 ("a physical index has exactly one registry entry") violated
+        toward zero; it also let repeated create/delete cycles accumulate
+        orphaned stores without the collection cap ever seeing them.
+
+
+        Exactly one of the two forms is legal for any collection, so nothing is
+        undeletable: a store shared with another entry can be unregistered but
+        not purged, and a store this entry alone claims can be purged but not
+        unregistered.
 
 
         With `purge=true` the physical Qdrant collection, the Elasticsearch index
@@ -937,7 +946,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/CollectionPurgeReport"
         "204":
-          description: Unregistered (`purge=false`) — physical stores left intact
+          description: >-
+            Unregistered (`purge=false`) — the binding is gone and the physical
+            stores are intact, still claimed by the other registry entry that
+            made this form legal
         "401":
           description: Missing or invalid credential (API key or bearer identity)
         "403":
@@ -949,8 +961,12 @@ paths:
             unknown, so existence is not leaked — ADR-0003 §2)
         "409":
           description: >-
-            The default collection, or (with `purge=true`) a collection whose
-            physical store is shared with other registry entries
+            The legacy shared collection or the current default pointer target;
+            with `purge=true`, a collection whose physical store is shared with
+            other registry entries (purging would destroy their data); with
+            `purge=false`, a collection whose store NO other entry claims
+            (unregistering would strand it outside every ACL). The two purge
+            cases are mutually exclusive, so one form always succeeds.
         "503":
           description: Authorization store unavailable — refused (fail closed).
 

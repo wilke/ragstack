@@ -66,7 +66,10 @@ any of them means a new collection and a full re-ingest.
 
 **4. Deletion is explicit about data.** `DELETE /v1/collections/{id}` unregisters the
 binding only; `?purge=true` also destroys the underlying Qdrant collection and ES index.
-The default is the non-destructive one.
+*(Amended 2026-08-07, [#285](https://github.com/wilke/ragstack/issues/285): the
+non-destructive form is refused when no other registry entry claims the store, because
+that would leave the data outside every ACL — see decision 5 and the retracted orphan
+consequence below. The caller is told which form applies; exactly one always does.)*
 
 **5. A physical index has exactly one registry entry.** *(Amendment, 2026-08-06 —
 [#275](https://github.com/wilke/ragstack/issues/275).)*
@@ -116,9 +119,22 @@ Two consequences worth stating, because both were nearly missed:
 - **The registry is now a stateful dependency** on a system that was otherwise derivable
   from its stores. It must be backed up with them; a lost registry means orphaned physical
   stores that nothing references.
-- **A new class of orphan.** Unregistering without purging leaves data on disk. This is
+- ~~**A new class of orphan.** Unregistering without purging leaves data on disk. This is
   deliberate — the reverse default would make an accidental delete unrecoverable — but it
-  means disk usage can exceed what the collection list implies.
+  means disk usage can exceed what the collection list implies.~~
+  **RETRACTED 2026-08-07 ([#285](https://github.com/wilke/ragstack/issues/285)).** This
+  contradicted decision 5 above: "exactly one registry entry" excludes zero as well as two.
+  A store no entry claims is governed by no ACL — and `deps.py` already refused that state
+  at *startup* ("serving it under NO id is worse") while the delete path manufactured it at
+  *runtime*, on request. It was also a denial-of-service vector: `create → delete → repeat`
+  returned the registry count to baseline each cycle, so `MAX_COLLECTIONS` never fired while
+  physical stores accumulated (~162 VMAs each, against a 262,144 ceiling).
+
+  `purge=false` is now **refused (409) unless another registry entry still claims the
+  store**. The concern that motivated the old default — an accidental delete being
+  unrecoverable — is answered by the two forms being mutually exclusive rather than by
+  leaving data unowned: a shared store can be unregistered but not purged, a solo store can
+  be purged but not unregistered, so a caller is always told which one they meant.
 
 **Gained:** re-ingest is genuinely idempotent; two users cannot collide; a mis-specified
 append fails loudly at 409 instead of quietly poisoning a corpus; and every collection can
