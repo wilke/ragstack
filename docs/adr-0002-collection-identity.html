@@ -192,7 +192,40 @@ different model, dim, or chunker is rejected with <strong>409</strong>, not sile
 any of them means a new collection and a full re-ingest.</p>
 <p><strong>4. Deletion is explicit about data.</strong> <code>DELETE /v1/collections/{id}</code> unregisters the
 binding only; <code>?purge=true</code> also destroys the underlying Qdrant collection and ES index.
-The default is the non-destructive one.</p>
+<em>(Amended 2026-08-07, <a href="https://github.com/wilke/ragstack/issues/285">#285</a>: the
+non-destructive form is refused when no other registry entry claims the store, because
+that would leave the data outside every ACL — see decision 5 and the retracted orphan
+consequence below. The caller is told which form applies; exactly one always does.)</em></p>
+<p><strong>5. A physical index has exactly one registry entry.</strong> <em>(Amendment, 2026-08-06 —
+<a href="https://github.com/wilke/ragstack/issues/275">#275</a>.)</em></p>
+<p>This was always implied. The Alternatives section below rejects aliasing — <em>"two named
+libraries would still share a store… the isolation has to exist at the physical layer"</em> —
+but the rule was never stated as a decision, and that omission is exactly how it got
+violated: the registry <strong>synthesised</strong> a <code>default</code> entry over whatever store the settings
+named, alongside any configured spec that already served it. <code>CollectionSpec.es_index</code>'s
+own docstring then described hand-authoring the same collision as <em>"the deliberate way to
+share one physical store between two registry ids."</em></p>
+<p>It matters because ADR-0003 asserts access control <strong>at the collection</strong>. Two ids over one
+store are therefore two <em>independent ACLs over one dataset</em>: revoking a grant on one id
+leaves the same bytes readable through the other. An owner who un-publishes a corpus has
+not un-published it. Reproduced live on a 1.5M-point corpus; the 21-second window in which
+one id was un-published while the other still served it is in that tenant's share audit
+trail.</p>
+<p>Enforced at registry build: the settings-derived entry is not created when a spec already
+claims its store, two specs may not claim the same store, and a spec claiming only <em>one</em>
+of the derived entry's two legs (vectors, text index) is a startup error rather than a
+silent suppression — suppressing would leave the other store served by no registry entry
+and therefore governed by no ACL.</p>
+<p>Two consequences worth stating, because both were nearly missed:</p>
+<ul>
+<li><strong><code>default</code> is a pointer, not an entry.</strong> It names which collection a request resolves to
+  when it omits <code>collection</code> (<code>DEFAULT_COLLECTION_ID</code>), and is a reserved, uncreatable id.</li>
+<li><strong>"Is the default" and "is the legacy shared surface" are different questions.</strong> The
+  latter carries authz exemptions — no share-based scope widening, and read-not-write on
+  the omitted-collection ingest and document-delete paths — because there per-chunk
+  <code>tenant_id</code> is the isolation. Letting those follow the pointer would let any <em>reader</em> of
+  an owned collection write to it by omitting <code>collection</code>. They are separate flags now.</li>
+</ul>
 <h2 id="consequences">Consequences</h2>
 <p><strong>Accepted:</strong></p>
 <ul>
@@ -206,10 +239,22 @@ The default is the non-destructive one.</p>
 <li><strong>The registry is now a stateful dependency</strong> on a system that was otherwise derivable
   from its stores. It must be backed up with them; a lost registry means orphaned physical
   stores that nothing references.</li>
-<li><strong>A new class of orphan.</strong> Unregistering without purging leaves data on disk. This is
+<li>~~<strong>A new class of orphan.</strong> Unregistering without purging leaves data on disk. This is
   deliberate — the reverse default would make an accidental delete unrecoverable — but it
-  means disk usage can exceed what the collection list implies.</li>
+  means disk usage can exceed what the collection list implies.~~
+  <strong>RETRACTED 2026-08-07 (<a href="https://github.com/wilke/ragstack/issues/285">#285</a>).</strong> This
+  contradicted decision 5 above: "exactly one registry entry" excludes zero as well as two.
+  A store no entry claims is governed by no ACL — and <code>deps.py</code> already refused that state
+  at <em>startup</em> ("serving it under NO id is worse") while the delete path manufactured it at
+  <em>runtime</em>, on request. It was also a denial-of-service vector: <code>create → delete → repeat</code>
+  returned the registry count to baseline each cycle, so <code>MAX_COLLECTIONS</code> never fired while
+  physical stores accumulated (~162 VMAs each, against a 262,144 ceiling).</li>
 </ul>
+<p><code>purge=false</code> is now <strong>refused (409) unless another registry entry still claims the
+  store</strong>. The concern that motivated the old default — an accidental delete being
+  unrecoverable — is answered by the two forms being mutually exclusive rather than by
+  leaving data unowned: a shared store can be unregistered but not purged, a solo store can
+  be purged but not unregistered, so a caller is always told which one they meant.</p>
 <p><strong>Gained:</strong> re-ingest is genuinely idempotent; two users cannot collide; a mis-specified
 append fails loudly at 409 instead of quietly poisoning a corpus; and every collection can
 answer <em>how was this built</em> from its own record.</p>

@@ -74,14 +74,22 @@ side is the bug.
 ## 3. The collection model
 
 The distinction below is normative; the terms are used precisely throughout the codebase.
+Full definitions, including the failure modes each one exists to name, are in the
+**[Glossary](GLOSSARY.md)**.
 
 | Term | Meaning |
 |---|---|
-| **index** | A *physical* store — one Qdrant collection plus one Elasticsearch index of the same name. |
-| **collection** | A *registry entry* binding an embedding model, dimension, and chunking strategy to an index. What users create and query. **Shipped.** |
+| **store** | The *physical* data: one Qdrant collection **plus** one Elasticsearch index (plus Neo4j triples, scoped but not yet purged). The two legs may have **different names** and may live on **different servers**, so tooling keys a store by `(backend_url, name)`, never by name alone. (Earlier docs called this an "index" — retired, because Elasticsearch already owns that word.) |
+| **collection** | A *registry entry*: an id, its immutable build spec, and its ACL rows. What users create, name in a request, own and share. Holds no data. Qdrant also calls its own containers "collections" — an unqualified "collection" here always means the RAGStack entry. **Shipped.** |
 | **library** | Not a separate entity. [ADR-0003](adr/0003-access-control.md) makes it one-to-one with a collection; the word survives only as the `lib` marker in a named collection's derived store name. |
-| **tenant** | A Qdrant *instance*. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users. |
+| **tenant** | A *physical deployment*: one API plus its own Qdrant, its own Elasticsearch, its own ACL/registry database, and optionally a UI ([ADR-0005](adr/0005-tenant-anatomy.md)). The boundary is data at rest, not a name — two APIs over one Qdrant are two front doors on one tenant's data, not two tenants. |
 | **owner_id / `tenant_id` (payload key)** | The per-chunk stamp recording who ingested it. Provenance + defence in depth, not the authorization mechanism ([ADR-0003](adr/0003-access-control.md) decision 1: renamed `owner_id` and demoted to provenance). The rename is a code-level alias only (#246): the physical key stays `tenant_id` because renaming storage would rewrite every point. |
+
+**A physical index has exactly one registry entry** ([ADR-0002](adr/0002-collection-identity.md)
+decision 5) — not two (which would be two independent ACLs over one dataset) and not
+zero (data no ACL governs). Collection and store are 1:1 in the healthy state; they are
+separate words because every access-control bug found in August 2026 was that mapping
+breaking in one direction or the other.
 
 A collection's physical name is derived deterministically from its build spec. Corpora are
 content-addressed over `(model, dim, chunk_descriptor)` so that re-ingesting an identical

@@ -331,7 +331,9 @@ implementations disagree on a field name, the schema is authoritative and the di
 side is the bug.</p>
 <hr />
 <h2 id="3-the-collection-model">3. The collection model</h2>
-<p>The distinction below is normative; the terms are used precisely throughout the codebase.</p>
+<p>The distinction below is normative; the terms are used precisely throughout the codebase.
+Full definitions, including the failure modes each one exists to name, are in the
+<strong><a href="glossary.html">Glossary</a></strong>.</p>
 <div class="tablewrap"><table>
 <thead>
 <tr>
@@ -341,12 +343,12 @@ side is the bug.</p>
 </thead>
 <tbody>
 <tr>
-<td><strong>index</strong></td>
-<td>A <em>physical</em> store — one Qdrant collection plus one Elasticsearch index of the same name.</td>
+<td><strong>store</strong></td>
+<td>The <em>physical</em> data: one Qdrant collection <strong>plus</strong> one Elasticsearch index (plus Neo4j triples, scoped but not yet purged). The two legs may have <strong>different names</strong> and may live on <strong>different servers</strong>, so tooling keys a store by <code>(backend_url, name)</code>, never by name alone. (Earlier docs called this an "index" — retired, because Elasticsearch already owns that word.)</td>
 </tr>
 <tr>
 <td><strong>collection</strong></td>
-<td>A <em>registry entry</em> binding an embedding model, dimension, and chunking strategy to an index. What users create and query. <strong>Shipped.</strong></td>
+<td>A <em>registry entry</em>: an id, its immutable build spec, and its ACL rows. What users create, name in a request, own and share. Holds no data. Qdrant also calls its own containers "collections" — an unqualified "collection" here always means the RAGStack entry. <strong>Shipped.</strong></td>
 </tr>
 <tr>
 <td><strong>library</strong></td>
@@ -354,7 +356,7 @@ side is the bug.</p>
 </tr>
 <tr>
 <td><strong>tenant</strong></td>
-<td>A Qdrant <em>instance</em>. The only absolute isolation boundary — Qdrant has no namespace above the collection, and since v1.16 enforces nothing below it. Used for orgs needing hard separation, not for users.</td>
+<td>A <em>physical deployment</em>: one API plus its own Qdrant, its own Elasticsearch, its own ACL/registry database, and optionally a UI (<a href="adr-0005-tenant-anatomy.html">ADR-0005</a>). The boundary is data at rest, not a name — two APIs over one Qdrant are two front doors on one tenant's data, not two tenants.</td>
 </tr>
 <tr>
 <td><strong>owner_id / <code>tenant_id</code> (payload key)</strong></td>
@@ -362,6 +364,11 @@ side is the bug.</p>
 </tr>
 </tbody>
 </table></div>
+<p><strong>A physical index has exactly one registry entry</strong> (<a href="adr-0002-collection-identity.html">ADR-0002</a>
+decision 5) — not two (which would be two independent ACLs over one dataset) and not
+zero (data no ACL governs). Collection and store are 1:1 in the healthy state; they are
+separate words because every access-control bug found in August 2026 was that mapping
+breaking in one direction or the other.</p>
 <p>A collection's physical name is derived deterministically from its build spec. Corpora are
 content-addressed over <code>(model, dim, chunk_descriptor)</code> so that re-ingesting an identical
 spec is idempotent; user-named collections additionally fold the <em>name</em> into the identity
