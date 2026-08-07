@@ -104,12 +104,21 @@ class CollectionSpec(BaseModel):
         ``collection`` by default, so whatever isolates the vector store isolates
         the text index too — there is no second name-derivation to keep in sync.
 
-        ``collection``/``text_index`` are also the *deliberate* way to share one
-        physical store between two registry ids: author both specs in
-        ``collections_file`` with the same ``collection`` value. Nothing in the
-        codebase does this today, and the ``POST /v1/collections`` path never
-        produces it (an explicit id is folded into the physical name so named
-        libraries stay isolated) — sharing is opt-in, by hand, at config time."""
+        **Two registry ids may NOT share one physical store.** This docstring
+        used to call hand-authoring both specs with the same ``collection`` value
+        "the deliberate way to share" one. That was wrong, and it is now a
+        startup error (``_build_collection_registry``).
+
+        Access control is asserted at the collection (ADR-0003), so two ids over
+        one store are two INDEPENDENT ACLs over one dataset: revoking a grant on
+        one id leaves the same bytes readable through the other, and an owner who
+        un-publishes a corpus has not un-published it (#275, reproduced live).
+        The invariant is ADR-0002's, stated positively: **a physical index has
+        exactly one registry entry.**
+
+        ``POST /v1/collections`` never produced this (an explicit id is folded
+        into the physical name, so named libraries stay isolated); the config
+        path could, and no longer can."""
         return self.text_index or self.collection
 
     def emb_signature(self) -> tuple[str, str, tuple[str, ...], str]:

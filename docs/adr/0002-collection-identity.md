@@ -68,6 +68,40 @@ any of them means a new collection and a full re-ingest.
 binding only; `?purge=true` also destroys the underlying Qdrant collection and ES index.
 The default is the non-destructive one.
 
+**5. A physical index has exactly one registry entry.** *(Amendment, 2026-08-06 —
+[#275](https://github.com/wilke/ragstack/issues/275).)*
+
+This was always implied. The Alternatives section below rejects aliasing — *"two named
+libraries would still share a store… the isolation has to exist at the physical layer"* —
+but the rule was never stated as a decision, and that omission is exactly how it got
+violated: the registry **synthesised** a `default` entry over whatever store the settings
+named, alongside any configured spec that already served it. `CollectionSpec.es_index`'s
+own docstring then described hand-authoring the same collision as *"the deliberate way to
+share one physical store between two registry ids."*
+
+It matters because ADR-0003 asserts access control **at the collection**. Two ids over one
+store are therefore two *independent ACLs over one dataset*: revoking a grant on one id
+leaves the same bytes readable through the other. An owner who un-publishes a corpus has
+not un-published it. Reproduced live on a 1.5M-point corpus; the 21-second window in which
+one id was un-published while the other still served it is in that tenant's share audit
+trail.
+
+Enforced at registry build: the settings-derived entry is not created when a spec already
+claims its store, two specs may not claim the same store, and a spec claiming only *one*
+of the derived entry's two legs (vectors, text index) is a startup error rather than a
+silent suppression — suppressing would leave the other store served by no registry entry
+and therefore governed by no ACL.
+
+Two consequences worth stating, because both were nearly missed:
+
+- **`default` is a pointer, not an entry.** It names which collection a request resolves to
+  when it omits `collection` (`DEFAULT_COLLECTION_ID`), and is a reserved, uncreatable id.
+- **"Is the default" and "is the legacy shared surface" are different questions.** The
+  latter carries authz exemptions — no share-based scope widening, and read-not-write on
+  the omitted-collection ingest and document-delete paths — because there per-chunk
+  `tenant_id` is the isolation. Letting those follow the pointer would let any *reader* of
+  an owned collection write to it by omitting `collection`. They are separate flags now.
+
 ## Consequences
 
 **Accepted:**
