@@ -38,8 +38,28 @@ export interface PasswordExchange {
  * receives a password, so it is exactly the value an attacker would want to
  * influence. Overridable at BUILD time for alpha/beta deployments.
  */
+function pinnedAuthUrl(): string {
+  const fallback = "https://user.patricbrc.org/authenticate";
+  const configured = import.meta.env.VITE_BVBRC_AUTH_URL;
+  if (!configured) return fallback;
+  // This one build-time knob decides where a PASSWORD is posted, so it is
+  // validated rather than trusted: https everywhere, except plain http on
+  // localhost for a developer running a stub provider.
+  try {
+    const u = new URL(configured);
+    const localhost = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if (u.protocol === "https:" || (u.protocol === "http:" && localhost)) return configured;
+  } catch {
+    /* not a URL at all */
+  }
+  throw new Error(
+    "VITE_BVBRC_AUTH_URL must be an https:// URL (or http:// on localhost): it is " +
+      "where a user's password is sent.",
+  );
+}
+
 export const BVBRC_EXCHANGE: PasswordExchange = {
-  url: import.meta.env.VITE_BVBRC_AUTH_URL || "https://user.patricbrc.org/authenticate",
+  url: pinnedAuthUrl(),
   userField: "username",
   passField: "password",
 };
@@ -79,6 +99,19 @@ export async function exchangePassword(
       // provider session cookie riding along would be an ambient authority we
       // neither need nor want.
       credentials: "omit",
+      // NEVER follow a redirect. The default is "follow", and a 307/308
+      // PRESERVES the method and body across origins — so a compromised or
+      // misconfigured provider could answer the authenticate POST with a
+      // redirect and have the browser re-POST the password to another host.
+      // CORS does not save us: the redirect response passes the check, and the
+      // follow-up is a CORS-simple form POST dispatched with no preflight, so
+      // only the RESPONSE is withheld. The password would arrive.
+      //
+      // Pinning the URL is worthless if the pinned host can re-point the
+      // request one hop later. A redirect is never a legitimate success path
+      // for an authenticate endpoint; the catch below turns the resulting
+      // TypeError into the same actionable "use p3-login instead" message.
+      redirect: "error",
       signal,
     });
   } catch {

@@ -89,21 +89,26 @@ export function LoginView({
       return false;
     }
     setNotice(null);
-    setCredential({ mode: "bearer", value: token });
+    // Bind FIRST, then persist: setStoredCredential's own write defaults the
+    // base to the live getApiBase(), so doing it the other way round wrote a
+    // binding and immediately corrected it. Correctness must not depend on
+    // nothing yielding between two statements.
     bindTokenToBase(live);
+    setCredential({ mode: "bearer", value: token });
     return true;
   }
 
   async function signInWithPassword(e: React.FormEvent) {
     e.preventDefault();
+    // Guarded here as well as by not rendering the form: implicit submission
+    // (Enter in a text field) must not depend on a button's disabled attribute.
+    if (insecure) return;
+    if (busy) return; // a second Enter must not fire a second exchange
     if (!username.trim() || !password) return;
     setBusy(true);
     setError(null);
     try {
       const token = await exchangePassword(BVBRC_EXCHANGE, username.trim(), password);
-      // Drop the password the instant it has been exchanged — it must not sit
-      // in component state waiting for a re-render or a crash dump.
-      setPassword("");
       if (acceptToken(token)) {
         setTokenDraft("");
         onDone();
@@ -115,6 +120,10 @@ export function LoginView({
           : "Sign-in failed for an unexpected reason.",
       );
     } finally {
+      // Drop the password on EVERY exit, not just success — a failed attempt
+      // left it sitting in component state (and in the input) for as long as
+      // the page stayed open, which is exactly what this clear exists to avoid.
+      setPassword("");
       setBusy(false);
     }
   }
@@ -189,10 +198,15 @@ export function LoginView({
             <>
               {insecure ? (
                 <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-xs text-red-800">
-                  <p className="font-medium">Not a secure connection</p>
+                  <p className="font-medium">Password sign-in is unavailable here</p>
                   <p className="mt-1">{insecure}</p>
                 </div>
               ) : null}
+              {/* The form is NOT rendered on an insecure page. A warning beside a
+                  working password field is not a control — it is a suggestion,
+                  and the whole point is that this page cannot be trusted to
+                  carry a password. The token paste below stays available. */}
+              {insecure ? null : (
               <form onSubmit={signInWithPassword} className="space-y-3">
                 <div>
                   <label
@@ -235,6 +249,7 @@ export function LoginView({
                   {busy ? "Signing in…" : "Sign in"}
                 </button>
               </form>
+              )}
 
               {error ? (
                 <p
@@ -245,12 +260,14 @@ export function LoginView({
                 </p>
               ) : null}
 
-              <p className="mt-3 text-xs text-gray-500">
-                Your password goes directly from this browser to {provider.label} over
-                HTTPS and is exchanged for a token. It is never sent to RAGStack, and
-                RAGStack stores nothing but the token — the same one{" "}
-                <code>p3-login</code> writes.
-              </p>
+              {insecure ? null : (
+                <p className="mt-3 text-xs text-gray-500">
+                  Your password goes directly from this browser to {provider.label} over
+                  HTTPS and is exchanged for a token. It is never sent to RAGStack, and
+                  RAGStack stores nothing but the token — the same one{" "}
+                  <code>p3-login</code> writes.
+                </p>
+              )}
 
               <div className="mt-4 border-t border-gray-100 pt-3">
                 <button

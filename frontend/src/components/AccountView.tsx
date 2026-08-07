@@ -1,4 +1,10 @@
-import { clearStoredToken, getApiBase, getStoredToken, getStoredTokenBase } from "../api/config";
+import {
+  clearStoredToken,
+  getApiBase,
+  getStoredApiKey,
+  getStoredToken,
+  getStoredTokenBase,
+} from "../api/config";
 import { BackendSwitcher } from "./BackendSwitcher";
 import {
   accountIssuer,
@@ -36,6 +42,7 @@ export function AccountView({
   onSignIn,
   onSignedOut,
   onCredentialChange,
+  onBaseChange,
 }: {
   credential: Credential;
   identity: IdentitySummary | null;
@@ -43,6 +50,8 @@ export function AccountView({
   onSignedOut: (c: Credential) => void;
   /** Re-resolve the app credential after a backend change. */
   onCredentialChange: (c: Credential) => void;
+  /** Report a same-tab base change to App (no storage event fires locally). */
+  onBaseChange: (base: string) => void;
 }) {
   const view = identityView(credential.mode, identity);
   const base = getApiBase();
@@ -74,7 +83,7 @@ export function AccountView({
           <p className="mb-2 mt-1 text-xs text-gray-500">
             Which deployment this UI talks to.
           </p>
-          <BackendSwitcher setCredential={onCredentialChange} />
+          <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
         </div>
       </div>
     );
@@ -137,7 +146,7 @@ export function AccountView({
             type="button"
             onClick={() => {
               clearStoredToken();
-              onSignedOut({ mode: "apikey", value: "" });
+              onSignedOut({ mode: "apikey", value: getStoredApiKey() });
             }}
             className="mt-3 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 hover:bg-gray-100"
           >
@@ -155,7 +164,7 @@ export function AccountView({
             Which deployment this UI talks to. Switching it stops a bearer token from
             being sent until you confirm it for the new backend on the sign-in page.
           </p>
-          <BackendSwitcher setCredential={onCredentialChange} />
+          <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
         </div>
 
         <div className="mt-5 border-t border-gray-100 pt-4">

@@ -12,6 +12,7 @@ interface Sent {
   headers: Record<string, string>;
   body: string;
   credentials?: string;
+  redirect?: string;
 }
 
 let sent: Sent[] = [];
@@ -24,6 +25,7 @@ function stubFetch(response: { status: number; body: string }) {
       headers: { ...((init?.headers ?? {}) as Record<string, string>) },
       body: String(init?.body ?? ""),
       credentials: init?.credentials,
+      redirect: init?.redirect,
     });
     return {
       ok: response.status >= 200 && response.status < 300,
@@ -59,6 +61,22 @@ describe("password exchange", () => {
     expect(sent[0].url).not.toContain("hunter2");
     expect(sent[0].url).not.toContain("alice");
     expect(sent[0].method).toBe("POST");
+  });
+
+  it("REFUSES to follow redirects, so a 307/308 cannot re-POST the password", async () => {
+    // The default is redirect:"follow", and 307/308 PRESERVE method and body
+    // across origins — so a compromised provider could bounce the authenticate
+    // POST to another host and receive the password. CORS does not stop it: the
+    // follow-up is a CORS-simple form POST, so only the RESPONSE is withheld.
+    // Pinning the URL is worthless if the pinned host can re-point one hop later.
+    stubFetch({ status: 200, body: TOKEN });
+    await exchangePassword(BVBRC_EXCHANGE, "alice", "hunter2");
+    expect(sent[0].redirect).toBe("error");
+  });
+
+  it("pins the exchange URL to https (or localhost)", () => {
+    // The one build-time knob that decides where a password is posted.
+    expect(BVBRC_EXCHANGE.url).toMatch(/^https:\/\/|^http:\/\/(localhost|127\.0\.0\.1)/);
   });
 
   it("sends no cookies in either direction", async () => {

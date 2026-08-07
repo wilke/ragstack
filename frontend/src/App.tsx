@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   clearStoredToken,
   getApiBase,
+  getStoredApiKey,
   getStoredCredential,
   setStoredCredential,
 } from "./api/config";
@@ -70,6 +71,30 @@ export function App() {
   const setApiKey = (v: string) => setCredential({ mode: "apikey", value: v });
   const [view, setView] = useState<View>("explore");
   const queryClient = useQueryClient();
+  // The selected backend, held in App state so the whoami key below genuinely
+  // tracks it. Reading getApiBase() inline would only be re-evaluated when
+  // something else re-rendered App — which happens to work for a same-tab
+  // switch (the switcher also sets the credential) but is an accident of object
+  // identity, not reactivity.
+  const [apiBase, setApiBaseState] = useState(getApiBase);
+
+  // Cross-tab resync — MUST live here, not in the backend switcher. localStorage
+  // is shared between tabs, so another tab can change the backend or sign out
+  // from under this one; the listener therefore has to be mounted for as long
+  // as the app is, not only while the settings screen happens to be open.
+  // Without it a background tab keeps showing "signed in as …" for a backend
+  // that never confirmed it, and — because no query key contains the base —
+  // keeps rendering the previous deployment's collections while addressing the
+  // new one. Requests still fail closed; the UI is what lies.
+  useEffect(() => {
+    function resync() {
+      setApiBaseState(getApiBase());
+      setCredentialState(getStoredCredential());
+      void queryClient.invalidateQueries();
+    }
+    window.addEventListener("storage", resync);
+    return () => window.removeEventListener("storage", resync);
+  }, [queryClient]);
 
   // WHOAMI — the one source of truth for the header's identity. Keyed on the
   // credential AND the base, because either changing means the answer may be a
@@ -80,7 +105,7 @@ export function App() {
   // There is no /v1/me, and inventing one would be a contract change plus both
   // implementations.
   const whoami = useQuery({
-    queryKey: ["whoami", credential.mode, credential.value, getApiBase()],
+    queryKey: ["whoami", credential.mode, credential.value, apiBase],
     queryFn: () => getTenants(credential.value || undefined),
     retry: false,
   });
@@ -118,7 +143,10 @@ export function App() {
             onAccount={() => setView("account")}
             onSignOut={() => {
               clearStoredToken();
-              applyCredential({ mode: "apikey", value: "" });
+              // Restore the saved API key rather than clearing it: the Account page
+              // promises sign-out deletes the TOKEN, and silently dropping an
+              // operator's key as a side effect is a surprise, not a safeguard.
+              applyCredential({ mode: "apikey", value: getStoredApiKey() });
               setView("explore");
             }}
           />
@@ -159,6 +187,7 @@ export function App() {
             setView("explore");
           }}
           onCredentialChange={setCredential}
+          onBaseChange={setApiBaseState}
         />
       ) : view === "explore" ? (
         <ExploreView apiKey={apiKey} setApiKey={setApiKey} />

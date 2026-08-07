@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 import { CollectionView } from "./CollectionView";
+import { AccountView } from "./AccountView";
 import { LoginView } from "./LoginView";
+import { UserMenu } from "./UserMenu";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
 
@@ -56,6 +58,81 @@ describe("static render", () => {
     expect(html).toContain("not available");
     // MG-RAST is deliberately absent until it can actually work.
     expect(html).not.toContain("MG-RAST");
+  });
+
+  it("does NOT render a password field on an insecure page", () => {
+    // A warning beside a working password field is a suggestion, not a control.
+    // On a plaintext page the form itself can be rewritten before it renders, so
+    // "we post it over TLS" is no defence — the field must not exist.
+    // The component reads window.isSecureContext; vitest's node env has no
+    // window at all, so stub the object itself.
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "window");
+    try {
+      Object.defineProperty(globalThis, "window", {
+        value: { isSecureContext: false },
+        configurable: true,
+      });
+      const html = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(html).toContain("Password sign-in is unavailable here");
+      expect(html).not.toMatch(/id="login-password"/);
+      expect(html).not.toContain("<form");
+      // ...and the alternative that still works is still offered.
+      expect(html).toContain("token");
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "window", orig);
+      else delete (globalThis as Record<string, unknown>).window;
+    }
+  });
+
+  it("renders the password field on a secure page", () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "window");
+    try {
+      Object.defineProperty(globalThis, "window", {
+        value: { isSecureContext: true },
+        configurable: true,
+      });
+      const html = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(html).toMatch(/id="login-password"/);
+      expect(html).toContain("never sent to RAGStack");
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "window", orig);
+      else delete (globalThis as Record<string, unknown>).window;
+    }
+  });
+
+  // Re-established after LoginPanel was deleted: the components that RECEIVE a
+  // credential must never render it. Nothing asserted this for a while.
+  it("never renders a credential into the markup", () => {
+    const SECRET = "un=alice@patricbrc.org|tokenid=t|sig=deadbeef";
+    const identity = { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true };
+    const menu = render(
+      createElement(UserMenu, {
+        credential: { mode: "bearer" as const, value: SECRET },
+        identity,
+        loading: false,
+        onSignIn: () => {},
+        onAccount: () => {},
+        onSignOut: () => {},
+      }),
+    );
+    expect(menu).not.toContain(SECRET);
+    expect(menu).toContain("alice@patricbrc.org"); // the server-reported name is fine
+
+    const account = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: SECRET },
+        identity,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(account).not.toContain(SECRET);
   });
 
   it("mounts the new-collection form", () => {

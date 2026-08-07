@@ -43,8 +43,12 @@ function effectiveLabel(base: string): string {
 
 export function BackendSwitcher({
   setCredential,
+  onBaseChange,
 }: {
   setCredential: (c: Credential) => void;
+  /** Tell App the base moved. A `storage` event does NOT fire in the tab that
+   *  wrote it, so the same-tab case has to be reported explicitly. */
+  onBaseChange: (base: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [base, setBase] = useState(getApiBase());
@@ -55,19 +59,17 @@ export function BackendSwitcher({
   // backend that is no longer selected. Requests already fail closed (client.ts
   // re-reads storage per request); the label must not lie either.
   useEffect(() => {
+    // Display state only. The credential resync and cache invalidation live in
+    // App, which is always mounted — this component is not (it is on the
+    // preferences screen), so it must not be the only thing listening.
     function resync() {
       const live = getApiBase();
       setBase(live);
       setSelectId(presetIdForUrl(live));
-      setCredential(getStoredCredential());
-      // No query key contains the base, so in API-key mode the key string is
-      // unchanged and this tab would keep rendering the previous backend's
-      // collections and ids while addressing the new one.
-      void queryClient.invalidateQueries();
     }
     window.addEventListener("storage", resync);
     return () => window.removeEventListener("storage", resync);
-  }, [setCredential, queryClient]);
+  }, []);
 
   function applyBase(url: string) {
     setApiBase(url);
@@ -77,6 +79,7 @@ export function BackendSwitcher({
     const clean = getApiBase();
     setBase(clean);
     setSelectId(presetIdForUrl(clean));
+    onBaseChange(clean);
     // A bearer token is bound to the base it was saved for: after a switch it
     // stops being sent until the user re-confirms it on the login page.
     setCredential(getStoredCredential());
