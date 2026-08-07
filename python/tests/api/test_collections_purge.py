@@ -324,3 +324,27 @@ async def test_backend_without_drop_support_is_reported_not_crashed(client, mani
     assert body["ok"] is False
     assert body["failed"][0]["target"] == "vectors"
     assert "does not support" in body["failed"][0]["error"]
+
+
+async def test_the_two_forms_are_exact_complements(client, manifests):
+    """The property the guards rest on: for ANY collection, exactly one of
+    purge/unregister is permitted — never both, never neither.
+
+    An earlier version tested the two legs with `and` here while
+    `_shared_store_users` uses `or`, so a HALF-shared entry (one leg claimed,
+    one not) was refused both ways and became permanently undeletable. Both
+    branches now ask the same question."""
+    # Half-shared: same ES index, different Qdrant collections. Reachable at
+    # runtime, because the create path's alias guard only checks the vector leg.
+    _add("phys_a", cid="half-a", text_index="shared_es")
+    _add("phys_b", cid="half-b", text_index="shared_es")
+
+    for cid in ("half-a", "half-b"):
+        unreg = await client.delete(f"/v1/collections/{cid}")
+        purge = await client.delete(f"/v1/collections/{cid}?purge=true")
+        allowed = [r.status_code for r in (unreg, purge) if r.status_code < 300]
+        assert len(allowed) == 1, (
+            f"{cid}: expected exactly one permitted form, got "
+            f"unregister={unreg.status_code} purge={purge.status_code}"
+        )
+        break  # the first delete mutates the registry; one pass is the assertion

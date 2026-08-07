@@ -533,6 +533,32 @@ async def create_collection(
             delete_manifest(settings.collection_manifest_dir, spec.collection)
         except Exception:  # noqa: BLE001 — a stale config manifest is harmless
             pass
+        # ...and drop the physical stores this create just ensured. Without this
+        # the rollback leaves exactly the orphan the delete path now refuses to
+        # create: `build_collection_entry` ensures the Qdrant collection and the
+        # ES index BEFORE the owner row is written, so a 409 (residual owner row
+        # for a reused id) or a 503 (ACL store down) left a store pair behind
+        # with no registry entry claiming it — and, during an outage, a client
+        # loop leaked one pair per attempt while the registry count never moved,
+        # which is the same MAX_COLLECTIONS-blind DoS.
+        #
+        # Guarded by _shared_store_users for the same reason purge is: never
+        # destroy a store another entry is serving.
+        if not _shared_store_users(registry, built):
+            for obj, op in (
+                (built.vector_store, "drop_collection"),
+                (built.text_index, "drop_index"),
+            ):
+                fn = getattr(obj, op, None)
+                if fn is None:
+                    continue
+                try:
+                    await fn()
+                except Exception:  # noqa: BLE001 — rollback is best-effort
+                    log.warning(
+                        "create %r: rollback of %s left a physical store behind",
+                        cid, op, exc_info=True,
+                    )
         raise
 
     tenants = readable_tenants(principal.tenant)
@@ -711,37 +737,29 @@ async def delete_collection(
     # caller who cannot read the collection would be an existence oracle for a
     # stranger's private id (see api/access.py's leak-safe posture).
     #
+    # They use the SAME predicate, so they are exact complements and the pair is
+    # provably total: whichever way `_shared_store_users` answers, exactly one of
+    # the two forms is permitted. An earlier version tested the two legs with
+    # `and` here while `_shared_store_users` uses `or`, which left a half-shared
+    # entry (one leg claimed, one not) refused BOTH ways and therefore
+    # undeletable. Keep these in lockstep.
+    #
     # Between them they make ADR-0002 decision 5 — "a physical index has exactly
     # one registry entry" — TOTAL. #279 enforced the "not two" half at registry
     # build. This is the "not zero" half: unregistering the last entry for a
     # store leaves data that no entry claims, and therefore that no ACL governs.
     # deps.py already refuses that state at startup ("serving it under NO id is
     # worse"); the delete path used to manufacture it at runtime, on request.
-    #
-    # Exactly one of the two branches is legal for any given collection, so
-    # nothing becomes undeletable:
-    #   * store shared with another entry  -> purge refused, unregister allowed
-    #   * store claimed by this entry only -> unregister refused, purge allowed
-    vec_shared = any(
-        e.id != entry.id and e.collection == entry.collection for e in registry.entries()
-    )
-    es_shared = any(
-        e.id != entry.id and e.es_index() == entry.es_index() for e in registry.entries()
-    )
-    if purge:
-        sharers = _shared_store_users(registry, entry)
-        if sharers:
-            raise HTTPException(
-                409,
-                f"cannot purge collection {collection_id!r}: its physical store "
-                f"({entry.collection}) is also used by {', '.join(repr(s) for s in sharers)}, "
-                f"and purging would destroy their data too. Unregister it instead "
-                f"(purge=false), or purge the other collections first.",
-            )
-    # `and`, not `or`: a half-shared entry (one leg claimed, one not) would be
-    # undeletable by either branch — but registry build refuses that shape at
-    # startup, so it cannot occur on a running server.
-    elif not (vec_shared and es_shared):
+    sharers = _shared_store_users(registry, entry)
+    if purge and sharers:
+        raise HTTPException(
+            409,
+            f"cannot purge collection {collection_id!r}: its physical store "
+            f"({entry.collection}) is also used by {', '.join(repr(s) for s in sharers)}, "
+            f"and purging would destroy their data too. Unregister it instead "
+            f"(purge=false), or purge the other collections first.",
+        )
+    if not purge and not sharers:
         raise HTTPException(
             409,
             f"cannot unregister collection {collection_id!r} without purging: no "

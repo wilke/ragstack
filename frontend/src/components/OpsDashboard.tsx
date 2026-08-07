@@ -962,7 +962,7 @@ export function PurgeConfirm({
           Cancel
         </button>
         <span className="text-xs text-red-400">
-          Prefer Unregister if you only want the id freed — it keeps the data.
+          This is the only delete for a store no other collection shares.
         </span>
       </div>
     </div>
@@ -1130,25 +1130,38 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                             —
                           </span>
                         ) : (
-                          // Unregister stays the quiet default; the destructive one
-                          // is visually separate and never the primary action.
+                          // Unregister is only offered when ANOTHER listed collection
+                          // serves the same physical store. Otherwise the server
+                          // refuses it (409): dropping the last binding would leave
+                          // the data with no collection claiming it and no permissions
+                          // governing it. Offering a button that always errors is worse
+                          // than not offering it.
                           <span className="inline-flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setNotice(null);
-                                setConfirming(
-                                  confirming?.id === c.id && confirming.mode === "unregister"
-                                    ? null
-                                    : { id: c.id, mode: "unregister" },
-                                );
-                              }}
-                              className="text-xs text-gray-400 hover:text-gray-700"
-                              title="Drop the registry binding only. The stored chunks survive."
-                            >
-                              Unregister
-                            </button>
-                            <span className="text-gray-200">|</span>
+                            {rows.some(
+                              (o) =>
+                                o.id !== c.id &&
+                                !!o.provenance?.collection &&
+                                o.provenance?.collection === c.provenance?.collection,
+                            ) ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setNotice(null);
+                                    setConfirming(
+                                      confirming?.id === c.id && confirming.mode === "unregister"
+                                        ? null
+                                        : { id: c.id, mode: "unregister" },
+                                    );
+                                  }}
+                                  className="text-xs text-gray-400 hover:text-gray-700"
+                                  title="Another collection shares this store, so the data survives the unregister."
+                                >
+                                  Unregister
+                                </button>
+                                <span className="text-gray-200">|</span>
+                              </>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => {
@@ -1234,8 +1247,9 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
           means one store is missing rows (a partial or failed ingest), not extra data.
           Both are filtered to your readable tenants; very large counts may be
           approximate. <span className="font-medium text-gray-500">Unregister</span> drops the
-          registry binding only, never the stored chunks — the physical store keeps costing disk
-          until something removes it.{" "}
+          registry binding only, and is offered solely when another collection shares the same
+          store — otherwise the server refuses it, because the data would be left with no
+          collection claiming it and no permissions governing who can read it.{" "}
           <span className="font-medium text-red-600">Delete permanently</span> is the one that
           removes it: it drops the Qdrant collection, the Elasticsearch index and the build
           manifest too, is irreversible, and is refused when another collection still shares the
