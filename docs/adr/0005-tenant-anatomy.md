@@ -74,6 +74,42 @@ indices leave the current shared ES, what remains *is* the large tenant's data �
 existing instance is **relabeled as that tenant's dedicated ES** and its tens of millions
 of documents never move. Tracked in #246.
 
+**6. The tenant model is the design target; the shared-store topology is a dated
+migration state, not a supported configuration.** *(Amendment, 2026-08-07.)*
+
+Design and plan against a tenant that **exclusively owns** its Qdrant, its Elasticsearch
+and its ACL/registry database. Where the current fleet contradicts that, the fleet is the
+thing that is wrong. The `dev` tenant (provisioned by `apptainer/new-tenant.sh`) is the
+first deployment that meets decision 1 and is the reference shape.
+
+This is not cosmetic — several designs were being drawn *smaller* than they should be
+because a shared instance made the honest version unsafe:
+
+- **Unclaimed stores could not be reclaimed.** On a shared Qdrant, "absent from this
+  registry" is indistinguishable from "owned by a tenant that is not currently running" —
+  268 GB of production corpora are in exactly that state today, so an automated sweep would
+  destroy them. Under exclusive ownership, unclaimed *means* orphan and reclaim becomes
+  constructible (#293).
+- **The collection cap could not count the thing it protects.** `max_collections` claims to
+  bound physical stores but counts registry rows, because a physical count on a shared
+  instance would let one tenant's usage refuse another tenant's users — contradicting this
+  ADR's own Consequences. Under exclusive ownership a physical count *is* a per-tenant
+  count, and the cap can finally count the noun it names (#286, #290).
+- **Two APIs over one store double the effective cap.** Each enforces its own limit against
+  its own registry. That is a property of the topology, not of the code.
+
+**Corollary — every physical store must be claimed by exactly one registry entry of its
+owning tenant.** ADR-0002 decision 5 states this for stores the API creates. The remaining
+hole is the bulk path: `scripts/ingest_jsonl.py` and `load_embeddings.py` call
+`ensure_collection()` directly, so they create stores the registry never sees — which is
+how 24 unclaimed stores accumulated, and why the ADR-0002 build-spec guard is disarmed for
+them (#263). The bulk CLI must therefore **take a `--collection-id` that already exists in
+the registry, and refuse an unregistered one** — optionally creating it through the API
+first, so the spec, the cap and the owner row all come from the normal path. The bulk
+*data* path stays direct to Qdrant; only the *registration* moves. Without this, "unclaimed
+means orphan" is nearly-true rather than true, and nearly-true is not a property a delete
+can be built on.
+
 ## Deferred: federated tenancy
 
 At some point a global view may be wanted — one query across every tenant a person
