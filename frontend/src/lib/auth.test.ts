@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  accountIssuer,
+  accountName,
+  AUTH_PROVIDERS,
   bearerAppliesToBase,
   bearerBaseWarning,
   credentialHeaders,
   identityView,
+  insecureContextWarning,
   isTokenExpired,
   laneCredential,
   OIDC_SEAM_NOTE,
@@ -394,5 +398,83 @@ describe("UI copy", () => {
   it("does not promise an OIDC flow that isn't built", () => {
     expect(OIDC_SEAM_NOTE).toMatch(/isn't wired up|not available/i);
     expect(OIDC_SEAM_NOTE).toMatch(/BV-BRC/);
+  });
+});
+
+describe("account identity display", () => {
+  it("shows the subject, not the issuer plumbing", () => {
+    expect(accountName("bvbrc:awilke@bvbrc")).toBe("awilke@bvbrc");
+    expect(accountIssuer("bvbrc:awilke@bvbrc")).toBe("bvbrc");
+  });
+
+  it("splits on the FIRST colon only, so a subject may contain one", () => {
+    // An OIDC `sub` is opaque and may legitimately contain a colon; splitting
+    // on the last (or on every) colon would display a truncated name.
+    expect(accountName("oidc:https://accounts.google.com/123")).toBe(
+      "https://accounts.google.com/123",
+    );
+    expect(accountIssuer("oidc:https://accounts.google.com/123")).toBe("oidc");
+  });
+
+  it("treats an API-key tenant as having no issuer", () => {
+    expect(accountName("demo-ops")).toBe("demo-ops");
+    expect(accountIssuer("demo-ops")).toBeNull();
+  });
+});
+
+describe("login page providers", () => {
+  it("offers BV-BRC and an API key, and lists Google as unavailable", () => {
+    const byId = Object.fromEntries(AUTH_PROVIDERS.map((p) => [p.id, p]));
+    expect(byId.bvbrc.available).toBe(true);
+    expect(byId.apikey.available).toBe(true);
+    expect(byId.google.available).toBe(false);
+  });
+
+  it("offers BV-BRC a real username/password sign-in, not just a paste", () => {
+    const bvbrc = AUTH_PROVIDERS.find((p) => p.id === "bvbrc");
+    expect(bvbrc?.methods).toContain("password");
+    // Paste stays as the fallback for anyone who already ran p3-login.
+    expect(bvbrc?.methods).toContain("paste");
+  });
+
+  it("never claims a password sign-in for a provider that has none", () => {
+    // Google does not accept passwords from third-party sites, by design; a
+    // password form there would be a phishing pattern, not a feature.
+    const google = AUTH_PROVIDERS.find((p) => p.id === "google");
+    expect(google?.methods).not.toContain("password");
+    for (const p of AUTH_PROVIDERS) {
+      if (!p.available) expect(p.methods).toHaveLength(0);
+    }
+  });
+
+  it("says WHY Google cannot be chosen rather than hiding it", () => {
+    // A greyed-out provider with no reason reads as a bug; the seam is real and
+    // the page should name it.
+    const google = AUTH_PROVIDERS.find((p) => p.id === "google");
+    expect(google?.unavailable).toBeTruthy();
+    expect(google?.unavailable).toMatch(/PKCE|authorization code|not built/i);
+  });
+
+  it("never marks an unavailable provider without an explanation", () => {
+    for (const p of AUTH_PROVIDERS) {
+      if (!p.available) expect(p.unavailable, `${p.id} needs a reason`).toBeTruthy();
+    }
+  });
+});
+
+describe("password entry requires a secure page", () => {
+  it("refuses to reassure on a plaintext page", () => {
+    const warn = insecureContextWarning(false);
+    expect(warn).toBeTruthy();
+    // The reason must name the real risk: the form itself can be rewritten, so
+    // "we post it over TLS" is not a defence.
+    expect(warn).toMatch(/rewritten|captured/i);
+    expect(warn).toMatch(/HTTPS/);
+    // ...and it must offer the way that still works.
+    expect(warn).toMatch(/p3-login|token/i);
+  });
+
+  it("says nothing on HTTPS or localhost", () => {
+    expect(insecureContextWarning(true)).toBeNull();
   });
 });

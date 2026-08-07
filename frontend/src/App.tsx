@@ -1,7 +1,17 @@
-import { useCallback, useState } from "react";
-import { getStoredCredential, setStoredCredential } from "./api/config";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import {
+  clearStoredToken,
+  getApiBase,
+  getStoredApiKey,
+  getStoredCredential,
+  setStoredCredential,
+} from "./api/config";
+import { getTenants } from "./api/client";
 import type { Credential } from "./lib/auth";
-import { BackendSwitcher } from "./components/BackendSwitcher";
+import { AccountView } from "./components/AccountView";
+import { LoginView } from "./components/LoginView";
+import { UserMenu } from "./components/UserMenu";
 import { CompareView } from "./components/CompareView";
 import { ExploreView } from "./components/ExploreView";
 import { CollectionView } from "./components/CollectionView";
@@ -18,7 +28,10 @@ import { OpsDashboard } from "./components/OpsDashboard";
 // library IS a collection, one-to-one — there is no separate concept, so
 // "collection" is simply the right word and the old name does not come back.
 
-type View = "explore" | "collection" | "compare" | "ops";
+// `login` and `account` are reachable from the header's user menu rather than
+// the tab bar: they are about WHO you are, not what you are working on, and
+// putting them in the tab strip would imply they are a fifth workspace.
+type View = "explore" | "collection" | "compare" | "ops" | "login" | "account";
 
 const TABS: { id: View; label: string }[] = [
   { id: "explore", label: "Explore" },
@@ -32,6 +45,8 @@ const SUBTITLE: Record<View, string> = {
   collection: "Collection — upload PDFs, watch them ingest, then ask",
   compare: "Compare — same query across collections, ranked side by side",
   ops: "Ops — stores, counts, and dependency health",
+  login: "Sign in",
+  account: "Account & preferences",
 };
 
 export function App() {
@@ -55,6 +70,59 @@ export function App() {
   const apiKey = credential.value;
   const setApiKey = (v: string) => setCredential({ mode: "apikey", value: v });
   const [view, setView] = useState<View>("explore");
+  const queryClient = useQueryClient();
+  // The selected backend, held in App state so the whoami key below genuinely
+  // tracks it. Reading getApiBase() inline would only be re-evaluated when
+  // something else re-rendered App — which happens to work for a same-tab
+  // switch (the switcher also sets the credential) but is an accident of object
+  // identity, not reactivity.
+  const [apiBase, setApiBaseState] = useState(getApiBase);
+
+  // Cross-tab resync — MUST live here, not in the backend switcher. localStorage
+  // is shared between tabs, so another tab can change the backend or sign out
+  // from under this one; the listener therefore has to be mounted for as long
+  // as the app is, not only while the settings screen happens to be open.
+  // Without it a background tab keeps showing "signed in as …" for a backend
+  // that never confirmed it, and — because no query key contains the base —
+  // keeps rendering the previous deployment's collections while addressing the
+  // new one. Requests still fail closed; the UI is what lies.
+  useEffect(() => {
+    function resync() {
+      setApiBaseState(getApiBase());
+      setCredentialState(getStoredCredential());
+      void queryClient.invalidateQueries();
+    }
+    window.addEventListener("storage", resync);
+    return () => window.removeEventListener("storage", resync);
+  }, [queryClient]);
+
+  // WHOAMI — the one source of truth for the header's identity. Keyed on the
+  // credential AND the base, because either changing means the answer may be a
+  // different person; without the base in the key, switching backends would
+  // leave the previous deployment's identity on screen.
+  //
+  // /v1/stats/tenants is the de-facto whoami (tenant + role + auth_enabled).
+  // There is no /v1/me, and inventing one would be a contract change plus both
+  // implementations.
+  const whoami = useQuery({
+    queryKey: ["whoami", credential.mode, credential.value, apiBase],
+    queryFn: () => getTenants(credential.value || undefined),
+    retry: false,
+  });
+  const identity = whoami.data
+    ? {
+        tenant: whoami.data.tenant,
+        role: whoami.data.role,
+        auth_enabled: whoami.data.auth_enabled,
+      }
+    : null;
+
+  // A credential change must invalidate everything: one principal's cached
+  // collection list must never be shown to another.
+  const applyCredential = (c: Credential) => {
+    setCredential(c);
+    void queryClient.invalidateQueries();
+  };
 
   // Compare needs width for side-by-side columns; the others read best narrow.
   const wide = view === "compare";
@@ -62,10 +130,31 @@ export function App() {
   return (
     <div className={`mx-auto px-4 py-8 ${wide ? "max-w-none" : "max-w-3xl"}`}>
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold">RAGStack Explorer</h1>
-        <p className="text-sm text-gray-500">{SUBTITLE[view]}</p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold">RAGStack Explorer</h1>
+            <p className="text-sm text-gray-500">{SUBTITLE[view]}</p>
+          </div>
+          <UserMenu
+            credential={credential}
+            identity={identity}
+            loading={whoami.isFetching}
+            onSignIn={() => setView("login")}
+            onAccount={() => setView("account")}
+            onSignOut={() => {
+              clearStoredToken();
+              // Restore the saved API key rather than clearing it: the Account page
+              // promises sign-out deletes the TOKEN, and silently dropping an
+              // operator's key as a side effect is a surprise, not a safeguard.
+              applyCredential({ mode: "apikey", value: getStoredApiKey() });
+              setView("explore");
+            }}
+          />
+        </div>
 
-        <BackendSwitcher credential={credential} setCredential={setCredential} />
+        {/* The backend selector lives in Account & preferences, not here:
+            picking a deployment is a setting, and carrying it on every screen
+            put a second sign-in entry point beside the first. */}
 
         <nav className="mt-4 flex gap-1 border-b border-gray-200" aria-label="Modules">
           {TABS.map((t) => (
@@ -86,7 +175,21 @@ export function App() {
         </nav>
       </header>
 
-      {view === "explore" ? (
+      {view === "login" ? (
+        <LoginView setCredential={applyCredential} onDone={() => setView("account")} />
+      ) : view === "account" ? (
+        <AccountView
+          credential={credential}
+          identity={identity}
+          onSignIn={() => setView("login")}
+          onSignedOut={(c) => {
+            applyCredential(c);
+            setView("explore");
+          }}
+          onCredentialChange={setCredential}
+          onBaseChange={setApiBaseState}
+        />
+      ) : view === "explore" ? (
         <ExploreView apiKey={apiKey} setApiKey={setApiKey} />
       ) : view === "collection" ? (
         <CollectionView apiKey={apiKey} setApiKey={setApiKey} />

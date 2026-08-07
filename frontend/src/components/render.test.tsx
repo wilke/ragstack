@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
 import { CollectionView } from "./CollectionView";
-import { LoginPanel } from "./LoginPanel";
+import { AccountView } from "./AccountView";
+import { LoginView } from "./LoginView";
+import { UserMenu } from "./UserMenu";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
 
@@ -32,35 +34,105 @@ describe("static render", () => {
     expect(html.toLowerCase()).not.toContain("librar");
   });
 
-  // The login panel must never render the token itself into the DOM, must say
-  // out loud where the credential is stored, and must not claim a sign-in it
-  // hasn't confirmed with the server.
-  it("mounts the login panel: password input, honest storage copy, no token in the markup", () => {
+  // The login page must never render a credential into the DOM, must say out
+  // loud where the token is stored, and must not claim a sign-in it has not
+  // confirmed with the server.
+  it("mounts the login page: provider dropdown, password fields, honest storage copy", () => {
     const html = render(
-      createElement(LoginPanel, {
-        credential: { mode: "bearer" as const, value: "un=alice|expiry=1|sig=ab" },
-        setCredential: () => {},
-        base: "/be/asm",
-      }),
+      createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
     );
-    expect(html).toContain("Paste a BV-BRC token");
-    expect(html).toContain("p3-login");
+    expect(html).toContain("Identity provider");
+    expect(html).toContain("BV-BRC");
+    expect(html).toContain("Username");
     expect(html).toContain("localStorage"); // the XSS-exposure warning
-    expect(html).toContain("wired up yet"); // the OIDC seam, stated not promised
     expect(html).toMatch(/<input[^>]*type="password"/);
-    expect(html).not.toContain("un=alice|expiry=1|sig=ab"); // never the credential itself
+    // The password must never reach RAGStack, and the page says so.
+    expect(html).toContain("never sent to RAGStack");
   });
 
-  it("shows the API-key box, not the token box, in key mode", () => {
+  it("lists Google as unavailable rather than hiding the seam", () => {
     const html = render(
-      createElement(LoginPanel, {
-        credential: { mode: "apikey" as const, value: "" },
-        setCredential: () => {},
-        base: "",
+      createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+    );
+    expect(html).toContain("Google");
+    expect(html).toContain("not available");
+    // MG-RAST is deliberately absent until it can actually work.
+    expect(html).not.toContain("MG-RAST");
+  });
+
+  it("does NOT render a password field on an insecure page", () => {
+    // A warning beside a working password field is a suggestion, not a control.
+    // On a plaintext page the form itself can be rewritten before it renders, so
+    // "we post it over TLS" is no defence — the field must not exist.
+    // The component reads window.isSecureContext; vitest's node env has no
+    // window at all, so stub the object itself.
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "window");
+    try {
+      Object.defineProperty(globalThis, "window", {
+        value: { isSecureContext: false },
+        configurable: true,
+      });
+      const html = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(html).toContain("Password sign-in is unavailable here");
+      expect(html).not.toMatch(/id="login-password"/);
+      expect(html).not.toContain("<form");
+      // ...and the alternative that still works is still offered.
+      expect(html).toContain("token");
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "window", orig);
+      else delete (globalThis as Record<string, unknown>).window;
+    }
+  });
+
+  it("renders the password field on a secure page", () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "window");
+    try {
+      Object.defineProperty(globalThis, "window", {
+        value: { isSecureContext: true },
+        configurable: true,
+      });
+      const html = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(html).toMatch(/id="login-password"/);
+      expect(html).toContain("never sent to RAGStack");
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "window", orig);
+      else delete (globalThis as Record<string, unknown>).window;
+    }
+  });
+
+  // Re-established after LoginPanel was deleted: the components that RECEIVE a
+  // credential must never render it. Nothing asserted this for a while.
+  it("never renders a credential into the markup", () => {
+    const SECRET = "un=alice@patricbrc.org|tokenid=t|sig=deadbeef";
+    const identity = { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true };
+    const menu = render(
+      createElement(UserMenu, {
+        credential: { mode: "bearer" as const, value: SECRET },
+        identity,
+        loading: false,
+        onSignIn: () => {},
+        onAccount: () => {},
+        onSignOut: () => {},
       }),
     );
-    expect(html).toContain("X-API-Key");
-    expect(html).not.toContain("Paste a BV-BRC token");
+    expect(menu).not.toContain(SECRET);
+    expect(menu).toContain("alice@patricbrc.org"); // the server-reported name is fine
+
+    const account = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: SECRET },
+        identity,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(account).not.toContain(SECRET);
   });
 
   it("mounts the new-collection form", () => {
