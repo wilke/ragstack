@@ -332,7 +332,7 @@ async def build_collection_entry(
         chunk_size=spec.chunk_size,
         chunk_overlap=spec.chunk_overlap,
         chunk_params=spec.chunk_params,
-        is_default=False,
+        is_shared_surface=False,
         retriever=_hybrid_retriever(
             vs, ti, emb, graph_store=graph_store, collection=spec.collection
         ),
@@ -643,37 +643,30 @@ async def _build_collection_registry(
     ``store`` is the authoritative registry (``collection_store_backend``); it
     defaults to the JSON-file backend, which reads exactly the
     ``collections_file``/``collections_json`` this used to read directly."""
-    entries: list[CollectionEntry] = [
-        CollectionEntry(
-            id="default",
-            label=f"default · {default_collection}",
-            collection=default_collection,
-            model=settings.embedding_model,
-            dim=settings.embedding_model_dim,
-            chunk_method=settings.chunk_method,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-            chunk_params={},
-            is_default=True,
-            retriever=default_retriever,
-            vector_store=default_vector_store,
-            text_index=default_text_index,
-            text_index_name=_es_index_name(),
-            embedder=default_embedder,
-            embedding_api=settings.embedding_api,
-            embedding_endpoints=list(embedding_urls()),
-        )
-    ]
-    _materialize_config_manifest(
-        default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
-        api=settings.embedding_api, endpoints=settings.embedding_endpoints,
-        chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+    derived = CollectionEntry(
+        id="default",
+        label=f"default · {default_collection}",
+        collection=default_collection,
+        model=settings.embedding_model,
+        dim=settings.embedding_model_dim,
+        chunk_method=settings.chunk_method,
+        chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        chunk_params={},
+        is_shared_surface=True,
+        retriever=default_retriever,
+        vector_store=default_vector_store,
+        text_index=default_text_index,
+        text_index_name=_es_index_name(),
+        embedder=default_embedder,
+        embedding_api=settings.embedding_api,
+        embedding_endpoints=list(embedding_urls()),
     )
 
+    # Specs FIRST, so we can tell whether one already claims the physical store
+    # the settings-derived entry would serve.
     specs = await (store or JsonFileCollectionStore(settings)).list_specs()
-    if not specs:
-        return CollectionRegistry(entries, default_id="default")
+    entries: list[CollectionEntry] = []
 
     # Reuse the default embedder for specs that share its backend signature.
     emb_cache: dict[tuple, Any] = {_default_emb_signature(): default_embedder}
@@ -687,11 +680,74 @@ async def _build_collection_registry(
         entries.append(
             await build_collection_entry(http, graph_store=graph_store, spec=spec, embedder=emb)
         )
+        # Materialized BEFORE the derived entry's manifest below, deliberately:
+        # manifests are keyed by PHYSICAL collection, and
+        # `_materialize_config_manifest` early-returns when one already exists.
+        # Writing the settings-derived spec first meant it always won, so a named
+        # spec's real build spec was never recorded and the ADR-0002 409 guard was
+        # armed with a value describing a different entry (#273).
         materialize_config_manifest_for_spec(spec)
 
-    log.info("collection registry: %d collections (%s)", len(entries),
-             ", ".join(e.id for e in entries))
-    return CollectionRegistry(entries, default_id="default")
+    # THE #275 FIX. Access control is asserted at the collection (ADR-0003), so
+    # two registry ids over one physical store are two INDEPENDENT ACLs over one
+    # dataset: revoking a grant on one leaves the same bytes readable through the
+    # other. An owner who un-publishes a corpus has not un-published it.
+    #
+    # `POST /v1/collections` already refuses this for created collections (the
+    # content-addressed alias guard); the config/implicit path needs the same
+    # rule. Compared on BOTH legs — a shared ES index aliases just as effectively
+    # as a shared Qdrant collection.
+    claimed_by = next(
+        (
+            e
+            for e in entries
+            if e.collection == derived.collection or e.es_index() == derived.es_index()
+        ),
+        None,
+    )
+    if claimed_by is None:
+        entries.insert(0, derived)
+        _materialize_config_manifest(
+            default_collection, model=settings.embedding_model, dim=settings.embedding_model_dim,
+            api=settings.embedding_api, endpoints=settings.embedding_endpoints,
+            chunk_method=settings.chunk_method, chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+        )
+    else:
+        log.info(
+            "collection registry: not synthesising a 'default' entry for %r — "
+            "it is already served as %r. Two ids over one store would be two "
+            "ACLs over one dataset (#275); requests that omit 'collection' "
+            "resolve to %r.",
+            derived.collection,
+            claimed_by.id,
+            claimed_by.id,
+        )
+
+    default_id = _resolve_default_id(entries, fallback=(claimed_by or derived).id)
+    log.info("collection registry: %d collections (%s), default=%r", len(entries),
+             ", ".join(e.id for e in entries), default_id)
+    return CollectionRegistry(entries, default_id=default_id)
+
+
+def _resolve_default_id(entries: list[CollectionEntry], *, fallback: str) -> str:
+    """Which id a request that omits ``collection`` resolves to.
+
+    ``DEFAULT_COLLECTION_ID`` wins when set. An unresolvable value is FATAL
+    rather than a silent fallback: it is an operator typo, and quietly serving a
+    different corpus than the one configured is precisely the class of bug this
+    change exists to remove."""
+    configured = (settings.default_collection_id or "").strip()
+    if not configured:
+        return fallback
+    if not any(e.id == configured for e in entries):
+        raise RuntimeError(
+            f"DEFAULT_COLLECTION_ID={configured!r} names no registered collection "
+            f"(have: {sorted(e.id for e in entries)}). It is the collection every "
+            "request that omits 'collection' resolves to, so a typo here would "
+            "serve the wrong corpus or 404 every such request."
+        )
+    return configured
 
 
 def _es_index_name() -> str:

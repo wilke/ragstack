@@ -48,7 +48,7 @@ def _add(collection: str, *, cid: str, text_index: str = ""):
     entry = CollectionEntry(
         id=cid, label=cid, collection=collection, model="test-model", dim=4,
         chunk_method="fixed", chunk_size=256, chunk_overlap=32, chunk_params={},
-        is_default=False, retriever=None, vector_store=vs, text_index=ti,
+        is_shared_surface=False, retriever=None, vector_store=vs, text_index=ti,
         text_index_name=text_index,
     )
     app.state.collections.add(entry)

@@ -63,7 +63,29 @@ class CollectionEntry:
     chunk_size: int | None
     chunk_overlap: int | None
     chunk_params: dict[str, Any]
-    is_default: bool
+    #: Is this the LEGACY SHARED SURFACE — the settings-derived collection that
+    #: predates ownership, where per-chunk ``tenant_id`` is the isolation and the
+    #: ``owner`` is only a backfill artifact?
+    #:
+    #: This is emphatically NOT "is the default collection". The two used to be
+    #: the same flag, because the settings-derived entry was always the pointer
+    #: target. Once ``default`` becomes a configurable POINTER (#276) they come
+    #: apart, and conflating them would grant two exemptions to whatever the
+    #: pointer names:
+    #:
+    #: * ``_shared_scope`` (routers/query.py) refuses to widen scope here,
+    #:   because widening would inject the backfill owner's tenant into every
+    #:   caller's scope. Pointing ``default`` at a genuinely owned, shared
+    #:   collection would silently DISABLE share-based widening for it.
+    #: * the omitted-collection ingest branch (routers/documents.py) requires
+    #:   only ``read`` rather than ``write``, for the same tenant-stamped reason.
+    #:   Pointing ``default`` at an owned collection would turn that exemption
+    #:   into a privilege escalation: any reader could ingest into it simply by
+    #:   omitting ``collection``.
+    #:
+    #: "Is the pointer target" is ``entry.id == registry.default_id`` and is what
+    #: the API's ``CollectionInfo.default`` reports.
+    is_shared_surface: bool
     retriever: Any
     vector_store: Any
     text_index: Any
@@ -95,6 +117,13 @@ class CollectionEntry:
         return self.text_index_name or self.collection
 
 
+#: The id that names the POINTER — the collection a request resolves to when it
+#: omits ``collection``. Never a creatable collection id, and deliberately NOT the
+#: same namespace as ``tenancy.DEFAULT_TENANT`` (also the string "default"), which
+#: is the writer stamped on chunks. Conflating the two would be a security bug.
+RESERVED_COLLECTION_ID = "default"
+
+
 class CollectionRegistry:
     """Lookup over built collections with a designated default."""
 
@@ -102,6 +131,15 @@ class CollectionRegistry:
         if not entries:
             raise ValueError("CollectionRegistry requires at least one entry")
         self._entries: dict[str, CollectionEntry] = {e.id: e for e in entries}
+        if default_id not in self._entries:
+            # Fail here, not at the first no-collection request. `resolve(None)`
+            # would raise KeyError deep in a router and surface as a misleading
+            # "unknown collection None" 404 on every such request — an operator
+            # typo in DEFAULT_COLLECTION_ID should stop the server instead.
+            raise ValueError(
+                f"default collection id {default_id!r} is not a registered "
+                f"collection (have: {sorted(self._entries)})"
+            )
         self._default_id = default_id
 
     @property

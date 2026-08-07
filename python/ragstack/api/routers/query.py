@@ -367,7 +367,7 @@ async def _shared_scope(
     if not auth_configured():
         return []
     # The default collection is the multi-tenant shared surface — never widen it.
-    if entry.is_default:
+    if entry.is_shared_surface:
         return []
     # Co-resident store (another registry entry points at the same physical
     # collection): widening by tenant_id would cross the collection boundary the

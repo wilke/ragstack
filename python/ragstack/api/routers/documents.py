@@ -159,9 +159,17 @@ async def _resolve_ingest_target(
     if not collection_id or collection_id == collections.default_id:
         default = collections.resolve(collections.default_id)
         _guard(default)
-        # READ, not write — the default collection is the shared tenant-stamped
-        # surface (docstring above); write stays owner-or-admin everywhere else.
-        await enforce_access(principal, default.id, "read")
+        # READ-not-write is an exemption for the LEGACY SHARED SURFACE, not for
+        # "whatever default points at". On that surface per-chunk ``tenant_id``
+        # is the isolation and every caller writes into their own stripe, so a
+        # write gate would block the thing it is built for. Once ``default`` is
+        # a configurable pointer (#276) it can name a genuinely OWNED collection
+        # — and there the same exemption would let any reader ingest into
+        # somebody else's corpus just by omitting ``collection``. So the
+        # exemption keys on the surface, and everything else needs write.
+        await enforce_access(
+            principal, default.id, "read" if default.is_shared_surface else "write"
+        )
         return None, prebuilt
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     if allowed is not None and collection_id not in allowed:

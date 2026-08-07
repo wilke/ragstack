@@ -77,7 +77,7 @@ def _entry(cid: str, default: bool = False) -> CollectionEntry:
     return CollectionEntry(
         id=cid, label=cid, collection=cid, model="m", dim=8,
         chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
-        is_default=default, retriever=None, vector_store=None, text_index=None, embedder=None,
+        is_shared_surface=default, retriever=None, vector_store=None, text_index=None, embedder=None,
     )
 
 
