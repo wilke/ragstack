@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -49,7 +49,7 @@ from ragstack.api.deps import (
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER, Principal, resolve_principal
 from ragstack.authz import AuthzUnavailable, resolve_access
-from ragstack.collection_store import CollectionStore
+from ragstack.collection_store import CollectionStore, CreateOutcome
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.chunkers import CHUNK_METHODS
@@ -301,6 +301,39 @@ class CollectionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+async def _raise_id_taken(principal: Principal, cid: str) -> NoReturn:
+    """409 for an id that is already taken, worded by what the caller may know.
+
+    "already exists" confirms the id to the caller — an enumeration oracle for a
+    stranger's private, unreadable named library. Only say so to a caller who can
+    already read it (owner / grant / public / admin); to everyone else the id is
+    merely "unavailable", matching the read path's leak-safe posture and the
+    residual-ACL message in ``write_owner_row``.
+
+    Shared by the pre-flight registry check and the durable ``create``'s
+    DUPLICATE outcome, so the two cannot drift into leaking different amounts.
+    """
+    try:
+        decision = await resolve_access(
+            principal.tenant, principal.role, cid, "read", get_acl_store()
+        )
+    except AuthzUnavailable:
+        raise HTTPException(503, "authorization store unavailable") from None
+    if decision.allowed:
+        raise HTTPException(409, f"collection {cid!r} already exists")
+    raise HTTPException(409, f"collection id {cid!r} is unavailable; choose a different id")
+
+
+def _cap_reached(limit: int) -> HTTPException:
+    return HTTPException(
+        403,
+        f"collection limit reached ({limit}): the server caps registered "
+        "collections because each one costs physical Qdrant/Elasticsearch "
+        "resources (ADR-0003). Delete unused collections or have the "
+        "operator raise MAX_COLLECTIONS",
+    )
+
+
 @router.post(
     "/collections",
     response_model=CollectionInfo,
@@ -349,15 +382,14 @@ async def create_collection(
     # endpoint into an instance-wide denial of service. Applies to admins too —
     # the limit is physical, not an authorization tier; raise MAX_COLLECTIONS
     # deliberately if the budget genuinely grows.
+    #
+    # The check itself is NOT here any more: it is taken against the DURABLE
+    # store, atomically with the id reservation, at step 5. Counting
+    # `registry.entries()` here counted an in-process dict — blind to a sibling
+    # API process sharing the registry, to a hand-edited collections_file, and
+    # to the bulk CLI — and sat two network round-trips before the insert it was
+    # supposed to authorize (#286).
     limit = settings.max_collections
-    if limit > 0 and len(registry.entries()) >= limit:
-        raise HTTPException(
-            403,
-            f"collection limit reached ({limit}): the server caps registered "
-            "collections because each one costs physical Qdrant/Elasticsearch "
-            "resources (ADR-0003). Delete unused collections or have the "
-            "operator raise MAX_COLLECTIONS",
-        )
 
     # 1. Resolve the embedding backend: an explicit model-ref against the Phase-1
     # registry (admin path), or the server-default embedder when omitted. The
@@ -431,20 +463,7 @@ async def create_collection(
             "you can create. Pick another id.",
         )
     if registry.has(cid):
-        # "already exists" confirms the id to the caller — an enumeration oracle
-        # for a stranger's private, unreadable named library. Only say so to a
-        # caller who can already read it (owner / grant / public / admin); to
-        # everyone else the id is merely "unavailable", matching the read path's
-        # leak-safe posture and the residual-ACL message in write_owner_row.
-        try:
-            decision = await resolve_access(
-                principal.tenant, principal.role, cid, "read", get_acl_store()
-            )
-        except AuthzUnavailable:
-            raise HTTPException(503, "authorization store unavailable") from None
-        if decision.allowed:
-            raise HTTPException(409, f"collection {cid!r} already exists")
-        raise HTTPException(409, f"collection id {cid!r} is unavailable; choose a different id")
+        await _raise_id_taken(principal, cid)
     if not body.id:
         # `not body.id`, NOT `body.id is None`: an empty-string id is treated as
         # omitted everywhere else (`cid = body.id or physical` above,
@@ -486,22 +505,94 @@ async def create_collection(
         chunk_params=chunk.params,
     )
 
-    # 5. Build the live entry (stores + retriever), register it, write-through to
-    # the durable collection store so it survives restart, and materialize its
-    # config manifest. The store — not this process's registry dict — is the
-    # authoritative record: it is what the next startup rebuilds from and what the
+    # 5. RESERVE the id in the durable store — capacity check and insert as one
+    # atomic operation, BEFORE any physical store exists. The store, not this
+    # process's registry dict, is the authoritative record: it is what the next
+    # startup rebuilds from, what a sibling API process also sees, and what the
     # ingest guard's spec comparison ultimately defends.
-    built = await build_collection_entry(
-        request.app.state.http_client,
-        graph_store=request.app.state.graph_store,
-        spec=spec,
-    )
+    #
+    # `reserved`: a shared-surface entry (the synthetic `default` pointer) is a
+    # POINTER at a store, not a user-created collection, and it is not a row in
+    # the durable registry — so it never shows up in the store's count. Charge it
+    # a slot here so the advertised cap still means "this many collections on
+    # this instance" (#286 item 4, the other direction of the same off-by-one).
+    #
+    # The int|None sentinel is load-bearing: MAX_COLLECTIONS=0 means the cap is
+    # DISABLED, while a cap fully consumed by reserved slots (MAX_COLLECTIONS=1
+    # with a shared surface) must mean REFUSE EVERYTHING. Both would be the int 0.
+    reserved = 1 if any(e.is_shared_surface for e in registry.entries()) else 0
+    effective = None if limit <= 0 else max(0, limit - reserved)
+    outcome = await store.create(spec, limit=effective)
+    if outcome is CreateOutcome.AT_CAP:
+        raise _cap_reached(limit)
+    if outcome is CreateOutcome.DUPLICATE:
+        # A sibling process (or the CLI, or a hand-edited file) already holds this
+        # id; registry.has(cid) above could not see it. Same leak-safe wording.
+        await _raise_id_taken(principal, cid)
+    if outcome is CreateOutcome.UNSUPPORTED:
+        # No durable store to reserve in (inline/unset collections_json). Fall
+        # back to the in-process count — wrong across processes, but so is the
+        # registry it is guarding, and refusing to create at all would be worse.
+        if limit > 0 and len(registry.entries()) >= limit:
+            raise _cap_reached(limit)
+
+    # ...then build the live entry (stores + retriever), register it, and
+    # materialize its config manifest.
+    #
+    # Reserving BEFORE the build inverts the crash window in our favour. Before,
+    # a crash between build and put left a PHYSICAL STORE WITH NO SPEC — unowned,
+    # un-ACL'd, invisible to the cap, and exactly the orphan ADR-0002 decision 5
+    # outlaws. Now a crash leaves a SPEC WITH NO STORE, which the next startup's
+    # `build_collection_entry` simply ensures, and whose ownership the backfill
+    # repairs from `spec.owner`. Both windows exist; only one of them self-heals.
+    #
+    # A BUILD FAILURE must withdraw the reservation. Without this the reordering
+    # regresses: the spec survives with no owner row, so it consumes a cap slot
+    # AND `enforce_access(..., "owner")` refuses everyone but an admin — the
+    # creator cannot delete what they just failed to create, until a restart's
+    # backfill repairs ownership from `spec.owner`. Repeated failures would let
+    # any caller consume the whole budget with collections nobody can remove.
+    try:
+        built = await build_collection_entry(
+            request.app.state.http_client,
+            graph_store=request.app.state.graph_store,
+            spec=spec,
+        )
+    except BaseException:
+        # BaseException, not Exception: `asyncio.CancelledError` derives from
+        # BaseException, and a cancellation — a client disconnect or a server
+        # timeout — is the MOST likely build failure under load, because the
+        # build is the slow part (two network round-trips ensuring the Qdrant
+        # collection and the ES index). Catching only Exception left exactly the
+        # leak this handler exists to prevent.
+        if outcome is CreateOutcome.CREATED:
+            try:
+                # Shielded so the same cancellation cannot also kill the
+                # withdrawal it just triggered.
+                await asyncio.shield(store.delete(cid))
+            except Exception:  # noqa: BLE001 — best-effort; startup rebuilds from the spec
+                log.warning(
+                    "create %r: the build failed and withdrawing the durable "
+                    "reservation also failed; the spec survives and the next "
+                    "startup will ensure its stores", cid, exc_info=True,
+                )
+        raise
     try:
         registry.add(built)
     except KeyError:
+        # CREATED proves no durable row existed before us, so the row is ours to
+        # withdraw — otherwise this 409 would leave a spec nothing ever claims.
+        if outcome is CreateOutcome.CREATED:
+            try:
+                await store.delete(cid)
+            except Exception:  # noqa: BLE001 — the 409 is the caller's answer either way
+                log.warning(
+                    "create %r: registry collision, and withdrawing the durable "
+                    "reservation failed; the spec is orphaned until the next "
+                    "startup rebuilds from it", cid, exc_info=True,
+                )
         raise HTTPException(409, f"collection {cid!r} already exists") from None
-    persisted = await store.put(spec)
-    if not persisted:
+    if outcome is CreateOutcome.UNSUPPORTED:
         log.warning(
             "collection %r created in-memory only (no durable collection store); "
             "lost on restart", cid

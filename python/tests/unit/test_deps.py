@@ -30,6 +30,11 @@ def _prod(monkeypatch, tmp_path):
     # Absolute: a relative sqlite path is refused under
     # require_durable_backends (two servers in one CWD would share it).
     monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
+    # Same reasoning for the collection registry: it backs the atomic
+    # MAX_COLLECTIONS reservation (#286), so production refuses a json store
+    # with nowhere to write. These fixtures exercise the tenant-map rule.
+    monkeypatch.setattr(deps.settings, "collection_store_backend", "sqlite")
+    monkeypatch.setattr(deps.settings, "collection_store_path", "/tmp/rs-test-colls.db")
 
 
 def test_partial_tenant_map_rejected_in_production(monkeypatch, tmp_path):

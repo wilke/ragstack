@@ -180,6 +180,17 @@ time, so later default changes never re-identify an existing collection). Supply
 spec collides with an existing collection; `403` when the `max_collections` cap is
 reached. Full schema: `contracts/schemas/collection_create_request.json`.
 
+The cap counts the **durable registry** (`collections_file` / the `collections` table),
+not the serving process's in-memory registry, and the count is taken *atomically with
+the id reservation* — so it sees collections registered by a sibling API process, by
+the bulk CLI, or by a hand edit, and ten concurrent creates with one slot left yield
+one `201` and nine `403`. A shared-surface `default` pointer is charged a slot, since
+it is a pointer rather than a durable row. The reservation happens **before** any
+physical Qdrant collection or ES index is created, so a crash mid-create leaves a spec
+with no store (which the next startup simply builds) rather than a store with no spec.
+Where no durable store is configured (inline `collections_json`, or neither set) the
+cap degrades to the in-process count and the create is logged as in-memory only.
+
 The new collection is **owned by its creator and private by default** — no other
 caller can read it until it is shared (see *Collection ownership* above). The
 creator is recorded on the durable spec itself and the owner row is written right

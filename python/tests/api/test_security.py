@@ -59,6 +59,11 @@ def test_production_settings_pass_when_set(monkeypatch, tmp_path):
     # Absolute: a relative sqlite path is refused under
     # require_durable_backends (two servers in one CWD would share it).
     monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
+    # The collection registry must be durable too: it backs the atomic
+    # MAX_COLLECTIONS reservation, which silently degrades to a per-process
+    # count without somewhere to write (#286).
+    monkeypatch.setattr(deps.settings, "collection_store_backend", "sqlite")
+    monkeypatch.setattr(deps.settings, "collection_store_path", "/tmp/rs-test-colls.db")
     deps._validate_production_settings()  # must not raise
 
 
@@ -177,3 +182,27 @@ def test_durable_still_requires_an_ingest_root(monkeypatch):
     monkeypatch.setattr(deps.settings, "ingest_root", "")
     with pytest.raises(RuntimeError, match="require_durable_backends is set"):
         deps._validate_production_settings()
+
+
+def test_production_requires_a_durable_collection_registry(monkeypatch, tmp_path):
+    """The collection registry backs the atomic MAX_COLLECTIONS reservation
+    (#286). A json store with nowhere to write cannot hold one, so the cap
+    silently degrades to a per-process count of the in-memory registry — blind to
+    sibling workers and to the concurrent creates it exists to bound. That
+    degradation is invisible except in a per-create log line, so it must not be
+    reachable in production. This is also the SHIPPED DEFAULT
+    (collection_store_backend='json', collections_file='')."""
+    monkeypatch.setattr(deps.settings, "require_durable_backends", True)
+    monkeypatch.setattr(deps.settings, "api_keys", ["k"])
+    monkeypatch.setattr(deps.settings, "ingest_root", str(tmp_path))
+    monkeypatch.setattr(deps.settings, "user_store_backend", "sqlite")
+    monkeypatch.setattr(deps.settings, "user_store_path", "/tmp/rs-test-users.db")
+    monkeypatch.setattr(deps.settings, "collection_store_backend", "json")
+    monkeypatch.setattr(deps.settings, "collections_file", "")
+    monkeypatch.setattr(deps.settings, "collections_json", "")
+    with pytest.raises(RuntimeError, match="COLLECTIONS_FILE"):
+        deps._validate_production_settings()
+
+    # A configured file is enough — the json backend is durable once it has one.
+    monkeypatch.setattr(deps.settings, "collections_file", str(tmp_path / "c.json"))
+    deps._validate_production_settings()  # must not raise
