@@ -67,6 +67,12 @@ one authorization seam (`resolve_access`):
 - **`DELETE /v1/collections/{id}`** is **owner-or-admin** — no longer admin-only:
   a user manages its own private collections. `admin` bypasses every check (a
   named, logged branch), for purge/migration/support.
+- **Ownership is transferable, not grantable**: `POST /v1/collections/{id}/owner`
+  atomically revokes the current owner row and grants ownership to another user
+  (exactly one active owner row per collection). The outgoing owner **loses
+  access** — their row is soft-revoked and no replacement `read` grant is minted;
+  the response says so explicitly. See
+  [POST /v1/collections/{id}/owner](#post-v1collectionsidowner).
 - When authentication is unconfigured (keyless dev), collection-ownership
   enforcement is a no-op — the open dev path, exactly as tenant auth is; production
   (`REQUIRE_DURABLE_BACKENDS`) forbids keyless and requires a durable ACL store
@@ -98,6 +104,7 @@ keys are configured.
 | GET | `/v1/collections/{id}/shares` | List a collection's shares + owner (owner-or-admin) |
 | POST | `/v1/collections/{id}/shares` | Grant a read share (or publish via `@public`) — owner-or-admin |
 | DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (un-publish) — owner-or-admin |
+| POST | `/v1/collections/{id}/owner` | Transfer ownership to another user — current-owner-or-admin |
 | POST | `/v1/groups` | Create a group (any authenticated caller owns what they create) |
 | GET | `/v1/groups` | List the groups the caller owns or belongs to |
 | GET | `/v1/groups/{id}` | Group details + members (owner-or-member; non-member 404) |
@@ -258,6 +265,59 @@ unknown id is **404**, never a cross-collection revoke). Revocation is soft
 The active **owner** row is not revocable here (**409** — transfer or delete the
 collection instead). Schemas: `contracts/schemas/share_grant_request.json`,
 `share_record.json`, `shares_response.json`.
+
+### POST /v1/collections/{id}/owner
+
+Transfer a collection to another user — the flow the shares endpoint refuses
+`permission: owner` in favour of. There is exactly **one active owner row per
+collection** (a partial unique index enforces it), so a handover is an *atomic
+revoke+grant pair*, not an extra share. **Current-owner-or-admin**, gated through
+the same seam and with the same leak-safe statuses as the share endpoints (403
+readable-but-not-owned, 404 unknown *or* unreadable, 503 store outage).
+
+`POST`, not `PATCH`: there is no owner *document* to merge a partial
+representation into. This is a state transition with audit side effects — one row
+soft-revoked, one row appended — and it is not idempotent (replaying it is a
+**409**, not a no-op).
+
+**The outgoing owner loses access** unless something else grants it back. Their
+owner row is **soft-revoked, never deleted** (ADR-0004 decision 6 — the handover
+stays in the audit trail), and **no consolation `read` grant is minted** for them:
+that would be a second write outside the transfer's transaction, with no rollback
+for an already-committed handover, and it would leave an active grant nobody asked
+for that the new owner has to discover and revoke — the wrong default for the
+common case (offboarding, a mis-assigned collection). Re-granting is one explicit,
+audited call: `POST /v1/collections/{id}/shares {"grantee": "<previous owner>"}`.
+
+So that neither choice is *silent*, the response says what happened:
+`previous_owner`, the `revoked_share_id` of their revoked row (still visible via
+`?include_revoked=true`), and `previous_owner_retains_read` — re-evaluated through
+the authorization seam, so it accounts for an independent share, group membership
+or a `public` grant (`null` if the store could not answer; the transfer had
+already committed). The transfer is deliberately **non-cascading**: every other
+share on the collection survives untouched.
+
+`subject` resolves with the same rules as a share `grantee` (see the table above)
+**except** that the group forms (`@public`, `@group:<id>`) are **400** — ownership
+is grantable to users only, never to a group. A subject that has never
+authenticated is pre-provisioned, exactly as a share grantee is.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/collections/my-papers/owner \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"subject": "bob"}'   # -> 200, owner "bvbrc:bob"
+# {"collection_id": "my-papers", "owner": "bvbrc:bob",
+#  "previous_owner": "bvbrc:alice", "revoked_share_id": "…",
+#  "previous_owner_retains_read": false, "share": { … }}
+```
+
+**`POST`** (`OwnerTransferRequest`): `{ subject (required), issuer?="bvbrc" }` →
+**200** `OwnerTransferResponse`. Also: **409** when `subject` already owns the
+collection, or when it has no active owner row to transfer from (only reachable
+by an admin — a lost owner row is repaired from the recorded creator by the
+startup backfill); **422** for a malformed subject. Schemas:
+`contracts/schemas/owner_transfer_request.json`,
+`owner_transfer_response.json`.
 
 ### Groups
 

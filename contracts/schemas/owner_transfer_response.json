@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "owner_transfer_response.json",
+  "title": "OwnerTransferResponse",
+  "description": "The result of an ownership transfer (POST /v1/collections/{id}/owner). Deliberately explicit about the OUTGOING owner: they lose access unless something else grants it back, and no consolation 'read' share is minted for them, so the response states who they were, which row was revoked, and whether they can still read the collection.",
+  "type": "object",
+  "required": [
+    "collection_id",
+    "owner",
+    "previous_owner",
+    "revoked_share_id",
+    "previous_owner_retains_read",
+    "share"
+  ],
+  "properties": {
+    "collection_id": { "type": "string" },
+    "owner": {
+      "description": "Resolved subject of the NEW owner (the echo of the request's 'subject' — a typo is visible here).",
+      "type": "string"
+    },
+    "previous_owner": {
+      "description": "Subject of the outgoing owner, whose owner row was soft-revoked (never deleted — the audit trail survives, ADR-0004 decision 6).",
+      "type": "string"
+    },
+    "revoked_share_id": {
+      "description": "Id of the outgoing owner's now-revoked row, still readable via GET /v1/collections/{id}/shares?include_revoked=true.",
+      "type": "string"
+    },
+    "previous_owner_retains_read": {
+      "description": "Whether the outgoing owner can still READ the collection after the transfer, re-evaluated through the same authorization seam a request uses (an independent share, group membership, or a 'public' grant). False means no ordinary-user grant survives the transfer. Evaluated as an ordinary user — an admin keeps access through the admin bypass regardless. Null when the store could not answer; the transfer itself had already committed.",
+      "type": ["boolean", "null"]
+    },
+    "share": {
+      "description": "The new, active owner row.",
+      "$ref": "share_record.json"
+    }
+  },
+  "additionalProperties": false
+}

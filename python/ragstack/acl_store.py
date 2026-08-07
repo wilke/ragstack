@@ -303,7 +303,23 @@ def _revocation_plan(active: list[ShareRecord], root_id: str) -> list[str]:
             if r.id == root_id or r.id in supported:
                 continue
             grounded = (
-                r.granted_by not in user_grantees  # external grantor (system/…)
+                # THE ACTIVE OWNER ROW IS NEVER COLLATERAL DAMAGE. The
+                # one-active-owner invariant outranks the grounding fixpoint:
+                # a collection with zero active owners cannot be managed,
+                # cannot be transferred (that route 409s on a missing owner),
+                # and is NOT repaired by the startup backfill, which skips any
+                # collection whose history ever contained an owner row. The
+                # only exit left is an admin DELETE.
+                #
+                # This was latent until ownership TRANSFER existed. Every owner
+                # row used to be a self-grant (`write_owner_row`) or backfilled
+                # by a non-grantee, so the two clauses below already grounded
+                # it. `transfer_owner` mints the new owner row with
+                # `granted_by=actor`, which is the first owner row a cascade
+                # can reach — after which revoking ANY share granted by that
+                # actor could take ownership with it.
+                r.permission == PERM_OWNER
+                or r.granted_by not in user_grantees  # external grantor (system/…)
                 or r.granted_by in supported_subjects  # grantor's access is grounded
                 or (r.grantee_type == GRANTEE_USER and r.granted_by == r.grantee_id)
             )
@@ -473,6 +489,15 @@ class InMemoryAclStore(InMemoryUserStore):
                 raise ShareInvariantError(
                     f"collection {collection_id!r} has no active owner to transfer from"
                 )
+            if current.grantee_id == new_owner:
+                # IN the transaction, not in the router. The endpoint's
+                # pre-check gives the nicer message, but two concurrent
+                # transfers to the SAME subject both passed it and both
+                # committed — revoking and re-inserting an identical owner row,
+                # churning the audit trail with a handover that never happened.
+                raise ShareInvariantError(
+                    f"{new_owner!r} already owns collection {collection_id!r}"
+                )
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             # Validate against the post-revoke state BEFORE mutating — atomic.
             _check_grant([r for r in active if r.id != current.id], rec)
@@ -600,6 +625,15 @@ class SqliteAclStore(SqliteUserStore):
             if current is None:
                 raise ShareInvariantError(
                     f"collection {collection_id!r} has no active owner to transfer from"
+                )
+            if current.grantee_id == new_owner:
+                # IN the transaction, not in the router. The endpoint's
+                # pre-check gives the nicer message, but two concurrent
+                # transfers to the SAME subject both passed it and both
+                # committed — revoking and re-inserting an identical owner row,
+                # churning the audit trail with a handover that never happened.
+                raise ShareInvariantError(
+                    f"{new_owner!r} already owns collection {collection_id!r}"
                 )
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             _check_grant([r for r in active if r.id != current.id], rec)
@@ -789,6 +823,15 @@ class PostgresAclStore(PostgresUserStore):
             if current is None:
                 raise ShareInvariantError(
                     f"collection {collection_id!r} has no active owner to transfer from"
+                )
+            if current.grantee_id == new_owner:
+                # IN the transaction, not in the router. The endpoint's
+                # pre-check gives the nicer message, but two concurrent
+                # transfers to the SAME subject both passed it and both
+                # committed — revoking and re-inserting an identical owner row,
+                # churning the audit trail with a handover that never happened.
+                raise ShareInvariantError(
+                    f"{new_owner!r} already owns collection {collection_id!r}"
                 )
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             _check_grant([r for r in active if r.id != current.id], rec)

@@ -47,7 +47,7 @@ from ragstack.api.deps import (
     probe_tenant_count,
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
-from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
+from ragstack.api.security import ROLE_ADMIN, ROLE_USER, Principal, resolve_principal
 from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionStore
 from ragstack.config import settings
@@ -1034,7 +1034,9 @@ async def create_share(
     perm = (req.permission or PERM_READ).strip()
     if perm == PERM_OWNER:
         raise HTTPException(
-            400, "ownership is transferred, not granted; use the transfer flow"
+            400,
+            "ownership is transferred, not granted; use "
+            f"POST /v1/collections/{entry.id}/owner",
         )
     if perm != PERM_READ:
         raise HTTPException(
@@ -1168,8 +1170,8 @@ async def revoke_share(
     if match.permission == PERM_OWNER and match.active:
         raise HTTPException(
             409,
-            "the owner row is not revocable via the share API; "
-            "delete the collection or transfer ownership instead",
+            "the owner row is not revocable via the share API; delete the "
+            f"collection or transfer it (POST /v1/collections/{entry.id}/owner)",
         )
 
     try:
@@ -1183,6 +1185,231 @@ async def revoke_share(
         share_id, entry.id, len(revoked), principal.tenant,
     )
     return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------- #
+# Ownership transfer (issue #280) — the flow the shares endpoint points at
+# --------------------------------------------------------------------------- #
+
+
+class OwnerTransferRequest(BaseModel):
+    """POST body for handing a collection to a new owner. ``subject`` takes the
+    SAME grantee vocabulary as :class:`ShareGrantRequest.grantee` — one
+    resolution rule for both, so ``@service:<subject>`` / a full
+    ``issuer:subject`` / a bare BV-BRC username mean here exactly what they mean
+    there. Group forms (``@public``, ``@group:<id>``) parse fine and are then
+    refused: ownership is a user's, never a group's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The new owner. A full 'issuer:subject' string (kept verbatim), "
+            "'@service:<subject>' (a service account, kept colon-free), or a bare "
+            "BV-BRC username prefixed to 'bvbrc:<username>'. Group forms "
+            "('@public', '@group:<id>') are rejected — ownership is users only. "
+            "The resolved subject is echoed back as 'owner' so a typo is visible "
+            "BEFORE it becomes an unreachable collection."
+        ),
+    )
+    issuer: str = Field(
+        _DEFAULT_ISSUER,
+        description="Issuer used to qualify a bare username (default 'bvbrc').",
+    )
+
+
+class OwnerTransferResponse(BaseModel):
+    """What the transfer actually did — deliberately explicit about the OUTGOING
+    owner, because both possible policies are surprising when they are silent."""
+
+    collection_id: str
+    owner: str  # resolved subject of the new owner (echo — a typo is visible here)
+    previous_owner: str  # the outgoing subject, whose owner row was soft-revoked
+    revoked_share_id: str  # id of that row; still readable via ?include_revoked=true
+    previous_owner_retains_read: bool | None
+    share: ShareInfo  # the new, active owner row
+
+
+@router.post(
+    "/collections/{collection_id}/owner",
+    response_model=OwnerTransferResponse,
+)
+async def transfer_collection_owner(
+    collection_id: str,
+    req: OwnerTransferRequest,
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
+) -> OwnerTransferResponse:
+    """Transfer ownership of a collection to another user (owner-or-admin).
+
+    This is the flow ``POST /v1/collections/{id}/shares`` refuses ``permission:
+    owner`` in favour of. Ownership is not a grant you add — there is exactly ONE
+    active owner row per collection (the ``shares_active_owner`` partial unique
+    index), so handing a collection over is a revoke+grant *pair* that must be
+    atomic. It runs through :meth:`AclStore.transfer_owner`, which does both
+    inside one transaction on every backend; this endpoint never touches SQL.
+
+    **POST, not PATCH.** PATCH means "merge this partial representation into the
+    resource", and there is no ``GET /v1/collections/{id}/owner`` document to
+    merge into. What happens here is a state *transition* with audit side effects
+    — one row soft-revoked, one row appended — and it is not idempotent: replaying
+    it is a 409, not a no-op. That is a POST-shaped action, and it matches the
+    verb the sibling share-grant endpoint already uses.
+
+    **The outgoing owner loses access** (unless something else grants it back).
+    Their owner row is soft-revoked — never deleted, ADR-0004 decision 6, so the
+    handover stays in the audit trail — and no consolation ``read`` grant is
+    minted for them. Three reasons: (1) a consolation grant would be a SECOND
+    write outside ``transfer_owner``'s transaction, and a crash between the two
+    would leave a state no invariant describes, with no rollback for an already
+    committed transfer; (2) every permission in this system comes from an
+    explicit row with a real ``granted_by`` — a row the system invented on the
+    actor's behalf would be a grant nobody asked for, still active, that the new
+    owner must discover and revoke; and (3) the common reason to transfer
+    (offboarding, a mis-assigned collection) is exactly the case where a silent
+    residual read is the leak. Re-granting is one explicit, audited call:
+    ``POST /v1/collections/{id}/shares {"grantee": "<previous owner>"}``.
+
+    So that this is not *silent* either way, the response states it: the outgoing
+    ``previous_owner``, the ``revoked_share_id`` of their now-revoked row, and
+    ``previous_owner_retains_read`` — re-evaluated through the ONE authorization
+    seam after the transfer, so it accounts for an independent share, group
+    membership or a ``public`` grant. It is evaluated as an ordinary user (an
+    admin keeps access through the admin bypass regardless), and is ``null`` if
+    the store could not answer — the transfer itself had already committed.
+
+    Transfer is deliberately NON-cascading (ADR-0004): every other share on the
+    collection survives the handover untouched.
+
+    Statuses: 400 for a group subject; 404 for an unknown collection or one the
+    caller cannot read (unreadable == unknown — the same leak-safe posture as the
+    share endpoints); 403 for a readable collection the caller does not own; 409
+    for a subject that already owns it, or a collection with no active owner row
+    to transfer from; 422 for a malformed subject; 503 for a store outage (fail
+    closed).
+    """
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+
+    # Current-owner OR admin. enforce_access already admits admin (the logged
+    # bypass in resolve_access) and already maps a denial to 403-if-readable /
+    # 404-otherwise, so an unknown id and an unreadable one are indistinguishable.
+    await enforce_access(principal, entry.id, "owner")
+
+    # Same resolution as a share grantee — '@service:', 'issuer:subject', bare
+    # username, and every reserved-subject/degenerate-form 422 — so the two
+    # endpoints can never disagree about what a subject string means.
+    grantee_type, new_owner = _resolve_grantee(req.subject, req.issuer)
+    if grantee_type == GRANTEE_GROUP:
+        # ``_check_grant`` enforces this too, but as a ShareInvariantError deep
+        # inside the store — surface it here as the clean 400 it is, naming the
+        # two inputs that get here ('@public' and '@group:<id>').
+        raise HTTPException(
+            400,
+            f"ownership is grantable to users only, never to a group: {req.subject!r} "
+            f"resolves to the group {new_owner!r}. Share a group in instead "
+            f"(POST /v1/collections/{entry.id}/shares)",
+        )
+
+    store = get_acl_store()
+
+    # Read the CURRENT owner row (not just owner_of): its id is what the response
+    # points at for the audit trail, and one round-trip answers both.
+    try:
+        active = await store.shares_for(entry.id)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — fail closed on any store outage
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+    current = next((s for s in active if s.permission == PERM_OWNER), None)
+    if current is None:
+        # Nothing to transfer FROM. Only reachable by an admin (a non-admin
+        # cannot pass the owner gate on an ownerless collection), and it means
+        # the owner row was lost — the startup backfill repairs that from the
+        # spec-recorded creator; say so rather than minting an owner here, which
+        # would let this endpoint *claim* collections instead of hand them over.
+        raise HTTPException(
+            409,
+            f"collection {entry.id!r} has no active owner row to transfer from; "
+            "restart repairs a lost owner row from the recorded creator (ACL "
+            "backfill), or re-create the collection",
+        )
+    if current.grantee_id == new_owner:
+        # 409, not a 200 no-op: `transfer_owner` would happily revoke and re-insert
+        # an identical owner row, churning the audit trail with a handover that
+        # never happened. Mirrors the share endpoint's own "already owns" 409.
+        raise HTTPException(
+            409, f"{new_owner!r} already owns collection {entry.id!r}"
+        )
+
+    # Pre-provision the incoming owner's users row (mirrors create_share and
+    # write_owner_row): a subject that has never authenticated still needs a row
+    # for the FK-by-convention to hold. A colon-free subject is a SERVICE account
+    # — we are its issuer, so the row's issuer is ''.
+    ep = getattr(store, "ensure_provisional", None)
+    if ep is not None:
+        new_owner_issuer = (
+            (new_owner.split(":", 1)[0] or _DEFAULT_ISSUER) if ":" in new_owner else ""
+        )
+        try:
+            await ep(new_owner, new_owner_issuer)
+        except Exception:  # noqa: BLE001 — provisioning is best-effort
+            log.warning(
+                "transfer: ensure_provisional(%s) failed", new_owner, exc_info=True
+            )
+
+    try:
+        rec = await store.transfer_owner(entry.id, new_owner, actor=principal.tenant)
+    except ShareInvariantError as e:
+        # The owner row vanished between the read above and here, or the incoming
+        # subject collides with an invariant. Nothing changed (the store validates
+        # against the post-revoke state before mutating, inside the transaction).
+        raise HTTPException(409, str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — fail closed on any store outage
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+
+    # What the outgoing owner is left with, answered by the seam rather than by
+    # this endpoint's own reasoning — it is the same evaluation a later request
+    # would make (direct share, group membership, or a `public` grant). Deliberately
+    # not fatal: the transfer is already committed, so a store hiccup here reports
+    # `null` instead of a 503 that would falsely read as "the transfer failed".
+    retains: bool | None
+    try:
+        retains = (
+            await resolve_access(
+                current.grantee_id, ROLE_USER, entry.id, "read", store
+            )
+        ).allowed
+    except Exception:  # noqa: BLE001 — unknown, not failed
+        log.warning(
+            "transfer %r: could not evaluate residual read for %s",
+            entry.id, current.grantee_id, exc_info=True,
+        )
+        retains = None
+
+    log.info(
+        "transferred ownership of %r: %s -> %s (by %s; outgoing row %s revoked, "
+        "retains_read=%s)",
+        entry.id, current.grantee_id, new_owner, principal.tenant, current.id, retains,
+    )
+    return OwnerTransferResponse(
+        collection_id=entry.id,
+        owner=new_owner,
+        previous_owner=current.grantee_id,
+        revoked_share_id=current.id,
+        previous_owner_retains_read=retains,
+        share=_share_info(rec),
+    )
 
 
 class AvailableModel(BaseModel):

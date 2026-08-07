@@ -1117,6 +1117,91 @@ paths:
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
+  /v1/collections/{collection_id}/owner:
+    post:
+      operationId: transferCollectionOwner
+      summary: Transfer ownership of a collection (owner-or-admin)
+      description: >-
+        Hand a collection to another user. This is the flow
+        `POST /v1/collections/{id}/shares` refuses `permission: owner` in favour
+        of: there is exactly ONE active owner row per collection (a partial unique
+        index enforces it), so a handover is an atomic revoke+grant *pair*, not an
+        extra share. Current-owner-or-admin, gated through the same seam as the
+        share endpoints.
+
+
+        `POST`, not `PATCH`: there is no owner *document* to merge a partial
+        representation into. This is a state transition with audit side effects —
+        one row soft-revoked, one row appended — and it is not idempotent
+        (replaying it is a 409, not a no-op).
+
+
+        **The outgoing owner loses access** unless something else grants it back.
+        Their owner row is soft-revoked, never deleted (ADR-0004 decision 6 — the
+        handover stays in the audit trail), and NO consolation `read` grant is
+        minted: that would be a second write outside the transfer's transaction,
+        and an invented grant nobody asked for would still be active for the new
+        owner to discover. Re-granting is one explicit call to the shares
+        endpoint. So it is not silent either way, the response reports
+        `previous_owner`, the `revoked_share_id` of their revoked row, and
+        `previous_owner_retains_read` (re-evaluated through the authorization
+        seam, so it accounts for an independent share, group membership or a
+        `public` grant).
+
+
+        The transfer is deliberately NON-cascading: every other share on the
+        collection survives untouched. `subject` resolves with the same rules as a
+        share `grantee`, except that the group forms (`@public`, `@group:<id>`)
+        are rejected — ownership is grantable to users only. A subject that has
+        never authenticated is pre-provisioned, exactly as a share grantee is.
+      tags: [Query]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerTransferRequest"
+      responses:
+        "200":
+          description: Ownership transferred; the new owner row and the outgoing owner's fate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerTransferResponse"
+        "400":
+          description: >-
+            The subject resolves to a group (`@public` / `@group:<id>`) —
+            ownership is grantable to users only, never to a group
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: Caller can read the collection but is neither its owner nor an admin
+        "404":
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked)
+        "409":
+          description: >-
+            The subject already owns the collection (a handover that never
+            happened must not churn the audit trail), or the collection has no
+            active owner row to transfer from
+        "422":
+          description: >-
+            A malformed subject — empty/whitespace, a degenerate `issuer:subject`
+            half, a bare username with a blank issuer, or a reserved/colon-bearing
+            `@service:` subject
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
   /v1/groups:
     get:
       operationId: listGroups
@@ -2107,6 +2192,73 @@ components:
         owner:
           description: Subject of the collection's active owner row, or null.
           type: [string, "null"]
+      additionalProperties: false
+
+    OwnerTransferRequest:
+      type: object
+      description: >-
+        Transfer ownership of a collection to another user. The subject takes the
+        same vocabulary as a share `grantee`, minus the group forms.
+      required: [subject]
+      properties:
+        subject:
+          description: >-
+            The new owner. A value containing `:` is a full `issuer:subject`
+            string kept verbatim; `@service:<subject>` names a service account and
+            keeps its subject colon-free; a bare BV-BRC username is prefixed to
+            `bvbrc:<username>`. The group forms (`@public`, `@group:<id>`) parse
+            but are rejected with 400 — ownership is grantable to users only. The
+            resolved subject is echoed back as `owner` so a typo is visible before
+            it becomes an unreachable collection.
+          type: string
+          minLength: 1
+        issuer:
+          description: Issuer used to qualify a bare username (default `bvbrc`). Ignored for `@service:` and for a value that already contains `:`.
+          type: string
+          default: bvbrc
+      additionalProperties: false
+
+    OwnerTransferResponse:
+      type: object
+      description: >-
+        The result of an ownership transfer. Deliberately explicit about the
+        OUTGOING owner: they lose access unless something else grants it back, and
+        no consolation `read` share is minted for them.
+      required:
+        - collection_id
+        - owner
+        - previous_owner
+        - revoked_share_id
+        - previous_owner_retains_read
+        - share
+      properties:
+        collection_id: { type: string }
+        owner:
+          description: "Resolved subject of the NEW owner (the echo of the request's `subject` — a typo is visible here)."
+          type: string
+        previous_owner:
+          description: >-
+            Subject of the outgoing owner, whose owner row was soft-revoked —
+            never deleted, so the audit trail survives (ADR-0004 decision 6).
+          type: string
+        revoked_share_id:
+          description: >-
+            Id of the outgoing owner's now-revoked row, still readable via
+            `GET /v1/collections/{id}/shares?include_revoked=true`.
+          type: string
+        previous_owner_retains_read:
+          description: >-
+            Whether the outgoing owner can still READ the collection after the
+            transfer, re-evaluated through the same authorization seam a request
+            uses (an independent share, group membership, or a `public` grant).
+            False means no ordinary-user grant survives the transfer. Evaluated as
+            an ordinary user — an admin keeps access through the admin bypass
+            regardless. Null when the store could not answer; the transfer itself
+            had already committed.
+          type: [boolean, "null"]
+        share:
+          description: The new, active owner row.
+          $ref: "#/components/schemas/ShareRecord"
       additionalProperties: false
 
     GroupRecord:
