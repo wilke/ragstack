@@ -44,6 +44,39 @@ Deferred deliberately: auto-reclaim (blocked on #263 — the bulk CLI still mint
 registry never sees) and Qdrant on-disk sizes unless `--qdrant-storage` is supplied
 (Qdrant's API exposes no size; ES's `_cat/indices` does).
 
+### Then #263 — the bulk CLI resolves through the registry
+
+`ragstack/ops/ingest_target.py`, wired into `ingest_jsonl.py`, `ingest_shard.py`,
+`ingest_chunks.py`, `load_embeddings.py`. The bulk **data** path is untouched; only the
+**registration** moved.
+
+- `--collection-id` resolves through the configured collection store and supplies *every*
+  physical name — vector collection, its Qdrant instance, ES index. The line that used to
+  read `args.collection or collection_name("ragstack", model, dim)` is exactly how stores
+  got minted that no registry ever saw; the CLI can no longer reach it.
+- **Routed collections beat the command line**, unrouted ones don't. Writing a routed
+  collection to the default instance builds a second invisible copy of a store that
+  already exists elsewhere; for everything else the operator naming an instance is the
+  more specific statement.
+- `--collection` (physical name) still works **when a registry entry claims it**. A flag
+  day would strand running pipelines; a warning would be ignored by exactly the callers
+  that matter. This splits on the property that matters and nothing else.
+- Each writer now writes the provenance manifest **from the registry entry**, which is
+  the actual fix: `check_ingest_build_spec` early-returns when `read_manifest()` is None,
+  so a store with no manifest disarms ADR-0002's 409 guard forever. A test drives the
+  real `deps.check_ingest_build_spec` to prove it is armed after a bulk write.
+- `check_build()` treats `None` as "the caller did not say" — a script ingesting
+  pre-chunked JSON never learns the chunker and must be prevented from contradicting the
+  entry, not blocked by silence.
+- `--create-via-api` re-resolves from the durable registry rather than trusting the 201:
+  if the API wrote to a different registry than the CLI reads, failing there beats
+  failing after a 500k-row load.
+
+**Still open**: `scripts/eval/*` name their own throwaway stores (`chunkcmp_*`,
+`oa_smoke_*`). Forcing each comparison arm through a registry entry is the wrong shape;
+they need an explicit *ephemeral* convention the inventory can recognise. They are the
+last source of unclaimed stores, so #293's reclaim half stays blocked on that, not on this.
+
 ---
 
 ## Session 2026-08-05 — access-control MVP: users → ownership → sharing → groups (ADR-0003/0004/0005)

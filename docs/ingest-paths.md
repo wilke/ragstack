@@ -39,6 +39,44 @@ to the deeper docs rather than repeating them.
 
 ---
 
+## Every path targets a registry entry (#263)
+
+The bulk CLIs write straight to Qdrant/ES — that is why they exist, and it does
+not change. What changed is **how they learn where to write**:
+
+```bash
+# the store name comes from the registry entry, not from you
+python scripts/ingest_jsonl.py corpus.jsonl --collection-id asm-tok256
+
+# create it through the API first, so the cap, the owner row and the build
+# spec all come from the normal path
+python scripts/ingest_shard.py shard.jsonl \
+    --collection-id new-corpus --create-via-api http://localhost:8000
+```
+
+`--collection-id` resolves through the configured collection store
+(`COLLECTION_STORE_BACKEND`) and supplies **every** physical name: the Qdrant
+collection, its instance (a routed collection lives on its own), and the ES
+index. An id that is not in the registry is refused.
+
+The deprecated `--collection` still takes a *physical* store name and still
+works — but only when a registry entry already claims it. An invocation that
+would have minted an unclaimed store now exits 2 with the two ways to fix it.
+
+Why the strictness. A store created outside the registry is invisible to
+`GET /v1/collections` and to the collection cap, governed by no owner row
+(ADR-0004) — and, because it has no provenance manifest, it **permanently
+disarms ADR-0002's 409 build-spec guard** for every later API ingest into it
+(`check_ingest_build_spec` early-returns when there is no manifest). So each
+bulk writer now also writes the manifest, from the registry entry, and checks its
+own build parameters against that entry before writing anything.
+
+Wired: `ingest_jsonl.py`, `ingest_shard.py`, `ingest_chunks.py`,
+`load_embeddings.py`. The eval harnesses under `scripts/eval/` still name their
+own throwaway stores — see the gap below.
+
+---
+
 ## The `job_id` distinction (common confusion)
 
 A local ingest `job_id` lives in **RAGStack's own `JobStore`**
@@ -65,6 +103,13 @@ Be clear-eyed about what does **not** work today:
   reads CWL step outputs back into a store (`libraries-spec.md §6`).
 - **No GoWe worker image.** Running `ingest_shard.py` on real workers needs a
   ragstack + deps worker image — **#135**.
+- **Eval harnesses still mint unclaimed stores.** `scripts/eval/*` call
+  `ensure_collection()` with a name of their own choosing (`chunkcmp_*`,
+  `oa_smoke_*`). They are deliberately throwaway, so forcing each comparison arm
+  through a registry entry is the wrong shape — what they need is an explicit
+  *ephemeral* convention that the store inventory can recognise and reclaim.
+  Until that exists they remain the last source of stores no registry claims,
+  and they are why **#293**'s auto-reclaim half is still blocked.
 
 The bulk CLI and local API paths are the ones that run today; the GoWe path is
 scaffolded and validated for pre-sharded JSONL but is not a PDF-in ingest route.

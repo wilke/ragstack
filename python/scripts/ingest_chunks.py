@@ -76,7 +76,7 @@ import httpx
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
 from ragstack.models import Chunk
-from ragstack.provenance import make_ingest_manifest, write_manifest
+from ragstack.ops import ingest_target
 from ragstack.stores.qdrant import QdrantVectorStore
 
 
@@ -110,7 +110,7 @@ def flatten(docs: list[dict[str, Any]]) -> list[Chunk]:
     return out
 
 
-async def run(args: argparse.Namespace) -> None:
+async def run(args: argparse.Namespace, target: ingest_target.IngestTarget) -> None:
     raw = json.loads(args.input.read_text())
     docs = raw if isinstance(raw, list) else [raw]
     chunks = flatten(docs)
@@ -148,12 +148,18 @@ async def run(args: argparse.Namespace) -> None:
         head_vecs = await embedder.embed([c.content for c in head])
         dim = len(head_vecs[0])
 
+        # The registry entry decided the physical name and the build spec; the
+        # observed embedding dim is the one thing only this run knows, so check
+        # it against the entry before creating anything (#263).
+        target.check_build(dim=dim)
+
         store = QdrantVectorStore(
-            url=args.qdrant_url, collection=args.collection, vector_size=dim
+            url=target.qdrant_url, collection=target.collection, vector_size=dim
         )
         await store.ensure_collection()
         print(
-            f"collection {args.collection!r} ready (vector_size={dim}, api={args.embedding_api})",
+            f"collection {target.collection_id!r} → store {target.collection!r} ready "
+            f"(vector_size={dim}, api={args.embedding_api})",
             file=sys.stderr,
         )
 
@@ -172,25 +178,20 @@ async def run(args: argparse.Namespace) -> None:
             done += len(batch)
             print(f"  upserted {done}/{len(chunks)}", file=sys.stderr)
 
-    # Record verified provenance for this collection — same module the API uses,
-    # so a script-built and an API-built collection are described identically.
+    # Record verified provenance for this store, from the REGISTRY ENTRY rather
+    # than from the command line — a manifest that merely echoed the flags could
+    # not contradict a later ingest, which is the whole job of ADR-0002's guard.
     manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
     if manifest_dir:
-        manifest = make_ingest_manifest(
-            collection=args.collection,
-            model=args.embedding_model or "",
-            dim=dim,
+        spec_hash = target.write_manifest(
+            manifest_dir,
             embedding_api=args.embedding_api,
             embedding_endpoints=list(args.embedding_url),
-            chunk_method=args.chunk_method or "",
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
             corpus=str(args.input),
             chunk_count=len(chunks),
         )
-        write_manifest(manifest_dir, manifest)
         print(
-            f"wrote provenance manifest ({manifest.spec_hash}) to {manifest_dir}",
+            f"wrote provenance manifest ({spec_hash}) to {manifest_dir}",
             file=sys.stderr,
         )
 
@@ -200,8 +201,13 @@ async def run(args: argparse.Namespace) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("input", type=Path, help="JSON file with documents+chunks")
-    p.add_argument("--qdrant-url", default="http://localhost:6333")
-    p.add_argument("--collection", default="ragstack")
+    p.add_argument("--qdrant-url", default="http://localhost:6333",
+                   help="ignored when the registry entry routes its store to a "
+                        "specific instance; kept for the store-name migration path")
+    p.add_argument("--collection", default="",
+                   help="DEPRECATED — the PHYSICAL store name. Accepted only when "
+                        "a registry entry already claims it; prefer --collection-id")
+    ingest_target.add_arguments(p)
     p.add_argument(
         "--tenant",
         default="default",
@@ -253,7 +259,17 @@ def main() -> None:
         help="write a provenance manifest here (defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set)",
     )
     args = p.parse_args()
-    asyncio.run(run(args))
+    # Resolve (and if asked, create) the registry entry BEFORE reading, embedding
+    # or connecting to anything — a refusal discovered after a 500k-row embed is
+    # a refusal that costs GPU hours.
+    target = ingest_target.resolve_or_exit(
+        args,
+        model=args.embedding_model,
+        chunk_method=args.chunk_method or None,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+    )
+    asyncio.run(run(args, target))
 
 
 if __name__ == "__main__":
