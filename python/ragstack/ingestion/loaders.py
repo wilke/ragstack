@@ -315,9 +315,22 @@ class JsonlLoader:
             return None
         text = record.get("text", "") or ""
         rec_path = record.get("path", "") or ""
-        # Fall back to the line content for the id key only if no path is given,
-        # so a path-less record still gets a stable, content-derived id.
-        key = str(Path(rec_path).resolve()) if rec_path else text
+        # The id key. Three cases, in order:
+        # - ABSOLUTE path: resolve() (normalizes symlinks) — stable, and what every
+        #   existing corpus was ingested with, so those doc ids are preserved.
+        # - RELATIVE path: use the LITERAL string. resolve() here would prepend the
+        #   process CWD, making the "deterministic" id a function of where the
+        #   loader happened to run — found live when a GoWe worker re-ingesting
+        #   the same JATS shard minted a second id family for every record
+        #   (its task workdir differed from the first run's cwd) and delete-prior
+        #   matched nothing, duplicating the corpus instead of upserting it.
+        #   Opaque identifiers like "PMC123#table-2" are relative paths too.
+        # - No path: the line content, so a path-less record still gets a stable,
+        #   content-derived id.
+        if rec_path:
+            key = str(Path(rec_path).resolve()) if Path(rec_path).is_absolute() else rec_path
+        else:
+            key = text
         return Document(
             id=deterministic_doc_id(key),
             content=text,

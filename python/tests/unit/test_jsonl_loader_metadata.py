@@ -224,3 +224,43 @@ def test_document_id_is_unaffected_by_passthrough(tmp_path: Path):
     f = _write(tmp_path / "c.jsonl", [_record(content_type="table")])
     assert (JsonlLoader().load(f)[0].id
             == JsonlLoader(passthrough_keys={"content_type"}).load(f)[0].id)
+
+
+# --------------------------------------------------------------------------
+# doc-id stability across working directories (#301 GoWe duplication bug)
+# --------------------------------------------------------------------------
+
+
+def test_relative_path_doc_id_is_independent_of_cwd(tmp_path, monkeypatch):
+    """A record whose ``path`` is an opaque relative identifier (JATS:
+    ``PMC123#table-2``) must get the same doc id wherever the loader runs.
+    Path.resolve() prepended the process CWD, so a GoWe worker (task workdir)
+    and a shell run (checkout dir) minted two id families for the same shard —
+    delete-prior matched nothing and the corpus duplicated instead of
+    upserting. Found live: +12,233 points on what should have been a no-op."""
+    from ragstack.ingestion.loaders import JsonlLoader
+
+    line = json.dumps({"text": "body text long enough to classify",
+                       "path": "PMC6305292#table-1", "metadata": {}})
+    a, b = tmp_path / "a", tmp_path / "b"
+    ids = []
+    for d in (a, b):
+        d.mkdir()
+        src = d / "shard.jsonl"
+        src.write_text(line + "\n")
+        monkeypatch.chdir(d)
+        ids.append(JsonlLoader().load(str(src))[0].id)
+    assert ids[0] == ids[1], "doc id must not depend on the working directory"
+
+
+def test_absolute_path_doc_id_unchanged(tmp_path):
+    """Absolute paths keep the resolve() behaviour — existing corpora (ASM PDFs
+    were ingested with absolute paths) must keep their doc ids."""
+    from ragstack.ingestion.loaders import JsonlLoader, deterministic_doc_id
+
+    p = tmp_path / "shard.jsonl"
+    abs_path = str(tmp_path / "corpus" / "x.pdf")
+    p.write_text(json.dumps({"text": "body text long enough",
+                             "path": abs_path, "metadata": {}}) + "\n")
+    doc = JsonlLoader().load(str(p))[0]
+    assert doc.id == deterministic_doc_id(str(Path(abs_path).resolve()))
