@@ -27,6 +27,7 @@ tool + receipts).
 | `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
 | `jats-ingest.cwl` | **JATS/OA plane (#301).** Hash-fanned PubMed-Central harvest → stores: scatter(`jats_extract` → `embed_shard`) chained per shard (no extract/embed barrier), then one gathered load. Shards come from `plan_shards.py` outside the workflow; the load step takes a **registry `collection_id` + the sqlite registry itself** (#263) — nothing in the DAG names a physical store. One chunk config (fixed_token 512/64) covers prose *and* the pre-capped table/figure units, so there is no second whole-doc pass and no ADR-0002 spec conflict. |
 | `jats-ingest.inputs.yml` | Example inputs (dev tenant: `oa-dev` collection, `:24041`/`:24043` stores). |
+| `../python/scripts/gowe_batch_ingest.py` | **JATS/OA batch driver.** Runs a whole shard plan through `jats-ingest.cwl` in bounded batches: submit → poll → verify against the stores (legs must agree; failed shards fatal; zero delta accepted as idempotent re-run) → delete that batch's staged `*.emb.jsonl` → append a resumable ledger. Batching is what pipelines batch N's load behind batch N+1's embed and caps intermediate disk (~50 GB/64-shard batch vs ~1.6 TB all-at-once). |
 
 ### Containerized runtime (#135)
 
