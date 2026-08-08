@@ -39,6 +39,16 @@ paths keep resolve() (ASM ids preserved), relative paths key on the literal stri
 Proven after the fix: run 1 → exactly 12,233 both legs; identical run 2 → still 12,233,
 one id family per source_path. Idempotency now holds ACROSS execution environments.
 
+**Batch driver (same night).** `scripts/gowe_batch_ingest.py` + 12 offline tests
+(stub gowe CLI, stub store HTTP). Live 2-batch validation on dev: batch 1 (already-
+loaded shards) delta 0 at 12,233 both legs — idempotency verified BY the driver;
+batch 2 (fresh shards) delta 12,030 → 24,263 both legs, equal to the local cwltool-less
+total exactly (cross-environment determinism at full-pipeline level). ~650 MB of staged
+.emb.jsonl reclaimed per batch; resume run reports 2 done / 0 to run. Full-batch plan:
+batch-size 64, six embedding endpoints (9001-9006 are up; dev inputs list only 2),
+current harvest ≈ 2-2.5 days, gated by load throughput if it stays at the measured
+~89 chunks/s — re-measure load off NFS before the big run.
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
