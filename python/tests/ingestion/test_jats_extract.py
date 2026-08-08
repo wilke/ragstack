@@ -292,6 +292,29 @@ def test_token_budget_splits_dense_tables_a_char_cap_would_pass(tmp_path: Path):
         assert joined.count(f"subject-{i:03d}") == 1
 
 
+def test_oversized_bitmap_only_table_splits_without_duplicating_caption(tmp_path: Path):
+    """A <table-wrap> with no <table> and a footless, over-budget caption must
+    split with the short <label> as the repeated prefix — not with the whole
+    caption as both prefix and body, which duplicated it into every piece."""
+    long_caption = " ".join(f"Sentence number {i} about the imaged assay." for i in range(60))
+    tw = f"""
+      <table-wrap id="TBMP">
+        <label>Table 4</label>
+        <caption><p>{long_caption}</p></caption>
+      </table-wrap>"""
+    body = "<sec><title>R</title><p>Prose.</p>" + tw + "</sec>"
+    xml = _write(tmp_path, "PMC11.xml", _article("11", body))
+    records, _ = jats.convert_file(xml, max_chars=400)
+    pieces = [r for r in records if r["metadata"]["content_type"] == "table"]
+    assert len(pieces) > 1
+    marker = "Sentence number 0"
+    joined = " ".join(p["text"] for p in pieces)
+    assert joined.count(marker) == 1, "caption text duplicated across pieces"
+    for p in pieces:
+        assert p["text"].startswith("Table 4")
+        assert len(p["text"]) <= 400
+
+
 def test_token_budget_never_splits_a_unit_that_fits(tmp_path: Path):
     """A unit inside the token budget is one piece regardless of its char count —
     prose-dense captions must not get chopped just because chars run long."""

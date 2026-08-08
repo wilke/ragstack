@@ -289,10 +289,14 @@ def table_units(
         only = " ".join(x for x in (head_txt, foot) if x).strip()
         if not only:
             return []
+        # Oversized caption-only wraps split like prose, with the short <label>
+        # ("Table 3") as the repeated prefix and caption+foot as the body — NOT
+        # head_txt as both, which would duplicate the caption into every piece.
+        body = " ".join(x for x in (caption, foot) if x).strip() or only
         return _fit_pieces(
             lambda cap: ([(f"table-{idx}", only)] if len(only) <= cap else
                          [(f"table-{idx}-part-{i}", t) for i, t in
-                          enumerate(split_long(head_txt, foot or head_txt, cap), 1)]),
+                          enumerate(split_long(label, body, cap), 1)]),
             lambda p: p[1], only, max_chars, count_tokens, max_tokens,
         )
 
