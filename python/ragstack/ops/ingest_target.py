@@ -69,7 +69,6 @@ class IngestTarget:
         chunk_method: str | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
-        chunk_params: dict[str, Any] | None = None,
     ) -> None:
         """Refuse a write whose build spec differs from the registry entry's.
 
@@ -78,27 +77,37 @@ class IngestTarget:
         when there is none; here the registry entry is the record, and there is
         always one — that is the point of resolving through it.
 
-        ``None`` means "the caller did not say", which is not the same as a
-        mismatch: a script that never learns the chunker (it ingests
-        pre-chunked JSON) must not be blocked, only prevented from
-        contradicting. A value that IS supplied and differs is fatal.
-        """
-        from ragstack.provenance import chunk_descriptor
+        Unset on **either** side is not a mismatch, and the comparison is
+        field-by-field rather than over the whole chunk descriptor. Both rules
+        are load-bearing:
 
+        * A script that never learns the chunker (it ingests pre-chunked JSON)
+          must be prevented from contradicting the entry, not blocked by silence.
+        * A registry entry that records nothing for a field cannot be
+          contradicted by one — the same "nothing to contradict" rule
+          ``check_ingest_build_spec`` applies to a missing manifest, at field
+          granularity. This is what keeps a semantic corpus re-ingestable:
+          ``asm-semantic`` records ``chunk_size=None`` because the semantic
+          chunker does not use one, while argparse still hands us its ``512``
+          default. Comparing whole descriptors made ``semantic//`` vs
+          ``semantic/512/64`` a fatal difference and refused a legitimate
+          rebuild of a production corpus.
+
+        A value that both sides state, and state differently, is fatal.
+        """
         diffs: list[str] = []
 
         def cmp(field: str, want: Any, got: Any) -> None:
-            if got is None:
+            if got is None or got == "" or want is None or want == "":
                 return
-            if str(want or "") != str(got or ""):
+            if str(want) != str(got):
                 diffs.append(f"{field}: registry={want!r} ingest={got!r}")
 
         cmp("embedding_model", self.spec.embedding_model, model)
         cmp("embedding_dim", self.spec.embedding_model_dim, dim)
-        if chunk_method is not None or chunk_size is not None or chunk_overlap is not None:
-            want = self.spec.chunk_descriptor()
-            got = chunk_descriptor(chunk_method or "", chunk_size, chunk_overlap, chunk_params)
-            cmp("chunk", want, got)
+        cmp("chunk_method", self.spec.chunk_method, chunk_method)
+        cmp("chunk_size", self.spec.chunk_size, chunk_size)
+        cmp("chunk_overlap", self.spec.chunk_overlap, chunk_overlap)
         if diffs:
             raise TargetError(
                 f"refusing to ingest into collection {self.collection_id!r}: this "
@@ -210,6 +219,26 @@ def target_from_spec(
     )
 
 
+def _specs_or_raise(settings: Any, specs: list[Any] | None) -> list[Any]:
+    """Load the registry, turning any failure into an operator-facing refusal.
+
+    A corrupt or unreachable registry must never read as an empty one: "no entry
+    claims this" and "we could not look" are different answers, and only the
+    first is a reason to stop. Both stop the load here, but the message has to
+    say which."""
+    if specs is not None:
+        return specs
+    try:
+        return load_specs(settings)
+    except Exception as e:  # noqa: BLE001 — every failure is the same refusal
+        raise TargetError(
+            f"could not read the collection registry ({_registry_description(settings)}): "
+            f"{type(e).__name__}: {e}\n"
+            "Refusing to ingest: an unreadable registry is not an empty one, and "
+            "guessing would write into a store nothing claims (#263)."
+        ) from e
+
+
 def _registry_description(settings: Any) -> str:
     backend = (getattr(settings, "collection_store_backend", "json") or "json").lower()
     if backend == "sqlite":
@@ -235,7 +264,7 @@ def resolve(
     for the old ``--collection <name>`` behaviour, which is the hole this closes.
     """
     s = settings or _settings()
-    entries = load_specs(s) if specs is None else specs
+    entries = _specs_or_raise(s, specs)
     for spec in entries:
         if spec.id == collection_id:
             return target_from_spec(spec, s, qdrant_url=qdrant_url)
@@ -270,7 +299,7 @@ def resolve_by_store_name(
     while a warning would be ignored by exactly the callers that matter.
     """
     s = settings or _settings()
-    entries = load_specs(s) if specs is None else specs
+    entries = _specs_or_raise(s, specs)
     matches = [e for e in entries if e.collection == name]
     if len(matches) == 1:
         return target_from_spec(matches[0], s, qdrant_url=qdrant_url)
@@ -386,7 +415,9 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
 
     if not cid:
         if physical:
-            return resolve_by_store_name(physical, settings=s, qdrant_url=url)
+            return _checked(
+                resolve_by_store_name(physical, settings=s, qdrant_url=url), args
+            )
         raise TargetError(
             "--collection-id is required: a bulk load writes into a store named "
             "by a registry entry (#263). Pass the id of an existing collection, "
@@ -401,7 +432,7 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
             raise
         target = None  # type: ignore[assignment]
     if target is not None:
-        return _checked(target, physical, cid)
+        return _checked(target, args)
 
     create_via_api(
         args.create_via_api, cid,
@@ -412,7 +443,7 @@ def resolve_from_args(args: Any, *, settings: Any | None = None) -> IngestTarget
     # durable entry is what every later reader sees, and if the API wrote to a
     # different registry than this CLI reads, that is exactly the misconfiguration
     # worth failing on here instead of after a 500k-row load.
-    return _checked(resolve(cid, settings=s, qdrant_url=url), physical, cid)
+    return _checked(resolve(cid, settings=s, qdrant_url=url), args)
 
 
 def resolve_or_exit(args: Any, *, settings: Any | None = None, **build: Any) -> IngestTarget:
@@ -435,17 +466,24 @@ def resolve_or_exit(args: Any, *, settings: Any | None = None, **build: Any) -> 
     return target
 
 
-def _checked(target: IngestTarget, physical: str, cid: str) -> IngestTarget:
-    """Refuse a ``--collection`` that contradicts the resolved entry.
+def _checked(target: IngestTarget, args: Any) -> IngestTarget:
+    """Refuse a physical name on the command line that contradicts the entry.
 
-    Silently preferring the entry would be worse than failing: the operator
-    named a store, and writing to a different one is the failure mode this whole
-    module exists to remove.
+    Both legs, and refusing rather than ignoring. Silently preferring the entry
+    would be worse than failing — the operator named a store, and writing to a
+    different one is the failure mode this module exists to remove. And silently
+    preferring the *flag* is worse still: ``--es-index`` used to let a bulk load
+    put the text leg in an index no registry entry claims, which is the same hole
+    as ``--collection``, one leg over.
     """
-    if physical and physical != target.collection:
-        raise TargetError(
-            f"--collection {physical!r} contradicts collection {cid!r}, whose "
-            f"registry entry names the store {target.collection!r}. The physical "
-            "name comes from the entry; drop --collection."
-        )
+    for flag, given, resolved in (
+        ("--collection", getattr(args, "collection", "") or "", target.collection),
+        ("--es-index", getattr(args, "es_index", "") or "", target.es_index),
+    ):
+        if given and given != resolved:
+            raise TargetError(
+                f"{flag} {given!r} contradicts collection "
+                f"{target.collection_id!r}, whose registry entry names "
+                f"{resolved!r}. Physical names come from the entry; drop {flag}."
+            )
     return target

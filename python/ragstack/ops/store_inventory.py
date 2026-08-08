@@ -574,7 +574,6 @@ def reconcile(stores: Iterable[PhysicalStore], deployments: Iterable[Deployment]
             by_name.setdefault((c.key.name, c.leg), []).append(c)
 
     rows: list[Row] = []
-    matched: set[tuple[str, str, str]] = set()
     for store in stores:
         ident = (store.key.backend, store.key.name, store.leg)
         hits = exact.get(ident, [])
@@ -585,8 +584,6 @@ def reconcile(stores: Iterable[PhysicalStore], deployments: Iterable[Deployment]
             status = CLAIMED_NAME_ONLY
         else:
             status = UNCLAIMED
-        if hits:
-            matched.add(ident)
         rows.append(Row(key=store.key, leg=store.leg, status=status,
                         store=store, claims=hits + weak))
 

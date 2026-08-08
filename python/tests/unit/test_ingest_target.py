@@ -144,6 +144,31 @@ def test_check_build_refuses_a_differing_spec(bad):
     assert "ADR-0002" in str(e.value)
 
 
+def test_semantic_corpus_stays_reingestable():
+    """Regression: asm-semantic records chunk_size=None (the semantic chunker uses
+    none) while argparse always hands over its 512/64 defaults. Comparing whole
+    chunk descriptors made 'semantic//' vs 'semantic/512/64' fatal and refused a
+    legitimate rebuild of a production corpus."""
+    spec = _spec("asm-semantic", "sem", chunk_method="semantic",
+                 chunk_size=None, chunk_overlap=None)
+    t = it.target_from_spec(spec, _settings())
+    t.check_build(model="m", dim=4, chunk_method="semantic",
+                  chunk_size=512, chunk_overlap=64)
+    # the method itself is still compared
+    with pytest.raises(it.TargetError):
+        t.check_build(chunk_method="fixed_token")
+
+
+def test_underspecified_entry_does_not_block_an_ingest():
+    """A registry entry that records nothing for a field cannot be contradicted
+    by one — the same 'nothing to contradict' rule the API applies to a missing
+    manifest, at field granularity."""
+    t = it.target_from_spec(_spec(chunk_method="", chunk_size=None,
+                                  chunk_overlap=None, embedding_model=""), _settings())
+    t.check_build(model="anything", chunk_method="fixed_token",
+                  chunk_size=256, chunk_overlap=32)
+
+
 def test_check_build_tolerates_what_the_caller_did_not_say():
     """A script that ingests pre-chunked JSON never learns the chunker. It must
     be prevented from contradicting the entry, not blocked by silence."""
@@ -233,6 +258,37 @@ def test_physical_flag_contradicting_the_id_is_refused(tmp_path):
         it.resolve_from_args(_args(collection_id="c", collection="somewhere_else"),
                              settings=s)
     assert "contradicts" in str(e.value)
+
+
+def test_es_index_flag_contradicting_the_entry_is_refused(tmp_path):
+    """The same hole as --collection, one leg over: --es-index used to let a bulk
+    load put the text leg in an index no registry entry claims."""
+    reg = tmp_path / "c.json"
+    reg.write_text(json.dumps([json.loads(
+        _spec("c", "store_a", text_index="text_a").model_dump_json())]))
+    s = _settings(collections_file=str(reg))
+
+    args = _args(collection_id="c")
+    args.es_index = "somewhere_else"
+    with pytest.raises(it.TargetError) as e:
+        it.resolve_from_args(args, settings=s)
+    assert "--es-index" in str(e.value)
+
+    args.es_index = "text_a"  # agreeing with the entry is fine
+    assert it.resolve_from_args(args, settings=s).es_index == "text_a"
+
+
+def test_unreadable_registry_is_not_an_empty_one(tmp_path):
+    """'no entry claims this' and 'we could not look' are different answers.
+    Both stop the load; the message has to say which."""
+    reg = tmp_path / "c.json"
+    reg.write_text("{ this is not json")
+    s = _settings(collections_file=str(reg))
+    with pytest.raises(it.TargetError) as e:
+        it.resolve("c", settings=s)
+    msg = str(e.value)
+    assert "could not read the collection registry" in msg
+    assert "registry is empty" not in msg
 
 
 def test_load_specs_reads_the_configured_registry(tmp_path):

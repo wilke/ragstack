@@ -98,8 +98,9 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
     else:
         if target is None:  # pragma: no cover — main() resolves before calling
             raise SystemExit("internal: no ingest target resolved")
-        # Both names come from the registry entry, never from the command line (#263).
-        es_index = args.es_index or target.es_index
+        # Both names come from the registry entry, never from the command line
+        # (#263). A contradicting --es-index was refused during resolution.
+        es_index = target.es_index
         dim = len((await embedder.embed(["dimension probe"]))[0])
         # The probed dim must match the entry, or this shard's vectors are not the
         # ones the entry promises (ADR-0002).

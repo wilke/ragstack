@@ -84,7 +84,8 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # store whose vectors are not the ones the entry promises (#263/ADR-0002).
         target.check_build(dim=dim)
         # Both names come from the registry entry, never from the command line.
-        es_index = args.es_index or target.es_index
+        # A contradicting --es-index was refused during resolution.
+        es_index = target.es_index
         vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout,
                                    upsert_batch_size=args.upsert_batch_size,
