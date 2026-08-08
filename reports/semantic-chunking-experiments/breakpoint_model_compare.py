@@ -15,7 +15,7 @@ See reports/semantic-chunking-experiments.md for rationale, results, provenance.
 Reproduce (coconut prod layout):
 
     . /rag/env.sh
-    /rag/envs/ragstack/bin/python python/scripts/eval/breakpoint_model_compare.py
+    /rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/breakpoint_model_compare.py
 
 Env vars: INPUT, N_SAMPLE (10), REF_MODEL (Salesforce/SFR-Embedding-Mistral),
 REF_URLS (comma-sep, default localhost:9001..9008), REF_KEY (BRCMistral),

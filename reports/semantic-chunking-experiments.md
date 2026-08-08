@@ -12,7 +12,7 @@ model is viable.
 | Host | `coconut` (8× H200 NVL) |
 | Author | wilke (Claude Code session) |
 | Repo code under test | `/rag/repos/ragstack` @ `main` `30018a4` (has #67/#68/#70); breakpoint logic unchanged since PR #36 |
-| Committed harness | `python/scripts/eval/profile_semantic_cpu.py`, `python/scripts/eval/breakpoint_model_compare.py` |
+| Committed harness | `python/scripts/eval/profile_semantic_cpu.py`, `python/scripts/eval/breakpoint_model_compare.py` (both now in `reports/semantic-chunking-experiments/`) |
 | Python env | `/rag/envs/ragstack` — Python 3.12.13, `transformers` 5.12.1 (tokenizer-only; no torch) |
 | Expensive model | `Salesforce/SFR-Embedding-Mistral` (7B), vLLM on `localhost:9001–9008`, `max_model_len=4096`, 4096-dim |
 | Cheap model | `BAAI/bge-base-en-v1.5`, embedding sidecar on `localhost:50053`, 512-token context, 768-dim |
@@ -397,19 +397,19 @@ HF tokenizer.
 . /rag/env.sh                       # HF cache/auth; endpoints already up
 
 # Experiment 1 — CPU profile (mock embed; no GPU contention)
-/rag/envs/ragstack/bin/python python/scripts/eval/profile_semantic_cpu.py
+/rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/profile_semantic_cpu.py
 
 # Experiment 2 — cheap vs expensive breakpoint model
-/rag/envs/ragstack/bin/python python/scripts/eval/breakpoint_model_compare.py
+/rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/breakpoint_model_compare.py
 # fair BGE re-test (bound buffers to BGE's 512-token context):
 CHEAP_MAX_TOKENS=512 /rag/envs/ragstack/bin/python \
-  python/scripts/eval/breakpoint_model_compare.py
+  reports/semantic-chunking-experiments/breakpoint_model_compare.py
 
 # Experiment 3 — embed throughput (is the cheap model faster?)
-/rag/envs/ragstack/bin/python python/scripts/eval/embed_speed.py
+/rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/embed_speed.py
 
 # Experiment 4 — BGE on a GPU (needs torch+CUDA; use the vllm env)
-CUDA_VISIBLE_DEVICES=6 /rag/envs/vllm/bin/python python/scripts/eval/bge_gpu_bench.py
+CUDA_VISIBLE_DEVICES=6 /rag/envs/vllm/bin/python reports/semantic-chunking-experiments/bge_gpu_bench.py
 
 # Experiment 5 — semantic_pooled end-to-end (needs the semantic_pooled code on the
 # imported ragstack; PYTHONPATH the checkout that has it). Compares wall/points vs

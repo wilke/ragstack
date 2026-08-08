@@ -895,20 +895,16 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 <td>SciFact (BEIR) passage-level benchmark with graded qrels — nDCG@10 / recall@{10,20,100} / MAP + bootstrap CIs</td>
 </tr>
 <tr>
-<td><code>bge_gpu_bench.py</code></td>
-<td>Embedding GPU throughput benchmark (no HTTP)</td>
+<td><code>g1_library_sweep.py</code></td>
+<td>G1 retrieval sweep over a built library (see <a href="https://github.com/wilke/ragstack/blob/main/docs/g1-retrieval-protocol.md"><code>g1-retrieval-protocol.md</code></a>)</td>
 </tr>
 <tr>
-<td><code>embed_speed.py</code></td>
-<td>Embedding throughput of breakpoint-model candidates over real buffers</td>
+<td><code>chunk_one.py</code></td>
+<td>Chunk a single document one way and emit its structure stats</td>
 </tr>
 <tr>
-<td><code>breakpoint_model_compare.py</code></td>
-<td>Cheap vs expensive breakpoint model — chunk-span Jaccard, boundary F1, Spearman</td>
-</tr>
-<tr>
-<td><code>profile_semantic_cpu.py</code></td>
-<td>Isolate semantic-chunker CPU cost with a mock embedder</td>
+<td><code>aggregate_stats.py</code></td>
+<td>Fold per-arm stats files into one comparison table</td>
 </tr>
 <tr>
 <td><code>_stats.py</code></td>
@@ -916,6 +912,13 @@ streaming endpoint yet. Go request models still lack <code>rerank</code> / <code
 </tr>
 </tbody>
 </table></div>
+<p>The four one-off <strong>performance</strong> benchmarks that answered the semantic-ingest cost
+question — <code>bge_gpu_bench.py</code>, <code>embed_speed.py</code>, <code>breakpoint_model_compare.py</code>,
+<code>profile_semantic_cpu.py</code> — are not part of this harness and now live beside their
+write-up, in
+<a href="https://github.com/wilke/ragstack/blob/main/reports/semantic-chunking-experiments/README.md"><code>reports/semantic-chunking-experiments/</code></a>.
+Nothing imports them and no workflow runs them; they are kept as reproducers because a
+conclusion is only as durable as the hardware it was measured on.</p>
 <hr />
 <h2 id="9-extension-points">9. Extension points</h2>
 <p>Every stage is a <code>Protocol</code>, so extending the system means implementing an interface and

@@ -11,7 +11,7 @@ bound on capacity (the real gap on an idle fleet is larger).
 See reports/semantic-chunking-experiments.md. Reproduce:
 
     . /rag/env.sh
-    /rag/envs/ragstack/bin/python python/scripts/eval/embed_speed.py
+    /rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/embed_speed.py
 
 Env vars: INPUT, N_BUFFERS (256), SUB (32), REF_MODEL, REF_URLS (comma-sep),
 REF_KEY, CHEAP_URL.

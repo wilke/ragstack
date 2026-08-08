@@ -411,11 +411,18 @@ removed ([ADR-0003](adr/0003-access-control.md)) and are rejected at startup.
 | `chunking_compare_7way.py` | Ingest one deterministic subset **7 ways**; report structure, overflow, cost, and known-item retrieval quality (recall/MRR/nDCG, hybrid + rerank) |
 | `chunking_compare.py` | 3-way (fixed/sentence/semantic) variant of the above |
 | `scifact_chunk_eval.py` | SciFact (BEIR) passage-level benchmark with graded qrels — nDCG@10 / recall@{10,20,100} / MAP + bootstrap CIs |
-| `bge_gpu_bench.py` | Embedding GPU throughput benchmark (no HTTP) |
-| `embed_speed.py` | Embedding throughput of breakpoint-model candidates over real buffers |
-| `breakpoint_model_compare.py` | Cheap vs expensive breakpoint model — chunk-span Jaccard, boundary F1, Spearman |
-| `profile_semantic_cpu.py` | Isolate semantic-chunker CPU cost with a mock embedder |
+| `g1_library_sweep.py` | G1 retrieval sweep over a built library (see [`g1-retrieval-protocol.md`](g1-retrieval-protocol.md)) |
+| `chunk_one.py` | Chunk a single document one way and emit its structure stats |
+| `aggregate_stats.py` | Fold per-arm stats files into one comparison table |
 | `_stats.py` | Shared stats layer (paired-bootstrap CIs, pairwise diff CIs, Wilcoxon + Holm), no scipy |
+
+The four one-off **performance** benchmarks that answered the semantic-ingest cost
+question — `bge_gpu_bench.py`, `embed_speed.py`, `breakpoint_model_compare.py`,
+`profile_semantic_cpu.py` — are not part of this harness and now live beside their
+write-up, in
+[`reports/semantic-chunking-experiments/`](../reports/semantic-chunking-experiments/README.md).
+Nothing imports them and no workflow runs them; they are kept as reproducers because a
+conclusion is only as durable as the hardware it was measured on.
 
 ---
 

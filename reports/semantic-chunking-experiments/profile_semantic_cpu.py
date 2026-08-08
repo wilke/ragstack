@@ -13,7 +13,7 @@ falls back to the estimate counter and UNDERCOUNTS the token-count CPU cost):
 
     . /rag/env.sh
     INPUT=/rag/ingest/inputs/<file>.jsonl EMBED_MODEL=Salesforce/SFR-Embedding-Mistral \\
-      /rag/envs/ragstack/bin/python python/scripts/eval/profile_semantic_cpu.py
+      /rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/profile_semantic_cpu.py
 
 Env vars: INPUT, EMBED_MODEL, MAX_TOKENS (4096), BUFFER_SIZE (3), N_SAMPLE (120).
 """
