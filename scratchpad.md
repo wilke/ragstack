@@ -1,5 +1,44 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-08-07 (evening) — JATS/OA ingest plane prototype (#301)
+
+Built and proven end-to-end on the DEV tenant against the live `/rag/oa` harvest
+(downloading throughout — the growth-stability property was exercised for real).
+
+Pieces (three subagents on disjoint file scopes + integration):
+- `JsonlLoader(passthrough_keys=...)` — opt-in metadata pass-through; enriched wins;
+  dicts refused (ES dynamic template matches ONE path level); default byte-identical.
+- `scripts/plan_shards.py` — shard = sha1(pmcid) % N with N an operator constant, so
+  re-planning a grown corpus moves nothing; balance by body_chars (CV 5.3% on 951k);
+  excludes only `shard-*.jsonl` so repaired downloads get re-planned.
+- `ragstack/ingestion/jats.py` + `scripts/jats_extract.py` — the validated converter as
+  a repo tool; byte-identical to `/rag/oa/scripts/jats_to_jsonl.py` on 400 articles.
+- `cwl/jats-ingest.cwl` — scatter(extract→embed) chained per shard, single load; the
+  load step takes a REGISTRY id + the sqlite registry file, so #263 is in the DAG.
+- `embed_shard.py --metadata-passthrough` — the activation point (its loader is real).
+
+**Finding that changed the design: char caps cannot bound table tokens.** Dev run 1
+(800 articles, 23,382 chunks): 32.2% of table units exceeded one 512-token window —
+token density on real tables spans 1.61–4.30 chars/token (p50 2.84), and the worst unit
+was 1,655 tokens at 1,784 chars, UNDER the 1,802-char cap. `fixed_token` then split
+them without caption/header — the exact contamination the lift-out exists to prevent.
+Fix: `_fit_pieces()` in jats.py derives each unit's char budget from its OWN measured
+density, verifies pieces, shrinks toward the worst offender (≤3 rounds). Dev run 2:
+**tables 99.6% single-chunk (was 67.8%), figures 100%**; 24,263 chunks, both legs equal;
+manifest spec_hash 528f8f36 == registry entry → ADR-0002 guard armed.
+
+Gotchas for the next session:
+- conda `ragstack` env lacks `transformers`; run bulk tools with
+  `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
+  (`make_token_counter` silently falls back hf→endpoint, which fixed_token then rejects —
+  the help text 'fixed_token forces hf' overpromises.)
+- Qdrant payloads are FLAT (`content_type`), ES nests (`metadata.content_type`) — filters
+  differ per leg.
+- `ingest_jsonl.py` does NOT use JsonlLoader (calls enrich directly) — still drops
+  content_type; irrelevant to the OA plane, noted on #301.
+- oa-dev physical name is server-minted; the plan's `ragstack_oa_tok512` mapping is dead.
+
+
 ## Session 2026-08-07 — store inventory: measuring the registry↔store gap (#293)
 
 ADR-0005 decision 6 made exclusive tenant ownership the design target, which re-scoped

@@ -6,9 +6,11 @@ import re
 import uuid
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from ragstack.ingestion.enrich import (
     EMPTY,
+    EnrichedDoc,
     PublisherProfile,
     enrich,
     index_metadata,
@@ -172,6 +174,40 @@ def _doi_from_pdf_metadata(doc: object) -> str:
     return ""
 
 
+# Value types an opted-in passthrough key may carry onto a chunk. Chunk metadata
+# is indexed in Elasticsearch, where ``metadata.*`` is mapped by a dynamic
+# template (stores/elasticsearch._MAPPINGS) whose ``path_match`` matches exactly
+# ONE level: a nested object's subfields (``metadata.x.y``) miss the template and
+# fall back to ES's default dynamic mapping (text + a ``.keyword`` subfield),
+# which breaks the exact-term filter contract ``_build_query`` assumes for every
+# metadata key. So dicts — and lists containing them — are dropped rather than
+# mapped badly. Scalars and *flat* lists of scalars are exactly what the enriched
+# schema itself already emits (``authors``/``keywords``) and index correctly.
+_PASSTHROUGH_SCALARS = (str, int, float, bool)
+
+
+def _passthrough_value(value: object) -> Any | None:
+    """Return ``value`` if it is safe to stamp on every chunk, else ``None``.
+
+    ``None`` means "drop this key", which is how the empty-value rule of
+    :func:`~ragstack.ingestion.enrich.index_metadata` is kept consistent for
+    passthrough keys: a record that simply lacks a value for an opted-in key must
+    not litter the payload (and the ES keyword index) with ``""`` / ``[]`` /
+    ``null``. Blank-but-not-empty strings count as empty here too, so a
+    whitespace-only raw value can never take the slot of an enriched field that
+    ``index_metadata`` dropped for being empty.
+    """
+    if isinstance(value, _PASSTHROUGH_SCALARS):
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+    if isinstance(value, list) and value and all(
+        isinstance(v, _PASSTHROUGH_SCALARS) for v in value
+    ):
+        return value
+    return None
+
+
 class JsonlLoader:
     """Load a JSONL corpus of *pre-extracted* documents.
 
@@ -192,18 +228,34 @@ class JsonlLoader:
     ``skip_types`` — by default only empty-text records — and malformed lines
     are skipped too, so a single bad line never aborts a large ingest. An
     otherwise-empty file (no usable documents) raises :class:`LoaderError`.
+
+    ``passthrough_keys`` opts specific raw ``record["metadata"]`` keys back in
+    (see :meth:`_metadata`). It is deliberately **per-instance only** — there is
+    no settings/config field for it, and none should be added on spec: the
+    allow-list is a property of the *corpus* being loaded, not of the server, and
+    a globally-configured list would silently change what a shard's chunks carry.
+    Callers that need it (the bulk shard scripts) pass it explicitly.
     """
 
     def __init__(
         self,
         skip_types: Iterable[str] | None = None,
         profile: PublisherProfile | None = None,
+        passthrough_keys: Iterable[str] | None = None,
     ) -> None:
         self._skip = frozenset(skip_types) if skip_types is not None else frozenset({EMPTY})
         # None → enrich() uses the ASM DEFAULT_PROFILE; pass a profile to ingest
         # a different publisher's corpus (different DOI prefix / filename rule /
         # front-matter set). Resolve from config via enrich.resolve_profile().
         self._profile = profile
+        # Opt-in passthrough for raw metadata keys the fixed EnrichedDoc schema
+        # has no slot for. Needed by non-PDF corpora: JATS/PMC carries pmcid,
+        # pmid, journal, publisher, licence, section_title, sha256, source_url —
+        # and, load-bearing, content_type, without which "filter to tables" is
+        # unanswerable at query time and re-stamping means a full re-ingest (the
+        # Qdrant point id is uuid5 of tenant+chunk_id). Default off, so the
+        # existing ASM/PDF path is byte-for-byte unchanged.
+        self._passthrough = frozenset(passthrough_keys or ())
 
     def load(self, source: str) -> list[Document]:
         path = Path(source)
@@ -225,6 +277,38 @@ class JsonlLoader:
             raise LoaderError("no usable documents in JSONL source")
         return docs
 
+    def _metadata(self, enriched: EnrichedDoc, record: dict) -> dict[str, Any]:
+        """The enriched index subset, plus any opted-in raw keys it has no slot for.
+
+        The enriched value **always wins** on a name collision: a passthrough key
+        may never shadow a field the enricher derived and validated. That matters
+        for ``doi``/``title``, whose derivation encodes real precedence rules
+        (``enrich.derive_doi``: metadata > filename > text, with normalisation) —
+        letting the raw record overwrite the result would quietly undo them.
+
+        Only keys present in the record with a non-empty, index-safe value are
+        added (see :func:`_passthrough_value`); an absent or empty key is simply
+        omitted rather than stamped as ``""``/``null``, matching
+        :func:`~ragstack.ingestion.enrich.index_metadata`.
+        """
+        meta = index_metadata(enriched)
+        if not self._passthrough:
+            return meta
+        # No isinstance guard on ``raw``: ``enrich()`` ran first on this same
+        # record and already did ``metadata.get(...)``, so a non-dict ``metadata``
+        # raised before we got here (see the note in the module tests).
+        raw = record.get("metadata") or {}
+        extra: dict[str, Any] = {}
+        # Iterate the record (not the allow-list) so key order is the record's —
+        # deterministic — rather than a frozenset's arbitrary iteration order.
+        for key, value in raw.items():
+            if key not in self._passthrough or key in meta:
+                continue
+            safe = _passthrough_value(value)
+            if safe is not None:
+                extra[key] = safe
+        return {**extra, **meta}
+
     def _document(self, record: dict) -> Document | None:
         enriched = enrich(record, profile=self._profile)
         if enriched.doc_type in self._skip:
@@ -237,7 +321,7 @@ class JsonlLoader:
         return Document(
             id=deterministic_doc_id(key),
             content=text,
-            metadata=index_metadata(enriched),
+            metadata=self._metadata(enriched, record),
             source=rec_path,
         )
 
