@@ -1,5 +1,84 @@
 # Scratchpad — keen-newton worktree
 
+## Session 2026-08-07 — store inventory: measuring the registry↔store gap (#293)
+
+ADR-0005 decision 6 made exclusive tenant ownership the design target, which re-scoped
+three issues. The first buildable piece is the **report-only** half of #293:
+`ragstack/ops/store_inventory.py` + `scripts/store_inventory.py`.
+
+Design decisions worth keeping:
+
+- **Claims come from two places, and missing either produces a false `unclaimed`.**
+  Registry specs, *and* the deployment's settings-derived (or pinned) default store,
+  which has no registry row at all. The largest production corpora on this host are
+  claimed only the second way — a tool that read only `*.collections.json` would report
+  them as unclaimed, which is the report that gets production deleted.
+- **Don't re-derive the default name — call the API's own helpers.** The module builds a
+  real `Settings` from each config file and calls `deps._derived_collection_name()` /
+  `_es_index_name()` / `_qdrant_url_for()` under a patched module global. A second copy
+  of that logic would drift, and drift here has a delete on the end of it.
+- **Build `Settings` by installing the parsed values as the environment**, not as init
+  kwargs: pydantic-settings JSON-decodes complex fields (`qdrant_collection_routes` is a
+  `dict`) in the env source only, so the kwargs route *rejects a config the API accepts*.
+  Caught by a test, not by review.
+- **`canonical_url` folds loopback spellings and makes the port explicit.** One instance
+  written two ways reads as two instances, and then every store on it is unclaimed.
+- **Absence is only asserted for a probed backend**, and a configured-but-missing
+  registry file raises instead of reading as empty — same reason each time: an empty
+  registry turns every store on the instance into a delete candidate.
+- Statuses are `claimed` / `claimed-name-only` / `unclaimed-by-known-registries` /
+  `claimed-but-absent`. The word *orphan* appears nowhere, and a test enforces that.
+
+**First run found a live defect**: `/rag/data/tenants/asm/config/tenant.env` carries
+unquoted JSON in `API_KEYS`/`API_KEY_ROLES`/`API_KEY_TENANTS` — the exact shape that took
+lucid-next down (bash strips the inner double quotes, pydantic then fails to parse). The
+running `:24020` holds valid JSON in its environ, so the file drifted after start and a
+restart would fail. Fix is to single-quote the three values; not applied here (the file
+holds live keys).
+
+Because that config is unreadable, asm's stores currently report unclaimed — including
+the 877k-point `…928f8ebe` that the switch notes label KEEP. That is the report working:
+it says *unclaimed*, and the header says loudly that a registry could not be read.
+
+Deferred deliberately: auto-reclaim (blocked on #263 — the bulk CLI still mints stores the
+registry never sees) and Qdrant on-disk sizes unless `--qdrant-storage` is supplied
+(Qdrant's API exposes no size; ES's `_cat/indices` does).
+
+### Then #263 — the bulk CLI resolves through the registry
+
+`ragstack/ops/ingest_target.py`, wired into `ingest_jsonl.py`, `ingest_shard.py`,
+`ingest_chunks.py`, `load_embeddings.py`. The bulk **data** path is untouched; only the
+**registration** moved.
+
+- `--collection-id` resolves through the configured collection store and supplies *every*
+  physical name — vector collection, its Qdrant instance, ES index. The line that used to
+  read `args.collection or collection_name("ragstack", model, dim)` is exactly how stores
+  got minted that no registry ever saw; the CLI can no longer reach it.
+- **Routed collections beat the command line**, unrouted ones don't. Writing a routed
+  collection to the default instance builds a second invisible copy of a store that
+  already exists elsewhere; for everything else the operator naming an instance is the
+  more specific statement.
+- `--collection` (physical name) still works **when a registry entry claims it**. A flag
+  day would strand running pipelines; a warning would be ignored by exactly the callers
+  that matter. This splits on the property that matters and nothing else.
+- Each writer now writes the provenance manifest **from the registry entry**, which is
+  the actual fix: `check_ingest_build_spec` early-returns when `read_manifest()` is None,
+  so a store with no manifest disarms ADR-0002's 409 guard forever. A test drives the
+  real `deps.check_ingest_build_spec` to prove it is armed after a bulk write.
+- `check_build()` treats `None` as "the caller did not say" — a script ingesting
+  pre-chunked JSON never learns the chunker and must be prevented from contradicting the
+  entry, not blocked by silence.
+- `--create-via-api` re-resolves from the durable registry rather than trusting the 201:
+  if the API wrote to a different registry than the CLI reads, failing there beats
+  failing after a 500k-row load.
+
+**Still open**: `scripts/eval/*` name their own throwaway stores (`chunkcmp_*`,
+`oa_smoke_*`). Forcing each comparison arm through a registry entry is the wrong shape;
+they need an explicit *ephemeral* convention the inventory can recognise. They are the
+last source of unclaimed stores, so #293's reclaim half stays blocked on that, not on this.
+
+---
+
 ## Session 2026-08-05 — access-control MVP: users → ownership → sharing → groups (ADR-0003/0004/0005)
 
 Started from a design conversation that turned three loose concepts (tenant, collection,

@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
@@ -36,6 +37,7 @@ from ragstack.ingestion.load_embeddings import run_load_file
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import merge_summary
+from ragstack.ops import ingest_target
 from ragstack.stores.backpressure import BackpressuredVectorStore
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
@@ -50,7 +52,7 @@ class _NoEmbed:
         raise RuntimeError("load stage does not embed")
 
 
-async def _build_pipeline(args) -> IngestionPipeline:
+async def _build_pipeline(args, target=None) -> IngestionPipeline:
     if (args.vector_backend == "qdrant") != (args.text_backend == "elasticsearch"):
         raise SystemExit(
             "vector-backend and text-backend must be consistent (both durable or "
@@ -64,8 +66,8 @@ async def _build_pipeline(args) -> IngestionPipeline:
         vstore = InMemoryVectorStore()
         tindex = InMemoryTextIndex()
     else:
-        if not args.collection:
-            raise SystemExit("--collection is required for --vector-backend qdrant")
+        if target is None:  # pragma: no cover — main() resolves before calling
+            raise SystemExit("internal: no ingest target resolved")
         # Dim comes from the embedding files themselves (their header), and every
         # file must agree — a wrong-dim file (e.g. 768-d BGE into a 4096-d SFR
         # collection) is caught here, before the collection is created/written.
@@ -78,8 +80,13 @@ async def _build_pipeline(args) -> IngestionPipeline:
         if len(dims) > 1:
             raise SystemExit(f"embedding files disagree on dim: {sorted(dims)}")
         dim = next(iter(dims))
-        es_index = args.es_index or args.collection
-        vstore = QdrantVectorStore(url=args.qdrant_url, collection=args.collection,
+        # The files' dim must also match the registry entry, or this load builds a
+        # store whose vectors are not the ones the entry promises (#263/ADR-0002).
+        target.check_build(dim=dim)
+        # Both names come from the registry entry, never from the command line.
+        # A contradicting --es-index was refused during resolution.
+        es_index = target.es_index
+        vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout,
                                    upsert_batch_size=args.upsert_batch_size,
                                    upsert_concurrency=args.upsert_concurrency)
@@ -98,8 +105,8 @@ async def _build_pipeline(args) -> IngestionPipeline:
                              embedder=_NoEmbed(), vector_store=vstore, text_index=tindex)
 
 
-async def amain(args) -> int:
-    pipeline = await _build_pipeline(args)
+async def amain(args, target=None) -> int:
+    pipeline = await _build_pipeline(args, target)
     receipts = []
     for path in args.embeddings:
         r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant)
@@ -111,6 +118,17 @@ async def amain(args) -> int:
         json.dump(summary, fh, indent=2, sort_keys=True)
     print(f"loaded {summary['n_chunks']} chunk(s) from {summary['n_shards']} file(s); "
           f"failed={summary['n_shards_failed']} → {args.out}", flush=True)
+    # Arm ADR-0002's build-spec guard for this store. Without a manifest,
+    # check_ingest_build_spec early-returns forever and a later API ingest with a
+    # different chunker interleaves silently — the failure #263 is about.
+    manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
+    if target is not None and manifest_dir and not summary["n_shards_failed"]:
+        spec_hash = target.write_manifest(
+            manifest_dir,
+            corpus=f"{summary['n_shards']} embedding file(s)",
+            chunk_count=summary["n_chunks"],
+        )
+        print(f"wrote provenance manifest ({spec_hash}) to {manifest_dir}", flush=True)
     if args.fail_on_error and summary["n_shards_failed"]:
         return 1
     return 0
@@ -137,7 +155,9 @@ def parse_args(argv=None):
                    help="give up (error) if not green after this many seconds; "
                         "default None = wait indefinitely")
     p.add_argument("--vector-backend", choices=["qdrant", "memory"], default="qdrant")
-    p.add_argument("--collection", default=None)
+    p.add_argument("--collection", default=None,
+                   help="DEPRECATED — the PHYSICAL store name. Accepted only when "
+                        "a registry entry already claims it; prefer --collection-id")
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--qdrant-timeout", type=int, default=120)
     p.add_argument("--upsert-batch-size", type=int, default=256,
@@ -148,11 +168,25 @@ def parse_args(argv=None):
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
     p.add_argument("--es-url", default="http://localhost:9200")
     p.add_argument("--es-index", default=None)
+    p.add_argument("--manifest-dir", default="",
+                   help="write a provenance manifest here (defaults to "
+                        "$COLLECTION_MANIFEST_DIR). Arms ADR-0002's build-spec "
+                        "guard for this store; skipped if neither is set")
+    ingest_target.add_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
-    return asyncio.run(amain(parse_args(argv)))
+    args = parse_args(argv)
+    # Resolve the registry entry before any store is created or written (#263).
+    # The in-memory backend is the dev/test path and owns no physical store, so
+    # it has nothing to register.
+    target = (
+        ingest_target.resolve_or_exit(args)
+        if args.vector_backend == "qdrant"
+        else None
+    )
+    return asyncio.run(amain(args, target))
 
 
 if __name__ == "__main__":

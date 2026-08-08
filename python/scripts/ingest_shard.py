@@ -40,6 +40,7 @@ from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
 from ragstack.ingestion.shard import run_shard
+from ragstack.ops import ingest_target
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.qdrant import QdrantVectorStore
@@ -80,7 +81,7 @@ def _build_chunker(args):
     return chunker
 
 
-async def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
+async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> IngestionPipeline:
     # Guard the half-ingest footgun: a qdrant vector store with an in-memory text
     # index (or vice versa) would silently write only one leg. Require both real
     # or both in-memory.
@@ -95,13 +96,16 @@ async def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
         vstore = InMemoryVectorStore()
         tindex = InMemoryTextIndex()
     else:
-        if not args.collection:
-            # Auto-name from (model, dim) only when explicitly allowed; otherwise a
-            # typo'd/empty collection silently writes to an auto-named store.
-            raise SystemExit("--collection is required for --vector-backend qdrant")
-        es_index = args.es_index or args.collection
+        if target is None:  # pragma: no cover — main() resolves before calling
+            raise SystemExit("internal: no ingest target resolved")
+        # Both names come from the registry entry, never from the command line
+        # (#263). A contradicting --es-index was refused during resolution.
+        es_index = target.es_index
         dim = len((await embedder.embed(["dimension probe"]))[0])
-        vstore = QdrantVectorStore(url=args.qdrant_url, collection=args.collection,
+        # The probed dim must match the entry, or this shard's vectors are not the
+        # ones the entry promises (ADR-0002).
+        target.check_build(dim=dim)
+        vstore = QdrantVectorStore(url=target.qdrant_url, collection=target.collection,
                                    vector_size=dim, timeout=args.qdrant_timeout)
         await vstore.ensure_collection()
         tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
@@ -112,17 +116,29 @@ async def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
                                  args.boilerplate, args.boilerplate_config))
 
 
-async def amain(args) -> int:
+async def amain(args, target=None) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
-        pipeline = await _build_pipeline(args, http)
+        pipeline = await _build_pipeline(args, http, target)
         shard_id = args.shard_id or os.path.basename(args.shard)
         receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
           + (f"  ERROR: {receipt.error}" if receipt.error else ""), flush=True)
+    # Arm ADR-0002's build-spec guard for the store this shard wrote into. The
+    # chunk count is deliberately omitted: many shards write one store, so a
+    # per-shard count would describe the corpus wrongly. It is the SPEC that arms
+    # the guard; the count is informational (#263).
+    manifest_dir = args.manifest_dir or os.getenv("COLLECTION_MANIFEST_DIR", "")
+    if target is not None and manifest_dir and receipt.status == COMPLETED:
+        target.write_manifest(
+            manifest_dir,
+            embedding_api=args.embedding_api,
+            embedding_endpoints=list(args.embedding_url),
+            corpus=f"shard {shard_id}",
+        )
     return 0 if receipt.status == COMPLETED else 1
 
 
@@ -148,7 +164,9 @@ def parse_args(argv=None):
     p.add_argument("--chunk-max-tokens", type=int, default=None,
                    help="per-chunk token budget (model window); default auto-detect")
     p.add_argument("--vector-backend", choices=["qdrant", "memory"], default="qdrant")
-    p.add_argument("--collection", default=None)
+    p.add_argument("--collection", default=None,
+                   help="DEPRECATED — the PHYSICAL store name. Accepted only when "
+                        "a registry entry already claims it; prefer --collection-id")
     p.add_argument("--qdrant-url", default="http://localhost:6333")
     p.add_argument("--qdrant-timeout", type=int, default=120)
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
@@ -159,11 +177,30 @@ def parse_args(argv=None):
     p.add_argument("--embedding-model", default="Salesforce/SFR-Embedding-Mistral")
     p.add_argument("--embedding-api-key", default=None)
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--manifest-dir", default="",
+                   help="write a provenance manifest here (defaults to "
+                        "$COLLECTION_MANIFEST_DIR). Arms ADR-0002's build-spec "
+                        "guard for this store; skipped if neither is set")
+    ingest_target.add_arguments(p)
     return p.parse_args(argv)
 
 
 def main(argv=None) -> int:
-    return asyncio.run(amain(parse_args(argv)))
+    args = parse_args(argv)
+    # Resolve the registry entry before embedding or writing anything (#263). The
+    # in-memory backend owns no physical store, so it has nothing to register.
+    target = (
+        ingest_target.resolve_or_exit(
+            args,
+            model=args.embedding_model,
+            chunk_method=args.chunk_method,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+        )
+        if args.vector_backend == "qdrant"
+        else None
+    )
+    return asyncio.run(amain(args, target))
 
 
 if __name__ == "__main__":

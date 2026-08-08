@@ -80,6 +80,7 @@ from ragstack.ingestion.retry import is_transient_error, retry_delay
 from ragstack.ingestion.segmentation_cache import SegmentationCache, config_fingerprint
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.models import Chunk, Document
+from ragstack.ops import ingest_target
 from ragstack.provenance import make_ingest_manifest, write_manifest
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.qdrant import QdrantVectorStore, collection_name
@@ -480,7 +481,18 @@ def _write_run_metrics(
 # Transient-error classification + backoff moved to ragstack.ingestion.retry:
 # library code rather than CLI-private, so a second retriable caller inherits it
 # instead of growing its own. The shared version also jitters the delay.
-async def run(args: argparse.Namespace) -> None:
+async def run(
+    args: argparse.Namespace,
+    target: ingest_target.IngestTarget | None = None,
+) -> None:
+    """Ingest ``args.input``.
+
+    ``target`` is the resolved registry entry (#263) and supplies every physical
+    name — ``main()`` always passes one for an indexing run. It stays optional
+    because the reingest/checkpoint tests drive ``run()`` directly with in-memory
+    stores and a hand-built Namespace; ``None`` keeps the pre-#263 behaviour for
+    those in-process callers only. The CLI cannot reach that path.
+    """
     keep_types = set(args.doc_types) if args.doc_types else None
     # Publisher profile (DOI prefix / filename rule / front-matter set) for
     # enrichment; unknown names degrade to the ASM default in resolve_profile.
@@ -649,17 +661,28 @@ async def run(args: argparse.Namespace) -> None:
         # Size the collection to the model's vector dim via a one-text probe, so
         # the store exists before the concurrent workers start.
         dim = len((await embedder.embed(["dimension probe"]))[0])
-        coll = args.collection or collection_name("ragstack", args.embedding_model, dim)
+        if target is not None:
+            # Every physical name comes from the registry entry (#263). The
+            # auto-naming fallback below is what minted stores no registry ever
+            # saw, so the CLI no longer reaches it — main() always resolves.
+            target.check_build(dim=dim)
+            qdrant_url, coll = target.qdrant_url, target.collection
+            es_index = target.es_index
+        else:
+            qdrant_url, coll = args.qdrant_url, (
+                args.collection or collection_name("ragstack", args.embedding_model, dim)
+            )
+            es_index = args.es_index
         store = QdrantVectorStore(
-            url=args.qdrant_url, collection=coll, vector_size=dim, timeout=args.qdrant_timeout
+            url=qdrant_url, collection=coll, vector_size=dim, timeout=args.qdrant_timeout
         )
         await store.ensure_collection()
         print(f"qdrant collection {coll!r} ready (dim={dim})", file=sys.stderr)
         text_index = None
         if args.text_backend == "elasticsearch":
-            text_index = ElasticsearchTextIndex(url=args.es_url, index=args.es_index)
+            text_index = ElasticsearchTextIndex(url=args.es_url, index=es_index)
             await text_index.ensure_index()
-            print(f"elasticsearch index {args.es_index!r} ready", file=sys.stderr)
+            print(f"elasticsearch index {es_index!r} ready", file=sys.stderr)
 
         # Concurrent pipeline: a producer streams fixed-size chunk batches onto a
         # bounded queue (constant memory on huge inputs); `concurrency` workers
@@ -1095,21 +1118,34 @@ async def run(args: argparse.Namespace) -> None:
             total_chunks = await store.count_tenants([args.tenant])
         except Exception:  # noqa: BLE001 — provenance count is best-effort
             pass
-        manifest = make_ingest_manifest(
-            collection=coll,
-            model=args.embedding_model or "",
-            dim=dim,
-            embedding_api=args.embedding_api,
-            embedding_endpoints=list(args.embedding_url),
-            chunk_method=args.chunk_method,
-            chunk_size=args.chunk_size,
-            chunk_overlap=args.chunk_overlap,
-            chunk_params=params,
-            corpus=str(args.input),
-            chunk_count=total_chunks,
-        )
-        write_manifest(manifest_dir, manifest)
-        print(f"wrote provenance manifest ({manifest.spec_hash}) to {manifest_dir}",
+        if target is not None:
+            # From the registry entry, so a bulk-built and an API-built store are
+            # described identically — and so a later API ingest with a different
+            # chunker has something to be refused by (ADR-0002).
+            spec_hash = target.write_manifest(
+                manifest_dir,
+                embedding_api=args.embedding_api,
+                embedding_endpoints=list(args.embedding_url),
+                corpus=str(args.input),
+                chunk_count=total_chunks,
+            )
+        else:
+            manifest = make_ingest_manifest(
+                collection=coll,
+                model=args.embedding_model or "",
+                dim=dim,
+                embedding_api=args.embedding_api,
+                embedding_endpoints=list(args.embedding_url),
+                chunk_method=args.chunk_method,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap,
+                chunk_params=params,
+                corpus=str(args.input),
+                chunk_count=total_chunks,
+            )
+            write_manifest(manifest_dir, manifest)
+            spec_hash = manifest.spec_hash
+        print(f"wrote provenance manifest ({spec_hash}) to {manifest_dir}",
               file=sys.stderr)
 
     print(f"done: {stats['docs']} docs indexed, {stats['skipped']} skipped, "
@@ -1162,7 +1198,8 @@ def main() -> None:
     p.add_argument("--qdrant-timeout", type=int, default=120,
                    help="per-request Qdrant timeout in seconds (default: %(default)s)")
     p.add_argument("--collection", default=None,
-                   help="Qdrant collection (default: auto-named from model+dim)")
+                   help="DEPRECATED — the PHYSICAL store name. Accepted only when a "
+                        "registry entry already claims it; prefer --collection-id")
     p.add_argument("--replace", action="store_true",
                    help="prune orphan chunks of EDITED docs after upsert (upsert-then-prune, by id). "
                         "Default off = upsert-only, which is correct for unchanged re-ingest and never "
@@ -1280,6 +1317,7 @@ def main() -> None:
                         "folds results in strict file order so the resume checkpoint is "
                         "unaffected. Set >1 to saturate a breakpoint-model fleet (e.g. "
                         "several BGE replicas). Default 1.")
+    ingest_target.add_arguments(p)
     p.add_argument("--manifest-dir", default="",
                    help="write a provenance manifest for the collection here "
                         "(defaults to $COLLECTION_MANIFEST_DIR; skipped if neither is set "
@@ -1296,7 +1334,16 @@ def main() -> None:
     p.add_argument("--checkpoint", type=Path, default=None,
                    help="checkpoint file (default: <input>.ckpt)")
     args = p.parse_args()
-    asyncio.run(run(args))
+    # Resolve (and if asked, create) the registry entry before any I/O (#263).
+    # --no-index is catalog-only: it writes to no store, so it registers nothing.
+    target = None if args.no_index else ingest_target.resolve_or_exit(
+        args,
+        model=args.embedding_model,
+        chunk_method=args.chunk_method,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+    )
+    asyncio.run(run(args, target))
 
 
 if __name__ == "__main__":
