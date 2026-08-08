@@ -1,0 +1,43 @@
+# Example inputs for jats-ingest.cwl — DEV TENANT prototype (#301).
+#
+# Prerequisites, in order:
+#   1. The collection exists in the tenant's registry (POST /v1/collections).
+#      'oa-dev' was created on the dev tenant with fixed_token 512/64 — its
+#      physical store names are SERVER-MINTED (ragstack_lib_oa_dev_..._e788c5be);
+#      nothing in this file names a store.
+#   2. plan_shards.py has produced shard files from the harvest.
+#
+# The registry db is the dev tenant's sqlite collection store, read-only here.
+
+corpus:
+  class: Directory
+  location: /rag/oa/corpus
+
+shards:
+  - class: File
+    location: /rag/ingest/oa/shards/shard-00000.jsonl
+  - class: File
+    location: /rag/ingest/oa/shards/shard-00001.jsonl
+
+collection_id: oa-dev
+
+registry_db:
+  class: File
+  location: /rag/data/tenants/dev/state/ragstack_collections.db
+
+tenant: public
+
+chunk_method: fixed_token
+chunk_size: 512
+chunk_overlap: 64
+
+embedding_url:
+  - http://localhost:9001
+  - http://localhost:9002
+embedding_model: Salesforce/SFR-Embedding-Mistral
+
+# Dev tenant stores (from /rag/data/tenants/dev/config/tenant.env).
+qdrant_url: http://localhost:24041
+es_url: http://localhost:24043
+
+backpressure: false

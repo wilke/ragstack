@@ -25,6 +25,8 @@ tool + receipts).
 | `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
 | `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-PDF (#203 Option A).** Scatter/gather: one PDF → one extract task → one `ingest_shard` task → **one receipt**, then merge. The only PDF workflow `GoWeBackend` can actually drive (below). |
 | `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
+| `jats-ingest.cwl` | **JATS/OA plane (#301).** Hash-fanned PubMed-Central harvest → stores: scatter(`jats_extract` → `embed_shard`) chained per shard (no extract/embed barrier), then one gathered load. Shards come from `plan_shards.py` outside the workflow; the load step takes a **registry `collection_id` + the sqlite registry itself** (#263) — nothing in the DAG names a physical store. One chunk config (fixed_token 512/64) covers prose *and* the pre-capped table/figure units, so there is no second whole-doc pass and no ADR-0002 spec conflict. |
+| `jats-ingest.inputs.yml` | Example inputs (dev tenant: `oa-dev` collection, `:24041`/`:24043` stores). |
 
 ### Containerized runtime (#135)
 

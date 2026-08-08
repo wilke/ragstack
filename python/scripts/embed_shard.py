@@ -69,11 +69,25 @@ def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
         max_concurrency=args.embedding_max_concurrency,
     )
-    # embed_source never calls these — placeholders satisfy the constructor only.
-    return IngestionPipeline(loader=JsonlLoader(), chunker=chunker, embedder=embedder,
+    # The loader is REAL (embed_source loads through it); only the stores are
+    # placeholders — embed_source never touches them.
+    loader = JsonlLoader(passthrough_keys=_passthrough_keys(args))
+    return IngestionPipeline(loader=loader, chunker=chunker, embedder=embedder,
                              vector_store=InMemoryVectorStore(), text_index=InMemoryTextIndex(),
                              boilerplate_filter=filter_from_mode(
                                  args.boilerplate, args.boilerplate_config))
+
+
+def _passthrough_keys(args) -> list[str]:
+    """The record-metadata keys to carry through the loader verbatim.
+
+    The fixed EnrichedDoc schema has no slot for corpus-specific keys (JATS/PMC:
+    ``content_type``, ``pmcid``, ``licence``, ``section_title``, …), and the
+    loader drops what it has no slot for. The allow-list is a property of the
+    CORPUS, so it arrives as a flag per run rather than server config. getattr
+    default: hand-built Namespaces (tests) predate the flag."""
+    raw = getattr(args, "metadata_passthrough", "") or ""
+    return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 async def amain(args) -> int:
@@ -117,6 +131,11 @@ def parse_args(argv=None):
     p.add_argument("--embedding-model", default="Salesforce/SFR-Embedding-Mistral")
     p.add_argument("--embedding-api-key", default=None)
     p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--metadata-passthrough", default="",
+                   help="comma-separated record-metadata keys to carry onto chunks "
+                        "verbatim (enriched fields always win on collision). For a "
+                        "JATS/PMC shard: content_type,pmcid,pmid,journal,publisher,"
+                        "licence,section_title,sha256,source_url,graphic")
     return p.parse_args(argv)
 
 
