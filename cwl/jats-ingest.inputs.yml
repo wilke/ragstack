@@ -13,11 +13,13 @@ corpus:
   class: Directory
   location: /rag/oa/corpus
 
+# Shard files from plan_shards.py. These are the dev-proto test shards, which
+# exist on this host; a real round's shards live wherever --out pointed.
 shards:
   - class: File
-    location: /rag/ingest/oa/shards/shard-00000.jsonl
+    location: /rag/ingest/oa/dev-proto/shards/shard-00000.jsonl
   - class: File
-    location: /rag/ingest/oa/shards/shard-00001.jsonl
+    location: /rag/ingest/oa/dev-proto/shards/shard-00001.jsonl
 
 collection_id: oa-dev
 
