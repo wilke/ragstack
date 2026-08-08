@@ -27,6 +27,18 @@ density, verifies pieces, shrinks toward the worst offender (≤3 rounds). Dev r
 **tables 99.6% single-chunk (was 67.8%), figures 100%**; 24,263 chunks, both legs equal;
 manifest spec_hash 528f8f36 == registry entry → ADR-0002 guard armed.
 
+**GoWe validation (same evening).** `jats-ingest.cwl` submitted to the live engine
+(`--group ragstack --no-upload`, 4 apptainer workers with `--extra-bind /rag`, worker
+image rebuilt from today's merge and deployed to /scout/containers). GoWe drives the
+nested subworkflow via child submissions — no flattening needed. **The first run caught
+a second real bug**: doc ids keyed on `Path(rec_path).resolve()`, and resolve() prepends
+the process CWD to a relative identifier like `PMC123#table-2` — so cwltool-less runs
+(cwd=checkout) and GoWe workers (cwd=task workdir) minted two id families and re-loading
+DUPLICATED the corpus (24,263 → 36,496) instead of upserting. Fixed in #303: absolute
+paths keep resolve() (ASM ids preserved), relative paths key on the literal string.
+Proven after the fix: run 1 → exactly 12,233 both legs; identical run 2 → still 12,233,
+one id family per source_path. Idempotency now holds ACROSS execution environments.
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
