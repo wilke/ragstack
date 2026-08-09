@@ -60,6 +60,26 @@ editorial/news/book-review. Root-tag-only matching matters: `article-type="corre
 greps also hit `related-article-type="correction-forward"` on corrected ORIGINALS
 (regression test pins it). exclusions.jsonl feeds plan_shards --exclude directly.
 
+**OA pilot (batch 0 of 32) — DONE and verified, three production bugs found.**
+`open-access` on the asm tenant (adopted stores :6333/:9200, ADR-0005 decision 7):
+**1,500,340 chunks, legs equal**, facet 992k article / 257k table / 251k figure,
+public read verified with a plain user key via the group:public grant. Pilot findings,
+all merged: (1) #306 embed concurrency was 8 TOTAL across endpoints; (2) #306 driver
+timeout now re-attaches instead of resubmitting; (3) #307 **doc_id had no payload
+index** — delete-prior full-scanned per document; the container load's 7h "hang" was
+~1 delete/s; creating the index live took it to ~125/s, host-side load then ran 358
+chunks/s. Also: one staged .emb.jsonl had a torn line (load failed the file loudly;
+re-embedded host-side). Demo's toy open-access purged via its own API — its
+content-addressed store name COLLIDED with asm's new collection (same id+spec ⇒ same
+name across tenants; the inventory had been reporting it).
+
+**Full-run blocker: #308.** Embed saturates ~58 chunks/s regardless of endpoints (2 vs
+6) or concurrency (8 vs 48) — suspect sequential batch embedding in _embed_and_link, or
+the endpoints themselves are the ceiling; benchmark single-endpoint first. Real corpus
+math: 23.4k chunks/shard × 2,048 = ~48M chunks → 9.6 days at 58 c/s. Load is fine:
+358 c/s host-side with the doc_id index. Ledger has batch 00000-00063 done; batches
+1–31 wait on #308. asm-next :24020 restarted on current main (tok256 pin intact).
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
