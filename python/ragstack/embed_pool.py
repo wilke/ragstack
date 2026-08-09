@@ -62,12 +62,14 @@ class PooledEmbedder:
         http: httpx.AsyncClient,
         max_concurrency: int = 8,
         health_interval: float = 30.0,
+        request_batch: int = 128,
     ) -> None:
         if not endpoints:
             raise ValueError("PooledEmbedder requires at least one endpoint")
         self._eps = endpoints
         self._http = http
         self._sem = asyncio.Semaphore(max(1, max_concurrency))
+        self._request_batch = max(1, request_batch)
         self._health_interval = health_interval
         # Start the clock now so the first probe waits a full interval rather than
         # firing on the first request.
@@ -75,6 +77,25 @@ class PooledEmbedder:
         self._health_lock = asyncio.Lock()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Embed ``texts``, fanning oversized inputs out across the fleet.
+
+        A caller-sized request is the fan-out unit: one ``embed()`` call larger
+        than ``request_batch`` is split and the sub-requests run CONCURRENTLY
+        under the pool's semaphore, each routed least-loaded. Without this, a
+        bulk caller that embeds a whole shard in one call rides a single
+        endpoint while the rest of the fleet idles — measured on the OA pilot
+        (#308): the 6-endpoint fleet benched at 2,606 texts/s, the pipeline
+        achieved 58, because its one 22k-text request pinned one endpoint and
+        parsed a ~350 MB JSON response in one go.
+        """
+        if len(texts) > self._request_batch:
+            batches = [texts[i:i + self._request_batch]
+                       for i in range(0, len(texts), self._request_batch)]
+            results = await asyncio.gather(*(self._embed_one(b) for b in batches))
+            return [v for vectors in results for v in vectors]
+        return await self._embed_one(texts)
+
+    async def _embed_one(self, texts: list[str]) -> list[list[float]]:
         # Refresh health *outside* the semaphore: a slow probe round must not hold
         # a backpressure permit hostage while it waits on /health GETs.
         await self._maybe_refresh_health()
@@ -217,6 +238,7 @@ def make_pooled_embedder(
     api_key: str | None = None,
     max_concurrency: int = 8,
     health_path: str = "/health",
+    request_batch: int = 128,
 ) -> PooledEmbedder:
     """Build a PooledEmbedder over ``base_urls`` using the same per-endpoint
     embedder as the single-endpoint path (``make_embedder``).
@@ -233,7 +255,8 @@ def make_pooled_embedder(
         )
         for url in base_urls
     ]
-    return PooledEmbedder(endpoints, http=http, max_concurrency=max_concurrency)
+    return PooledEmbedder(endpoints, http=http, max_concurrency=max_concurrency,
+                          request_batch=request_batch)
 
 
 def make_embedder_auto(
@@ -244,14 +267,12 @@ def make_embedder_auto(
     api_key: str | None = None,
     max_concurrency: int = 8,
 ):
-    """Pick the single- vs multi-endpoint embedder by URL count.
+    """Build the pooled embedder for the CLI tools (``ingest_shard``/``embed_shard``).
 
-    One URL → :func:`ragstack.embedders.make_embedder`; several →
-    :func:`make_pooled_embedder`. Shared by the CLI tools (``ingest_shard`` and
-    ``embed_shard``) so the "one url or many" branch lives in exactly one place.
+    ALWAYS pooled, even for one URL: the pool is what bounds request size
+    (``request_batch``) and keeps several requests in flight — a single endpoint
+    benched at 223 texts/s serial vs 523 with 4 in flight (#308). A bare
+    ``make_embedder`` would send one unbounded request and wait on it.
     """
-    if len(base_urls) > 1:
-        return make_pooled_embedder(api=api, http=http, base_urls=base_urls, model=model,
-                                    api_key=api_key, max_concurrency=max_concurrency)
-    return make_embedder(api=api, http=http, base_url=base_urls[0], model=model,
-                         api_key=api_key)
+    return make_pooled_embedder(api=api, http=http, base_urls=base_urls, model=model,
+                                api_key=api_key, max_concurrency=max_concurrency)

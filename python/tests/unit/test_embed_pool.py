@@ -260,3 +260,82 @@ async def test_health_refresh_is_interval_gated(http, monkeypatch):
     assert probes == 1
     await pool._maybe_refresh_health()  # gate closes again immediately after
     assert probes == 1
+
+
+# --------------------------------------------------------------------------- #
+# request fan-out (#308): one oversized embed() call must use the whole fleet
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingEmbedder:
+    """Fake endpoint embedder: records request sizes and live concurrency."""
+
+    def __init__(self, tag: str, log: list, gauge: dict):
+        self.tag, self.log, self.gauge = tag, log, gauge
+
+    async def embed(self, texts):
+        self.gauge["now"] += 1
+        self.gauge["max"] = max(self.gauge["max"], self.gauge["now"])
+        try:
+            self.log.append((self.tag, len(texts)))
+            await asyncio.sleep(0.01)  # hold the slot so overlap is observable
+            return [[float(hash((self.tag, t)) % 97)] for t in texts]
+        finally:
+            self.gauge["now"] -= 1
+
+
+def _fanout_pool(n_eps: int, max_concurrency: int, request_batch: int):
+    log: list = []
+    gauge = {"now": 0, "max": 0}
+    eps = [Endpoint(_RecordingEmbedder(f"ep{i}", log, gauge), f"http://e{i}/health")
+           for i in range(n_eps)]
+    pool = PooledEmbedder(eps, http=None, max_concurrency=max_concurrency,
+                          request_batch=request_batch)
+    pool._maybe_refresh_health = _no_health(pool)
+    return pool, log, gauge
+
+
+def _no_health(pool):
+    async def noop():
+        return None
+    return noop
+
+
+@pytest.mark.asyncio
+async def test_oversized_call_is_split_and_runs_concurrently():
+    """The OA-pilot failure shape: one whole-shard embed() call rode a single
+    endpoint while five idled (58 texts/s against a 2,606 texts/s fleet)."""
+    pool, log, gauge = _fanout_pool(n_eps=3, max_concurrency=6, request_batch=10)
+    texts = [f"t{i}" for i in range(100)]
+    out = await pool.embed(texts)
+    assert len(out) == 100
+    assert len(log) == 10                       # 100/10 sub-requests
+    assert all(size <= 10 for _, size in log)   # bounded request size
+    assert gauge["max"] > 1, "sub-requests must overlap, not serialize"
+    assert len({tag for tag, _ in log}) > 1, "fan-out must reach several endpoints"
+
+
+@pytest.mark.asyncio
+async def test_split_preserves_order():
+    pool, _, _ = _fanout_pool(n_eps=2, max_concurrency=4, request_batch=7)
+    texts = [f"text-{i}" for i in range(40)]
+    out = await pool.embed(texts)
+    # each vector is a deterministic function of its text per endpoint; re-embed
+    # single texts to check alignment irrespective of which endpoint served them
+    for i in (0, 6, 7, 13, 39):
+        candidates = {float(hash((f"ep{e}", texts[i])) % 97) for e in range(2)}
+        assert out[i][0] in candidates, f"vector {i} not derived from texts[{i}]"
+
+
+@pytest.mark.asyncio
+async def test_small_call_is_a_single_request():
+    pool, log, _ = _fanout_pool(n_eps=3, max_concurrency=6, request_batch=128)
+    await pool.embed([f"t{i}" for i in range(50)])
+    assert len(log) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrency_cap_still_bounds_the_fanout():
+    pool, _, gauge = _fanout_pool(n_eps=4, max_concurrency=2, request_batch=5)
+    await pool.embed([f"t{i}" for i in range(60)])
+    assert gauge["max"] <= 2
