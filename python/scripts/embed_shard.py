@@ -63,11 +63,14 @@ def _build_chunker(args):
 
 def _build_pipeline(args, http: httpx.AsyncClient) -> IngestionPipeline:
     chunker = _build_chunker(args)  # fail fast on a bad chunk config, before any I/O
+    # None -> scale with the fleet: 8 in-flight PER endpoint. A fixed total
+    # silently caps a wider fleet at a narrower fleet's throughput.
+    concurrency = args.embedding_max_concurrency or 8 * max(len(args.embedding_url), 1)
     embedder = make_embedder_auto(
         api=args.embedding_api, http=http, base_urls=args.embedding_url,
         model=args.embedding_model,
         api_key=args.embedding_api_key or os.getenv("OPENAI_API_KEY"),
-        max_concurrency=args.embedding_max_concurrency,
+        max_concurrency=concurrency,
     )
     # The loader is REAL (embed_source loads through it); only the stores are
     # placeholders — embed_source never touches them.
@@ -130,7 +133,13 @@ def parse_args(argv=None):
     p.add_argument("--embedding-url", nargs="+", default=["http://localhost:9001"])
     p.add_argument("--embedding-model", default="Salesforce/SFR-Embedding-Mistral")
     p.add_argument("--embedding-api-key", default=None)
-    p.add_argument("--embedding-max-concurrency", type=int, default=8)
+    p.add_argument("--embedding-max-concurrency", type=int, default=None,
+                   help="TOTAL in-flight embedding requests across all endpoints. "
+                        "Default: 8 PER endpoint (8 x len(--embedding-url)). The old "
+                        "fixed default of 8 total meant adding endpoints changed "
+                        "nothing — measured on the OA pilot: 6 endpoints ran at the "
+                        "2-endpoint rate (~55 chunks/s) because 8 in-flight spread "
+                        "1.3 deep per endpoint.")
     p.add_argument("--metadata-passthrough", default="",
                    help="comma-separated record-metadata keys to carry onto chunks "
                         "verbatim (enriched fields always win on collision). For a "

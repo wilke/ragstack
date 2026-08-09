@@ -335,3 +335,47 @@ def test_fresh_store_batch_runs_end_to_end(tmp_path, stores):
     rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
                         batch_size=2, stage=stage))
     assert rc == 0
+
+
+# --------------------------------------------------------------------------- #
+# timeout / re-attach (the OA pilot incident)
+# --------------------------------------------------------------------------- #
+
+
+def test_timeout_is_recorded_as_timeout_not_failed(tmp_path, stores):
+    """A poll timeout means the DRIVER gave up, not that the submission died —
+    it is very likely still running server-side. Marking it failed invites a
+    resubmit that redoes hours of embedding the live submission already owns."""
+    _plan(tmp_path, 2)
+    # status always RUNNING → poll can never reach terminal → immediate timeout
+    gowe = _stub_gowe(tmp_path, state="RUNNING")
+    tpl = _template(tmp_path, stores, _registry(tmp_path))
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
+                        batch_size=2, batch_timeout="0.05"))
+    assert rc == 1
+    row = gbi.read_ledger(str(tmp_path / "run" / "ledger.jsonl"))["00000-00001"]
+    assert row["status"] == "timeout"
+    assert row["submission"].startswith("sub_stub_")
+
+
+def test_rerun_reattaches_to_the_timed_out_submission(tmp_path, stores):
+    """The recovery path: rerun polls the recorded submission instead of
+    resubmitting the batch."""
+    _plan(tmp_path, 2)
+    gowe = _stub_gowe(tmp_path)  # now answers COMPLETED
+    tpl = _template(tmp_path, stores, _registry(tmp_path))
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "ledger.jsonl").write_text(json.dumps(
+        {"batch": "00000-00001", "status": "timeout",
+         "submission": "sub_prior_run"}) + "\n")
+    stage = tmp_path / "stage"
+    _stage_outputs(stage, n_chunks=10)
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
+                        batch_size=2, stage=stage))
+    assert rc == 0
+    # no new submit happened
+    assert not (tmp_path / "submits.log").exists()
+    row = gbi.read_ledger(str(run / "ledger.jsonl"))["00000-00001"]
+    assert row["status"] == "done"
+    assert row["submission"] == "sub_prior_run"
