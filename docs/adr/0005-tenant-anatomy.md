@@ -110,6 +110,28 @@ first, so the spec, the cap and the owner row all come from the normal path. The
 means orphan" is nearly-true rather than true, and nearly-true is not a property a delete
 can be built on.
 
+**7. A tenant may reach exclusive ownership by ADOPTION as well as by migration.**
+*(Amendment, 2026-08-08.)* The asm tenant's stores are declared to be the existing
+Qdrant `:6333` and Elasticsearch `:9200` — not the empty per-tenant instances the
+provisioning script stamped out. The boundary test is decision 1's own: **data at
+rest**. Those instances hold asm's three corpora (40.4M points, 58 GB of text
+index); standing up fresh stores would have meant moving all of it to satisfy a
+naming convention. Adoption inverts the cost: the data stays, and what remains is
+a **decommission list** of co-tenants, each with a defined exit:
+
+| co-tenant on the adopted stores | exits when |
+|---|---|
+| old lucid text leg (`lucid_sfr_tok256` on `:9200`) | the legacy `:8010` API retires (pending lucid web-team sign-off) |
+| demo's `open-access` library store | demo repoints to its own stores or retires |
+| eval residue (`chunkcmp_*`, `oa_smoke_*`) | deleted per the store inventory (#299) |
+| KEEP rollback pair (`ragstack_sfr`, `…928f8ebe`) | operator decision after the old `:8000` door closes |
+
+The store inventory is the progress meter: adoption is COMPLETE when every entry
+on these instances shows exactly one owner, asm. Until then the old `:8000` API
+and the tenant API are two front doors on one tenant's data — the same-org
+transition state the glossary permits. The tenant's empty provisioned store
+dirs stay dormant; re-point or delete them when the manifest row is next touched.
+
 ## Deferred: federated tenancy
 
 At some point a global view may be wanted — one query across every tenant a person

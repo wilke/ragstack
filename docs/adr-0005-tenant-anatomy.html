@@ -253,6 +253,45 @@ first, so the spec, the cap and the owner row all come from the normal path. The
 <em>data</em> path stays direct to Qdrant; only the <em>registration</em> moves. Without this, "unclaimed
 means orphan" is nearly-true rather than true, and nearly-true is not a property a delete
 can be built on.</p>
+<p><strong>7. A tenant may reach exclusive ownership by ADOPTION as well as by migration.</strong>
+<em>(Amendment, 2026-08-08.)</em> The asm tenant's stores are declared to be the existing
+Qdrant <code>:6333</code> and Elasticsearch <code>:9200</code> — not the empty per-tenant instances the
+provisioning script stamped out. The boundary test is decision 1's own: <strong>data at
+rest</strong>. Those instances hold asm's three corpora (40.4M points, 58 GB of text
+index); standing up fresh stores would have meant moving all of it to satisfy a
+naming convention. Adoption inverts the cost: the data stays, and what remains is
+a <strong>decommission list</strong> of co-tenants, each with a defined exit:</p>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>co-tenant on the adopted stores</th>
+<th>exits when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>old lucid text leg (<code>lucid_sfr_tok256</code> on <code>:9200</code>)</td>
+<td>the legacy <code>:8010</code> API retires (pending lucid web-team sign-off)</td>
+</tr>
+<tr>
+<td>demo's <code>open-access</code> library store</td>
+<td>demo repoints to its own stores or retires</td>
+</tr>
+<tr>
+<td>eval residue (<code>chunkcmp_*</code>, <code>oa_smoke_*</code>)</td>
+<td>deleted per the store inventory (#299)</td>
+</tr>
+<tr>
+<td>KEEP rollback pair (<code>ragstack_sfr</code>, <code>…928f8ebe</code>)</td>
+<td>operator decision after the old <code>:8000</code> door closes</td>
+</tr>
+</tbody>
+</table></div>
+<p>The store inventory is the progress meter: adoption is COMPLETE when every entry
+on these instances shows exactly one owner, asm. Until then the old <code>:8000</code> API
+and the tenant API are two front doors on one tenant's data — the same-org
+transition state the glossary permits. The tenant's empty provisioned store
+dirs stay dormant; re-point or delete them when the manifest row is next touched.</p>
 <h2 id="deferred-federated-tenancy">Deferred: federated tenancy</h2>
 <p>At some point a global view may be wanted — one query across every tenant a person
 belongs to. The shape is known and recorded so it isn't re-derived: a <strong>tenant registry</strong>,
