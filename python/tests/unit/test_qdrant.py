@@ -207,6 +207,23 @@ async def test_ensure_collection_backfills_tenant_index_on_existing():
     assert client.created == [] and ("c", "tenant_id") in client.indexed
 
 
+@pytest.mark.asyncio
+async def test_ensure_collection_indexes_doc_id():
+    """delete() filters on doc_id, and every re-ingest/bulk load delete-priors
+    per document — without this index each delete is a full collection scan.
+    Measured on the OA pilot: ~1 delete/s past 150k points (the 'hung' load),
+    ~125/s the moment the index existed."""
+    client = _FakeClient()
+    store = _store(client, collection="new", size=256)
+    await store.ensure_collection()
+    assert ("new", "doc_id") in client.indexed
+    # and back-filled on a pre-existing collection too
+    client2 = _FakeClient(existing={"old": 768})
+    store2 = _store(client2, collection="old", size=768)
+    await store2.ensure_collection()
+    assert ("old", "doc_id") in client2.indexed
+
+
 # --- count_tenants: exact where affordable, estimate on timeout --------------
 
 @pytest.mark.asyncio
