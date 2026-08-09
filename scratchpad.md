@@ -80,6 +80,18 @@ math: 23.4k chunks/shard × 2,048 = ~48M chunks → 9.6 days at 58 c/s. Load is 
 358 c/s host-side with the doc_id index. Ledger has batch 00000-00063 done; batches
 1–31 wait on #308. asm-next :24020 restarted on current main (tok256 pin intact).
 
+**FULL OA RUN LAUNCHED (2026-08-09 ~15:00).** Driver pid on coconut, log
+/rag/ingest/oa/asm-run/driver.log, ledger same dir. 31 batches × 64 shards remaining
+(batch 0 = pilot, done). #308 fixed first (#309): PooledEmbedder fans oversized embed()
+calls across the fleet (request_batch=128, gather under the pool semaphore; auto factory
+always pools) — measured 58 → 560 chunks/s through the real pipeline; fleet benched at
+2,606 texts/s so the GPUs were never the ceiling; residual per-shard cost is the 1.2 GB
+embedding-file JSON write (#308 stays open, low priority). Worker image rebuilt+verified
+with the fix. Projection: ~2.5 h/batch (embed ~74 min at 4 workers + load ~70 min at
+358 c/s) ≈ 3.2 days. Expected final: ~48M chunks in open-access on the adopted asm
+stores. If the driver dies: rerun the same command — ledger resume + timeout re-attach
+are tested. Verify per batch: legs equal in ledger rows; prod ES guard alerts >3s.
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
