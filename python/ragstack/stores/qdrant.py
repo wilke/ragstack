@@ -213,24 +213,31 @@ class QdrantVectorStore:
                     size=self._vector_size, distance=self._distance
                 ),
             )
-        # Index the tenant field so tenant-filtered counts/searches use the index
-        # rather than a full scan. Runs for pre-existing collections too (e.g. one
-        # built before this fix), where it back-fills the missing index.
-        await self._ensure_tenant_index()
+        # Index the fields our filters actually use, so filtered operations hit
+        # an index rather than a full scan. Runs for pre-existing collections too
+        # (back-fills a missing index; Qdrant builds it in the background).
+        await self._ensure_payload_indexes()
 
-    async def _ensure_tenant_index(self) -> None:
-        """Ensure a keyword payload index on the tenant field. Idempotent and
-        best-effort: a pre-existing index (or a transient failure) is non-fatal —
-        counts just fall back to the slow scan path until it's built. On a large
-        collection Qdrant builds the index in the background."""
-        try:
-            await self._client.create_payload_index(
-                collection_name=self._collection,
-                field_name=_TENANT_FIELD,
-                field_schema=PayloadSchemaType.KEYWORD,
-            )
-        except Exception as e:  # noqa: BLE001 — already-exists / transient; non-fatal
-            log.debug("tenant_id index on %r not (re)created: %s", self._collection, e)
+    async def _ensure_payload_indexes(self) -> None:
+        """Keyword payload indexes on ``tenant_id`` AND ``doc_id``. Idempotent and
+        best-effort: a pre-existing index (or transient failure) is non-fatal —
+        operations just fall back to the scan path until it is built.
+
+        ``doc_id`` is not optional at ingest scale: ``delete()`` (the per-document
+        delete-prior every re-ingest and bulk load performs) filters on it, and
+        without the index each delete is a full collection scan. Measured on the
+        OA pilot: a 64-shard load ground to ~1 delete/s once the store passed
+        ~150k points — the "hung" container load was this — and jumped to
+        ~125/s the moment the index was created live."""
+        for field in (_TENANT_FIELD, "doc_id"):
+            try:
+                await self._client.create_payload_index(
+                    collection_name=self._collection,
+                    field_name=field,
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+            except Exception as e:  # noqa: BLE001 — already-exists / transient; non-fatal
+                log.debug("%s index on %r not (re)created: %s", field, self._collection, e)
 
     async def upsert(self, chunks: list[Chunk]) -> None:
         if not chunks:
@@ -313,7 +320,7 @@ class QdrantVectorStore:
         is belt-and-braces: it just skips a round trip that can only return 0.
 
         Exact where affordable, estimate where not. The tenant field is indexed
-        (see ``_ensure_tenant_index``) so *filtering* is fast — but an EXACT count
+        (see ``_ensure_payload_indexes``) so *filtering* is fast — but an EXACT count
         still enumerates every matching point, which on a huge, largely
         single-tenant collection (e.g. 24.8M points all ``public``) is O(matches)
         and blows past ``_COUNT_TIMEOUT_S``. On that timeout we fall back to

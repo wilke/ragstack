@@ -15,7 +15,7 @@ wrong vector distribution — it does not transfer. This script re-measures with
   collection (default ``ragstack_sfr_tok256``) and re-used as the corpus, so the
   embedding distribution is the true one;
 * **synthetic payloads** (``library_id`` + ``tenant_id``) with keyword indexes on
-  both, mirroring ``ragstack/stores/qdrant.py::_ensure_tenant_index``;
+  both, mirroring ``ragstack/stores/qdrant.py::_ensure_payload_indexes``;
 * a **selectivity sweep** from ~10^-2 down to ~10^-5 of the collection, crossed
   with several ``k``;
 * **three filter shapes** (conjunction / library-only / tenant-only) so a failure
@@ -404,7 +404,7 @@ def create_scratch(
         hnsw_config=hnsw,
         optimizers_config=opt,
     )
-    # Mirrors qdrant.py::_ensure_tenant_index — plus the library_id index that
+    # Mirrors qdrant.py::_ensure_payload_indexes — plus the library_id index that
     # §4 says ONLY ragstack_lib_v1 gets.
     for fname in (TENANT_FIELD, LIBRARY_FIELD):
         client.create_payload_index(
