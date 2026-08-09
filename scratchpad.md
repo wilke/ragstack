@@ -49,6 +49,17 @@ batch-size 64, six embedding endpoints (9001-9006 are up; dev inputs list only 2
 current harvest ≈ 2-2.5 days, gated by load throughput if it stays at the measured
 ~89 chunks/s — re-measure load off NFS before the big run.
 
+**Notice scanner (post-harvest).** `scripts/scan_notices.py`: retraction is NOT a flag
+— it is a separate notice article whose `related-article[@related-article-type=
+'retracted-article']/@xlink:href` names the retracted ORIGINAL, whose own XML is
+untouched. So exclusion is two-hop: drop the notice AND its target. Corrections are the
+opposite (original valid + links forward to its fix): both halves kept. Full-harvest
+scan: 1,439,753 roots in 34s, 0 unreadable → 3,867 exclusions (0.27%): 106 retraction
+notices + 77 retracted originals + 24 EoC notices (26 originals kept+listed) + 3,660
+editorial/news/book-review. Root-tag-only matching matters: `article-type="correction"`
+greps also hit `related-article-type="correction-forward"` on corrected ORIGINALS
+(regression test pins it). exclusions.jsonl feeds plan_shards --exclude directly.
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
