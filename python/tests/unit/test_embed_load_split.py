@@ -305,18 +305,22 @@ def test_read_embedding_file_tolerates_missing_count(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_make_embedder_auto_picks_single_vs_pooled():
+async def test_make_embedder_auto_always_pools():
+    """Changed by #308: even one URL gets the pool, because the pool is what
+    bounds request size and keeps several requests in flight — a single
+    endpoint benched 223 texts/s serial vs 523 with 4 in flight. A bare
+    OpenAIEmbedder sends one unbounded request and waits."""
     import httpx
 
     from ragstack.embed_pool import PooledEmbedder, make_embedder_auto
-    from ragstack.embedders import OpenAIEmbedder
     async with httpx.AsyncClient() as http:
         one = make_embedder_auto(api="openai", http=http, base_urls=["http://a"],
                                  model="m")
         many = make_embedder_auto(api="openai", http=http,
                                   base_urls=["http://a", "http://b"], model="m")
-    assert isinstance(one, OpenAIEmbedder)
+    assert isinstance(one, PooledEmbedder)
     assert isinstance(many, PooledEmbedder)
+    assert len(one._eps) == 1 and len(many._eps) == 2
 
 
 # --- streaming embed (memory-bounded large shards) --------------------------- #
