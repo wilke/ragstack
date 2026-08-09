@@ -233,15 +233,26 @@ def render_inputs(template: dict, shard_paths: list[str], out_path: str) -> None
 # --------------------------------------------------------------------------- #
 
 def run_batch(args, template: dict, store: str, key: str,
-              shard_paths: list[str], ledger_path: str) -> bool:
-    """One batch through submit → poll → verify → clean. True = batch done."""
+              shard_paths: list[str], ledger_path: str,
+              reattach_sub: str | None = None) -> bool:
+    """One batch through submit → poll → verify → clean. True = batch done.
+
+    ``reattach_sub`` skips the submit and re-polls an EXISTING submission — the
+    recovery for a driver that timed out (or died) while its submission kept
+    running. Without it, a rerun resubmits and redoes hours of embedding that
+    the still-running submission already owns. Found live on the OA pilot: the
+    driver declared TIMEOUT and stopped while the submission was mid-load.
+    """
     t0 = time.time()
     q0, e0 = store_counts(args.qdrant_url, args.es_url, store)
-    inputs_path = os.path.join(args.out, f"inputs-{key}.json")
-    render_inputs(template, shard_paths, inputs_path)
-
-    sub_id = submit(args.gowe_bin, args.server, args.cwl, inputs_path, args.group)
-    print(f"[{key}] submitted {sub_id} ({len(shard_paths)} shards)", flush=True)
+    if reattach_sub:
+        sub_id = reattach_sub
+        print(f"[{key}] re-attaching to {sub_id}", flush=True)
+    else:
+        inputs_path = os.path.join(args.out, f"inputs-{key}.json")
+        render_inputs(template, shard_paths, inputs_path)
+        sub_id = submit(args.gowe_bin, args.server, args.cwl, inputs_path, args.group)
+        print(f"[{key}] submitted {sub_id} ({len(shard_paths)} shards)", flush=True)
     state = poll(args.gowe_bin, args.server, sub_id,
                  interval=args.poll_interval, timeout=args.batch_timeout)
 
@@ -268,7 +279,12 @@ def run_batch(args, template: dict, store: str, key: str,
     if ok and not args.keep_embeddings:
         row["reclaimed_bytes"] = clean_embeddings(args.stage_out, t0, dry=False)
 
-    row["status"] = "done" if ok else "failed"
+    # A timeout is NOT a failure: the submission is (very likely) still
+    # running server-side, and a rerun must re-attach to it, not resubmit.
+    if state.startswith("TIMEOUT"):
+        row["status"] = "timeout"
+    else:
+        row["status"] = "done" if ok else "failed"
     row["wall_s"] = round(time.time() - t0, 1)
     append_ledger(ledger_path, row)
     print(f"[{key}] {row['status']}: state={state} delta={row['delta']} "
@@ -297,8 +313,10 @@ def main(argv=None) -> int:
     p.add_argument("--keep-embeddings", action="store_true",
                    help="do not delete staged *.emb.jsonl after a verified load")
     p.add_argument("--poll-interval", type=float, default=20.0)
-    p.add_argument("--batch-timeout", type=float, default=4 * 3600,
-                   help="seconds before a batch is declared TIMEOUT (default 4h)")
+    p.add_argument("--batch-timeout", type=float, default=12 * 3600,
+                   help="seconds before a batch is declared TIMEOUT (default 12h). "
+                        "A timeout row keeps its submission id and a rerun "
+                        "RE-ATTACHES to it instead of resubmitting.")
     p.add_argument("--continue-on-failure", action="store_true")
     p.add_argument("--dry-run", action="store_true",
                    help="print the batch plan and per-batch shard counts; submit nothing")
@@ -327,7 +345,10 @@ def main(argv=None) -> int:
 
     os.makedirs(args.out, exist_ok=True)
     ledger_path = os.path.join(args.out, "ledger.jsonl")
-    done = {k for k, r in read_ledger(ledger_path).items() if r.get("status") == "done"}
+    ledger = read_ledger(ledger_path)
+    done = {k for k, r in ledger.items() if r.get("status") == "done"}
+    reattach = {k: r["submission"] for k, r in ledger.items()
+                if r.get("status") == "timeout" and r.get("submission")}
 
     todo = [(k, s) for k, s in batches if k not in done]
     n_shards = sum(len(s) for _, s in todo)
@@ -340,7 +361,8 @@ def main(argv=None) -> int:
         return 0
 
     for k, s in todo:
-        if not run_batch(args, template, store, k, s, ledger_path):
+        if not run_batch(args, template, store, k, s, ledger_path,
+                         reattach_sub=reattach.get(k)):
             if not args.continue_on_failure:
                 print(f"stopping at failed batch {k} (rerun to retry it)", file=sys.stderr)
                 return 1
