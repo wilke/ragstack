@@ -31,6 +31,10 @@ class _Stores(BaseHTTPRequestHandler):
     es = 0
 
     def do_GET(self):  # noqa: N802
+        if "missing_store" in self.path:  # simulate a store that does not exist yet
+            self.send_response(404)
+            self.end_headers()
+            return
         if self.path.startswith("/collections/"):
             body = {"result": {"points_count": type(self).qdrant, "status": "green"}}
         elif self.path.endswith("/_count"):
@@ -309,3 +313,25 @@ def test_keep_embeddings_flag_disables_cleanup(tmp_path, stores):
                         batch_size=2, stage=stage) + ["--keep-embeddings"])
     assert rc == 0
     assert list(stage.glob("task_e*/shard-*.emb.jsonl"))
+
+
+def test_fresh_store_counts_as_zero_not_404(tmp_path, stores):
+    """Batch 0 of a fresh collection runs before ensure_collection() has created
+    the physical store — the registry row exists, the bytes don't. Found live:
+    the pilot's baseline count 404ed and killed the driver before submitting."""
+    assert gbi.store_counts(stores, stores, "missing_store") == (0, 0)
+
+
+def test_fresh_store_batch_runs_end_to_end(tmp_path, stores):
+    """The whole pilot shape: registry entry present, physical store absent at
+    baseline, present after the (stubbed) load."""
+    _plan(tmp_path, 2)
+    gowe = _stub_gowe(tmp_path)
+    db = _registry(tmp_path, store="phys_store")
+    tpl = _template(tmp_path, stores, db)
+    stage = tmp_path / "stage"
+    _stage_outputs(stage, n_chunks=10)
+    _Stores.qdrant = _Stores.es = 10
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
+                        batch_size=2, stage=stage))
+    assert rc == 0

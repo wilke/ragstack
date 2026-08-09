@@ -106,10 +106,25 @@ def _get_json(url: str, payload: dict | None = None) -> Any:
 
 
 def store_counts(qdrant_url: str, es_url: str, store: str) -> tuple[int, int]:
-    q = _get_json(f"{qdrant_url.rstrip('/')}/collections/{store}")
-    qc = int(q["result"]["points_count"])
-    e = _get_json(f"{es_url.rstrip('/')}/{store}/_count")
-    return qc, int(e["count"])
+    """Both legs' counts. A 404 is 0, not an error: batch 0 of a fresh
+    collection runs before the load's ensure_collection() has created the
+    physical store — the registry entry exists (#263 requires it), the bytes
+    don't yet."""
+    import urllib.error
+
+    def _count(url: str) -> int:
+        try:
+            d = _get_json(url)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return 0
+            raise
+        if "result" in d:
+            return int(d["result"]["points_count"])
+        return int(d["count"])
+
+    return (_count(f"{qdrant_url.rstrip('/')}/collections/{store}"),
+            _count(f"{es_url.rstrip('/')}/{store}/_count"))
 
 
 def resolve_store_name(registry_db: str, collection_id: str) -> str:
