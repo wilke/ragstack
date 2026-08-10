@@ -20,8 +20,6 @@ from ragstack.api.collections import CollectionRegistry, confined_collection_nam
 from ragstack.api.deps import (
     get_collections,
     get_graph_store,
-    get_text_index,
-    get_vector_store,
     probe_tenant_count,
 )
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
@@ -48,16 +46,6 @@ class StoreStatsResponse(BaseModel):
     graph: StoreCount
 
 
-async def _count_store(backend: str, store: Any, tenants: list[str]) -> StoreCount:
-    """Probe a vector/text store's tenant-filtered count, degrading gracefully.
-
-    Shares the probe with /v1/collections via ``deps.probe_tenant_count`` (which
-    logs a server-side trail on failure); ``available`` is False whenever the count
-    couldn't be obtained (store missing, no method, or the probe errored)."""
-    n = await probe_tenant_count(store, tenants)
-    return StoreCount(backend=backend, available=n is not None, count=n)
-
-
 async def _count_graph(
     backend: str, store: Any, tenant_id: str, collection: str | None = None
 ) -> StoreCount:
@@ -78,35 +66,69 @@ async def _count_graph(
     return StoreCount(backend=backend, available=True, count=int(relationships))
 
 
+async def _count_across(backend: str, targets: list[Any], tenants: list[str]) -> StoreCount:
+    """Sum a store's tenant-filtered count across every readable collection.
+
+    ``targets`` is already deduplicated by PHYSICAL store — two registry entries
+    may deliberately share one Qdrant collection / ES index (``CollectionEntry.
+    es_index``), and counting per entry would report that data twice.
+
+    All-or-nothing on failure: a partial sum presented as a total is a wrong
+    number, which is worse than no number, so if any probe fails the whole store
+    degrades to ``available=false`` / ``count=null`` — the same shape a single
+    failed probe produced before. No readable collections is a true zero.
+    """
+    counts = await asyncio.gather(*(probe_tenant_count(t, tenants) for t in targets))
+    if any(c is None for c in counts):
+        return StoreCount(backend=backend, available=False, count=None)
+    return StoreCount(backend=backend, available=True, count=sum(counts))  # type: ignore[arg-type]
+
+
 @router.get("/stats/stores", response_model=StoreStatsResponse)
 async def stats_stores(
     request: Request,
     principal: Principal = Depends(resolve_principal),
-    vector_store: Any = Depends(get_vector_store),
-    text_index: Any = Depends(get_text_index),
+    registry: CollectionRegistry = Depends(get_collections),
     graph_store: Any = Depends(get_graph_store),
 ) -> StoreStatsResponse:
     """Per-store counts scoped to the caller's readable tenants (own + public).
 
-    Never a global store total: the vector/text counts are tenant-filtered and
-    the graph count is scoped by the store — and, for a confined tenant, by its
-    collection. Any store that errors or lacks a count method degrades to
-    ``available=false`` / ``count=null``.
+    The vector/text counts span EVERY collection the caller may read, not just
+    the default one. They used to probe only the settings-derived default store,
+    which reported 0 for a deployment whose corpus lives in a named collection —
+    each collection is its own physical Qdrant collection / ES index, so the
+    default store genuinely holds nothing and the honest total is their sum.
+    /v1/stats/tenants splits the same figure per (tenant, collection).
+
+    Never a global store total: each probe is filtered to the readable tenants,
+    the collections are filtered by the caller's allowlist AND ownership (the
+    same intersection /v1/collections applies), and the graph count is scoped by
+    the store — and, for a confined tenant, by its collection. Any store that
+    errors or lacks a count method degrades to ``available=false`` /
+    ``count=null``.
     """
     tenants = readable_tenants(principal.tenant)
+    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    entries = [e for e in registry.entries() if allowed is None or e.id in allowed]
+    entries = await filter_readable(principal, entries)
+    # Deduplicate by physical store, keyed separately per store kind because an
+    # entry's ES index need not be named after its Qdrant collection.
+    vector_targets: dict[str, Any] = {}
+    text_targets: dict[str, Any] = {}
+    for e in entries:
+        vector_targets.setdefault(e.collection, e.vector_store)
+        text_targets.setdefault(e.es_index(), e.text_index)
     graph_collection = confined_collection_name(
         getattr(request.app.state, "collections", None),
         principal.tenant,
         settings.tenant_collections,
     )
-    return StoreStatsResponse(
-        tenants=tenants,
-        vector=await _count_store(settings.vector_backend, vector_store, tenants),
-        text=await _count_store(settings.text_backend, text_index, tenants),
-        graph=await _count_graph(
-            settings.graph_backend, graph_store, principal.tenant, graph_collection
-        ),
+    vector, text, graph = await asyncio.gather(
+        _count_across(settings.vector_backend, list(vector_targets.values()), tenants),
+        _count_across(settings.text_backend, list(text_targets.values()), tenants),
+        _count_graph(settings.graph_backend, graph_store, principal.tenant, graph_collection),
     )
+    return StoreStatsResponse(tenants=tenants, vector=vector, text=text, graph=graph)
 
 
 class TenantCollectionCount(BaseModel):
@@ -145,8 +167,9 @@ async def stats_tenants(
     """The caller's tenancy: identity, readable tenants, collection allowlist, and
     a per-tenant × per-collection count breakdown.
 
-    Unlike /v1/stats/stores — which reports one number per store for the *union*
-    of readable tenants — this splits that union apart, so an operator can see
+    Unlike /v1/stats/stores — which reports one number per store, summed over
+    every readable collection for the *union* of readable tenants — this splits
+    that total apart on both axes, so an operator can see
     which tenant actually owns a corpus (e.g. everything sitting in ``public``)
     and per collection rather than in aggregate.
 

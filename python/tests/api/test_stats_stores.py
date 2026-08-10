@@ -108,3 +108,91 @@ async def test_graph_count_is_collection_scoped_for_a_confined_tenant(client, mo
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
     assert body["graph"]["count"] == 1  # not 2 — the other collection's edge is out
+
+
+def _entry(cid: str, physical: str, vector_store, text_index, es_index: str = ""):
+    """A registry entry bound to the given physical stores (test helper)."""
+    from ragstack.api.collections import CollectionEntry
+
+    return CollectionEntry(
+        id=cid, label=cid, collection=physical,
+        model="test-model", dim=4, chunk_method="fixed", chunk_size=None,
+        chunk_overlap=None, chunk_params={},
+        is_shared_surface=False, retriever=None,
+        vector_store=vector_store, text_index=text_index,
+        text_index_name=es_index,
+    )
+
+
+def _publish(store, collection_id: str) -> None:
+    """World-read the collection, the way the conftest seeds ``default`` — these
+    tests are about COUNTING, and an unpublished entry is filtered out by the
+    ownership gate before any probe runs."""
+    import uuid
+
+    from ragstack.acl_store import GRANTEE_GROUP, PERM_READ, PUBLIC_GROUP, ShareRecord
+
+    rec = ShareRecord(
+        id=uuid.uuid4().hex,
+        collection_id=collection_id,
+        grantee_type=GRANTEE_GROUP,
+        grantee_id=PUBLIC_GROUP,
+        permission=PERM_READ,
+        granted_by="system:test",
+        granted_at="2020-01-01T00:00:00+00:00",
+    )
+    store._shares[rec.id] = rec
+
+
+async def test_counts_span_every_readable_collection(client, monkeypatch, _acl_store):
+    """The corpus usually lives in a NAMED collection, not the default store.
+
+    Counting only the default one reported 0 for a deployment whose data sits in
+    e.g. `oa-dev` — each collection is its own physical Qdrant collection / ES
+    index, so the honest total is their sum.
+    """
+    from ragstack.api.collections import CollectionRegistry
+    from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
+
+    _configure_keys(monkeypatch)
+    await _seed()  # 3 readable chunks in the default stores
+
+    # A second collection with its own physical stores, holding one more chunk.
+    other_vec, other_txt = InMemoryVectorStore(), InMemoryTextIndex()
+    extra = [_chunk("c1", "acme")]
+    await other_vec.upsert(extra)
+    await other_txt.index(extra)
+    _publish(_acl_store, "named")
+    app.state.collections = CollectionRegistry(
+        [
+            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry("named", "ragstack_named", other_vec, other_txt),
+        ],
+        default_id="default",
+    )
+
+    body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
+    assert body["vector"]["count"] == 4  # 3 in the default store + 1 in the named one
+    assert body["text"]["count"] == 4
+
+
+async def test_shared_physical_store_is_counted_once(client, monkeypatch, _acl_store):
+    """Two registry entries may deliberately share one physical store; summing
+    per entry would report that data twice."""
+    from ragstack.api.collections import CollectionRegistry
+
+    _configure_keys(monkeypatch)
+    await _seed()  # 3 readable chunks
+    _publish(_acl_store, "b")
+
+    app.state.collections = CollectionRegistry(
+        [
+            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry("b", "ragstack", app.state.vector_store, app.state.text_index),
+        ],
+        default_id="default",
+    )
+
+    body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
+    assert body["vector"]["count"] == 3  # not 6
+    assert body["text"]["count"] == 3

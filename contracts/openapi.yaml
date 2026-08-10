@@ -735,8 +735,13 @@ paths:
         Chunk/document counts for the vector, text, and graph stores, each
         FILTERED to the caller's readable tenants (own + the shared `public`
         corpus) — never a global store total, so a caller can never learn
-        another tenant's corpus size. A store that is unavailable or errors
-        degrades to `available: false` with a null count (no 500).
+        another tenant's corpus size. The vector/text counts SUM every
+        collection the caller may read (each collection is its own physical
+        Qdrant collection / ES index), deduplicated by physical store because
+        two collections may deliberately share one; `/v1/stats/tenants` splits
+        the same total per tenant × collection. A store that is unavailable or
+        errors degrades to `available: false` with a null count (no 500) — a
+        partial sum is never reported as a total.
       tags: [Stats]
       security:
         - ApiKeyAuth: []
