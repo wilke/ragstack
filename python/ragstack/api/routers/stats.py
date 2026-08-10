@@ -22,6 +22,7 @@ from ragstack.api.deps import (
     get_graph_store,
     probe_tenant_count,
 )
+from ragstack.api.scope import count_scope, shared_scope
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -67,7 +68,7 @@ async def _count_graph(
 
 
 async def _count_across(
-    backend: str, targets: dict[str, Any], tenants: list[str]
+    backend: str, targets: dict[str, tuple[Any, list[str]]]
 ) -> StoreCount:
     """Sum a store's tenant-filtered count across every readable collection.
 
@@ -88,7 +89,9 @@ async def _count_across(
     logs the traceback but not which store it was probing).
     """
     names = list(targets)
-    counts = await asyncio.gather(*(probe_tenant_count(t, tenants) for t in targets.values()))
+    counts = await asyncio.gather(
+        *(probe_tenant_count(store, scope) for store, scope in targets.values())
+    )
     failed = [n for n, c in zip(names, counts, strict=True) if c is None]
     if failed:
         log.warning(
@@ -145,17 +148,20 @@ async def stats_stores(
     entries = await filter_readable(principal, entries)
     # Keyed by physical store, per leg — an entry's ES index need not be named
     # after its Qdrant collection. See _count_across on why the keying exists.
-    vector_targets: dict[str, Any] = {}
-    text_targets: dict[str, Any] = {}
-    for e in entries:
-        vector_targets.setdefault(e.collection, e.vector_store)
-        text_targets.setdefault(e.es_index(), e.text_index)
+    # Each entry carries its OWN scope: a shared collection counts the owner's
+    # chunks (what a query over it returns), an unshared one stays own+public.
+    scopes = await asyncio.gather(*(count_scope(e, registry, principal) for e in entries))
+    vector_targets: dict[str, tuple[Any, list[str]]] = {}
+    text_targets: dict[str, tuple[Any, list[str]]] = {}
+    for e, sc in zip(entries, scopes, strict=True):
+        vector_targets.setdefault(e.collection, (e.vector_store, sc))
+        text_targets.setdefault(e.es_index(), (e.text_index, sc))
     graph_collection = confined_collection_name(
         registry, principal.tenant, settings.tenant_collections
     )
     vector, text, graph = await asyncio.gather(
-        _count_across(settings.vector_backend, vector_targets, tenants),
-        _count_across(settings.text_backend, text_targets, tenants),
+        _count_across(settings.vector_backend, vector_targets),
+        _count_across(settings.text_backend, text_targets),
         _count_graph(settings.graph_backend, graph_store, principal.tenant, graph_collection),
     )
     return StoreStatsResponse(tenants=tenants, vector=vector, text=text, graph=graph)
@@ -206,6 +212,13 @@ async def stats_tenants(
     Still never leaks another tenant's size: the rows are exactly the tenants this
     caller may already read, and the columns exactly the collections its allowlist
     permits. The ``policy`` map names other tenants, so it is admin-only.
+
+    Rows include a writer-tenant reached through a SHARE (``scope.shared_scope``),
+    because a query over that collection returns its chunks — omitting the row
+    reported 0 for a corpus the caller can search, and made this endpoint's split
+    disagree with /v1/stats/stores' sum. A shared row is scoped to the collections
+    that actually share with the caller: another collection's cell in that row is
+    ``null``, never the owner's size.
     """
     tenants = readable_tenants(principal.tenant)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
@@ -218,18 +231,41 @@ async def stats_tenants(
     # SINGLE tenant, which is what makes the split meaningful. Gathered so the
     # latency is one round-trip rather than 2·|tenants|·|collections|; each probe
     # degrades to None on its own (probe_tenant_count never raises).
+    # Which extra writer-tenant (if any) each entry is readable through, so a
+    # shared corpus gets a row instead of reading as zero everywhere.
+    extra = await asyncio.gather(*(shared_scope(e, registry, principal) for e in entries))
+    shared_by_tenant: dict[str, set[str]] = {}
+    for e, owners in zip(entries, extra, strict=True):
+        for owner in owners:
+            shared_by_tenant.setdefault(owner, set()).add(e.id)
+    rows_tenants = [*tenants, *(t for t in sorted(shared_by_tenant) if t not in tenants)]
+
+    # One count per (tenant, collection, store) — each probe filtered to a SINGLE
+    # tenant, which is what makes the split meaningful. A share-derived row is
+    # probed ONLY for the collections that share with this caller; the rest stay
+    # null so the row can never carry that tenant's size elsewhere.
+    def _probe(store: object, tenant: str, entry_id: str):
+        allowed_here = tenant in tenants or entry_id in shared_by_tenant.get(tenant, set())
+        if not allowed_here:
+
+            async def _null() -> None:
+                return None
+
+            return _null()
+        return probe_tenant_count(store, [tenant])
+
     cells = await asyncio.gather(
         *(
             asyncio.gather(
-                probe_tenant_count(e.vector_store, [t]),
-                probe_tenant_count(e.text_index, [t]),
+                _probe(e.vector_store, t, e.id),
+                _probe(e.text_index, t, e.id),
             )
-            for t in tenants
+            for t in rows_tenants
             for e in entries
         )
     )
     rows: list[TenantRow] = []
-    for i, t in enumerate(tenants):
+    for i, t in enumerate(rows_tenants):
         offset = i * len(entries)
         rows.append(
             TenantRow(

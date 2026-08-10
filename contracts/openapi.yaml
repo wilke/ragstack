@@ -740,11 +740,11 @@ paths:
         Qdrant collection / ES index); `/v1/stats/tenants` splits the same
         total per tenant × collection.
 
-        Narrower than "everything I can see" in two ways: WHICH collections is
-        the caller's allowlist ∩ ownership (the same filter `/v1/collections`
-        applies), and WHOSE chunks stays own+public — a collection reached
-        through a share contributes the caller's own chunks in it, typically 0,
-        not the owner's.
+        WHICH collections is the caller's allowlist ∩ ownership (the same filter
+        `/v1/collections` applies). WHOSE chunks is own+public, WIDENED per
+        collection by any share that grants read — the same widening retrieval
+        applies — so a count reports what a query over that collection would
+        return, never more.
 
         Cost scales with the number of readable collections (one probe per
         physical store per leg), so poll slowly; the Ops dashboard uses 15s.
