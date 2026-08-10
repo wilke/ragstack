@@ -1,3 +1,37 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Semantic-color + dim-text tokens, consumed by tailwind.config.js as
+ * rgb(var(--c-*) / <alpha-value>) — values are space-separated RGB triplets.
+ *
+ * Default: the handoff palette verbatim.
+ * data-vision="accessible" (toggled in Account & preferences, lib/vision.ts):
+ *  - state colors move to Okabe–Ito-derived hues chosen to stay pairwise
+ *    distinguishable under deuteranopia/protanopia (bluish-green vs vermillion
+ *    instead of green vs red-brown; degraded shifts to a dark ochre separated
+ *    from vermillion by lightness, not hue alone);
+ *  - the dim-text ramp rises to a ≥4.5:1 floor against white/paper, keeping
+ *    its relative hierarchy (muted < dim < faint stays ordered).
+ */
+:root {
+  --c-moss: 42 125 95; /* #2a7d5f */
+  --c-moss-soft: 233 245 239; /* #e9f5ef */
+  --c-rust: 165 80 46; /* #a5502e */
+  --c-rust-soft: 255 241 230; /* #fff1e6 */
+  --c-amber: 200 169 43; /* #c8a92b */
+  --c-muted: 138 138 133; /* #8a8a85 */
+  --c-dim: 156 156 150; /* #9c9c96 */
+  --c-faint: 179 179 173; /* #b3b3ad */
+}
+
+[data-vision="accessible"] {
+  --c-moss: 0 130 95; /* bluish green (Okabe–Ito #009E73, darkened to 4.6:1 on white) */
+  --c-moss-soft: 224 242 236;
+  --c-rust: 187 82 0; /* vermillion (Okabe–Ito #D55E00, darkened to 4.5:1 on white) */
+  --c-rust-soft: 253 238 226;
+  --c-amber: 154 106 0; /* dark ochre — differs from vermillion in lightness too */
+  --c-muted: 99 99 94; /* 5.6:1 */
+  --c-dim: 111 111 106; /* 4.9:1 */
+  --c-faint: 130 130 124; /* 3.8:1 — placeholders/disabled, still the lightest step */
+}

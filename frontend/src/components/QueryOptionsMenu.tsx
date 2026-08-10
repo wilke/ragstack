@@ -1,11 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import type { QueryRequest } from "../api/client";
-import {
-  OPTION_TIP,
-  rewriteStrategies,
-  type Mode,
-  type Rewrite,
-} from "../lib/queryOptions";
+import { lookupTerm } from "../lib/glossary";
+import { HelpTip } from "./HelpTip";
+import { useDismissable } from "./useDismiss";
+import { rewriteStrategies, type Mode, type Rewrite } from "../lib/queryOptions";
 
 // Explore's "Options" popover: the query-pipeline levers (retrieval mode,
 // rewrite strategy, rerank on/off, top_k) behind one button, so the console
@@ -38,6 +36,16 @@ const MAX_TOPK = 20;
 // compiled default is rerank_enabled=False (config.py), so display "off".
 const CODE_DEFAULT_RERANK = false;
 
+// What the reranker will actually do for a request sent with these options —
+// the value the closed-menu chips and the run rail display. Single source so
+// the chip row can never disagree with the menu's select.
+export function effectiveRerank(
+  o: QueryOptions,
+  serverRerank?: boolean | null,
+): "on" | "off" {
+  return o.rerank ?? ((serverRerank ?? CODE_DEFAULT_RERANK) ? "on" : "off");
+}
+
 // The /v1/query fields these options become — spread into the request body.
 export function queryOptionsRequest(
   o: QueryOptions,
@@ -64,6 +72,27 @@ function optionTags(o: QueryOptions, serverRerank: boolean): string[] {
   return t;
 }
 
+// The lever labels ARE the help triggers (dotted underline, as they were when
+// they carried title=""). A <label> may not wrap them: it would forward clicks
+// on the trigger button to the control, so each row names its own select with
+// aria-label instead.
+const LEVER = "w-20 shrink-0 text-left text-[11px] font-medium";
+
+// A lever's panel lists the glossary definition of every value in its select,
+// so the hover copy cannot drift from lib/glossary (which the Compare glossary
+// panel renders from the same source).
+function LeverTip({ label, terms }: { label: string; terms: string[] }) {
+  return (
+    <HelpTip label={label} className={LEVER}>
+      {terms.map((t) => (
+        <span key={t} className="mb-1.5 block last:mb-0">
+          <span className="font-medium">{t}</span> — {lookupTerm(t)}
+        </span>
+      ))}
+    </HelpTip>
+  );
+}
+
 export function QueryOptionsMenu({
   value,
   onChange,
@@ -75,62 +104,38 @@ export function QueryOptionsMenu({
   // the caller isn't an admin and got a 403).
   serverRerank?: boolean | null;
 }) {
-  const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
-
-  // Close on an outside click or Escape — a menu that can only be closed by the
-  // button that opened it is a trap on touch.
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const [open, setOpen] = useDismissable(wrap);
 
   const rerankDefault = serverRerank ?? CODE_DEFAULT_RERANK;
-  const rerankShown = value.rerank ?? (rerankDefault ? "on" : "off");
+  const rerankShown = effectiveRerank(value, serverRerank);
   const tags = optionTags(value, rerankDefault);
-  const sel = "min-w-0 flex-1 rounded border border-gray-300 px-2 py-1 text-sm";
+  const sel = "min-w-0 flex-1 rounded-panel border border-line px-2 py-1.5 text-sm text-strong";
 
   return (
-    <div className="relative ml-auto" ref={wrap}>
+    <div className="relative ml-1" ref={wrap}>
+      {/* The trigger sits at the end of the config chip row, so it reads as a
+          chip-row link (mono, link-blue) rather than a standalone button. The
+          live lever values are on the chips beside it — no count badge. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="true"
-        className="flex items-center gap-1.5 rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50"
+        className="font-mono text-[10.5px] text-link hover:underline"
       >
-        Options
-        {tags.length > 0 ? (
-          <span className="rounded-full bg-blue-100 px-1.5 text-xs font-medium text-blue-700">
-            {tags.length}
-          </span>
-        ) : null}
-        <span aria-hidden="true" className="text-gray-400">
-          ▾
-        </span>
+        Options <span aria-hidden="true">▾</span>
       </button>
       {!open && tags.length > 0 ? (
         <span className="sr-only">Active options: {tags.join(", ")}</span>
       ) : null}
 
       {open ? (
-        <div className="absolute right-0 z-10 mt-1 w-72 space-y-2 rounded-md border border-gray-200 bg-white p-3 shadow-lg">
-          <label className="flex items-center gap-2" title={OPTION_TIP.mode}>
-            <span className="w-20 shrink-0 cursor-help text-xs font-medium text-gray-500 underline decoration-dotted underline-offset-2">
-              Query mode
-            </span>
+        <div className="absolute left-0 top-full z-10 mt-2 w-[330px] space-y-2.5 rounded-card border border-line bg-white p-4 shadow-popover">
+          <div className="flex items-center gap-2">
+            <LeverTip label="Query mode" terms={["hybrid", "vector", "bm25"]} />
             <select
+              aria-label="Query mode"
               value={value.mode}
               onChange={(e) => onChange({ mode: e.target.value as Mode })}
               className={sel}
@@ -139,13 +144,12 @@ export function QueryOptionsMenu({
               <option value="vector">vector</option>
               <option value="bm25">es (bm25)</option>
             </select>
-          </label>
+          </div>
 
-          <label className="flex items-center gap-2" title={OPTION_TIP.rewrite}>
-            <span className="w-20 shrink-0 cursor-help text-xs font-medium text-gray-500 underline decoration-dotted underline-offset-2">
-              Rewrite
-            </span>
+          <div className="flex items-center gap-2">
+            <LeverTip label="Rewrite" terms={["none", "multiquery", "hyde"]} />
             <select
+              aria-label="Rewrite"
               value={value.rewrite}
               onChange={(e) => onChange({ rewrite: e.target.value as Rewrite })}
               className={sel}
@@ -154,16 +158,20 @@ export function QueryOptionsMenu({
               <option value="multiquery">multiquery</option>
               <option value="hyde">hyde</option>
             </select>
-          </label>
+          </div>
 
-          <label
-            className="flex items-center gap-2"
-            title="Cross-encoder re-scoring of the results. Preset to this server's configured default."
-          >
-            <span className="w-20 shrink-0 cursor-help text-xs font-medium text-gray-500 underline decoration-dotted underline-offset-2">
-              Reranker
-            </span>
+          <div className="flex items-center gap-2">
+            <HelpTip label="Reranker" className={LEVER}>
+              <span className="mb-1.5 block">{lookupTerm("cross-encoder")}</span>
+              <span className="block">
+                Preset to this server's configured default. /v1/config is admin-only, so
+                without an admin key the menu falls back to the built-in default (off) —
+                and until you change it, the request omits the field and the server
+                applies its own setting either way.
+              </span>
+            </HelpTip>
             <select
+              aria-label="Reranker"
               value={rerankShown}
               onChange={(e) => onChange({ rerank: e.target.value as "on" | "off" })}
               className={sel}
@@ -171,14 +179,13 @@ export function QueryOptionsMenu({
               <option value="on">on</option>
               <option value="off">off</option>
             </select>
-          </label>
+          </div>
 
-          <label className="flex items-center gap-2" title={OPTION_TIP.top_k}>
-            <span className="w-20 shrink-0 cursor-help text-xs font-medium text-gray-500 underline decoration-dotted underline-offset-2">
-              Top k
-            </span>
+          <div className="flex items-center gap-2">
+            <HelpTip term="top_k" label="Top k" className={LEVER} />
             <input
               type="number"
+              aria-label="Top k"
               min={1}
               max={MAX_TOPK}
               value={value.topK}
@@ -189,14 +196,14 @@ export function QueryOptionsMenu({
               }
               className={`${sel} tabular-nums`}
             />
-          </label>
+          </div>
 
-          <div className="flex justify-end border-t border-gray-100 pt-2">
+          <div className="flex justify-end border-t border-lineSoft pt-2">
             <button
               type="button"
               onClick={() => onChange({ ...DEFAULT_QUERY_OPTIONS })}
               disabled={tags.length === 0}
-              className="text-xs text-gray-500 hover:text-gray-800 disabled:opacity-40"
+              className="text-xs text-dim hover:text-strong disabled:opacity-40"
             >
               Reset to defaults
             </button>

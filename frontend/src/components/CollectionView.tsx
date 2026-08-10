@@ -14,6 +14,9 @@ import { getStoredAuthMode } from "../api/config";
 import { SIGNED_IN_HINT } from "../lib/auth";
 import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
 import { collectionCreateMessage } from "../lib/collections";
+import { lookupTerm } from "../lib/glossary";
+import { GlossaryPanel } from "./GlossaryPanel";
+import { HelpTip } from "./HelpTip";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { ShareDialog } from "./ShareDialog";
 
@@ -189,13 +192,19 @@ export function CollectionView({
           act that commits the selection, since uploads go wherever the picker
           points at that moment. */}
       <section aria-labelledby="select-heading">
-        <div className="mb-3">
+        <div className="mb-3 flex items-center gap-2">
           {stageBadge(
             1,
             "Select or create a collection",
             files.length === 0 && jobId == null,
             files.length > 0 || jobId != null,
           )}
+          <HelpTip icon side="bottom" term="collection">
+            {lookupTerm("collection")} Uploads go to whichever collection this picker points at
+            when you press Ingest, and nothing here moves documents afterwards: putting them
+            somewhere else means ingesting them again. The line under the picker is how the
+            selected collection was built, verified or declared.
+          </HelpTip>
         </div>
 
         {/* Bound to the app's single credential slot — hidden while a bearer
@@ -333,8 +342,16 @@ export function CollectionView({
 
       {/* ---- Step 2: Upload PDFs into it ---- */}
       <section aria-labelledby="upload-heading">
-        <div className="mb-3">
+        <div className="mb-3 flex items-center gap-2">
           {stageBadge(2, "Upload PDFs", files.length > 0 && jobId == null, jobId != null)}
+          <HelpTip icon side="bottom" term="ingest job">
+            Ingest is one multipart POST to /v1/ingest/upload carrying the staged files. The server
+            answers with a job_id and this page then polls GET /v1/ingest/&#123;job_id&#125; about
+            every 1.5s until the job reports completed, failed — or unknown, which is what an id
+            the server no longer has answers. The ~{MAX_MB} MB note is a client-side advisory only
+            — the server is the authority and rejects an oversized upload with a 413. Querying what
+            you ingested happens in the Explore tab; this view only ingests.
+          </HelpTip>
         </div>
 
         {/* Drop zone */}
@@ -492,6 +509,9 @@ export function CollectionView({
           </div>
         )}
       </section>
+
+      {/* The terms this tab's help text uses, defined once in lib/glossary. */}
+      <GlossaryPanel groups={["Chunking", "Corpus & indexing", "Stores", "Access & sharing"]} />
     </div>
   );
 }

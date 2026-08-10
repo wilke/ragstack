@@ -19,6 +19,7 @@ import {
   type AuthProviderOption,
   type Credential,
 } from "../lib/auth";
+import { HelpTip } from "./HelpTip";
 
 // The sign-in PAGE. Pick a provider, give it what it asks for.
 //
@@ -137,9 +138,14 @@ export function LoginView({
         </p>
 
         <div className="mt-5">
-          <label htmlFor="login-provider" className="block text-sm font-medium text-gray-700">
-            Identity provider
-          </label>
+          {/* The <label> keeps its htmlFor binding — the tip sits beside it,
+              because a button may not be the label for a control. */}
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="login-provider" className="block text-sm font-medium text-gray-700">
+              Identity provider
+            </label>
+            <HelpTip icon side="right" term="identity provider" />
+          </div>
           <select
             id="login-provider"
             value={providerId}
@@ -179,9 +185,10 @@ export function LoginView({
                 onChange={(e) => setKeyDraft(e.target.value)}
                 className={INPUT}
               />
+              {/* Only the half nothing else on this card says: the provider blurb
+                  and the "identity provider" tip both cover not-a-person. */}
               <p className="text-xs text-gray-500">
-                An API key identifies a configured tenant, not a person. Its role comes
-                from the server's <code>API_KEY_ROLES</code>.
+                Its role comes from the server's <code>API_KEY_ROLES</code>.
               </p>
               <button
                 type="button"

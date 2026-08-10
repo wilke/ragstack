@@ -15,25 +15,29 @@ interface Props {
   data?: QueryResponse;
   error?: Error | null;
   onRetry: () => void;
+  // Per-source links pass their 0-based index so Evidence preselects them.
+  onOpenEvidence: (sourceIndex?: number) => void;
 }
 
-export function ResultsPanel({ status, query, data, error, onRetry }: Props) {
+export function ResultsPanel({ status, query, data, error, onRetry, onOpenEvidence }: Props) {
   if (status === "error" && error) {
     return <ErrorBanner error={error} onRetry={onRetry} />;
   }
 
   return (
-    <div className="mt-6 space-y-6">
+    <div className="space-y-8">
       <AnswerCard
         query={query}
         answer={data?.answer}
         rewrittenQueries={data?.rewritten_queries}
         pending={status === "pending"}
+        sourceCount={data?.sources.length ?? 0}
+        onOpenEvidence={onOpenEvidence}
       />
       {status === "pending" ? (
         <SourceSkeleton />
       ) : (
-        data && <SourceList sources={data.sources} />
+        data && <SourceList sources={data.sources} onOpenEvidence={onOpenEvidence} />
       )}
     </div>
   );

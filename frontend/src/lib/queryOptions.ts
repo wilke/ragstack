@@ -16,12 +16,7 @@ export const rewriteStrategies = (r: Rewrite): string[] =>
 export const rerankValue = (r: Rerank): boolean | null =>
   r === "default" ? null : r === "on";
 
-// Hover copy for the shared levers (native title tooltips). Compare extends
-// this with its lane-only levers (graph/llm/reranker model).
-export const OPTION_TIP: Record<string, string> = {
-  mode: "Which retrieval legs run. hybrid = dense vectors + BM25 keyword (fused); vector = dense only; bm25 = keyword (Elasticsearch) only.",
-  rewrite:
-    "Expand the query before retrieving. none = as-is; multiquery = LLM paraphrases; hyde = retrieve on a hypothetical answer.",
-  rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force it.",
-  top_k: "How many results to return.",
-};
+// No tip strings live here any more. Both views label these levers with
+// <HelpTip term="retrieval mode" | "query rewriting" | "rerank" | "top_k"/>,
+// which reads lib/glossary — a second copy of the wording is what drift is
+// made of, and the old one was written for native title="" tooltips.

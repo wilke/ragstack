@@ -28,33 +28,42 @@ export function SearchForm({ apiKey, setApiKey, query, setQuery, onSubmit, pendi
       className="space-y-3"
     >
       {bearer ? (
-        <p className="text-xs text-gray-500">{SIGNED_IN_HINT}</p>
+        <p className="text-xs text-dim">{SIGNED_IN_HINT}</p>
       ) : (
         <input
           type="password"
           placeholder="X-API-Key (leave blank if the API is keyless in dev)"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="w-full rounded-pill border border-line px-5 py-2 text-xs text-strong placeholder:text-faint focus:border-ink-900 focus:outline-none"
           aria-label="API key"
           autoComplete="off"
         />
       )}
-      <div className="flex gap-2">
+      <div className="flex gap-2.5">
         <input
           type="text"
           placeholder="Ask the corpus…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="flex-1 rounded border border-gray-300 px-3 py-2 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="h-12 min-w-0 flex-1 rounded-pill border-[1.5px] border-ink-900 px-5 text-[15.5px] text-strong placeholder:text-faint focus:outline-none focus:ring-2 focus:ring-accent"
           aria-label="Query"
         />
         <button
           type="submit"
           disabled={pending || !query.trim()}
-          className="rounded bg-blue-600 px-4 py-2 text-white transition-opacity hover:bg-blue-700 disabled:opacity-50"
+          className="flex h-12 shrink-0 items-center gap-2 rounded-pill bg-accent px-[22px] text-sm font-semibold text-ink-900 transition-opacity hover:brightness-95 disabled:opacity-50"
         >
-          {pending ? "Searching…" : "Search"}
+          {pending ? (
+            "Asking…"
+          ) : (
+            <>
+              Ask{" "}
+              <span aria-hidden="true" className="text-[15px]">
+                →
+              </span>
+            </>
+          )}
         </button>
       </div>
     </form>

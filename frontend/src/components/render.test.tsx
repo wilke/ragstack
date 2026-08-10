@@ -3,7 +3,10 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
+import { AnswerCard } from "./AnswerCard";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
+import { ExploreView } from "./ExploreView";
+import { SourceList } from "./SourceList";
 import { CollectionView } from "./CollectionView";
 import { AccountView } from "./AccountView";
 import { LoginView } from "./LoginView";
@@ -44,15 +47,16 @@ describe("static render", () => {
     expect(html).not.toContain("Ask the corpus");
   });
 
-  // Closed by default: just the button, no lever controls in the DOM, and no
-  // count badge while everything is at its default.
-  it("mounts the Explore options menu closed, badging only non-defaults", () => {
+  // Closed by default: just the trigger, no lever controls in the DOM. The
+  // chips beside it show the live values, so non-defaults are named for AT
+  // only (sr-only), not badged.
+  it("mounts the Explore options menu closed, naming non-defaults for AT", () => {
     const closed = render(
       createElement(QueryOptionsMenu, { value: DEFAULT_QUERY_OPTIONS, onChange: () => {} }),
     );
     expect(closed).toContain("Options");
     expect(closed).not.toContain("Query mode");
-    expect(closed).not.toMatch(/bg-blue-100/); // no active-count badge
+    expect(closed).not.toContain("Active options");
 
     const tuned = render(
       createElement(QueryOptionsMenu, {
@@ -60,7 +64,87 @@ describe("static render", () => {
         onChange: () => {},
       }),
     );
-    expect(tuned).toContain(">4<"); // all four levers off-default → badge count
+    expect(tuned).toContain("Active options");
+    expect(tuned).toContain("k=10");
+  });
+
+  // The editorial answer block: first sentence is the lead claim behind the
+  // yellow rule, [n] markers become citation chips (first-cited = yellow),
+  // and the Verify link + feedback pills are present.
+  it("renders the answer as lead claim + citation chips + Verify link", () => {
+    const html = render(
+      createElement(AnswerCard, {
+        query: "bees?",
+        answer: "Bees model Parkinson's disease [1] [2]. Passage 3 covers ants [3].",
+        rewrittenQueries: [],
+        pending: false,
+        sourceCount: 3,
+        onOpenEvidence: () => {},
+      }),
+    );
+    expect(html).toContain("Verify in Evidence");
+    expect(html).toContain("Was this useful?");
+    expect(html).toMatch(/<sup[^>]*>1<\/sup>/); // marker → superscript chip
+    expect(html).not.toContain("[1]");
+    expect(html).toContain("bg-accent "); // first-cited chip is yellow
+    expect(html).toContain("border-accent"); // the lead claim's rule
+  });
+
+  it("keeps out-of-range citation markers as literal text", () => {
+    const html = render(
+      createElement(AnswerCard, {
+        query: "q",
+        answer: "No such source [7].",
+        rewrittenQueries: [],
+        pending: false,
+        sourceCount: 2,
+        onOpenEvidence: () => {},
+      }),
+    );
+    expect(html).toContain("[7]");
+    expect(html).not.toContain("<sup");
+  });
+
+  // Source cards: rank drives the left rule (1 = navy) and the rank-1 numeral
+  // is amber; every card carries its own Evidence jump beside the citation
+  // actions.
+  it("ranks source cards and gives each an Evidence link", () => {
+    const source = {
+      doc_id: "d1",
+      chunk_id: "c1",
+      content: "…of the honeybee PD model…",
+      score: 0.91,
+      metadata: { title: "Honeybee gut microbiota", doc_type: "article", year: 2024, authors: ["Zeng", "Li"] },
+    };
+    const html = render(
+      createElement(SourceList, { sources: [source], onOpenEvidence: () => {} }),
+    );
+    expect(html).toContain("Sources (1)");
+    expect(html).toContain("Open all in Evidence");
+    expect(html).toContain("border-l-ink-900"); // rank-1 rule
+    expect(html).toContain("article · 2024 · Zeng, Li");
+    expect(html).toContain("Evidence →");
+    expect(html).toContain("Copy DOI"); // CitationActions still on the card
+  });
+
+  // Explore's frame: pill query row, config chip readout, and the run rail
+  // (empty-run state) all mount without a network.
+  it("mounts Explore with the Ask pill, config chips and the run rail", () => {
+    const html = render(
+      createElement(ExploreView, {
+        apiKey: "",
+        setApiKey: () => {},
+        run: null,
+        onRun: () => {},
+        onOpenEvidence: () => {},
+        onSendToCompare: () => {},
+      }),
+    );
+    expect(html).toContain("Ask");
+    expect(html).toContain("rerank"); // chip row reads the live levers
+    expect(html).toContain("This run");
+    expect(html).toContain("Recent questions");
+    expect(html).toContain("Ask the corpus"); // query input placeholder survives
   });
 
   // The login page must never render a credential into the DOM, must say out

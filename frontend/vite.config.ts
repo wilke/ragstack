@@ -1,5 +1,10 @@
 import react from "@vitejs/plugin-react";
+import { createRequire } from "node:module";
 import { defineConfig, loadEnv } from "vite";
+
+// The UI build's own version, surfaced in Ops. Read from package.json here
+// because the app cannot import it at runtime.
+const { version: uiVersion } = createRequire(import.meta.url)("./package.json");
 
 // Dev server proxies the API surface so the browser sees a single origin (no
 // CORS) — matching same-origin production. Two layers:
@@ -46,6 +51,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    define: { __APP_VERSION__: JSON.stringify(uiVersion) },
     server: {
       port: 5173,
       allowedHosts,

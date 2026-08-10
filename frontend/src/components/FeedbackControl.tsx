@@ -1,10 +1,11 @@
-// Thumbs up/down on an answer. Ephemeral: records to the in-session store (never
-// a network call today), so it can't fail. aria-pressed reflects selection; the
-// confirmation is a transient "Noted" (not "Saved" — nothing is persisted server
-// side).
+// "Was this useful?" Yes/No on an answer. Ephemeral: records to the in-session
+// store (never a network call today), so it can't fail. aria-pressed reflects
+// selection; the confirmation is a transient "Noted" (not "Saved" — nothing is
+// persisted server side).
 
 import { useState } from "react";
 import { hashAnswer, recordFeedback, type Verdict } from "../lib/feedback";
+import { HelpTip } from "./HelpTip";
 
 export function FeedbackControl({ query, answer }: { query: string; answer: string }) {
   const [choice, setChoice] = useState<Verdict | null>(null);
@@ -14,27 +15,29 @@ export function FeedbackControl({ query, answer }: { query: string; answer: stri
     recordFeedback({ query, answerHash: hashAnswer(answer), verdict });
   };
 
-  const btn = (verdict: Verdict, label: string, glyph: string) => (
+  const btn = (verdict: Verdict, label: string, text: string) => (
     <button
       type="button"
       aria-label={label}
       aria-pressed={choice === verdict}
       onClick={() => vote(verdict)}
-      className={`min-h-6 min-w-6 rounded border px-2 py-1 text-sm transition-colors ${
+      className={`rounded-chip border px-[15px] py-2 text-xs font-medium transition-colors ${
         choice === verdict
-          ? "border-blue-500 bg-blue-50 text-blue-700"
-          : "border-gray-300 text-gray-500 hover:bg-gray-50"
+          ? "border-ink-900 bg-accent-soft text-ink-900"
+          : "border-[#d8d7d2] text-[#5b5b55] hover:bg-paper"
       }`}
     >
-      {glyph}
+      {text}
     </button>
   );
 
   return (
-    <div className="flex items-center gap-2">
-      {btn("up", "Helpful", "👍")}
-      {btn("down", "Not helpful", "👎")}
-      <span aria-live="polite" className="text-xs text-gray-400">
+    <div className="flex items-center gap-[9px]">
+      <span className="text-[11.5px] text-dim">Was this useful?</span>
+      <HelpTip icon side="top" term="feedback" />
+      {btn("up", "Helpful", "Yes")}
+      {btn("down", "Not helpful", "No")}
+      <span aria-live="polite" className="text-xs text-faint">
         {choice ? "Noted" : ""}
       </span>
     </div>

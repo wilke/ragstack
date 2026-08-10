@@ -7,6 +7,7 @@ import {
   setApiBase,
 } from "../api/config";
 import { type Credential } from "../lib/auth";
+import { HelpTip } from "./HelpTip";
 
 // Which API the whole UI talks to. Persisted to localStorage; changing it
 // invalidates every react-query cache so no panel keeps rendering the previous
@@ -110,6 +111,9 @@ export function BackendSwitcher({
           ))}
           <option value={CUSTOM}>Custom…</option>
         </select>
+
+        {/* One tip for the control, in the component both mount points share. */}
+        <HelpTip icon side="right" term="deployment" />
 
         {selectId === CUSTOM ? (
           <input
