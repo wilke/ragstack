@@ -92,6 +92,17 @@ with the fix. Projection: ~2.5 h/batch (embed ~74 min at 4 workers + load ~70 mi
 stores. If the driver dies: rerun the same command — ledger resume + timeout re-attach
 are tested. Verify per batch: legs equal in ledger rows; prod ES guard alerts >3s.
 
+**GoWe scatter-subworkflow defect + flatten (late 08-09).** The full run's first batch
+ran SERIAL: GoWe executes scatter-over-subworkflow children one at a time, inline in the
+scheduler loop, blocking every other submission, and uncancellable via API (parent cancel
+ignored between iterations; an early-cancelled child finalizes in a state the loop reads
+as success). Full handoff spec with a self-contained reproducer: **GoWe#164** (body
+rewritten for the GoWe agent; acceptance criteria included). ragstack-side workaround
+merged (#310): jats-ingest.cwl flattened to two top-level scatters (extract-all →
+embed-all barrier) — dev smoke showed 2 tasks concurrently RUNNING, idempotent at 24,263.
+Driver restarted; batch 00064-00127 resubmitted flat (sub_a25f84e1). The cancelled serial
+batch drained ~2h holding the scheduler hostage first. Projection back to ~2.5h/batch.
+
 Gotchas for the next session:
 - conda `ragstack` env lacks `transformers`; run bulk tools with
   `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH=<dev checkout>/python` + `HF_HOME=/rag/cache`.
