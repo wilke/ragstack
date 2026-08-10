@@ -12,7 +12,29 @@ import {
   type Source,
 } from "../api/client";
 import { getStoredAuthMode } from "../api/config";
-import { laneCredential, SIGNED_IN_HINT } from "../lib/auth";
+import { laneCredential, SIGNED_IN_HINT, type CredentialInput } from "../lib/auth";
+import {
+  rerankValue,
+  rewriteStrategies,
+  type Mode,
+  type Rerank,
+  type Rewrite,
+} from "../lib/queryOptions";
+import { GlossaryPanel } from "./GlossaryPanel";
+import { HelpTip } from "./HelpTip";
+import { AgreementBadge } from "./compare/AgreementBadge";
+import { AgreementBand, type AgreementBandStats } from "./compare/AgreementBand";
+import { LaneConfigChips } from "./compare/LaneConfigChips";
+import { LeverPopover } from "./compare/LeverPopover";
+import {
+  DEFAULT_LEVERS,
+  defaultsChips,
+  effectiveLevers,
+  normalizeOverrides,
+  overrideChips,
+  type LeverOverrides,
+  type Levers,
+} from "./compare/levers";
 
 // Compare module: run ONE query across several lanes — each a (collection,
 // optional API key) pair — and lay the answers out side by side so retrieval
@@ -20,6 +42,9 @@ import { laneCredential, SIGNED_IN_HINT } from "../lib/auth";
 // The collection axis is server-supported via the `collection` param; the tenant
 // axis is a per-lane API-key override (tenant is server-derived from the key).
 // Backend needs nothing new — it's N independent /v1/query calls.
+//
+// Levers are held once as shared defaults; a lane carries only a sparse
+// override set (components/compare/levers.ts), surfaced as yellow chips.
 
 type LaneResult = {
   status: "pending" | "success" | "error";
@@ -28,160 +53,64 @@ type LaneResult = {
   ms?: number;
 };
 
-type Mode = "hybrid" | "vector" | "bm25";
-type Rerank = "default" | "on" | "off"; // → server default | force on | force off
-type Rewrite = "none" | "multiquery" | "hyde";
-
-// The pipeline levers — each maps to a /v1/query field so a single question can
-// be compared across retrieval *strategies*, not just corpora. Held both as a
-// global template (shared by every lane) and, when overrides are on, per-lane.
-interface Levers {
-  mode: Mode; // retrieval_mode
-  rerank: Rerank; // rerank: null | true | false
-  useGraph: boolean; // use_graph
-  rewrite: Rewrite; // rewrite_strategies
-  topK: number | null; // top_k; null → inherit the global default
-  llm: string; // registered model id for generation; "" → server default
-  reranker: string; // registered model id for reranking; "" → server default
-}
-
-const DEFAULT_LEVERS: Levers = {
-  mode: "hybrid",
-  rerank: "default",
-  useGraph: true,
-  rewrite: "none",
-  topK: null,
-  llm: "",
-  reranker: "",
-};
-
 interface Lane {
   key: string;
   collection: string; // "" → default collection
   apiKey: string; // "" → inherit the shared key (same tenant)
-  levers: Levers; // used only when per-lane overrides are on
+  overrides: LeverOverrides; // levers this lane pins; everything else inherits
 }
 
 let _seq = 0;
-const newLane = (collection = "", apiKey = "", levers = DEFAULT_LEVERS): Lane => ({
+const newLane = (collection = ""): Lane => ({
   key: `lane-${_seq++}`,
   collection,
-  apiKey,
-  levers: { ...levers },
+  apiKey: "",
+  overrides: {},
 });
 
 const MAX_LANES = 6;
 const GLOBAL_DEFAULT_TOPK = 5;
 
-// The non-default levers, as short chips — so two lanes on the same collection
-// but different pipelines are distinguishable in the header/leaderboard.
-const leverTags = (v: Levers): string[] => {
-  const t: string[] = [];
-  if (v.mode !== "hybrid") t.push(v.mode);
-  if (v.rewrite !== "none") t.push(v.rewrite);
-  if (v.rerank !== "default") t.push(`rerank:${v.rerank}`);
-  if (!v.useGraph) t.push("no-graph");
-  if (v.topK != null) t.push(`k=${v.topK}`);
-  if (v.llm) t.push(`llm:${v.llm}`);
-  if (v.reranker) t.push(`rr:${v.reranker}`);
-  return t;
-};
+// The glossary sits at the foot of the page while the agreement band's "What do
+// these mean?" toggles it from the top — a fixed id so that remote trigger can
+// name what it expands.
+const GLOSSARY_REGION_ID = "compare-glossary";
 
-const rewriteStrategies = (r: Rewrite): string[] =>
-  r === "none" ? ["passthrough"] : ["passthrough", r];
-
-const rerankValue = (r: Rerank): boolean | null =>
-  r === "default" ? null : r === "on";
-
-// Hover copy for the lever labels (native title tooltips). The Glossary below
-// carries the per-term detail.
-const LABEL_TIP: Record<string, string> = {
-  mode: "Which retrieval legs run. hybrid = dense vectors + BM25 keyword (fused); vector = dense only; bm25 = keyword only.",
-  rewrite:
-    "Expand the query before retrieving. none = as-is; multiquery = LLM paraphrases; hyde = retrieve on a hypothetical answer.",
-  rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force for this lane.",
-  top_k: "How many results to return per lane.",
-  graph: "Also retrieve from the knowledge graph (entities & relations) as an extra leg.",
-  llm: "Which registered model generates the answer for this lane. default = the server's assigned LLM. Retrieval is unchanged, so this is a clean A/B of generation.",
-  rerankerModel: "Which registered cross-encoder reranks this lane's results. default = the server's assigned reranker.",
-};
-
-// Grouped definitions rendered by <Glossary/> at the foot of the page.
-const GLOSSARY: { group: string; items: { term: string; def: string }[] }[] = [
-  {
-    group: "Retrieval mode",
-    items: [
-      { term: "hybrid", def: "Both retrieval legs — dense vectors + BM25 keyword — fused with RRF. The default; best recall." },
-      { term: "vector", def: "Dense-embedding (semantic) retrieval only. Finds meaning-similar text even without shared words." },
-      { term: "bm25", def: "Keyword / lexical retrieval only (Elasticsearch BM25). Fast, needs no embedding; rewards exact term matches." },
-    ],
-  },
-  {
-    group: "Query rewriting",
-    items: [
-      { term: "none", def: "No rewriting — the query is sent unchanged (passthrough only)." },
-      { term: "passthrough", def: "The original query, unmodified. Always included even when another strategy runs." },
-      { term: "multiquery", def: "The LLM generates several paraphrases of your question; each one retrieves and the lists are fused — widens recall." },
-      { term: "hyde", def: "Hypothetical Document Embeddings: the LLM drafts a fake answer, then retrieves documents similar to that draft. Helps vague queries." },
-    ],
-  },
-  {
-    group: "Reranking",
-    items: [
-      { term: "rerank: default", def: "Use the server default — rerank only if a cross-encoder is wired." },
-      { term: "rerank: on / off", def: "Force reranking on or off for this lane, overriding the server default." },
-      { term: "cross-encoder", def: "A model that re-scores candidates by reading query + document together — more accurate ordering than first-stage retrieval." },
-    ],
-  },
-  {
-    group: "Lane levers",
-    items: [
-      { term: "top_k", def: "Number of results returned per lane." },
-      { term: "knowledge graph", def: "An extra retrieval leg over an entity/relationship graph, added on top of the chosen mode." },
-      { term: "collection", def: "One indexed corpus — a fixed build of (embedding model + chunking strategy). The main axis you compare." },
-      { term: "tenant", def: "Data-isolation scope derived from the API key. A lane can supply its own key to compare tenants." },
-    ],
-  },
-  {
-    group: "Model overrides",
-    items: [
-      { term: "llm", def: "A registered model used to generate the answer for this lane only — the corpus and retrieval stay fixed, so it's a clean A/B of generation. 'default' uses the server's assigned LLM." },
-      { term: "rr·model", def: "A registered cross-encoder used to rerank this lane only. Distinct from the rerank on/off lever, which just gates whether reranking runs." },
-      { term: "registered model", def: "A model (URL + name) an admin has registered for a task (llm/reranker); the pickers list only these, curated and SSRF-checked." },
-    ],
-  },
-  {
-    group: "Fusion & scoring",
-    items: [
-      { term: "RRF", def: "Reciprocal Rank Fusion — merges multiple ranked lists by rank position (k=60), not by raw scores, so different scales combine safely." },
-      { term: "score", def: "A lane's relevance score. Not comparable across lanes (different models/fusions), which is why agreement is measured on rank." },
-    ],
-  },
-  {
-    group: "Agreement metrics",
-    items: [
-      { term: "chunk overlap", def: "Jaccard on retrieved chunk_ids — used when lanes share a collection (same chunker), so chunks are the same units. The exact retrieval-agreement measure." },
-      { term: "passage-span overlap", def: "Across shared docs, intersection ÷ union of the retrieved char-ranges. Granularity-independent, so it's the honest cross-chunker signal: did the lanes surface the same passage, not just the same document?" },
-      { term: "document overlap", def: "Jaccard on doc_ids. A recall-robustness signal (is this doc found regardless of chunker?), but confounded by chunk granularity — a coarser chunker returns more unique docs per top-k, so cross-chunker doc overlap reads low for reasons unrelated to relevance." },
-      { term: "Kendall τ (order)", def: "Rank-order agreement over the items two lanes share. +1 = identical order, 0 = unrelated, −1 = reversed." },
-      { term: "answer agreement", def: "Bag-of-words overlap of the lanes' generated answers — the outcome retrieval agreement approximates. Lexical, so paraphrases read lower than they truly agree." },
-      { term: "consensus (×) / coverage (×N)", def: "× = how many lanes retrieved a doc (recall). ×N on a rank badge = how many of that lane's chunks came from the doc (why finer chunkers list fewer unique docs)." },
-    ],
-  },
-  {
-    group: "Chunking (in collection names)",
-    items: [
-      { term: "fixed_token", def: "Fixed-size windows measured in model tokens (e.g. 256 / 512), with overlap. Sizes are consistent for the embedder." },
-      { term: "fixed (char)", def: "Fixed-size windows measured in characters. Simpler, but token counts vary by text." },
-      { term: "semantic", def: "Splits where the topic shifts, detected by embedding successive buffers and cutting at similarity drops." },
-      { term: "semantic_pooled", def: "Embeds each sentence once and mean-pools — a cheaper, reproducible variant of semantic chunking." },
-    ],
-  },
+// The groups this page's own vocabulary comes from. Without it the panel falls
+// through to all 13 — including sharing and operations terms Compare never says.
+const GLOSSARY_GROUPS = [
+  "Retrieval mode",
+  "Query rewriting",
+  "Reranking",
+  "Lane levers",
+  "Model overrides",
+  "Fusion & scoring",
+  "Agreement metrics",
+  "Chunking",
 ];
 
-// One control cluster for the levers — reused by the global panel and, when
-// overrides are on, by each lane. ``topKPlaceholder`` shows the inherited
-// default when the field is left blank.
+// Lane letters + badge colors: A navy/yellow, B blue/white, C green/white, then
+// the remaining brand hues for lanes 4–6.
+const LETTERS = "ABCDEF";
+const laneLetter = (i: number): string => LETTERS[i] ?? String(i + 1);
+const LANE_BADGE = [
+  "bg-ink-900 text-accent",
+  "bg-link text-white",
+  "bg-moss text-white",
+  "bg-rust text-white",
+  "bg-sky text-white",
+  "bg-ink-600 text-accent",
+];
+
+// One control cluster for the levers — inside the "Edit defaults" popover and,
+// per lane, inside the "edit ▾" popover. ``topKPlaceholder`` shows the
+// inherited default when the field is left blank.
+//
+// Each lever label is a <HelpTip/>, not a native title="": every one of them
+// resolves through lib/glossary, so this panel and Explore's Options menu cannot
+// describe the same lever differently. The <label> wrappers are gone because a
+// HelpTip is a button and must not nest inside one — the controls carry
+// aria-label instead.
 function LeverControls({
   value,
   onChange,
@@ -193,16 +122,15 @@ function LeverControls({
   topKPlaceholder: string;
   models?: AvailableModel[];
 }) {
-  const sel = "min-w-0 flex-1 rounded border border-gray-200 px-1 py-0.5";
+  const sel = "min-w-0 flex-1 rounded border border-line bg-white px-1 py-0.5 text-[11px] text-body";
   const llmModels = models.filter((m) => m.task === "llm");
   const rerankerModels = models.filter((m) => m.task === "reranker");
   return (
-    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-gray-500">
-      <label className="flex items-center gap-1" title={LABEL_TIP.mode}>
-        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-          mode
-        </span>
+    <div className="grid grid-cols-2 gap-x-2 gap-y-1.5 text-[11px] text-dim">
+      <div className="flex items-center gap-1">
+        <HelpTip term="retrieval mode" label="mode" className="w-9 shrink-0" />
         <select
+          aria-label="retrieval mode"
           value={value.mode}
           onChange={(e) => onChange({ mode: e.target.value as Mode })}
           className={sel}
@@ -211,12 +139,11 @@ function LeverControls({
           <option value="vector">vector</option>
           <option value="bm25">bm25</option>
         </select>
-      </label>
-      <label className="flex items-center gap-1" title={LABEL_TIP.rewrite}>
-        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-          rewrite
-        </span>
+      </div>
+      <div className="flex items-center gap-1">
+        <HelpTip term="query rewriting" label="rewrite" className="w-12 shrink-0" />
         <select
+          aria-label="query rewriting"
           value={value.rewrite}
           onChange={(e) => onChange({ rewrite: e.target.value as Rewrite })}
           className={sel}
@@ -225,12 +152,11 @@ function LeverControls({
           <option value="multiquery">multiquery</option>
           <option value="hyde">hyde</option>
         </select>
-      </label>
-      <label className="flex items-center gap-1" title={LABEL_TIP.rerank}>
-        <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-          rerank
-        </span>
+      </div>
+      <div className="flex items-center gap-1">
+        <HelpTip term="rerank" label="rerank" className="w-9 shrink-0" />
         <select
+          aria-label="reranking"
           value={value.rerank}
           onChange={(e) => onChange({ rerank: e.target.value as Rerank })}
           className={sel}
@@ -239,13 +165,12 @@ function LeverControls({
           <option value="on">on</option>
           <option value="off">off</option>
         </select>
-      </label>
-      <label className="flex items-center gap-1" title={LABEL_TIP.top_k}>
-        <span className="w-12 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-          top_k
-        </span>
+      </div>
+      <div className="flex items-center gap-1">
+        <HelpTip term="top_k" className="w-12 shrink-0" />
         <input
           type="number"
+          aria-label="top_k"
           min={1}
           max={20}
           value={value.topK ?? ""}
@@ -256,23 +181,21 @@ function LeverControls({
           }}
           className={`${sel} tabular-nums`}
         />
-      </label>
-      <label className="col-span-2 flex items-center gap-1.5" title={LABEL_TIP.graph}>
+      </div>
+      <div className="col-span-2 flex items-center gap-1.5">
         <input
           type="checkbox"
+          aria-label="use knowledge graph"
           checked={value.useGraph}
           onChange={(e) => onChange({ useGraph: e.target.checked })}
         />
-        <span className="cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-          use knowledge graph
-        </span>
-      </label>
+        <HelpTip term="knowledge graph" label="use knowledge graph" />
+      </div>
       {llmModels.length > 0 ? (
-        <label className="col-span-2 flex items-center gap-1" title={LABEL_TIP.llm}>
-          <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-            llm
-          </span>
+        <div className="col-span-2 flex items-center gap-1">
+          <HelpTip term="llm" className="w-9 shrink-0" />
           <select
+            aria-label="answer model"
             value={value.llm}
             onChange={(e) => onChange({ llm: e.target.value })}
             className={sel}
@@ -284,14 +207,13 @@ function LeverControls({
               </option>
             ))}
           </select>
-        </label>
+        </div>
       ) : null}
       {rerankerModels.length > 0 ? (
-        <label className="col-span-2 flex items-center gap-1" title={LABEL_TIP.rerankerModel}>
-          <span className="w-9 shrink-0 cursor-help text-gray-400 underline decoration-dotted underline-offset-2">
-            rr·model
-          </span>
+        <div className="col-span-2 flex items-center gap-1">
+          <HelpTip term="rr·model" className="w-9 shrink-0" />
           <select
+            aria-label="reranker model"
             value={value.reranker}
             onChange={(e) => onChange({ reranker: e.target.value })}
             className={sel}
@@ -303,27 +225,8 @@ function LeverControls({
               </option>
             ))}
           </select>
-        </label>
+        </div>
       ) : null}
-    </div>
-  );
-}
-
-function Stars({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  return (
-    <div className="flex items-center gap-0.5" role="radiogroup" aria-label="rating">
-      {[1, 2, 3, 4, 5].map((n) => (
-        <button
-          key={n}
-          type="button"
-          aria-label={`${n} star${n > 1 ? "s" : ""}`}
-          aria-checked={value === n}
-          onClick={() => onChange(value === n ? 0 : n)}
-          className={`text-lg leading-none ${n <= value ? "text-amber-500" : "text-gray-300 hover:text-amber-300"}`}
-        >
-          ★
-        </button>
-      ))}
     </div>
   );
 }
@@ -333,12 +236,12 @@ function ContextChunk({ chunk, position }: { chunk: ChunkOut; position: "prev" |
   const idx =
     typeof chunk.metadata.chunk_index === "number" ? chunk.metadata.chunk_index : undefined;
   return (
-    <div className="my-1 border-l-2 border-gray-200 bg-gray-50 py-1 pl-2">
-      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
+    <div className="my-1 border-l-2 border-line bg-paper py-1 pl-2">
+      <div className="font-mono text-[10px] font-medium uppercase tracking-wide text-faint">
         {position === "prev" ? "◀ previous chunk" : "next chunk ▶"}
         {idx !== undefined ? ` · #${idx}` : ""}
       </div>
-      <p className="whitespace-pre-wrap text-[11px] leading-snug text-gray-500">{chunk.content}</p>
+      <p className="whitespace-pre-wrap text-[11px] leading-snug text-dim">{chunk.content}</p>
     </div>
   );
 }
@@ -365,21 +268,31 @@ function docLabel(m: Source["metadata"], docId: string): string {
   );
 }
 
-// One shared column template for the sources header and every row, so rank /
-// document / score line up exactly even across side-by-side lanes. The document
-// column is minmax(0,1fr) so long titles truncate instead of widening the grid.
-const SOURCE_GRID = "grid grid-cols-[1.5rem_minmax(0,1fr)_3.25rem] items-baseline gap-x-2";
+// Left rule colour by rank: 1 navy, 2–3 sky, the tail neutral. No grey
+// below-threshold rule: the API exposes no score threshold, and inventing one
+// client-side would grade results the backend didn't (same decision as
+// SourceCard's missing off-topic chip).
+const rankRule = (rank: number): string =>
+  rank === 1 ? "border-l-ink-900" : rank <= 3 ? "border-l-sky" : "border-l-[#d8d7d2]";
 
 function CompareSource({
   rank,
   source,
   collection,
   apiKey,
+  letters,
+  laneCount,
 }: {
   rank: number;
   source: Source;
   collection: string;
-  apiKey: string;
+  // The LANE's credential, already resolved by laneCredential — a lane's own
+  // key arrives pinned {mode:"apikey"} so a bearer-mode app can't relabel it
+  // (and sendableCredential then drop it), which would 401 the context fetch.
+  apiKey: CredentialInput;
+  // Which lanes (by letter) retrieved this doc — null until ≥2 lanes answered.
+  letters: string[] | null;
+  laneCount: number;
 }) {
   const [open, setOpen] = useState(false);
   const [ctx, setCtx] = useState<Ctx | null>(null);
@@ -413,63 +326,68 @@ function CompareSource({
   };
 
   return (
-    // The row IS the grid, so its cells sit in the same columns as the header;
-    // the expanded detail spans the doc+score columns, indented past the rank.
-    <li className={`${SOURCE_GRID} border-t border-gray-100 py-1.5`}>
-      <span className="text-right text-[11px] tabular-nums text-gray-400">{rank}.</span>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="min-w-0 truncate text-left text-xs font-medium text-gray-700"
-        title={title}
-      >
-        {title}
-      </button>
-      <span className="text-right tabular-nums text-[11px] text-gray-400">
-        {source.score.toFixed(4)}
-      </span>
-
-      <div className="col-span-2 col-start-2 min-w-0">
-        {ctx && !ctx.loading && !ctx.error && ctx.prev ? (
-          <ContextChunk chunk={ctx.prev} position="prev" />
-        ) : null}
-
-        <p
+    <li className={`rounded-[4px] border border-line border-l-[3px] px-[11px] py-2.5 ${rankRule(rank)}`}>
+      <div className="flex items-baseline gap-1.5">
+        <span className="font-mono text-[10px] font-medium text-faint">{rank}</span>
+        <button
+          type="button"
           onClick={() => setOpen((o) => !o)}
-          title={source.content}
-          className={`mt-0.5 cursor-pointer whitespace-pre-wrap break-words text-xs text-gray-500 ${open ? "" : "line-clamp-2"}`}
+          className="min-w-0 flex-1 text-left text-[12px] font-medium leading-[1.35] text-strong"
+          title={title}
         >
-          {source.content}
-        </p>
-
-        {ctx && !ctx.loading && !ctx.error && ctx.next ? (
-          <ContextChunk chunk={ctx.next} position="next" />
-        ) : null}
-
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[10px] text-gray-400">
-          <button type="button" onClick={() => setOpen((o) => !o)} className="hover:text-gray-600">
-            {open ? "▴ collapse" : "▾ full text"}
-          </button>
-          {idx !== undefined ? <span>· chunk #{idx}</span> : null}
-          {hasNbr ? (
-            <button
-              type="button"
-              onClick={loadContext}
-              disabled={ctx?.loading}
-              className="text-blue-600 hover:underline disabled:opacity-50"
-            >
-              {ctx?.loading
-                ? "· loading…"
-                : ctx && !ctx.error
-                  ? "· hide context"
-                  : "· ± parent/child"}
-            </button>
-          ) : (
-            <span className="text-gray-300">· no neighbours</span>
-          )}
-        </div>
-        {ctx?.error ? <p className="text-[10px] text-red-500">context: {ctx.error}</p> : null}
+          {title}
+        </button>
       </div>
+      <div className="mt-[7px] flex items-center gap-1.5">
+        {letters ? <AgreementBadge letters={letters} laneCount={laneCount} /> : null}
+        <span className="ml-auto font-mono text-[9.5px] text-faint" title={`score ${source.score.toFixed(4)}`}>
+          {source.score.toFixed(2)}
+        </span>
+      </div>
+
+      {open ? (
+        <div className="mt-2 min-w-0">
+          {ctx && !ctx.loading && !ctx.error && ctx.prev ? (
+            <ContextChunk chunk={ctx.prev} position="prev" />
+          ) : null}
+
+          <p
+            onClick={() => setOpen(false)}
+            title={source.content}
+            className="cursor-pointer whitespace-pre-wrap break-words text-xs text-dim"
+          >
+            {source.content}
+          </p>
+
+          {ctx && !ctx.loading && !ctx.error && ctx.next ? (
+            <ContextChunk chunk={ctx.next} position="next" />
+          ) : null}
+
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 font-mono text-[10px] text-faint">
+            <button type="button" onClick={() => setOpen(false)} className="hover:text-body">
+              ▴ collapse
+            </button>
+            {idx !== undefined ? <span>· chunk #{idx}</span> : null}
+            {hasNbr ? (
+              <button
+                type="button"
+                onClick={loadContext}
+                disabled={ctx?.loading}
+                className="text-link hover:underline disabled:opacity-50"
+              >
+                {ctx?.loading
+                  ? "· loading…"
+                  : ctx && !ctx.error
+                    ? "· hide context"
+                    : "· ± parent/child"}
+              </button>
+            ) : (
+              <span className="text-faint/70">· no neighbours</span>
+            )}
+          </div>
+          {ctx?.error ? <p className="text-[10px] text-rust">context: {ctx.error}</p> : null}
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -533,8 +451,11 @@ function laneDocs(sources: Source[]): DocAgg[] {
     .map((d, i) => ({ doc_id: d.doc_id, rank: i + 1, chunkCount: d.chunkCount, spans: d.spans, title: d.title }));
 }
 
-function jaccard<T>(a: Set<T>, b: Set<T>): number {
-  if (!a.size && !b.size) return 0;
+// null (not 0) when both sides are empty: two lanes that each returned nothing
+// have no disagreement to report, and 0 would render as "total disagreement".
+// Callers already guard null (the band hides the figure).
+function jaccard<T>(a: Set<T>, b: Set<T>): number | null {
+  if (!a.size && !b.size) return null;
   let inter = 0;
   a.forEach((x) => {
     if (b.has(x)) inter++;
@@ -563,6 +484,12 @@ function mergedLength(spans: Span[]): number {
 // the retrieved source text coincides (intersection ÷ union of char ranges).
 // Granularity-independent — the meaningful cross-chunker signal. null when the
 // shared docs carry no offsets.
+//
+// CONDITIONAL on those shared docs: docs unique to one lane are not in the
+// denominator, so lanes sharing a single doc whose spans coincide score 1.0
+// however little else they agree on. Renderers must show the base (how many
+// docs it was computed over) rather than presenting it as whole-result
+// agreement — see `spanBasis` in the agreement band.
 function spanIoU(
   spansA: Map<string, Span[]>,
   spansB: Map<string, Span[]>,
@@ -635,7 +562,35 @@ function jaccardClass(j: number): string {
   return "bg-gray-50 text-gray-300";
 }
 
-const pct = (x: number) => `${Math.round(x * 100)}%`;
+// n/a, not 0%: a null overlap means there was nothing to compare (both lanes
+// empty), which is not the same claim as "these results disagree entirely".
+const pct = (x: number | null) => (x === null ? "n/a" : `${Math.round(x * 100)}%`);
+
+// Mean pairwise overlap for the band's headline number: chunk-level Jaccard when
+// every lane shares a collection (same chunker → same units), doc-level Jaccard
+// otherwise. Same comparability rule as AgreementPanel's matrix.
+function meanPairwiseOverlap(entries: LaneEntry[]): number | null {
+  const n = entries.length;
+  if (n < 2) return null;
+  const sameCollection = entries.every((e) => e.collection === entries[0].collection);
+  const sets = entries.map((e) =>
+    sameCollection
+      ? new Set(e.sources.map((s) => s.chunk_id))
+      : new Set(e.sources.map((s) => s.doc_id)),
+  );
+  let sum = 0;
+  let pairs = 0;
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      // Pairs with nothing to compare (both lanes empty) are skipped rather
+      // than averaged in as 0, which would drag the mean toward "disagree".
+      const j2 = jaccard(sets[i], sets[j]);
+      if (j2 === null) continue;
+      sum += j2;
+      pairs++;
+    }
+  return pairs ? sum / pairs : null;
+}
 
 function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
   const lanes = entries.map((e) => ({
@@ -699,18 +654,18 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
   const short = (s: string) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
 
   return (
-    <details open className="mt-6 rounded-lg border border-gray-200 bg-white">
+    <details className="mt-6 rounded-card border border-line bg-white">
       <summary className="cursor-pointer list-none px-4 py-3">
-        <span className="text-sm font-semibold text-gray-700">Agreement</span>
-        <span className="ml-2 text-xs text-gray-400">
-          how much the {n} lanes converge — evidence and answers
+        <span className="font-display text-[13px] font-semibold text-ink-900">Agreement detail</span>
+        <span className="ml-2 text-xs text-dim">
+          pairwise matrices and the per-document recall table behind the band above
         </span>
       </summary>
 
-      <div className="space-y-5 border-t border-gray-100 p-4">
+      <div className="space-y-5 border-t border-lineSoft p-4">
         {/* Comparability banner — what unit the agreement can honestly use */}
         <div
-          className={`rounded-md px-3 py-2 text-xs leading-snug ${allChunkLevel ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-800"}`}
+          className={`rounded-md px-3 py-2 text-xs leading-snug ${allChunkLevel ? "bg-mossSoft text-moss" : "bg-accent-soft text-accent-text"}`}
         >
           {allChunkLevel
             ? "All lanes share a collection → agreement is measured at the chunk level (the exact retrieval unit)."
@@ -858,7 +813,7 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
             <table className="w-full table-fixed border-collapse text-xs">
               <colgroup>
                 <col />
-                <col className="w-10" />
+                <col className="w-14" />
                 {lanes.map((l) => (
                   <col key={l.key} className="w-20" />
                 ))}
@@ -866,8 +821,13 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
               <thead className="sticky top-0 bg-gray-50">
                 <tr>
                   <th className="p-2 text-left font-medium text-gray-500">Document</th>
-                  <th className="p-2 text-center font-medium text-gray-500" title="lanes that retrieved this doc (recall robustness)">
-                    ×
+                  {/* Was a native title="": keyboard and touch never reached it,
+                      and this column's whole meaning lived there. */}
+                  <th className="p-2 text-center font-medium text-gray-500">
+                    <span className="inline-flex items-center gap-1">
+                      ×
+                      <HelpTip icon side="bottom" term="consensus (×) / coverage (×N)" />
+                    </span>
                   </th>
                   {lanes.map((l) => (
                     <th key={l.key} className="truncate p-2 text-center font-medium text-gray-500" title={l.label}>
@@ -917,40 +877,34 @@ function AgreementPanel({ entries }: { entries: LaneEntry[] }) {
   );
 }
 
-function Glossary() {
+// A lane's generated answer: one line until clicked open.
+function LaneAnswer({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
   return (
-    <details className="mt-6 rounded-lg border border-gray-200 bg-white">
-      <summary className="cursor-pointer list-none px-4 py-3">
-        <span className="text-sm font-semibold text-gray-700">Glossary</span>
-        <span className="ml-2 text-xs text-gray-400">what the terms on this page mean</span>
-      </summary>
-      <div className="grid gap-x-6 gap-y-5 border-t border-gray-100 p-4 sm:grid-cols-2 lg:grid-cols-3">
-        {GLOSSARY.map((g) => (
-          <div key={g.group}>
-            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-              {g.group}
-            </div>
-            <dl className="space-y-1.5">
-              {g.items.map((i) => (
-                <div key={i.term}>
-                  <dt className="text-xs font-medium text-gray-700">{i.term}</dt>
-                  <dd className="text-xs leading-snug text-gray-500">{i.def}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-        ))}
-      </div>
-    </details>
+    <button
+      type="button"
+      onClick={() => setOpen((o) => !o)}
+      title={open ? "collapse" : text}
+      className={`mb-4 block w-full text-left text-[13px] leading-[1.65] text-body ${
+        open ? "whitespace-pre-wrap break-words" : "truncate"
+      }`}
+    >
+      {text}
+    </button>
   );
 }
 
 export function CompareView({
   apiKey,
   setApiKey,
+  seedQuery = null,
 }: {
   apiKey: string;
   setApiKey: (v: string) => void;
+  // Query text carried over by Explore/Evidence's "Send to Compare". Applied
+  // whenever it changes; the view remounts on tab switch, so mount covers the
+  // usual path. Editable afterwards — a seed, not a binding.
+  seedQuery?: string | null;
 }) {
   const collections = useQuery({
     queryKey: ["collections", apiKey],
@@ -959,8 +913,8 @@ export function CompareView({
   });
   const opts: CollectionInfo[] = collections.data?.collections ?? [];
 
-  // Registered llm/reranker models for the per-lane override pickers. When none
-  // are registered the selects don't render, so Compare is unchanged.
+  // Registered llm/reranker models for the lever pickers. When none are
+  // registered the selects don't render, so Compare is unchanged.
   const availableModels = useQuery({
     queryKey: ["available-models", apiKey],
     queryFn: () => getAvailableModels(apiKey || undefined),
@@ -969,17 +923,19 @@ export function CompareView({
   const models: AvailableModel[] = availableModels.data?.models ?? [];
 
   const [query, setQuery] = useState("");
-  // Global pipeline template shared by every lane. topK carries the global
-  // default (a concrete number); lanes may leave their own topK null to inherit.
+  useEffect(() => {
+    if (seedQuery) setQuery(seedQuery);
+  }, [seedQuery]);
+  // Shared defaults for every lane. topK carries the global default (a concrete
+  // number); a lane override may pin its own.
   const [glob, setGlob] = useState<Levers>({ ...DEFAULT_LEVERS, topK: GLOBAL_DEFAULT_TOPK });
-  // When false (default) all lanes share `glob` — one setting, consistent
-  // everywhere. When true, each lane's own `levers` take over and its controls
-  // appear in the card.
-  const [perLane, setPerLane] = useState(false);
   const [lanes, setLanes] = useState<Lane[]>([]);
   const [results, setResults] = useState<Record<string, LaneResult>>({});
-  const [ratings, setRatings] = useState<Record<string, number>>({});
+  // ONE preferred lane across the board (replaces per-lane star ratings) —
+  // in-session only, like the ratings were.
+  const [preferred, setPreferred] = useState<string | null>(null);
   const [ran, setRan] = useState(false);
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
 
   const globalTopK = glob.topK ?? GLOBAL_DEFAULT_TOPK;
 
@@ -1012,12 +968,12 @@ export function CompareView({
     const q = query.trim();
     if (!q || lanes.length === 0) return;
     setRan(true);
+    setPreferred(null);
     setResults(Object.fromEntries(lanes.map((l) => [l.key, { status: "pending" as const }])));
     for (const lane of lanes) {
       const t0 = performance.now();
-      // Global mode → every lane runs the shared template; per-lane mode → the
-      // lane's own levers, still inheriting the global top_k when blank.
-      const eff = perLane ? lane.levers : glob;
+      // A lane's effective config = shared defaults + its sparse overrides.
+      const eff = effectiveLevers(glob, lane.overrides);
       queryRag(
         {
           query: q,
@@ -1053,327 +1009,423 @@ export function CompareView({
 
   const setLane = (key: string, patch: Partial<Lane>) =>
     setLanes((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
-  // Clear a lane's prior answer + rating — a stored result is attributed to the
-  // exact pipeline that produced it, so any lever change must invalidate it.
+  // Clear a lane's prior answer + preference — a stored result is attributed to
+  // the exact pipeline that produced it, so any lever change must invalidate it.
   const resetLane = (key: string) => {
     setResults((r) => {
       const n = { ...r };
       delete n[key];
       return n;
     });
-    setRatings((r) => {
-      const n = { ...r };
-      delete n[key];
-      return n;
-    });
+    setPreferred((p) => (p === key ? null : p));
   };
   const tuneLane = (key: string, patch: Partial<Lane>) => {
     setLane(key, patch);
     resetLane(key);
   };
-  // Per-lane lever edit (only reachable when overrides are on).
-  const tuneLevers = (key: string, patch: Partial<Levers>) => {
+  // Per-lane lever edit: writes into the override set, dropping entries that
+  // land back on the shared default so inheritance is restored automatically.
+  const tuneOverrides = (key: string, patch: Partial<Levers>) => {
     setLanes((ls) =>
-      ls.map((l) => (l.key === key ? { ...l, levers: { ...l.levers, ...patch } } : l)),
+      ls.map((l) =>
+        l.key === key
+          ? { ...l, overrides: normalizeOverrides(glob, { ...l.overrides, ...patch }) }
+          : l,
+      ),
     );
+    resetLane(key);
+  };
+  const clearOverrides = (key: string) => {
+    setLanes((ls) => ls.map((l) => (l.key === key ? { ...l, overrides: {} } : l)));
     resetLane(key);
   };
   const resetAll = () => {
     setResults({});
-    setRatings({});
+    setPreferred(null);
   };
-  // A global lever change updates the template and mirrors into every lane, so
-  // flipping overrides on later starts from the current global — and so the
-  // global controls double as a "set all" even while overrides are on.
+  // Editing a shared default invalidates every stored result. Overrides win
+  // via spread order, so lane pins survive a defaults edit.
   const setGlobalLevers = (patch: Partial<Levers>) => {
     setGlob((g) => ({ ...g, ...patch }));
-    setLanes((ls) => ls.map((l) => ({ ...l, levers: { ...l.levers, ...patch } })));
-    resetAll();
-  };
-  const togglePerLane = (v: boolean) => {
-    // Seed each lane from the current global on enabling, so overrides begin
-    // consistent rather than from a stale per-lane state.
-    if (v) setLanes((ls) => ls.map((l) => ({ ...l, levers: { ...glob } })));
-    setPerLane(v);
     resetAll();
   };
   const removeLane = (key: string) => setLanes((ls) => ls.filter((l) => l.key !== key));
-  const addLane = () =>
-    setLanes((ls) => (ls.length < MAX_LANES ? [...ls, newLane("", "", glob)] : ls));
+  const addLane = () => setLanes((ls) => (ls.length < MAX_LANES ? [...ls, newLane()] : ls));
 
-  // Leaderboard: lanes with a rating, best first.
-  const ranked = lanes
-    .filter((l) => (ratings[l.key] ?? 0) > 0)
-    .sort((a, b) => (ratings[b.key] ?? 0) - (ratings[a.key] ?? 0));
-  const topKey = ranked[0]?.key;
+  // Successful lanes with their letters — feeds the band, the badges, and the
+  // detail panel.
+  const succ = lanes
+    .map((l, i) => ({ lane: l, letter: laneLetter(i), res: results[l.key] }))
+    .filter((x) => x.res?.status === "success" && x.res!.data);
+  const succCount = succ.length;
 
-  // Successful lanes, labelled (collection + non-default levers), for the
-  // agreement analysis below.
-  const successEntries: LaneEntry[] = lanes
-    .map((l) => ({ lane: l, res: results[l.key] }))
-    .filter((x) => x.res?.status === "success" && x.res.data)
-    .map((x) => ({
+  const successEntries: LaneEntry[] = succ.map((x) => {
+    const chips = overrideChips(glob, x.lane.overrides);
+    return {
       key: x.lane.key,
       label:
-        collLabel(x.lane.collection) +
-        (perLane && leverTags(x.lane.levers).length
-          ? ` · ${leverTags(x.lane.levers).join(" ")}`
-          : ""),
+        `${x.letter} · ${collLabel(x.lane.collection)}` + (chips.length ? ` · ${chips.join(" ")}` : ""),
       collection: x.lane.collection,
       answer: x.res!.data!.answer ?? "",
       sources: x.res!.data!.sources,
-    }));
+    };
+  });
+
+  // doc_id → letters of the lanes that retrieved it (unique docs per lane).
+  const docLanes = new Map<string, string[]>();
+  for (const x of succ) {
+    for (const id of new Set(x.res!.data!.sources.map((s) => s.doc_id))) {
+      docLanes.set(id, [...(docLanes.get(id) ?? []), x.letter]);
+    }
+  }
+
+  // Band stats — doc_id membership counts + mean pairwise overlap + timing.
+  let band: AgreementBandStats | null = null;
+  if (succCount >= 2) {
+    let full = 0;
+    let partial = 0;
+    let unique = 0;
+    docLanes.forEach((letters) => {
+      if (letters.length === succCount) full++;
+      else if (letters.length > 1) partial++;
+      else unique++;
+    });
+    const overlap = meanPairwiseOverlap(successEntries);
+    const fastestLane = succ.reduce((a, b) => ((a.res!.ms ?? Infinity) <= (b.res!.ms ?? Infinity) ? a : b));
+    band = {
+      full,
+      partial,
+      unique,
+      total: docLanes.size,
+      laneCount: succCount,
+      overlapPct: overlap === null ? null : Math.round(overlap * 100),
+      uniques: succ
+        .map((x) => ({
+          letter: x.letter,
+          count: [...new Set(x.res!.data!.sources.map((s) => s.doc_id))].filter(
+            (id) => (docLanes.get(id) ?? []).length === 1,
+          ).length,
+        }))
+        .filter((u) => u.count > 0),
+      fastest: fastestLane.res!.ms != null ? { letter: fastestLane.letter, ms: fastestLane.res!.ms! } : null,
+    };
+  }
 
   return (
     <div>
-      {/* Toolbar */}
-      <div className="mb-4 space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Query row + shared defaults (main's px-[34px] IS the band inset) */}
+      <div className="pb-5">
+        <div className="mb-3 flex flex-wrap items-center gap-2.5">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && run()}
             placeholder="Ask one question, compare across collections…"
-            className="min-w-64 flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm"
+            className="h-[46px] min-w-64 flex-1 rounded-pill border-[1.5px] border-ink-900 px-5 text-[15px] text-strong placeholder:text-faint"
           />
           <button
             type="button"
             onClick={run}
             disabled={!query.trim() || lanes.length === 0}
-            className="rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-40"
+            className="flex h-[46px] items-center gap-2 rounded-pill bg-accent px-[22px] text-[13.5px] font-semibold text-ink-900 disabled:opacity-40"
           >
-            Run {lanes.length}
+            Run {lanes.length} lane{lanes.length === 1 ? "" : "s"} <span className="text-[15px]">→</span>
           </button>
           <button
             type="button"
             onClick={addLane}
             disabled={lanes.length >= MAX_LANES}
-            className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-40"
+            className="h-[46px] rounded-pill border border-ink-900 px-[18px] text-[13px] font-medium text-ink-900 disabled:opacity-40"
           >
             + Lane
           </button>
+          {/* "Lane" is this screen's central noun and four later tips presume it
+              ("Applies to every lane", "only C") — so it is defined here, before
+              them, rather than only inside the collapsed glossary. */}
+          <HelpTip icon side="bottom" term="lane" />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <HelpTip
+            label="Applies to every lane unless overridden"
+            side="bottom"
+            className="font-mono text-[11px]"
+          >
+            These levers are sent with every lane&rsquo;s query, so a lane differs
+            only where it pins its own value — shown as a yellow chip on that lane
+            (a lane with its own API key gets one too). Editing a default here
+            clears every lane&rsquo;s stored answer but leaves the pins;
+            &ldquo;Use defaults&rdquo; in a lane&rsquo;s edit popover drops them.
+          </HelpTip>
+          <div className="flex flex-wrap gap-1.5 font-mono text-[10.5px]">
+            {defaultsChips(glob).map((c) => (
+              <span key={c} className="rounded-[10px] bg-[#f2f1ed] px-[11px] py-1.5 text-[#6a6a64]">
+                {c}
+              </span>
+            ))}
+          </div>
+          <LeverPopover
+            label="Edit defaults"
+            buttonClassName="text-[11.5px] font-medium text-link"
+          >
+            <div className="space-y-2">
+              <LeverControls
+                value={glob}
+                onChange={setGlobalLevers}
+                topKPlaceholder={String(GLOBAL_DEFAULT_TOPK)}
+                models={models}
+              />
+              <p className="border-t border-lineSoft pt-2 text-[10px] leading-snug text-dim">
+                Changing a default re-arms every lane; lane overrides (yellow chips) keep their pins.
+              </p>
+            </div>
+          </LeverPopover>
           {getStoredAuthMode() === "bearer" ? (
-            <span className="text-xs text-gray-500">{SIGNED_IN_HINT}</span>
+            <span className="ml-auto text-[11px] text-dim">{SIGNED_IN_HINT}</span>
           ) : (
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="API key (optional)"
-              className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs"
+              className="ml-auto w-40 rounded border border-line px-2 py-1 text-xs"
             />
           )}
         </div>
-
-        {/* Leaderboard */}
-        {ranked.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-medium text-gray-500">Ranking:</span>
-            {ranked.map((l, i) => (
-              <span
-                key={l.key}
-                className={`rounded-full px-2 py-0.5 ${i === 0 ? "bg-amber-100 text-amber-800" : "bg-gray-100 text-gray-600"}`}
-              >
-                {i === 0 ? "🥇 " : `${i + 1}. `}
-                {collLabel(l.collection)}
-                {perLane && leverTags(l.levers).length
-                  ? ` · ${leverTags(l.levers).join(" ")}`
-                  : ""}{" "}
-                · {ratings[l.key]}★
-              </span>
-            ))}
-          </div>
-        ) : null}
       </div>
 
-      {/* Global pipeline panel + lanes */}
-      <div className="flex gap-4">
-        <aside className="sticky top-4 w-52 shrink-0 self-start space-y-3 rounded-lg border border-gray-200 bg-white p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-            Pipeline
-          </div>
-          <label className="flex cursor-pointer items-center justify-between gap-2">
-            <span className="text-xs font-medium text-gray-600">Per-lane overrides</span>
-            <input
-              type="checkbox"
-              checked={perLane}
-              onChange={(e) => togglePerLane(e.target.checked)}
-            />
-          </label>
-          <LeverControls
-            value={glob}
-            onChange={setGlobalLevers}
-            topKPlaceholder="5"
-            models={models}
-          />
-          <p className="text-[11px] leading-snug text-gray-400">
-            {perLane
-              ? "Each lane below can differ. Changing a control here applies it to every lane."
-              : "All lanes share these settings."}
+      {/* Agreement band — doc_id + rank based; never cross-lane score comparison. */}
+      {band ? (
+        <AgreementBand
+          stats={band}
+          glossaryOpen={glossaryOpen}
+          // The panel this opens is at the foot of the page, so opening it from
+          // up here also has to take the reader there.
+          onToggleGlossary={() => {
+            const next = !glossaryOpen;
+            setGlossaryOpen(next);
+            if (next) {
+              requestAnimationFrame(() => document.getElementById(GLOSSARY_REGION_ID)?.focus());
+            }
+          }}
+          glossaryRegionId={GLOSSARY_REGION_ID}
+        />
+      ) : null}
+
+      {/* Lanes: equal columns with hairline gaps; below ~900px the min column
+          width makes the strip horizontally scrollable instead of crushing. */}
+      <div className={`-mx-[34px] overflow-x-auto border-b border-line ${band ? "" : "border-t"}`}>
+        {lanes.length === 0 ? (
+          <p className="px-[34px] py-8 text-sm text-dim">
+            No collections available. Configure the registry to compare.
           </p>
-        </aside>
-
-        {/* Lanes */}
-        <div className="flex gap-4 overflow-x-auto pb-4">
-          {lanes.map((lane) => {
-          const res = results[lane.key];
-          const isTop = lane.key === topKey;
-          return (
-            <div
-              key={lane.key}
-              className={`flex w-80 shrink-0 flex-col rounded-lg border bg-white ${isTop ? "border-amber-300 ring-1 ring-amber-200" : "border-gray-200"}`}
-            >
-              {/* Lane header */}
-              <div className="space-y-2 border-b border-gray-100 p-3">
-                <div className="flex items-center gap-2">
-                  <select
-                    value={lane.collection}
-                    onChange={(e) => tuneLane(lane.key, { collection: e.target.value })}
-                    className="min-w-0 flex-1 rounded-md border border-gray-300 px-2 py-1 text-sm"
-                  >
-                    {opts.map((c) => (
-                      <option key={c.id} value={c.default ? "" : c.id}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    aria-label="remove lane"
-                    onClick={() => removeLane(lane.key)}
-                    className="shrink-0 text-gray-400 hover:text-red-500"
-                  >
-                    ✕
-                  </button>
-                </div>
-                {(() => {
-                  const c = collOf(lane.collection);
-                  const p = c?.provenance;
-                  const method = p?.chunk_method ?? c?.chunk_method;
-                  return c ? (
-                    <div className="flex items-center gap-1.5 text-[11px] text-gray-400">
-                      <span>{c.model.split("/").pop()} · {c.dim}d</span>
-                      {method ? (
-                        <span>· {method}{p?.chunk_size ? "/" + p.chunk_size : ""}</span>
-                      ) : null}
-                      {p ? (
-                        <span className={p.source === "ingest" ? "text-green-600" : "text-gray-400"}>
-                          · {p.source === "ingest" ? "verified" : "config"}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null;
-                })()}
-
-                {/* Per-lane levers appear only when overrides are enabled;
-                    otherwise every lane follows the global panel. */}
-                {perLane ? (
-                  <LeverControls
-                    value={lane.levers}
-                    onChange={(p) => tuneLevers(lane.key, p)}
-                    topKPlaceholder={String(globalTopK)}
-                    models={models}
-                  />
-                ) : null}
-
-                <input
-                  type="password"
-                  value={lane.apiKey}
-                  onChange={(e) => setLane(lane.key, { apiKey: e.target.value })}
-                  placeholder="lane API key → compare a tenant (optional)"
-                  className="w-full rounded-md border border-gray-200 px-2 py-1 text-xs"
-                />
-                <div className="flex items-center justify-between">
-                  <Stars
-                    value={ratings[lane.key] ?? 0}
-                    onChange={(v) => setRatings((r) => ({ ...r, [lane.key]: v }))}
-                  />
-                  {res?.ms != null ? (
-                    <span className="tabular-nums text-[11px] text-gray-400">
-                      {res.ms.toFixed(0)} ms
-                      {res.data?.sources?.length
-                        ? ` · top ${res.data.sources[0].score.toFixed(4)}`
-                        : ""}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-
-              {/* Lane body */}
-              <div className="flex-1 space-y-3 p-3">
-                {!ran ? (
-                  <p className="text-xs text-gray-400">Run a query to compare.</p>
-                ) : res?.status === "pending" ? (
-                  <p className="animate-pulse text-xs text-gray-400">querying…</p>
-                ) : res?.status === "error" ? (
-                  <p className="text-xs text-red-600">Error: {res.error}</p>
-                ) : res?.data ? (
-                  <>
-                    <section
-                      aria-label="answer"
-                      className="rounded-md border border-gray-200 bg-gray-50 p-2"
+        ) : (
+          <div
+            className="grid min-h-[420px] gap-px bg-line"
+            style={{ gridTemplateColumns: `repeat(${lanes.length}, minmax(340px, 1fr))` }}
+          >
+            {lanes.map((lane, i) => {
+              const res = results[lane.key];
+              const chips = overrideChips(glob, lane.overrides).concat(
+                lane.apiKey.trim() ? ["own key"] : [],
+              );
+              const isPreferred = preferred === lane.key;
+              const c = collOf(lane.collection);
+              const p = c?.provenance;
+              const method = p?.chunk_method ?? c?.chunk_method;
+              return (
+                <div key={lane.key} className="bg-white px-5 pb-6 pt-[18px]">
+                  {/* Lane header: letter badge · collection picker · remove */}
+                  <div className="mb-1.5 flex items-center gap-2">
+                    <span
+                      className={`rounded-[3px] px-2 py-[5px] font-mono text-[11px] font-semibold ${LANE_BADGE[i % LANE_BADGE.length]}`}
                     >
-                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                        Answer
-                      </div>
-                      {/* content is untrusted → rendered as React text (auto-escaped). */}
-                      <p className="whitespace-pre-wrap break-words text-sm text-gray-800">
-                        {res.data.answer}
-                      </p>
-                    </section>
+                      {laneLetter(i)}
+                    </span>
+                    <select
+                      value={lane.collection}
+                      onChange={(e) => tuneLane(lane.key, { collection: e.target.value })}
+                      className="min-w-0 flex-1 cursor-pointer appearance-none truncate border-none bg-transparent p-0 font-display text-[13.5px] font-semibold leading-[1.3] text-ink-900"
+                    >
+                      {opts.map((o) => (
+                        <option key={o.id} value={o.default ? "" : o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      aria-label="remove lane"
+                      onClick={() => removeLane(lane.key)}
+                      className="shrink-0 text-[13px] text-faint hover:text-rust"
+                    >
+                      ✕
+                    </button>
+                  </div>
 
-                    <section aria-label="sources">
-                      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
-                        Sources ({res.data.sources.length})
+                  {/* Collection facts: id, then model · dims · chunking */}
+                  <div className="mb-2.5 font-mono text-[10.5px] leading-[1.6] text-dim">
+                    <div className="truncate" title={c?.id ?? lane.collection}>
+                      {c?.id ?? (lane.collection || "default")}
+                    </div>
+                    {c ? (
+                      <div className="truncate">
+                        {c.model.split("/").pop()} · {c.dim}d
+                        {method ? ` · ${method}${p?.chunk_size ? "/" + p.chunk_size : ""}` : ""}
+                        {p ? (p.source === "ingest" ? " · verified" : " · config") : ""}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* Config chips + the per-lane edit popover */}
+                  <LaneConfigChips chips={chips}>
+                    <div className="space-y-2">
+                      <LeverControls
+                        value={effectiveLevers(glob, lane.overrides)}
+                        onChange={(patch) => tuneOverrides(lane.key, patch)}
+                        topKPlaceholder={String(globalTopK)}
+                        models={models}
+                      />
+                      <input
+                        type="password"
+                        value={lane.apiKey}
+                        onChange={(e) => tuneLane(lane.key, { apiKey: e.target.value })}
+                        placeholder="lane API key → compare another owner scope (optional)"
+                        className="w-full rounded border border-line px-2 py-1 text-xs"
+                      />
+                      <p className="text-[10px] leading-snug text-dim">
+                        Sent as X-API-Key even when the app is signed in with a
+                        token, so this lane really queries that key's{" "}
+                        <HelpTip term="owner scope" />. The other lanes keep the
+                        app's credential.
+                      </p>
+                      <div className="flex items-center justify-between border-t border-lineSoft pt-2">
+                        <span className="text-[10px] text-dim">overrides replace the shared defaults</span>
+                        <button
+                          type="button"
+                          onClick={() => clearOverrides(lane.key)}
+                          disabled={Object.keys(lane.overrides).length === 0}
+                          className="text-xs text-dim hover:text-body disabled:opacity-40"
+                        >
+                          Use defaults
+                        </button>
+                      </div>
+                    </div>
+                  </LaneConfigChips>
+
+                  {/* Result meta + the ONE Prefer radio across lanes */}
+                  {res?.status === "success" && res.data ? (
+                    <div
+                      className={`mb-3.5 flex items-center gap-2 rounded-row px-[11px] py-[9px] ${
+                        isPreferred ? "border border-accent bg-accent-soft" : "bg-paper"
+                      }`}
+                    >
+                      <span
+                        className={`flex-1 font-mono text-[10.5px] ${isPreferred ? "text-accent-text" : "text-[#6a6a64]"}`}
+                      >
+                        {res.ms != null ? `${(res.ms / 1000).toFixed(2)}s · ` : ""}
+                        {res.data.sources.length} source{res.data.sources.length === 1 ? "" : "s"}
+                      </span>
+                      <HelpTip icon side="bottom" term="lane result" />
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={isPreferred}
+                        onClick={() => setPreferred(lane.key)}
+                        className="flex items-center gap-2 text-[10.5px] font-medium text-ink-900"
+                      >
+                        {isPreferred ? "Preferred" : "Prefer"}
+                        <span
+                          aria-hidden="true"
+                          className={`h-3.5 w-3.5 rounded-full border-[1.5px] ${
+                            isPreferred
+                              ? "border-ink-900 bg-ink-900 shadow-[inset_0_0_0_3px_#fff]"
+                              : "border-faint"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {/* Lane body */}
+                  {!ran ? (
+                    <p className="text-xs text-dim">Run a query to compare.</p>
+                  ) : res?.status === "pending" ? (
+                    <p className="animate-pulse text-xs text-dim">querying…</p>
+                  ) : res?.status === "error" ? (
+                    <p className="text-xs text-rust">Error: {res.error}</p>
+                  ) : res?.data ? (
+                    <>
+                      {res.data.answer?.trim() ? (
+                        <LaneAnswer text={res.data.answer} />
+                      ) : (
+                        <p className="mb-4 text-[13px] italic text-faint">no answer generated</p>
+                      )}
+
+                      {/* One tip per lane column, on the section heading — the
+                          row anatomy (badge, score) is explained once, not per
+                          source row. */}
+                      <div className="mb-2.5">
+                        <HelpTip
+                          label="Ranked sources"
+                          className="font-mono text-[10px] font-medium uppercase tracking-[.12em]"
+                        >
+                          In the order this lane returned them. The badge names the
+                          lanes that retrieved the same document — &ldquo;all
+                          lanes&rdquo;, &ldquo;A · B&rdquo;, or &ldquo;only
+                          C&rdquo; — matched on doc_id, so it means the same
+                          document, not the same chunk; it appears once two lanes
+                          have answered. The number on the right is this lane&rsquo;s
+                          retrieval score, comparable inside this lane only.
+                        </HelpTip>
                       </div>
                       {res.data.sources.length === 0 ? (
-                        <p className="rounded bg-amber-50 p-2 text-xs text-amber-800">
+                        <p className="rounded-row bg-accent-soft p-2 text-xs text-accent-text">
                           No sources matched — the answer may be low-confidence.
                         </p>
                       ) : (
-                        <>
-                          <div
-                            className={`${SOURCE_GRID} border-b border-gray-200 pb-1 text-[10px] font-medium uppercase tracking-wide text-gray-400`}
-                          >
-                            <span className="text-right">#</span>
-                            <span>Document</span>
-                            <span className="text-right">Score</span>
-                          </div>
-                          <ul>
-                            {res.data.sources.map((s, i) => (
-                              <CompareSource
-                                key={s.chunk_id}
-                                rank={i + 1}
-                                source={s}
-                                collection={lane.collection}
-                                apiKey={lane.apiKey || apiKey}
-                              />
-                            ))}
-                          </ul>
-                        </>
+                        <ul className="flex flex-col gap-2">
+                          {res.data.sources.map((s, k) => (
+                            <CompareSource
+                              key={s.chunk_id}
+                              rank={k + 1}
+                              source={s}
+                              collection={lane.collection}
+                              apiKey={laneCredential(lane.apiKey, apiKey)}
+                              letters={succCount >= 2 ? (docLanes.get(s.doc_id) ?? null) : null}
+                              laneCount={succCount}
+                            />
+                          ))}
+                        </ul>
                       )}
-                    </section>
-                  </>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-
-          {lanes.length === 0 ? (
-            <p className="text-sm text-gray-400">
-              No collections available. Configure the registry to compare.
-            </p>
-          ) : null}
-        </div>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      {/* Agreement analysis across the lanes' results. */}
-      {ran && successEntries.length >= 2 ? <AgreementPanel entries={successEntries} /> : null}
+      {/* Deep-dive agreement matrices behind the band's headline numbers. */}
+      {ran && successEntries.length >= 2 ? (
+        <AgreementPanel entries={successEntries} />
+      ) : null}
 
-      {/* Glossary of the levers + metrics used on this page. */}
-      <Glossary />
+      {/* Glossary of the levers + metrics used on this page (lib/glossary via
+          the shared panel). The same `open` bit is toggled by the agreement
+          band's "What do these mean? ▾"; the page bleeds the row edge-to-edge
+          out of its 34px gutter. */}
+      <GlossaryPanel
+        open={glossaryOpen}
+        onToggle={() => setGlossaryOpen((o) => !o)}
+        regionId={GLOSSARY_REGION_ID}
+        groups={GLOSSARY_GROUPS}
+        className="-mx-[34px]"
+        inset="px-[34px]"
+        summary="hybrid · vector · bm25 · rewrite · rerank · cross-encoder · knowledge graph"
+      />
     </div>
   );
 }

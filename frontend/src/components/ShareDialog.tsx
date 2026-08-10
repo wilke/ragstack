@@ -18,6 +18,8 @@ import {
   normalizeGranteeSubject,
   shareGranteeLabel,
 } from "../lib/collections";
+import { lookupTerm } from "../lib/glossary";
+import { HelpTip } from "./HelpTip";
 
 // Inline "Share collection" panel (issue #244). There is no modal/overlay in this
 // codebase — every "dialog" is an inline bordered panel — so this mirrors
@@ -154,9 +156,15 @@ export function ShareDialog({
   return (
     <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-800">
-          Share {collectionLabel ? `“${collectionLabel}”` : "collection"}
-        </h3>
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-sm font-semibold text-gray-800">
+            Share {collectionLabel ? `“${collectionLabel}”` : "collection"}
+          </h3>
+          <HelpTip icon side="bottom" term="share">
+            {lookupTerm("share")} There is no write or admin grant in v1, and ownership is
+            transferred rather than granted by anything on this panel.
+          </HelpTip>
+        </div>
         <button
           type="button"
           onClick={onClose}
@@ -201,9 +209,12 @@ export function ShareDialog({
 
       {/* Grant to a user. */}
       <div className="mb-4">
-        <label htmlFor="share-grantee" className="mb-1 block text-xs font-medium text-gray-500">
-          Share with a user
-        </label>
+        <div className="mb-1 flex items-center gap-1.5">
+          <label htmlFor="share-grantee" className="block text-xs font-medium text-gray-500">
+            Share with a user
+          </label>
+          <HelpTip icon term="grantee" />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <input
             id="share-grantee"
@@ -288,7 +299,13 @@ export function ShareDialog({
 
       {/* Current shares. */}
       <div>
-        <h4 className="mb-1 text-xs font-medium text-gray-500">Current shares</h4>
+        <div className="mb-1 flex items-center gap-1.5">
+          <h4 className="text-xs font-medium text-gray-500">Current shares</h4>
+          <HelpTip icon term="revoke">
+            {lookupTerm("revoke")} That is why the whole list is re-read after every revoke instead
+            of one row vanishing.
+          </HelpTip>
+        </div>
         {owner ? (
           <p className="mb-2 text-[11px] text-gray-400">
             Owner: <span className="font-mono text-gray-500">{owner}</span>

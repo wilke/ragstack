@@ -1,11 +1,11 @@
 // Ephemeral, best-effort answer feedback.
 //
 // There is no feedback endpoint yet, so this records to an in-session store only
-// (sessionStorage — NOT localStorage, matching the API-key no-persist
-// convention) and is lost on reload. recordFeedback NEVER throws: the answer
-// view must not break if storage is unavailable. The event shape is pre-aligned
-// to a future POST /v1/stats/usage feedback event, so wiring the network call
-// later is a one-line swap of the sink.
+// (sessionStorage — NOT localStorage: a verdict that is never sent anywhere
+// should not outlive the tab) and is lost on reload. recordFeedback NEVER
+// throws: the answer view must not break if storage is unavailable. The event
+// shape is pre-aligned to a future POST /v1/stats/usage feedback event, so
+// wiring the network call later is a one-line swap of the sink.
 
 export type Verdict = "up" | "down";
 

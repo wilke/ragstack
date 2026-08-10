@@ -5,6 +5,8 @@ import {
   isChunkMethod,
   type ChunkForm,
 } from "../lib/chunkers";
+import { lookupTerm } from "../lib/glossary";
+import { HelpTip } from "./HelpTip";
 
 // The chunk-strategy control, shared by every place that mints a collection:
 // the demo's NewCollectionForm and the Ops admin panel. Chunking is build-time
@@ -41,12 +43,21 @@ export function ChunkStrategyPicker({
   return (
     <>
       <div>
-        <label
-          htmlFor={`${idPrefix}-method`}
-          className="mb-1 block text-xs font-medium text-gray-500"
-        >
-          Chunker
-        </label>
+        {/* Tips sit BESIDE their labels, never inside them: a button in a
+            <label> would fire on the label's click too. */}
+        <div className="mb-1 flex items-center gap-1.5">
+          <label
+            htmlFor={`${idPrefix}-method`}
+            className="block text-xs font-medium text-gray-500"
+          >
+            Chunker
+          </label>
+          <HelpTip icon term="chunker">
+            {lookupTerm("chunker")} Choosing differently later means a different collection and a
+            fresh ingest of the whole corpus, and the same query lands on differently cut text. The
+            line under the picker is what the selected method does.
+          </HelpTip>
+        </div>
         <select
           id={`${idPrefix}-method`}
           value={form.method}
@@ -68,12 +79,15 @@ export function ChunkStrategyPicker({
       {sized ? (
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
-            <label
-              htmlFor={`${idPrefix}-size`}
-              className="mb-1 block text-xs font-medium text-gray-500"
-            >
-              Chunk size ({info.unit})
-            </label>
+            <div className="mb-1 flex items-center gap-1.5">
+              <label
+                htmlFor={`${idPrefix}-size`}
+                className="block text-xs font-medium text-gray-500"
+              >
+                Chunk size ({info.unit})
+              </label>
+              <HelpTip icon term="chunk size" />
+            </div>
             <input
               id={`${idPrefix}-size`}
               type="number"
@@ -84,12 +98,18 @@ export function ChunkStrategyPicker({
             />
           </div>
           <div>
-            <label
-              htmlFor={`${idPrefix}-overlap`}
-              className="mb-1 block text-xs font-medium text-gray-500"
-            >
-              Overlap ({info.unit})
-            </label>
+            <div className="mb-1 flex items-center gap-1.5">
+              <label
+                htmlFor={`${idPrefix}-overlap`}
+                className="block text-xs font-medium text-gray-500"
+              >
+                Overlap ({info.unit})
+              </label>
+              <HelpTip icon term="overlap">
+                {lookupTerm("overlap")} This form refuses to submit an overlap at or above the
+                size; more overlap also means more duplicated text in both stores.
+              </HelpTip>
+            </div>
             <input
               id={`${idPrefix}-overlap`}
               type="number"
@@ -107,17 +127,23 @@ export function ChunkStrategyPicker({
         </div>
       ) : (
         <div className="mt-3">
-          <p className="mb-2 text-xs text-gray-500">
-            Boundaries come from the text itself, so there is no fixed size or overlap. Leave a
-            field blank to use the server&apos;s configured default.
+          {/* "Blank = server default" is already said by each input's placeholder
+              and by the glossary entry the tip interpolates; it is not repeated
+              here. */}
+          <p className="mb-2 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+            <span>Boundaries come from the text itself, so there is no fixed size or overlap.</span>
+            <HelpTip icon term="semantic tunables">
+              {lookupTerm("semantic tunables")} Like size and overlap, they are fixed when the
+              collection is created.
+            </HelpTip>
           </p>
           <div className="grid gap-3 sm:grid-cols-3">
             {SEMANTIC_PARAMS.map((spec) => (
               <div key={spec.key}>
+                {/* No title="": the same sentence renders under the input. */}
                 <label
                   htmlFor={`${idPrefix}-${spec.key}`}
                   className="mb-1 block text-xs font-medium text-gray-500"
-                  title={spec.help}
                 >
                   {spec.label}
                 </label>

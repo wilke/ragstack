@@ -58,7 +58,11 @@ import {
   purgeConfirmed,
   purgeReportSummary,
 } from "../lib/collections";
+import { lookupTerm } from "../lib/glossary";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
+import { GlossaryPanel } from "./GlossaryPanel";
+import { HelpTip } from "./HelpTip";
+import { StatusBand, storeTitle } from "./ops/StatusBand";
 
 // Ops module (slice of #95): the operational view fed by the tenant-scoped read
 // endpoints (#85). Store stats work for any caller; deep health, config, jobs and
@@ -78,18 +82,20 @@ const fmt = (n: number | null | undefined): string => (n == null ? "—" : n.toL
 
 // --- Section registry / table of contents ---------------------------------
 
-// One list drives both the TOC and every <h2>: SectionHeading renders its text
-// from here, so a section can't exist without a nav entry (or vice versa).
-// Order matches the render order below.
+// One list drives both the TOC rail and every heading: SectionHeading renders
+// its text from here, so a section can't exist without a nav entry (or vice
+// versa). Order matches the render order below (mockup 6a).
 const SECTIONS = [
+  { id: "health", label: "Deep health" },
   { id: "stores", label: "Stores" },
-  { id: "config", label: "Config" },
   { id: "collections", label: "Collections" },
   { id: "groups", label: "Groups" },
-  { id: "tenants", label: "Tenants" },
   { id: "models", label: "Models" },
+  // "Data ownership", not "Tenants": in this operation a tenant is a whole
+  // deployment (dev/lucid/asm); these rows are owner scopes inside ONE of them.
+  { id: "tenants", label: "Data ownership" },
   { id: "jobs", label: "Ingest jobs" },
-  { id: "health", label: "Deep health" },
+  { id: "config", label: "Config" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -99,92 +105,191 @@ const SECTION_LABEL = Object.fromEntries(SECTIONS.map((s) => [s.id, s.label])) a
   string
 >;
 
-// Headings report their own availability upward so the TOC can dim the sections
-// that 403'd (admin-only) or failed, instead of advertising them as live.
-const ReportSection = createContext<(id: SectionId, available: boolean) => void>(() => {});
+// Headings report their state upward so the TOC can dim the sections that
+// 403'd ("admin" — dimmed with a chip) or failed outright ("down"), instead of
+// advertising them as live.
+type SectionState = "ok" | "admin" | "down";
+
+const ReportSection = createContext<(id: SectionId, state: SectionState) => void>(() => {});
 
 function SectionHeading({
   id,
+  gated,
   unavailable,
+  meta,
+  help,
   children,
 }: {
   id: SectionId;
+  // 401/403 — the section exists but this key's role can't read it.
+  gated?: boolean;
   unavailable?: boolean;
+  // Mono side-note next to the label (endpoint, "n of MAX", …).
+  meta?: ReactNode;
+  // Panel body for the heading's "?" — what the section shows and where it
+  // comes from. The accessible name is the section label, so every "?" on this
+  // page announces which section it belongs to.
+  help?: ReactNode;
   children?: ReactNode;
 }) {
   const report = useContext(ReportSection);
-  useEffect(() => report(id, !unavailable), [report, id, unavailable]);
+  const state: SectionState = gated ? "admin" : unavailable ? "down" : "ok";
+  useEffect(() => report(id, state), [report, id, state]);
   return (
-    <div className="mb-2 mt-8 flex items-center justify-between">
-      {/* scroll-mt clears the sticky TOC bar so the heading isn't hidden under it */}
-      <h2 id={id} className="scroll-mt-16 text-sm font-semibold text-gray-700">
+    <div className="mb-3.5 mt-9 flex items-baseline gap-2.5 first:mt-0">
+      {/* scroll-mt clears the sticky chip strip the TOC becomes on small screens */}
+      <h2
+        id={id}
+        className={`scroll-mt-16 font-mono text-[11px] font-medium uppercase tracking-[.14em] ${
+          gated ? "text-faint" : "text-muted"
+        }`}
+      >
         {SECTION_LABEL[id]}
       </h2>
-      {children}
+      {help ? (
+        <HelpTip icon side="bottom" term={SECTION_LABEL[id]}>
+          {help}
+        </HelpTip>
+      ) : null}
+      {meta ? <span className="font-mono text-[11px] text-[#c4c4be]">{meta}</span> : null}
+      {children ? <span className="ml-auto flex items-center gap-2">{children}</span> : null}
     </div>
   );
 }
 
-function TableOfContents({ available }: { available: Partial<Record<SectionId, boolean>> }) {
+// 196px sticky paper rail on wide screens; a horizontal chip strip below md
+// (README responsive rule). The active item is navy/white; role-gated items are
+// dimmed with an "admin" chip and the rail's foot explains why in one line.
+function SectionToc({
+  state,
+  active,
+  onSelect,
+}: {
+  state: Partial<Record<SectionId, SectionState>>;
+  active: SectionId;
+  onSelect: (id: SectionId) => void;
+}) {
+  const anyDimmed = SECTIONS.some((s) => state[s.id] === "admin");
   return (
+    // Wrapper paints the full-height paper column (and is itself the sticky
+    // chip strip on small screens); the nav re-sticks inside it at width.
+    <div className="sticky top-0 z-10 border-b border-line bg-paper md:static md:z-auto md:border-b-0 md:border-r">
     <nav
       aria-label="Sections"
-      className="sticky top-0 z-10 -mx-4 flex flex-wrap items-center gap-1.5 border-b border-gray-200 bg-white/90 px-4 py-2 backdrop-blur"
+      className="flex items-center gap-1 overflow-x-auto px-4 py-2 md:sticky md:top-0 md:block md:overflow-visible md:py-6"
     >
-      {SECTIONS.map((s) => {
-        const off = available[s.id] === false;
-        return (
-          <a
-            key={s.id}
-            href={`#${s.id}`}
-            title={off ? "unavailable — admin-only or failed to load" : undefined}
-            className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${
-              off
-                ? "border-dashed border-gray-200 text-gray-400 hover:text-gray-600"
-                : "border-gray-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900"
-            }`}
-          >
-            {s.label}
-            {off ? <span className="ml-1 text-gray-300">n/a</span> : null}
-          </a>
-        );
-      })}
+      <div className="hidden font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted md:mb-3.5 md:block">
+        Sections
+      </div>
+      <div className="flex items-center gap-1 md:flex-col md:items-stretch md:gap-[3px]">
+        {SECTIONS.map((s) => {
+          const st = state[s.id] ?? "ok";
+          const current = active === s.id;
+          return (
+            <a
+              key={s.id}
+              href={`#${s.id}`}
+              onClick={() => onSelect(s.id)}
+              title={
+                st === "admin"
+                  ? "admin-only — this key's role can't read it"
+                  : st === "down"
+                    ? "failed to load"
+                    : undefined
+              }
+              className={`flex shrink-0 items-center gap-[7px] whitespace-nowrap rounded-row px-[11px] py-[9px] text-[13px] font-medium ${
+                current
+                  ? "bg-ink-900 text-white"
+                  : st === "ok"
+                    ? "text-body hover:bg-lineSoft"
+                    : "text-faint"
+              }`}
+            >
+              {s.label}
+              {st === "admin" ? (
+                <span
+                  className={`rounded-[3px] px-[5px] py-[3px] font-mono text-[9.5px] leading-none ${
+                    current ? "bg-white/15 text-white" : "bg-[#e9e8e4] text-muted"
+                  }`}
+                >
+                  admin
+                </span>
+              ) : null}
+            </a>
+          );
+        })}
+      </div>
+      {anyDimmed ? (
+        <div className="mt-[22px] hidden border-t border-line pt-[18px] text-[11.5px] leading-relaxed text-dim md:block">
+          Dimmed sections need a role your key doesn&apos;t have.
+        </div>
+      ) : null}
     </nav>
-  );
-}
-
-function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="text-xs uppercase tracking-wide text-gray-400">{label}</div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums text-gray-900">{value}</div>
-      {sub ? <div className="mt-1 truncate text-xs text-gray-500">{sub}</div> : null}
     </div>
   );
 }
 
-function StorePill({ label, s }: { label: string; s: StoreStat }) {
-  const ok = s.available;
+// Shared table treatment (mockup 6a): paper header strip in mono uppercase,
+// hairline row dividers, panel radius on the wrapper.
+const THEAD = "bg-paper text-left font-mono text-[10px] uppercase tracking-[.1em] text-muted";
+const TH = "px-3.5 py-2.5 font-medium";
+
+// Outline pill for section-heading actions ("New collection →", …).
+const PILL =
+  "rounded-chip border border-ink-900 px-3.5 py-[7px] text-xs font-medium text-ink-900 hover:bg-ink-900 hover:text-white disabled:opacity-50";
+
+// A 403'd section renders one dim explanatory line — never an error blob.
+function GatedNote({ children }: { children: ReactNode }) {
+  return <p className="text-[12.5px] leading-relaxed text-faint">{children}</p>;
+}
+
+// Non-permission failures also stay a single line, just in the failure color.
+function ErrLine({ children }: { children: ReactNode }) {
+  return <p className="text-[12.5px] leading-relaxed text-rust">{children}</p>;
+}
+
+const gatedErr = (e: unknown): boolean =>
+  e instanceof ApiError && (e.status === 403 || e.status === 401);
+
+// `variant` picks the value's type case. "stat" is the mockup's Archivo numeral
+// — right for counts and one-word states. "id" is for identifiers such as an
+// account subject: at display weight those become a shouted, wrapping headline,
+// so they get mono at reading size and break on their own separators.
+function KpiCard({
+  label,
+  value,
+  sub,
+  variant = "stat",
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  variant?: "stat" | "id";
+}) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-        ok ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-      }`}
-      title={`${label}: ${s.backend}`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${ok ? "bg-green-500" : "bg-red-500"}`} />
-      {label} · {s.backend}
-    </span>
+    <div className="rounded-card border border-line bg-white p-4">
+      <div className="font-mono text-[10px] uppercase tracking-[.1em] text-muted">{label}</div>
+      <div
+        className={
+          variant === "id"
+            ? "mt-1.5 break-all font-mono text-[12.5px] font-medium leading-snug text-ink-900"
+            : "mt-1.5 font-display text-[22px] font-extrabold leading-none text-ink-900"
+        }
+      >
+        {value}
+      </div>
+      {sub ? <div className="mt-1.5 truncate font-mono text-[10.5px] text-dim">{sub}</div> : null}
+    </div>
   );
 }
 
-function StatusDot({ ok, note }: { ok: boolean; note?: string | null }) {
-  if (note) return <span className="text-xs text-gray-400">{note}</span>;
-  return ok ? (
-    <span className="text-green-600">● up</span>
-  ) : (
-    <span className="text-red-600">● down</span>
-  );
+// Model state leads its table row: reachable ⇒ ready. There is no cold-start
+// signal in /v1/stats/models, so the only other honest states are the server's
+// own note ("not configured" / "disabled") and down.
+function modelState(m: ModelStatus): { label: string; cls: string } {
+  if (m.reachable) return { label: "ready", cls: "text-[#1f6b4c]" };
+  if (m.note) return { label: m.note, cls: "text-dim" };
+  return { label: "down", cls: "text-rust" };
 }
 
 function endpointSummary(m: ModelStatus): string {
@@ -225,17 +330,32 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
     mutationFn: () => runModelBenchmark(apiKey || undefined),
   });
 
-  const err = models.error as ApiError | undefined;
+  const gated = models.isError && gatedErr(models.error);
 
   return (
     <>
-      <SectionHeading id="models" unavailable={models.isError}>
+      <SectionHeading
+        id="models"
+        gated={gated}
+        unavailable={models.isError}
+        meta={models.data ? `serving · ${models.data.models.length}` : undefined}
+        help={
+          <>
+            GET /v1/stats/models, re-read every 8s: one row per task role this server serves
+            (embedding, llm, reranker…). State is reachability only — “ready” means an endpoint
+            answered this probe. There is no warm-up signal in the API, so a model still loading
+            reads as down until it responds, and “not configured” / “disabled” is the server’s own
+            note. Throughput stays “—” until Measure throughput runs, and that is one batched call
+            across the live fleet, not a saturation benchmark. Admin-only.
+          </>
+        }
+      >
         {!models.isError && (
           <button
             type="button"
             onClick={() => bench.mutate()}
             disabled={bench.isPending}
-            className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className={PILL}
           >
             {bench.isPending ? "measuring…" : "Measure throughput"}
           </button>
@@ -243,53 +363,62 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
       </SectionHeading>
 
       {models.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {err?.status === 403
-            ? "Model status is admin-only. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
-            : `Unavailable: ${(models.error as Error).message}`}
-        </div>
+        gated ? (
+          <GatedNote>
+            Model status is admin-only — start the API with DEFAULT_ROLE=admin, or enter an admin
+            key.
+          </GatedNote>
+        ) : (
+          <ErrLine>Unavailable: {(models.error as Error).message}</ErrLine>
+        )
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <div className="overflow-x-auto rounded-panel border border-line">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+            <thead className={THEAD}>
               <tr>
-                <th className="px-3 py-2 font-medium">Role</th>
-                <th className="px-3 py-2 font-medium">Model</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Endpoints</th>
-                <th className="px-3 py-2 font-medium">Throughput</th>
+                <th className={TH}>State</th>
+                <th className={TH}>Model</th>
+                <th className={TH}>Task</th>
+                <th className={TH}>Endpoints</th>
+                <th className={TH}>Throughput</th>
               </tr>
             </thead>
             <tbody>
-              {(models.data?.models ?? []).map((m) => (
-                <tr key={m.role} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-medium capitalize text-gray-800">{m.role}</td>
-                  <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={m.model}>
-                    {m.model}
-                    {m.dim ? <span className="text-gray-400"> · {m.dim}d</span> : null}
-                  </td>
-                  <td className="px-3 py-2">
-                    <StatusDot ok={m.reachable} note={m.note} />
-                  </td>
-                  <td
-                    className="px-3 py-2 tabular-nums text-gray-500"
-                    title={m.endpoints.map((e) => `${e.url} — ${e.reachable ? "up" : "down"}${e.latency_ms != null ? ` (${e.latency_ms} ms)` : ""}`).join("\n")}
-                  >
-                    {endpointSummary(m)}
-                  </td>
-                  <td className="px-3 py-2 tabular-nums text-gray-700">
-                    {throughputCell(m.role, bench.data)}
-                  </td>
-                </tr>
-              ))}
+              {(models.data?.models ?? []).map((m) => {
+                const st = modelState(m);
+                return (
+                  <tr key={m.role} className="border-t border-lineSoft">
+                    <td className={`px-3.5 py-2.5 font-mono text-[10px] font-medium ${st.cls}`}>
+                      {st.label}
+                    </td>
+                    <td
+                      className="max-w-xs truncate px-3.5 py-2.5 font-mono text-[11px] text-strong"
+                      title={m.model}
+                    >
+                      {m.model}
+                      {m.dim ? <span className="text-dim"> · {m.dim}d</span> : null}
+                    </td>
+                    <td className="px-3.5 py-2.5 text-[11px] text-dim">{m.role}</td>
+                    <td
+                      className="px-3.5 py-2.5 font-mono text-[11px] tabular-nums text-dim"
+                      title={m.endpoints.map((e) => `${e.url} — ${e.reachable ? "up" : "down"}${e.latency_ms != null ? ` (${e.latency_ms} ms)` : ""}`).join("\n")}
+                    >
+                      {endpointSummary(m)}
+                    </td>
+                    <td className="px-3.5 py-2.5 font-mono text-[11px] tabular-nums text-body">
+                      {throughputCell(m.role, bench.data)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {bench.isError ? (
-            <p className="px-3 py-2 text-xs text-red-600">
+            <p className="px-3.5 py-2 text-xs text-rust">
               Benchmark failed: {(bench.error as Error).message}
             </p>
           ) : bench.data ? (
-            <p className="px-3 py-2 text-xs text-gray-400">
+            <p className="px-3.5 py-2 text-xs text-dim">
               Throughput is a one-shot estimate over the live fleet (single batched
               call), not a saturation benchmark.
             </p>
@@ -302,12 +431,20 @@ function ModelsPanel({ apiKey }: { apiKey?: string }) {
 
 // --- Config viewer (#95) --------------------------------------------------
 
+// URLs in config (store DSNs, embedding endpoints) may embed credentials
+// (scheme://user:pass@host). The chip next to the heading promises redaction,
+// so every rendered value passes through here.
+function redactCreds(v: string): string {
+  return v.replace(/\/\/[^/@\s]*@/g, "//***@");
+}
+
 function Row({ k, v }: { k: string; v: unknown }) {
-  const val = Array.isArray(v) ? v.join(", ") : v == null || v === "" ? "—" : String(v);
+  const raw = Array.isArray(v) ? v.join(", ") : v == null || v === "" ? "—" : String(v);
+  const val = redactCreds(raw);
   return (
-    <div className="flex justify-between gap-3 py-1">
-      <dt className="shrink-0 text-gray-500">{k}</dt>
-      <dd className="truncate text-right font-mono text-xs text-gray-800" title={val}>
+    <div className="flex justify-between gap-3">
+      <dt className="shrink-0 text-dim">{k}</dt>
+      <dd className="truncate text-right text-body" title={val}>
         {val}
       </dd>
     </div>
@@ -316,9 +453,11 @@ function Row({ k, v }: { k: string; v: unknown }) {
 
 function ConfigGroup({ title, rows }: { title: string; rows: [string, unknown][] }) {
   return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">{title}</div>
-      <dl className="text-sm">
+    <div>
+      <div className="mb-[7px] font-mono text-[10px] font-medium uppercase tracking-[.1em] text-faint">
+        {title}
+      </div>
+      <dl className="font-mono text-[11.5px] leading-[1.7]">
         {rows.map(([k, v]) => (
           <Row key={k} k={k} v={v} />
         ))}
@@ -334,67 +473,92 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
     refetchInterval: 30000,
     retry: false,
   });
-  const err = cfg.error as ApiError | undefined;
+  const gated = cfg.isError && gatedErr(cfg.error);
   const c: AppConfig = cfg.data ?? {};
 
   return (
     <>
-      <SectionHeading id="config" unavailable={cfg.isError} />
+      <SectionHeading
+        id="config"
+        gated={gated}
+        unavailable={cfg.isError}
+        help={
+          <>
+            GET /v1/config — the settings this server is actually running with. Read-only: nothing
+            on this page writes them, they come from the API&apos;s environment. Any credentials
+            embedded in a URL (<span className="font-mono">scheme://user:pass@host</span>) are
+            rewritten to <span className="font-mono">***</span> before a value is rendered. This is
+            also where MAX_COLLECTIONS lives, which is why a non-admin key sees the Collections
+            count with no cap beside it.
+          </>
+        }
+        meta={
+          cfg.isError ? undefined : (
+            <span className="rounded-[3px] bg-linkSoft px-[7px] py-1 font-mono text-[10px] normal-case tracking-normal text-link">
+              admin only · URL credentials redacted
+            </span>
+          )
+        }
+      />
       {cfg.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {err?.status === 403
-            ? "Config is admin-only. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
-            : `Unavailable: ${(cfg.error as Error).message}`}
-        </div>
+        gated ? (
+          <GatedNote>
+            Config is admin-only — start the API with DEFAULT_ROLE=admin, or enter an admin key.
+          </GatedNote>
+        ) : (
+          <ErrLine>Unavailable: {(cfg.error as Error).message}</ErrLine>
+        )
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        // Three mono columns (mockup 6a): Retrieval / Stores / Limits. Every key
+        // the old six-card layout showed still renders, regrouped.
+        <div className="grid grid-cols-1 gap-x-[26px] gap-y-5 rounded-panel border border-line px-5 py-[18px] sm:grid-cols-3">
+          <div className="space-y-5">
+            <ConfigGroup
+              title="Retrieval"
+              rows={[
+                ["top_k", c.top_k],
+                ["rerank", c.rerank_enabled ? `on (${c.rerank_candidates})` : "off"],
+                ["reranker", c.reranker_model],
+                ["kg extract", c.kg_extraction_enabled ? "on" : "off"],
+              ]}
+            />
+            <ConfigGroup
+              title="Chunking"
+              rows={[
+                ["method", c.chunk_method],
+                ["size", c.chunk_size],
+                ["overlap", c.chunk_overlap],
+              ]}
+            />
+          </div>
+          <div className="space-y-5">
+            <ConfigGroup
+              title="Stores"
+              rows={[
+                ["vector", c.vector_backend],
+                ["text", c.text_backend],
+                ["graph", c.graph_backend],
+                ["jobs", c.job_store_backend],
+                ["collection", c.qdrant_collection_explicit || c.qdrant_collection],
+                ["es index", c.elasticsearch_index],
+              ]}
+            />
+            <ConfigGroup
+              title="Embedding"
+              rows={[
+                ["api", c.embedding_api],
+                ["model", c.embedding_model],
+                ["dim", c.embedding_model_dim],
+                ["endpoints", c.embedding_endpoints?.length],
+              ]}
+            />
+          </div>
           <ConfigGroup
-            title="Collection"
-            rows={[
-              ["active", c.qdrant_collection_explicit || c.qdrant_collection],
-              ["es index", c.elasticsearch_index],
-            ]}
-          />
-          <ConfigGroup
-            title="Backends"
-            rows={[
-              ["vector", c.vector_backend],
-              ["text", c.text_backend],
-              ["graph", c.graph_backend],
-              ["jobs", c.job_store_backend],
-            ]}
-          />
-          <ConfigGroup
-            title="Embedding"
-            rows={[
-              ["api", c.embedding_api],
-              ["model", c.embedding_model],
-              ["dim", c.embedding_model_dim],
-              ["endpoints", c.embedding_endpoints?.length],
-            ]}
-          />
-          <ConfigGroup
-            title="Retrieval"
-            rows={[
-              ["top_k", c.top_k],
-              ["rerank", c.rerank_enabled ? `on (${c.rerank_candidates})` : "off"],
-              ["reranker", c.reranker_model],
-              ["kg extract", c.kg_extraction_enabled ? "on" : "off"],
-            ]}
-          />
-          <ConfigGroup
-            title="Chunking"
-            rows={[
-              ["method", c.chunk_method],
-              ["size", c.chunk_size],
-              ["overlap", c.chunk_overlap],
-            ]}
-          />
-          <ConfigGroup
-            title="Ingest / limits"
+            title="Limits"
             rows={[
               ["ingest conc.", c.ingest_concurrency],
               ["tenant conc.", c.tenant_max_concurrency || "unbounded"],
+              ["embed conc.", c.embedding_max_concurrency],
               ["log level", c.log_level],
             ]}
           />
@@ -431,17 +595,31 @@ function ConfigPanel({ apiKey }: { apiKey?: string }) {
 // relative delta before crying drift.
 function ParityBadge({ vec, text }: { vec?: number | null; text?: number | null }) {
   if (vec == null || text == null) {
-    return <span className="text-xs text-gray-300" title="a count is unavailable">—</span>;
+    // The dash stands where every other row carries a verdict, so what it means
+    // is reachable — not a hover-only title on a non-focusable span.
+    return (
+      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
+        —
+        <HelpTip icon side="left">
+          One of the two counts is unavailable, so the legs can&apos;t be compared. A store
+          that answers no count is usually disabled or unreachable, not empty.
+        </HelpTip>
+      </span>
+    );
   }
   const delta = Math.abs(vec - text);
   const rel = delta / Math.max(vec, text, 1);
   if (delta === 0) {
-    return <span className="rounded bg-green-50 px-1.5 py-0.5 text-xs text-green-700">✓ match</span>;
+    return (
+      <span className="rounded-[3px] bg-mossSoft px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#1f6b4c]">
+        ✓ match
+      </span>
+    );
   }
   if (rel <= 0.02) {
     return (
       <span
-        className="rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700"
+        className="rounded-[3px] bg-accent-soft px-1.5 py-0.5 font-mono text-[10px] font-medium text-accent-text"
         title={`vector and text counts differ by ${delta.toLocaleString()} (~${(rel * 100).toFixed(1)}%) — likely an approximate count on a large collection`}
       >
         ≈ close
@@ -450,7 +628,7 @@ function ParityBadge({ vec, text }: { vec?: number | null; text?: number | null 
   }
   return (
     <span
-      className="rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-700"
+      className="rounded-[3px] bg-rustSoft px-1.5 py-0.5 font-mono text-[10px] font-medium text-rust"
       title={`vector and text counts differ by ${delta.toLocaleString()} (${(rel * 100).toFixed(1)}%) — one store is missing rows (incomplete ingest?)`}
     >
       ⚠ drift {delta.toLocaleString()}
@@ -481,25 +659,42 @@ function provenanceDetail(p: Provenance): string {
   return parts.filter(Boolean).join("\n");
 }
 
+// Both branches carry their explanation in a tip, not a native title: the fix
+// for a missing manifest and the manifest's own contents are consequential, and
+// a title on a <span> reaches neither keyboard nor touch.
 function ProvenanceBadge({ p }: { p?: Provenance | null }) {
   if (!p) {
     return (
-      <span
-        className="text-gray-300"
-        title="No build manifest for this collection — set COLLECTION_MANIFEST_DIR and restart to materialize one from the registry spec (an ingest through this API then upgrades it to a verified record)."
-      >
+      <span className="inline-flex items-center gap-1 font-mono text-[10px] text-faint">
         none
+        {/* side="right": this badge sits in the table's FIRST column, and the
+            wrapper's overflow-x clips anything reaching past its left edge. */}
+        <HelpTip icon side="right">
+          No build manifest for this collection — set COLLECTION_MANIFEST_DIR and restart to
+          materialize one from the registry spec (an ingest through this API then upgrades it
+          to a verified record).
+        </HelpTip>
       </span>
     );
   }
   return (
-    <span title={provenanceDetail(p)}>
+    <span className="inline-flex items-center gap-1">
       <span
-        className={`rounded px-1 ${p.source === "ingest" ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}
+        className={`rounded-[3px] px-1 py-0.5 font-mono text-[10px] font-medium ${
+          p.source === "ingest" ? "bg-mossSoft text-[#1f6b4c]" : "bg-[#f2f1ed] text-[#6a6a64]"
+        }`}
       >
         {p.source === "ingest" ? "verified" : "declared"}
       </span>
-      {p.ingested_at ? <span className="ml-1 text-gray-400">{p.ingested_at.slice(0, 10)}</span> : null}
+      {p.ingested_at ? (
+        <span className="font-mono text-[10px] text-faint">{p.ingested_at.slice(0, 10)}</span>
+      ) : null}
+      <HelpTip icon side="right" term="verified vs declared">
+        <span className="mb-1.5 block">{lookupTerm("verified vs declared")}</span>
+        <span className="block whitespace-pre-line font-mono text-[11px]">
+          {provenanceDetail(p)}
+        </span>
+      </HelpTip>
     </span>
   );
 }
@@ -525,7 +720,7 @@ function CollectionDetail({ c }: { c: CollectionInfo }) {
     .join(", ");
   const overlap = p?.chunk_overlap;
   return (
-    <div className="grid gap-4 bg-gray-50 px-4 py-3 text-sm sm:grid-cols-2">
+    <div className="grid gap-4 bg-paper px-4 py-3 text-sm sm:grid-cols-2">
       <dl>
         <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-400">
           Binding (registry)
@@ -652,7 +847,7 @@ function CreateCollectionForm({
   }
 
   return (
-    <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+    <div className="mb-3 rounded-panel border border-line bg-paper p-4">
       <h3 className="mb-3 text-sm font-semibold text-gray-800">New collection</h3>
 
       {registry.isLoading ? (
@@ -969,6 +1164,21 @@ export function PurgeConfirm({
   );
 }
 
+// Access chip per collection row. GET /v1/collections carries no share data and
+// this page doesn't fetch per-collection shares (N admin-gated requests), so the
+// only honest chips are "default" and a dash. The column header's HelpTip says
+// so once, rather than every cell repeating it in a native title.
+function AccessChip({ c }: { c: CollectionInfo }) {
+  if (c.default) {
+    return (
+      <span className="rounded-[3px] bg-[#f2f1ed] px-2 py-[5px] font-mono text-[10px] font-medium text-[#6a6a64]">
+        default
+      </span>
+    );
+  }
+  return <span className="font-mono text-[10px] text-faint">—</span>;
+}
+
 function CollectionsPanel({ apiKey }: { apiKey?: string }) {
   const queryClient = useQueryClient();
   const cols = useQuery({
@@ -978,6 +1188,18 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
     retry: false,
   });
   const rows = cols.data?.collections ?? [];
+
+  // "n of MAX_COLLECTIONS" in the heading — the cap only exists in the
+  // admin-only config, so non-admins just see the count. Same query key as
+  // ConfigPanel: one request serves both.
+  const cfg = useQuery({
+    queryKey: ["config", apiKey],
+    queryFn: () => getConfig(apiKey || undefined),
+    refetchInterval: 30000,
+    retry: false,
+  });
+  const maxCollections =
+    typeof cfg.data?.max_collections === "number" ? cfg.data.max_collections : null;
 
   const [creating, setCreating] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -1000,16 +1222,36 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <SectionHeading id="collections" unavailable={cols.isError}>
+      <SectionHeading
+        id="collections"
+        unavailable={cols.isError}
+        help={
+          <>
+            Every entry in the collection registry (GET /v1/collections). The badge beside a
+            name is the build manifest, <em>verified</em> or <em>declared</em>. Unregister drops
+            the registry binding and leaves the data; Delete permanently destroys the store, and
+            the server refuses it for a store another entry still serves. The heading shows the
+            entry count alone: MAX_COLLECTIONS is not among the fields /v1/config returns, so no
+            key — admin or not — can display the limit here.
+          </>
+        }
+        meta={
+          cols.data
+            ? maxCollections != null
+              ? `${rows.length} of ${maxCollections} · MAX_COLLECTIONS`
+              : String(rows.length)
+            : undefined
+        }
+      >
         <button
           type="button"
           onClick={() => {
             setNotice(null);
             setCreating((v) => !v);
           }}
-          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          className={PILL}
         >
-          {creating ? "Cancel" : "＋ New collection"}
+          {creating ? "Cancel" : "New collection →"}
         </button>
       </SectionHeading>
 
@@ -1044,36 +1286,43 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
       ) : null}
 
       {cols.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          Unavailable: {(cols.error as Error).message}
-        </div>
+        <ErrLine>Unavailable: {(cols.error as Error).message}</ErrLine>
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+        <div className="rounded-panel border border-dashed border-line p-4 text-center text-sm text-faint">
           No collections registered.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <div className="overflow-x-auto rounded-panel border border-line">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+            <thead className={THEAD}>
               <tr>
-                <th className="px-3 py-2 font-medium">Collection</th>
-                <th className="px-3 py-2 font-medium">Model</th>
-                <th className="px-3 py-2 font-medium">Chunking</th>
-                <th className="px-3 py-2 font-medium">Provenance</th>
-                <th
-                  className="px-3 py-2 text-right font-medium"
-                  title="Chunks in the vector store (Qdrant), tenant-filtered — the dense/embedding leg of hybrid retrieval."
-                >
-                  Vectors
+                <th className={TH}>Collection</th>
+                <th className={TH}>Embedding model</th>
+                <th className={TH}>Chunking</th>
+                <th className={`${TH} text-right`}>
+                  {/* Was a native title="": the column beside it already carries
+                      its explanation as a HelpTip, and one header row cannot
+                      have two kinds of help. side="bottom-end" because the table
+                      scrolls in an overflow box that clips a centred panel. */}
+                  <span className="inline-flex items-center gap-1.5">
+                    Chunks
+                    <HelpTip icon side="bottom-end" term="drift">
+                      Both legs&apos; counts for this collection, vector store then text index
+                      (BM25), filtered to this credential&apos;s scope. The badge flags drift
+                      between them. {lookupTerm("drift")}
+                    </HelpTip>
+                  </span>
                 </th>
-                <th
-                  className="px-3 py-2 text-right font-medium"
-                  title="Chunks in the text index (Elasticsearch BM25), tenant-filtered — the lexical leg of hybrid retrieval."
-                >
-                  Text
+                <th className={TH}>
+                  <span className="inline-flex items-center gap-1.5">
+                    Access
+                    <HelpTip icon side="bottom-end" term="access">
+                      {lookupTerm("access")} The <em>default</em> chip marks the fallback
+                      collection, which can&apos;t be unregistered or deleted.
+                    </HelpTip>
+                  </span>
                 </th>
-                <th className="px-3 py-2 text-center font-medium">Parity</th>
-                <th className="px-3 py-2 text-right font-medium">Registry</th>
+                <th className={`${TH} text-right`}>Registry</th>
               </tr>
             </thead>
             <tbody>
@@ -1088,8 +1337,8 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                 const open = expanded === c.id;
                 return (
                   <Fragment key={c.id}>
-                    <tr className="border-t border-gray-100">
-                      <td className="px-3 py-2 font-medium text-gray-800">
+                    <tr className="border-t border-lineSoft">
+                      <td className="px-3.5 py-3 text-[12.5px] font-semibold text-ink-900">
                         <button
                           type="button"
                           onClick={() => setExpanded(open ? null : c.id)}
@@ -1097,37 +1346,44 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                           className="text-left hover:underline"
                           title="Show what this collection is made of"
                         >
-                          <span className="mr-1 text-gray-400">{open ? "▾" : "▸"}</span>
+                          <span className="mr-1 text-faint">{open ? "▾" : "▸"}</span>
                           {c.label || c.id}
                         </button>
-                        {c.default ? (
-                          <span className="ml-1 rounded bg-gray-100 px-1 text-xs text-gray-500">default</span>
-                        ) : null}
+                        <span className="ml-1.5 font-normal">
+                          <ProvenanceBadge p={p} />
+                        </span>
                       </td>
-                      <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={c.model}>
+                      <td className="max-w-xs truncate px-3.5 py-3 font-mono text-[11px] text-[#6a6a64]" title={c.model}>
                         {c.model}
-                        <span className="text-gray-400"> · {c.dim}d</span>
+                        <span className="text-faint"> · {c.dim}d</span>
                       </td>
-                      <td className="px-3 py-2 text-gray-600">{chunking}</td>
-                      <td className="px-3 py-2 text-xs">
-                        <ProvenanceBadge p={p} />
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-gray-600">
+                      <td className="px-3.5 py-3 font-mono text-[11px] text-body">{chunking}</td>
+                      {/* The BM25 count is visible text, not a title on the cell:
+                          it is half of what the parity badge is judging, and a
+                          <td> tooltip reaches neither keyboard nor touch. */}
+                      <td className="whitespace-nowrap px-3.5 py-3 text-right font-mono text-[11px] tabular-nums text-body">
                         {c.count != null ? c.count.toLocaleString() : "—"}
+                        <span className="text-[#6a6a64]">
+                          {" / "}
+                          {c.text_count != null ? c.text_count.toLocaleString() : "—"}
+                        </span>
+                        <span className="ml-1.5">
+                          <ParityBadge vec={c.count} text={c.text_count} />
+                        </span>
                       </td>
-                      <td className="px-3 py-2 text-right tabular-nums text-gray-600">
-                        {c.text_count != null ? c.text_count.toLocaleString() : "—"}
+                      <td className="px-3.5 py-3">
+                        <AccessChip c={c} />
                       </td>
-                      <td className="px-3 py-2 text-center">
-                        <ParityBadge vec={c.count} text={c.text_count} />
-                      </td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-3.5 py-3 text-right">
                         {c.default ? (
-                          <span
-                            className="text-xs text-gray-300"
-                            title="The default collection can't be unregistered or deleted."
-                          >
+                          // This dash stands where every other row has buttons,
+                          // so why it has none has to be reachable.
+                          <span className="inline-flex items-center gap-1 text-xs text-faint">
                             —
+                            <HelpTip icon side="left">
+                              The default collection can&apos;t be unregistered or deleted — it is
+                              the one a query falls back to when it names none.
+                            </HelpTip>
                           </span>
                         ) : (
                           // Unregister is only offered when ANOTHER listed collection
@@ -1154,12 +1410,12 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                                         : { id: c.id, mode: "unregister" },
                                     );
                                   }}
-                                  className="text-xs text-gray-400 hover:text-gray-700"
+                                  className="text-xs text-dim hover:text-strong"
                                   title="Another collection shares this store, so the data survives the unregister."
                                 >
                                   Unregister
                                 </button>
-                                <span className="text-gray-200">|</span>
+                                <span className="text-lineSoft">|</span>
                               </>
                             ) : null}
                             <button
@@ -1182,15 +1438,15 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
                       </td>
                     </tr>
                     {open ? (
-                      <tr className="border-t border-gray-100">
-                        <td colSpan={8} className="p-0">
+                      <tr className="border-t border-lineSoft">
+                        <td colSpan={6} className="p-0">
                           <CollectionDetail c={c} />
                         </td>
                       </tr>
                     ) : null}
                     {confirming?.id === c.id ? (
-                      <tr className="border-t border-gray-100">
-                        <td colSpan={8} className="p-0">
+                      <tr className="border-t border-lineSoft">
+                        <td colSpan={6} className="p-0">
                           {confirming.mode === "unregister" ? (
                             <DeleteConfirm
                               c={c}
@@ -1237,23 +1493,14 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
           </table>
         </div>
       )}
+      {/* Only what no tip on this table already carries: drift is on the Chunks
+          header, the readable-scope filter on the section heading, and
+          unregister-vs-purge in the glossary and both confirm panels. */}
       {rows.length > 0 ? (
-        <p className="mt-2 text-xs text-gray-400">
+        <p className="mt-2.5 text-[11.5px] leading-relaxed text-dim">
           Click a collection to see the model, dimension, chunk strategy and build manifest it was
-          made with. <span className="font-medium text-gray-500">Vectors</span> counts the dense
-          embeddings in Qdrant; <span className="font-medium text-gray-500">Text</span>{" "}
-          counts the BM25 documents in Elasticsearch. Hybrid retrieval queries both legs
-          over the <em>same</em> chunks, so equal numbers are the healthy state — a drift
-          means one store is missing rows (a partial or failed ingest), not extra data.
-          Both are filtered to your readable tenants; very large counts may be
-          approximate. <span className="font-medium text-gray-500">Unregister</span> drops the
-          registry binding only, and is offered solely when another collection shares the same
-          store — otherwise the server refuses it, because the data would be left with no
-          collection claiming it and no permissions governing who can read it.{" "}
-          <span className="font-medium text-red-600">Delete permanently</span> is the one that
-          removes it: it drops the Qdrant collection, the Elasticsearch index and the build
-          manifest too, is irreversible, and is refused when another collection still shares the
-          same physical store.
+          made with. <span className="font-medium text-body">Unregister</span> appears only when
+          another collection shares the same physical store.
         </p>
       ) : null}
     </>
@@ -1320,7 +1567,7 @@ function GroupMembers({ groupId, apiKey }: { groupId: string; apiKey?: string })
   const listErr = detail.isError ? (detail.error as Error) : null;
 
   return (
-    <div className="bg-gray-50 px-4 py-3 text-sm">
+    <div className="bg-paper px-4 py-3 text-sm">
       {listErr ? (
         <p role="alert" className="mb-2 rounded bg-red-50 p-2 text-sm text-red-700">
           {groupMemberRemoveMessage(
@@ -1462,21 +1709,21 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
 
   return (
     <>
-      <SectionHeading id="groups">
+      <SectionHeading id="groups" meta={groups.data ? String(rows.length) : undefined}>
         <button
           type="button"
           onClick={() => {
             create.reset();
             setCreating((v) => !v);
           }}
-          className="rounded-md border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          className={PILL}
         >
-          {creating ? "Cancel" : "＋ New group"}
+          {creating ? "Cancel" : "New group →"}
         </button>
       </SectionHeading>
 
       {creating ? (
-        <div className="mb-3 rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="mb-3 rounded-panel border border-line bg-paper p-4">
           <label htmlFor="ops-group-name" className="mb-1 block text-xs font-medium text-gray-500">
             Group name
           </label>
@@ -1517,26 +1764,26 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
       ) : null}
 
       {listErr ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        <ErrLine>
           {groupCreateMessage(
             listErr instanceof ApiError ? listErr.status : null,
             listErr.message,
           )}
-        </div>
+        </ErrLine>
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+        <div className="rounded-panel border border-dashed border-line p-4 text-center text-sm text-faint">
           You don’t own or belong to any groups yet. Create one to share a collection with a
           set of people at once.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <div className="overflow-x-auto rounded-panel border border-line">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+            <thead className={THEAD}>
               <tr>
-                <th className="px-3 py-2 font-medium">Group</th>
-                <th className="px-3 py-2 font-medium">Owner</th>
-                <th className="px-3 py-2 font-medium">Created</th>
-                <th className="px-3 py-2 text-right font-medium">Manage</th>
+                <th className={TH}>Group</th>
+                <th className={TH}>Owner</th>
+                <th className={TH}>Created</th>
+                <th className={`${TH} text-right`}>Manage</th>
               </tr>
             </thead>
             <tbody>
@@ -1544,8 +1791,8 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
                 const open = expanded === g.id;
                 return (
                   <Fragment key={g.id}>
-                    <tr className="border-t border-gray-100">
-                      <td className="px-3 py-2 font-medium text-gray-800">
+                    <tr className="border-t border-lineSoft">
+                      <td className="px-3.5 py-3 text-[12.5px] font-semibold text-ink-900">
                         <button
                           type="button"
                           onClick={() => setExpanded(open ? null : g.id)}
@@ -1553,27 +1800,27 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
                           className="text-left hover:underline"
                           title="Show and edit this group's members"
                         >
-                          <span className="mr-1 text-gray-400">{open ? "▾" : "▸"}</span>
+                          <span className="mr-1 text-faint">{open ? "▾" : "▸"}</span>
                           {g.name}
                         </button>
-                        <span className="ml-2 font-mono text-[11px] text-gray-400" title={g.id}>
+                        <span className="ml-2 font-mono text-[11px] font-normal text-faint" title={g.id}>
                           {g.id.slice(0, 8)}
                         </span>
                       </td>
-                      <td className="max-w-xs truncate px-3 py-2 font-mono text-xs text-gray-600" title={g.owner_subject}>
+                      <td className="max-w-xs truncate px-3.5 py-3 font-mono text-[11px] text-[#6a6a64]" title={g.owner_subject}>
                         {g.owner_subject || "—"}
                       </td>
-                      <td className="px-3 py-2 tabular-nums text-gray-500">{fmtDay(g.created_at)}</td>
-                      <td className="px-3 py-2 text-right">
+                      <td className="px-3.5 py-3 font-mono text-[11px] tabular-nums text-dim">{fmtDay(g.created_at)}</td>
+                      <td className="px-3.5 py-3 text-right">
                         <span className="inline-flex items-center gap-2">
                           <button
                             type="button"
                             onClick={() => setExpanded(open ? null : g.id)}
-                            className="text-xs text-gray-400 hover:text-gray-700"
+                            className="text-xs text-dim hover:text-strong"
                           >
                             {open ? "Hide members" : "Members"}
                           </button>
-                          <span className="text-gray-200">|</span>
+                          <span className="text-lineSoft">|</span>
                           <button
                             type="button"
                             onClick={() => {
@@ -1589,14 +1836,14 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
                       </td>
                     </tr>
                     {open ? (
-                      <tr className="border-t border-gray-100">
+                      <tr className="border-t border-lineSoft">
                         <td colSpan={4} className="p-0">
                           <GroupMembers groupId={g.id} apiKey={apiKey} />
                         </td>
                       </tr>
                     ) : null}
                     {confirmDelete === g.id ? (
-                      <tr className="border-t border-gray-100">
+                      <tr className="border-t border-lineSoft">
                         <td colSpan={4} className="p-0">
                           <div className="border-l-4 border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
                             <p className="font-medium">Delete group “{g.name}”?</p>
@@ -1642,7 +1889,7 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
           </table>
         </div>
       )}
-      <p className="mt-2 text-xs text-gray-400">
+      <p className="mt-2.5 text-[11.5px] leading-relaxed text-dim">
         Groups you own or belong to. Expand one to add or remove members — a member is always a
         user (groups don’t nest). Share a collection with a group from the Collection tab’s Share
         panel; every active member then reads it, and removing a member revokes their access on
@@ -1654,11 +1901,18 @@ function GroupsPanel({ apiKey }: { apiKey?: string }) {
 
 // --- Tenancy --------------------------------------------------------------
 
-// /v1/stats/stores reports one number per store for the UNION of readable tenants
-// (own + public). This panel splits that union apart per collection, which is how
-// you spot a corpus sitting entirely in `public` when you expected it under an org's
-// own tenant. Fetched on demand (no refetchInterval): it costs a count per
-// tenant x collection x store.
+// /v1/stats/stores reports one number per store for the UNION of readable owner
+// scopes (you + public). This panel splits that union apart per collection, which
+// is how you spot a corpus sitting entirely in `public` when you expected it under
+// your own account. Fetched on demand (no refetchInterval): it costs a count per
+// owner x collection x store.
+//
+// TERMINOLOGY: the API calls these rows "tenants" (/v1/stats/tenants, tenant_id
+// payload filtering), but in this operation "tenant" means a whole DEPLOYMENT —
+// the dev/lucid/asm stacks with their own ports and stores. What the rows here
+// actually are is data-OWNERSHIP scopes: your account's subject, plus the shared
+// `public` bucket everyone may read. The UI copy says "owner"/"account"; only
+// code-level identifiers (query keys, env var names, API fields) keep "tenant".
 function TenantsPanel({ apiKey }: { apiKey?: string }) {
   const t = useQuery({
     queryKey: ["tenants", apiKey],
@@ -1668,23 +1922,48 @@ function TenantsPanel({ apiKey }: { apiKey?: string }) {
   const data = t.data;
   const cols = data?.tenants[0]?.collections ?? [];
 
+  // Tenants the admin policy names but the listing doesn't return — visible
+  // only when the policy itself is readable (admin), so the filtering is shown
+  // rather than silently hidden.
+  const hiddenTenants = data?.policy
+    ? Object.keys(data.policy).filter((p) => !data.tenants.some((r) => r.tenant === p)).length
+    : 0;
+
   return (
     <>
-      <SectionHeading id="tenants" unavailable={t.isError} />
+      <SectionHeading
+        id="tenants"
+        unavailable={t.isError}
+        meta="readable only"
+        help={
+          <>
+            GET /v1/stats/tenants. Each row is a data-ownership scope inside this one deployment:
+            your account&apos;s subject, plus every other scope this credential may read — normally
+            the shared <span className="font-mono">public</span> bucket. (Only the API field kept
+            the name &ldquo;tenant&rdquo;; in this operation a tenant is a whole deployment.) Cells
+            are vector-store chunks per collection for that owner, so a 0 under your own account
+            beside a large <span className="font-mono">public</span> number is the normal shape of
+            a shared corpus, not missing data.
+          </>
+        }
+      />
       {t.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          Unavailable: {(t.error as Error).message}
-        </div>
+        <ErrLine>Unavailable: {(t.error as Error).message}</ErrLine>
       ) : !data ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+        <div className="rounded-panel border border-dashed border-line p-4 text-center text-sm text-faint">
           Loading tenancy…
         </div>
       ) : (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <KpiCard label="Tenant" value={data.tenant} sub={`role ${data.role}`} />
+        <div className="space-y-3.5">
+          <div className="grid grid-cols-2 gap-3">
             <KpiCard
-              label="Readable"
+              label="Account"
+              value={data.tenant}
+              sub={`role ${data.role}`}
+              variant="id"
+            />
+            <KpiCard
+              label="Readable scopes"
               value={String(data.readable.length)}
               sub={data.readable.join(" + ")}
             />
@@ -1696,89 +1975,116 @@ function TenantsPanel({ apiKey }: { apiKey?: string }) {
             <KpiCard
               label="Auth"
               value={data.auth_enabled ? "API keys" : "keyless"}
-              sub={data.auth_enabled ? "per-key tenant" : "everyone is `default`"}
+              sub={data.auth_enabled ? "per-key owner" : "everyone is `default`"}
             />
           </div>
 
           {!data.auth_enabled ? (
-            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-              Keyless mode — every caller is the <code>default</code> tenant with the
-              server's default role. Fine for dev; production startup forbids it.
+            <div className="rounded-panel bg-accent-soft px-3.5 py-2.5 text-xs leading-relaxed text-accent-text">
+              Keyless mode — every caller shares the <code>default</code> owner scope
+              with the server's default role. Fine for dev; production startup forbids it.
             </div>
           ) : null}
 
           {cols.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
-              No collections reachable by this tenant.
+            <div className="rounded-panel border border-dashed border-line p-4 text-center text-sm text-faint">
+              No collections reachable by this account.
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <div className="overflow-x-auto rounded-panel border border-line">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+                <thead className={THEAD}>
                   <tr>
-                    <th className="px-3 py-2 font-medium">Tenant</th>
+                    <th className={TH}>Owner</th>
+                    <th className={TH}>Role</th>
                     {cols.map((c) => (
-                      <th key={c.collection} className="px-3 py-2 text-right font-medium">
+                      <th key={c.collection} className={`${TH} text-right`}>
                         {c.label}
                       </th>
                     ))}
-                    <th className="px-3 py-2 text-right font-medium">Total</th>
+                    <th className={`${TH} text-right`}>Total</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.tenants.map((row) => {
                     const total = row.collections.reduce((n, c) => n + (c.vector_count ?? 0), 0);
                     return (
-                      <tr key={row.tenant} className="border-t border-gray-100">
-                        <td className="px-3 py-2 font-medium text-gray-800">
+                      <tr key={row.tenant} className="border-t border-lineSoft">
+                        <td className="px-3.5 py-2.5 text-[12.5px] font-semibold text-ink-900">
                           {row.tenant}
-                          <span className="ml-1 rounded bg-gray-100 px-1 text-xs font-normal text-gray-500">
-                            {row.own ? "you" : "shared"}
+                        </td>
+                        <td className="px-3.5 py-2.5">
+                          {/* The server only reports OUR role — other readable
+                              tenants get the honest "shared", not a guessed role. */}
+                          <span
+                            className={`rounded-[3px] px-1.5 py-1 font-mono text-[10px] font-medium ${
+                              row.own
+                                ? "bg-linkSoft text-link"
+                                : "bg-[#f2f1ed] text-[#6a6a64]"
+                            }`}
+                          >
+                            {row.own ? data.role : "shared"}
                           </span>
                         </td>
                         {row.collections.map((c) => (
                           <td
                             key={c.collection}
-                            className="px-3 py-2 text-right tabular-nums text-gray-600"
+                            className="px-3.5 py-2.5 text-right font-mono text-[11px] tabular-nums text-body"
                             title={`text index: ${fmt(c.text_count)}`}
                           >
                             {fmt(c.vector_count)}
                           </td>
                         ))}
-                        <td className="px-3 py-2 text-right font-medium tabular-nums text-gray-800">
+                        <td className="px-3.5 py-2.5 text-right font-mono text-[11px] font-medium tabular-nums text-strong">
                           {total.toLocaleString()}
                         </td>
                       </tr>
                     );
                   })}
+                  {hiddenTenants > 0 ? (
+                    <tr className="border-t border-lineSoft text-faint">
+                      <td className="px-3.5 py-2.5 text-[12px]">
+                        {hiddenTenants} owner{hiddenTenants === 1 ? "" : "s"} hidden
+                      </td>
+                      <td className="px-3.5 py-2.5 text-[11px]">—</td>
+                      {cols.map((c) => (
+                        <td key={c.collection} className="px-3.5 py-2.5 text-right font-mono text-[11px]">
+                          —
+                        </td>
+                      ))}
+                      <td className="px-3.5 py-2.5 text-right font-mono text-[11px]">—</td>
+                    </tr>
+                  ) : null}
                 </tbody>
               </table>
             </div>
           )}
-          <p className="text-xs text-gray-400">
-            Vector-store chunks owned by each tenant (hover a cell for its text-index
-            count). Rows cover only the tenants you may read — another tenant's corpus
+          <p className="text-[11.5px] leading-relaxed text-dim">
+            Vector-store chunks owned by each scope (hover a cell for its text-index
+            count). Rows cover only the scopes you may read — another account's corpus
             size is never shown. Reads are filtered to{" "}
             <code>{data.readable.join(" + ")}</code>, so a collection that looks empty
-            for your own tenant may still be fully served from <code>public</code>.
+            for your own account may still be fully served from <code>public</code>.
+            (&ldquo;Tenant&rdquo; in this operation means a whole deployment — this
+            table is about who owns the data inside this one.)
           </p>
 
           {data.policy ? (
-            <div className="rounded-lg border border-gray-200 p-3">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-400">
+            <div className="rounded-panel border border-line px-3.5 py-3">
+              <div className="mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[.1em] text-muted">
                 Access policy (admin)
               </div>
               {Object.keys(data.policy).length === 0 ? (
-                <p className="text-xs text-gray-400">
-                  <code>TENANT_COLLECTIONS</code> unset — every tenant may reach every
+                <p className="text-xs text-dim">
+                  <code>TENANT_COLLECTIONS</code> unset — every owner may reach every
                   collection.
                 </p>
               ) : (
-                <ul className="space-y-1 text-xs text-gray-600">
+                <ul className="space-y-1 text-xs text-body">
                   {Object.entries(data.policy).map(([tenant, ids]) => (
                     <li key={tenant}>
-                      <span className="font-medium text-gray-800">{tenant}</span>
-                      <span className="text-gray-400"> → </span>
+                      <span className="font-medium text-strong">{tenant}</span>
+                      <span className="text-faint"> → </span>
                       <span className="font-mono">{ids.join(", ") || "(none)"}</span>
                     </li>
                   ))}
@@ -1794,11 +2100,13 @@ function TenantsPanel({ apiKey }: { apiKey?: string }) {
 
 // --- Ingest jobs (#95) ----------------------------------------------------
 
-function jobStatusClass(status: string): string {
-  if (status === "completed") return "text-green-600";
-  if (status === "failed") return "text-red-600";
-  if (status === "running" || status === "accepted") return "text-blue-600";
-  return "text-gray-500";
+// Status chip palette (mockup 6a): running amber, completed green, failed rust,
+// anything queued/other blue.
+function jobStatusChip(status: string): string {
+  if (status === "completed") return "bg-mossSoft text-[#1f6b4c]";
+  if (status === "failed") return "bg-rustSoft text-rust";
+  if (status === "running") return "bg-[#fff4c9] text-accent-text";
+  return "bg-linkSoft text-link";
 }
 
 function jobProgress(j: JobSummary): string {
@@ -1815,6 +2123,13 @@ function jobProgress(j: JobSummary): string {
   return j.chunks ? `${j.chunks} chunks` : "—";
 }
 
+// Percent of tracked items settled; null when the job tracks no items.
+function jobPct(j: JobSummary): number | null {
+  const { pending, completed, failed } = j.items;
+  const tracked = pending + completed + failed;
+  return tracked > 0 ? Math.round(((completed + failed) / tracked) * 100) : null;
+}
+
 function JobsPanel({ apiKey }: { apiKey?: string }) {
   const jobs = useQuery({
     queryKey: ["jobs", apiKey],
@@ -1822,53 +2137,108 @@ function JobsPanel({ apiKey }: { apiKey?: string }) {
     refetchInterval: 5000,
     retry: false,
   });
-  const err = jobs.error as ApiError | undefined;
+  const gated = jobs.isError && gatedErr(jobs.error);
   const rows = jobs.data?.jobs ?? [];
 
   return (
     <>
-      <SectionHeading id="jobs" unavailable={jobs.isError}>
+      <SectionHeading
+        id="jobs"
+        gated={gated}
+        unavailable={jobs.isError}
+        meta="last 25"
+        help={
+          <>
+            The 25 most recent ingest runs (GET /v1/jobs?limit=25), re-read every 5s — one row per
+            upload/ingest request, not per document. Progress comes from per-item counters, which
+            only exist once a job has enumerated its documents; a single-document run has none and
+            shows its chunk count instead. A failed row puts the server&apos;s error where the
+            progress bar would be. Admin-only.
+          </>
+        }
+      >
         {jobs.isFetching && !jobs.isError ? (
-          <span className="text-xs text-gray-400">refreshing…</span>
+          <span className="font-mono text-[10px] text-faint">refreshing…</span>
         ) : null}
       </SectionHeading>
       {jobs.isError ? (
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-          {err?.status === 403
-            ? "Ingest jobs are admin-only. Start the API with DEFAULT_ROLE=admin, or enter an admin key above."
-            : `Unavailable: ${(jobs.error as Error).message}`}
-        </div>
+        gated ? (
+          <GatedNote>
+            Ingest jobs are admin-only — start the API with DEFAULT_ROLE=admin, or enter an admin
+            key.
+          </GatedNote>
+        ) : (
+          <ErrLine>Unavailable: {(jobs.error as Error).message}</ErrLine>
+        )
       ) : rows.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-400">
+        <div className="rounded-panel border border-dashed border-line p-4 text-center text-sm text-faint">
           No ingest jobs yet. Run one via <code className="font-mono">POST /v1/ingest</code>.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
+        <div className="overflow-x-auto rounded-panel border border-line">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
+            <thead className={THEAD}>
               <tr>
-                <th className="px-3 py-2 font-medium">Job</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Progress</th>
-                <th className="px-3 py-2 font-medium">Source</th>
+                <th className={TH}>Status</th>
+                <th className={TH}>Job</th>
+                <th className={TH}>Source</th>
+                <th className={`${TH} w-[190px]`}>Progress</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((j) => (
-                <tr key={j.job_id} className="border-t border-gray-100">
-                  <td className="px-3 py-2 font-mono text-xs text-gray-600" title={j.job_id}>
-                    {j.job_id.slice(0, 8)}
-                  </td>
-                  <td className={`px-3 py-2 font-medium ${jobStatusClass(j.status)}`}>
-                    {j.status}
-                    {j.error ? <span className="ml-1 text-xs text-red-400">({j.error})</span> : null}
-                  </td>
-                  <td className="px-3 py-2 tabular-nums text-gray-600">{jobProgress(j)}</td>
-                  <td className="max-w-xs truncate px-3 py-2 text-gray-500" title={j.source}>
-                    {j.source || "—"}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((j) => {
+                const running = j.status === "running" || j.status === "accepted";
+                const pct = jobPct(j);
+                return (
+                  <tr
+                    key={j.job_id}
+                    className={`border-t border-lineSoft ${running ? "bg-accent-soft" : ""}`}
+                  >
+                    <td className="px-3.5 py-3">
+                      <span
+                        className={`rounded-[3px] px-2 py-[5px] font-mono text-[10.5px] font-medium ${jobStatusChip(j.status)}`}
+                      >
+                        {j.status}
+                      </span>
+                    </td>
+                    <td className="px-3.5 py-3 font-mono text-[11.5px] text-strong" title={j.job_id}>
+                      {j.job_id.slice(0, 8)}
+                    </td>
+                    <td className="max-w-xs truncate px-3.5 py-3 text-[12px] text-body" title={j.source}>
+                      {j.source || "—"}
+                    </td>
+                    <td className="px-3.5 py-3">
+                      {j.status === "failed" && j.error ? (
+                        // A failed row puts the reason where the progress was going.
+                        <span className="font-mono text-[10.5px] text-rust" title={j.error}>
+                          {j.error}
+                        </span>
+                      ) : running && pct != null ? (
+                        <span className="flex items-center gap-2">
+                          <span className="h-1 flex-1 rounded-sm bg-[#e9e8e4]">
+                            <span
+                              className="block h-1 rounded-sm bg-accent"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </span>
+                          <span className="font-mono text-[10.5px] text-accent-text">{pct}%</span>
+                        </span>
+                      ) : (
+                        <span
+                          className={`font-mono text-[10.5px] tabular-nums ${
+                            running ? "text-accent-text" : "text-[#6a6a64]"
+                          }`}
+                          title={j.error || undefined}
+                        >
+                          {jobProgress(j)}
+                          {/* An error on a non-failed status (partial success) still surfaces. */}
+                          {j.error ? <span className="text-rust"> · {j.error}</span> : null}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1877,114 +2247,255 @@ function JobsPanel({ apiKey }: { apiKey?: string }) {
   );
 }
 
-export function OpsDashboard({ apiKey }: { apiKey?: string }) {
-  const stats = useQuery({
-    queryKey: ["stats-stores", apiKey],
-    queryFn: () => getStoreStats(apiKey || undefined),
-    refetchInterval: 5000,
-    retry: false,  // fail fast on 401/403 like the sibling queries — no retry storm
-  });
+// --- Deep health / Stores sections ----------------------------------------
 
+// Dependency rows from the mockup's [dot, dependency, version, latency, detail]
+// grid — minus the version column, which the API doesn't report (never fake).
+// Degraded rows take the yellow-tint treatment instead of a red blob.
+function HealthPanel({ apiKey }: { apiKey?: string }) {
   const health = useQuery({
     queryKey: ["health-deep", apiKey],
     queryFn: () => getDeepHealth(apiKey || undefined),
     refetchInterval: 15000,
     retry: false,
   });
-
-  const healthErr = health.error as ApiError | undefined;
-
-  const [available, setAvailable] = useState<Partial<Record<SectionId, boolean>>>({});
-  const report = useCallback((id: SectionId, ok: boolean) => {
-    setAvailable((prev) => (prev[id] === ok ? prev : { ...prev, [id]: ok }));
-  }, []);
+  const gated = health.isError && gatedErr(health.error);
 
   return (
-    <section>
-      <ReportSection.Provider value={report}>
-        <TableOfContents available={available} />
-
-        <SectionHeading id="stores" unavailable={stats.isError}>
-          {stats.isFetching ? <span className="text-xs text-gray-400">refreshing…</span> : null}
-        </SectionHeading>
-
-        {stats.isError ? (
-          <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            Failed to load store stats: {(stats.error as Error).message}
-          </div>
-        ) : (
+    <>
+      <SectionHeading
+        id="health"
+        gated={gated}
+        unavailable={health.isError}
+        meta="GET /v1/health/deep"
+        help={
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <KpiCard label="Vectors" value={fmt(stats.data?.vector.count)} sub={stats.data?.vector.backend} />
-              <KpiCard label="Text · BM25" value={fmt(stats.data?.text.count)} sub={stats.data?.text.backend} />
-              <KpiCard label="Graph" value={fmt(stats.data?.graph.count)} sub={stats.data?.graph.backend} />
-              <KpiCard
-                label="Tenants"
-                value={fmt(stats.data?.tenants.length)}
-                sub={stats.data?.tenants.join(", ")}
-              />
-            </div>
-            {stats.data ? (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StorePill label="vector" s={stats.data.vector} />
-                <StorePill label="text" s={stats.data.text} />
-                <StorePill label="graph" s={stats.data.graph} />
-              </div>
-            ) : null}
+            One probe per dependency, re-run every 15s — not a single liveness bit. A filled dot is
+            a check that passed; a “!” and a tinted row is one that didn&apos;t, with whatever
+            detail the server returned. The number is that one probe&apos;s round trip, so a single
+            slow reading is one slow call rather than a trend. Admin-only: a non-admin key gets the
+            gated note here, not a failure.
           </>
-        )}
-
-        <ConfigPanel apiKey={apiKey} />
-
-        <CollectionsPanel apiKey={apiKey} />
-
-        <GroupsPanel apiKey={apiKey} />
-
-        <TenantsPanel apiKey={apiKey} />
-
-        <ModelsPanel apiKey={apiKey} />
-
-        <JobsPanel apiKey={apiKey} />
-
-        <SectionHeading id="health" unavailable={health.isError} />
-        {health.isError ? (
-          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-            {healthErr?.status === 403
-              ? "Deep health is admin-only. Start the API with DEFAULT_ROLE=admin (keyless callers default to 'user'), or enter an admin key above."
-              : `Unavailable: ${(health.error as Error).message}`}
-          </div>
+        }
+      />
+      {health.isError ? (
+        gated ? (
+          <GatedNote>
+            Deep health is admin-only — start the API with DEFAULT_ROLE=admin (keyless callers
+            default to &lsquo;user&rsquo;), or enter an admin key.
+          </GatedNote>
         ) : (
-          <div className="overflow-x-auto rounded-lg border border-gray-200">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-400">
-                <tr>
-                  <th className="px-3 py-2 font-medium">Check</th>
-                  <th className="px-3 py-2 font-medium">Status</th>
-                  <th className="px-3 py-2 font-medium">Latency</th>
-                  <th className="px-3 py-2 font-medium">Detail</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(health.data?.checks ?? []).map((c) => (
-                  <tr key={c.name} className="border-t border-gray-100">
-                    <td className="px-3 py-2 font-medium text-gray-800">{c.name}</td>
-                    <td className="px-3 py-2">
-                      {c.ok ? (
-                        <span className="text-green-600">● ok</span>
-                      ) : (
-                        <span className="text-red-600">● down</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-gray-500">
-                      {c.latency_ms != null ? `${c.latency_ms} ms` : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-gray-500">{c.detail ?? ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <ErrLine>Unavailable: {(health.error as Error).message}</ErrLine>
+        )
+      ) : (
+        <div className="overflow-hidden rounded-panel border border-line">
+          {(health.data?.checks ?? []).map((c) => (
+            <div
+              key={c.name}
+              className={`grid grid-cols-[20px_minmax(0,1fr)_90px_minmax(0,1.2fr)] items-center gap-3 border-b border-lineSoft px-4 py-3 last:border-b-0 ${
+                c.ok ? "" : "bg-accent-soft"
+              }`}
+            >
+              {/* State is never color-alone: ok = filled dot, not-ok = a "!"
+                  glyph — distinguishable without color vision, plus AT text. */}
+              {c.ok ? (
+                <span className="h-2 w-2 rounded-full bg-moss" role="img" aria-label="ok" />
+              ) : (
+                <span
+                  className="font-mono text-[11px] font-bold leading-none text-amber"
+                  role="img"
+                  aria-label="degraded"
+                >
+                  !
+                </span>
+              )}
+              <span className="truncate text-[13px] font-medium text-strong">{c.name}</span>
+              <span
+                className={`font-mono text-[11px] tabular-nums ${
+                  c.ok ? "text-[#6a6a64]" : "font-medium text-accent-text"
+                }`}
+              >
+                {c.latency_ms != null ? `${c.latency_ms}ms` : "—"}
+              </span>
+              <span
+                className={`truncate font-mono text-[11px] ${
+                  c.ok ? "text-dim" : "font-medium text-accent-text"
+                }`}
+                title={c.detail ?? undefined}
+              >
+                {c.detail ?? ""}
+              </span>
+            </div>
+          ))}
+          {health.isLoading ? (
+            <p className="px-4 py-3 text-[12.5px] text-dim">Checking dependencies…</p>
+          ) : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+// The section-level view of the same store stats the band summarises: one card
+// per store plus the tenant union. Shares the band's query key, so no extra
+// polling.
+function StoreKpi({
+  label,
+  swatch,
+  unit,
+  s,
+}: {
+  label: string; // role name ("Vector store") — title fallback + sub-line
+  swatch: string;
+  unit: string;
+  s?: StoreStat;
+}) {
+  const disabled = s != null && !s.available && s.backend === "disabled";
+  return (
+    <div className={`rounded-card border border-line bg-white p-4 ${disabled ? "opacity-60" : ""}`}>
+      <div className="mb-2.5 flex items-center gap-[7px]">
+        <span className={`h-2 w-2 rounded-[2px] ${swatch}`} />
+        {/* Titled by the concrete backend (Qdrant/Elasticsearch/Neo4j), like
+            the status band's cards; the role stays in the mono sub-line. */}
+        <span className="text-[11px] font-medium text-body">{storeTitle(s?.backend, label)}</span>
+        <span
+          className={`ml-auto font-mono text-[10px] ${
+            s == null
+              ? "text-faint"
+              : s.available
+                ? "text-[#1f6b4c]"
+                : disabled
+                  ? "text-faint"
+                  : "text-rust"
+          }`}
+        >
+          {s == null ? "…" : s.available ? "up" : disabled ? "disabled" : "down"}
+        </span>
+      </div>
+      <div className="font-display text-[26px] font-extrabold leading-none text-ink-900">
+        {disabled ? "—" : fmt(s?.count)}
+      </div>
+      <div className="mt-1.5 truncate font-mono text-[10.5px] text-dim">
+        {disabled ? "backend disabled" : s ? `${unit} · ${label.toLowerCase()}` : "loading"}
+      </div>
+    </div>
+  );
+}
+
+function StoresPanel({ apiKey }: { apiKey?: string }) {
+  const stats = useQuery({
+    queryKey: ["stats-stores", apiKey],
+    queryFn: () => getStoreStats(apiKey || undefined),
+    // 15s, not 5s: the endpoint counts every readable collection (one probe per
+    // physical store), so a fast poll multiplies store load by the collection
+    // count. Corpus size does not move that quickly.
+    refetchInterval: 15000,
+    retry: false, // fail fast on 401/403 like the sibling queries — no retry storm
+  });
+
+  return (
+    <>
+      <SectionHeading
+        id="stores"
+        unavailable={stats.isError}
+        meta="GET /v1/stats/stores"
+        help={
+          <>
+            Live counts per backing store, re-read every 15s and summed across every owner scope
+            this credential may read (yours plus anything shared or public) — so a number here can
+            exceed any single collection&apos;s. The text store holds one Elasticsearch document
+            per chunk, so it and the vector store should track each other; a lasting gap means one
+            leg is missing rows. The graph store reads “disabled” when no graph backend is
+            configured, which is a choice, not an outage.
+          </>
+        }
+      >
+        {stats.isFetching && !stats.isError ? (
+          <span className="font-mono text-[10px] text-faint">refreshing…</span>
+        ) : null}
+      </SectionHeading>
+      {stats.isError ? (
+        <ErrLine>Failed to load store stats: {(stats.error as Error).message}</ErrLine>
+      ) : (
+        <div className="grid grid-cols-2 gap-3.5 lg:grid-cols-4">
+          <StoreKpi label="Vector store" swatch="bg-accent" unit="chunks" s={stats.data?.vector} />
+          <StoreKpi label="Text store" swatch="bg-sky" unit="docs" s={stats.data?.text} />
+          <StoreKpi label="Graph store" swatch="bg-moss" unit="relations" s={stats.data?.graph} />
+          <KpiCard
+            label="Readable scopes"
+            value={fmt(stats.data?.tenants.length)}
+            sub={stats.data?.tenants.join(", ")}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+export function OpsDashboard({ apiKey }: { apiKey?: string }) {
+  const [sectionState, setSectionState] = useState<Partial<Record<SectionId, SectionState>>>({});
+  const report = useCallback((id: SectionId, st: SectionState) => {
+    setSectionState((prev) => (prev[id] === st ? prev : { ...prev, [id]: st }));
+  }, []);
+
+  // Scroll-spy for the rail: the topmost heading in the upper band of the
+  // viewport is the active section. Clicking a TOC item sets it directly so the
+  // rail responds before the smooth scroll settles.
+  const [active, setActive] = useState<SectionId>(SECTIONS[0].id);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const tops = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (tops[0]) setActive(tops[0].target.id as SectionId);
+      },
+      { rootMargin: "-10% 0px -70% 0px" },
+    );
+    for (const s of SECTIONS) {
+      const el = document.getElementById(s.id);
+      if (el) obs.observe(el);
+    }
+    return () => obs.disconnect();
+  }, []);
+
+  // App renders Ops full-bleed (no <main> padding), so the navy band runs
+  // edge-to-edge flush under the header; the 1180px two-column page (mockup
+  // 6a) centers itself below it.
+  return (
+    <section className="bg-white">
+      <StatusBand apiKey={apiKey} />
+      <ReportSection.Provider value={report}>
+        <div className="mx-auto grid max-w-[1180px] grid-cols-1 md:grid-cols-[196px_minmax(0,1fr)]">
+          <SectionToc state={sectionState} active={active} onSelect={setActive} />
+          <div className="min-w-0 px-5 pb-10 pt-[26px] md:px-[30px]">
+            <HealthPanel apiKey={apiKey} />
+            <StoresPanel apiKey={apiKey} />
+            <CollectionsPanel apiKey={apiKey} />
+            <GroupsPanel apiKey={apiKey} />
+            {/* Models and Data ownership sit side by side at width (mockup 6a). */}
+            {/* Each column's heading is its wrapper's first child, so the
+                headings' own first:mt-0 applies — the grid carries the gap. */}
+            <div className="mt-9 grid grid-cols-1 gap-x-[26px] gap-y-9 xl:grid-cols-2">
+              <div className="min-w-0">
+                <ModelsPanel apiKey={apiKey} />
+              </div>
+              <div className="min-w-0">
+                <TenantsPanel apiKey={apiKey} />
+              </div>
+            </div>
+            <JobsPanel apiKey={apiKey} />
+            <ConfigPanel apiKey={apiKey} />
+            {/* The operator vocabulary this page uses in its own labels — drift,
+                readable scopes, unregister vs purge — defined once in
+                lib/glossary, as on Collection/Compare/Evidence. */}
+            <GlossaryPanel
+              groups={["Corpus & indexing", "Stores", "Access & sharing", "Operations"]}
+              summary="drift · readable scopes · unregister vs purge · deep health"
+            />
           </div>
-        )}
+        </div>
       </ReportSection.Provider>
     </section>
   );

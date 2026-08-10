@@ -7,6 +7,7 @@ import {
   type ChunkForm,
 } from "../lib/chunkers";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
+import { HelpTip } from "./HelpTip";
 
 // Inline "New collection" panel: name + chunk strategy.
 //
@@ -60,9 +61,14 @@ export function NewCollectionForm({
       <h3 className="mb-3 text-sm font-semibold text-gray-800">New collection</h3>
 
       <div className="mb-3">
-        <label htmlFor="new-col-name" className="mb-1 block text-xs font-medium text-gray-500">
-          Name
-        </label>
+        {/* The tip is a SIBLING of the label: a button inside a <label> would
+            take the label's click as well as its own. */}
+        <div className="mb-1 flex items-center gap-1.5">
+          <label htmlFor="new-col-name" className="block text-xs font-medium text-gray-500">
+            Name
+          </label>
+          <HelpTip icon term="collection name" />
+        </div>
         <input
           id="new-col-name"
           type="text"

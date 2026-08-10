@@ -5,7 +5,10 @@ import {
   getStoredToken,
   getStoredTokenBase,
 } from "../api/config";
+import { useState } from "react";
+import { getAccessibleVision, setAccessibleVision } from "../lib/vision";
 import { BackendSwitcher } from "./BackendSwitcher";
+import { HelpTip } from "./HelpTip";
 import {
   accountIssuer,
   accountName,
@@ -27,7 +30,7 @@ import {
 // which is deliberately scheduled after this work; the placeholder at the bottom
 // names it rather than rendering a control that writes nowhere.
 
-function Row({ label, value }: { label: string; value: React.ReactNode }) {
+function Row({ label, value }: { label: React.ReactNode; value: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between gap-4 border-b border-gray-100 py-2 last:border-0">
       <dt className="text-xs font-medium text-gray-500">{label}</dt>
@@ -54,6 +57,9 @@ export function AccountView({
   onBaseChange: (base: string) => void;
 }) {
   const view = identityView(credential.mode, identity);
+  // Mirrors the persisted vision mode so the checkbox re-renders on toggle;
+  // lib/vision.ts owns storage + the <html> attribute.
+  const [accessibleVision, setAccessibleVisionState] = useState(getAccessibleVision);
   const base = getApiBase();
   const savedToken = getStoredToken();
   const tokenBase = getStoredTokenBase();
@@ -79,10 +85,9 @@ export function AccountView({
             common reason a sign-in appears not to work, and the fix has to be
             available without first signing in. */}
         <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 text-left">
+          {/* No paragraph here: BackendSwitcher's own "deployment" tip already
+              defines a deployment, re-pointing and the per-browser persistence. */}
           <h3 className="text-sm font-medium text-gray-700">API backend</h3>
-          <p className="mb-2 mt-1 text-xs text-gray-500">
-            Which deployment this UI talks to.
-          </p>
           <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
         </div>
       </div>
@@ -103,7 +108,7 @@ export function AccountView({
         <dl className="mt-4">
           <Row label="Name" value={accountName(tenant)} />
           <Row label="Identity provider" value={issuer ?? "API key (not a person)"} />
-          <Row label="Tenant" value={tenant} />
+          <Row label="Owner scope" value={tenant} />
           <Row
             label="Role"
             value={
@@ -118,7 +123,15 @@ export function AccountView({
               </span>
             }
           />
-          <Row label="Credential type" value={credential.mode === "bearer" ? "Bearer token" : "API key"} />
+          <Row
+            label={
+              <>
+                Credential type{" "}
+                <HelpTip icon side="right" term="credential type" />
+              </>
+            }
+            value={credential.mode === "bearer" ? "Bearer token" : "API key"}
+          />
           <Row label="Backend" value={base || "default (same origin)"} />
         </dl>
         {identity?.role === "admin" ? (
@@ -133,7 +146,15 @@ export function AccountView({
         <section className="rounded-xl border border-gray-200 bg-white p-5">
           <h2 className="text-base font-semibold text-gray-900">Session</h2>
           <dl className="mt-4">
-            <Row label="Token bound to" value={tokenBase || "the default backend"} />
+            <Row
+              label={
+                <>
+                  Token bound to{" "}
+                  <HelpTip icon side="right" term="token binding" />
+                </>
+              }
+              value={tokenBase || "the default backend"}
+            />
             <Row label="Expiry" value={expiry ?? "no expiry field in the token"} />
           </dl>
           <p className="mt-3 text-xs text-gray-500">
@@ -159,12 +180,31 @@ export function AccountView({
         <h2 className="text-base font-semibold text-gray-900">Preferences</h2>
 
         <div className="mt-4">
-          <h3 className="text-sm font-medium text-gray-700">API backend</h3>
-          <p className="mb-2 mt-1 text-xs text-gray-500">
-            Which deployment this UI talks to. Switching it stops a bearer token from
-            being sent until you confirm it for the new backend on the sign-in page.
-          </p>
+          <h3 className="mb-2 text-sm font-medium text-gray-700">API backend</h3>
           <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
+        </div>
+
+        <div className="mt-5 border-t border-gray-100 pt-4">
+          <h3 className="text-sm font-medium text-gray-700">
+            Accessibility{" "}
+            <HelpTip icon side="right" term="accessible vision mode" />
+          </h3>
+          <label className="mt-2 flex items-start gap-2.5">
+            <input
+              type="checkbox"
+              checked={accessibleVision}
+              onChange={(e) => {
+                setAccessibleVisionState(e.target.checked);
+                setAccessibleVision(e.target.checked);
+              }}
+              className="mt-0.5"
+            />
+            {/* No sub-label: the tip on the heading above is the one definition
+                of what this mode swaps and where it is kept. */}
+            <span className="text-sm text-gray-700">
+              Color-vision friendly colors &amp; higher contrast
+            </span>
+          </label>
         </div>
 
         <div className="mt-5 border-t border-gray-100 pt-4">

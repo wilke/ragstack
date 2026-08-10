@@ -38,6 +38,10 @@ export interface SourceMetadata {
   // issue). When present, lib/highlight.ts marks it inside the passage.
   match_start?: number;
   match_end?: number;
+  // Off-topic / below-threshold flag — not emitted by the API yet (handoff
+  // README backend gap #4). When present, SourceCard shows the off-topic chip;
+  // the client never infers it from scores.
+  off_topic?: boolean;
   tenant_id?: string;
   [key: string]: unknown;
 }
@@ -358,6 +362,29 @@ export interface AppConfig {
 
 export function getConfig(apiKey?: CredentialInput): Promise<AppConfig> {
   return get<AppConfig>("/v1/config", apiKey);
+}
+
+// --- Server version ---
+
+/**
+ * The API's declared version. There is NO version endpoint: `/health` returns
+ * only a status and `/v1/config` carries no version field, so the one honest
+ * source is the OpenAPI document's `info.version` (FastAPI's `version=`).
+ *
+ * That document is ~80KB, so callers must cache it hard (staleTime Infinity) —
+ * it changes only on redeploy. Unauthenticated, like the docs it describes, and
+ * a deployment that does not serve it degrades to null rather than erroring:
+ * an absent version must read as "unknown", never as a wrong number.
+ */
+export async function getApiVersion(): Promise<string | null> {
+  try {
+    const res = await fetch(apiUrl("/openapi.json"));
+    if (!res.ok) return null;
+    const doc = (await res.json()) as { info?: { version?: string } };
+    return doc.info?.version ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Ingest jobs (#95, admin-only) ---
@@ -708,6 +735,36 @@ export interface AvailableModelsResponse {
 // Models the Compare per-lane pickers can select (base_urls are not exposed).
 export function getAvailableModels(apiKey?: CredentialInput): Promise<AvailableModelsResponse> {
   return get<AvailableModelsResponse>("/v1/models/available", apiKey);
+}
+
+// --- Knowledge graph (Evidence's "Entities in this answer") ---
+
+// One KG entity as listed by GET /v1/graph/entities (tenant-scoped).
+export interface EntityInfo {
+  name: string;
+  triple_count?: number;
+}
+
+// One neighbourhood triple from GET /v1/graph/neighbors/{entity}.
+export interface Triple {
+  subject: string;
+  predicate: string;
+  object: string;
+}
+
+// Entities in the knowledge graph. Errors (graph store disabled/unreachable)
+// are the caller's cue to hide the KG section, not an error to surface.
+export function getGraphEntities(limit = 100, apiKey?: CredentialInput): Promise<EntityInfo[]> {
+  return get<EntityInfo[]>(`/v1/graph/entities?limit=${limit}`, apiKey);
+}
+
+// Neighbourhood triples for one entity, depth 1–5.
+export function getGraphNeighbors(
+  entity: string,
+  depth = 1,
+  apiKey?: CredentialInput,
+): Promise<Triple[]> {
+  return get<Triple[]>(`/v1/graph/neighbors/${encodeURIComponent(entity)}?depth=${depth}`, apiKey);
 }
 
 // A chunk fetched by id (no retrieval score) — used to expand a source's

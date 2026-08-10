@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
+import { useDismissable } from "./useDismiss";
 import { accountName, type Credential, type IdentitySummary } from "../lib/auth";
 import { identityView } from "../lib/auth";
+import { HelpTip } from "./HelpTip";
+import { lookupTerm } from "../lib/glossary";
 
 // Top-right account control. Signed out it is a single "Sign in" button; signed
 // in it shows WHO THE SERVER SAYS YOU ARE and opens a small menu (account,
@@ -20,6 +23,7 @@ export function UserMenu({
   onSignIn,
   onAccount,
   onSignOut,
+  dark = false,
 }: {
   credential: Credential;
   identity: IdentitySummary | null;
@@ -27,27 +31,11 @@ export function UserMenu({
   onSignIn: () => void;
   onAccount: () => void;
   onSignOut: () => void;
+  // Evidence's dark header chrome — flips the chip to the on-dark palette.
+  dark?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
-
-  // Close on an outside click or Escape — a menu that can only be closed by the
-  // button that opened it is a trap on touch.
-  useEffect(() => {
-    if (!open) return;
-    function onDown(e: MouseEvent) {
-      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const [open, setOpen] = useDismissable(wrap);
 
   const view = identityView(credential.mode, identity);
 
@@ -56,7 +44,11 @@ export function UserMenu({
       <button
         type="button"
         onClick={onSignIn}
-        className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-800 hover:bg-gray-100"
+        className={`rounded-full border px-4 py-1.5 text-sm font-medium ${
+          dark
+            ? "border-white/20 text-white hover:bg-white/5"
+            : "border-line bg-white text-strong hover:bg-paper"
+        }`}
       >
         Sign in
       </button>
@@ -68,60 +60,97 @@ export function UserMenu({
 
   return (
     <div className="relative" ref={wrap}>
+      {/* Closed state is the account pill-chip from the mockup header: 26px
+          avatar disc (navy/yellow, inverted on dark), name, mono role + caret. */}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex items-center gap-2 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-800 hover:bg-gray-100"
+        className={`flex items-center gap-2.5 rounded-[22px] border py-[5px] pl-[5px] pr-3 ${
+          dark ? "border-white/20 hover:bg-white/5" : "border-line bg-white hover:bg-paper"
+        }`}
       >
         <span
           aria-hidden="true"
-          className="flex h-6 w-6 items-center justify-center rounded-full bg-gray-900 text-xs font-semibold text-white"
+          className={`flex h-[26px] w-[26px] items-center justify-center rounded-full text-[11px] font-semibold ${
+            dark ? "bg-accent text-ink-600" : "bg-ink-900 text-accent"
+          }`}
         >
           {initial}
         </span>
-        <span className="max-w-[14rem] truncate font-medium">{name}</span>
+        <span
+          className={`max-w-[14rem] truncate text-[12.5px] font-medium ${
+            dark ? "text-white" : "text-strong"
+          }`}
+        >
+          {name}
+        </span>
         {/* The role is the consequential bit — an admin is a superuser over
             every collection in the deployment, so it is on screen, not buried. */}
-        {identity?.role ? <span className="text-gray-500">· {identity.role}</span> : null}
-        <span aria-hidden="true" className="text-gray-400">
-          ▾
+        <span
+          aria-hidden={identity?.role ? undefined : "true"}
+          className={`font-mono text-[11px] ${dark ? "text-[#7fa4c6]" : "text-dim"}`}
+        >
+          {identity?.role ? `${identity.role} ` : ""}▾
         </span>
       </button>
 
       {open ? (
-        <div
-          role="menu"
-          className="absolute right-0 z-10 mt-1 w-64 rounded-md border border-gray-200 bg-white p-1 shadow-lg"
-        >
+        <div className="absolute right-0 z-10 mt-1 w-64 rounded-md border border-gray-200 bg-white p-1 shadow-lg">
+          {/* The identity header sits OUTSIDE role="menu": it now holds help
+              triggers, and a menu may contain only menuitems. */}
           <div className="border-b border-gray-100 px-3 py-2">
             <p className="truncate text-sm font-medium text-gray-900">{name}</p>
             <p className="truncate text-xs text-gray-500">{identity?.tenant}</p>
+            {/* The role is the consequential fact and the name's provenance is the
+                one that is easy to get wrong — both explained here rather than on
+                the closed chip, which is a button and cannot hold another one. */}
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px]">
+              <HelpTip label="server-confirmed" side="bottom">
+                Name and owner scope are what GET /v1/stats/tenants answered for the
+                credential this browser is sending. They are never read out of a
+                pasted token: with no identity provider enabled the server ignores
+                the token entirely and answers as the default tenant, so a
+                token-derived name would claim a sign-in that did not happen.
+              </HelpTip>
+              {identity?.role ? (
+                // The trigger names the CURRENT role, so the panel leads with
+                // that rather than opening on the definition of admin — which,
+                // for a non-admin, reads as a mislabelled tip.
+                <HelpTip term="admin role" label={`role ${identity.role}`} side="bottom">
+                  The role the server derived from this credential is{" "}
+                  <span className="font-medium">{identity.role}</span>.{" "}
+                  {lookupTerm("admin role")}
+                </HelpTip>
+              ) : null}
+            </p>
             {loading ? <p className="text-xs text-gray-400">checking…</p> : null}
           </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onAccount();
-            }}
-            className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-          >
-            Account &amp; preferences
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onSignOut();
-            }}
-            className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
-          >
-            Sign out
-          </button>
+          <div role="menu">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onAccount();
+              }}
+              className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+            >
+              Account &amp; preferences
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onSignOut();
+              }}
+              className="w-full rounded px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       ) : null}
     </div>

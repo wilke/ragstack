@@ -2,8 +2,10 @@
 // action is disabled when its backing metadata is absent/invalid. The resolver
 // is a real <a> (Enter + middle-click work) with a validated, encoded DOI URL and
 // rel="noopener noreferrer". Clipboard is feature-detected (secure-context only).
+// `trailing` lets the card append a right-aligned action (Evidence →) to the
+// same row without a second flex container.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { SourceMetadata } from "../api/client";
 import {
   clipboardAvailable,
@@ -13,12 +15,17 @@ import {
   isValidDoi,
 } from "../lib/citation";
 
+const ACTION =
+  "min-h-6 rounded-[4px] border border-[#d8d7d2] px-2.5 py-1.5 text-[11px] hover:bg-paper";
+
 export function CitationActions({
   metadata,
   fallbackTitle,
+  trailing,
 }: {
   metadata: SourceMetadata;
   fallbackTitle: string;
+  trailing?: ReactNode;
 }) {
   const [status, setStatus] = useState("");
   // Hold the "Copied" reset timer so it can be cancelled — otherwise it can fire
@@ -38,12 +45,12 @@ export function CitationActions({
   };
 
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+    <div className="mt-3 flex flex-wrap items-center gap-2">
       <button
         type="button"
         disabled={!canCopy || !isValidDoi(doi)}
         onClick={() => copy(String(doi), "DOI")}
-        className="min-h-6 rounded border border-gray-300 px-2 py-1 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+        className={`${ACTION} text-[#5b5b55] disabled:opacity-40`}
         title={!canCopy ? "Clipboard needs a secure (https) context" : undefined}
       >
         Copy DOI
@@ -53,30 +60,30 @@ export function CitationActions({
         type="button"
         disabled={!canCopy}
         onClick={() => copy(formatCitation(metadata, fallbackTitle), "Citation")}
-        className="min-h-6 rounded border border-gray-300 px-2 py-1 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+        className={`${ACTION} text-[#5b5b55] disabled:opacity-40`}
         title={!canCopy ? "Clipboard needs a secure (https) context" : undefined}
       >
         Copy citation
       </button>
 
       {url ? (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="min-h-6 rounded border border-gray-300 px-2 py-1 text-blue-600 hover:bg-gray-50"
-        >
+        <a href={url} target="_blank" rel="noopener noreferrer" className={`${ACTION} text-link`}>
           Open ↗
         </a>
       ) : (
-        <span aria-disabled="true" className="min-h-6 rounded border border-gray-200 px-2 py-1 text-gray-300">
+        <span
+          aria-disabled="true"
+          className="min-h-6 rounded-[4px] border border-line px-2.5 py-1.5 text-[11px] text-faint"
+        >
           Open ↗
         </span>
       )}
 
-      <span aria-live="polite" className="text-gray-400">
+      <span aria-live="polite" className="text-[11px] text-faint">
         {status}
       </span>
+
+      {trailing}
     </div>
   );
 }
