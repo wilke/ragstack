@@ -12,7 +12,7 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ragstack.api.access import filter_readable
@@ -66,27 +66,40 @@ async def _count_graph(
     return StoreCount(backend=backend, available=True, count=int(relationships))
 
 
-async def _count_across(backend: str, targets: list[Any], tenants: list[str]) -> StoreCount:
+async def _count_across(
+    backend: str, targets: dict[str, Any], tenants: list[str]
+) -> StoreCount:
     """Sum a store's tenant-filtered count across every readable collection.
 
-    ``targets`` is already deduplicated by PHYSICAL store — two registry entries
-    may deliberately share one Qdrant collection / ES index (``CollectionEntry.
-    es_index``), and counting per entry would report that data twice.
+    ``targets`` is keyed by PHYSICAL store name, which deduplicates as defence in
+    depth only: ADR-0002 makes two registry ids over one store a *startup* error
+    (``deps._build_collection_registry`` raises), so a served registry cannot
+    contain the collision. The key is what makes that guarantee visible here
+    rather than assumed — dropping it would silently double-count if the
+    invariant ever regressed.
 
     All-or-nothing on failure: a partial sum presented as a total is a wrong
     number, which is worse than no number, so if any probe fails the whole store
     degrades to ``available=false`` / ``count=null`` — the same shape a single
     failed probe produced before. No readable collections is a true zero.
+
+    Failure is NAMED: with N collections the aggregate says only that something
+    is unavailable, so the store that poisoned it is logged (``probe_tenant_count``
+    logs the traceback but not which store it was probing).
     """
-    counts = await asyncio.gather(*(probe_tenant_count(t, tenants) for t in targets))
-    if any(c is None for c in counts):
+    names = list(targets)
+    counts = await asyncio.gather(*(probe_tenant_count(t, tenants) for t in targets.values()))
+    failed = [n for n, c in zip(names, counts, strict=True) if c is None]
+    if failed:
+        log.warning(
+            "stats: %s count unavailable — probe failed for %s", backend, ", ".join(failed)
+        )
         return StoreCount(backend=backend, available=False, count=None)
     return StoreCount(backend=backend, available=True, count=sum(counts))  # type: ignore[arg-type]
 
 
 @router.get("/stats/stores", response_model=StoreStatsResponse)
 async def stats_stores(
-    request: Request,
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
     graph_store: Any = Depends(get_graph_store),
@@ -100,32 +113,49 @@ async def stats_stores(
     default store genuinely holds nothing and the honest total is their sum.
     /v1/stats/tenants splits the same figure per (tenant, collection).
 
-    Never a global store total: each probe is filtered to the readable tenants,
-    the collections are filtered by the caller's allowlist AND ownership (the
-    same intersection /v1/collections applies), and the graph count is scoped by
-    the store — and, for a confined tenant, by its collection. Any store that
-    errors or lacks a count method degrades to ``available=false`` /
-    ``count=null``.
+    Never a global store total, and narrower than "everything I can see" in two
+    ways worth stating:
+
+    * WHICH collections — the caller's allowlist AND ownership, the same
+      intersection /v1/collections applies. An unreadable collection is not
+      probed at all.
+    * WHOSE chunks — each probe stays filtered to ``readable_tenants`` (own +
+      public), so a collection reached through a SHARE contributes the caller's
+      own + public chunks in it, typically 0, not the owner's. Query-time scope
+      widening (routers/query.py) deliberately does not apply to counting.
+
+    Cost scales with the number of readable collections: one probe per physical
+    store per leg. Callers that poll should do so slowly — the Ops dashboard uses
+    15s, matching /v1/collections, which carries the same per-collection cost.
+
+    Degradation: any store that errors or lacks a count method degrades that leg
+    to ``available=false`` / ``count=null`` (never a 500, never a partial sum
+    presented as a total). The ownership filter is the one hard failure — an
+    unreachable ACL store fails the request closed with 503.
+
+    Asymmetry to be aware of: vector/text SUM every readable collection, while
+    the graph count is scoped to at most one (``confined_collection_name``),
+    because one graph store spans them all and #209 narrows it for a confined
+    tenant. A confined caller can therefore see a summed vector/text beside a
+    single-collection graph figure.
     """
     tenants = readable_tenants(principal.tenant)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     entries = [e for e in registry.entries() if allowed is None or e.id in allowed]
     entries = await filter_readable(principal, entries)
-    # Deduplicate by physical store, keyed separately per store kind because an
-    # entry's ES index need not be named after its Qdrant collection.
+    # Keyed by physical store, per leg — an entry's ES index need not be named
+    # after its Qdrant collection. See _count_across on why the keying exists.
     vector_targets: dict[str, Any] = {}
     text_targets: dict[str, Any] = {}
     for e in entries:
         vector_targets.setdefault(e.collection, e.vector_store)
         text_targets.setdefault(e.es_index(), e.text_index)
     graph_collection = confined_collection_name(
-        getattr(request.app.state, "collections", None),
-        principal.tenant,
-        settings.tenant_collections,
+        registry, principal.tenant, settings.tenant_collections
     )
     vector, text, graph = await asyncio.gather(
-        _count_across(settings.vector_backend, list(vector_targets.values()), tenants),
-        _count_across(settings.text_backend, list(text_targets.values()), tenants),
+        _count_across(settings.vector_backend, vector_targets, tenants),
+        _count_across(settings.text_backend, text_targets, tenants),
         _count_graph(settings.graph_backend, graph_store, principal.tenant, graph_collection),
     )
     return StoreStatsResponse(tenants=tenants, vector=vector, text=text, graph=graph)

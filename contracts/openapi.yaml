@@ -737,11 +737,22 @@ paths:
         corpus) — never a global store total, so a caller can never learn
         another tenant's corpus size. The vector/text counts SUM every
         collection the caller may read (each collection is its own physical
-        Qdrant collection / ES index), deduplicated by physical store because
-        two collections may deliberately share one; `/v1/stats/tenants` splits
-        the same total per tenant × collection. A store that is unavailable or
-        errors degrades to `available: false` with a null count (no 500) — a
-        partial sum is never reported as a total.
+        Qdrant collection / ES index); `/v1/stats/tenants` splits the same
+        total per tenant × collection.
+
+        Narrower than "everything I can see" in two ways: WHICH collections is
+        the caller's allowlist ∩ ownership (the same filter `/v1/collections`
+        applies), and WHOSE chunks stays own+public — a collection reached
+        through a share contributes the caller's own chunks in it, typically 0,
+        not the owner's.
+
+        Cost scales with the number of readable collections (one probe per
+        physical store per leg), so poll slowly; the Ops dashboard uses 15s.
+
+        A store that is unavailable or errors degrades to `available: false`
+        with a null count (no 500) — a partial sum is never reported as a
+        total. The graph count is scoped to at most one collection for a
+        confined tenant, so it does not sum the way vector/text do.
       tags: [Stats]
       security:
         - ApiKeyAuth: []
@@ -755,6 +766,11 @@ paths:
                 $ref: "#/components/schemas/StoreStatsResponse"
         "401":
           description: Missing or invalid credential (API key or bearer identity)
+        "503":
+          description: >-
+            Authorization store unavailable — the counted collections are
+            owner-filtered, so it refuses rather than risk counting a
+            collection the caller may not read (fail closed).
 
   /v1/stats/tenants:
     get:
