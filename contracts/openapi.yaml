@@ -740,11 +740,11 @@ paths:
         Qdrant collection / ES index); `/v1/stats/tenants` splits the same
         total per tenant × collection.
 
-        Narrower than "everything I can see" in two ways: WHICH collections is
-        the caller's allowlist ∩ ownership (the same filter `/v1/collections`
-        applies), and WHOSE chunks stays own+public — a collection reached
-        through a share contributes the caller's own chunks in it, typically 0,
-        not the owner's.
+        WHICH collections is the caller's allowlist ∩ ownership (the same filter
+        `/v1/collections` applies). WHOSE chunks is own+public, WIDENED per
+        collection by any share that grants read — the same widening retrieval
+        applies — so a count reports what a query over that collection would
+        return, never more.
 
         Cost scales with the number of readable collections (one probe per
         physical store per leg), so poll slowly; the Ops dashboard uses 15s.
@@ -783,9 +783,12 @@ paths:
         sitting in `public` rather than the org's own tenant) and per collection
         rather than in aggregate. Also reports the caller's role, its collection
         allowlist (`restricted_to`; null = unrestricted) and whether API-key auth
-        is enabled at all. The isolation rules are unchanged: rows cover only
-        tenants this caller may already read and columns only collections its
-        allowlist permits, so no other tenant's corpus size is revealed. `policy`
+        is enabled at all. Rows cover the tenants this caller may read, INCLUDING
+        a writer-tenant whose data a share makes readable — such a row is scoped
+        to the shared collections (other cells are null) and is omitted entirely
+        when it carries no chunks, so it never discloses an owner the caller
+        could not already see. Columns are only collections the allowlist
+        permits, so no corpus size the caller cannot retrieve is revealed. `policy`
         (the full tenant->collections map) names other tenants and is admin-only,
         null otherwise. Each count degrades to null independently.
       tags: [Stats]
@@ -814,7 +817,8 @@ paths:
       description: >-
         Lists the collections selectable via the `collection` field on /query
         and /retrieve — each with its embedding model/dim, chunk-strategy label,
-        default flag, and a tenant-scoped chunk count (own + `public`; null when
+        default flag, and a chunk count scoped to what this caller can retrieve
+        (own + `public`, widened by a read share on that collection; null when
         unavailable). **Owner-filtered**: a caller sees only the collections it
         owns, has been granted, or that are `public` (admins see all). The
         reported `default` is always one of the listed ids.
@@ -1821,7 +1825,7 @@ components:
         tenants:
           type: array
           items: { type: string }
-          description: Readable tenants the counts are scoped to (own + public).
+          description: The caller's base readable tenants (own + public). Per-collection share widening can add to the scope a count actually used, so this is the base, not the exhaustive list.
         vector: { $ref: "#/components/schemas/StoreCount" }
         text: { $ref: "#/components/schemas/StoreCount" }
         graph: { $ref: "#/components/schemas/StoreCount" }
@@ -2074,7 +2078,7 @@ components:
         chunk_size: { type: [integer, "null"] }
         default: { type: boolean }
         count:
-          description: Vector-store tenant-scoped count (own + public); null when unavailable.
+          description: Vector-store count scoped to what this caller can retrieve (own + public, widened by a read share); null when unavailable.
           type: [integer, "null"]
         text_count:
           description: Text-index (BM25) tenant-scoped count; compare with `count` for a vector↔text parity check. Null when unavailable.

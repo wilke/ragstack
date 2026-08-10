@@ -47,6 +47,7 @@ from ragstack.api.deps import (
     probe_tenant_count,
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
+from ragstack.api.scope import count_scope
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER, Principal, resolve_principal
 from ragstack.authz import AuthzUnavailable, resolve_access
 from ragstack.collection_store import CollectionStore, CreateOutcome
@@ -169,7 +170,6 @@ async def list_collections(
     The reported ``default`` is the caller's effective default (the registry
     default when permitted, else the caller's first accessible collection) so it
     is always one of the listed ids."""
-    tenants = readable_tenants(principal.tenant)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     entries = [
         e for e in registry.entries() if allowed is None or e.id in allowed
@@ -184,9 +184,18 @@ async def list_collections(
     # gather them all concurrently so latency is one round-trip, not 2N (the ops
     # dashboard polls this, and Explore/Compare call it on load). Both probes share
     # deps.probe_tenant_count, which degrades to None rather than raising.
+    # Scope is resolved PER ENTRY, not once for the request: a collection reached
+    # through a share must count the owner's chunks (exactly what a query over it
+    # returns), while an unshared one stays own+public. Counting less reported 0
+    # for a corpus the same key could search, which reads as "empty".
+    scopes = await asyncio.gather(*(count_scope(e, registry, principal) for e in entries))
     vec_counts, txt_counts = await asyncio.gather(
-        asyncio.gather(*(probe_tenant_count(e.vector_store, tenants) for e in entries)),
-        asyncio.gather(*(probe_tenant_count(e.text_index, tenants) for e in entries)),
+        asyncio.gather(
+            *(probe_tenant_count(e.vector_store, sc) for e, sc in zip(entries, scopes, strict=True))
+        ),
+        asyncio.gather(
+            *(probe_tenant_count(e.text_index, sc) for e, sc in zip(entries, scopes, strict=True))
+        ),
     )
     infos = [
         _collection_info(e, vc, tc, is_default=e.id == registry.default_id)
