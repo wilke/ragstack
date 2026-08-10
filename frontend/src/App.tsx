@@ -17,16 +17,18 @@ import { ExploreView } from "./components/ExploreView";
 import { CollectionView } from "./components/CollectionView";
 import { OpsDashboard } from "./components/OpsDashboard";
 
-// SPA shell: Explore (query console, #93) + Collection (upload -> ingest -> ask)
+// SPA shell: Explore (query console, #93) + Collection (select/create -> upload)
 // + Compare (multi-collection/tenant A/B eval) + Ops (store stats / deep health /
 // collection administration, a slice of #95). A lightweight state toggle rather
 // than a router keeps the scaffold minimal. The in-memory API key is shared
 // across modules.
 //
-// The "Collection" tab was called "Library" until it was renamed to match what it
-// actually creates (POST /v1/collections). Per docs/adr/0003-access-control.md a
-// library IS a collection, one-to-one — there is no separate concept, so
-// "collection" is simply the right word and the old name does not come back.
+// The upload tab's LABEL is "Upload" — it names the activity, now that querying
+// moved out and ingest is all the tab does. The view id and every user-facing
+// string for the THING still say "collection" (the tab was called "Library"
+// until renamed to match what it actually creates, POST /v1/collections; per
+// docs/adr/0003-access-control.md a library IS a collection, one-to-one, so
+// neither "library" nor a third name comes back).
 
 // `login` and `account` are reachable from the header's user menu rather than
 // the tab bar: they are about WHO you are, not what you are working on, and
@@ -35,14 +37,14 @@ type View = "explore" | "collection" | "compare" | "ops" | "login" | "account";
 
 const TABS: { id: View; label: string }[] = [
   { id: "explore", label: "Explore" },
-  { id: "collection", label: "Collection" },
+  { id: "collection", label: "Upload" },
   { id: "compare", label: "Compare" },
   { id: "ops", label: "Ops" },
 ];
 
 const SUBTITLE: Record<View, string> = {
   explore: "Explore — ask the corpus, verify the sources",
-  collection: "Collection — upload PDFs, watch them ingest, then ask",
+  collection: "Upload — pick or create a collection, then upload PDFs",
   compare: "Compare — same query across collections, ranked side by side",
   ops: "Ops — stores, counts, and dependency health",
   login: "Sign in",

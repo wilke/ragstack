@@ -13,6 +13,14 @@ import {
 } from "../api/client";
 import { getStoredAuthMode } from "../api/config";
 import { laneCredential, SIGNED_IN_HINT } from "../lib/auth";
+import {
+  OPTION_TIP,
+  rerankValue,
+  rewriteStrategies,
+  type Mode,
+  type Rerank,
+  type Rewrite,
+} from "../lib/queryOptions";
 
 // Compare module: run ONE query across several lanes — each a (collection,
 // optional API key) pair — and lay the answers out side by side so retrieval
@@ -27,10 +35,6 @@ type LaneResult = {
   error?: string;
   ms?: number;
 };
-
-type Mode = "hybrid" | "vector" | "bm25";
-type Rerank = "default" | "on" | "off"; // → server default | force on | force off
-type Rewrite = "none" | "multiquery" | "hyde";
 
 // The pipeline levers — each maps to a /v1/query field so a single question can
 // be compared across retrieval *strategies*, not just corpora. Held both as a
@@ -87,20 +91,11 @@ const leverTags = (v: Levers): string[] => {
   return t;
 };
 
-const rewriteStrategies = (r: Rewrite): string[] =>
-  r === "none" ? ["passthrough"] : ["passthrough", r];
-
-const rerankValue = (r: Rerank): boolean | null =>
-  r === "default" ? null : r === "on";
-
-// Hover copy for the lever labels (native title tooltips). The Glossary below
-// carries the per-term detail.
+// Hover copy for the lever labels (native title tooltips). The shared levers'
+// copy comes from lib/queryOptions (kept in sync with Explore's Options menu);
+// the Glossary below carries the per-term detail.
 const LABEL_TIP: Record<string, string> = {
-  mode: "Which retrieval legs run. hybrid = dense vectors + BM25 keyword (fused); vector = dense only; bm25 = keyword only.",
-  rewrite:
-    "Expand the query before retrieving. none = as-is; multiquery = LLM paraphrases; hyde = retrieve on a hypothetical answer.",
-  rerank: "Cross-encoder re-scoring of the results. default = server setting; on / off = force for this lane.",
-  top_k: "How many results to return per lane.",
+  ...OPTION_TIP,
   graph: "Also retrieve from the knowledge graph (entities & relations) as an extra leg.",
   llm: "Which registered model generates the answer for this lane. default = the server's assigned LLM. Retrieval is unchanged, so this is a clean A/B of generation.",
   rerankerModel: "Which registered cross-encoder reranks this lane's results. default = the server's assigned reranker.",

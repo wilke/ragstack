@@ -6,28 +6,25 @@ import {
   getCollections,
   getIngestJob,
   isTerminalIngestStatus,
-  queryRag,
   uploadPdfs,
   type CollectionInfo,
   type IngestResponse,
-  type QueryResponse,
 } from "../api/client";
 import { getStoredAuthMode } from "../api/config";
 import { SIGNED_IN_HINT } from "../lib/auth";
 import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
 import { collectionCreateMessage } from "../lib/collections";
 import { NewCollectionForm } from "./NewCollectionForm";
-import { ResultsPanel } from "./ResultsPanel";
 import { ShareDialog } from "./ShareDialog";
-import { SearchForm } from "./SearchForm";
-import { EmptyState } from "./states/EmptyState";
 
-// Demo "Collection" view: the full upload -> ingest -> query loop on one page.
-//   1. Upload   - drag/drop or pick PDFs, POST /v1/ingest/upload (multipart).
-//   2. Progress - poll GET /v1/ingest/{job_id} every ~1.5s until terminal.
-//   3. Query    - ask the corpus, reusing the Explore answer/source components.
+// "Collection" view: get PDFs into a collection, in two steps.
+//   1. Select  - pick the target collection, or create a new one inline.
+//   2. Upload  - drag/drop or pick PDFs, POST /v1/ingest/upload (multipart),
+//                then poll GET /v1/ingest/{job_id} every ~1.5s until terminal.
+// Querying lives in the Explore tab — this view is only about ingest, so it
+// deliberately has no search box.
 // The target collection is PICKED from a dropdown of existing collections
-// (GET /v1/collections) - never free-typed, so a user can't aim upload/query at a
+// (GET /v1/collections) - never free-typed, so a user can't aim an upload at a
 // non-existent id. A "+ New collection" control opens an inline form (name + chunk
 // strategy) that mints a fresh named collection (POST /v1/collections) and
 // selects it.
@@ -146,9 +143,6 @@ export function CollectionView({
   const selected = opts.find((c) => (c.default ? "" : c.id) === collection) ?? null;
   const selectedChunking = selected ? describeChunking(selected) : "";
 
-  // Query stage state.
-  const [query, setQuery] = useState("");
-
   const addFiles = (list: FileList | null) => {
     if (!list) return;
     const incoming = Array.from(list);
@@ -182,16 +176,6 @@ export function CollectionView({
   const terminal = jobStatus != null && isTerminalIngestStatus(jobStatus);
   const items = job.data?.items ?? null;
 
-  const run = useMutation<QueryResponse, Error, string>({
-    mutationFn: (q) =>
-      queryRag({ query: q, top_k: 5, collection: collection || undefined }, apiKey || undefined),
-  });
-  const submitQuery = () => {
-    const q = query.trim();
-    if (q) run.mutate(q);
-  };
-  const queryStatus = run.isPending ? "pending" : run.isError ? "error" : "success";
-
   const resetJob = () => {
     setJobId(null);
     setFiles([]);
@@ -200,10 +184,18 @@ export function CollectionView({
 
   return (
     <div className="space-y-8">
-      {/* ---- Stage 1: Upload ---- */}
-      <section aria-labelledby="upload-heading">
+      {/* ---- Step 1: Select or create the target collection ---- */}
+      {/* "Done" once files are staged (or a job launched): adding files is the
+          act that commits the selection, since uploads go wherever the picker
+          points at that moment. */}
+      <section aria-labelledby="select-heading">
         <div className="mb-3">
-          {stageBadge(1, "Upload PDFs", jobId == null, jobId != null)}
+          {stageBadge(
+            1,
+            "Select or create a collection",
+            files.length === 0 && jobId == null,
+            files.length > 0 || jobId != null,
+          )}
         </div>
 
         {/* Bound to the app's single credential slot — hidden while a bearer
@@ -222,61 +214,77 @@ export function CollectionView({
           />
         )}
 
+        {/* Select an existing collection OR create a new one — never both at
+            once, so the picker (and its Share control) hides while the create
+            form is open rather than sitting beside it as a second answer. */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <label htmlFor="target-collection" className="text-xs font-medium text-gray-500">
-            Collection
-          </label>
-          <select
-            id="target-collection"
-            value={collection}
-            onChange={(e) => setCollection(e.target.value)}
-            disabled={opts.length === 0}
-            className="rounded-md border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
-          >
-            {opts.length === 0 ? (
-              <option value="">
-                {collections.isLoading ? "Loading…" : "No collections available"}
-              </option>
-            ) : (
-              opts.map((c) => {
-                // Show how each collection was built right in the picker: chunking
-                // is build-time identity, so "which chunker is this?" is part of
-                // choosing a target, not a detail buried in the ops dashboard.
-                const built = describeChunking(c);
-                return (
-                  <option key={c.id} value={c.default ? "" : c.id}>
-                    {c.label}
-                    {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
-                    {built ? ` · ${built}` : ""}
+          {!creating && (
+            <>
+              <label htmlFor="target-collection" className="text-xs font-medium text-gray-500">
+                Collection
+              </label>
+              <select
+                id="target-collection"
+                value={collection}
+                onChange={(e) => setCollection(e.target.value)}
+                disabled={opts.length === 0}
+                className="rounded-md border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
+              >
+                {opts.length === 0 ? (
+                  <option value="">
+                    {collections.isLoading ? "Loading…" : "No collections available"}
                   </option>
-                );
-              })
-            )}
-          </select>
+                ) : (
+                  opts.map((c) => {
+                    // Show how each collection was built right in the picker: chunking
+                    // is build-time identity, so "which chunker is this?" is part of
+                    // choosing a target, not a detail buried in the ops dashboard.
+                    const built = describeChunking(c);
+                    return (
+                      <option key={c.id} value={c.default ? "" : c.id}>
+                        {c.label}
+                        {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
+                        {built ? ` · ${built}` : ""}
+                      </option>
+                    );
+                  })
+                )}
+              </select>
+            </>
+          )}
           <button
             type="button"
-            onClick={() => setCreating((v) => !v)}
+            onClick={() => {
+              // Entering create mode closes the share dialog: its toggle hides
+              // with the picker, so leaving it open would strand it on screen.
+              setCreating((v) => !v);
+              setSharing(false);
+            }}
             disabled={create.isPending}
             className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
           >
             {create.isPending ? "Creating…" : creating ? "Cancel" : "＋ New collection"}
           </button>
-          <button
-            type="button"
-            onClick={() => setSharing((v) => !v)}
-            disabled={!selected}
-            title={selected ? undefined : "Pick a collection to share"}
-            className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
-          >
-            {sharing ? "Cancel" : "Share"}
-          </button>
-          <span className="text-xs text-gray-400">upload target &amp; query source</span>
+          {!creating && (
+            <>
+              <button
+                type="button"
+                onClick={() => setSharing((v) => !v)}
+                disabled={!selected}
+                title={selected ? undefined : "Pick a collection to share"}
+                className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
+              >
+                {sharing ? "Cancel" : "Share"}
+              </button>
+              <span className="text-xs text-gray-400">upload target</span>
+            </>
+          )}
         </div>
 
         {/* How the selected collection was built. `provenance` (when present) is the
             manifest a real ingest wrote; otherwise these are the registry's
             declared values. Rendered as text, never markup. */}
-        {selected ? (
+        {selected && !creating ? (
           <p className="mb-3 text-xs text-gray-400">
             <span className="font-mono text-gray-500">{selected.model}</span>
             <span> · {selected.dim}d</span>
@@ -321,6 +329,13 @@ export function CollectionView({
             onClose={() => setSharing(false)}
           />
         )}
+      </section>
+
+      {/* ---- Step 2: Upload PDFs into it ---- */}
+      <section aria-labelledby="upload-heading">
+        <div className="mb-3">
+          {stageBadge(2, "Upload PDFs", files.length > 0 && jobId == null, jobId != null)}
+        </div>
 
         {/* Drop zone */}
         <div
@@ -410,14 +425,12 @@ export function CollectionView({
             {uploadErrorMessage(upload.error)}
           </div>
         )}
-      </section>
+        {/* Ingest progress — feedback on the upload, not a third step. */}
+        {jobId != null && (
+          <div className="mt-6">
+            <h3 className="mb-3 text-sm font-medium text-gray-700">Ingest progress</h3>
 
-      {/* ---- Stage 2: Ingest progress ---- */}
-      {jobId != null && (
-        <section aria-labelledby="progress-heading">
-          <div className="mb-3">{stageBadge(2, "Ingest progress", !terminal, terminal)}</div>
-
-          <div className="rounded-lg border border-gray-200 p-4">
+            <div className="rounded-lg border border-gray-200 p-4">
             <div className="mb-2 flex items-center justify-between">
               <span className="text-xs text-gray-400">
                 Job <span className="font-mono text-gray-600">{jobId}</span>
@@ -469,39 +482,14 @@ export function CollectionView({
             {job.isError && (
               <p className="mt-2 text-sm text-red-600">Lost contact with the job while polling.</p>
             )}
+            </div>
+
+            {terminal && (
+              <p className="mt-3 text-xs text-gray-400">
+                Ask the corpus from the Explore tab — this view only ingests.
+              </p>
+            )}
           </div>
-        </section>
-      )}
-
-      {/* ---- Stage 3: Query ---- */}
-      <section aria-labelledby="query-heading">
-        <div className="mb-3">
-          {stageBadge(3, "Ask the corpus", jobId == null || terminal, false)}
-        </div>
-        <p className="mb-3 text-xs text-gray-400">
-          Query the {collection ? <span className="font-mono">{collection}</span> : "demo"} collection.
-          {jobId != null && !terminal ? " (You can ask now against the pre-loaded corpus.)" : ""}
-        </p>
-
-        <SearchForm
-          apiKey={apiKey}
-          setApiKey={setApiKey}
-          query={query}
-          setQuery={setQuery}
-          onSubmit={submitQuery}
-          pending={run.isPending}
-        />
-
-        {run.isIdle ? (
-          <EmptyState />
-        ) : (
-          <ResultsPanel
-            status={queryStatus}
-            query={run.variables ?? query}
-            data={run.data}
-            error={run.error}
-            onRetry={() => run.variables && run.mutate(run.variables)}
-          />
         )}
       </section>
     </div>

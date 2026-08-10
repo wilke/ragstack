@@ -10,6 +10,7 @@ import { LoginView } from "./LoginView";
 import { UserMenu } from "./UserMenu";
 import { NewCollectionForm } from "./NewCollectionForm";
 import { OpsDashboard, PurgeConfirm } from "./OpsDashboard";
+import { DEFAULT_QUERY_OPTIONS, QueryOptionsMenu } from "./QueryOptionsMenu";
 
 // Render smoke tests: no DOM, no fetch — `renderToStaticMarkup` just proves each
 // screen mounts and produces the text it promises. Cheap insurance for the parts
@@ -32,6 +33,34 @@ describe("static render", () => {
     const html = render(createElement(CollectionView, { apiKey: "", setApiKey: () => {} }));
     expect(html).toContain("New collection");
     expect(html.toLowerCase()).not.toContain("librar");
+  });
+
+  // The Collection tab is ingest-only: two steps (select/create, then upload)
+  // and NO search box — querying belongs to Explore.
+  it("shows the Collection view as select-then-upload with no query stage", () => {
+    const html = render(createElement(CollectionView, { apiKey: "", setApiKey: () => {} }));
+    expect(html).toContain("Select or create a collection");
+    expect(html).toContain("Upload PDFs");
+    expect(html).not.toContain("Ask the corpus");
+  });
+
+  // Closed by default: just the button, no lever controls in the DOM, and no
+  // count badge while everything is at its default.
+  it("mounts the Explore options menu closed, badging only non-defaults", () => {
+    const closed = render(
+      createElement(QueryOptionsMenu, { value: DEFAULT_QUERY_OPTIONS, onChange: () => {} }),
+    );
+    expect(closed).toContain("Options");
+    expect(closed).not.toContain("Query mode");
+    expect(closed).not.toMatch(/bg-blue-100/); // no active-count badge
+
+    const tuned = render(
+      createElement(QueryOptionsMenu, {
+        value: { mode: "bm25" as const, rerank: "on" as const, rewrite: "hyde" as const, topK: 10 },
+        onChange: () => {},
+      }),
+    );
+    expect(tuned).toContain(">4<"); // all four levers off-default → badge count
   });
 
   // The login page must never render a credential into the DOM, must say out
