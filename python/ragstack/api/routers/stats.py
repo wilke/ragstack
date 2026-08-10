@@ -1,8 +1,10 @@
 """Aggregation / stats endpoints for the dashboard.
 
-Read-only, tenant-scoped counts. Every count is FILTERED to the caller's
-*readable* tenants (own + the shared ``public`` corpus) — never a global store
-total — so a caller can never learn the size of another tenant's corpus. Each
+Read-only, tenant-scoped counts. Every count is FILTERED to what the caller may
+read — own + the shared ``public`` corpus, plus, per collection, a tenant whose
+data a SHARE makes readable (``api/scope``) — never a global store total. The
+bound is "what a query with this credential returns", so a caller never learns
+the size of a corpus it could not retrieve. Each
 store probe degrades to ``available=false`` / ``count=null`` on error rather
 than 500-ing (graceful degradation, mirroring the graph endpoints).
 """
@@ -45,6 +47,11 @@ class StoreStatsResponse(BaseModel):
     vector: StoreCount
     text: StoreCount
     graph: StoreCount
+
+
+async def _no_count() -> None:
+    """A cell that was deliberately not probed (null, not zero)."""
+    return None
 
 
 async def _count_graph(
@@ -122,10 +129,11 @@ async def stats_stores(
     * WHICH collections — the caller's allowlist AND ownership, the same
       intersection /v1/collections applies. An unreadable collection is not
       probed at all.
-    * WHOSE chunks — each probe stays filtered to ``readable_tenants`` (own +
-      public), so a collection reached through a SHARE contributes the caller's
-      own + public chunks in it, typically 0, not the owner's. Query-time scope
-      widening (routers/query.py) deliberately does not apply to counting.
+    * WHOSE chunks — ``readable_tenants`` (own + public), WIDENED per collection
+      by any share that grants read (``api/scope.count_scope``), which is the
+      same widening retrieval applies. A count therefore reports what a query
+      over that collection would return — never more, and no longer the 0 that
+      made a shared corpus read as empty.
 
     Cost scales with the number of readable collections: one probe per physical
     store per leg. Callers that poll should do so slowly — the Ops dashboard uses
@@ -227,10 +235,6 @@ async def stats_tenants(
     # gates WHICH collections a tenant may see, ownership gates whether it may READ
     # each — the two intersect. Admin sees all; keyless dev is a no-op.
     entries = await filter_readable(principal, entries)
-    # One count per (tenant, collection, store) — each probe is filtered to a
-    # SINGLE tenant, which is what makes the split meaningful. Gathered so the
-    # latency is one round-trip rather than 2·|tenants|·|collections|; each probe
-    # degrades to None on its own (probe_tenant_count never raises).
     # Which extra writer-tenant (if any) each entry is readable through, so a
     # shared corpus gets a row instead of reading as zero everywhere.
     extra = await asyncio.gather(*(shared_scope(e, registry, principal) for e in entries))
@@ -246,13 +250,7 @@ async def stats_tenants(
     # null so the row can never carry that tenant's size elsewhere.
     def _probe(store: object, tenant: str, entry_id: str):
         allowed_here = tenant in tenants or entry_id in shared_by_tenant.get(tenant, set())
-        if not allowed_here:
-
-            async def _null() -> None:
-                return None
-
-            return _null()
-        return probe_tenant_count(store, [tenant])
+        return probe_tenant_count(store, [tenant]) if allowed_here else _no_count()
 
     cells = await asyncio.gather(
         *(
@@ -267,21 +265,28 @@ async def stats_tenants(
     rows: list[TenantRow] = []
     for i, t in enumerate(rows_tenants):
         offset = i * len(entries)
-        rows.append(
-            TenantRow(
-                tenant=t,
-                own=t == principal.tenant,
-                collections=[
-                    TenantCollectionCount(
-                        collection=e.id,
-                        label=e.label,
-                        vector_count=cells[offset + j][0],
-                        text_count=cells[offset + j][1],
-                    )
-                    for j, e in enumerate(entries)
-                ],
+        cols = [
+            TenantCollectionCount(
+                collection=e.id,
+                label=e.label,
+                vector_count=cells[offset + j][0],
+                text_count=cells[offset + j][1],
             )
-        )
+            for j, e in enumerate(entries)
+        ]
+        # A share-derived row is emitted only when it CARRIES something. The row
+        # is keyed by the owner's subject — for a bearer identity that is an
+        # email — and an all-zero row would disclose who owns a collection to a
+        # caller who cannot read that from anywhere else: GET .../shares is 403
+        # for a non-owner, and with no chunks there is no metadata.tenant_id to
+        # see either. Non-zero means a query already returns chunks stamped with
+        # that tenant, so the row tells the caller nothing new. Own/public rows
+        # are unconditional — they are the caller's own scopes.
+        if t not in tenants and not any(
+            (c.vector_count or 0) or (c.text_count or 0) for c in cols
+        ):
+            continue
+        rows.append(TenantRow(tenant=t, own=t == principal.tenant, collections=cols))
     return TenantsResponse(
         tenant=principal.tenant,
         role=principal.role,

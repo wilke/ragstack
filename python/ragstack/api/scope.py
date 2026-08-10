@@ -52,7 +52,17 @@ async def shared_scope(
     # Co-resident store (another registry entry points at the same physical
     # collection): widening by tenant_id would cross the collection boundary the
     # filter can't express. Under-expose (safe) rather than leak the neighbour.
-    if any(e.collection == entry.collection for e in registry.entries() if e.id != entry.id):
+    # BOTH legs: an ES index shared with another entry aliases exactly as a
+    # shared Qdrant collection does — the text store filters on tenant_id alone,
+    # with no collection predicate — and every other co-residency guard in the
+    # codebase (deps._build_collection_registry, _shared_store_users) compares
+    # both. Checking only the vector leg let a co-resident index leak through the
+    # BM25 side.
+    if any(
+        e.collection == entry.collection or e.es_index() == entry.es_index()
+        for e in registry.entries()
+        if e.id != entry.id
+    ):
         return []
     try:
         owner = await get_acl_store().owner_of(entry.id)
@@ -64,7 +74,6 @@ async def shared_scope(
     if owner and owner != principal.tenant:
         return [owner]
     return []
-
 
 
 async def count_scope(

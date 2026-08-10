@@ -73,7 +73,7 @@ class CollectionEntry:
     #: apart, and conflating them would grant two exemptions to whatever the
     #: pointer names:
     #:
-    #: * ``_shared_scope`` (routers/query.py) refuses to widen scope here,
+    #: * ``shared_scope`` (api/scope.py) refuses to widen scope here,
     #:   because widening would inject the backfill owner's tenant into every
     #:   caller's scope. Pointing ``default`` at a genuinely owned, shared
     #:   collection would silently DISABLE share-based widening for it.

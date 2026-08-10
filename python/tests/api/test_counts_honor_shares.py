@@ -115,27 +115,66 @@ async def test_tenants_grid_shows_the_owner_row_for_a_shared_collection(client):
     assert own["vector_count"] == 0
 
 
-async def test_a_shared_row_is_scoped_to_the_shared_collection_only(client):
-    """The owner row must not carry that tenant's size in a collection that was
-    never shared — the share is per collection, and so is the widening."""
+async def test_a_shared_row_never_carries_a_tenant_size_from_another_collection(client):
+    """The widening is per collection, and so is the ROW.
+
+    Two collections BOTH readable by the caller but owned by different tenants,
+    where the second also holds chunks stamped with the first owner. Probing
+    every row x every column would report those chunks under (owner, B) — chunks
+    a query on B, widened only to o2, never returns. This is the case the
+    per-cell guard exists for; without it the numbers leak across collections.
+    """
+    from tests.api.conftest import _StateRetriever  # noqa: F401  (entry factory)
+
     app.state.kg_extractor = None
     app.state.doi_enricher = None
+    a, b = _entry("A"), _entry("B")
+    # Distinct physical stores so the co-residency guard does not (correctly)
+    # refuse to widen either of them.
+    b.__dict__["collection"] = "B-store"
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), _entry("priv"), _entry("secret")], default_id="default"
+        [_entry("default", True), a, b], default_id="default"
     )
-    await _seed_owned_corpus()
+
+    # A holds 3 chunks stamped `owner`; B holds 5 stamped `o2` AND 7 stamped
+    # `owner` (a corpus B's owner ingested from the same source).
+    await _seed_owned_corpus(3)  # -> A's store (shared in-memory doubles)
     store = get_acl_store()
-    await store.grant("priv", GRANTEE_USER, "owner", PERM_OWNER, granted_by="owner")
-    await store.grant("secret", GRANTEE_USER, "owner", PERM_OWNER, granted_by="owner")
-    await store.grant("priv", GRANTEE_USER, "grantee", PERM_READ, granted_by="owner")
+    await store.grant("A", GRANTEE_USER, "owner", PERM_OWNER, granted_by="owner")
+    await store.grant("B", GRANTEE_USER, "o2", PERM_OWNER, granted_by="o2")
+    await store.grant("A", GRANTEE_USER, "grantee", PERM_READ, granted_by="owner")
+    await store.grant("B", GRANTEE_USER, "grantee", PERM_READ, granted_by="o2")
 
     body = (await client.get("/v1/stats/tenants", headers=_h("grantee"))).json()
     rows = {r["tenant"]: r for r in body["tenants"]}
+    # `owner` is a row (A is shared and non-empty) but must NOT report a count
+    # for B — that column is not shared with this caller through `owner`.
+    assert "owner" in rows
     cols = {c["collection"]: c for c in rows["owner"]["collections"]}
-    assert cols["priv"]["vector_count"] == 3
-    # 'secret' is not shared with this caller, so it is not even a column for it;
-    # if it is listed, it must never carry the owner's size.
-    assert cols.get("secret", {}).get("vector_count") in (None, 0)
+    assert cols["A"]["vector_count"] == 3
+    assert cols["B"]["vector_count"] is None, "a shared row must not count another collection"
+
+
+async def test_an_all_zero_share_row_is_omitted(client):
+    """A row keyed by the owner's SUBJECT (an email, for a bearer identity) that
+    carries no chunks is pure identity disclosure: GET .../shares is 403 for a
+    non-owner, and an empty collection has no metadata.tenant_id to read either.
+    Emit such a row only when a query would already reveal the tenant."""
+    app.state.kg_extractor = None
+    app.state.doi_enricher = None
+    app.state.collections = CollectionRegistry(
+        [_entry("default", True), _entry("empty")], default_id="default"
+    )
+    store = get_acl_store()
+    await store.grant("empty", GRANTEE_USER, "google:alice@corp.example", PERM_OWNER,
+                      granted_by="google:alice@corp.example")
+    await store.grant("empty", GRANTEE_USER, "grantee", PERM_READ,
+                      granted_by="google:alice@corp.example")
+
+    body = (await client.get("/v1/stats/tenants", headers=_h("grantee"))).json()
+    named = [r["tenant"] for r in body["tenants"]]
+    assert "google:alice@corp.example" not in named
+    assert "grantee" in named  # the caller's own scopes are unconditional
 
 
 async def test_an_unshared_collection_still_counts_zero_for_a_stranger(client):
