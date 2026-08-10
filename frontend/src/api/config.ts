@@ -63,7 +63,7 @@ export const BACKEND_PRESETS: BackendPreset[] = [
  * Plain dev (BASE_URL="/") keeps the original key names, so nobody's local
  * settings are disturbed.
  */
-const KEY_SCOPE = (() => {
+export const KEY_SCOPE = (() => {
   const base = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
   return base ? `${base}.` : "";
 })();

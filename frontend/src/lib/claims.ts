@@ -116,9 +116,19 @@ export function splitClaims(answer: string, sourceCount: number): Claim[] {
   for (const para of answer.split(/\n+/)) {
     const trimmed = para.trim();
     if (!trimmed) continue;
-    // Sentence = up to terminal punctuation (plus closing quotes/brackets), or
-    // the unterminated tail of the paragraph.
-    const sentences = trimmed.match(/[^.!?]*[.!?]+["'”’)\]]*|[^.!?]+$/g) ?? [trimmed];
+    // Sentence = up to terminal punctuation (plus closing quotes/brackets and
+    // any citation markers trailing it), or the unterminated tail.
+    //
+    // The trailing-marker clause is load-bearing. Without it
+    // "Bees pollinate. [1] Nectar follows. [2]" hands [1] to the SECOND
+    // sentence — every citation shifts one claim down and the first claim
+    // renders uncited — and markers-after-the-period is a form the generator
+    // actually emits. It mirrors LEAD_RE above so Explore and Evidence cannot
+    // disagree about which source a sentence cites.
+    const sentences =
+      trimmed.match(
+        new RegExp(String.raw`[^.!?]*[.!?]+["'”’)\]]*(?:\s*${CITE_SRC})*|[^.!?]+$`, "g"),
+      ) ?? [trimmed];
     for (const raw of sentences) {
       const cited = extractCited(raw, sourceCount);
       const text = raw

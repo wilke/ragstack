@@ -451,8 +451,11 @@ function laneDocs(sources: Source[]): DocAgg[] {
     .map((d, i) => ({ doc_id: d.doc_id, rank: i + 1, chunkCount: d.chunkCount, spans: d.spans, title: d.title }));
 }
 
-function jaccard<T>(a: Set<T>, b: Set<T>): number {
-  if (!a.size && !b.size) return 0;
+// null (not 0) when both sides are empty: two lanes that each returned nothing
+// have no disagreement to report, and 0 would render as "total disagreement".
+// Callers already guard null (the band hides the figure).
+function jaccard<T>(a: Set<T>, b: Set<T>): number | null {
+  if (!a.size && !b.size) return null;
   let inter = 0;
   a.forEach((x) => {
     if (b.has(x)) inter++;
@@ -481,6 +484,12 @@ function mergedLength(spans: Span[]): number {
 // the retrieved source text coincides (intersection ÷ union of char ranges).
 // Granularity-independent — the meaningful cross-chunker signal. null when the
 // shared docs carry no offsets.
+//
+// CONDITIONAL on those shared docs: docs unique to one lane are not in the
+// denominator, so lanes sharing a single doc whose spans coincide score 1.0
+// however little else they agree on. Renderers must show the base (how many
+// docs it was computed over) rather than presenting it as whole-result
+// agreement — see `spanBasis` in the agreement band.
 function spanIoU(
   spansA: Map<string, Span[]>,
   spansB: Map<string, Span[]>,
@@ -553,7 +562,9 @@ function jaccardClass(j: number): string {
   return "bg-gray-50 text-gray-300";
 }
 
-const pct = (x: number) => `${Math.round(x * 100)}%`;
+// n/a, not 0%: a null overlap means there was nothing to compare (both lanes
+// empty), which is not the same claim as "these results disagree entirely".
+const pct = (x: number | null) => (x === null ? "n/a" : `${Math.round(x * 100)}%`);
 
 // Mean pairwise overlap for the band's headline number: chunk-level Jaccard when
 // every lane shares a collection (same chunker → same units), doc-level Jaccard
@@ -571,7 +582,11 @@ function meanPairwiseOverlap(entries: LaneEntry[]): number | null {
   let pairs = 0;
   for (let i = 0; i < n; i++)
     for (let j = i + 1; j < n; j++) {
-      sum += jaccard(sets[i], sets[j]);
+      // Pairs with nothing to compare (both lanes empty) are skipped rather
+      // than averaged in as 0, which would drag the mean toward "disagree".
+      const j2 = jaccard(sets[i], sets[j]);
+      if (j2 === null) continue;
+      sum += j2;
       pairs++;
     }
   return pairs ? sum / pairs : null;

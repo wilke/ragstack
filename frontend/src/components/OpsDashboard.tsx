@@ -1227,12 +1227,12 @@ function CollectionsPanel({ apiKey }: { apiKey?: string }) {
         unavailable={cols.isError}
         help={
           <>
-            Every entry in the collection registry (GET /v1/collections). Several entries can
-            point at the same physical store, which is exactly when Unregister is offered and
-            Delete permanently is refused. The badge beside a name is the build manifest,{" "}
-            <em>verified</em> or <em>declared</em>. The count in the heading is entries against
-            MAX_COLLECTIONS, which lives in the admin-only config — without an admin key you see
-            the count alone.
+            Every entry in the collection registry (GET /v1/collections). The badge beside a
+            name is the build manifest, <em>verified</em> or <em>declared</em>. Unregister drops
+            the registry binding and leaves the data; Delete permanently destroys the store, and
+            the server refuses it for a store another entry still serves. The heading shows the
+            entry count alone: MAX_COLLECTIONS is not among the fields /v1/config returns, so no
+            key — admin or not — can display the limit here.
           </>
         }
         meta={
@@ -2401,7 +2401,7 @@ function StoresPanel({ apiKey }: { apiKey?: string }) {
         meta="GET /v1/stats/stores"
         help={
           <>
-            Live counts per backing store, re-read every 5s and summed across every owner scope
+            Live counts per backing store, re-read every 15s and summed across every owner scope
             this credential may read (yours plus anything shared or public) — so a number here can
             exceed any single collection&apos;s. The text store holds one Elasticsearch document
             per chunk, so it and the vector store should track each other; a lasting gap means one

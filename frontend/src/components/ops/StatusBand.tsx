@@ -172,7 +172,13 @@ export function StatusBand({ apiKey }: { apiKey?: string }) {
   // "tenant" names the DEPLOYMENT (dev/lucid/asm). The gateway path is the only
   // place it is written down — no endpoint names itself — so a UI served at "/"
   // honestly has no name and falls back to naming the backend it addresses.
-  const name = deploymentName();
+  //
+  // The served path names the deployment that serves this UI, which is only the
+  // one being REPORTED ON while the API base is still that UI's own gateway
+  // sibling. Point the backend switcher elsewhere and every number below comes
+  // from another stack, so the path-derived name would caption the wrong one.
+  const ownApi = getApiBase() === (import.meta.env.BASE_URL || "/").replace(/\/ui\/?$/, "/api");
+  const name = ownApi ? deploymentName() : null;
   const apiPath = getApiBase() || "same-origin";
 
   // The API's version, from the OpenAPI doc (the only place it exists). Fetched

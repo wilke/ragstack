@@ -297,7 +297,9 @@ export function SourceViewer({
     (v): v is string => typeof v === "string" && v.length > 0,
   );
   const ctx = useQuery({
-    queryKey: ["chunks", collection, source.chunk_id, ids],
+    // apiKey in the key: a credential switch must not re-render the previous
+    // principal's chunk text from cache (retry:false would make it stick).
+    queryKey: ["chunks", apiKey, collection, source.chunk_id, ids],
     queryFn: () => fetchChunks(ids, collection || undefined, apiKey || undefined),
     enabled: ids.length > 0,
     retry: false,
@@ -309,7 +311,10 @@ export function SourceViewer({
   // selector moves. Reset DURING render (not in an effect) so the new source
   // never paints one frame paired with the previous source's walked chunk;
   // keyed on collection too — chunk ids are only unique within a collection.
-  const resetKey = `${collection} ${source.chunk_id}`;
+  // \u0000 as the separator: it cannot occur in a collection id or chunk
+  // id, so the key is unambiguous. Written as an ESCAPE, never a raw byte —
+  // a literal NUL makes this file binary to `file` and invisible to grep.
+  const resetKey = `${collection}\u0000${source.chunk_id}`;
   const [prevKey, setPrevKey] = useState(resetKey);
   const [viewId, setViewId] = useState<string | null>(null);
   const [visited, setVisited] = useState<Map<string, ChunkOut>>(() => new Map());
@@ -322,7 +327,7 @@ export function SourceViewer({
   const cached = (id: string) => visited.get(id) ?? ctxById.get(id);
   const wantId = viewId != null && !cached(viewId) ? viewId : null;
   const walk = useQuery({
-    queryKey: ["chunk-walk", collection, wantId],
+    queryKey: ["chunk-walk", apiKey, collection, wantId],
     queryFn: () => fetchChunks([wantId!], collection || undefined, apiKey || undefined),
     enabled: wantId != null,
     retry: false,

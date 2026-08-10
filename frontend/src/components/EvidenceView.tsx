@@ -14,6 +14,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getGraphEntities, getGraphNeighbors } from "../api/client";
+import { KEY_SCOPE } from "../api/config";
 import { splitClaims } from "../lib/claims";
 import { formatCitation } from "../lib/citation";
 import type { RunRecord } from "../lib/run";
@@ -38,7 +39,12 @@ export interface EvidenceViewProps {
 // the session-only feedback log), newest first, capped so an enthusiastic
 // session can't grow the key unboundedly. Best-effort: storage disabled/full
 // returns false and the button says so instead of throwing.
-const SAVED_KEY = "ragstack.evidence.savedRuns";
+// Scoped to the served path like every other stored key (api/config.ts
+// KEY_SCOPE): the gateway serves every deployment from ONE origin at
+// /ragstack/<name>/ui/, so an unscoped key would list asm's saved runs in
+// lucid's run selector — rendering another deployment's answer and firing
+// its chunk ids at this one's API.
+const SAVED_KEY = `ragstack.${KEY_SCOPE}evidence.savedRuns`;
 const SAVED_CAP = 20;
 
 function readSavedRuns(): RunRecord[] {

@@ -33,5 +33,9 @@
   --c-amber: 154 106 0; /* dark ochre — differs from vermillion in lightness too */
   --c-muted: 99 99 94; /* 5.6:1 */
   --c-dim: 111 111 106; /* 4.9:1 */
-  --c-faint: 130 130 124; /* 3.8:1 — placeholders/disabled, still the lightest step */
+  /* 5.0:1 on white, 4.6:1 on the warm `paper` surface. It was 3.8:1 and
+     excused as "placeholders/disabled", but text-faint also carries real prose
+     and aria-live status, so the mode failed the floor its own header claims.
+     Checked against BOTH grounds: white alone would have left paper at 4.4. */
+  --c-faint: 112 112 106;
 }

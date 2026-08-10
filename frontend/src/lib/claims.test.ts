@@ -36,3 +36,28 @@ describe("splitClaims", () => {
     expect(splitClaims("   \n ", 5)).toEqual([]);
   });
 });
+
+// Citation attribution when the marker follows terminal punctuation. The
+// generator emits both forms; before the trailing-marker clause in splitClaims
+// every citation shifted one claim down and claim 1 rendered uncited.
+describe("citations after the period", () => {
+  it("attaches a trailing marker to the sentence it follows", () => {
+    const c = splitClaims("Bees pollinate flowers. [1] Flowers produce nectar. [2]", 2);
+    expect(c.map((x) => x.text)).toEqual(["Bees pollinate flowers.", "Flowers produce nectar."]);
+    expect(c[0].cited).toEqual([0]);
+    expect(c[1].cited).toEqual([1]);
+  });
+
+  it("agrees with the marker-before-the-period form", () => {
+    const after = splitClaims("A is true. [1] B is false. [2] C is unknown. [3]", 3);
+    const before = splitClaims("A is true [1]. B is false [2]. C is unknown [3].", 3);
+    expect(after.map((x) => x.cited)).toEqual([[0], [1], [2]]);
+    expect(after.map((x) => x.cited)).toEqual(before.map((x) => x.cited));
+  });
+
+  it("keeps multi-source and out-of-range markers correct", () => {
+    const c = splitClaims("Two sources agree. [1, 2] One is missing. [9]", 2);
+    expect(c[0].cited).toEqual([0, 1]);
+    expect(c[1].cited).toEqual([]); // [9] points outside the retrieved set
+  });
+});
