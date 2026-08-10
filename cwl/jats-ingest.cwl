@@ -4,10 +4,15 @@
 #
 # Shape notes, in the order they matter:
 #
-# - EXTRACT and EMBED are chained inside one scatter, so a shard's embed starts as
-#   soon as ITS extract finishes — no barrier where the whole fleet waits for the
-#   slowest XML parse. LOAD stays a single task (see load-embeddings.cwl: the load
-#   is a stateful backpressure loop, not a dataflow fan-out).
+# - EXTRACT and EMBED are TWO TOP-LEVEL SCATTERS with a phase barrier between
+#   them — not a scatter over a chained sub-workflow. The chained shape is
+#   prettier dataflow, but GoWe executes scatter-over-subworkflow children
+#   strictly serially (GoWe#164: executeChildSubmission blocks inside the
+#   dispatch loop), which single-filed a 64-shard batch at ~5.3 min/shard with
+#   the whole fleet idle. Flat scatters dispatch as parallel tasks. The barrier
+#   costs little: extract is ~1 min/shard and cheap next to embed. LOAD stays a
+#   single task (see load-embeddings.cwl: backpressure is a control loop, not a
+#   dataflow fan-out).
 #
 # - The shard files come from `plan_shards.py`, run OUTSIDE this workflow. Shards
 #   are a pure function of article identity, so the plan is stable while the
@@ -37,7 +42,6 @@ class: Workflow
 
 requirements:
   ScatterFeatureRequirement: {}
-  SubworkflowFeatureRequirement: {}
   StepInputExpressionRequirement: {}
 
 inputs:
@@ -98,13 +102,58 @@ inputs:
     default: false
 
 steps:
-  ingest_shard:
-    doc: "One shard: JATS XML -> ingest JSONL (tables/figures lifted out) -> embed
-      -> one embedding file + receipts. Stateless; never touches the stores."
+  extract:
+    doc: "JATS -> {text,path,metadata} JSONL, one task per shard, all shards in
+      parallel. Two record kinds: prose (content_type=article, tables/figures
+      lifted OUT) and self-contained table/figure units under one chunk window.
+      Skipped/corrupt articles go to the report, never silently dropped."
     scatter: shard
     in:
       shard: shards
       corpus: corpus
+    out: [jsonl, skips]
+    run:
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: ragstack-worker.sif
+          dockerImageId: ragstack-worker.sif
+      baseCommand: [python, /opt/ragstack/scripts/jats_extract.py]
+      inputs:
+        shard:
+          type: File
+          inputBinding:
+            prefix: --shard
+            position: 2
+        corpus:
+          type: Directory
+          inputBinding:
+            prefix: --corpus
+            position: 3
+      arguments:
+        - position: 4
+          prefix: --out
+          valueFrom: $(inputs.shard.nameroot).jsonl
+        - position: 5
+          prefix: --skip-report
+          valueFrom: $(inputs.shard.nameroot).skips.json
+      outputs:
+        jsonl:
+          type: File
+          outputBinding:
+            glob: $(inputs.shard.nameroot).jsonl
+        skips:
+          type: File
+          outputBinding:
+            glob: $(inputs.shard.nameroot).skips.json
+
+  embed:
+    doc: "Ingest JSONL -> embedding file, one task per shard, all shards in
+      parallel across the worker pool (each task additionally fans requests
+      across every endpoint — #309)."
+    scatter: shard
+    in:
+      shard: extract/jsonl
       tenant: tenant
       chunk_method: chunk_method
       chunk_size: chunk_size
@@ -113,164 +162,82 @@ steps:
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
       metadata_passthrough: metadata_passthrough
-    out: [embeddings, receipt, skips]
+    out: [embeddings, receipt]
     run:
-      class: Workflow
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: ragstack-worker.sif
+          dockerImageId: ragstack-worker.sif
+        NetworkAccess:
+          networkAccess: true
+      baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
       inputs:
-        shard: File
-        corpus: Directory
-        tenant: string
-        chunk_method: string
-        chunk_size: int
-        chunk_overlap: int
-        embedding_url: string[]
-        embedding_model: string
-        embedding_api_key: ["null", string]
-        metadata_passthrough: string
-      steps:
-        extract:
-          doc: "JATS -> {text,path,metadata} JSONL. Two record kinds: prose
-            (content_type=article, tables/figures lifted OUT) and self-contained
-            table/figure units capped under one chunk window. Skipped/corrupt
-            articles go to the report, never silently dropped."
-          in:
-            shard: shard
-            corpus: corpus
-          out: [jsonl, skips]
-          run:
-            class: CommandLineTool
-            requirements:
-              DockerRequirement:
-                dockerPull: ragstack-worker.sif
-                dockerImageId: ragstack-worker.sif
-            baseCommand: [python, /opt/ragstack/scripts/jats_extract.py]
-            inputs:
-              shard:
-                type: File
-                inputBinding:
-                  prefix: --shard
-                  position: 2
-              corpus:
-                type: Directory
-                inputBinding:
-                  prefix: --corpus
-                  position: 3
-            arguments:
-              - position: 4
-                prefix: --out
-                valueFrom: $(inputs.shard.nameroot).jsonl
-              - position: 5
-                prefix: --skip-report
-                valueFrom: $(inputs.shard.nameroot).skips.json
-            outputs:
-              jsonl:
-                type: File
-                outputBinding:
-                  glob: $(inputs.shard.nameroot).jsonl
-              skips:
-                type: File
-                outputBinding:
-                  glob: $(inputs.shard.nameroot).skips.json
-
-        embed:
-          doc: "Ingest JSONL -> embedding file (vectors + metadata + deterministic
-            ids). Same tool and flags as embed-bulk.cwl."
-          in:
-            shard: extract/jsonl
-            tenant: tenant
-            chunk_method: chunk_method
-            chunk_size: chunk_size
-            chunk_overlap: chunk_overlap
-            embedding_url: embedding_url
-            embedding_model: embedding_model
-            embedding_api_key: embedding_api_key
-            metadata_passthrough: metadata_passthrough
-          out: [embeddings, receipt]
-          run:
-            class: CommandLineTool
-            requirements:
-              DockerRequirement:
-                dockerPull: ragstack-worker.sif
-                dockerImageId: ragstack-worker.sif
-              NetworkAccess:
-                networkAccess: true
-            baseCommand: [python, /opt/ragstack/scripts/embed_shard.py]
-            inputs:
-              shard:
-                type: File
-                inputBinding:
-                  position: 2
-              tenant:
-                type: string
-                inputBinding:
-                  prefix: --tenant
-                  position: 3
-              chunk_method:
-                type: string
-                inputBinding:
-                  prefix: --chunk-method
-                  position: 4
-              chunk_size:
-                type: int
-                inputBinding:
-                  prefix: --chunk-size
-                  position: 5
-              chunk_overlap:
-                type: int
-                inputBinding:
-                  prefix: --chunk-overlap
-                  position: 6
-              embedding_model:
-                type: string
-                inputBinding:
-                  prefix: --embedding-model
-                  position: 7
-              embedding_api_key:
-                type: ["null", string]
-                inputBinding:
-                  prefix: --embedding-api-key
-                  position: 8
-              embedding_url:
-                type: string[]
-                inputBinding:
-                  prefix: --embedding-url
-                  position: 9
-              metadata_passthrough:
-                type: string
-                inputBinding:
-                  prefix: --metadata-passthrough
-                  position: 10
-            arguments:
-              - position: 11
-                prefix: --out
-                valueFrom: $(inputs.shard.nameroot).emb.jsonl
-              - position: 12
-                prefix: --receipt
-                valueFrom: receipt.json
-            outputs:
-              embeddings:
-                type: File
-                outputBinding:
-                  glob: $(inputs.shard.nameroot).emb.jsonl
-              receipt:
-                type: File
-                outputBinding:
-                  glob: receipt.json
+        shard:
+          type: File
+          inputBinding:
+            position: 2
+        tenant:
+          type: string
+          inputBinding:
+            prefix: --tenant
+            position: 3
+        chunk_method:
+          type: string
+          inputBinding:
+            prefix: --chunk-method
+            position: 4
+        chunk_size:
+          type: int
+          inputBinding:
+            prefix: --chunk-size
+            position: 5
+        chunk_overlap:
+          type: int
+          inputBinding:
+            prefix: --chunk-overlap
+            position: 6
+        embedding_model:
+          type: string
+          inputBinding:
+            prefix: --embedding-model
+            position: 7
+        embedding_api_key:
+          type: ["null", string]
+          inputBinding:
+            prefix: --embedding-api-key
+            position: 8
+        embedding_url:
+          type: string[]
+          inputBinding:
+            prefix: --embedding-url
+            position: 9
+        metadata_passthrough:
+          type: string
+          inputBinding:
+            prefix: --metadata-passthrough
+            position: 10
+      arguments:
+        - position: 11
+          prefix: --out
+          valueFrom: $(inputs.shard.nameroot).emb.jsonl
+        - position: 12
+          prefix: --receipt
+          valueFrom: receipt.json
       outputs:
         embeddings:
           type: File
-          outputSource: embed/embeddings
+          outputBinding:
+            glob: $(inputs.shard.nameroot).emb.jsonl
         receipt:
           type: File
-          outputSource: embed/receipt
-        skips:
-          type: File
-          outputSource: extract/skips
+          outputBinding:
+            glob: receipt.json
 
   merge:
     doc: "Gather per-shard embed receipts -> run summary."
     in:
-      receipts: ingest_shard/receipt
+      receipts: embed/receipt
     out: [summary]
     run:
       class: CommandLineTool
@@ -300,7 +267,7 @@ steps:
       (Qdrant collection AND ES index) come from the entry, and the tool writes
       the provenance manifest that arms ADR-0002's guard."
     in:
-      embeddings: ingest_shard/embeddings
+      embeddings: embed/embeddings
       collection_id: collection_id
       registry_db: registry_db
       tenant: tenant
@@ -375,9 +342,9 @@ outputs:
     outputSource: merge/summary
   receipts:
     type: File[]
-    outputSource: ingest_shard/receipt
+    outputSource: embed/receipt
   skip_reports:
     type: File[]
     doc: "Per-shard extract skips (missing/corrupt/under-min XML). Read these —
       an article absent here and absent from the stores was never attempted."
-    outputSource: ingest_shard/skips
+    outputSource: extract/skips
