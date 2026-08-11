@@ -318,6 +318,13 @@ def main(argv=None) -> int:
                         "A timeout row keeps its submission id and a rerun "
                         "RE-ATTACHES to it instead of resubmitting.")
     p.add_argument("--continue-on-failure", action="store_true")
+    p.add_argument("--retries", type=int, default=1,
+                   help="resubmit a FAILED batch this many times before stopping "
+                        "(default 1). Infrastructure faults are real: a batch died "
+                        "after 128/130 tasks succeeded because apptainer could not "
+                        "resolve the run-as uid for ~5 s (transient LDAP), and its "
+                        "three in-worker retries all fell inside that window. "
+                        "Timeouts are NOT retried here — they re-attach instead.")
     p.add_argument("--dry-run", action="store_true",
                    help="print the batch plan and per-batch shard counts; submit nothing")
     args = p.parse_args(argv)
@@ -361,8 +368,14 @@ def main(argv=None) -> int:
         return 0
 
     for k, s in todo:
-        if not run_batch(args, template, store, k, s, ledger_path,
-                         reattach_sub=reattach.get(k)):
+        ok = run_batch(args, template, store, k, s, ledger_path,
+                       reattach_sub=reattach.get(k))
+        attempt = 0
+        while not ok and attempt < args.retries:
+            attempt += 1
+            print(f"[{k}] retry {attempt}/{args.retries} after failure", flush=True)
+            ok = run_batch(args, template, store, k, s, ledger_path)
+        if not ok:
             if not args.continue_on_failure:
                 print(f"stopping at failed batch {k} (rerun to retry it)", file=sys.stderr)
                 return 1
