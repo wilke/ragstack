@@ -379,3 +379,41 @@ def test_rerun_reattaches_to_the_timed_out_submission(tmp_path, stores):
     row = gbi.read_ledger(str(run / "ledger.jsonl"))["00000-00001"]
     assert row["status"] == "done"
     assert row["submission"] == "sub_prior_run"
+
+
+def test_failed_batch_is_retried_then_succeeds(tmp_path, stores, monkeypatch):
+    """Infrastructure faults are real and transient: a batch died after 128/130
+    tasks because apptainer couldn't resolve the run-as uid for ~5s, and the
+    worker's own three retries all fell inside that window. One resubmit
+    recovers; without it the driver stops the whole run."""
+    _plan(tmp_path, 2)
+    tpl = _template(tmp_path, stores, _registry(tmp_path))
+    stage = tmp_path / "stage"
+    _stage_outputs(stage, n_chunks=10)
+    # a gowe stub that FAILS the first status call, then COMPLETEs
+    stub = tmp_path / "gowe"
+    stub.write_text(f"""#!/bin/bash
+if [ "$1" = submit ]; then
+  echo "$@" >> {tmp_path}/submits.log
+  echo "Submission created: sub_$(wc -l < {tmp_path}/submits.log | tr -d ' ')"
+elif [ "$1" = status ]; then
+  n=$(wc -l < {tmp_path}/submits.log | tr -d ' ')
+  if [ "$n" -le 1 ]; then echo "  State:    FAILED"; else echo "  State:    COMPLETED"; fi
+fi
+""")
+    stub.chmod(0o755)
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=stub,
+                        batch_size=2, stage=stage))
+    assert rc == 0
+    assert len((tmp_path / "submits.log").read_text().strip().splitlines()) == 2
+    assert gbi.read_ledger(str(tmp_path / "run" / "ledger.jsonl"))["00000-00001"]["status"] == "done"
+
+
+def test_retries_zero_keeps_the_old_stop_behaviour(tmp_path, stores):
+    _plan(tmp_path, 2)
+    gowe = _stub_gowe(tmp_path, state="FAILED")
+    tpl = _template(tmp_path, stores, _registry(tmp_path))
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
+                        batch_size=2, retries=0))
+    assert rc == 1
+    assert len((tmp_path / "submits.log").read_text().strip().splitlines()) == 1
