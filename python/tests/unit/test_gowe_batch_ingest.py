@@ -417,3 +417,20 @@ def test_retries_zero_keeps_the_old_stop_behaviour(tmp_path, stores):
                         batch_size=2, retries=0))
     assert rc == 1
     assert len((tmp_path / "submits.log").read_text().strip().splitlines()) == 1
+
+
+def test_timeout_is_not_retried_only_real_failures_are(tmp_path, stores):
+    """A timeout means the DRIVER gave up while the submission is very likely
+    still running. Resubmitting duplicates the batch's GPU work and races two
+    loads into one store — observed live on batch 00448-00511 (timed out at 12h
+    with its submission at 129/130 tasks, load still running). Re-attach is the
+    recovery, on the next driver run; retry is for real failures only."""
+    _plan(tmp_path, 2)
+    gowe = _stub_gowe(tmp_path, state="RUNNING")   # never terminal -> timeout
+    tpl = _template(tmp_path, stores, _registry(tmp_path))
+    rc = gbi.main(_args(tmp_path, stores, template=tpl, gowe=gowe,
+                        batch_size=2, batch_timeout="0.05", retries=1))
+    assert rc == 1
+    subs = (tmp_path / "submits.log").read_text().strip().splitlines()
+    assert len(subs) == 1, f"timeout must not resubmit; got {len(subs)} submissions"
+    assert gbi.read_ledger(str(tmp_path / "run" / "ledger.jsonl"))["00000-00001"]["status"] == "timeout"

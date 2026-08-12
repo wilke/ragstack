@@ -232,6 +232,11 @@ def render_inputs(template: dict, shard_paths: list[str], out_path: str) -> None
 # main loop
 # --------------------------------------------------------------------------- #
 
+def _last_status(ledger_path: str, batch: str) -> str | None:
+    """The batch's most recent recorded status ('done' | 'failed' | 'timeout')."""
+    return read_ledger(ledger_path).get(batch, {}).get("status")
+
+
 def run_batch(args, template: dict, store: str, key: str,
               shard_paths: list[str], ledger_path: str,
               reattach_sub: str | None = None) -> bool:
@@ -371,7 +376,14 @@ def main(argv=None) -> int:
         ok = run_batch(args, template, store, k, s, ledger_path,
                        reattach_sub=reattach.get(k))
         attempt = 0
-        while not ok and attempt < args.retries:
+        # RETRY ONLY A REAL FAILURE. A timeout means the DRIVER gave up while its
+        # submission is very likely still running — resubmitting then duplicates
+        # the whole batch's GPU work and races two loads into one store. Observed
+        # live: batch 00448-00511 timed out at 12h with its submission at 129/130
+        # tasks, load step still running, and the retry launched 64 redundant
+        # embeds. Re-attach handles this case, on the next driver run.
+        while (not ok and attempt < args.retries
+               and _last_status(ledger_path, k) == "failed"):
             attempt += 1
             print(f"[{k}] retry {attempt}/{args.retries} after failure", flush=True)
             ok = run_batch(args, template, store, k, s, ledger_path)
