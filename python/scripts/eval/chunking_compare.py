@@ -72,7 +72,31 @@ from ragstack.tenancy import scope_filters
 # --------------------------------------------------------------------------- #
 # Configuration constants
 # --------------------------------------------------------------------------- #
-DEFAULT_INPUT = "/rag/inputs/09320c55-a8a7-4f4d-81b3-ae55b7a329fa.jsonl"
+#: Where the ASM source JSONL lives. A DIRECTORY, not a file: the corpus was
+#: consolidated into one canonical place (40 files, 448,650 documents, see its
+#: MANIFEST.tsv), and the two duplicate copies this script used to name a file
+#: inside were deleted. Naming one shard also silently scoped the comparison to
+#: ~8% of the corpus, which is not what "the ASM corpus" means.
+ASM_CORPUS_DIR = "/rag/ingest/docs/asm"
+
+
+def discover_corpus(directory: str = ASM_CORPUS_DIR) -> list[str]:
+    """Every ``*.jsonl`` shard in ``directory``, sorted for determinism.
+
+    Sorted because an unordered glob makes a re-run a different experiment:
+    the eval takes the first ``--limit`` documents, so listing order decides
+    the sample. Raises rather than silently comparing nothing when the corpus
+    is absent — an empty run reports zeros that look like a result.
+    """
+    import glob as _glob
+
+    files = sorted(_glob.glob(os.path.join(directory, "*.jsonl")))
+    if not files:
+        raise SystemExit(
+            f"{directory}: no *.jsonl found. Pass --input/--inputs explicitly, "
+            "or point at the consolidated ASM corpus directory."
+        )
+    return files
 SFR_ENDPOINTS = [
     "http://localhost:9001",
     "http://localhost:9002",
@@ -907,6 +931,11 @@ docs and the per-mode chunk count.
 # Main
 # --------------------------------------------------------------------------- #
 async def amain(args: argparse.Namespace) -> int:
+    # None -> discover. Resolved HERE, not in argparse, so --help stays fast and
+    # a missing corpus fails with a message rather than at import time.
+    if args.input is None:
+        args.input = discover_corpus()[0]
+        print(f"corpus: {args.input} (discovered in {ASM_CORPUS_DIR})", file=sys.stderr)
     docs = load_subset(args.input, args.limit)
     if not docs:
         print("No matching article documents found; aborting.", file=sys.stderr)
@@ -963,7 +992,9 @@ async def amain(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--input", default=DEFAULT_INPUT, help="JSONL corpus path")
+    p.add_argument("--input", default=None,
+                   help=f"JSONL corpus file. Default: the first shard found in "
+                        f"{ASM_CORPUS_DIR}, discovered at runtime.")
     p.add_argument("--limit", type=int, default=300, help="docs in the subset")
     p.add_argument("--top-k", type=int, default=10, help="retrieval cut for metrics")
     p.add_argument("--rerank-pool", type=int, default=50, help="rerank candidate pool")

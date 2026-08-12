@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import itertools
 import json
 import math
@@ -97,11 +98,28 @@ from ragstack.tenancy import scope_filters
 # --------------------------------------------------------------------------- #
 # Configuration constants
 # --------------------------------------------------------------------------- #
-DEFAULT_INPUTS = [
-    "/rag/ingest/inputs/09320c55-a8a7-4f4d-81b3-ae55b7a329fa.jsonl",
-    "/rag/ingest/inputs/0a4f7390-da10-4305-bf94-e0cb8d9e7de8.jsonl",
-    "/rag/ingest/inputs/0d1bb3c8-ecf7-44d1-a898-6215f00f1592.jsonl",
-]
+#: The consolidated ASM corpus (40 shards, 448,650 documents; see its
+#: MANIFEST.tsv). Previously three hard-coded paths under /rag/ingest/inputs —
+#: a duplicate directory that has since been deleted, so those defaults pointed
+#: at nothing. Discovery also means a shard added to the corpus is picked up
+#: instead of silently ignored.
+ASM_CORPUS_DIR = "/rag/ingest/docs/asm"
+
+
+def discover_corpus(directory: str = ASM_CORPUS_DIR) -> list[str]:
+    """Every ``*.jsonl`` shard in ``directory``, sorted for determinism.
+
+    Sorted because the eval consumes the first ``--limit`` documents, so listing
+    order decides the sample and an unordered glob would make a re-run a
+    different experiment. Absent corpus raises rather than comparing nothing.
+    """
+    files = sorted(glob.glob(os.path.join(directory, "*.jsonl")))
+    if not files:
+        raise SystemExit(
+            f"{directory}: no *.jsonl found. Pass --inputs explicitly, or point "
+            "at the consolidated ASM corpus directory."
+        )
+    return files
 # 16 endpoints: coconut keyless :9001-9008 + lambda13 keyed :9990-9997. The live
 # subset is detected at startup; the keyless endpoints ignore the Bearer header,
 # so one --embedding-api-key safely covers the mixed pool.
@@ -1232,8 +1250,9 @@ async def amain(args: argparse.Namespace, live_endpoints: list[str]) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
-        "--inputs", nargs="+", default=DEFAULT_INPUTS,
-        help="JSONL corpus paths (the 3 input files)",
+        "--inputs", nargs="+", default=None,
+        help=f"JSONL corpus shards. Default: every *.jsonl in {ASM_CORPUS_DIR}, "
+             f"discovered at runtime.",
     )
     p.add_argument(
         "--limit", type=int, default=1500,
@@ -1285,6 +1304,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     global _PREFIX, SFR_ENDPOINTS, EMBED_API_KEY, HARD_CAP_TOKENS, TOKEN_COUNTER
     args = parse_args(argv)
+    # None -> discover. Resolved here so --help stays fast and a missing corpus
+    # fails with a message instead of at import time.
+    if args.inputs is None:
+        args.inputs = discover_corpus()
+        print(f"corpus: {len(args.inputs)} shard(s) from {ASM_CORPUS_DIR}", file=sys.stderr)
     if not args.collection_prefix.startswith("chunkcmp_m7"):
         raise SystemExit(
             "--collection-prefix must start with 'chunkcmp_m7' (teardown safety guard)"
