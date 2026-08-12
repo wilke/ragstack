@@ -1,0 +1,122 @@
+# PubMed Central open-access ingest — run record
+
+Building the `open-access` collection on the **asm** tenant: 1.44M JATS articles →
+~47M chunks in Qdrant `:6333` + Elasticsearch `:9200`. Started 2026-08-09.
+
+This is the record of *how* it was run and *what went wrong*, which is the part
+that does not survive in the ledger. Live state lives in
+`/rag/ingest/oa/asm-run/` — `ledger.jsonl` (one verified row per batch),
+`report.sh` and `collections.sh` (timestamped, re-runnable, store-verified).
+
+## Provenance
+
+| | |
+|---|---|
+| Corpus | `/rag/oa/corpus` — 1,439,753 JATS XML, 191 GB, hash-verified (0 missing, 0 mismatches) |
+| Excluded | 33,154 (2.30%) — retraction notices **and their targets**, EoC notices, editorial/news/book-review, abstracts, letters, replies |
+| Planned | 1,404,453 articles → 2,048 shards, CV 4.3% |
+| Collection | `open-access`, registered via `POST /v1/collections` **before** any write (#263) |
+| Store | server-minted `ragstack_lib_open_access_…_cd24acfc` — the plan's assumed `ragstack_oa_tok512` does not survive the API path |
+| Build spec | `fixed_token` 512/64, SFR-Embedding-Mistral 4096-d, tenant `public`, `group:public` read |
+
+## Reproducing it
+
+```bash
+# 0. exclusions (34s over 1.44M roots)
+python scripts/scan_notices.py --corpus /rag/oa/corpus --out /rag/ingest/oa/notice-scan \
+    --drop-types "retraction,retraction-forward,expression-of-concern,editorial,news,book-review,abstract,letter,decision-letter,reply"
+
+# 1. plan — shard = sha1(pmcid) % N, stable while the corpus grows
+python scripts/plan_shards.py --corpus /rag/oa/corpus --out /rag/ingest/oa/r1 \
+    --exclude /rag/ingest/oa/notice-scan/exclusions.jsonl
+
+# 2. register the collection (FIRST, not last)
+curl -X POST .../v1/collections -d '{"id":"open-access","label":"…",
+    "chunk":{"method":"fixed_token","size":512,"overlap":64}}'
+
+# 3. run — 64-shard batches, verified and cleaned per batch, resumable
+python scripts/gowe_batch_ingest.py --plan /rag/ingest/oa/r1 \
+    --cwl cwl/jats-ingest.cwl --inputs-template /rag/ingest/oa/asm-run/base.yml \
+    --out /rag/ingest/oa/asm-run --batch-size 64 --retries 1 \
+    --batch-timeout 86400 --gowe-bin /scout/Experiments/GoWe/bin/gowe
+```
+
+Rerunning the driver is always safe: it skips `done` batches, re-attaches to a
+`timeout`ed submission, and point ids are `uuid5(tenant:chunk_id)` so a repeated
+load upserts rather than duplicates.
+
+## Measured
+
+| | |
+|---|---|
+| Steady-state batch | **~6.0 h** (6.09, 5.95, 5.95, 5.99, 6.14 — 2.3% spread) |
+| Per batch | ~1.48M chunks, ~82 GB of intermediates, reclaimed after verification |
+| Embed | 560 chunks/s through the pipeline across 6 endpoints (was 58 — see #308) |
+| Load | 358 chunks/s host-side with the `doc_id` index (was ~1 delete/s without) |
+| Corpus rate | 29.8 chunks/article measured, vs 26.9 planned |
+| Projection | ~47.4M chunks |
+
+Production impact: prod ES answered real queries at **7–21 ms** throughout.
+
+## Incidents — the expensive knowledge
+
+**1 · `doc_id` had no Qdrant payload index (#307).** `index_chunks` delete-priors
+per document; unindexed, every delete is a full collection scan. A load past
+~150k points ground to **~1 delete/s** and presented as a hung container (7 h in
+`ep_poll`, zero I/O). Creating the index live took the same load to ~125/s.
+`ensure_collection` now creates it and back-fills existing collections at boot.
+
+**2 · The embed pool used one endpoint at a time (#308/#309).** `_embed_and_link`
+embeds a whole shard in ONE `embed()` call and the pool routed one call to one
+endpoint — a 22k-text request pinning a single GPU while five idled. The fleet
+benched at 2,606 texts/s; the pipeline achieved 58. `PooledEmbedder.embed` now
+splits oversized calls and gathers them concurrently: **58 → 560 chunks/s.**
+An earlier "fix" (8 in-flight per endpoint instead of 8 total) changed nothing,
+because there was only ever one call in flight — the real defect was upstream.
+
+**3 · GoWe serializes scatter-over-subworkflow (GoWe#164).** The chained
+`scatter(extract → embed)` shape ran children strictly serially *inline in the
+scheduler loop*: 1/N speed, **every other submission on the engine blocked**, and
+uncancellable (parent cancel ignored between iterations; a cancelled child
+finalizes in a state the loop reads as success). Only a server restart stops it.
+Workaround: two **top-level** scatters with a phase barrier (`jats-ingest.cwl`).
+
+**4 · Doc ids depended on the process working directory (#303).** Ids keyed on
+`Path(path).resolve()`, which prepends the CWD to a relative identifier like
+`PMC123#table-2`. A shell run and a GoWe worker minted two id families, so a
+re-load **duplicated** the corpus (24,263 → 36,496) instead of upserting.
+Absolute paths keep `resolve()`; relative ones key on the literal string.
+Only reachable when the same shard is ingested from two different directories —
+which is exactly what the first GoWe run did.
+
+**5 · A transient LDAP blip failed a batch at 128/130 tasks (#315).** Apptainer
+could not resolve the run-as uid for ~5 s and the worker's three retries all
+landed inside that window. Embeddings were intact, so the load ran host-side —
+~2 h instead of re-embedding for ~6 h. The driver now retries a failed batch once.
+
+**6 · …and that retry then fired on a TIMEOUT (#317).** A timeout means the
+*driver* gave up, not that the submission died: the resubmit launched 64
+redundant embeds while the original was at 129/130 with its load running.
+Retry is now gated on the ledger status literally being `failed`; timeouts
+re-attach instead. No data harm — idempotent ids meant the cost was compute only.
+
+**Also**: one staged `.emb.jsonl` had a torn line; the loader failed that file
+loudly rather than loading it partially (re-embedded, ~6 min). And demo's toy
+`open-access` collided with this one's content-addressed store name — same id +
+same spec ⇒ same name **across tenants**.
+
+## Things to know before the next large ingest
+
+- **Heavy read analytics on the shared instance are not free.** Batch 8 took
+  >12 h against a 6 h norm while cardinality aggregations ran over 25M-document
+  indices on the same ES. Set `--batch-timeout` well above the norm (24 h), or
+  don't audit during a load.
+- **Payload shape differs per leg**: Qdrant flat (`content_type`), ES nested
+  (`metadata.content_type`). A filter correct on one silently matches nothing on
+  the other.
+- **A mid-load leg mismatch is expected**, not an alarm: the loader writes
+  vectors then text per file, so Qdrant leads within a batch. Only an at-rest
+  mismatch is real — every completed batch has matched exactly.
+- **Bulk tools need `/rag/envs/ragstack/bin/python3.12` + `PYTHONPATH` +
+  `HF_HOME=/rag/cache`.** The conda env lacks `transformers`, and without the
+  tokenizer `fixed_token` silently degrades to a counter the chunker then rejects.

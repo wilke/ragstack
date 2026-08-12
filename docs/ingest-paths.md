@@ -39,6 +39,10 @@ to the deeper docs rather than repeating them.
 
 ---
 
+> **Ran a large ingest?** The production open-access build is written up in
+> [`reports/oa-ingest-run.md`](../reports/oa-ingest-run.md) — reproduce commands,
+> measured rates, and the incidents worth knowing before the next one.
+
 ## Every path targets a registry entry (#263)
 
 The bulk CLIs write straight to Qdrant/ES — that is why they exist, and it does
