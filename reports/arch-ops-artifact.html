@@ -1,0 +1,1001 @@
+<title>RAGStack — Architecture &amp; Operations</title>
+<style>
+  :root{
+    --paper:#f7f9fa; --card:#fff; --ink:#111a1f; --body:#35454e; --slate:#62727c;
+    --hair:#dce3e7; --hair-soft:#eaeff2; --field:#f1f5f7;
+    --wire:#22608e; --wire-soft:#e9f1f7;
+    --prod:#15683f; --prod-soft:#e4f2ea;
+    --demo:#8a5a0c; --demo-soft:#fbf1de;
+    --warn:#9c3244; --warn-soft:#fbeaed;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --paper:#0d1317; --card:#141d22; --ink:#e6edf1; --body:#aebcc5; --slate:#788892;
+    --hair:#243037; --hair-soft:#1b252b; --field:#0f181d;
+    --wire:#63a4d8; --wire-soft:#14232e;
+    --prod:#57bd91; --prod-soft:#10261c; --demo:#d5a751; --demo-soft:#281f12;
+    --warn:#e08296; --warn-soft:#2a151a;}}
+  :root[data-theme="dark"]{
+    --paper:#0d1317; --card:#141d22; --ink:#e6edf1; --body:#aebcc5; --slate:#788892;
+    --hair:#243037; --hair-soft:#1b252b; --field:#0f181d;
+    --wire:#63a4d8; --wire-soft:#14232e;
+    --prod:#57bd91; --prod-soft:#10261c; --demo:#d5a751; --demo-soft:#281f12;
+    --warn:#e08296; --warn-soft:#2a151a;}
+  :root[data-theme="light"]{
+    --paper:#f7f9fa; --card:#fff; --ink:#111a1f; --body:#35454e; --slate:#62727c;
+    --hair:#dce3e7; --hair-soft:#eaeff2; --field:#f1f5f7;
+    --wire:#22608e; --wire-soft:#e9f1f7;
+    --prod:#15683f; --prod-soft:#e4f2ea; --demo:#8a5a0c; --demo-soft:#fbf1de;
+    --warn:#9c3244; --warn-soft:#fbeaed;}
+
+  body{background:var(--paper);color:var(--body);font-family:var(--sans);font-size:15.5px;line-height:1.62;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px 100px}
+  .col{max-width:70ch}
+  h1,h2,h3,h4{font-family:var(--mono);color:var(--ink);text-wrap:balance}
+  h1{font-size:28px;line-height:1.2;letter-spacing:-.02em;font-weight:600;margin:0 0 10px}
+  h2{font-size:19px;font-weight:600;margin:0 0 6px;letter-spacing:-.01em}
+  h3{font-size:14.5px;font-weight:600;margin:26px 0 8px}
+  h4{font-size:12.5px;font-weight:600;margin:0 0 6px}
+  p{margin:0 0 13px} a{color:var(--wire)}
+  code{font-family:var(--mono);font-size:.87em;background:var(--field);padding:.1em .36em;border-radius:3px;border:1px solid var(--hair-soft)}
+  strong{color:var(--ink);font-weight:600}
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--slate);margin:0 0 9px}
+  header.top{padding:50px 0 26px;border-bottom:1px solid var(--hair);margin-bottom:8px}
+  .lede{font-size:17px;line-height:1.55;max-width:64ch;margin:0}
+  section{padding-top:46px}
+  hr.rule{border:0;border-top:1px solid var(--hair);margin:46px 0 0}
+
+  .tag{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:3px;border:1px solid transparent;white-space:nowrap}
+  .tag.prod{color:var(--prod);background:var(--prod-soft);border-color:color-mix(in srgb,var(--prod) 28%,transparent)}
+  .tag.demo{color:var(--demo);background:var(--demo-soft);border-color:color-mix(in srgb,var(--demo) 30%,transparent)}
+  .tag.infra{color:var(--wire);background:var(--wire-soft);border-color:color-mix(in srgb,var(--wire) 28%,transparent)}
+  .tag.warn{color:var(--warn);background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+
+  .scroller{overflow-x:auto;margin:16px 0 0;border:1px solid var(--hair);border-radius:6px;background:var(--card)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  thead th{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--slate);text-align:left;font-weight:600;padding:9px 12px;border-bottom:1px solid var(--hair);background:var(--hair-soft);white-space:nowrap}
+  tbody td{padding:8px 12px;border-bottom:1px solid var(--hair-soft);vertical-align:top}
+  tbody tr:last-child td{border-bottom:0}
+  td.m,.m{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .nw{white-space:nowrap} .num{font-variant-numeric:tabular-nums;text-align:right}
+
+  pre{background:var(--field);border:1px solid var(--hair);border-radius:6px;padding:13px 15px;overflow-x:auto;font-family:var(--mono);font-size:12px;line-height:1.55;color:var(--ink);margin:12px 0}
+  pre .c{color:var(--slate)}
+  .mermaid{background:var(--card);border:1px solid var(--hair);border-radius:6px;padding:18px;margin:18px 0;overflow-x:auto}
+
+  .callout{border-left:3px solid;padding:11px 14px;border-radius:0 5px 5px 0;font-size:13.5px;line-height:1.55;margin:16px 0}
+  .callout.warn{border-color:var(--warn);background:var(--warn-soft);color:var(--ink)}
+  .callout.note{border-color:var(--wire);background:var(--wire-soft);color:var(--ink)}
+  .callout.demo{border-color:var(--demo);background:var(--demo-soft);color:var(--ink)}
+  .callout p{margin-bottom:7px}.callout p:last-child{margin-bottom:0}
+
+  ul.tight{margin:0 0 13px;padding-left:19px}ul.tight li{margin-bottom:5px}
+  .toc{position:sticky;top:0;z-index:10;display:flex;flex-wrap:wrap;gap:6px;background:color-mix(in srgb,var(--paper) 92%,transparent);backdrop-filter:blur(6px);border-bottom:1px solid var(--hair);padding:9px 0;margin-bottom:0}
+  .toc a{font-family:var(--mono);font-size:11px;text-decoration:none;color:var(--slate);border:1px solid var(--hair);border-radius:99px;padding:2px 9px}
+  .toc a:hover{color:var(--ink);background:var(--card)}
+  h2[id],h3[id]{scroll-margin-top:56px}
+  :where(a):focus-visible{outline:2px solid var(--wire);outline-offset:2px}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <p class="eyebrow">RAGStack · host: coconut · captured 2026-08-11 (was 2026-08-06)</p>
+  <h1>Architecture &amp; Operations</h1>
+  <p class="lede">
+    Every running service, its port, where its code and config live, how to restart it,
+    and the API it serves. Written for whoever has to keep this up at 3am.
+    <b>Since 2026-08-06, in order of how badly they bite:</b>
+    <code>:24020</code> is no longer a scratch process over someone else's data — the
+    <a href="#tenancy">asm tenant ADOPTED</a> the stores it was borrowing, so those instances
+    are now its own and the old &ldquo;not isolated&rdquo; row here would get you a bad decision;
+    a second corpus, <a href="#oa"><code>open-access</code></a>, is being ingested into them
+    (6.5M chunks and climbing toward ~47M);
+    and the tenant port manifest <a href="#layout">now exists</a>, contrary to what this page used to say.</p>
+</header>
+
+<nav class="toc">
+  <a href="#ports">Port map</a><a href="#proxy">Front proxy</a><a href="#state">State</a><a href="#tenancy">Tenancy</a><a href="#layout">/rag layout</a><a href="#oa">OA ingest</a><a href="#oneentry">One entry per store</a><a href="#readonly">Read-only guard</a>
+  <a href="#login">Sign-in</a><a href="#topology">Topology</a><a href="#api">API servers</a>
+  <a href="#stores">Data stores</a><a href="#models">Models</a><a href="#config">Config</a>
+  <a href="#startup">Startup</a><a href="#surface">API reference</a><a href="#cautions">Cautions</a>
+</nav>
+
+<section id="ports" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Look here first</p>
+    <h2>Port map</h2>
+    <p>Everything binds <code>0.0.0.0</code> unless noted. <span class="tag prod">prod</span> serves users;
+      <span class="tag demo">demo</span> is disposable; <span class="tag infra">infra</span> is shared by all of them.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Port</th><th>Service</th><th>Class</th><th>Serves</th><th>Code from</th></tr></thead>
+      <tbody>
+        <tr><td class="m nw">9000</td><td><b>Front proxy (nginx) — HTTP</b></td><td><span class="tag infra">infra</span></td><td>the front door for every route below</td><td>—</td></tr>
+        <tr><td class="m nw">9443</td><td><b>Front proxy (nginx) — HTTPS</b></td><td><span class="tag infra">infra</span></td><td>same routes; self-signed cert today</td><td>—</td></tr>
+        <tr><td class="m nw">8000</td><td>RAGStack API — ASM</td><td><span class="tag prod">prod</span></td><td class="m">ragstack_sfr_tok256</td><td class="m">/rag/repos</td></tr>
+        <tr><td class="m nw">8010</td><td>RAGStack API — Lucid</td><td><span class="tag prod">prod</span></td><td class="m">lucid_sfr_tok256</td><td class="m">/rag/repos</td></tr>
+        <tr><td class="m nw">8030</td><td>RAGStack API — Demo</td><td><span class="tag demo">demo</span></td><td class="m">demo_g1_sfr_tok512</td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">24000</td><td>RAGStack API — <b>lucid-next</b></td><td><span class="tag demo">demo</span></td><td class="m">lucid stores <em>(shared with prod)</em></td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">24020</td><td>RAGStack API — <b>asm-next</b></td><td><span class="tag demo">demo</span></td><td class="m">ASM stores <em>(shared with prod)</em></td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">24040</td><td>RAGStack API — <b>dev tenant</b></td><td><span class="tag demo">demo</span></td><td class="m">own stores — <b>isolated</b></td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">24041 / 24042</td><td>Qdrant — dev tenant (HTTP / gRPC)</td><td><span class="tag infra">infra</span></td><td>dev vectors <em>(dedicated)</em></td><td>—</td></tr>
+        <tr><td class="m nw">24043 / 24044</td><td>Elasticsearch — dev tenant</td><td><span class="tag infra">infra</span></td><td>dev BM25 <em>(dedicated)</em></td><td>—</td></tr>
+        <tr><td class="m nw">8090</td><td>dev UI (Vite, <code>--base</code>)</td><td><span class="tag demo">demo</span></td><td class="m">→ /ragstack/dev/api</td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">5210</td><td>demo UI (Vite, <code>--base</code>)</td><td><span class="tag demo">demo</span></td><td class="m">→ /ragstack/demo/api</td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">5211 / 5212</td><td>lucid-next / asm-next UI (Vite, <code>--base</code>)</td><td><span class="tag demo">demo</span></td><td class="m">→ :24000 / :24020</td><td class="m">~/Development</td></tr>
+        <tr><td class="m nw">5173 / 5175</td><td>legacy Explorer UIs</td><td><span class="tag demo">demo</span></td><td class="m">no <code>--base</code>; 403 behind the gateway</td><td class="m">/rag/repos · ~/Development</td></tr>
+        <tr><td class="m nw">8091</td><td>GoWe workflow engine</td><td><span class="tag infra">infra</span></td><td>CWL job execution</td><td class="m">/scout</td></tr>
+        <tr><td class="m nw">6333 / 6334</td><td>Qdrant #1 (HTTP / gRPC)</td><td><span class="tag infra">infra</span></td><td>ASM + demo vectors</td><td>—</td></tr>
+        <tr><td class="m nw">6343 / 6344</td><td>Qdrant #2 (HTTP / gRPC)</td><td><span class="tag infra">infra</span></td><td>Lucid vectors <em>(isolated)</em></td><td>—</td></tr>
+        <tr><td class="m nw">9200 / 9300</td><td>Elasticsearch 8.x</td><td><span class="tag infra">infra</span></td><td>BM25 for every collection</td><td>—</td></tr>
+        <tr><td class="m nw">9001–9006</td><td>vLLM × 6 — SFR-Embedding-Mistral</td><td><span class="tag infra">infra</span></td><td>embeddings, 4096-d</td><td>—</td></tr>
+        <tr><td class="m nw">50052</td><td>Cross-encoder sidecar</td><td><span class="tag infra">infra</span></td><td>reranking</td><td>—</td></tr>
+        <tr><td class="m nw">50053</td><td>Embedding sidecar (BGE)</td><td><span class="tag infra">infra</span></td><td>legacy 768-d path</td><td>—</td></tr>
+        <tr><td class="m nw">5432</td><td>PostgreSQL 16</td><td><span class="tag infra">infra</span></td><td>job store (optional backend)</td><td>—</td></tr>
+        <tr><td class="m nw">6379</td><td>Redis</td><td><span class="tag infra">infra</span></td><td>available, lightly used</td><td>—</td></tr>
+        <tr><td class="m nw">external</td><td><span class="m">mango.cels.anl.gov:8003</span> — Llama-4-Scout</td><td><span class="tag infra">infra</span></td><td>answer generation</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="callout warn">
+      <p><strong>Only :8000 and :8010 are production.</strong> Everything else runs from a
+      <em>developer working tree</em> and is restarted freely. Do not treat their uptime as an SLO — but
+      equally, do not <code>git checkout</code> in that tree while they serve, because they import from it
+      live and the Vite servers hot-reload from it.</p>
+      <p style="margin-bottom:0"><strong>Sharing a port range is not sharing data.</strong> Of the four
+      non-production APIs, only <code>:24040</code> (dev) has stores of its own. <code>lucid-next</code> and
+      <code>asm-next</code> are <em>parallel APIs over the production stores</em> — new code, same data. See
+      <a href="#tenancy">Tenancy</a> before assuming any of them is safe to write to.</p>
+    </div>
+
+    <h3 id="notrunning">Documented elsewhere, but not running</h3>
+    <p>The repo docs and compose files describe a fuller stack than what is actually deployed here. These
+      are <strong>not up</strong> on coconut, and nothing in the live path depends on them — do not
+      restart them chasing a docs mismatch:</p>
+    <ul class="tight">
+      <li><strong>Neo4j</strong> (7687 / 7474) — knowledge graph. The <code>/v1/graph/*</code> endpoints exist but have no backing store; treat them as unavailable.</li>
+      <li><strong>FAISS sidecar</strong> (50051) — superseded by Qdrant.</li>
+      <li><strong>Go API</strong> (8080) — Phase-1 scaffold, never deployed. Python is the only implementation in service.</li>
+      <li><strong>Docker Compose</strong> — this host runs processes and Apptainer directly, not the <code>deploy/docker-compose.*.yml</code> stack.</li>
+    </ul>
+    <p>The <strong>BGE embedding sidecar (50053) <em>is</em> up</strong>, but only as a legacy 768-d path.
+      No collection listed here uses it; all live collections are 4096-d SFR.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+
+<section id="proxy" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">The front door</p>
+    <h2>Front proxy</h2>
+    <p>One rootless nginx on <code>:9000</code> / <code>:9443</code> fronts every service on this host, so
+      external callers get one host, one port and one CORS policy instead of a dozen bare uvicorn and vLLM ports.
+      <strong>Prefer it over the bare ports for anything outside the machine.</strong></p>
+    <p class="note"><b>This page is not the authority on the proxy.</b> Routing tables, CORS, TLS, the rootless
+      Apptainer constraints, log rotation and its own gotcha list live in
+      <a href="https://claude.ai/code/artifact/9c1f85ea-c997-42a4-a10d-890ebb9010e1">coconut front proxy</a>.
+      Deliberately not duplicated here — two copies of a routing table drift, and the drifted one is always the
+      one someone reads at 2am.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <caption>Just enough to find your way</caption>
+      <thead><tr><th>Path</th><th>Goes to</th><th>Prefix</th></tr></thead>
+      <tbody>
+        <tr><td class="m nw">/ragstack/&lt;tenant&gt;/api/…</td><td>that tenant's API — <span class="m">asm 8000 · lucid 8010 · demo 8030 · dev 24040 · lucid-next 24000 · asm-next 24020</span></td><td>stripped</td></tr>
+        <tr><td class="m nw">/ragstack/&lt;tenant&gt;/ui/…</td><td>that tenant's Vite dev server</td><td><b>preserved</b></td></tr>
+        <tr><td class="m nw">/models/…</td><td>9001–9006, 50052, 50053, mango — allowlisted</td><td>—</td></tr>
+        <tr><td class="m nw">/gowe/…</td><td>GoWe on :8091</td><td>stripped</td></tr>
+        <tr><td class="m nw">/health</td><td>gateway liveness — does <em>not</em> probe upstreams</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p class="note warn"><b>Two live limits.</b> The three allowed browser origins are all <code>https://</code>,
+      and a page there cannot call <code>http://…:9000</code> at all — the browser blocks it before CORS runs. Those
+      callers need <code>:9443</code>, and a self-signed cert will not do for a background XHR. Separately,
+      <code>demo</code>, <code>dev</code>, <code>lucid-next</code> and <code>asm-next</code> are now served by
+      <code>--base</code>-aware Vite instances and work through the gateway; the legacy <code>:5173</code> /
+      <code>:5175</code> servers are not, and 403 or serve assets that 404 at the gateway root.</p>
+  </div>
+</section>
+
+<section id="state" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Read before touching anything</p>
+    <h2>State — the two halves are not the same software</h2>
+    <p>The four API servers no longer run the same code, and no longer share an authorization posture.
+      This is the single most important operational fact on this page.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Server</th><th>Checkout</th><th>Access control</th><th>Unauthenticated read</th></tr></thead>
+      <tbody>
+        <tr><td class="m nw">:8000 ASM</td><td class="m">/rag/repos/ragstack</td><td>none — pre-ADR-0003</td><td>allowed (non-admin)</td></tr>
+        <tr><td class="m nw">:8010 Lucid</td><td class="m">/rag/repos/ragstack</td><td>none — pre-ADR-0003</td><td>allowed (non-admin)</td></tr>
+        <tr><td class="m nw">:8030 demo</td><td class="m">dev checkout</td><td><b>ownership + shares + groups</b></td><td><b>401 — credential required</b></td></tr>
+        <tr><td class="m nw">:24000 lucid-next</td><td class="m">dev checkout</td><td><b>ownership + shares + groups</b></td><td><b>401 — credential required</b></td></tr>
+        <tr><td class="m nw">:24020 asm-next</td><td class="m">dev checkout</td><td><b>ownership + shares + groups</b></td><td><b>401 — credential required</b></td></tr>
+        <tr><td class="m nw">:24040 dev</td><td class="m">dev checkout</td><td><b>ownership + shares + groups</b></td><td><b>401 — credential required</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p><b>The production checkout is on an unmerged branch</b> (<code>fix/es-keyword-ignore-above-and-drain-completeness</code>).
+      Its ES <code>ignore_above</code> guard and embed-pool routing fixes are load-bearing for the bulk ingest, so
+      <code>git checkout main</code> there would be a regression, not an upgrade. The four fixes worth keeping have been
+      cherry-picked to <code>main</code>; the embed-pool routing has not, and needs an ingest/query bulkhead first.</p>
+    <div class="callout warn">
+      <p><b>CORRECTION — a bearer identity CAN now be an admin.</b> This page previously said a bearer
+      identity was hardcoded to <code>user</code> and could <em>never</em> be admin, and that “an admin is
+      always an API key.” That stopped being true on 2026-08-06. Anyone who planned around the old
+      sentence should re-read <a href="#tenancy">Tenancy</a>.</p>
+      <p style="margin-bottom:0">The hardcoding was deliberate, and so is its removal. Production sets
+      <code>DEFAULT_ROLE=admin</code>, so letting a bearer identity fall through to the default would have
+      made every authenticated user a superuser. A bearer identity is now admin only when an
+      <em>explicit server-side source</em> names it: the <code>ADMIN_SUBJECTS</code> env allowlist, or a
+      stored <code>users.role</code> written through <code>PATCH /v1/admin/users/{subject}/role</code>.
+      Nothing that travels with the credential is an input, so a token cannot elevate itself, and the
+      store read fails <b>closed</b> — an outage withholds admin rather than granting it.</p>
+    </div>
+    <p><b>Every non-production API requires a credential.</b> Each has an admin key and a user key;
+      <code>DEFAULT_ROLE</code> is <code>user</code> there, so an unmapped caller is never an admin. Keys are
+      mode-600 files under <code>/rag/data/migration-2026-08-05/</code>, alongside the migration playbook and
+      the rollback snapshots.</p>
+    <p><b>A bearer admin reaches every <code>/v1/admin/*</code> route</b>, including service-account
+      registration — <code>require_role</code> tests the principal's role, not which credential produced it.
+      There is also no “disable this person” lever: the disabled-account gate runs only on the API-key path.
+      Stopping a bearer admin means revoking the stored role (bounded by the role-cache TTL, per worker), an
+      env edit plus restart, or revoking the identity at its issuer.</p>
+    <p><b>Each migrated tenant has its own ACL database</b> (<code>users</code>, <code>shares</code>, <code>groups</code>,
+      <code>group_members</code>) under its own state directory — per ADR-0005 the schema is shared, the instance is not.
+      Back it up with the stores: a lost ACL database means orphaned collections nothing can reach.</p>
+    <p class="note"><b>The demo's BM25 was in memory until 2026-08-05</b> and is gone; its vectors survive in Qdrant, so the
+      text side can be rebuilt from payloads. <code>TEXT_BACKEND</code> is now <code>elasticsearch</code> there.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="tenancy" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Which APIs share data</p>
+    <h2>Tenancy — isolated, or merely separate?</h2>
+    <p>ADR-0005 defines a tenant as one API endpoint plus <em>dedicated</em> stateful stores. Exactly one
+      deployment on this host currently meets that definition. The rest are separate <em>processes</em> over
+      shared <em>data</em>, which is a different and much weaker thing.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Tenant / API</th><th>Qdrant</th><th>Elasticsearch</th><th>Vector bytes live in</th><th>Text bytes live in</th><th>Exclusive?</th></tr></thead>
+      <tbody>
+        <tr><td class="m nw"><b>asm</b> · :24020<br><span class="m" style="color:var(--slate)">(+ :8000 prod door)</span></td><td class="m">6333</td><td class="m">9200</td><td class="m">/rag/data/qdrant <span class="num">815G</span></td><td class="m">the :9200 instance</td><td><b>adopted</b> — see below</td></tr>
+        <tr><td class="m nw"><b>lucid</b> · :24000<br><span class="m" style="color:var(--slate)">(+ :8010 prod door)</span></td><td class="m">6343</td><td class="m"><b>24003</b></td><td class="m">/rag/data/qdrant2 <span class="num">145G</span></td><td class="m">/rag/data/tenants/lucid/elasticsearch <span class="num">3.6G</span></td><td>text yes, vectors adopted</td></tr>
+        <tr><td class="m nw"><b>dev</b> · :24040</td><td class="m"><b>24041</b></td><td class="m"><b>24043</b></td><td class="m">/rag/data/tenants/dev/qdrant <span class="num">515M</span></td><td class="m">/rag/data/tenants/dev/elasticsearch <span class="num">48M</span></td><td><b>yes</b> — the reference shape</td></tr>
+        <tr><td class="m nw"><b>demo</b> · :8030</td><td class="m">6333</td><td class="m">9200</td><td class="m">the :6333 instance</td><td class="m">the :9200 instance</td><td>no — co-tenant, on the exit list</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <h3 id="es-separation">How collections are separated in Elasticsearch</h3>
+    <p><b>One index per collection.</b> A collection's ES index name rides on its physical collection
+      name (<code>CollectionSpec.es_index</code>), so each corpus gets its own index —
+      <code>lucid_sfr_tok256</code>, <code>ragstack_sfr_tok256</code>, <code>demo_g1_sfr_tok512</code>
+      and so on. <b>Inside</b> an index, the boundary is a <code>tenant_id</code> filter, and it is
+      enforced rather than advisory: <code>search</code> refuses a query whose <code>tenant_id</code>
+      filter is empty instead of defaulting to everything.</p>
+    <p>This is why the one-entry-per-store rule compares <em>both</em> legs. Two registry ids sharing an
+      ES index are the same two-ACLs-over-one-dataset defect as sharing a Qdrant collection; a
+      hand-authored spec could arrange exactly that until 2026-08-06.</p>
+    <p class="note warn"><b>Index separation is not process separation.</b> Every index above lives in
+      <em>one</em> Elasticsearch on <code>:9200</code>, shared by both production tenants. An index name
+      is a value in a request, not a boundary anything enforces below the application — and this ES has
+      no authentication. Anything that can reach <code>:9200</code> can read any index.
+      <code>dev</code> is the only deployment whose text leg is its own process.</p>
+
+    <div class="callout warn">
+      <p><b>What <code>:8020</code> taught us, and why it is gone.</b> The “Unified Explorer” pointed at
+      ASM's Qdrant, ASM's ES index <em>and</em> the shared manifest directory. So it listed ASM's collections
+      — which is how this was noticed — but the real problem was the other direction: it was a
+      <b>writable</b> API over production data, sitting outside the read-only guard that protects the
+      <code>asm</code> route. The guard locked the front door while this was an unlocked side door into the
+      same room. It was stopped on 2026-08-06 and nothing routes to it.</p>
+      <p style="margin-bottom:0">The general lesson is worth more than the incident: <b>a read-only guard on
+      a route is only as good as the set of routes that reach the store.</b> Before trusting one, enumerate
+      every process that can write to the data, not every path that is guarded.</p>
+    </div>
+
+    <h3>Provisioning a tenant</h3>
+    <p><code>apptainer/new-tenant.sh &lt;name&gt; --start</code> creates the per-tenant directory tree, a
+      dedicated Qdrant and Elasticsearch, a generated <code>tenant.env</code>, and <code>bin/up.sh</code> /
+      <code>bin/down.sh</code>. It is idempotent, and <code>--dry-run</code> touches nothing.</p>
+    <p class="note warn"><b>Port allocation needs an explicit base today.</b> The allocator's manifest
+      (<code>$RAG_DATA/tenants/manifest.tsv</code>) <b>does not exist</b> on this host: the
+      <code>lucid</code> and <code>asm</code> tenant directories were created before it, so the script has no
+      record of <code>24000</code>/<code>24020</code>. It probes live ports and <em>refuses</em> rather than
+      allocating a colliding block — good — but that means every new tenant needs
+      <code>TENANT_PORT_BASE=&lt;free base&gt;</code> until those two are reconciled into a manifest.
+      <code>dev</code> was provisioned at <code>24040</code> this way.</p>
+    <p class="note"><b>A fresh tenant is not empty-looking.</b> It boots with one collection named
+      <code>default</code>, whose label is a <em>derived</em> physical store name
+      (<code>ragstack_&lt;model&gt;_&lt;dim&gt;_&lt;hash&gt;</code>) with <code>count: 0</code>. Two things
+      combine: the served collection name is content-addressed from the build spec, and the API creates
+      that Qdrant collection eagerly at startup so the first request cannot race. Because the name is
+      deterministic, the same build spec yields the same name on every instance — <b>identical names on
+      two Qdrants are not shared data.</b></p>
+  </div>
+</section>
+
+<div class="col">
+    <h3 id="adoption">Exclusive ownership by ADOPTION — ADR-0005 decision 7</h3>
+    <p><b>The asm tenant's stores are the existing Qdrant <code>:6333</code> and Elasticsearch
+      <code>:9200</code></b> — not the empty per-tenant instances the provisioning script stamped out
+      (<code>/rag/data/tenants/asm/{qdrant,elasticsearch}</code> are 12K and 16K placeholders, and stay
+      dormant). ADR-0005's boundary test is <em>data at rest</em>, and the data at rest on those instances
+      is asm's: three corpora, 40.4M points, 58 GB of text index. Standing up fresh stores would have meant
+      moving all of it to satisfy a naming convention.</p>
+    <p>Adoption inverts the cost. The data stays; what remains is a <b>decommission list</b> of co-tenants,
+      each with a defined exit. <b>The store inventory is the progress meter</b> — adoption is COMPLETE when
+      every store on these instances shows exactly one owner:</p>
+    <div class="scroller"><table>
+      <thead><tr><th>Co-tenant still on the adopted stores</th><th>Exits when</th></tr></thead>
+      <tbody>
+        <tr><td class="m">lucid_sfr_tok256 (text leg, on :9200)</td><td>the legacy <code>:8010</code> door retires — pending lucid web-team sign-off</td></tr>
+        <tr><td class="m">demo's stores</td><td>demo repoints to its own (it now has a manifest row, <code>24060</code>) or retires</td></tr>
+        <tr><td class="m">chunkcmp_* · oa_smoke_* (eval residue)</td><td>deleted per the store inventory — #299</td></tr>
+        <tr><td class="m">ragstack_sfr · …928f8ebe (KEEP rollback pair)</td><td>operator decision after the old <code>:8000</code> door closes</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note" style="margin-top:12px"><b>Two front doors on one tenant's data is the transition state,
+      not a defect.</b> <code>:8000</code> (pre-ADR-0003, no access control) and <code>:24020</code>
+      (ownership + shares) both serve asm. The old door closes when its consumers move.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="layout" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Where things are on disk</p>
+    <h2>The <code>/rag</code> layout</h2>
+    <p>One filesystem (<code>/dev/mapper/vg1-rag</code>, 3.9 TB). Everything a tenant owns is under its own
+      directory; the two big shared Qdrant instances predate the tenant tree and are adopted in place
+      rather than moved.</p>
+<pre>/rag
+├─ <b>data/tenants/</b>&lt;name&gt;/          <span class="c"># one dir per tenant — the unit you back up</span>
+│    ├─ config/tenant.env       <span class="c"># the ONE operator-editable file (mode 600: keys, role maps)</span>
+│    ├─ state/                  <span class="c"># collections.db (registry) · acl.db (users/shares/groups) · jobs</span>
+│    ├─ manifests/              <span class="c"># provenance per store — arms the ADR-0002 build-spec guard</span>
+│    ├─ qdrant/ · elasticsearch/<span class="c"># per-tenant store data — EMPTY for asm (adopted, see above)</span>
+│    ├─ ingest/                 <span class="c"># INGEST_ROOT, confined to the tenant</span>
+│    └─ bin/up.sh · down.sh     <span class="c"># derived; regenerated by new-tenant.sh, do not edit</span>
+├─ data/tenants/manifest.tsv    <span class="c"># port allocator: lucid 0 24000 · asm 1 24020 · dev 2 24040 · demo 3 24060</span>
+├─ <b>data/qdrant/</b>   815G           <span class="c"># the :6333 instance — ASM tenant's adopted vector store</span>
+├─ <b>data/qdrant2/</b>  145G           <span class="c"># the :6343 instance — Lucid's vectors</span>
+├─ config/                      <span class="c"># PRE-TENANT configs: unified.env · lucid.env · *.collections.json</span>
+├─ repos/ragstack               <span class="c"># the PRODUCTION checkout (:8000 / :8010 only)</span>
+├─ envs/ragstack                <span class="c"># python3.12 + deps — bulk tools run from here, not conda</span>
+├─ cache/                       <span class="c"># HF_HOME — tokenizers; a tool without it silently degrades</span>
+├─ oa/       294G               <span class="c"># the PubMed Central OA harvest (corpus/ + scripts/ + plan)</span>
+└─ ingest/    52G               <span class="c"># derived shard plans + run state (asm-run/ledger.jsonl)</span></pre>
+    <div class="callout note">
+      <p style="margin-bottom:0"><b>The port manifest exists now.</b> This page previously said it did not,
+      and that every new tenant needed an explicit <code>TENANT_PORT_BASE</code>. It was reconciled on
+      2026-08-05 and gained a <code>demo</code> row on 2026-08-11. The allocator reuses existing rows
+      verbatim, so re-runs and restarts never move a tenant's ports.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="oa" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">In progress · started 2026-08-09</p>
+    <h2>The open-access corpus and its ingest plane</h2>
+    <p>A second corpus is being ingested into the asm tenant: <b>PubMed Central open access</b>, 1.44M
+      JATS XML articles harvested to <code>/rag/oa/corpus</code> (191 GB, hash-fanned, 0 missing / 0 hash
+      mismatches at verify). It becomes the <b>second-largest collection on <code>:6333</code></b>.</p>
+    <div class="scroller"><table>
+      <thead><tr><th>Stage</th><th>Tool</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>0 · register</td><td class="m">POST /v1/collections</td><td><b>first, not last</b> — a bulk writer refuses a <code>--collection-id</code> the registry does not hold (#263). The physical name is server-minted.</td></tr>
+        <tr><td>1 · exclude</td><td class="m">scan_notices.py</td><td>retraction is a SEPARATE article naming its target, so exclusion is two-hop: notice + the retracted original. 33,154 excluded of 1.44M.</td></tr>
+        <tr><td>2 · plan</td><td class="m">plan_shards.py</td><td><code>shard = sha1(pmcid) % N</code> — re-planning a growing corpus moves nothing. 2,048 shards, CV 4.3%.</td></tr>
+        <tr><td>3 · run</td><td class="m">gowe_batch_ingest.py</td><td>64-shard batches: submit → verify both legs → reclaim ~82 GB → next. Resumable ledger; re-attaches on timeout.</td></tr>
+        <tr><td>4 · per batch</td><td class="m">jats-ingest.cwl</td><td>two TOP-LEVEL scatters (extract-all → embed-all), then one load. ~6.0 h/batch measured.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="callout warn">
+      <p><b>Never scatter over a sub-workflow on this GoWe.</b> The chained
+      <code>scatter(extract → embed)</code> shape is prettier dataflow and it cost a day:
+      <code>dispatchScatterSubWorkflow</code> executes children <em>strictly serially, inline in the
+      scheduler loop</em>, so it runs at 1/N speed, <b>blocks every other submission on the engine</b> for
+      its duration, and cannot be stopped — cancelling the parent is ignored between iterations and a
+      cancelled child finalizes in a state the loop reads as success. Only a server restart stops it.
+      Handoff spec with a self-contained reproducer: <b>GoWe#164</b>. Use flat top-level scatters.</p>
+      <p style="margin-bottom:0"><b>Qdrant needs a <code>doc_id</code> payload index.</b>
+      <code>index_chunks</code> delete-priors per document; unindexed, every delete is a full collection
+      scan — a load past ~150k points ground to <b>~1 delete/s</b> and looked like a network hang. Creating
+      the index live took the same load to ~125/s. <code>ensure_collection</code> now creates it and
+      back-fills existing collections at boot (#307).</p>
+    </div>
+    <p class="note"><b>Payload shape differs per leg.</b> Qdrant payloads are FLAT
+      (<code>content_type</code>); Elasticsearch nests under <code>metadata.*</code>
+      (<code>metadata.content_type</code>). A filter that works on one leg silently matches nothing on the
+      other. The JATS records carry <code>content_type</code> = <code>article</code> | <code>table</code> |
+      <code>figure</code>, which is what makes &ldquo;filter to data tables&rdquo; answerable — it survives
+      to the chunk payload only because <code>JsonlLoader</code> gained an opt-in metadata pass-through.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="oneentry" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Fixed 2026-08-06 · #275</p>
+    <h2>A physical index has exactly one registry entry</h2>
+    <p>Access control is asserted at the <em>collection</em> (ADR-0003). So two registry ids over one
+      physical store are <b>two independent ACLs over one dataset</b>: revoking a grant on one id leaves
+      the same bytes readable through the other. An owner who un-publishes a corpus has not un-published
+      it.</p>
+  </div>
+  <div class="col">
+    <p>The registry used to <em>synthesise</em> an entry called <code>default</code> from the top-level
+      settings and then append every configured spec. Where a spec named the same store — the ordinary
+      shape for <code>QDRANT_COLLECTION_EXPLICIT</code> plus a matching spec — the same corpus was served
+      under two ids. That was live on <code>lucid-next</code>, and the 21-second window in which one id was
+      un-published while the other still served the same 1.5M-point corpus is in that tenant's share audit
+      trail.</p>
+    <p><b>What changed.</b> The derived entry is created only when no spec claims its store; two specs may
+      not claim one store; a spec claiming only <em>one</em> of the two legs is a startup error rather than
+      a silent suppression (suppressing left the other store served by no entry, hence governed by no ACL);
+      and <code>default</code> is a reserved, uncreatable id naming the <b>pointer</b>
+      (<code>DEFAULT_COLLECTION_ID</code>).</p>
+    <div class="callout warn">
+      <p><b>“Is the default” and “is the legacy shared surface” are different questions.</b> They used to be
+      one flag, because the pointer could only ever name the settings-derived entry. The <em>surface</em>
+      carries two authz exemptions — no share-based scope widening, and <code>read</code>-not-<code>write</code>
+      on the omitted-collection ingest and document-delete paths — because there per-chunk
+      <code>tenant_id</code> is the isolation. Letting those follow the pointer would let any <b>reader</b>
+      of an owned collection write to it by omitting <code>collection</code>. Separate flags now; see
+      ADR-0002 decision 5.</p>
+    </div>
+    <p class="note warn"><b>Upgrade consequence, observed on <code>lucid-next</code>.</b> After restart the
+      id <code>default</code> <em>ceases to exist</em> there: a request naming it explicitly 404s, and its
+      two ACL rows (<code>lucid</code> owner, <code>public</code> read) are left <b>orphaned and active</b>.
+      They are inert — nothing reads them — but they mean any revocation an operator recorded against
+      <code>default</code> is silently discarded, and the reverse: a corpus un-published on <code>default</code>
+      alone is now published. Reconciling them is the migration script (#276), which needs ownership
+      transfer (#280) first.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="login" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Who you are</p>
+    <h2>Signing in</h2>
+    <p>The UI has a sign-in page with a provider dropdown, and the header shows the identity
+      <em>the server reported</em> — never a name read out of the pasted token.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Provider</th><th>How</th><th>State</th></tr></thead>
+      <tbody>
+        <tr><td>BV-BRC</td><td>username + password, or paste a <code>p3-login</code> token</td><td><b>working</b></td></tr>
+        <tr><td>API key</td><td>a configured key — a tenant, not a person</td><td><b>working</b></td></tr>
+        <tr><td>Google / OIDC</td><td>authorization code + PKCE redirect</td><td>listed, <b>disabled</b> — browser half not built</td></tr>
+        <tr><td>MG-RAST</td><td>—</td><td>absent: no password exchange upstream, <em>and</em> no provider to verify its token here</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p><b>The password never reaches RAGStack.</b> The browser posts it straight to
+      <code>user.patricbrc.org/authenticate</code> and receives the same signed token
+      <code>p3-login</code> writes. That is possible because BV-BRC echoes the caller's Origin and its
+      preflight allows the POST. A server-side pass-through would have been easier and strictly worse — it
+      would put user passwords through a service with no business holding them and make the request logs
+      credential-bearing. <b>The API has no endpoint that accepts a password and must never gain one.</b></p>
+    <p>The token is stored in <code>localStorage</code> <em>bound to the backend it was confirmed for</em>,
+      and that binding is enforced when each request's header is built, not in UI state. A BV-BRC token has
+      no audience claim and cannot be revoked before it expires, so sending it to a backend the user never
+      confirmed would hand over their whole BV-BRC session.</p>
+    <div class="callout warn">
+      <p style="margin-bottom:0"><b>Password sign-in requires HTTPS, and today that means a self-signed
+      cert.</b> On a plaintext page an on-path attacker can rewrite the form before it renders — posting to
+      the provider over TLS is no defence when the attacker replaced the code doing the posting. The UI
+      therefore refuses to reassure on an insecure origin: it shows a red warning and points at the token
+      paste instead. <code>http://localhost:9000</code> is fine (browsers treat localhost as secure);
+      <code>http://coconut.cels.anl.gov:9000</code> is not. <code>:9443</code> works but its certificate is
+      self-signed, and training people to click through a certificate warning <em>before typing a
+      password</em> is its own bad habit. <b>A real certificate is what makes this feature safe to use.</b></p>
+    </div>
+    <p class="note">Bearer sign-in only works where <code>IDENTITY_PROVIDER</code> is set. It is on for
+      <code>demo</code> and <code>dev</code>; on <code>lucid-next</code> and <code>asm-next</code> it is
+      unset, so the <code>Authorization</code> header is not an authentication input at all and a token
+      request 401s. That is the usual cause of “I signed in and it says I'm not signed in.”</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="readonly" style="padding-top:34px">
+  <div class="col">
+    <p class="eyebrow">Migration safety</p>
+    <h2>The gateway refuses writes to asm and lucid</h2>
+    <p>While the production tenants are being migrated, the front proxy returns <b>403</b> to API calls that
+      would mutate them — before authentication, so it does not depend on the app being correct.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Request</th><th>asm / lucid</th><th>everything else</th></tr></thead>
+      <tbody>
+        <tr><td class="m nw">POST /v1/query · /v1/retrieve</td><td><b>200</b></td><td>200</td></tr>
+        <tr><td class="m nw">POST /v1/ingest</td><td><b>403</b></td><td>allowed</td></tr>
+        <tr><td class="m nw">POST/PUT/PATCH/DELETE /v1/collections</td><td><b>403</b></td><td>allowed</td></tr>
+        <tr><td class="m nw">PUT/PATCH/DELETE /v1/documents</td><td><b>403</b></td><td>allowed</td></tr>
+        <tr><td class="m nw">POST/PUT/PATCH/DELETE /v1/admin · /v1/jobs</td><td><b>403</b></td><td>allowed</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <p><b>Path-based, not method-based — and that distinction is the whole design.</b>
+      <code>POST /v1/query</code> and <code>POST /v1/retrieve</code> are reads that happen to be POSTs. A
+      method-based rule would have returned 403 for both and taken every consuming service offline. The map
+      matches method <em>and</em> path, and query/retrieve are deliberately absent from it.</p>
+    <p class="note warn"><b>What this does not cover.</b> It is a gateway guard, not authorization. The API
+      ports still bind <code>0.0.0.0</code>, so anything on the host can bypass it entirely; and the bulk
+      ingest CLI writes to Qdrant directly, never touching the API. Binding those ports to localhost is a
+      production restart and belongs in the cutover window.</p>
+  </div>
+</section>
+
+<section id="topology">
+  <div class="col">
+    <p class="eyebrow">What talks to what</p>
+    <h2>Topology</h2>
+  </div>
+  <pre class="mermaid">
+graph TB
+    subgraph clients["Clients"]
+      UI1["dev UI :8090"]
+      UI2["demo UI :5210"]
+      CLA["Claude / MCP"]
+    end
+    subgraph api["RAGStack API servers"]
+      P1["ASM :8000 · prod door"]
+      P2["Lucid :8010 · prod door"]
+      A1["asm :24020 · tenant"]
+      L1["lucid :24000 · tenant"]
+      D2["Demo :8030"]
+      D3["dev :24040 · tenant"]
+    end
+    subgraph asmT["asm tenant — ADOPTED stores"]
+      Q1[("Qdrant :6333<br/>/rag/data/qdrant 815G<br/>tok256 · tok512 · semantic<br/>+ open-access")]
+      ES[("Elasticsearch :9200<br/>all of the above<br/>+ co-tenants exiting")]
+    end
+    subgraph lucidT["lucid tenant"]
+      Q2[("Qdrant :6343<br/>/rag/data/qdrant2 145G")]
+      EL[("ES :24003<br/>tenants/lucid/elasticsearch")]
+    end
+    subgraph devT["dev tenant — fully own"]
+      QD[("Qdrant :24041")]
+      ED[("ES :24043")]
+    end
+    subgraph models["Model serving"]
+      EMB["vLLM x6 :9001-9006<br/>SFR-Embedding 4096d"]
+      RR["Cross-encoder :50052"]
+      LLM["Llama-4-Scout<br/>mango:8003"]
+    end
+    GW["GoWe :8091<br/>group: ragstack x4"]
+
+    UI1 --> D3
+    UI2 --> D2
+    CLA --> D2
+    P1 --> Q1
+    P1 --> ES
+    A1 --> Q1
+    A1 --> ES
+    P2 --> Q2
+    P2 --> ES
+    L1 --> Q2
+    L1 --> EL
+    D2 --> Q1
+    D2 --> ES
+    D3 --> QD
+    D3 --> ED
+    A1 --> EMB
+    P1 --> EMB
+    D3 --> EMB
+    GW -->|"OA bulk ingest"| Q1
+    GW --> ES
+    GW --> EMB
+  </pre>
+  <div class="col">
+    <p><strong>The subgraphs are the tenant boundaries</strong>, and they no longer line up with
+    &ldquo;one process, one store&rdquo;. <code>asm</code> owns <code>:6333</code>/<code>:9200</code> by
+    adoption and is served by two doors (<code>:8000</code> pre-ADR-0003, <code>:24020</code> with access
+    control) while the old one retires. <strong>Lucid now has its own Elasticsearch</strong> on
+    <code>:24003</code> — the vector-only caveat this page used to carry is fixed; only its vectors still
+    sit on a shared instance (<code>:6343</code>, which nothing else uses). <code>demo</code> is the last
+    real co-tenant on asm's stores.</p>
+    <p><strong>dev is the only fully isolated deployment</strong> — its own Qdrant <em>and</em> its own
+    Elasticsearch. It is the first thing on this host that matches ADR-0005's definition of a tenant.</p>
+    <p>Every API embeds against the <em>same</em> six vLLM replicas, so a bulk ingest and a live query
+    compete for the same GPUs. Isolating data does not isolate compute, and was never meant to.</p>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="api">
+  <div class="col">
+    <p class="eyebrow">Service by service</p>
+    <h2>API servers</h2>
+    <p>All four are the same FastAPI app (<code>ragstack.api.main:app</code>) under uvicorn, differing only
+      by environment. Health is <code>GET /health</code> — <strong>not</strong> <code>/v1/health</code>.</p>
+  </div>
+
+  <div class="scroller">
+    <table>
+      <thead><tr><th>:8000 ASM</th><th>:8010 Lucid</th><th>:8030 Demo</th><th>:24040 dev</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><span class="tag prod">prod</span></td><td><span class="tag prod">prod</span></td>
+          <td><span class="tag demo">demo</span></td><td><span class="tag demo">demo</span></td>
+        </tr>
+        <tr class="m">
+          <td>Qdrant :6333</td><td>Qdrant <strong>:6343</strong></td><td>Qdrant :6333</td><td>Qdrant <strong>:24041</strong></td>
+        </tr>
+        <tr class="m">
+          <td>ES :9200</td><td>ES :9200</td><td>ES :9200</td><td>ES <strong>:24043</strong></td>
+        </tr>
+        <tr class="m">
+          <td>ragstack_sfr_tok256</td><td>lucid_sfr_tok256</td><td>demo_g1_sfr_tok512</td><td>empty (derived default)</td>
+        </tr>
+        <tr class="m">
+          <td>inline env only</td><td>/rag/config/lucid.env</td><td>inline env</td><td>tenants/dev/config/tenant.env</td>
+        </tr>
+        <tr class="m">
+          <td>role: default<br/>keyless</td><td>role: user<br/>API keys set</td><td><strong>keys required</strong><br/>DEFAULT_ROLE=user</td><td><strong>keys required</strong><br/>DEFAULT_ROLE=user<br/>IDENTITY_PROVIDER=bvbrc</td>
+        </tr>
+        <tr class="m">
+          <td>rerank on · no LLM</td><td>no LLM</td><td>rerank on · LLM · DOI enrich</td><td>rerank on · LLM</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <div class="callout warn">
+      <p><strong>:8000 has no config file.</strong> It runs from inline shell environment on its launch
+      command line. If it is ever restarted without those variables it will come up pointed at the wrong
+      collection. Its full launch line is in the restore runbook — <em>capture it before you kill it.</em></p>
+      <p style="margin-bottom:0"><strong>Every non-production API requires a credential</strong> (migrated
+      2026-08-05): <code>DEFAULT_ROLE=user</code>, one admin key and one user key each, unauthenticated
+      requests get 401. They are also the only servers running the access-control code — see
+      <a href="#state">State</a>. :8000 and :8010 remain keyless and pre-ADR-0003.
+      <code>:24040</code> is the first whose config lives in a generated <code>tenant.env</code> rather than
+      inline environment, which is also the first time bearer sign-in survives a restart.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="stores">
+  <div class="col">
+    <p class="eyebrow">Where the data is</p>
+    <h2>Data stores</h2>
+    <p>Every collection exists twice: dense vectors in Qdrant, BM25 in an Elasticsearch index of the
+      <em>same name</em>. Retrieval fuses both legs with RRF, so losing one index silently halves recall
+      rather than erroring.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Qdrant collection</th><th class="num">Points</th><th class="num">Segs</th><th>Instance</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="m">ragstack_sfr_tok256</td><td class="num">24,830,600</td><td class="num">99</td><td class="m">:6333</td><td>ASM prod · fixed_token 256/32</td></tr>
+        <tr><td class="m">ragstack_sfr_tok512</td><td class="num">12,587,981</td><td class="num">51</td><td class="m">:6333</td><td>ASM · fixed_token 512/64</td></tr>
+        <tr><td class="m">ragstack_sfr_semantic</td><td class="num">2,982,219</td><td class="num">13</td><td class="m">:6333</td><td>ASM · semantic</td></tr>
+        <tr><td class="m">lucid_sfr_tok256</td><td class="num">—</td><td class="num">—</td><td class="m">:6343</td><td>Lucid prod · isolated instance</td></tr>
+        <tr><td class="m">ragstack_salesforce_…_928f8ebe</td><td class="num">877,343</td><td class="num">8</td><td class="m">:6333</td><td>older eval corpus — retain</td></tr>
+        <tr><td class="m">chunkcmp_{fixed,sentence,semantic}</td><td class="num">~70k</td><td class="num">7–8</td><td class="m">:6333</td><td>chunking benchmark artifacts</td></tr>
+        <tr><td class="m">demo_g1_sfr_tok512</td><td class="num">1,410</td><td class="num">8</td><td class="m">:6333</td><td><span class="tag demo">demo</span> disposable</td></tr>
+        <tr><td class="m">ragstack_lib_open_access_…</td><td class="num">2,492</td><td class="num">8</td><td class="m">:6333</td><td><span class="tag demo">demo</span> disposable</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="callout note">
+      <p style="margin-bottom:0"><strong>VMA budget.</strong> Qdrant consumes roughly 1,140 virtual memory
+      areas per million points. <code>vm.max_map_count</code> is currently <strong>262,144</strong> (raised
+      after an exhaustion incident); instance&nbsp;#1 uses ~60k of it. Bulk rebuilds transiently double-map
+      during segment merges — that transient is what caused the original outage. Check headroom before any
+      large ingest.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="models">
+  <div class="col">
+    <p class="eyebrow">Model serving</p>
+    <h2>Embedding, reranking, generation</h2>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Role</th><th>Model</th><th>Endpoint</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Embedding</td><td class="m">Salesforce/SFR-Embedding-Mistral</td><td class="m">:9001–9006</td><td>4096-d. 6 replicas, client-side fan-out with least-in-flight routing.</td></tr>
+        <tr><td>Reranking</td><td class="m">cross-encoder sidecar</td><td class="m">:50052</td><td>Off by default; on for :8000, :8030, :24040.</td></tr>
+        <tr><td>Generation</td><td class="m">Llama-4-Scout-17B-FP8</td><td class="m">mango:8003</td><td><strong>External host.</strong> Used by the non-production APIs only.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="callout note">
+      <p style="margin-bottom:0"><strong>The embedding model is immutable per collection.</strong> A
+      collection's identity is <code>(model, dim, chunker)</code>. You cannot re-point an existing
+      collection at a different embedder — the stored vectors would be incomparable. Changing it means a
+      new collection and a full re-ingest. As of the latest build the API enforces this with a
+      <strong>409</strong> rather than silently appending incoherent data.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="config">
+  <div class="col">
+    <p class="eyebrow">Configuration</p>
+    <h2>Files and precedence</h2>
+    <p>Config is environment variables. Files under <code>/rag/config/</code> are sourced into the shell
+      before launch — they are not read by the app directly.</p>
+  </div>
+  <div class="scroller">
+    <table>
+      <thead><tr><th>File</th><th>Used by</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td class="m">rag.env</td><td>all (base)</td><td><code>RAG_DATA</code>, <code>RAG_IMAGES</code>, <code>HF_HOME</code></td></tr>
+        <tr><td class="m">lucid.env</td><td class="m">:8010</td><td>Qdrant :6343, API keys <span class="tag warn">secrets</span>, <code>INGEST_ROOT</code></td></tr>
+        <tr><td class="m">tenants/&lt;name&gt;/config/tenant.env</td><td class="m">:24040 (dev)</td><td><b>generated</b> by <code>new-tenant.sh</code>; operator-editable, kept on re-runs. Stores, keys, identity provider, <code>ADMIN_SUBJECTS</code>.</td></tr>
+        <tr><td class="m">tenants/&lt;name&gt;/config/secrets.env</td><td class="m">:24040 (dev)</td><td>generated once, never regenerated <span class="tag warn">secrets</span></td></tr>
+        <tr><td class="m">unified.env <em>(orphaned)</em></td><td class="m">— was :8020</td><td>kept for reference; its server is gone</td></tr>
+        <tr><td class="m">demo.collections.json</td><td class="m">:8030</td><td>demo collection registry</td></tr>
+        <tr><td class="m">lucid.collections.json</td><td class="m">:8010</td><td>lucid collection specs</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col">
+    <div class="callout warn">
+      <p><strong><code>lucid.env</code> contains live API keys.</strong> Mode is <code>0644</code>. Treat the
+      file as a secret; do not copy it into tickets, logs, or repos.</p>
+      <p style="margin-bottom:0"><strong>Sourcing gotcha:</strong> use <code>set -a; . file; set +a</code>.
+      Do <em>not</em> pipe through <code>xargs</code> — values containing JSON or spaces are mangled. And
+      <code>EMBEDDING_ENDPOINTS</code> must be a <strong>comma list</strong>, not a JSON array: shell
+      sourcing strips the quotes and the app then rejects it.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="startup">
+  <div class="col">
+    <p class="eyebrow">Operations</p>
+    <h2>Starting and stopping</h2>
+
+    <h3 id="stop">Stopping — by PID, never by pattern</h3>
+    <p>A <code>pkill -f "port 8030"</code> matches the shell running it and kills your own session. This
+      has happened repeatedly. Always resolve the PID first:</p>
+  </div>
+<pre><span class="c"># find it</span>
+ss -lntp | grep ':8030 '
+<span class="c"># stop it (SIGTERM; uvicorn drains)</span>
+kill &lt;pid&gt;</pre>
+
+  <div class="col">
+    <h3 id="restart-prod">Restarting a production API</h3>
+    <p><strong>Capture the running environment first</strong> — :8000 in particular has no config file, so
+      its settings exist only in the running process:</p>
+  </div>
+<pre>tr '\0' '\n' &lt; /proc/&lt;pid&gt;/environ | grep -E '^(QDRANT_|ELASTICSEARCH_|EMBEDDING_|CHUNK_|LLM_|INGEST_ROOT|DEFAULT_ROLE)='
+readlink /proc/&lt;pid&gt;/cwd</pre>
+
+  <div class="col">
+    <p>Then relaunch from the same working directory with the same variables. For file-configured servers:</p>
+  </div>
+<pre>cd /rag/repos/ragstack/python
+set -a; . /rag/config/lucid.env; set +a
+export HF_HOME=/rag/cache
+nohup /rag/envs/ragstack/bin/uvicorn ragstack.api.main:app \
+      --host 0.0.0.0 --port 8010 &gt;&gt; /rag/config/lucid.uvicorn.log 2&gt;&amp;1 &amp;</pre>
+
+  <div class="col">
+    <h3 id="verify">Verifying after a restart</h3>
+  </div>
+<pre>curl -s localhost:8010/health                 <span class="c"># {"status":"ok"}</span>
+curl -s localhost:8010/v1/stats/stores        <span class="c"># counts must match pre-restart</span>
+curl -s localhost:8010/v1/collections | jq '.collections[]|{id,count}'</pre>
+
+  <div class="col">
+    <div class="callout note">
+      <p style="margin-bottom:0"><strong>Python environment:</strong> <code>/rag/envs/ragstack</code>. It
+      holds an <em>editable install</em> pinned to <code>/rag/repos/ragstack/python</code>, so the
+      production servers import from that checkout regardless of your shell's cwd. The demo servers
+      override this with <code>PYTHONPATH</code>.</p>
+    </div>
+    <div class="callout warn">
+      <p style="margin-bottom:0"><strong>The production checkout is not on <code>main</code>.</strong>
+      <code>/rag/repos/ragstack</code> sits on a feature branch, ahead of <code>main</code> with unmerged
+      ingest work and well behind it otherwise. A naive <code>git checkout main</code> there
+      <em>discards</em> that work. A tagged pre-change commit exists as a revert anchor; see the restore
+      runbook in <code>docs/production-restore.md</code> before updating either prod server.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="surface">
+  <div class="col">
+    <p class="eyebrow">Interface</p>
+    <h2>API reference</h2>
+    <p>OpenAPI 3.1 source of truth: <code>contracts/openapi.yaml</code>. Live docs at
+      <code>/docs</code> on any server. Auth is <code>X-API-Key</code> where keys are configured;
+      bearer-token identity (BV-BRC / OIDC) exists behind a flag and is off by default.</p>
+    <p><small>* On the migrated servers only (<code>:8030</code>, <code>:24000</code>, <code>:24020</code>,
+      <code>:24040</code>). On <code>:8000</code> / <code>:8010</code>, which predate the access-control
+      work, collection create and delete are still admin-gated and there is no ownership. On the migrated
+      servers a bearer identity <strong>can</strong> be admin, but only by explicit server-side assignment —
+      see <a href="#state">State</a>.</small></p>
+  </div>
+
+  <div class="scroller">
+    <table>
+      <thead><tr><th>Method</th><th>Path</th><th>Role</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td class="m">GET</td><td class="m">/health</td><td>—</td><td>Liveness. Use this, not <code>/v1/health</code>.</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/health/deep</td><td>admin</td><td>Dependency checks with latencies</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/query</td><td>user</td><td><strong>Retrieval + generated answer</strong> with citations</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/retrieve</td><td>user</td><td>Ranked chunks only, no LLM</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/chunks</td><td>user</td><td>Fetch chunks by id (context expansion)</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/collections</td><td>user</td><td>List collections + counts + provenance</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/collections</td><td>user*</td><td>Create from the server-default build spec; supplying <code>embedding</code>/<code>chunk</code> is admin-only</td></tr>
+        <tr><td class="m">DELETE</td><td class="m">/v1/collections/{id}</td><td>owner*</td><td>Unregister; <code>?purge=true</code> also destroys data. Owner-or-admin</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/ingest</td><td>user</td><td>Ingest from a server-side path</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/ingest/upload</td><td>user</td><td><strong>Multipart PDF upload</strong> → stage → ingest</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/ingest/{job_id}</td><td>user</td><td>Poll ingest progress</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/documents</td><td>user</td><td>List documents</td></tr>
+        <tr><td class="m">DELETE</td><td class="m">/v1/documents/{doc_id}</td><td>user</td><td>Delete a document</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/stats/stores</td><td>user</td><td>Per-store counts, tenant-scoped</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/stats/tenants</td><td>user</td><td>Tenant × collection breakdown</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/stats/models</td><td>admin</td><td>Per-endpoint liveness, latency, in-flight</td></tr>
+        <tr><td class="m">POST</td><td class="m">/v1/stats/models/benchmark</td><td>admin</td><td>Throughput probe</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/config</td><td>admin</td><td>Effective config (secrets redacted)</td></tr>
+        <tr><td class="m">GET,POST</td><td class="m">/v1/admin/models/registry</td><td>admin</td><td>Register/list models</td></tr>
+        <tr><td class="m">PUT,DELETE</td><td class="m">/v1/admin/models/registry/{id}</td><td>admin</td><td>Update/remove a model</td></tr>
+        <tr><td class="m">PATCH</td><td class="m">/v1/admin/config/assignments</td><td>admin</td><td>Hot-swap the llm / reranker</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/models/available</td><td>user</td><td>Models assignable per-request</td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/graph/*</td><td>user</td><td>KG entities / neighbours / stats — <strong>Neo4j is not running; unavailable</strong></td></tr>
+        <tr><td class="m">GET</td><td class="m">/v1/jobs</td><td>admin</td><td>Ingest job list</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <h3 id="examples">Common calls</h3>
+  </div>
+<pre><span class="c"># ask a question, grounded, with citations</span>
+curl -s localhost:8030/v1/query -H 'Content-Type: application/json' \
+  -d '{"query":"...","collection":"open-access","top_k":5}'
+
+<span class="c"># upload PDFs → returns a job_id; poll it</span>
+curl -s -X POST localhost:8030/v1/ingest/upload \
+  -F 'files=@paper.pdf;type=application/pdf' -F 'collection=open-access'
+curl -s localhost:8030/v1/ingest/&lt;job_id&gt;
+
+<span class="c"># what is actually indexed, and is it in parity</span>
+curl -s localhost:8030/v1/collections | jq '.collections[]|{id,count,text_count}'</pre>
+
+  <div class="col">
+    <div class="callout note">
+      <p style="margin-bottom:0"><strong>Ingest paths.</strong> Three exist and are documented in
+      <code>docs/ingest-paths.md</code>: the local API path above (what the demo uses); a GoWe/CWL path for
+      scaled batch work (<code>INGEST_BACKEND=gowe</code>, consumes pre-extracted JSONL shards); and a bulk
+      CLI (<code>scripts/ingest_jsonl.py</code>) for operator corpus builds. A <code>job_id</code> from the
+      local path lives in RAGStack's job store and will <em>not</em> appear in GoWe.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section id="cautions">
+  <div class="col">
+    <p class="eyebrow">Read before touching anything</p>
+    <h2>Operational cautions</h2>
+
+    <h3>Things that have already gone wrong here</h3>
+    <ul class="tight">
+      <li><strong>Killing by pattern.</strong> <code>pkill -f "port 80xx"</code> matches the invoking shell. Use PIDs.</li>
+      <li><strong>VMA exhaustion.</strong> A bulk rebuild exhausted <code>vm.max_map_count</code> and took Qdrant down. The limit was raised to 262,144; leave optimizer thread caps alone during bulk work.</li>
+      <li><strong>Elasticsearch client major.</strong> The 9.x Python client is rejected by an 8.x server at <em>runtime</em>, not install time. The dependency is now pinned <code>&lt;9</code> — don't loosen it while the servers are 8.x.</li>
+      <li><strong>Silent index drift.</strong> A collection's Qdrant and ES counts should match. A gap means one leg missed writes; the Ops UI shows a parity badge for this.</li>
+      <li><strong>Orphaned stores.</strong> Deleting a collection historically dropped only the registry binding, leaving vectors on disk. <code>?purge=true</code> now removes the data; without it, expect orphans.</li>
+      <li><strong>A “safe” probe that wasn't.</strong> <code>POST /v1/collections</code> with an empty body
+        <code>{}</code> was assumed to be an invalid request that would 422. It is <b>valid</b> — open
+        collection creation fills in the server-default build spec — so it returned <b>201</b> and created a
+        registry entry, a Qdrant collection and an ES index on the production instance. All empty, and left
+        in place for the migration. <b>Read-only intent is not read-only behaviour:</b> on a stack that
+        shares production stores, verify a guard by reading the config, not by sending the write.</li>
+      <li><strong>A guarded route is not a guarded store.</strong> The gateway's read-only guard covered
+        <code>asm</code> and <code>lucid</code> while <code>:8020</code> wrote to the same Qdrant and ES from
+        an unguarded route. Enumerate every <em>process</em> that can reach the data, not every
+        <em>path</em> that is guarded.</li>
+      <li><strong>“I signed in and it says I'm not signed in.”</strong> Almost always
+        <code>IDENTITY_PROVIDER</code> unset on that backend: the <code>Authorization</code> header is then
+        not an authentication input at all, the request 401s, and the UI reports the truth. Check the
+        backend before suspecting the login code.</li>
+    </ul>
+
+    <h3>Known gaps</h3>
+    <ul class="tight">
+      <li><strong>No real TLS certificate.</strong> <code>:9443</code> is self-signed. This now blocks a
+        feature rather than merely being untidy: password sign-in is refused on an insecure origin, and the
+        alternative — teaching people to click through a certificate warning before typing a password — is
+        worse than not having it. <b>Highest-value gap on this list after backups.</b></li>
+      <li><strong>The tenant port manifest does not exist.</strong>
+        <code>$RAG_DATA/tenants/manifest.tsv</code> is missing, so <code>new-tenant.sh</code> cannot see the
+        blocks <code>lucid-next</code> and <code>asm-next</code> occupy. It fails safe (probes live ports and
+        refuses), but every new tenant needs an explicit <code>TENANT_PORT_BASE</code> until those two are
+        reconciled.</li>
+      <li><strong>No collection management beyond create / share / delete</strong> — no rename, no
+        ownership transfer (the API tells callers to "use the transfer flow"; there isn't one, #280), no
+        way to repoint the default without an env edit and a restart, and no merge tooling for the
+        orphaned ACL rows above. These interlock: the collection <code>default</code> points at cannot be
+        deleted, and repointing needs a restart, so a user whose collection became the default has no
+        in-API way out (#281).</li>
+      <li><strong>No tenant inventory or drift check.</strong> Nothing enumerates provisioned tenants and
+        their store bindings, and nothing verifies a tenant's <code>tenant.env</code> still describes what
+        is running. Two live examples today: a tenant directory pointing at <em>production</em> stores
+        rather than its own, and an API that ran for hours with its identity provider set only as a
+        runtime override, absent from its config file (#281).</li>
+      <li><strong>Elasticsearch is still shared</strong> by everything except dev, including both production
+        tenants. Qdrant is separated for Lucid; ES is not. A per-tenant ES is what
+        <code>new-tenant.sh</code> now produces, so the path is known — it just has not been walked for
+        <code>asm</code> and <code>lucid</code>.</li>
+      <li><strong>API ports bind <code>0.0.0.0</code>.</strong> The gateway's read-only guard can be bypassed
+        by anything on the host, and the bulk ingest CLI writes to Qdrant without touching the API at all.
+        Binding to localhost is a production restart.</li>
+      <li><strong><code>USER_STORE_BACKEND</code> defaults to <code>memory</code></strong> in
+        <code>config.py</code> (only <code>.env.example</code> says sqlite). With <code>memory</code>, every
+        role grant vanishes on restart and each worker keeps its own table — which matters more now that an
+        admin role lives in that table. ADR-0004 targets Postgres; the live tenants run sqlite, whose
+        single-writer guarantees hold only within one file on one host.</li>
+      <li><strong>No metrics endpoint.</strong> No <code>/metrics</code>, no OTEL. Observability is logs plus the Ops page.</li>
+      <li><strong>Single worker.</strong> The API runs one uvicorn worker. Several in-process caches and registries assume that; raising <code>--workers</code> needs work first.</li>
+      <li><strong>No OCR.</strong> Scanned PDFs fail ingest with a clear error rather than being processed.</li>
+      <li><strong>GoWe worker hygiene.</strong> Task directories are never cleaned up and accumulate tens of GB. Cron a <code>find … -mtime +7 -delete</code>.</li>
+      <li><strong>GoWe authentication needs hardening</strong> before any wider network exposure. Details were reported separately and privately; treat the engine as trusted-network-only until then.</li>
+      <li><strong>The published docs are stale.</strong> <code>wilke.github.io/ragstack/architecture.html</code> is generated from <code>docs/ARCHITECTURE.md</code> and last built <strong>2026-07-02</strong>. It describes the repo's intended stack — BGE 768-d, one API server, Neo4j, Docker Compose — none of which matches this deployment. <strong>This page supersedes it</strong> for anything operational.</li>
+    </ul>
+
+    <h3>Backups</h3>
+    <p>There is no automated backup of Qdrant or Elasticsearch today. The corpora are re-derivable from
+      source documents plus the recorded build spec, but a rebuild is a multi-day GPU job. Snapshot
+      policy is the highest-value operational gap on this list.</p>
+  </div>
+</section>
+
+</div>
+
