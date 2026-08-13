@@ -14,7 +14,7 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from ragstack.api.access import filter_readable
@@ -206,6 +206,13 @@ class TenantsResponse(BaseModel):
 @router.get("/stats/tenants", response_model=TenantsResponse)
 async def stats_tenants(
     principal: Principal = Depends(resolve_principal),
+    counts: bool = Query(
+        True,
+        description=(
+            "Count the cells. Pass false for the identity/reach fields alone: every "
+            "count comes back null and NO store is probed. Default true (unchanged)."
+        ),
+    ),
     registry: CollectionRegistry = Depends(get_collections),
 ) -> TenantsResponse:
     """The caller's tenancy: identity, readable tenants, collection allowlist, and
@@ -227,6 +234,14 @@ async def stats_tenants(
     disagree with /v1/stats/stores' sum. A shared row is scoped to the collections
     that actually share with the caller: another collection's cell in that row is
     ``null``, never the owner's size.
+
+    ``counts=false`` answers the identity half alone — tenant, role,
+    ``auth_enabled``, ``readable``, ``restricted_to``, and the collection columns
+    with null counts. This is the endpoint's OTHER caller: the UI has no /v1/me,
+    so it resolves "who am I" here on every credential change, and the grid it
+    throws away costs one count per (tenant, collection, store). On a large
+    deployment that is 5s — Qdrant's exact count hits its timeout and falls back
+    to an estimate — for three fields that need no store at all.
     """
     tenants = readable_tenants(principal.tenant)
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
@@ -237,11 +252,21 @@ async def stats_tenants(
     entries = await filter_readable(principal, entries)
     # Which extra writer-tenant (if any) each entry is readable through, so a
     # shared corpus gets a row instead of reading as zero everywhere.
-    extra = await asyncio.gather(*(shared_scope(e, registry, principal) for e in entries))
+    #
+    # Skipped with counts=false, and NOT merely as an optimisation: shared_scope
+    # is an owner_of lookup per collection that exists only to decide count
+    # SCOPE, and a share-derived row is admitted only when it carries a non-zero
+    # count (see below) — with no counts there is nothing it could admit. So the
+    # cheap path is the caller's own scopes, resolved with no ACL work beyond the
+    # one batched read filter authorization already required.
     shared_by_tenant: dict[str, set[str]] = {}
-    for e, owners in zip(entries, extra, strict=True):
-        for owner in owners:
-            shared_by_tenant.setdefault(owner, set()).add(e.id)
+    if counts:
+        extra = await asyncio.gather(
+            *(shared_scope(e, registry, principal) for e in entries)
+        )
+        for e, owners in zip(entries, extra, strict=True):
+            for owner in owners:
+                shared_by_tenant.setdefault(owner, set()).add(e.id)
     rows_tenants = [*tenants, *(t for t in sorted(shared_by_tenant) if t not in tenants)]
 
     # One count per (tenant, collection, store) — each probe filtered to a SINGLE
@@ -252,16 +277,18 @@ async def stats_tenants(
         allowed_here = tenant in tenants or entry_id in shared_by_tenant.get(tenant, set())
         return probe_tenant_count(store, [tenant]) if allowed_here else _no_count()
 
-    cells = await asyncio.gather(
-        *(
-            asyncio.gather(
-                _probe(e.vector_store, t, e.id),
-                _probe(e.text_index, t, e.id),
+    cells: list[Any] = []
+    if counts:
+        cells = await asyncio.gather(
+            *(
+                asyncio.gather(
+                    _probe(e.vector_store, t, e.id),
+                    _probe(e.text_index, t, e.id),
+                )
+                for t in rows_tenants
+                for e in entries
             )
-            for t in rows_tenants
-            for e in entries
         )
-    )
     rows: list[TenantRow] = []
     for i, t in enumerate(rows_tenants):
         offset = i * len(entries)
@@ -269,8 +296,8 @@ async def stats_tenants(
             TenantCollectionCount(
                 collection=e.id,
                 label=e.label,
-                vector_count=cells[offset + j][0],
-                text_count=cells[offset + j][1],
+                vector_count=cells[offset + j][0] if counts else None,
+                text_count=cells[offset + j][1] if counts else None,
             )
             for j, e in enumerate(entries)
         ]

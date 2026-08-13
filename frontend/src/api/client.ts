@@ -276,6 +276,21 @@ export function getTenants(apiKey?: CredentialInput): Promise<TenantsInfo> {
   return get<TenantsInfo>("/v1/stats/tenants", apiKey);
 }
 
+/**
+ * The same call WITHOUT the count grid — the whoami path (App.tsx).
+ *
+ * `counts=false` returns the identity and reach fields with every
+ * `vector_count`/`text_count` null and no store probed. It matters because this
+ * runs on mount and on every credential change: counted, it is one probe per
+ * tenant x collection x store, which on the production deployments is a
+ * consistent ~5s (Qdrant's exact count times out and estimates) to learn three
+ * fields. Anything that needs the numbers — the Ops tenants panel — calls
+ * `getTenants` instead.
+ */
+export function getIdentity(apiKey?: CredentialInput): Promise<TenantsInfo> {
+  return get<TenantsInfo>("/v1/stats/tenants?counts=false", apiKey);
+}
+
 export function getDeepHealth(apiKey?: CredentialInput): Promise<DeepHealth> {
   return get<DeepHealth>("/v1/health/deep", apiKey);
 }

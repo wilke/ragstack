@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getTenants } from "./client";
+import { getIdentity, getTenants } from "./client";
 import {
   bindTokenToBase,
   clearStoredToken,
@@ -170,6 +170,19 @@ describe("credential routing", () => {
     // ...and the empty base really is same-origin, not the gateway fallback.
     setApiBase("");
     expect(getApiBase()).toBe("");
+  });
+
+  it("asks the whoami call for no counts, and the ops call for counts", async () => {
+    // Same endpoint, two callers. The identity one must carry counts=false: it
+    // runs on mount and on every credential change, and counted it waits on one
+    // store probe per tenant x collection x store (~5s in production) for three
+    // fields. The Ops panel is the one that wants the grid.
+    const held = signIn("/be/asm");
+    await getIdentity(held);
+    await getTenants(held);
+    expect(sent[0].url).toBe("/be/asm/v1/stats/tenants?counts=false");
+    expect(sent[1].url).toBe("/be/asm/v1/stats/tenants");
+    expect(sent[0].headers.Authorization).toBe(TOKEN);
   });
 
   it("does not re-bind on a token differing only by trailing whitespace", async () => {

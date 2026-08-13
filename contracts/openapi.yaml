@@ -791,10 +791,29 @@ paths:
         permits, so no corpus size the caller cannot retrieve is revealed. `policy`
         (the full tenant->collections map) names other tenants and is admin-only,
         null otherwise. Each count degrades to null independently.
+
+
+        This is also the de-facto "who am I" call (there is no `/v1/me`), and the
+        grid is what makes it expensive — one count per tenant x collection x
+        store, seconds on a large corpus. `counts=false` answers the identity half
+        alone: same response shape, every `vector_count`/`text_count` null, and NO
+        store probed.
       tags: [Stats]
       security:
         - ApiKeyAuth: []
         - BearerIdentity: []
+      parameters:
+        - name: counts
+          in: query
+          required: false
+          description: >-
+            Count the cells. Pass `false` to resolve identity and reach only —
+            every count is null, no store is probed, and no share-derived row is
+            resolved (a share row is admissible only when it carries a non-zero
+            count, so it cannot be decided without one). Default true.
+          schema:
+            type: boolean
+            default: true
       responses:
         "200":
           description: Tenancy and per-tenant, per-collection counts
