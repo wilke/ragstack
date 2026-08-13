@@ -7,7 +7,7 @@ import {
   getStoredCredential,
   setStoredCredential,
 } from "./api/config";
-import { apiFailure, getTenants } from "./api/client";
+import { apiFailure, getIdentity } from "./api/client";
 import {
   identityNeedsExplanation,
   identityView,
@@ -146,10 +146,12 @@ export function App({
   //
   // /v1/stats/tenants is the de-facto whoami (tenant + role + auth_enabled).
   // There is no /v1/me, and inventing one would be a contract change plus both
-  // implementations.
+  // implementations — so it is asked with `counts=false` (getIdentity), which
+  // answers those three fields without probing a store. Counted, this same call
+  // costs ~5s on a production deployment for a grid this screen never reads.
   const whoami = useQuery({
     queryKey: ["whoami", credential.mode, credential.value, apiBase],
-    queryFn: () => getTenants(credential.value || undefined),
+    queryFn: () => getIdentity(credential.value || undefined),
     retry: false,
   });
   const identity = whoami.data

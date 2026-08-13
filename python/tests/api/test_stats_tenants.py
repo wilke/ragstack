@@ -120,10 +120,66 @@ async def test_keyless_path_reports_auth_disabled(client, monkeypatch):
     assert body["tenant"] == "default" and body["role"] == ROLE_ADMIN
 
 
-async def test_requires_authentication(client, monkeypatch):
+@pytest.mark.parametrize("query", ["", "?counts=false"])
+async def test_requires_authentication(client, monkeypatch, query):
+    # The cheap path skips the count sweep, never the credential — and it is the
+    # call a UI makes on every credential change, so it is the likeliest one to
+    # arrive without one.
     _configure_keys(monkeypatch)
-    r = await client.get("/v1/stats/tenants")
+    r = await client.get(f"/v1/stats/tenants{query}")
     assert r.status_code == 401
+
+
+async def test_counts_false_answers_identity_with_null_cells(client, monkeypatch):
+    # The whoami shape: who I am and what I may reach, no numbers. The columns
+    # stay, so the answer is the same object the counted call returns — uncounted.
+    _configure_keys(monkeypatch)
+    await _seed()
+    r = await client.get("/v1/stats/tenants?counts=false", headers={"X-API-Key": "k-acme"})
+    assert r.status_code == 200
+    body = r.json()
+    assert (body["tenant"], body["role"], body["auth_enabled"]) == ("acme", ROLE_USER, True)
+    assert body["readable"] == ["acme", "public"]
+    cells = [c for row in body["tenants"] for c in row["collections"]]
+    assert [c["collection"] for c in cells] == ["default", "default"]  # acme + public
+    assert all(c["vector_count"] is None and c["text_count"] is None for c in cells)
+
+
+async def test_counts_false_probes_no_store_and_looks_up_no_owner(client, monkeypatch):
+    # The flag asserted where it is SPENT, not at the nulls: a null cell could
+    # equally be a failed probe. Touching either seam at all is the failure.
+    # shared_scope is in here because its owner_of-per-collection exists only to
+    # decide count scope — it is part of what counts=false must not pay for.
+    _configure_keys(monkeypatch)
+    await _seed()
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("counts=false must not touch a store or the ACL owner")
+
+    monkeypatch.setattr(stats, "probe_tenant_count", forbidden)
+    monkeypatch.setattr(stats, "shared_scope", forbidden)
+    r = await client.get("/v1/stats/tenants?counts=false", headers={"X-API-Key": "k-acme"})
+    assert r.status_code == 200
+    assert r.json()["tenant"] == "acme"
+
+
+async def test_counts_default_still_probes_every_cell(client, monkeypatch):
+    # The default stays the counted endpoint the Ops dashboard reads: the flag is
+    # opt-in, so omitting it probes (tenant x collection x store) exactly as before.
+    _configure_keys(monkeypatch)
+    await _seed()
+    probed: list[list[str]] = []
+    real = stats.probe_tenant_count
+
+    async def counting(store, tenants):
+        probed.append(tenants)
+        return await real(store, tenants)
+
+    monkeypatch.setattr(stats, "probe_tenant_count", counting)
+    r = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-acme"})
+    assert r.status_code == 200
+    assert probed == [["acme"], ["acme"], ["public"], ["public"]]  # 2 tenants x 2 stores
+    assert r.json()["tenants"][0]["collections"][0]["vector_count"] == 2
 
 
 async def test_count_failure_degrades_to_null(client, monkeypatch):

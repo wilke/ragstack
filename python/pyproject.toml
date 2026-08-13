@@ -11,7 +11,16 @@ requires-python = ">=3.12"
 license = { text = "MIT" }
 
 dependencies = [
-    "fastapi>=0.111",
+    # >=0.133 is a SECURITY floor, not a feature one. Before 0.133 the
+    # /openapi.json route folded the request's root_path into APP-level state
+    # (`self.servers.insert(0, {"url": root_path})`) on a schema it also caches.
+    # api/root_path.py makes root_path reachable from a request header, so on an
+    # older FastAPI one unauthenticated `curl -H 'X-Forwarded-Prefix: /evil'
+    # .../openapi.json` would pin `{"url": "/evil"}` into the schema served to
+    # every later client, and a fresh prefix per request would grow that list
+    # without bound. 0.133+ copies the schema per request (`schema =
+    # dict(schema)`), which is what keeps the header a per-request fact.
+    "fastapi>=0.133",
     "python-multipart>=0.0.9",  # required by POST /v1/ingest/upload (Form/File)
     "uvicorn[standard]>=0.29",
     "pydantic>=2.7",

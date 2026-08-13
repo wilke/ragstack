@@ -1,3 +1,6 @@
-fastapi>=0.111
+# Floor aligned with python/pyproject.toml: FastAPI <0.133 mutates app-level
+# `servers` from a request's root_path. No root_path input reaches these
+# sidecars, so it is not exploitable here — one floor is easier to audit.
+fastapi>=0.133
 uvicorn[standard]>=0.29
 sentence-transformers>=3.0,<4
