@@ -43,33 +43,51 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
 | flag | when to use | when NOT to |
 |---|---|---|
 | `bulk_refresh: true` | always, for a bulk load | when something must search the index live during the load |
-| `file_concurrency: 2` | start here and raise only against measured **free memory** | see the memory note below — this is not a free dial |
+| `file_concurrency: 1` | leave it at 1 | **do not raise it** — see below (#328) |
 | `no_delete_prior: true` | **only** a replay from unchanged embedding files | any batch whose inputs were re-extracted or re-chunked |
 
-### `file_concurrency` costs memory, and multiplies the other knobs
+### `file_concurrency` — leave it at 1 (#328)
 
-Each in-flight file is read **fully into RAM**. Measured on a production shard:
-a 1.33 GB embedding file leaves the loader at **6.1 GB resident** — roughly a
-4.6x expansion, dominated by Python float lists. So peak loader memory is
-about **6 GB per concurrent file**.
+**Do not raise this.** An earlier revision of this runbook recommended `2` and
+estimated ~6 GB of loader memory per concurrent file. That estimate was wrong by
+more than an order of magnitude, and the recommendation broke a real batch.
 
-Size it against free memory, **not** against store headroom. The stores have
-plenty of CPU headroom, which is what makes concurrency tempting; the binding
-constraint is elsewhere. Overshooting does not fail loudly — it evicts the page
-cache the production stores read through, and shows up as query latency on an
-unrelated service.
+Measured on a 64-file batch, same image and same other flags:
 
-It also **multiplies** the other concurrency settings, because the delete
-semaphore is created per `index_chunks` call rather than per pipeline:
+| setting | loader RSS | outcome |
+|---|---|---|
+| `file_concurrency: 2` | **142.5 GB**, one core pinned | 2 files loaded, **22 failed** |
+| `file_concurrency: 1` | **4.8 GB** | steady, no failures |
 
-```
-effective deletes  = file_concurrency x delete_concurrency   (4 x 8  = 32)
-effective upserts  = file_concurrency x upsert_concurrency   (4 x 4  = 16)
-```
+That is ~30x the memory for 2x the concurrency — so it is not "two files in
+flight", something retains nearly every file in the batch.
 
-So raising `file_concurrency` from 1 to 4 does not merely quadruple file
-throughput — it quadruples the load on both stores at the same time. Raise one
-dial at a time and measure.
+**The failure mode is actively misleading.** It surfaces as the vector client's
+`ResponseHandlingException` with an empty message, which reads as a store
+outage. It is not: throughout the failures the vector store was `green`,
+`optimizer_status: ok`, answering in 0.01 s and absent from the host's top CPU
+consumers. Do not go debugging the store — check the loader's RSS first.
+
+Note also that concurrency **multiplies** the other knobs, since the delete
+semaphore is per `index_chunks` call rather than per pipeline: N files means
+N x `delete_concurrency` deletes and N x `upsert_concurrency` upserts in flight.
+Another reason not to reach for it.
+
+`no_delete_prior` and `bulk_refresh` are unaffected and both behave as intended;
+the serial run with both enabled is stable and materially faster than the
+unflagged path. Only file concurrency is held back.
+
+### Stopping a load: use SIGINT, never SIGTERM
+
+`bulk_refresh` parks the text index's refresh interval and restores it in a
+`finally`. **`finally` does not run on SIGTERM**, so a `kill` (or `pkill`) leaves
+the index with `refresh_interval: -1` — it silently stops refreshing, and every
+count-based check reads stale from then on.
+
+Use `kill -INT` so the restore runs. If a load was killed any other way, or
+crashed, set it back by hand and force one refresh before trusting any count.
+Verify with the index settings endpoint; the value should read as the default,
+not `-1`.
 
 `no_delete_prior` deserves the emphasis. It is safe precisely when chunk ids
 cannot have moved — the load reads ids *from* the embedding file rather than
@@ -88,7 +106,7 @@ Add to the driver's inputs template:
 
 ```yaml
 bulk_refresh: true
-file_concurrency: 2         # ~12 GB peak loader RSS; raise only against free memory
+file_concurrency: 1         # leave at 1 — see #328, do not raise
 no_delete_prior: false      # true ONLY for an id-stable replay
 ```
 
@@ -106,12 +124,10 @@ always safe.
       not only at the end — the legs are gathered rather than sequential, so a
       vector-count lead is no longer expected mid-batch.
 - [ ] Batch wall time against the ~6 h steady-state norm.
-- [ ] **Loader peak RSS**, against free memory — expect ~6 GB per concurrent
-      file. If page cache shrank materially, lower `file_concurrency`; the cost
-      lands on unrelated services, not on this load, so it will not announce
-      itself.
-- [ ] The store did not become the new bottleneck: if the vector store
-      saturates, lower `file_concurrency` before anything else.
+- [ ] **Loader RSS stays flat near ~5 GB.** A serial load plateaus there. If it
+      climbs across files, stop — that is #328, and the store errors it produces
+      will point you at the wrong subsystem.
+- [ ] Refresh interval is back to the default after the run, not `-1`.
 
 ## Rollback
 
