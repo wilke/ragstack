@@ -357,5 +357,56 @@ class ElasticsearchTextIndex:
             conflicts="proceed",
         )
 
+    async def bulk_load_refresh(self, disable: bool) -> str | None:
+        """Disable (or restore) the index refresh interval for a bulk load (#323).
+
+        A default 1-second refresh during a bulk load is pathological: on the
+        open-access build the index had spent ~9.6 hours refreshing against ~20
+        minutes actually indexing. Disabling it for the load and restoring after is
+        the standard remedy.
+
+        ``disable=True`` sets ``refresh_interval=-1`` and returns the PRIOR value so
+        the caller can hand it back — ``None`` means the index carried no explicit
+        setting and should be reset to the server default. Call with
+        ``disable=False`` and that value to restore.
+
+        Caller beware: with refresh off, newly indexed documents are NOT visible to
+        search or to ``_count``. Any post-load verification must force a refresh
+        first (:meth:`refresh`) or it reads stale.
+        """
+        if disable:
+            prior = None
+            try:
+                got = await self._es.indices.get_settings(
+                    index=self._index, name="index.refresh_interval"
+                )
+                for body in got.body.values():
+                    prior = body.get("settings", {}).get("index", {}).get("refresh_interval")
+            except Exception:  # noqa: BLE001 — never fail a load over a settings read
+                log.warning("could not read refresh_interval; will restore to default")
+            await self._es.indices.put_settings(
+                index=self._index, body={"index": {"refresh_interval": "-1"}}
+            )
+            return prior
+        return None
+
+    async def restore_refresh(self, prior: str | None) -> None:
+        """Restore what :meth:`bulk_load_refresh` returned. ``None`` resets to the
+        server default. Best-effort and never raises: leaving refresh disabled is a
+        visible, fixable state, but failing a completed load over it is not."""
+        try:
+            await self._es.indices.put_settings(
+                index=self._index, body={"index": {"refresh_interval": prior}}
+            )
+        except Exception:  # noqa: BLE001
+            log.error(
+                "FAILED to restore refresh_interval on %s — the index will not "
+                "refresh until this is set manually", self._index, exc_info=True,
+            )
+
+    async def refresh(self) -> None:
+        """Force a refresh so just-indexed documents become searchable/countable."""
+        await self._es.indices.refresh(index=self._index)
+
     async def close(self) -> None:
         await self._es.close()
