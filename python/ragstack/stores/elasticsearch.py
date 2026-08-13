@@ -41,6 +41,18 @@ log = logging.getLogger(__name__)
 # stays under Lucene's 32766-BYTE limit even for 4-byte UTF-8.
 _METADATA_KEYWORD_IGNORE_ABOVE = 8191
 
+# Bulk-request sizing. ES rejects a body over `http.max_content_length` (100 MB by
+# default) with a bare HTTP 413 — no per-item errors, nothing indexed. Cap well
+# under it: the per-chunk estimate below counts raw content length only, so it
+# undercounts JSON escaping, the action line before each document, and the
+# metadata block. A generous margin is much cheaper than a 413.
+_BULK_MAX_BYTES = 20 * 1024 * 1024
+_BULK_BATCH_SIZE = 500
+# Flat allowance per document for the action line + metadata + field names. Chunk
+# content dominates for real text; this keeps small-content chunks from looking
+# free and letting the count cap alone drive an oversized body.
+_METADATA_BYTES_ESTIMATE = 2048
+
 _MAPPINGS: dict[str, Any] = {
     "dynamic_templates": [
         {
@@ -106,11 +118,13 @@ class ElasticsearchTextIndex:
     """TextIndex protocol backed by Elasticsearch BM25."""
 
     def __init__(self, url: str, index: str, api_key: str | None = None,
-                 refresh_on_write: bool = True) -> None:
+                 refresh_on_write: bool = True,
+                 bulk_batch_size: int = _BULK_BATCH_SIZE) -> None:
         from elasticsearch import AsyncElasticsearch
 
         self._es = AsyncElasticsearch(hosts=url, api_key=api_key or None)
         self._index = index
+        self._bulk_batch_size = max(1, bulk_batch_size)
         # Every write forces a synchronous refresh so a subsequent read sees it —
         # read-your-writes, which the interactive API path depends on.
         #
@@ -167,8 +181,42 @@ class ElasticsearchTextIndex:
             )
 
     async def index(self, chunks: list[Chunk]) -> None:
+        """Bulk-index ``chunks``, split into requests ES will actually accept.
+
+        The whole list used to go in ONE bulk request. ES caps a request body at
+        ``http.max_content_length`` (100 MB by default) and answers an oversized
+        one with a bare **HTTP 413**, so a large shard failed outright — no
+        partial write, no per-item error, just a status code.
+
+        That is not hypothetical: a 1.99 GB shard of 38,322 chunks failed exactly
+        this way on every load attempt, while the vector store — which has always
+        batched at 256 points — took all 38,322. The two legs then disagreed by
+        precisely 38,322 documents, and with ``--fail-on-error`` the whole batch
+        failed after the other 63 shards had loaded fine.
+
+        Split on BOTH count and accumulated bytes: chunk sizes vary by orders of
+        magnitude across a corpus (a figure caption vs a full methods section),
+        so a count-only cap still lets a run of large chunks build an oversized
+        body. The byte cap is deliberately well under the server limit — the
+        estimate ignores JSON escaping and the action lines between documents.
+        """
         if not chunks:
             return
+        batch: list[Chunk] = []
+        nbytes = 0
+        for c in chunks:
+            approx = len(c.content) + _METADATA_BYTES_ESTIMATE
+            if batch and (
+                len(batch) >= self._bulk_batch_size or nbytes + approx > _BULK_MAX_BYTES
+            ):
+                await self._index_batch(batch)
+                batch, nbytes = [], 0
+            batch.append(c)
+            nbytes += approx
+        if batch:
+            await self._index_batch(batch)
+
+    async def _index_batch(self, chunks: list[Chunk]) -> None:
         operations: list[dict[str, Any]] = []
         for c in chunks:
             # Persist full metadata (not just tenant_id) so BM25 hits round-trip

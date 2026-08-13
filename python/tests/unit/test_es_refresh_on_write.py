@@ -37,6 +37,7 @@ def _index(refresh_on_write):
     idx._es = _FakeES()
     idx._index = "t"
     idx._refresh_on_write = refresh_on_write
+    idx._bulk_batch_size = 500
     return idx
 
 
