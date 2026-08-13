@@ -239,6 +239,7 @@ describe("static render", () => {
       createElement(AccountView, {
         credential: { mode: "bearer" as const, value: SECRET },
         identity,
+        checking: false,
         onSignIn: () => {},
         onSignedOut: () => {},
         onCredentialChange: () => {},
@@ -246,6 +247,46 @@ describe("static render", () => {
       }),
     );
     expect(account).not.toContain(SECRET);
+  });
+
+  // The login-loop bug: whoami takes seconds on a deployment with slow store
+  // counts, and for that whole window Account rendered "You are not signed in"
+  // plus a Sign in button — which led a user who HAD just signed in back to the
+  // login form. While the check is unresolved the page must offer nothing.
+  it("shows Account as checking, with no sign-in button, until whoami answers", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: true,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).toContain("Checking sign-in");
+    expect(html).not.toContain("Sign in<"); // no call to action of any kind
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("not signed in");
+    expect(html).not.toContain("API backend"); // nor the backend picker
+  });
+
+  it("shows Account as signed out once the check resolves to nobody", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: false,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).toContain("You are not signed in");
+    expect(html).toContain("Sign in");
+    expect(html).toContain("API backend"); // the wrong-backend escape hatch
   });
 
   it("mounts the new-collection form", () => {

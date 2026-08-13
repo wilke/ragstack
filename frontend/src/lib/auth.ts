@@ -272,13 +272,30 @@ export interface IdentitySummary {
   auth_enabled: boolean;
 }
 
-export interface IdentityView {
-  /** True only when the server confirmed a *verified federated identity*. */
-  signedIn: boolean;
-  label: string;
-  /** Set when the 200 does not mean what it looks like. */
-  warning: string | null;
-}
+/**
+ * Three states, not two — and deliberately a discriminated union.
+ *
+ * "the check hasn't answered yet" and "the server says nobody" are different
+ * facts, and a boolean `signedIn` could only spell them the same way. It did,
+ * and the cost was a real bug: whoami is a network call (on a large deployment
+ * GET /v1/stats/tenants takes seconds, because it counts every store), so for
+ * that whole window a signed-in user was shown the full signed-OUT screen —
+ * "You are not signed in" plus a Sign in button that led straight back to the
+ * login form they had just completed.
+ *
+ * `checking` therefore carries NO `warning` field: a caller that tries to treat
+ * it like the signed-out case has to narrow the union first, so the "unknown"
+ * state cannot be collapsed into "signed out" by accident again. Render it as a
+ * neutral placeholder with no call to action — there is nothing to act on until
+ * the answer arrives.
+ */
+export type IdentityView =
+  /** No answer yet. Not a verdict — say nothing definite and offer no button. */
+  | { state: "checking"; label: string }
+  /** The server confirmed a *verified federated identity* (or a working key). */
+  | { state: "signed-in"; label: string; warning: null }
+  /** The server answered, and the answer is nobody. */
+  | { state: "signed-out"; label: string; warning: string | null };
 
 /**
  * A federated (bearer-authenticated) tenant is spelled `issuer:subject` —
@@ -389,32 +406,45 @@ export const AUTH_PROVIDERS: AuthProviderOption[] = [
  * `bool(settings.api_keys)` — it is about API KEYS, not about the identity
  * provider — so it is used only to explain a keyless backend, never to decide
  * whether a bearer login worked.
+ *
+ * `pending` is the whoami request's own in-flight flag and is REQUIRED: without
+ * it the no-answer-yet case is indistinguishable from a refusal. It only decides
+ * the null case — a background refetch of an identity we already have keeps
+ * showing that identity rather than blanking the header on a timer.
  */
-export function identityView(mode: AuthMode, info: IdentitySummary | null): IdentityView {
-  if (!info) return { signedIn: false, label: "Not signed in", warning: null };
+export function identityView(
+  mode: AuthMode,
+  info: IdentitySummary | null,
+  pending: boolean,
+): IdentityView {
+  if (!info)
+    return pending
+      ? { state: "checking", label: "Checking sign-in…" }
+      : { state: "signed-out", label: "Not signed in", warning: null };
   const federated = isFederatedTenant(info.tenant);
   if (mode === "bearer") {
     if (federated)
       return {
-        signedIn: true,
+        state: "signed-in",
         label: `Signed in as ${info.tenant} · role ${info.role}`,
         warning: null,
       };
     return {
-      signedIn: false,
+      state: "signed-out",
       label: `The server sees you as “${info.tenant}” · role ${info.role}`,
       warning:
         "This backend ignored the token — it has no identity provider enabled, so every caller is the default tenant. You are not signed in.",
     };
   }
+  const label = federated
+    ? `Signed in as ${info.tenant} · role ${info.role}`
+    : `API key → tenant “${info.tenant}” · role ${info.role}`;
+  if (federated || info.auth_enabled) return { state: "signed-in", label, warning: null };
   return {
-    signedIn: federated || info.auth_enabled,
-    label: federated
-      ? `Signed in as ${info.tenant} · role ${info.role}`
-      : `API key → tenant “${info.tenant}” · role ${info.role}`,
-    warning: info.auth_enabled
-      ? null
-      : "This backend has no API keys configured, so the key is ignored and every caller is the default tenant.",
+    state: "signed-out",
+    label,
+    warning:
+      "This backend has no API keys configured, so the key is ignored and every caller is the default tenant.",
   };
 }
 

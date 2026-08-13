@@ -145,6 +145,12 @@ export function App() {
         auth_enabled: whoami.data.auth_enabled,
       }
     : null;
+  // "No answer yet" — NOT `isFetching`, which is also true while refreshing an
+  // identity we already have, and false for a query the browser has paused
+  // offline. Every screen that renders an identity verdict takes this, because
+  // an unanswered check must never be drawn as a refusal: the call can take
+  // seconds, and a signed-in user shown "not signed in" signs in again.
+  const identityPending = whoami.isPending;
 
   // A credential change must invalidate everything: one principal's cached
   // collection list must never be shown to another.
@@ -243,11 +249,16 @@ export function App() {
         }
       >
         {view === "login" ? (
-          <LoginView setCredential={applyCredential} onDone={() => setView("account")} />
+          // Explore, not Account: people sign in to ask the corpus something.
+          // Landing on Account put a backend picker and (until the whoami answer
+          // arrived) a Sign in button in front of someone who had just signed in,
+          // which reads as "that didn't work". Account stays in the user menu.
+          <LoginView setCredential={applyCredential} onDone={() => setView("explore")} />
         ) : view === "account" ? (
           <AccountView
             credential={credential}
             identity={identity}
+            checking={identityPending}
             onSignIn={() => setView("login")}
             onSignedOut={(c) => {
               applyCredential(c);

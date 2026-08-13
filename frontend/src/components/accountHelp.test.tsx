@@ -23,6 +23,7 @@ const account = (mode: "bearer" | "apikey") =>
     createElement(AccountView, {
       credential: { mode, value: "x" },
       identity: IDENTITY,
+      checking: false,
       onSignIn: () => {},
       onSignedOut: () => {},
       onCredentialChange: () => {},

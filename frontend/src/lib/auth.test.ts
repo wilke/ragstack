@@ -293,39 +293,77 @@ describe("token expiry", () => {
 // federated `issuer:subject` tenant proves the bearer path authenticated.
 describe("identityView", () => {
   it("confirms a bearer login only on a federated issuer:subject tenant", () => {
-    const v = identityView("bearer", {
-      tenant: "bvbrc:alice@patricbrc.org",
-      role: "user",
-      auth_enabled: false, // reports bool(api_keys) — irrelevant to a bearer login
-    });
-    expect(v.signedIn).toBe(true);
+    const v = identityView(
+      "bearer",
+      {
+        tenant: "bvbrc:alice@patricbrc.org",
+        role: "user",
+        auth_enabled: false, // reports bool(api_keys) — irrelevant to a bearer login
+      },
+      false,
+    );
+    expect(v.state).toBe("signed-in");
     expect(v.label).toContain("bvbrc:alice@patricbrc.org");
-    expect(v.warning).toBeNull();
+    expect(v.state === "signed-in" && v.warning).toBeNull();
   });
 
   it("refuses to call a 200 a login when the backend ignored the token", () => {
-    const v = identityView("bearer", { tenant: "default", role: "admin", auth_enabled: true });
-    expect(v.signedIn).toBe(false);
-    expect(v.warning ?? "").toMatch(/identity provider/i);
-    expect(v.warning ?? "").toMatch(/not signed in/i);
+    const v = identityView(
+      "bearer",
+      { tenant: "default", role: "admin", auth_enabled: true },
+      false,
+    );
+    expect(v.state).toBe("signed-out");
+    const warning = v.state === "signed-out" ? (v.warning ?? "") : "";
+    expect(warning).toMatch(/identity provider/i);
+    expect(warning).toMatch(/not signed in/i);
   });
 
   it("names the tenant an API key maps to", () => {
-    const v = identityView("apikey", { tenant: "asm", role: "admin", auth_enabled: true });
-    expect(v.signedIn).toBe(true);
+    const v = identityView("apikey", { tenant: "asm", role: "admin", auth_enabled: true }, false);
+    expect(v.state).toBe("signed-in");
     expect(v.label).toContain("asm");
-    expect(v.warning).toBeNull();
+    expect(v.state === "signed-in" && v.warning).toBeNull();
   });
 
   it("warns that a keyless backend ignores the key", () => {
-    const v = identityView("apikey", { tenant: "default", role: "admin", auth_enabled: false });
-    expect(v.signedIn).toBe(false);
-    expect(v.warning ?? "").toMatch(/no API keys/i);
+    const v = identityView(
+      "apikey",
+      { tenant: "default", role: "admin", auth_enabled: false },
+      false,
+    );
+    expect(v.state).toBe("signed-out");
+    expect((v.state === "signed-out" ? (v.warning ?? "") : "")).toMatch(/no API keys/i);
   });
 
-  it("says 'not signed in' before the server has answered", () => {
-    expect(identityView("bearer", null).signedIn).toBe(false);
-    expect(identityView("bearer", null).label).toMatch(/not signed in/i);
+  // The three-state contract. A boolean here spelled "still asking" and "the
+  // server says nobody" the same way, and whoami takes SECONDS on a deployment
+  // with slow store counts — so a freshly signed-in user was shown the
+  // signed-out screen and sent back to the login form.
+  it("reports an unanswered check as checking, never as signed out", () => {
+    const v = identityView("bearer", null, true);
+    expect(v.state).toBe("checking");
+    expect(v.label).not.toMatch(/not signed in/i);
+    // No `warning` to render, by type: the checking variant does not carry one,
+    // so a caller cannot treat it as the signed-out case without narrowing.
+    expect("warning" in v).toBe(false);
+  });
+
+  it("says 'not signed in' only once the check has resolved to nobody", () => {
+    const v = identityView("bearer", null, false);
+    expect(v.state).toBe("signed-out");
+    expect(v.label).toMatch(/not signed in/i);
+  });
+
+  // `pending` decides the null case only: a background refetch must not blank
+  // an identity the server already confirmed.
+  it("keeps a known identity on screen while it is being refreshed", () => {
+    const v = identityView(
+      "bearer",
+      { tenant: "bvbrc:alice@patricbrc.org", role: "user", auth_enabled: false },
+      true,
+    );
+    expect(v.state).toBe("signed-in");
   });
 });
 

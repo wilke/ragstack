@@ -37,9 +37,13 @@ export function UserMenu({
   const wrap = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useDismissable(wrap);
 
-  const view = identityView(credential.mode, identity);
+  // `pending: false` — the header does not distinguish an unfinished check yet;
+  // it shows "Sign in" until the answer arrives, as it always has. The screen
+  // where that ambiguity was actively misleading is Account & preferences, and
+  // that one now renders the checking state.
+  const view = identityView(credential.mode, identity, false);
 
-  if (!view.signedIn) {
+  if (view.state !== "signed-in") {
     return (
       <button
         type="button"

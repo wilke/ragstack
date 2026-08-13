@@ -42,6 +42,7 @@ function Row({ label, value }: { label: React.ReactNode; value: React.ReactNode 
 export function AccountView({
   credential,
   identity,
+  checking,
   onSignIn,
   onSignedOut,
   onCredentialChange,
@@ -49,6 +50,8 @@ export function AccountView({
 }: {
   credential: Credential;
   identity: IdentitySummary | null;
+  /** The whoami answer has not arrived yet — no verdict to render. */
+  checking: boolean;
   onSignIn: () => void;
   onSignedOut: (c: Credential) => void;
   /** Re-resolve the app credential after a backend change. */
@@ -56,7 +59,7 @@ export function AccountView({
   /** Report a same-tab base change to App (no storage event fires locally). */
   onBaseChange: (base: string) => void;
 }) {
-  const view = identityView(credential.mode, identity);
+  const view = identityView(credential.mode, identity, checking);
   // Mirrors the persisted vision mode so the checkbox re-renders on toggle;
   // lib/vision.ts owns storage + the <html> attribute.
   const [accessibleVision, setAccessibleVisionState] = useState(getAccessibleVision);
@@ -65,7 +68,20 @@ export function AccountView({
   const tokenBase = getStoredTokenBase();
   const expiry = tokenExpiryNote(savedToken, Date.now());
 
-  if (!view.signedIn) {
+  // Nothing definite, so nothing to act on: no "not signed in", no Sign in
+  // button, and no backend picker. Whoami is a network call — seconds on a
+  // deployment whose store counts are slow — and rendering the signed-out screen
+  // in that window is what made a completed sign-in look like a failed one and
+  // sent people round the login loop again.
+  if (view.state === "checking") {
+    return (
+      <div className="mx-auto max-w-md py-10 text-center" role="status">
+        <p className="text-sm text-gray-500">{view.label}</p>
+      </div>
+    );
+  }
+
+  if (view.state === "signed-out") {
     return (
       <div className="mx-auto max-w-md py-10 text-center">
         <p className="text-sm text-gray-600">You are not signed in.</p>
