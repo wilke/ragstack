@@ -114,7 +114,11 @@ inputs:
     default: 1
     doc: "Embedding files loaded concurrently (#323). Shards hold disjoint
       documents and ids are deterministic, so this cannot race or duplicate.
-      1 = the previous serial behaviour."
+      1 = the previous serial behaviour. COSTS MEMORY — each in-flight file is
+      read fully into RAM (~6 GB resident per 1.3 GB file), so size it against
+      free memory, not store headroom. It also multiplies the other knobs: the
+      delete semaphore is per-call, so N files means N x delete-concurrency
+      concurrent deletes. Start at 2."
   bulk_refresh:
     type: boolean
     default: false

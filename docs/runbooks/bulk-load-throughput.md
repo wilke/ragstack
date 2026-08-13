@@ -32,8 +32,33 @@ an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
 | flag | when to use | when NOT to |
 |---|---|---|
 | `bulk_refresh: true` | always, for a bulk load | when something must search the index live during the load |
-| `file_concurrency: 4` | always; raise if the store still has headroom | — |
+| `file_concurrency: 2` | start here and raise only against measured **free memory** | see the memory note below — this is not a free dial |
 | `no_delete_prior: true` | **only** a replay from unchanged embedding files | any batch whose inputs were re-extracted or re-chunked |
+
+### `file_concurrency` costs memory, and multiplies the other knobs
+
+Each in-flight file is read **fully into RAM**. Measured on a production shard:
+a 1.33 GB embedding file leaves the loader at **6.1 GB resident** — roughly a
+4.6x expansion, dominated by Python float lists. So peak loader memory is
+about **6 GB per concurrent file**.
+
+Size it against free memory, **not** against store headroom. The stores have
+plenty of CPU headroom, which is what makes concurrency tempting; the binding
+constraint is elsewhere. Overshooting does not fail loudly — it evicts the page
+cache the production stores read through, and shows up as query latency on an
+unrelated service.
+
+It also **multiplies** the other concurrency settings, because the delete
+semaphore is created per `index_chunks` call rather than per pipeline:
+
+```
+effective deletes  = file_concurrency x delete_concurrency   (4 x 8  = 32)
+effective upserts  = file_concurrency x upsert_concurrency   (4 x 4  = 16)
+```
+
+So raising `file_concurrency` from 1 to 4 does not merely quadruple file
+throughput — it quadruples the load on both stores at the same time. Raise one
+dial at a time and measure.
 
 `no_delete_prior` deserves the emphasis. It is safe precisely when chunk ids
 cannot have moved — the load reads ids *from* the embedding file rather than
@@ -52,7 +77,7 @@ Add to the driver's inputs template:
 
 ```yaml
 bulk_refresh: true
-file_concurrency: 4
+file_concurrency: 2         # ~12 GB peak loader RSS; raise only against free memory
 no_delete_prior: false      # true ONLY for an id-stable replay
 ```
 
@@ -70,6 +95,10 @@ always safe.
       not only at the end — the legs are gathered rather than sequential, so a
       vector-count lead is no longer expected mid-batch.
 - [ ] Batch wall time against the ~6 h steady-state norm.
+- [ ] **Loader peak RSS**, against free memory — expect ~6 GB per concurrent
+      file. If page cache shrank materially, lower `file_concurrency`; the cost
+      lands on unrelated services, not on this load, so it will not announce
+      itself.
 - [ ] The store did not become the new bottleneck: if the vector store
       saturates, lower `file_concurrency` before anything else.
 

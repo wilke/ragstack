@@ -132,7 +132,19 @@ async def amain(args, target=None) -> int:
     if can_park:
         print(f"refresh_interval parked (was {prior or 'default'})", flush=True)
     try:
-        await asyncio.gather(*(_one(i, p) for i, p in enumerate(args.embeddings)))
+        # return_exceptions + re-raise, for the same reason index_chunks does it:
+        # a bare gather propagates the first failure while the other files keep
+        # loading unsupervised. run_load_file already converts per-file errors into
+        # FAILED receipts, so this should be unreachable — but "should be" is what
+        # the sequential version looked like too, and an unreachable guard is
+        # cheaper than a load that keeps writing after it reported failure.
+        outcomes = await asyncio.gather(
+            *(_one(i, p) for i, p in enumerate(args.embeddings)),
+            return_exceptions=True,
+        )
+        for o in outcomes:
+            if isinstance(o, BaseException):
+                raise o
     finally:
         if can_park:
             await tindex.restore_refresh(prior)
@@ -210,7 +222,15 @@ def parse_args(argv=None):
     p.add_argument("--file-concurrency", type=int, default=1,
                    help="embedding files loaded concurrently (default 1 = serial, the "
                         "previous behaviour). Files hold disjoint documents and ids "
-                        "are deterministic, so concurrency cannot race or duplicate")
+                        "are deterministic, so concurrency cannot race or duplicate. "
+                        "COSTS MEMORY: each in-flight file is read fully into RAM — "
+                        "measured ~6 GB resident for a 1.3 GB file (~4.6x expansion, "
+                        "float lists dominate), so N files is ~6N GB. Size this "
+                        "against free memory, NOT against store headroom; overshoot "
+                        "evicts the page cache the stores read through. It also "
+                        "MULTIPLIES the other knobs: the delete semaphore is "
+                        "per-call, so N files means N x --delete-concurrency "
+                        "concurrent deletes and N x --upsert-concurrency upserts")
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
     p.add_argument("--es-url", default="http://localhost:9200")
     p.add_argument("--es-index", default=None)
