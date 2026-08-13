@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ragstack.api.deps import lifespan
+from ragstack.api.root_path import RootPathMiddleware
 from ragstack.api.routers import (
     admin,
     admin_users,
@@ -47,6 +48,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mounted-under-a-prefix support. The gateway serves this app at
+# /ragstack/<tenant>/api/ and strips the prefix, so /docs used to emit a
+# root-absolute `url: '/openapi.json'` and 404 there. This restores the prefix
+# into scope["root_path"], which is what FastAPI builds the docs/redoc URLs and
+# the schema's `servers` entry from; absent a prefix nothing changes, so
+# direct-port /docs still works. See api/root_path.py.
+#
+# Added LAST so it is the OUTERMOST middleware — the value must be in the scope
+# before routing (add_middleware inserts at the front of the stack).
+app.add_middleware(RootPathMiddleware)
 
 # Health stays open for liveness probes; the data/v1 surface requires an API key
 # when keys are configured (always, in production). resolve_tenant both enforces

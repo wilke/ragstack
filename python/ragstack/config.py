@@ -542,6 +542,16 @@ class Settings(BaseSettings):
     # one server per org. env TENANT_COLLECTIONS='{"asm":["asm"],"lucid":["lucid"]}'
     tenant_collections: dict[str, list[str]] = Field(default_factory=dict)
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
+    # Path prefix this API is mounted under by a reverse proxy that STRIPS it
+    # (the gateway serves each deployment at /ragstack/<tenant>/api/...). It is
+    # what /docs builds its openapi URL from, and what the served schema
+    # advertises as its `servers` entry. Empty (default) = mounted at the root,
+    # which is also direct-port access — the proxy's `X-Forwarded-Prefix` then
+    # supplies it per request (ragstack/api/root_path.py). Set this only where
+    # the proxy cannot be made to send that header: it PINS the prefix, so a
+    # deployment reachable both ways would then advertise it on the direct port
+    # too. env ROOT_PATH=/ragstack/asm/api
+    root_path: str = ""
 
     # Retrieval defaults
     top_k: int = 5
