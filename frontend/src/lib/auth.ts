@@ -126,8 +126,9 @@ export function sendableCredential(
   // that IS the saved token — or that is structurally a BV-BRC token, which
   // covers the tab whose token was signed out from under it — is dropped rather
   // than sent under the wrong header. (An opaque OIDC token after a sign-out is
-  // the residual gap: only the identity check can catch that one, and the
-  // login panel's `identityView` does.)
+  // the residual gap: only the identity check can catch that one — `identityView`
+  // over the whoami answer, rendered by the header chip and Account. The login
+  // page does NOT call it: it claims no sign-in, it only stores a credential.)
   const isToken = value === savedToken.trim() || parseBvbrcToken(value) !== null;
   return { mode: "apikey", value: isToken ? "" : value };
 }
@@ -272,13 +273,70 @@ export interface IdentitySummary {
   auth_enabled: boolean;
 }
 
-export interface IdentityView {
-  /** True only when the server confirmed a *verified federated identity*. */
-  signedIn: boolean;
-  label: string;
-  /** Set when the 200 does not mean what it looks like. */
-  warning: string | null;
+/**
+ * Why the identity check could not answer: an HTTP status plus the raw body, or
+ * a null status when the request never got a reply at all (DNS, TLS, offline,
+ * CORS). {@link signInMessage} turns it into a sentence; the body itself is
+ * never rendered.
+ */
+export interface IdentityFailure {
+  status: number | null;
+  body: string;
 }
+
+/**
+ * FOUR states, not two — and deliberately a discriminated union.
+ *
+ * "the check hasn't answered yet", "the check FAILED" and "the server says
+ * nobody" are three different facts, and a boolean `signedIn` could only spell
+ * them the same way. It did, and each collapse cost a real bug:
+ *
+ *  * checking-as-signed-out. Whoami is a network call (on a large deployment GET
+ *    /v1/stats/tenants takes seconds, because it counts every store), so for that
+ *    whole window a signed-in user was shown the full signed-OUT screen — "You
+ *    are not signed in" plus a Sign in button that led straight back to the login
+ *    form they had just completed.
+ *  * error-as-signed-in. query-core RETAINS `data` across a failed refetch, so an
+ *    expired token or a 503 from the identity provider left the header asserting
+ *    "Signed in as alice · role admin" while every request 401'd.
+ *  * error-as-signed-out. With no cached data a rejection rendered as the
+ *    definitive "You are not signed in", so "the backend is down" was reported as
+ *    "you are signed out" — sending the user to paste a token that fails
+ *    identically.
+ *
+ * `checking` therefore carries NO `warning` field: a caller that tries to treat
+ * it like the signed-out case has to narrow the union first, so the "unknown"
+ * state cannot be collapsed into "signed out" by accident again. Render it as a
+ * neutral placeholder with no call to action — there is nothing to act on until
+ * the answer arrives.
+ *
+ * `signed-in` DOES carry a nullable `warning`, because "signed in, with a
+ * caveat" is a real state: an API key against a backend whose whoami reports a
+ * federated tenant but no configured keys is accepted AND ignored. Modelling
+ * signed-in as `warning: null` made that unrepresentable and silently dropped
+ * the sentence explaining it.
+ */
+export type IdentityView =
+  /** No answer yet. Not a verdict — say nothing definite and offer no button. */
+  | { state: "checking"; label: string }
+  /** The server confirmed a *verified federated identity* (or a working key). */
+  | { state: "signed-in"; label: string; warning: string | null }
+  /** The server answered, and the answer is nobody. */
+  | { state: "signed-out"; label: string; warning: string | null }
+  /**
+   * The check FAILED, so there is no current verdict either way. `identity` is
+   * whatever the last successful check reported (query-core keeps it across a
+   * failed refetch) — retained so the user is not logged out of the UI by a
+   * transient 503, but explicitly NOT asserted: the label says unconfirmed and
+   * `warning` says why. Callers must still offer Sign out here — the credential
+   * is in localStorage and is still going out on every request.
+   */
+  | {
+      state: "unconfirmed";
+      label: string;
+      warning: string;
+      identity: IdentitySummary | null;
+    };
 
 /**
  * A federated (bearer-authenticated) tenant is spelled `issuer:subject` —
@@ -389,33 +447,89 @@ export const AUTH_PROVIDERS: AuthProviderOption[] = [
  * `bool(settings.api_keys)` — it is about API KEYS, not about the identity
  * provider — so it is used only to explain a keyless backend, never to decide
  * whether a bearer login worked.
+ *
+ * `pending` is the whoami request's own in-flight flag and is REQUIRED: without
+ * it the no-answer-yet case is indistinguishable from a refusal. It only decides
+ * the null case — a background refetch of an identity we already have keeps
+ * showing that identity rather than blanking the header on a timer.
+ *
+ * `failure` is REQUIRED for the same reason and OUTRANKS everything, including a
+ * cached `info`: once the check has failed, the last answer is a memory, not a
+ * fact about the credential being sent now. Pass null when the check did not
+ * fail. Both flags are positional-required rather than optional so that a new
+ * call site cannot quietly reintroduce a collapse by omitting one.
  */
-export function identityView(mode: AuthMode, info: IdentitySummary | null): IdentityView {
-  if (!info) return { signedIn: false, label: "Not signed in", warning: null };
+export function identityView(
+  mode: AuthMode,
+  info: IdentitySummary | null,
+  pending: boolean,
+  failure: IdentityFailure | null,
+): IdentityView {
+  if (failure)
+    return {
+      state: "unconfirmed",
+      label: info
+        ? `Not confirmed — last seen as ${info.tenant} · role ${info.role}`
+        : "Sign-in could not be confirmed",
+      warning: signInMessage(failure.status, failure.body),
+      identity: info,
+    };
+  if (!info)
+    return pending
+      ? { state: "checking", label: "Checking sign-in…" }
+      : { state: "signed-out", label: "Not signed in", warning: null };
   const federated = isFederatedTenant(info.tenant);
   if (mode === "bearer") {
     if (federated)
       return {
-        signedIn: true,
+        state: "signed-in",
         label: `Signed in as ${info.tenant} · role ${info.role}`,
         warning: null,
       };
     return {
-      signedIn: false,
+      state: "signed-out",
       label: `The server sees you as “${info.tenant}” · role ${info.role}`,
       warning:
         "This backend ignored the token — it has no identity provider enabled, so every caller is the default tenant. You are not signed in.",
     };
   }
-  return {
-    signedIn: federated || info.auth_enabled,
-    label: federated
-      ? `Signed in as ${info.tenant} · role ${info.role}`
-      : `API key → tenant “${info.tenant}” · role ${info.role}`,
-    warning: info.auth_enabled
-      ? null
-      : "This backend has no API keys configured, so the key is ignored and every caller is the default tenant.",
-  };
+  const label = federated
+    ? `Signed in as ${info.tenant} · role ${info.role}`
+    : `API key → tenant “${info.tenant}” · role ${info.role}`;
+  // The keyless warning is about the KEY being ignored and is decided by
+  // `auth_enabled` ALONE — it must survive the `federated` case, where the
+  // verdict is signed-in. Folding it into the signed-out branch (as the first
+  // cut of this union did) silently deleted the only sentence that explains why
+  // an unauthenticated caller is getting admin.
+  const keyless = info.auth_enabled
+    ? null
+    : "This backend has no API keys configured, so the key is ignored and every caller is the default tenant.";
+  if (federated || info.auth_enabled)
+    return { state: "signed-in", label, warning: keyless };
+  return { state: "signed-out", label, warning: keyless };
+}
+
+/**
+ * Does this verdict carry something the user must READ to understand what just
+ * happened to their sign-in?
+ *
+ * The post-login destination depends on it. Signing in lands on Explore, which
+ * shows no identity verdict at all — so on a deployment with no identity
+ * provider (the DEFAULT: `IDENTITY_PROVIDER=none`) a perfectly valid token gets
+ * a whoami 200 as the default tenant, the verdict is `signed-out`, and the one
+ * sentence explaining it — "This backend ignored the token…" — renders on a
+ * screen the user has no reason to open. They see a Sign in button, sign in
+ * again, and loop forever. Where there is something to read, land where it is
+ * readable.
+ *
+ * `signed-in` is false even when it carries a caveat: the user IS in, Explore is
+ * the right place, and the caveat is in the account menu.
+ */
+export function identityNeedsExplanation(view: IdentityView): boolean {
+  if (view.state === "checking") return false; // nothing resolved yet — wait
+  if (view.state === "signed-in") return false;
+  if (view.state === "unconfirmed") return true;
+  return view.warning !== null;
 }
 
 // --- Messages ---------------------------------------------------------------

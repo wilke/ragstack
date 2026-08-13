@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getIdentity, getTenants } from "./client";
+import { ApiError, apiFailure, getIdentity, getTenants } from "./client";
 import {
   bindTokenToBase,
   clearStoredToken,
@@ -195,5 +195,32 @@ describe("credential routing", () => {
     await getTenants(getStoredCredential().value);
     expect(sent[0].url).toBe("https://evil.example/v1/stats/tenants");
     expect(sent[0].headers.Authorization).toBeUndefined();
+  });
+});
+
+// What a failed identity check becomes before lib/auth.ts words it. The failure
+// path is the one that used to be dropped entirely: `identity` was built from
+// `data` alone, so a rejection either kept asserting a stale identity or was
+// rendered as "you are not signed in".
+describe("apiFailure", () => {
+  it("carries the status and body of an API error through", () => {
+    expect(apiFailure(new ApiError(401, '{"detail":"nope"}'))).toEqual({
+      status: 401,
+      body: '{"detail":"nope"}',
+    });
+  });
+
+  it("reports a request that never got a reply as a null status, not a 0", () => {
+    // fetch rejects with a TypeError when the request never left/returned. A
+    // null status is what makes signInMessage say "could not reach the API"
+    // instead of inventing a refusal.
+    expect(apiFailure(new TypeError("Failed to fetch"))).toEqual({ status: null, body: "" });
+    expect(apiFailure(undefined)).toEqual({ status: null, body: "" });
+  });
+
+  it("drops a non-API error's message rather than putting it on screen", () => {
+    // Browser fetch messages are not sentences for a user, and are not
+    // guaranteed free of the URL or the credential in it.
+    expect(apiFailure(new Error("http://host/v1/stats/tenants?key=SECRET")).body).toBe("");
   });
 });

@@ -7,8 +7,13 @@ import {
   getStoredCredential,
   setStoredCredential,
 } from "./api/config";
-import { getIdentity } from "./api/client";
-import type { Credential } from "./lib/auth";
+import { apiFailure, getIdentity } from "./api/client";
+import {
+  identityNeedsExplanation,
+  identityView,
+  type Credential,
+  type IdentityFailure,
+} from "./lib/auth";
 import { AccountView } from "./components/AccountView";
 import { LoginView } from "./components/LoginView";
 import { UserMenu } from "./components/UserMenu";
@@ -44,7 +49,16 @@ const TABS: { id: View; label: string }[] = [
   { id: "ops", label: "Ops" },
 ];
 
-export function App() {
+export function App({
+  // Which screen to mount on. `main.tsx` passes nothing, so the app always opens
+  // on Explore; this is the seam a router (or a deep link) would hand its parsed
+  // route to, and until one exists it is what lets a test mount a screen that is
+  // otherwise only reachable by clicking. Both AccountView and the header chip
+  // take their identity state from App, and only one of them is on Explore — so
+  // without this, half of that wiring could be replaced by a constant with every
+  // test still green, which is exactly the bug that shipped.
+  initialView = "explore",
+}: { initialView?: View }) {
   // The app's ONE credential: a value plus the kind of header it becomes
   // (X-API-Key, or a bearer token pasted in the login panel). Seeded from
   // localStorage so it survives reloads, and persisted here — config.ts is the
@@ -64,7 +78,7 @@ export function App() {
   }, []);
   const apiKey = credential.value;
   const setApiKey = (v: string) => setCredential({ mode: "apikey", value: v });
-  const [view, setView] = useState<View>("explore");
+  const [view, setView] = useState<View>(initialView);
   // Shared run state: the most recent completed Explore query. Explore writes
   // it (via onRun) on every successful /v1/query; Evidence reads it. Held here
   // so the tabs share one record without a store or router.
@@ -147,6 +161,37 @@ export function App() {
         auth_enabled: whoami.data.auth_enabled,
       }
     : null;
+  // "No answer yet, and we are actively asking" — `isLoading`, which is
+  // `isPending && isFetching`.
+  //
+  // NOT `isPending` alone: with the default networkMode "online" an offline
+  // browser PAUSES the query rather than failing it, so `status` sits at
+  // "pending" indefinitely and `isPending` never clears — an offline tab would
+  // render a spinner that can never resolve. NOT `isFetching` alone either,
+  // which is also true while refreshing an identity we already have. Every
+  // screen that renders an identity verdict takes this, because an unanswered
+  // check must never be drawn as a refusal: the call can take seconds, and a
+  // signed-in user shown "not signed in" signs in again.
+  const identityChecking = whoami.isLoading;
+  // Why the check could not answer, or null. A PAUSED query is a failure for
+  // display purposes even though react-query does not call it an error: the
+  // request never left the browser, so the honest sentence is signInMessage's
+  // "could not reach the API", not "you are not signed in".
+  const identityFailure: IdentityFailure | null = whoami.isError
+    ? apiFailure(whoami.error)
+    : whoami.isPending && whoami.fetchStatus === "paused"
+      ? { status: null, body: "" }
+      : null;
+  // The verdict App itself has to reason about (where a completed sign-in
+  // lands). The two renderers below take the same three inputs — identity,
+  // checking, failure — and resolve it themselves, so neither can be handed a
+  // pre-narrowed conclusion that hides which of the four states it is in.
+  const identityResolved = identityView(
+    credential.mode,
+    identity,
+    identityChecking,
+    identityFailure,
+  );
 
   // A credential change must invalidate everything: one principal's cached
   // collection list must never be shown to another.
@@ -154,6 +199,39 @@ export function App() {
     setCredential(c);
     void queryClient.invalidateQueries();
   };
+
+  // POST-LOGIN DESTINATION. Set when the login page hands back, cleared as soon
+  // as the check that follows resolves.
+  const [awaitingVerdict, setAwaitingVerdict] = useState(false);
+  const verdictResolved = identityResolved.state !== "checking";
+  const verdictNeedsReading = identityNeedsExplanation(identityResolved);
+
+  // Signing in lands on Explore — but only when there is nothing to READ.
+  //
+  // IDENTITY_PROVIDER defaults to `none`, and with it off a perfectly valid
+  // pasted token gets a whoami 200 as the default tenant: the verdict is
+  // signed-out, and the one sentence that explains it ("This backend ignored the
+  // token…") renders only on Account. Landing on Explore in that case leaves the
+  // user with a Sign in button, no explanation anywhere they would look, and a
+  // login loop with no exit. So: Explore on success, Account whenever the
+  // resolved verdict carries something that has to be read.
+  //
+  // Deliberately deferred to the RESOLVED verdict rather than decided at
+  // onDone(): at that moment the credential has just changed, the whoami for it
+  // has not run, and the only honest answer is "checking".
+  useEffect(() => {
+    if (!awaitingVerdict) return;
+    // A deliberate navigation cancels the pending redirect. Whoami takes
+    // seconds; someone who has already picked another tab must not be yanked off
+    // it, and the explanation is still one click away in the account menu.
+    if (view !== "explore") {
+      setAwaitingVerdict(false);
+      return;
+    }
+    if (!verdictResolved) return;
+    setAwaitingVerdict(false);
+    if (verdictNeedsReading) setView("account");
+  }, [awaitingVerdict, view, verdictResolved, verdictNeedsReading]);
 
   // Compare and Evidence need width for side-by-side columns; Explore needs it
   // for its 660px column + 300px run rail (it caps itself at 1004px). The rest
@@ -222,6 +300,8 @@ export function App() {
             dark={dark}
             credential={credential}
             identity={identity}
+            checking={identityChecking}
+            failure={identityFailure}
             loading={whoami.isFetching}
             onSignIn={() => setView("login")}
             onAccount={() => setView("account")}
@@ -245,11 +325,25 @@ export function App() {
         }
       >
         {view === "login" ? (
-          <LoginView setCredential={applyCredential} onDone={() => setView("account")} />
+          // Explore, not Account: people sign in to ask the corpus something.
+          // Landing on Account put a backend picker and (until the whoami answer
+          // arrived) a Sign in button in front of someone who had just signed in,
+          // which reads as "that didn't work". Account stays in the user menu —
+          // and the effect above sends the user back to it if, and only if, the
+          // resolved verdict turns out to carry something they have to read.
+          <LoginView
+            setCredential={applyCredential}
+            onDone={() => {
+              setAwaitingVerdict(true);
+              setView("explore");
+            }}
+          />
         ) : view === "account" ? (
           <AccountView
             credential={credential}
             identity={identity}
+            checking={identityChecking}
+            failure={identityFailure}
             onSignIn={() => setView("login")}
             onSignedOut={(c) => {
               applyCredential(c);
