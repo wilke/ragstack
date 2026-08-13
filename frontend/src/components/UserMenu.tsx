@@ -7,7 +7,11 @@ import { lookupTerm } from "../lib/glossary";
 
 // Top-right account control. Signed out it is a single "Sign in" button; signed
 // in it shows WHO THE SERVER SAYS YOU ARE and opens a small menu (account,
-// preferences, sign out).
+// preferences, sign out). While the whoami answer is still in flight it is a
+// mute "checking" chip: the header must not offer a sign-in it is about to
+// contradict, and it must say the same thing as the page under it — a "Sign in"
+// button in the corner of a page that is still checking is the same
+// misdirection that sent users round the login loop, one line higher.
 //
 // The name comes from GET /v1/stats/tenants — never from the pasted token. A
 // BV-BRC token carries `un=`, and showing that would mean the header displays a
@@ -19,6 +23,7 @@ import { lookupTerm } from "../lib/glossary";
 export function UserMenu({
   credential,
   identity,
+  checking,
   loading,
   onSignIn,
   onAccount,
@@ -27,6 +32,9 @@ export function UserMenu({
 }: {
   credential: Credential;
   identity: IdentitySummary | null;
+  /** The whoami answer has not arrived yet — there is no verdict to render. */
+  checking: boolean;
+  /** A whoami request is in flight, INCLUDING a refresh of a known identity. */
   loading: boolean;
   onSignIn: () => void;
   onAccount: () => void;
@@ -37,13 +45,26 @@ export function UserMenu({
   const wrap = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useDismissable(wrap);
 
-  // `pending: false` — the header does not distinguish an unfinished check yet;
-  // it shows "Sign in" until the answer arrives, as it always has. The screen
-  // where that ambiguity was actively misleading is Account & preferences, and
-  // that one now renders the checking state.
-  const view = identityView(credential.mode, identity, false);
+  const view = identityView(credential.mode, identity, checking);
 
-  if (view.state !== "signed-in") {
+  // Deliberately not a button: there is nothing to act on yet, and the one
+  // action it could offer is the one that would be wrong if the check comes
+  // back signed-in. `role="status"` so a screen reader hears the wait rather
+  // than a control that vanishes under it.
+  if (view.state === "checking") {
+    return (
+      <span
+        role="status"
+        className={`rounded-full border px-4 py-1.5 text-sm ${
+          dark ? "border-white/20 text-[#7fa4c6]" : "border-line bg-white text-muted"
+        }`}
+      >
+        {view.label}
+      </span>
+    );
+  }
+
+  if (view.state === "signed-out") {
     return (
       <button
         type="button"

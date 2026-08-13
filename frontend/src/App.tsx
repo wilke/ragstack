@@ -226,6 +226,7 @@ export function App() {
             dark={dark}
             credential={credential}
             identity={identity}
+            checking={identityPending}
             loading={whoami.isFetching}
             onSignIn={() => setView("login")}
             onAccount={() => setView("account")}

@@ -226,6 +226,7 @@ describe("static render", () => {
       createElement(UserMenu, {
         credential: { mode: "bearer" as const, value: SECRET },
         identity,
+        checking: false,
         loading: false,
         onSignIn: () => {},
         onAccount: () => {},
@@ -270,6 +271,25 @@ describe("static render", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain("not signed in");
     expect(html).not.toContain("API backend"); // nor the backend picker
+  });
+
+  // The header has to agree with the page: a "Sign in" button in the corner
+  // while the page below says "checking" is the same misdirection, and it is the
+  // control the user actually clicked to start the loop.
+  it("shows the header chip as checking rather than offering Sign in", () => {
+    const props = {
+      credential: { mode: "bearer" as const, value: "tok" },
+      identity: null,
+      onSignIn: () => {},
+      onAccount: () => {},
+      onSignOut: () => {},
+    };
+    const pending = render(createElement(UserMenu, { ...props, checking: true, loading: true }));
+    expect(pending).toContain("Checking sign-in");
+    expect(pending).not.toContain("<button");
+
+    const resolved = render(createElement(UserMenu, { ...props, checking: false, loading: false }));
+    expect(resolved).toMatch(/<button[^>]*>Sign in<\/button>/);
   });
 
   it("shows Account as signed out once the check resolves to nobody", () => {

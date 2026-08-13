@@ -65,6 +65,7 @@ describe("Account & auth help", () => {
       createElement(UserMenu, {
         credential: { mode: "bearer" as const, value: "x" },
         identity: IDENTITY,
+        checking: false,
         loading: false,
         onSignIn: () => {},
         onAccount: () => {},
