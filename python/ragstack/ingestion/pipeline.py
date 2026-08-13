@@ -50,6 +50,7 @@ class IngestionPipeline:
         collection: str | None = None,
         doi_enricher: DoiEnricher | None = None,
         boilerplate_filter: BoilerplateFilter | None = None,
+        delete_prior: bool = True,
     ) -> None:
         self.loader = loader
         self.chunker = chunker
@@ -79,6 +80,19 @@ class IngestionPipeline:
         # run serially it is ~6000 round-trips for a 3000-doc shard and dominates
         # the load (the #144 A/B benchmark). Bound-concurrent it instead.
         self._delete_concurrency = max(1, delete_concurrency)
+        # Delete-prior guarantees "replace, don't accumulate": deterministic ids
+        # make a byte-identical re-ingest upsert in place, but an *edited* document
+        # yields shifted boundaries → new ids → the old chunks linger as orphans.
+        # It is nonetheless a provable no-op when the chunk ids cannot have moved —
+        # a replay from an unchanged embedding file, where ids are READ from the
+        # file rather than recomputed (#323). At 8.6k doc_ids per shard that is
+        # ~550k round-trips per 64-shard batch of pure waste.
+        #
+        # Opt-in only, and deliberately NOT inferred: "the file looks unchanged" is
+        # not the same as "this doc was never ingested with different boundaries",
+        # and #303 produced exactly that divergence in this repository. The caller
+        # asserts id-stability; the pipeline does not guess it.
+        self._delete_prior = delete_prior
 
     async def ingest(self, source: str, tenant_id: str = DEFAULT_TENANT) -> list[str]:
         """Ingest a source and return the list of chunk IDs created.
@@ -326,11 +340,29 @@ class IngestionPipeline:
                         doc_id, tenant_id=tenant_id, collection=self.collection
                     )
 
-        await asyncio.gather(*(_delete_prior(d) for d in docs_with_chunks))
+        if self._delete_prior:
+            await asyncio.gather(*(_delete_prior(d) for d in docs_with_chunks))
 
-        # Index
-        await self.vector_store.upsert(chunks)
-        await self.text_index.index(chunks)
+        # Index. The two legs are independent and individually batched, and each is
+        # idempotent under deterministic ids — so gather them rather than idling one
+        # store while the other works (#323). This also removes the mid-load leg
+        # skew that made a vector-count lead look like a real mismatch: within a
+        # batch the legs now advance together instead of vectors-then-text.
+        #
+        # return_exceptions=True, then re-raise: a bare gather propagates the first
+        # failure while the sibling leg keeps running unsupervised, so a failed load
+        # could still be writing to one store after index_chunks returned. Awaiting
+        # both to completion bounds the write when we raise. Which store ends up
+        # ahead on a partial failure is unchanged from the serial version — both
+        # orders were already reachable — and a re-load repairs it either way.
+        results = await asyncio.gather(
+            self.vector_store.upsert(chunks),
+            self.text_index.index(chunks),
+            return_exceptions=True,
+        )
+        for r in results:
+            if isinstance(r, BaseException):
+                raise r
 
         # Knowledge-graph extraction (optional)
         if self.kg_extractor and self.graph_store:

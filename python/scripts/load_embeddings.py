@@ -102,17 +102,54 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
-                             embedder=_NoEmbed(), vector_store=vstore, text_index=tindex)
+                             embedder=_NoEmbed(), vector_store=vstore, text_index=tindex,
+                             delete_concurrency=args.delete_concurrency,
+                             delete_prior=not args.no_delete_prior)
 
 
 async def amain(args, target=None) -> int:
     pipeline = await _build_pipeline(args, target)
-    receipts = []
-    for path in args.embeddings:
-        r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant)
-        receipts.append(r)
+    # Files hold disjoint document sets and chunk ids are deterministic, so
+    # concurrent files cannot race on a doc_id or duplicate a point (#323). Receipts
+    # are collected positionally, so the summary is identical to the serial run
+    # regardless of completion order.
+    sem = asyncio.Semaphore(max(1, args.file_concurrency))
+    receipts: list = [None] * len(args.embeddings)
+
+    async def _one(i: int, path: str) -> None:
+        async with sem:
+            r = await run_load_file(pipeline, path, file_id=path, tenant=args.tenant)
+        receipts[i] = r
         print(f"[{path}] status={r.status} chunks={r.n_chunks}"
               + (f"  ERROR: {r.error}" if r.error else ""), flush=True)
+
+    # Refresh off for the duration, restored in `finally` even on failure — and an
+    # explicit refresh before we return, so the count-based verification the driver
+    # runs immediately after does not read a stale index (#323).
+    tindex = pipeline.text_index
+    can_park = args.bulk_refresh and hasattr(tindex, "bulk_load_refresh")
+    prior = await tindex.bulk_load_refresh(True) if can_park else None
+    if can_park:
+        print(f"refresh_interval parked (was {prior or 'default'})", flush=True)
+    try:
+        # return_exceptions + re-raise, for the same reason index_chunks does it:
+        # a bare gather propagates the first failure while the other files keep
+        # loading unsupervised. run_load_file already converts per-file errors into
+        # FAILED receipts, so this should be unreachable — but "should be" is what
+        # the sequential version looked like too, and an unreachable guard is
+        # cheaper than a load that keeps writing after it reported failure.
+        outcomes = await asyncio.gather(
+            *(_one(i, p) for i, p in enumerate(args.embeddings)),
+            return_exceptions=True,
+        )
+        for o in outcomes:
+            if isinstance(o, BaseException):
+                raise o
+    finally:
+        if can_park:
+            await tindex.restore_refresh(prior)
+            await tindex.refresh()
+            print("refresh_interval restored + index refreshed", flush=True)
     summary = merge_summary(receipts)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2, sort_keys=True)
@@ -165,6 +202,35 @@ def parse_args(argv=None):
     p.add_argument("--upsert-concurrency", type=int, default=4,
                    help="concurrent upsert batches (pipelines the load; default 4). "
                         "1 = serial, safest under a capped/optimizing collection")
+    p.add_argument("--delete-concurrency", type=int, default=8,
+                   help="concurrent delete-prior operations (default 8)")
+    p.add_argument("--no-delete-prior", action="store_true",
+                   help="skip the per-doc_id delete before upserting. ONLY safe when "
+                        "the chunk ids cannot have moved since the last load of these "
+                        "documents — i.e. a replay from UNCHANGED embedding files, "
+                        "where ids are read from the file rather than recomputed. "
+                        "Saves ~550k round-trips per 64-shard batch. If any document "
+                        "here was ever ingested with different chunk boundaries, its "
+                        "old chunks survive as orphans: do not use it to 'speed up' a "
+                        "load whose inputs were re-extracted or re-chunked")
+    p.add_argument("--bulk-refresh", action="store_true",
+                   help="disable the text index's refresh interval for the duration "
+                        "of the load and restore it afterwards. The index spent ~28x "
+                        "longer refreshing than indexing on the last bulk build. The "
+                        "loader forces an explicit refresh before returning, so a "
+                        "count check straight after the load is still accurate")
+    p.add_argument("--file-concurrency", type=int, default=1,
+                   help="embedding files loaded concurrently (default 1 = serial, the "
+                        "previous behaviour). Files hold disjoint documents and ids "
+                        "are deterministic, so concurrency cannot race or duplicate. "
+                        "COSTS MEMORY: each in-flight file is read fully into RAM — "
+                        "measured ~6 GB resident for a 1.3 GB file (~4.6x expansion, "
+                        "float lists dominate), so N files is ~6N GB. Size this "
+                        "against free memory, NOT against store headroom; overshoot "
+                        "evicts the page cache the stores read through. It also "
+                        "MULTIPLIES the other knobs: the delete semaphore is "
+                        "per-call, so N files means N x --delete-concurrency "
+                        "concurrent deletes and N x --upsert-concurrency upserts")
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
     p.add_argument("--es-url", default="http://localhost:9200")
     p.add_argument("--es-index", default=None)

@@ -575,11 +575,13 @@ class Settings(BaseSettings):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Cross-encoder reranking (final stage over the fused candidate pool).
-    # Off by default; when enabled, the hybrid result is re-fetched to a pool of
+    # ON by default: the hybrid result is re-fetched to a pool of
     # `rerank_candidates`, rescored by the cross-encoder sidecar, then truncated
     # to top_k. A rerank failure degrades to the fused order (never a 500), so
-    # this is not gated by require_durable_backends.
-    rerank_enabled: bool = False
+    # this is not gated by require_durable_backends — and an unreachable sidecar
+    # costs latency, not availability, which is why it is safe to default on.
+    # Set rerank_enabled=false to opt a deployment back out.
+    rerank_enabled: bool = True
     rerank_candidates: int = 50
     crossencoder_sidecar_url: str = "http://localhost:50052"
 
