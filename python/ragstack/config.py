@@ -544,13 +544,20 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = Field(default_factory=lambda: ["*"])
     # Path prefix this API is mounted under by a reverse proxy that STRIPS it
     # (the gateway serves each deployment at /ragstack/<tenant>/api/...). It is
-    # what /docs builds its openapi URL from, and what the served schema
-    # advertises as its `servers` entry. Empty (default) = mounted at the root,
-    # which is also direct-port access — the proxy's `X-Forwarded-Prefix` then
-    # supplies it per request (ragstack/api/root_path.py). Set this only where
-    # the proxy cannot be made to send that header: it PINS the prefix, so a
-    # deployment reachable both ways would then advertise it on the direct port
-    # too. env ROOT_PATH=/ragstack/asm/api
+    # what /docs builds its openapi URL from, what /redoc builds its `spec-url`
+    # from, and what the served schema advertises as its `servers` entry. Empty
+    # (default) = mounted at the root, which is also direct-port access — the
+    # proxy's `X-Forwarded-Prefix` then supplies it per request
+    # (ragstack/api/root_path.py). Set this only where the proxy cannot be made
+    # to send that header: it PINS the prefix, so a deployment reachable both
+    # ways would then advertise it on the direct port too.
+    #
+    # It must NOT be a prefix this app is itself served under, because pinning it
+    # also makes Starlette strip it before routing: ROOT_PATH=/v1 would 404 the
+    # whole /v1 surface (GET /v1/stats/tenants would route as /stats/tenants).
+    # A value that fails validation is rejected at import with a warning and
+    # means "no proxy" — it does NOT fall back to the caller-supplied header.
+    # env ROOT_PATH=/ragstack/asm/api
     root_path: str = ""
 
     # Retrieval defaults

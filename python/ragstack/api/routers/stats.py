@@ -277,6 +277,8 @@ async def stats_tenants(
         allowed_here = tenant in tenants or entry_id in shared_by_tenant.get(tenant, set())
         return probe_tenant_count(store, [tenant]) if allowed_here else _no_count()
 
+    # (vector, text) per (tenant, collection), row-major over rows_tenants. Left
+    # empty with counts=false — nothing indexes it on that path.
     cells: list[Any] = []
     if counts:
         cells = await asyncio.gather(
@@ -292,15 +294,19 @@ async def stats_tenants(
     rows: list[TenantRow] = []
     for i, t in enumerate(rows_tenants):
         offset = i * len(entries)
-        cols = [
-            TenantCollectionCount(
-                collection=e.id,
-                label=e.label,
-                vector_count=cells[offset + j][0] if counts else None,
-                text_count=cells[offset + j][1] if counts else None,
+        cols: list[TenantCollectionCount] = []
+        for j, e in enumerate(entries):
+            # One lookup guarded once, rather than indexing an empty list twice
+            # and relying on the ternary to short-circuit it.
+            vector_count, text_count = cells[offset + j] if counts else (None, None)
+            cols.append(
+                TenantCollectionCount(
+                    collection=e.id,
+                    label=e.label,
+                    vector_count=vector_count,
+                    text_count=text_count,
+                )
             )
-            for j, e in enumerate(entries)
-        ]
         # A share-derived row is emitted only when it CARRIES something. The row
         # is keyed by the owner's subject — for a bearer identity that is an
         # email — and an all-zero row would disclose who owns a collection to a

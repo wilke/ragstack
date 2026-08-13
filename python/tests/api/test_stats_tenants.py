@@ -120,9 +120,13 @@ async def test_keyless_path_reports_auth_disabled(client, monkeypatch):
     assert body["tenant"] == "default" and body["role"] == ROLE_ADMIN
 
 
-async def test_requires_authentication(client, monkeypatch):
+@pytest.mark.parametrize("query", ["", "?counts=false"])
+async def test_requires_authentication(client, monkeypatch, query):
+    # The cheap path skips the count sweep, never the credential — and it is the
+    # call a UI makes on every credential change, so it is the likeliest one to
+    # arrive without one.
     _configure_keys(monkeypatch)
-    r = await client.get("/v1/stats/tenants")
+    r = await client.get(f"/v1/stats/tenants{query}")
     assert r.status_code == 401
 
 

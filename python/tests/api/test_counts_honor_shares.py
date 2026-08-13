@@ -177,6 +177,47 @@ async def test_an_all_zero_share_row_is_omitted(client):
     assert "grantee" in named  # the caller's own scopes are unconditional
 
 
+async def test_counts_false_exposes_no_more_than_counts_true(client):
+    """The invariant the cheap path's authorization argument rests on.
+
+    ``counts=false`` skips the share widening, so it cannot be argued safe cell
+    by cell — it has to hold as a WHOLE: the rows it exposes are a SUBSET of the
+    counted ones (share-derived rows are dropped entirely, which is the
+    identity-disclosure rule above applied harder, never a row the counted call
+    would have withheld), the columns are the same collections, and the identity
+    half — the only thing the flag is for — is identical. Skipping work must
+    change how much is measured, never WHO or WHAT is visible.
+    """
+    await _setup_shared()
+
+    counted = (await client.get("/v1/stats/tenants", headers=_h("grantee"))).json()
+    cheap = (
+        await client.get("/v1/stats/tenants?counts=false", headers=_h("grantee"))
+    ).json()
+
+    counted_rows = {r["tenant"] for r in counted["tenants"]}
+    cheap_rows = {r["tenant"] for r in cheap["tenants"]}
+    assert cheap_rows <= counted_rows, "the cheap path must not expose a new tenant"
+    # Not vacuous: this fixture HAS a share-derived row, and that row is exactly
+    # what the cheap path drops. Equal sets would prove nothing about the
+    # widening being skipped.
+    assert "owner" in counted_rows and "owner" not in cheap_rows
+
+    def _cols(body: dict) -> dict[str, list[str]]:
+        return {
+            r["tenant"]: [c["collection"] for c in r["collections"]]
+            for r in body["tenants"]
+        }
+
+    counted_cols, cheap_cols = _cols(counted), _cols(cheap)
+    assert all(cheap_cols[t] == counted_cols[t] for t in cheap_cols), (
+        "the same collections either way — the allowlist is not a count"
+    )
+
+    identity = ("tenant", "role", "readable", "restricted_to", "auth_enabled")
+    assert {k: cheap[k] for k in identity} == {k: counted[k] for k in identity}
+
+
 async def test_an_unshared_collection_still_counts_zero_for_a_stranger(client):
     """Widening is the SHARE, no wider: without a grant the count stays 0 and the
     collection is not listed at all."""
