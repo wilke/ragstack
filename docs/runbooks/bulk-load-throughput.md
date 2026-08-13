@@ -16,9 +16,20 @@ afterthought — passing `--no-delete-prior` to an old image fails the task with
 an unrecognized-argument error, which in a 64-shard batch means 64 failed tasks.
 
 1. Merge #324.
-2. Rebuild the worker image from the merged tree and place it where the CWL
-   resolves `ragstack-worker.sif`.
-3. Verify the image actually has the flags before submitting a real batch:
+2. Rebuild the worker image from the merged tree.
+3. **Install it where the workers actually resolve it — not where the repo keeps
+   it.** The CWL names the image bare (`dockerPull: ragstack-worker.sif`), and it
+   is resolved by the worker's `--image-dir`, not by the checkout. The repo copy
+   under `apptainer/images/` is *not* what a submitted batch runs. Check the
+   running worker's own command line for its `--image-dir` and install there.
+   Getting this wrong is silent: the batch runs happily on the old image and the
+   new flags simply never take effect.
+4. **Never overwrite the image in place while a load is running** — a container
+   is mapped to that file. Stage it under a versioned name and swap at a batch
+   boundary. (An atomic `mv` on the same filesystem preserves the running
+   process's inode and is safe in principle; staging and swapping at a boundary
+   removes the need to rely on that.)
+5. Verify the image actually has the flags before submitting a real batch:
 
    ```
    <run the worker image> python /opt/ragstack/scripts/load_embeddings.py --help \
