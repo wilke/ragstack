@@ -99,7 +99,13 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
                 vstore, poll_interval=args.backpressure_poll,
                 max_wait=args.backpressure_max_wait,
             )
-        tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index)
+        # --bulk-refresh turns OFF the per-write forced refresh. That is the whole
+        # win: measured mid-build, forced refreshes were ~99% of the text leg's
+        # wall clock. Parking index.refresh_interval (below) is the smaller,
+        # complementary half — it governs the periodic background refresh, which an
+        # explicit per-request refresh bypasses entirely.
+        tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index,
+                                        refresh_on_write=not args.bulk_refresh)
         await tindex.ensure_index()
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
                              embedder=_NoEmbed(), vector_store=vstore, text_index=tindex,
@@ -214,11 +220,15 @@ def parse_args(argv=None):
                         "old chunks survive as orphans: do not use it to 'speed up' a "
                         "load whose inputs were re-extracted or re-chunked")
     p.add_argument("--bulk-refresh", action="store_true",
-                   help="disable the text index's refresh interval for the duration "
-                        "of the load and restore it afterwards. The index spent ~28x "
-                        "longer refreshing than indexing on the last bulk build. The "
-                        "loader forces an explicit refresh before returning, so a "
-                        "count check straight after the load is still accurate")
+                   help="stop forcing a synchronous text-index refresh on every "
+                        "write, and park the periodic refresh interval too. Measured "
+                        "mid-build on an 11.9M-doc index: 1,355 refreshes in 90s "
+                        "(~15/s, one per bulk and per delete) burning 89.1s of that "
+                        "90s window, against 1.5s deleting and 0.0s indexing — "
+                        "refresh was ~99% of the text leg's wall clock. The loader "
+                        "forces one explicit refresh before returning, so a count "
+                        "check straight after the load is still accurate. Do not use "
+                        "it if something must search the index DURING the load")
     p.add_argument("--file-concurrency", type=int, default=1,
                    help="embedding files loaded concurrently (default 1 = serial, the "
                         "previous behaviour). Files hold disjoint documents and ids "

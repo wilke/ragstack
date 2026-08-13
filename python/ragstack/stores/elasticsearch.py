@@ -105,11 +105,26 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
 class ElasticsearchTextIndex:
     """TextIndex protocol backed by Elasticsearch BM25."""
 
-    def __init__(self, url: str, index: str, api_key: str | None = None) -> None:
+    def __init__(self, url: str, index: str, api_key: str | None = None,
+                 refresh_on_write: bool = True) -> None:
         from elasticsearch import AsyncElasticsearch
 
         self._es = AsyncElasticsearch(hosts=url, api_key=api_key or None)
         self._index = index
+        # Every write forces a synchronous refresh so a subsequent read sees it —
+        # read-your-writes, which the interactive API path depends on.
+        #
+        # It is ruinous for a bulk load. Measured on an 11.9M-doc single-shard
+        # index mid-build: 1,355 refreshes in 90 seconds (~15/s, one per bulk and
+        # per delete-by-query), consuming 89.1 s of that 90 s window against 1.5 s
+        # deleting and 0.0 s indexing. Refresh was ~99% of the wall clock.
+        #
+        # Note this is NOT the same thing as `index.refresh_interval`, and parking
+        # that setting does NOT fix it: an explicit `refresh=true` on a request
+        # forces a refresh of the affected shards regardless of the interval. The
+        # interval governs only the periodic background refresh. Two different
+        # mechanisms; only this one was actually costing us the time.
+        self._refresh_on_write = refresh_on_write
 
     async def ensure_index(self) -> None:
         # Create idempotently rather than gating on exists(): two workers can both
@@ -173,8 +188,9 @@ class ElasticsearchTextIndex:
                     "metadata": metadata,
                 }
             )
-        # refresh so the just-indexed docs are immediately searchable.
-        resp = await self._es.bulk(operations=operations, refresh=True)
+        # refresh so the just-indexed docs are immediately searchable — unless the
+        # caller is bulk-loading, where it dominates the wall clock (see __init__).
+        resp = await self._es.bulk(operations=operations, refresh=self._refresh_on_write)
         # ES returns HTTP 200 with errors=true on partial failure rather than
         # raising, so a malformed/conflicting doc would silently never be indexed
         # (and a later BM25 search would miss it). Surface the first failure.
@@ -329,7 +345,7 @@ class ElasticsearchTextIndex:
         await self._es.delete_by_query(
             index=self._index,
             query={"bool": {"filter": filter_clauses}},
-            refresh=True,
+            refresh=self._refresh_on_write,
             conflicts="proceed",
         )
 
@@ -353,7 +369,7 @@ class ElasticsearchTextIndex:
                     "must_not": [{"terms": {"chunk_id": list(keep_chunk_ids)}}],
                 }
             },
-            refresh=True,
+            refresh=self._refresh_on_write,
             conflicts="proceed",
         )
 
