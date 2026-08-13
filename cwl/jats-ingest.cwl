@@ -100,6 +100,28 @@ inputs:
   backpressure:
     type: boolean
     default: false
+  no_delete_prior:
+    type: boolean
+    default: false
+    doc: "Skip the per-doc_id delete before upserting (#323). ONLY for a replay
+      from UNCHANGED embedding files, where chunk ids are read from the file and
+      cannot have moved — then the delete removes exactly what the upsert is about
+      to rewrite (~550k round-trips per 64-shard batch). NEVER set it for a batch
+      whose inputs were re-extracted or re-chunked: the old chunks survive as
+      orphans. Default false = the safe, id-agnostic behaviour."
+  file_concurrency:
+    type: int
+    default: 1
+    doc: "Embedding files loaded concurrently (#323). Shards hold disjoint
+      documents and ids are deterministic, so this cannot race or duplicate.
+      1 = the previous serial behaviour."
+  bulk_refresh:
+    type: boolean
+    default: false
+    doc: "Park the ES refresh interval for the load and restore it after (#323).
+      The index spent ~28x longer refreshing than indexing on the last build. The
+      tool forces an explicit refresh before returning, so the driver's count
+      verification stays accurate."
 
 steps:
   extract:
@@ -274,6 +296,9 @@ steps:
       qdrant_url: qdrant_url
       es_url: es_url
       backpressure: backpressure
+      no_delete_prior: no_delete_prior
+      file_concurrency: file_concurrency
+      bulk_refresh: bulk_refresh
     out: [summary]
     run:
       class: CommandLineTool
@@ -321,11 +346,26 @@ steps:
           inputBinding:
             prefix: --backpressure
             position: 7
+        no_delete_prior:
+          type: boolean
+          inputBinding:
+            prefix: --no-delete-prior
+            position: 8
+        file_concurrency:
+          type: int
+          inputBinding:
+            prefix: --file-concurrency
+            position: 9
+        bulk_refresh:
+          type: boolean
+          inputBinding:
+            prefix: --bulk-refresh
+            position: 10
       arguments:
-        - position: 8
+        - position: 11
           prefix: --out
           valueFrom: load-summary.json
-        - position: 9
+        - position: 12
           valueFrom: "--fail-on-error"
       outputs:
         summary:
