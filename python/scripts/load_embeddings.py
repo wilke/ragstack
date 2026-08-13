@@ -225,7 +225,7 @@ def parse_args(argv=None):
                         "mid-build on an 11.9M-doc index: 1,355 refreshes in 90s "
                         "(~15/s, one per bulk and per delete) burning 89.1s of that "
                         "90s window, against 1.5s deleting and 0.0s indexing — "
-                        "refresh was ~99% of the text leg's wall clock. The loader "
+                        "refresh was ~99%% of the text leg's wall clock. The loader "
                         "forces one explicit refresh before returning, so a count "
                         "check straight after the load is still accurate. Do not use "
                         "it if something must search the index DURING the load")
