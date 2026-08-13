@@ -226,6 +226,8 @@ describe("static render", () => {
       createElement(UserMenu, {
         credential: { mode: "bearer" as const, value: SECRET },
         identity,
+        checking: false,
+        failure: null,
         loading: false,
         onSignIn: () => {},
         onAccount: () => {},
@@ -240,6 +242,7 @@ describe("static render", () => {
         credential: { mode: "bearer" as const, value: SECRET },
         identity,
         checking: false,
+        failure: null,
         onSignIn: () => {},
         onSignedOut: () => {},
         onCredentialChange: () => {},
@@ -252,13 +255,14 @@ describe("static render", () => {
   // The login-loop bug: whoami takes seconds on a deployment with slow store
   // counts, and for that whole window Account rendered "You are not signed in"
   // plus a Sign in button — which led a user who HAD just signed in back to the
-  // login form. While the check is unresolved the page must offer nothing.
+  // login form. While the check is unresolved the page must offer no VERDICT...
   it("shows Account as checking, with no sign-in button, until whoami answers", () => {
     const html = render(
       createElement(AccountView, {
         credential: { mode: "bearer" as const, value: "tok" },
         identity: null,
         checking: true,
+        failure: null,
         onSignIn: () => {},
         onSignedOut: () => {},
         onCredentialChange: () => {},
@@ -266,10 +270,32 @@ describe("static render", () => {
       }),
     );
     expect(html).toContain("Checking sign-in");
-    expect(html).not.toContain("Sign in<"); // no call to action of any kind
-    expect(html).not.toContain("<button");
+    expect(html).not.toContain(">Sign in<"); // no call to action of any kind
     expect(html).not.toContain("not signed in");
-    expect(html).not.toContain("API backend"); // nor the backend picker
+    // ...and a screen-reader user must still land on a named page.
+    expect(html).toMatch(/<h2[^>]*>Account/);
+  });
+
+  // ...but the page itself stays. The backend picker's own comment says it has
+  // to be reachable "because picking the wrong backend is a common reason a
+  // sign-in appears not to work" — and a check that never answers is the most
+  // likely symptom of exactly that, so the early return that dropped the whole
+  // page took the fix away in the state that needs it most.
+  it("keeps the backend picker mounted while the check is unresolved", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: true,
+        failure: null,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).toContain("API backend");
+    expect(html).toContain('aria-label="API backend"'); // the <select>, not just a heading
   });
 
   it("shows Account as signed out once the check resolves to nobody", () => {
@@ -278,6 +304,7 @@ describe("static render", () => {
         credential: { mode: "bearer" as const, value: "tok" },
         identity: null,
         checking: false,
+        failure: null,
         onSignIn: () => {},
         onSignedOut: () => {},
         onCredentialChange: () => {},
@@ -287,6 +314,129 @@ describe("static render", () => {
     expect(html).toContain("You are not signed in");
     expect(html).toContain("Sign in");
     expect(html).toContain("API backend"); // the wrong-backend escape hatch
+  });
+
+  // A failed check is not a verdict. Reporting "the backend is down" as "you are
+  // signed out" sends the user to paste a token that will fail identically.
+  it("reports a failed check on Account as unconfirmed, with a way out", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: false,
+        failure: { status: 503, body: "" },
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).not.toContain("You are not signed in");
+    expect(html).toContain("could not be confirmed");
+    expect(html).toContain("identity provider is unreachable"); // signInMessage(503)
+    // The token is still in localStorage and still being sent, so the one action
+    // that always has to work is clearing it.
+    expect(html).toContain("Sign out");
+    expect(html).toContain("API backend");
+  });
+
+  it("keeps a cached identity on Account without asserting it, when the check fails", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true },
+        checking: false,
+        failure: { status: 401, body: "" },
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).toContain("bvbrc:alice@patricbrc.org"); // retained
+    expect(html).not.toContain("Signed in as bvbrc:alice"); // but not asserted
+    expect(html).toContain("last seen as");
+    expect(html).toContain("Sign out");
+  });
+
+  // The keyless caveat is decided by `auth_enabled` alone, so it has to render
+  // on a signed-IN verdict too — modelling signed-in as `warning: null` dropped
+  // the only sentence explaining why an unauthenticated caller gets admin.
+  it("shows the keyless caveat on a signed-in Account page", () => {
+    const html = render(
+      createElement(AccountView, {
+        credential: { mode: "apikey" as const, value: "k" },
+        identity: { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: false },
+        checking: false,
+        failure: null,
+        onSignIn: () => {},
+        onSignedOut: () => {},
+        onCredentialChange: () => {},
+        onBaseChange: () => {},
+      }),
+    );
+    expect(html).toContain("no API keys configured");
+  });
+
+  // BLOCKER: sign-in lands on Explore, which shows no identity verdict at all,
+  // so the header is the ONLY identity surface a freshly signed-in user sees.
+  // A definitive "Sign in" button there — for the several seconds whoami takes —
+  // is the control that restarts the login loop this whole change exists to end.
+  it("renders no button in the header while the identity check is unresolved", () => {
+    const html = render(
+      createElement(UserMenu, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: true,
+        failure: null,
+        loading: true,
+        onSignIn: () => {},
+        onAccount: () => {},
+        onSignOut: () => {},
+      }),
+    );
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("Sign in");
+    expect(html).toContain("Checking…");
+  });
+
+  it("restores the header Sign in button once the check resolves to nobody", () => {
+    const html = render(
+      createElement(UserMenu, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: null,
+        checking: false,
+        failure: null,
+        loading: false,
+        onSignIn: () => {},
+        onAccount: () => {},
+        onSignOut: () => {},
+      }),
+    );
+    expect(html).toContain("<button");
+    expect(html).toContain("Sign in");
+  });
+
+  it("marks the header chip unconfirmed — and keeps Sign out reachable — on a failed check", () => {
+    const html = render(
+      createElement(UserMenu, {
+        credential: { mode: "bearer" as const, value: "tok" },
+        identity: { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true },
+        checking: false,
+        failure: { status: 401, body: "" },
+        loading: false,
+        onSignIn: () => {},
+        onAccount: () => {},
+        onSignOut: () => {},
+      }),
+    );
+    // The chip opens the menu (which holds Sign out) rather than collapsing to a
+    // Sign in button that would strand a still-stored, still-sent credential.
+    expect(html).toContain("<button");
+    expect(html).not.toContain(">Sign in<");
+    expect(html).toContain("unconfirmed");
+    // ...and it must NOT claim the role a check that just failed reported.
+    expect(html).not.toContain("admin ▾");
   });
 
   it("mounts the new-collection form", () => {

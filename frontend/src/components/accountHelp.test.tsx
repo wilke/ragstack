@@ -24,6 +24,7 @@ const account = (mode: "bearer" | "apikey") =>
       credential: { mode, value: "x" },
       identity: IDENTITY,
       checking: false,
+      failure: null,
       onSignIn: () => {},
       onSignedOut: () => {},
       onCredentialChange: () => {},
@@ -65,6 +66,8 @@ describe("Account & auth help", () => {
       createElement(UserMenu, {
         credential: { mode: "bearer" as const, value: "x" },
         identity: IDENTITY,
+        checking: false,
+        failure: null,
         loading: false,
         onSignIn: () => {},
         onAccount: () => {},

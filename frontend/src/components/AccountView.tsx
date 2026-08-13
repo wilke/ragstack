@@ -15,6 +15,7 @@ import {
   identityView,
   tokenExpiryNote,
   type Credential,
+  type IdentityFailure,
   type IdentitySummary,
 } from "../lib/auth";
 
@@ -43,6 +44,7 @@ export function AccountView({
   credential,
   identity,
   checking,
+  failure,
   onSignIn,
   onSignedOut,
   onCredentialChange,
@@ -52,6 +54,8 @@ export function AccountView({
   identity: IdentitySummary | null;
   /** The whoami answer has not arrived yet — no verdict to render. */
   checking: boolean;
+  /** The whoami request failed, or null when it did not. */
+  failure: IdentityFailure | null;
   onSignIn: () => void;
   onSignedOut: (c: Credential) => void;
   /** Re-resolve the app credential after a backend change. */
@@ -59,7 +63,7 @@ export function AccountView({
   /** Report a same-tab base change to App (no storage event fires locally). */
   onBaseChange: (base: string) => void;
 }) {
-  const view = identityView(credential.mode, identity, checking);
+  const view = identityView(credential.mode, identity, checking, failure);
   // Mirrors the persisted vision mode so the checkbox re-renders on toggle;
   // lib/vision.ts owns storage + the <html> attribute.
   const [accessibleVision, setAccessibleVisionState] = useState(getAccessibleVision);
@@ -68,15 +72,83 @@ export function AccountView({
   const tokenBase = getStoredTokenBase();
   const expiry = tokenExpiryNote(savedToken, Date.now());
 
-  // Nothing definite, so nothing to act on: no "not signed in", no Sign in
-  // button, and no backend picker. Whoami is a network call — seconds on a
-  // deployment whose store counts are slow — and rendering the signed-out screen
-  // in that window is what made a completed sign-in look like a failed one and
-  // sent people round the login loop again.
+  // The wrong-backend escape hatch, mounted on EVERY state of this page.
+  // Picking the wrong backend is a common reason a sign-in appears not to work,
+  // and the states where that is most likely — the check hanging, the check
+  // failing — are exactly the ones an early return used to drop it from.
+  const backendCard = (
+    <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 text-left">
+      {/* No paragraph here: BackendSwitcher's own "deployment" tip already
+          defines a deployment, re-pointing and the per-browser persistence. */}
+      <h3 className="text-sm font-medium text-gray-700">API backend</h3>
+      <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
+    </div>
+  );
+
+  // Clearing the token is the one action that must work in every state,
+  // including the ones with no confirmed identity: the credential is in
+  // localStorage and is still being sent on every request, so "the check keeps
+  // failing" must be escapable from the UI.
+  const signOut = (
+    <button
+      type="button"
+      onClick={() => {
+        clearStoredToken();
+        onSignedOut({ mode: "apikey", value: getStoredApiKey() });
+      }}
+      className="mt-3 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 hover:bg-gray-100"
+    >
+      Sign out
+    </button>
+  );
+
+  // Nothing definite, so no VERDICT and nothing to act on: no "not signed in"
+  // and no Sign in button. Whoami is a network call — seconds on a deployment
+  // whose store counts are slow — and rendering the signed-out screen in that
+  // window is what made a completed sign-in look like a failed one and sent
+  // people round the login loop again. Only the verdict block waits; the page
+  // itself (and its backend picker) stays.
   if (view.state === "checking") {
     return (
-      <div className="mx-auto max-w-md py-10 text-center" role="status">
-        <p className="text-sm text-gray-500">{view.label}</p>
+      <div className="mx-auto max-w-md py-10 text-center">
+        <h2 className="text-base font-semibold text-gray-900">Account &amp; preferences</h2>
+        <p className="mt-2 text-sm text-gray-500" role="status">
+          {view.label}
+        </p>
+        {backendCard}
+      </div>
+    );
+  }
+
+  // The check FAILED. Not a verdict either way, so this must not say "you are
+  // not signed in" — "the backend is down" reported as "you are signed out"
+  // sends the user to paste a token that will fail identically.
+  if (view.state === "unconfirmed") {
+    return (
+      <div className="mx-auto max-w-md py-10 text-center">
+        <h2 className="text-base font-semibold text-gray-900">Account &amp; preferences</h2>
+        <p className="mt-2 text-sm text-gray-600">{view.label}</p>
+        <p className="mx-auto mt-3 max-w-sm rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+          {view.warning}
+        </p>
+        {view.identity ? (
+          <p className="mt-3 text-xs text-gray-500">
+            The name above is what the last successful check reported. It is not
+            being asserted now — the credential in this browser is still being sent
+            on every request, and the server has stopped confirming it.
+          </p>
+        ) : null}
+        <div className="mt-4 flex justify-center gap-2">
+          <button
+            type="button"
+            onClick={onSignIn}
+            className="rounded bg-gray-900 px-3 py-2 text-sm font-medium text-white hover:bg-gray-800"
+          >
+            Sign in again
+          </button>
+        </div>
+        {signOut}
+        {backendCard}
       </div>
     );
   }
@@ -84,7 +156,8 @@ export function AccountView({
   if (view.state === "signed-out") {
     return (
       <div className="mx-auto max-w-md py-10 text-center">
-        <p className="text-sm text-gray-600">You are not signed in.</p>
+        <h2 className="text-base font-semibold text-gray-900">Account &amp; preferences</h2>
+        <p className="mt-2 text-sm text-gray-600">You are not signed in.</p>
         {view.warning ? (
           <p className="mx-auto mt-3 max-w-sm rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
             {view.warning}
@@ -97,15 +170,7 @@ export function AccountView({
         >
           Sign in
         </button>
-        {/* Reachable while signed OUT too: picking the wrong backend is a
-            common reason a sign-in appears not to work, and the fix has to be
-            available without first signing in. */}
-        <div className="mt-6 rounded-xl border border-gray-200 bg-white p-5 text-left">
-          {/* No paragraph here: BackendSwitcher's own "deployment" tip already
-              defines a deployment, re-pointing and the per-browser persistence. */}
-          <h3 className="text-sm font-medium text-gray-700">API backend</h3>
-          <BackendSwitcher setCredential={onCredentialChange} onBaseChange={onBaseChange} />
-        </div>
+        {backendCard}
       </div>
     );
   }
@@ -121,6 +186,14 @@ export function AccountView({
           As reported by the server for the credential this browser is sending — not
           read from the token.
         </p>
+        {/* Signed in WITH a caveat is a real state (see identityView): a key the
+            backend accepts because it configures no keys at all. The union used
+            to spell signed-in as `warning: null`, which deleted this sentence. */}
+        {view.warning ? (
+          <p className="mt-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">
+            {view.warning}
+          </p>
+        ) : null}
         <dl className="mt-4">
           <Row label="Name" value={accountName(tenant)} />
           <Row label="Identity provider" value={issuer ?? "API key (not a person)"} />
@@ -179,16 +252,7 @@ export function AccountView({
             Signing out deletes it from this browser; it stays valid elsewhere until
             expiry.
           </p>
-          <button
-            type="button"
-            onClick={() => {
-              clearStoredToken();
-              onSignedOut({ mode: "apikey", value: getStoredApiKey() });
-            }}
-            className="mt-3 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 hover:bg-gray-100"
-          >
-            Sign out
-          </button>
+          {signOut}
         </section>
       ) : null}
 
