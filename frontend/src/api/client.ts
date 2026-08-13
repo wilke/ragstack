@@ -20,6 +20,7 @@ import {
   credentialHeaders,
   sendableCredential,
   type CredentialInput,
+  type IdentityFailure,
 } from "../lib/auth";
 
 export interface SourceMetadata {
@@ -81,6 +82,22 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * Normalize whatever a failed request threw into the {status, body} pair
+ * lib/auth.ts renders a sentence from.
+ *
+ * A rejected `fetch` throws a TypeError with a browser-specific, unhelpful
+ * message ("Failed to fetch", "NetworkError when attempting to fetch resource"),
+ * and there is no status because no reply arrived — that is `status: null`, which
+ * `signInMessage` words as "could not reach the API" rather than as a refusal.
+ * The message of a non-ApiError is deliberately DROPPED: it is not a sentence for
+ * a user, and it is not guaranteed free of the URL or credential.
+ */
+export function apiFailure(error: unknown): IdentityFailure {
+  if (error instanceof ApiError) return { status: error.status, body: error.message };
+  return { status: null, body: "" };
 }
 
 // The ONE place a credential becomes a header. Every request helper below calls

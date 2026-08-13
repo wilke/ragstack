@@ -6,6 +6,7 @@ import {
   bearerAppliesToBase,
   bearerBaseWarning,
   credentialHeaders,
+  identityNeedsExplanation,
   identityView,
   insecureContextWarning,
   isTokenExpired,
@@ -293,39 +294,183 @@ describe("token expiry", () => {
 // federated `issuer:subject` tenant proves the bearer path authenticated.
 describe("identityView", () => {
   it("confirms a bearer login only on a federated issuer:subject tenant", () => {
-    const v = identityView("bearer", {
-      tenant: "bvbrc:alice@patricbrc.org",
-      role: "user",
-      auth_enabled: false, // reports bool(api_keys) — irrelevant to a bearer login
-    });
-    expect(v.signedIn).toBe(true);
+    const v = identityView(
+      "bearer",
+      {
+        tenant: "bvbrc:alice@patricbrc.org",
+        role: "user",
+        auth_enabled: false, // reports bool(api_keys) — irrelevant to a bearer login
+      },
+      false,
+      null,
+    );
+    expect(v.state).toBe("signed-in");
     expect(v.label).toContain("bvbrc:alice@patricbrc.org");
-    expect(v.warning).toBeNull();
+    expect(v.state === "signed-in" && v.warning).toBeNull();
   });
 
   it("refuses to call a 200 a login when the backend ignored the token", () => {
-    const v = identityView("bearer", { tenant: "default", role: "admin", auth_enabled: true });
-    expect(v.signedIn).toBe(false);
-    expect(v.warning ?? "").toMatch(/identity provider/i);
-    expect(v.warning ?? "").toMatch(/not signed in/i);
+    const v = identityView(
+      "bearer",
+      { tenant: "default", role: "admin", auth_enabled: true },
+      false,
+      null,
+    );
+    expect(v.state).toBe("signed-out");
+    const warning = v.state === "signed-out" ? (v.warning ?? "") : "";
+    expect(warning).toMatch(/identity provider/i);
+    expect(warning).toMatch(/not signed in/i);
   });
 
   it("names the tenant an API key maps to", () => {
-    const v = identityView("apikey", { tenant: "asm", role: "admin", auth_enabled: true });
-    expect(v.signedIn).toBe(true);
+    const v = identityView(
+      "apikey",
+      { tenant: "asm", role: "admin", auth_enabled: true },
+      false,
+      null,
+    );
+    expect(v.state).toBe("signed-in");
     expect(v.label).toContain("asm");
-    expect(v.warning).toBeNull();
+    expect(v.state === "signed-in" && v.warning).toBeNull();
   });
 
   it("warns that a keyless backend ignores the key", () => {
-    const v = identityView("apikey", { tenant: "default", role: "admin", auth_enabled: false });
-    expect(v.signedIn).toBe(false);
-    expect(v.warning ?? "").toMatch(/no API keys/i);
+    const v = identityView(
+      "apikey",
+      { tenant: "default", role: "admin", auth_enabled: false },
+      false,
+      null,
+    );
+    expect(v.state).toBe("signed-out");
+    expect((v.state === "signed-out" ? (v.warning ?? "") : "")).toMatch(/no API keys/i);
   });
 
-  it("says 'not signed in' before the server has answered", () => {
-    expect(identityView("bearer", null).signedIn).toBe(false);
-    expect(identityView("bearer", null).label).toMatch(/not signed in/i);
+  // The keyless warning is about the KEY being ignored and is decided by
+  // `auth_enabled` alone, so it has to survive the case where the verdict is
+  // signed-in. Folding it into the signed-out branch deleted the only sentence
+  // explaining why an unauthenticated caller is getting admin.
+  it("keeps the keyless caveat on a signed-in verdict, not only a signed-out one", () => {
+    const v = identityView(
+      "apikey",
+      { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: false },
+      false,
+      null,
+    );
+    expect(v.state).toBe("signed-in");
+    expect(v.state === "signed-in" ? (v.warning ?? "") : "").toMatch(/no API keys/i);
+  });
+
+  // The four-state contract. A boolean here spelled "still asking" and "the
+  // server says nobody" the same way, and whoami takes SECONDS on a deployment
+  // with slow store counts — so a freshly signed-in user was shown the
+  // signed-out screen and sent back to the login form.
+  it("reports an unanswered check as checking, never as signed out", () => {
+    const v = identityView("bearer", null, true, null);
+    expect(v.state).toBe("checking");
+    expect(v.label).not.toMatch(/not signed in/i);
+    // No `warning` to render, by type: the checking variant does not carry one,
+    // so a caller cannot treat it as the signed-out case without narrowing.
+    expect("warning" in v).toBe(false);
+  });
+
+  it("says 'not signed in' only once the check has resolved to nobody", () => {
+    const v = identityView("bearer", null, false, null);
+    expect(v.state).toBe("signed-out");
+    expect(v.label).toMatch(/not signed in/i);
+  });
+
+  // `pending` decides the null case only: a background refetch must not blank
+  // an identity the server already confirmed.
+  it("keeps a known identity on screen while it is being refreshed", () => {
+    const v = identityView(
+      "bearer",
+      { tenant: "bvbrc:alice@patricbrc.org", role: "user", auth_enabled: false },
+      true,
+      null,
+    );
+    expect(v.state).toBe("signed-in");
+  });
+
+  // --- the check FAILED ------------------------------------------------------
+  // query-core RETAINS `data` across a failed refetch, so an expired token left
+  // the header asserting "Signed in as alice · role admin" while every request
+  // 401'd. A failure outranks a cached answer: the last answer is a memory, not
+  // a fact about the credential being sent now.
+  it("stops asserting a cached identity once the check fails", () => {
+    const info = { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true };
+    const v = identityView("bearer", info, false, { status: 401, body: "" });
+    expect(v.state).toBe("unconfirmed");
+    expect(v.label).not.toMatch(/^Signed in as/);
+    expect(v.label).toMatch(/not confirmed/i);
+    // ...but the identity is KEPT, so a transient 503 does not log the UI out.
+    expect(v.state === "unconfirmed" && v.identity).toEqual(info);
+    // ...and the reason is the copy signInMessage already had, not a new string.
+    expect(v.state === "unconfirmed" && v.warning).toBe(signInMessage(401, ""));
+  });
+
+  // "The backend is down" reported as "you are signed out" sends the user to
+  // paste a token that will fail identically.
+  it("reports a failed check with no cached answer as unconfirmed, not signed out", () => {
+    const v = identityView("bearer", null, false, { status: 503, body: "" });
+    expect(v.state).toBe("unconfirmed");
+    expect(v.label).not.toMatch(/not signed in/i);
+    expect(v.state === "unconfirmed" && v.warning).toBe(signInMessage(503, ""));
+    expect(v.state === "unconfirmed" && v.warning).toMatch(/identity provider is unreachable/i);
+  });
+
+  it("words an unreachable API as such rather than as a refusal", () => {
+    const v = identityView("apikey", null, false, { status: null, body: "" });
+    expect(v.state).toBe("unconfirmed");
+    expect(v.state === "unconfirmed" && v.warning).toMatch(/could not reach the API/i);
+  });
+
+  it("prefers the failure over a still-in-flight retry", () => {
+    // A refetch after an error has isLoading false, but be explicit: a failure
+    // outranks `pending` so a retry loop cannot flicker back to "checking".
+    const v = identityView("bearer", null, true, { status: 401, body: "" });
+    expect(v.state).toBe("unconfirmed");
+  });
+});
+
+// Where a completed sign-in should LAND. Explore shows no identity verdict at
+// all, so any verdict that carries a sentence has to be read somewhere else.
+describe("identityNeedsExplanation", () => {
+  const IDP_OFF = { tenant: "default", role: "admin", auth_enabled: true };
+
+  it("is true for the default deployment that silently ignores a valid token", () => {
+    // IDENTITY_PROVIDER unset/none: whoami 200s as the default tenant, so a
+    // perfectly good token yields signed-out + the "ignored the token" warning.
+    // Landing on Explore hides it and the user loops through the login form.
+    const v = identityView("bearer", IDP_OFF, false, null);
+    expect(v.state).toBe("signed-out");
+    expect(identityNeedsExplanation(v)).toBe(true);
+  });
+
+  it("is true when the check failed", () => {
+    expect(identityNeedsExplanation(identityView("bearer", null, false, { status: 401, body: "" })))
+      .toBe(true);
+  });
+
+  it("is false on a real sign-in, caveat or not", () => {
+    const ok = identityView(
+      "bearer",
+      { tenant: "bvbrc:alice@patricbrc.org", role: "user", auth_enabled: true },
+      false,
+      null,
+    );
+    expect(identityNeedsExplanation(ok)).toBe(false);
+    const caveat = identityView(
+      "apikey",
+      { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: false },
+      false,
+      null,
+    );
+    expect(caveat.state).toBe("signed-in");
+    expect(identityNeedsExplanation(caveat)).toBe(false); // they ARE in; Explore is right
+  });
+
+  it("is false while the check is unresolved — there is nothing to read yet", () => {
+    expect(identityNeedsExplanation(identityView("bearer", null, true, null))).toBe(false);
   });
 });
 
