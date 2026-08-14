@@ -30,6 +30,7 @@ async def run_embed_shard(
     tenant: str,
     shard_id: str,
     out_path: str | Path,
+    group_size: int = 64,
 ) -> ShardReceipt:
     """Embed one shard → embedding file at ``out_path``; return its receipt.
 
@@ -42,13 +43,25 @@ async def run_embed_shard(
     rather than the whole shard — a 500k-doc shard would OOM if materialized
     (the #144 benchmark measured 2.35 GB for just 3k docs). A partial file from a
     mid-shard failure is unlinked so a retry starts clean.
+
+    ``group_size`` is the fan-out ceiling, not just a memory bound (#334): one
+    group is one ``embed()`` call, and the pool can spread a call across at most
+    ``ceil(chunks / request_batch)`` endpoints. At the old fixed 64 docs
+    (~3 chunks/doc → ~190 chunks → 1.5 sub-requests against a 128 batch), a
+    six-endpoint fleet ran on ~1.3 GPUs — measured over 937 samples of a
+    production batch — with four cards never above 5%. Callers with a fleet
+    should size this so a group yields at least ``len(endpoints) x
+    request_batch`` chunks; ``scripts/embed_shard.py`` derives that
+    automatically.
     """
     out = Path(out_path)
     writer = EmbeddingFileWriter(out, tenant=tenant)
     chunk_ids: list[str] = []
     doc_ids: set[str] = set()
     try:
-        async for group in pipeline.iter_embed_source(shard_path, tenant_id=tenant):
+        async for group in pipeline.iter_embed_source(
+            shard_path, tenant_id=tenant, group_size=max(1, group_size)
+        ):
             for chunk in group:
                 writer.write(chunk)
                 chunk_ids.append(chunk.id)
