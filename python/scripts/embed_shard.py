@@ -93,13 +93,33 @@ def _passthrough_keys(args) -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
+def _derive_group_size(args) -> int:
+    """Docs per embed() call, sized so the POOL has something to distribute (#334).
+
+    One group is one ``embed()`` call, and the pool spreads a call across at most
+    ``ceil(chunks / request_batch)`` endpoints — so the group, not the permit
+    count, is the fan-out ceiling. The old fixed 64 docs yielded ~1.5
+    sub-requests on the production corpus (~3 chunks/doc, 128-chunk batches) and
+    a six-GPU fleet measurably ran on ~1.3 GPUs.
+
+    128 docs per endpoint ≈ 384 chunks ≈ 3 sub-requests per endpoint at 3
+    chunks/doc — fleet fully engaged with in-flight depth to spare, while a
+    single-endpoint run keeps a memory profile close to the old behaviour.
+    Corpora with fewer chunks/doc under-fan rather than over-allocate, which is
+    the safe direction; --embed-group-size overrides either way.
+    """
+    return 128 * max(1, len(args.embedding_url))
+
+
 async def amain(args) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
         pipeline = _build_pipeline(args, http)
         shard_id = args.shard_id or os.path.basename(args.shard)
-        receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id, args.out)
+        group = args.embed_group_size or _derive_group_size(args)
+        receipt = await run_embed_shard(pipeline, args.shard, args.tenant, shard_id,
+                                        args.out, group_size=group)
     receipt.write(args.receipt)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
@@ -140,6 +160,12 @@ def parse_args(argv=None):
                         "nothing — measured on the OA pilot: 6 endpoints ran at the "
                         "2-endpoint rate (~55 chunks/s) because 8 in-flight spread "
                         "1.3 deep per endpoint.")
+    p.add_argument("--embed-group-size", type=int, default=0,
+                   help="documents per embed() call (0 = derive: 128 x number of "
+                        "endpoints). This bounds BOTH peak memory and the pool's "
+                        "fan-out: a group's chunks split into ceil(chunks/128) "
+                        "sub-requests, and only that many endpoints can be busy at "
+                        "once. The old fixed 64 ran a 6-GPU fleet on ~1.3 GPUs")
     p.add_argument("--metadata-passthrough", default="",
                    help="comma-separated record-metadata keys to carry onto chunks "
                         "verbatim (enriched fields always win on collision). For a "
