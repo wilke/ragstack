@@ -127,6 +127,66 @@ def store_counts(qdrant_url: str, es_url: str, store: str) -> tuple[int, int]:
             _count(f"{es_url.rstrip('/')}/{store}/_count"))
 
 
+def settled_store_counts(qdrant_url: str, es_url: str, store: str,
+                         max_wait: float = 600.0, interval: float = 1.0,
+                         stable_rounds: int = 3) -> tuple[int, int]:
+    """Both legs' counts once they AGREE, or the last read at the deadline.
+
+    A single immediate read races the stores, and that race became likely after
+    two changes that were individually right:
+
+    * the legs are now written CONCURRENTLY, so neither finishes last by
+      construction — the old serial order (vectors, then text) meant the vector
+      store was long done whenever the loader returned;
+    * the text index has its refresh parked during a bulk load, so its count
+      only becomes visible at the explicit refresh on the way out.
+
+    The vector store also acknowledges an upsert before the points are fully
+    applied (the collection reports ``yellow`` while it catches up), so a count
+    taken the instant the workflow reports COMPLETED can be short by a
+    five-figure number and recover within a minute. That is exactly what
+    happened on 01024-01087: a 16,950 disagreement that converged to zero in
+    ~60 s — after the driver had already written `failed` and triggered a
+    full re-run of a batch that was fine.
+
+    Poll instead, forcing a text-index refresh each round so a parked refresh
+    interval cannot make the count lie. Two properties keep this cheap in both
+    directions:
+
+    * **Stability, not just time, ends the wait.** A settling store is *moving*;
+      a real gap is static. Once both legs read identically ``stable_rounds``
+      times in a row and still disagree, waiting longer cannot help — fail then,
+      not at the deadline. A genuinely broken batch fails in seconds rather than
+      sitting out the whole window.
+    * **The interval backs off** from ``interval`` up to 30 s, so the common case
+      (converges almost immediately) costs about a second, while a slow apply on
+      a large collection still gets the full window without hammering the stores.
+    """
+    import time
+    import urllib.request
+
+    deadline = time.monotonic() + max_wait
+    q, e = store_counts(qdrant_url, es_url, store)
+    wait, stable, prev = interval, 0, (q, e)
+    while q != e and time.monotonic() < deadline:
+        time.sleep(wait)
+        wait = min(wait * 2, 30.0)
+        try:  # best-effort: a refresh failure must not fail the verification
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"{es_url.rstrip('/')}/{store}/_refresh", method="POST"),
+                timeout=60,
+            ).close()
+        except Exception:  # noqa: BLE001
+            pass
+        q, e = store_counts(qdrant_url, es_url, store)
+        stable = stable + 1 if (q, e) == prev else 0
+        prev = (q, e)
+        if stable >= stable_rounds:
+            break  # neither leg is moving: this is a real gap, not a settle
+    return q, e
+
+
 def resolve_store_name(registry_db: str, collection_id: str) -> str:
     """The physical store name from the registry entry — the driver verifies
     counts against the same store the workflow writes, resolved the same way."""
@@ -272,14 +332,20 @@ def run_batch(args, template: dict, store: str, key: str,
     if ok and summary is not None and summary.get("n_shards_failed"):
         ok, row["error"] = False, f"load summary reports failed shards: {summary}"
 
-    q1, e1 = store_counts(args.qdrant_url, args.es_url, store)
+    # Settle before judging: the legs are written concurrently and the vector
+    # store applies upserts asynchronously, so an immediate read races them.
+    q1, e1 = settled_store_counts(args.qdrant_url, args.es_url, store,
+                                  max_wait=args.settle_timeout)
     row.update(qdrant_after=q1, es_after=e1,
                loaded_chunks=(summary or {}).get("n_chunks"),
                delta=q1 - q0)
     if ok and q1 != e1:
         # Leg disagreement is data loss in one store; a small/zero DELTA is not
         # (an idempotent re-run legitimately advances by less than n_chunks).
-        ok, row["error"] = False, f"legs disagree: qdrant={q1} es={e1}"
+        # Surviving the settle window means it did not converge, so it is real.
+        ok, row["error"] = False, (
+            f"legs disagree after {args.settle_timeout:.0f}s settle: "
+            f"qdrant={q1} es={e1}")
 
     if ok and not args.keep_embeddings:
         row["reclaimed_bytes"] = clean_embeddings(args.stage_out, t0, dry=False)
@@ -322,6 +388,15 @@ def main(argv=None) -> int:
                    help="seconds before a batch is declared TIMEOUT (default 12h). "
                         "A timeout row keeps its submission id and a rerun "
                         "RE-ATTACHES to it instead of resubmitting.")
+    p.add_argument("--settle-timeout", type=float, default=600.0,
+                   help="seconds to let the two legs converge before calling a "
+                        "count difference a real disagreement (default 600). The "
+                        "legs are written concurrently and the vector store "
+                        "applies upserts asynchronously, so an immediate read "
+                        "races them: a 16,950 gap on one batch converged to zero "
+                        "in ~60s, after the driver had already failed it and "
+                        "re-run a healthy batch. A genuine disagreement never "
+                        "converges, so this only delays true failures.")
     p.add_argument("--continue-on-failure", action="store_true")
     p.add_argument("--retries", type=int, default=1,
                    help="resubmit a FAILED batch this many times before stopping "
