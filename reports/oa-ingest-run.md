@@ -47,13 +47,14 @@ load upserts rather than duplicates.
 
 ## Measured
 
-Progress at the time of writing: **15 of 32 batches, 22.3M chunks**, every batch's
-two legs matching exactly at rest.
+Progress at the time of writing: **26 of 32 batches, 38.7M chunks**, every batch's
+two legs matching exactly at rest. Six consecutive batches at 2.94-2.99 h — the
+steadiest stretch of the run.
 
 | | |
 |---|---|
 | Batch wall, original | **~6.0 h** (6.09, 5.95, 5.95, 5.99, 6.14 — 2.3% spread) |
-| Batch wall, current | **~3.0 h** (3.00, 3.00, 3.11) after the embed fan-out fix |
+| Batch wall, current | **~3.0 h** (six consecutive at 2.94-2.99) after the embed fan-out fix |
 | Per batch | ~1.49M chunks, ~82 GB of intermediates, reclaimed after verification |
 | Corpus rate | 29.8 chunks/article measured, vs 26.9 planned |
 | Projection | ~47.6M chunks |
@@ -164,6 +165,19 @@ retains nearly every file rather than two. Held at 1. The failure surfaces as th
 vector client's `ResponseHandlingException` with an **empty message**, which reads
 as a store outage — the store was green, answering in 0.01 s, and absent from the
 host's top CPU consumers throughout.
+
+**11 · The batch verification raced the stores it was verifying (#338).** The
+driver read both leg counts once, the instant the workflow reported COMPLETED.
+Three changes — concurrent legs, parked refresh, and Qdrant's
+acknowledge-before-apply — each correct alone, made that single read a race: a
+16,950 "disagreement" that converged to zero in ~60 s. By then the driver had
+written `failed` and its retry was re-running 64 shards of a healthy batch,
+while the original load task was still going. Fixed with a settle-poll whose
+first version had its own flaw — it waited the full window on *any* gap, which
+would have delayed every true failure by 10 minutes and took the test suite from
+35 s to 20 minutes. A real gap is *static*; a settling store is *moving* —
+stability, not time, now ends the wait. Fourth consecutive incident caused by
+the fix for the previous one.
 
 **Also**: one staged `.emb.jsonl` had a torn line; the loader failed that file
 loudly rather than loading it partially (re-embedded, ~6 min). demo's toy
