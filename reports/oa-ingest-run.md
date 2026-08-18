@@ -1,7 +1,8 @@
 # PubMed Central open-access ingest — run record
 
 Building the `open-access` collection on the **asm** tenant: 1.44M JATS articles →
-~47M chunks in Qdrant `:6333` + Elasticsearch `:9200`. Started 2026-08-09.
+**47,625,155 chunks** in Qdrant `:6333` + Elasticsearch `:9200`.
+Started 2026-08-09, **completed 2026-08-17** — 32/32 batches.
 
 This is the record of *how* it was run and *what went wrong*, which is the part
 that does not survive in the ledger. Live state lives in
@@ -47,9 +48,14 @@ load upserts rather than duplicates.
 
 ## Measured
 
-Progress at the time of writing: **26 of 32 batches, 38.7M chunks**, every batch's
-two legs matching exactly at rest. Six consecutive batches at 2.94-2.99 h — the
-steadiest stretch of the run.
+**COMPLETE: 32/32 batches, 47,625,155 chunks.** Final verification at rest:
+both legs exactly equal across three stable samples, Qdrant green, and distinct
+`pmcid` cardinality at **100.27% of the 1,404,453 planned articles** (within the
+aggregation's ±0.5% band). Staged intermediates reclaimed (235 GB).
+
+The run's own arc is its summary: the first clean batches took ~6.0 h, the last
+eleven took 2.94-3.54 h. Total wall ~8 days, roughly half of which was the four
+big incidents; the fixes they produced then halved the batch time.
 
 | | |
 |---|---|
@@ -57,7 +63,7 @@ steadiest stretch of the run.
 | Batch wall, current | **~3.0 h** (six consecutive at 2.94-2.99) after the embed fan-out fix |
 | Per batch | ~1.49M chunks, ~82 GB of intermediates, reclaimed after verification |
 | Corpus rate | 29.8 chunks/article measured, vs 26.9 planned |
-| Projection | ~47.6M chunks |
+| Final | **47,625,155 chunks** |
 
 Production impact: prod ES answered real queries at **7–31 ms** throughout.
 
