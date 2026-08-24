@@ -35,6 +35,7 @@ All targets live in the root `Makefile` and `cd` into the right subdir for you. 
 ```bash
 make install-python              # pip install -e ".[all,dev]" inside python/
 make test-python                 # python/ pytest unit + API tests
+make perf-python                 # perf budget tests (excluded from test-python; an explicit run of a perf file needs `-m perf` appended — CLI `-m` overrides addopts)
 make lint-python                 # ruff check . && mypy ragstack/  (inside python/)
 make run-python                  # uvicorn ragstack.api.main:app --reload --port 8000
 
