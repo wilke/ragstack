@@ -607,6 +607,19 @@ export function insecureContextWarning(secure: boolean): string | null {
   );
 }
 
+/**
+ * Whether the deployment has opted to show the password form on a plaintext
+ * page anyway — `VITE_ALLOW_PASSWORD_OVER_HTTP` at BUILD time. Off unless the
+ * value is exactly "1", "true" or "yes" (case-insensitive): a typo must fail
+ * closed. The warning from insecureContextWarning is shown regardless; this
+ * knob only decides whether the form exists beneath it. For dev/demo
+ * instances served over plain HTTP behind a trusted proxy — never for a real
+ * deployment, where the fix is HTTPS.
+ */
+export function passwordOverHttpAllowed(raw: string | undefined): boolean {
+  return /^(1|true|yes)$/i.test((raw ?? "").trim());
+}
+
 /** Extra warning shown before binding a token to a base, or null. */
 export function bearerBaseWarning(base: string): string | null {
   if (!isAbsoluteBase(base)) return null;

@@ -13,6 +13,7 @@ import {
   bearerAppliesToBase,
   bearerBaseWarning,
   insecureContextWarning,
+  passwordOverHttpAllowed,
   parseBvbrcToken,
   TOKEN_STORAGE_HINT,
   tokenExpiryNote,
@@ -72,6 +73,13 @@ export function LoginView({
   const insecure = insecureContextWarning(
     typeof window !== "undefined" ? window.isSecureContext : true,
   );
+  // Deployment override for dev/demo instances served over plain HTTP: the
+  // form is rendered anyway, but the warning above it is NOT suppressed — the
+  // page is exactly as tamperable as it was; only the operator's acceptance of
+  // that changed. Read at render time so tests can stub it per case.
+  const passwordBlocked =
+    insecure !== null &&
+    !passwordOverHttpAllowed(import.meta.env.VITE_ALLOW_PASSWORD_OVER_HTTP);
 
   /** Store a token we just obtained (or the user pasted) and leave. */
   function acceptToken(raw: string): boolean {
@@ -103,7 +111,7 @@ export function LoginView({
     e.preventDefault();
     // Guarded here as well as by not rendering the form: implicit submission
     // (Enter in a text field) must not depend on a button's disabled attribute.
-    if (insecure) return;
+    if (passwordBlocked) return;
     if (busy) return; // a second Enter must not fire a second exchange
     if (!username.trim() || !password) return;
     setBusy(true);
@@ -205,15 +213,22 @@ export function LoginView({
             <>
               {insecure ? (
                 <div className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-xs text-red-800">
-                  <p className="font-medium">Password sign-in is unavailable here</p>
+                  <p className="font-medium">
+                    {passwordBlocked
+                      ? "Password sign-in is unavailable here"
+                      : "Password sign-in over plain HTTP is enabled by configuration"}
+                  </p>
                   <p className="mt-1">{insecure}</p>
                 </div>
               ) : null}
               {/* The form is NOT rendered on an insecure page. A warning beside a
                   working password field is not a control — it is a suggestion,
                   and the whole point is that this page cannot be trusted to
-                  carry a password. The token paste below stays available. */}
-              {insecure ? null : (
+                  carry a password. The token paste below stays available.
+                  The one exception is VITE_ALLOW_PASSWORD_OVER_HTTP, a build-time
+                  opt-in for dev/demo instances: the form appears, but the
+                  warning stays, because the risk it names has not gone away. */}
+              {passwordBlocked ? null : (
               <form onSubmit={signInWithPassword} className="space-y-3">
                 <div>
                   <label

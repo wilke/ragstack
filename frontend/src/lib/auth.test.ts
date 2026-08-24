@@ -9,6 +9,7 @@ import {
   identityNeedsExplanation,
   identityView,
   insecureContextWarning,
+  passwordOverHttpAllowed,
   isTokenExpired,
   laneCredential,
   OIDC_SEAM_NOTE,
@@ -621,5 +622,14 @@ describe("password entry requires a secure page", () => {
 
   it("says nothing on HTTPS or localhost", () => {
     expect(insecureContextWarning(true)).toBeNull();
+  });
+
+  it("the plain-HTTP override fails closed on anything but an explicit yes", () => {
+    for (const on of ["1", "true", "TRUE", "yes", " true "]) {
+      expect(passwordOverHttpAllowed(on), on).toBe(true);
+    }
+    for (const off of [undefined, "", "0", "false", "no", "on", "enabled", "tru"]) {
+      expect(passwordOverHttpAllowed(off), String(off)).toBe(false);
+    }
   });
 });
