@@ -22,3 +22,6 @@ embedding_url:
 embedding_model: Salesforce/SFR-Embedding-Mistral
 qdrant_url: http://localhost:6333
 es_url: http://localhost:9200
+# Archive (#357): the run's version directory lands at <outdir>/<version>/.
+version: "1"
+collection_id: demo_gowe_pdf_scatter

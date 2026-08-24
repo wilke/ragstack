@@ -10,6 +10,17 @@
 # at the GoWe/driver layer (submit N pdf-ingest runs) — the same way ingest-bulk
 # scatters JSONL shards.
 #
+# ARCHIVE (#357, phase 2 of #353): after load, the `pack` step packs the embed
+# output + the load summary into ONE directory named `<version>` (manifest,
+# chunks.jsonl.gz, vectors.f32, receipt.json — the ragstack-archive/1 format) and
+# the workflow emits it as the `archive: Directory` output. GoWe uploads workflow
+# outputs to the submission's output_destination with a Directory's basename as a
+# subfolder, so the archive lands at `<output_destination>/<version>/` — no
+# Workspace call and no token inside any task. `version` and `collection_id` are
+# REQUIRED inputs (the API assigns the version from the registry's ordered list;
+# a silent default would mint wrong version numbers). A driver that submits this
+# workflow must pass both.
+#
 # CONTAINERIZED (#135). Every step runs inside the ragstack-worker image via
 # DockerRequirement; scripts live at /opt/ragstack/scripts. embed + load need the
 # embedding fleet / Qdrant / ES over the network (NetworkAccess) and embed reads
@@ -73,6 +84,22 @@ inputs:
   backpressure:
     type: boolean
     default: false
+  version:
+    type: string
+    doc: "Archive version number N (digits) — the `archive` output's basename,
+      hence the Workspace subfolder `versions/N/`. Assigned by the API from the
+      registry's ordered version list. REQUIRED."
+  collection_id:
+    type: string
+    doc: "Registry collection id (#263), recorded in the archive manifest. NOT
+      the physical `collection` store name above. REQUIRED."
+  spec_hash:
+    type: ["null", string]
+    doc: "The collection's build-spec hash (ADR-0002), recorded in the manifest
+      so restore can refuse an archive that does not match the registry row."
+  job_id:
+    type: ["null", string]
+    doc: "The RAGStack ingest job id, recorded in the manifest."
 
 steps:
   extract:
@@ -198,6 +225,46 @@ steps:
       outputs:
         summary: {type: File, outputBinding: {glob: load-summary.json}}
 
+  pack:
+    doc: "Pack the embedding file + load summary into the version directory
+      (ragstack-archive/1). Runs after load — an archive of an unloaded batch
+      would describe stores that never received it."
+    in:
+      version: version
+      chunks: embed/embeddings
+      receipt: load/summary
+      collection_id: collection_id
+      tenant: tenant
+      spec_hash: spec_hash
+      job_id: job_id
+    out: [archive]
+    # INLINED copy of cwl/archive-collection.cwl — keep in sync. The one
+    # deliberate difference: `receipt` is a single File here (load emits one
+    # summary); the standalone tool and the scatter workflow take File[].
+    run:
+      class: CommandLineTool
+      requirements:
+        DockerRequirement:
+          dockerPull: ragstack-worker.sif
+          dockerImageId: ragstack-worker.sif
+      baseCommand: [python, /opt/ragstack/scripts/archive_version.py]
+      inputs:
+        version: {type: string, inputBinding: {prefix: --version, position: 1}}
+        chunks: {type: "File[]", inputBinding: {prefix: --chunks, position: 2}}
+        receipt: {type: File, inputBinding: {prefix: --receipt, position: 3}}
+        collection_id: {type: string, inputBinding: {prefix: --collection-id, position: 4}}
+        tenant: {type: string, default: "public", inputBinding: {prefix: --tenant, position: 5}}
+        spec_hash:
+          type: ["null", string]
+          inputBinding: {prefix: --spec-hash, position: 6}
+        job_id:
+          type: ["null", string]
+          inputBinding: {prefix: --job-id, position: 7}
+      arguments:
+        - {position: 8, prefix: --out, valueFrom: "."}
+      outputs:
+        archive: {type: Directory, outputBinding: {glob: $(inputs.version)}}
+
 outputs:
   shard:
     type: File
@@ -211,3 +278,9 @@ outputs:
   summary:
     type: File
     outputSource: load/summary
+  archive:
+    type: Directory
+    doc: "The version directory (basename == version): manifest.json,
+      chunks.jsonl.gz, vectors.f32, receipt.json. GoWe post-stages it to
+      <output_destination>/<version>/."
+    outputSource: pack/archive

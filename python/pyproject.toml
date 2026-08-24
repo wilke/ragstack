@@ -128,7 +128,10 @@ include = ["ragstack*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = ["perf: performance budget tests (excluded by default)"]
+markers = [
+    "perf: performance budget tests (excluded by default)",
+    "integration: needs a live service or an external runner (tests/integration; selected by path in CI)",
+]
 addopts = "-m 'not perf'"
 
 [tool.ruff]

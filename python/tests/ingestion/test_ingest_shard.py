@@ -83,6 +83,43 @@ async def test_run_shard_idempotent(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_shard_embedding_file_matches_upsert(tmp_path: Path) -> None:
+    """``embedding_file`` (#357): the chunks written to the file are exactly the
+    chunks upserted (same ids, same vectors), the receipt names the file, and a
+    failed shard leaves no file behind."""
+    from ragstack.ingestion.embedding_file import read_embedding_file
+
+    pipe, vstore = _pipeline()
+    emb = tmp_path / "s0.emb.jsonl"
+    r = await run_shard(pipe, _shard(tmp_path, "s0.jsonl"), "public", "s0", embedding_file=emb)
+    assert r.status == COMPLETED
+    assert r.embedding_file == str(emb)
+    chunks, header = read_embedding_file(emb)
+    assert header["tenant"] == "public" and header["dim"] == 4
+    assert [c.id for c in chunks] == r.chunk_ids
+    stored = {c.id: c.embedding for c in vstore._chunks}
+    assert {c.id: c.embedding for c in chunks} == stored
+
+    missing = tmp_path / "missing.emb.jsonl"
+    r2 = await run_shard(pipe, str(tmp_path / "nope.jsonl"), "public", "nope",
+                         embedding_file=missing)
+    assert r2.status == FAILED and not missing.exists()
+
+    # The file is written BEFORE the upsert; a failed upsert must take it with it,
+    # or a retry would find a stale file next to a "failed" receipt.
+    class _BoomStore(InMemoryVectorStore):
+        async def upsert(self, chunks):
+            raise RuntimeError("qdrant down")
+
+    boom = IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
+                             embedder=_FakeEmbedder(), vector_store=_BoomStore(),
+                             text_index=InMemoryTextIndex())
+    r3 = await run_shard(boom, _shard(tmp_path, "s1.jsonl"), "public", "s1",
+                         embedding_file=missing)
+    assert r3.status == FAILED and "qdrant down" in r3.error
+    assert not missing.exists()
+
+
 async def test_run_shard_missing_file_is_failed_not_raised(tmp_path: Path) -> None:
     pipe, _ = _pipeline()
     receipt = await run_shard(pipe, str(tmp_path / "nope.jsonl"), "public", "sX")

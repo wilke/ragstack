@@ -91,6 +91,81 @@ own submission ids internally; you do not poll GoWe with a RAGStack `job_id`.
 
 ---
 
+## Archive format (`ragstack-archive/1`)
+
+> Phase 2 of #353 (issue #357). The archive is the **last step of the ingest
+> workflows** (`cwl/pdf-ingest.cwl`, `cwl/pdf-ingest-scatter.cwl`; standalone
+> tool `cwl/archive-collection.cwl`, delete form `cwl/archive-tombstone.cwl`).
+> Writer/reader: `python/ragstack/ingestion/archive.py`; CLI
+> `python/scripts/archive_version.py`.
+
+A collection's archive is an ordered sequence of **versions** — one per
+completed ingest job (a *batch*: that job's chunks + vectors, not the whole
+collection) or per delete (a *tombstone*). The registry row orders them;
+restore replays them in order. Each version is one directory whose **basename
+is the version number**; the workflow emits it as a CWL `Directory` output and
+GoWe uploads it under that basename, so it lands at
+`…/collections/<id>/versions/<N>/` with no Workspace call and no token inside
+any task.
+
+```
+<N>/
+  manifest.json      identity + counts + sha256/bytes per file (below)
+  chunks.jsonl.gz    one JSON object per chunk: id, doc_id, content, metadata,
+                     start_char, end_char — NO vector. gzip, mtime=0, no filename
+  vectors.f32        64-byte header + float32 rows, little-endian, row i is
+                     chunk line i of chunks.jsonl.gz
+  receipt.json       the load stage's receipt, copied verbatim (pdf-ingest: the
+                     load summary) — or a JSON ARRAY of the per-item receipts in
+                     input order (pdf-ingest-scatter: one ShardReceipt per PDF)
+  tombstone.json     DELETE versions only: {"format", "count", "doc_ids": [...]}
+  triples.jsonl.zst  RESERVED for the graph leg — never written today
+```
+
+A tombstone version holds **only** `manifest.json` + `tombstone.json`.
+
+**`manifest.json`** (keys sorted, no timestamps — a re-run of the step is
+byte-identical, like the receipts):
+
+| key | value |
+|---|---|
+| `format` | `"ragstack-archive/1"` |
+| `collection_id`, `tenant`, `spec_hash`, `version`, `job_id` | identity: the registry id (not the store name), the tenant, the ADR-0002 build-spec hash, the version number (int), the RAGStack job id. Restore refuses a `spec_hash` that differs from the registry row. |
+| `counts` | `{"chunks": rows, "docs": distinct doc_ids}` (`chunks: 0` for a tombstone) |
+| `files` | the data files present, in order |
+| `sha256`, `bytes` | per file — every file is verified before a reader yields anything |
+| `vectors` | `{"dim", "rows", "dtype": "float32", "byte_order": "little", "header_bytes": 64}` — must agree with the file's own header (chunk versions only) |
+| `chunks_compression` | `"gzip"` |
+| `receipts` | how many receipt files went into `receipt.json` (1 = verbatim object, >1 = array) |
+| `graph` | `false` — the graph leg is not archived |
+| `has_tombstone` | `true` for a delete version |
+
+**`vectors.f32` header** (64 bytes, integers little-endian): `RSF32VEC` magic
+(8) · header version `1` (u32) · header length `64` (u32) · `dim` (u32) ·
+`rows` (u64) · dtype code `1` = float32 (u32) · byte order `<` (1) · zero
+padding. Hence `len(file) == 64 + rows × dim × 4`, and
+`numpy.memmap(path, dtype="<f4", offset=64, shape=(rows, dim))` reads it
+directly. The reader (`read_version`) verifies every sha256, that the header
+and manifest geometry agree, and that the file size matches, **before** the
+first row — then streams `(chunk_dict, array('f'))` pairs one at a time; any
+mismatch is `ArchiveCorrupt`. The writer streams too (bounded blocks of input
+lines through a small process pool): 35k × 4096-d packs in seconds with a flat
+RSS — the JSONL embed file is never materialised as Python float lists.
+
+**Why gzip, not zstd.** The design names `chunks.jsonl.zst`; `zstandard` is
+not a project dependency and shared environments do not get new packages for
+one file, so the chunks file is gzip. Readers find the chunks filename through
+`manifest.files`, so a zstd writer later is a manifest change, not a format
+break. (Vectors are incompressible float32 either way.)
+
+**Producing it.** `archive_version.py --version N --collection-id <id>
+--chunks <emb.jsonl…> --receipt <receipt.json…> --out <dir>` writes
+`<dir>/N/`; `--tombstone doc_ids.json` writes the delete form. Both workflows
+take `version` and `collection_id` as **required** inputs (the API assigns the
+version from the registry), plus optional `spec_hash` / `job_id`. In the
+scatter workflow, `ingest_shard.py --embedding-file` writes each PDF's embedded
+chunks on their way to the stores, which is what the archive step packs.
+
 ## Known gaps
 
 Be clear-eyed about what does **not** work today:
