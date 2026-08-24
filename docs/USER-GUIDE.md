@@ -277,9 +277,10 @@ Three layers, from the one you can read as a user to the one that is the truth:
 1. **`GET /v1/config`** — the effective, *allowlisted* runtime config of the
    deployment you are talking to: backends, store URLs and index names,
    embedding model and dimension, chunking, `top_k`, rerank settings, ingest
-   limits, log level — 32 keys, **no secrets** (keys, passwords, DSNs and the
-   key→tenant maps are never returned). Requires the `admin` role; the UI's
-   *Ops* page renders it when it is readable.
+   limits, the `ALLOW_USER_COLLECTION_CREATE` capability switch, log level — 33
+   keys, **no secrets** (keys, passwords, DSNs and the key→tenant maps are
+   never returned). Requires the `admin` role; the UI's *Ops* page renders it
+   when it is readable.
 
    ```bash
    curl -s $BASE/v1/config -H "X-API-Key: $ADMIN_KEY" | jq
