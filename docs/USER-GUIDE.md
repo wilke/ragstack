@@ -152,7 +152,8 @@ curl -s -X POST $BASE/v1/collections \
 - The new collection is **private to you** — owned by its creator, unreadable
   by anyone else until shared. `409` on an id collision; `403` when the
   deployment's `MAX_COLLECTIONS` cap (default 100) is reached — that cap applies
-  to admins too.
+  to admins too — or when the deployment has set
+  `ALLOW_USER_COLLECTION_CREATE=false` (creation is then admin-only).
 
 Then put documents in it. PDFs go through the multipart upload; it answers
 `202` with a job you poll:
