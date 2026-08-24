@@ -1,6 +1,6 @@
 # ADR 0001 — Execution topology: workflow engine, Go, and Python ownership
 
-- **Status:** Proposed
+- **Status:** Superseded by [ADR-0006](0006-execution-topology-revised.md) (2026-08-24)
 - **Date:** 2026-07-02
 - **Deciders:** @wilke
 - **Supersedes:** —

@@ -11,11 +11,12 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 
 | # | Title | Status |
 |---|---|---|
-| [0001](0001-execution-topology.md) | Execution topology: workflow engine, Go, and Python ownership | Proposed |
+| [0001](0001-execution-topology.md) | Execution topology: workflow engine, Go, and Python ownership | Superseded by 0006 |
 | [0002](0002-collection-identity.md) | Collection identity: content-addressed stores + a durable registry | Accepted |
 | [0003](0003-access-control.md) | Access control: physical tenancy, collection-level ownership, two roles | Accepted |
 | [0004](0004-users-groups-shares.md) | Users, groups, and shares: Postgres ACLs with grant-option delegation | Accepted |
 | [0005](0005-tenant-anatomy.md) | Anatomy of a tenant: dedicated stateful stores, scripted provisioning | Accepted |
+| [0006](0006-execution-topology-revised.md) | Execution topology, revised from the production build: one ingest plane, Python online plane, Go by measured trigger | Proposed |
 
 ## Conventions
 
