@@ -3102,6 +3102,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None)
+    p.add_argument("--qdrant-url", default=c7.QDRANT_URL,
+                   help="Qdrant base URL the g1_* scratch collections are built in "
+                        "(default: the chunking_compare_7way constant). guard_scratch "
+                        "guards NAMES, not hosts — point this at a non-production "
+                        "instance.")
+    p.add_argument("--es-url", default=c7.ES_URL,
+                   help="Elasticsearch base URL for the g1_* scratch indices "
+                        "(same caveat as --qdrant-url)")
     p.add_argument("--hard-cap-tokens", type=int, default=c7.HARD_CAP_TOKENS)
     args = p.parse_args(argv)
     args.modes = [m.strip() for m in args.modes.split(",") if m.strip()]
@@ -3121,6 +3129,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     c7.HARD_CAP_TOKENS = args.hard_cap_tokens
     c7.EMBED_API_KEY = args.embedding_api_key or os.environ.get("OPENAI_API_KEY")
+    # Stores are set here, before any index is built, so the manifest
+    # (build_run_manifest reads c7.QDRANT_URL / c7.ES_URL) records the override.
+    c7.QDRANT_URL = args.qdrant_url.rstrip("/")
+    c7.ES_URL = args.es_url.rstrip("/")
     candidates = (
         [u.strip() for u in args.endpoints.split(",") if u.strip()]
         if args.endpoints else list(c7.DEFAULT_ENDPOINTS)
