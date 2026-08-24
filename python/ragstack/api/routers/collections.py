@@ -39,12 +39,14 @@ from ragstack.api.collections import (
     CollectionSpec,
 )
 from ragstack.api.deps import (
+    bound_json_body,
     build_collection_entry,
     get_collection_store,
     get_collections,
     get_model_registry,
     materialize_config_manifest_for_spec,
     probe_tenant_count,
+    rate_limited,
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.scope import count_scope
@@ -347,6 +349,7 @@ def _cap_reached(limit: int) -> HTTPException:
     "/collections",
     response_model=CollectionInfo,
     status_code=201,
+    dependencies=[Depends(bound_json_body), Depends(rate_limited("collections_create"))],
 )
 async def create_collection(
     body: CollectionCreateRequest,
@@ -1162,6 +1165,7 @@ async def list_shares(
     "/collections/{collection_id}/shares",
     response_model=ShareInfo,
     status_code=201,
+    dependencies=[Depends(bound_json_body), Depends(rate_limited("shares"))],
 )
 async def create_share(
     collection_id: str,

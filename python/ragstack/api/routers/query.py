@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ragstack.api.access import enforce_access
 from ragstack.api.collections import CollectionRegistry
@@ -70,6 +70,20 @@ async def _expand_query(
     return variants
 
 
+def _bound_top_k(v: int) -> int:
+    """Shared ``top_k`` ceiling for :class:`QueryRequest` and
+    :class:`RetrieveRequest` (issue #87): an unbounded ``top_k`` lets one
+    request force an arbitrarily large fusion/rerank pool. Reads
+    ``settings.max_top_k`` at VALIDATION time, not import time, so it tracks a
+    settings override made after these classes were defined (module import is
+    long since done by the time a request arrives). ``max_top_k <= 0`` disables
+    the bound."""
+    limit = settings.max_top_k
+    if limit > 0 and v > limit:
+        raise ValueError(f"top_k must be <= {limit} (got {v})")
+    return v
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1)
@@ -98,6 +112,11 @@ class QueryRequest(BaseModel):
     llm: str | None = None
     reranker: str | None = None
 
+    @field_validator("top_k")
+    @classmethod
+    def _validate_top_k(cls, v: int) -> int:
+        return _bound_top_k(v)
+
 
 class QueryResponse(BaseModel):
     answer: str
@@ -120,6 +139,11 @@ class RetrieveRequest(BaseModel):
     # See QueryRequest — per-request cross-encoder override (no generation here).
     reranker: str | None = None
 
+    @field_validator("top_k")
+    @classmethod
+    def _validate_top_k(cls, v: int) -> int:
+        return _bound_top_k(v)
+
 
 class RetrieveResponse(BaseModel):
     sources: list[Source]
@@ -137,10 +161,6 @@ class ChunkOut(BaseModel):
 
 class ChunksResponse(BaseModel):
     chunks: list[ChunkOut]
-
-
-# A context expansion needs only prev+next, but allow a small batch.
-_MAX_CHUNK_IDS = 20
 
 
 def _shaping_active(retriever: Any) -> bool:
@@ -401,9 +421,18 @@ async def get_chunks(
     ``ids`` is a comma-separated list — typically the ``prev_chunk_id`` /
     ``next_chunk_id`` carried in a Source's metadata — so a client can expand a
     retrieved chunk's neighbouring context. Unknown or out-of-scope ids are
-    silently omitted; order follows the request. ``collection`` selects the
+    silently omitted; order follows the request. More than ``max_chunk_ids``
+    entries is a 422 (issue #87) — rejected outright rather than silently
+    truncated, so a caller relying on the tail of a long list finds out instead
+    of getting a quietly incomplete response. ``collection`` selects the
     registry collection (default when omitted); an unknown id 404s."""
-    id_list = [x for x in (i.strip() for i in ids.split(",")) if x][:_MAX_CHUNK_IDS]
+    id_list = [x for x in (i.strip() for i in ids.split(",")) if x]
+    max_ids = settings.max_chunk_ids
+    if max_ids > 0 and len(id_list) > max_ids:
+        raise HTTPException(
+            status_code=422,
+            detail=f"ids: at most {max_ids} allowed (got {len(id_list)})",
+        )
     if not id_list:
         return ChunksResponse(chunks=[])
     entry = await _resolve_entry(registry, collection, principal)

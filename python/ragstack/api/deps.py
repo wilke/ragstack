@@ -8,13 +8,14 @@ fallback keeps unit tests and demo runs functional without infra.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, TypedDict
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 
 from ragstack.api.collections import (
     RESERVED_COLLECTION_ID,
@@ -23,6 +24,7 @@ from ragstack.api.collections import (
     CollectionSpec,
 )
 from ragstack.api.model_registry import ModelEntry, ModelRegistry
+from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
 from ragstack.collection_store import (
     CollectionStore,
     JsonFileCollectionStore,
@@ -47,6 +49,7 @@ from ragstack.jobstore import make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.protocols import QueryRewriter
 from ragstack.quota import TenantQuota
+from ragstack.ratelimit import TokenBucketLimiter
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.rewriting.rewriters import (
     HyDERewriter,
@@ -1499,6 +1502,7 @@ async def lifespan(app: FastAPI):
         else None
     )
     app.state.tenant_quota = tenant_quota
+    app.state.rate_limiters = build_rate_limiters()
     app.state.retriever = retriever
     app.state.rewriters = _build_rewriters(llm)
     app.state.reranker = _build_reranker(http_client)
@@ -1743,3 +1747,103 @@ def get_ingestor(request: Request):
 
 def get_tenant_quota(request: Request):
     return request.app.state.tenant_quota
+
+
+# --------------------------------------------------------------------------- #
+# Per-principal rate limits + request bounds (issue #87)
+# --------------------------------------------------------------------------- #
+
+
+def build_rate_limiters() -> dict[str, TokenBucketLimiter]:
+    """Build the per-bucket token-bucket limiters from current settings.
+
+    One entry per named bucket used by :func:`rate_limited`. ``"ingest"``
+    covers BOTH ``POST /v1/ingest`` and ``POST /v1/ingest/upload`` — the spec
+    gives them one shared hourly rate (same write path, two transports), not
+    one bucket each. Called once at app startup (the lifespan, below) and
+    again by any test fixture that builds its own ``app.state``
+    (``tests/api/conftest.py``), so a settings override via monkeypatch always
+    lands in a freshly-built set of limiters rather than buckets already
+    populated under the old value.
+    """
+    return {
+        "ingest": TokenBucketLimiter(settings.rate_limit_ingest_per_hour),
+        "collections_create": TokenBucketLimiter(
+            settings.rate_limit_collections_create_per_hour
+        ),
+        "shares": TokenBucketLimiter(settings.rate_limit_shares_per_hour),
+    }
+
+
+def get_rate_limiters(request: Request) -> dict[str, TokenBucketLimiter]:
+    return request.app.state.rate_limiters
+
+
+def rate_limited(bucket: str):
+    """FastAPI dependency factory: 429 the caller once ``bucket``'s per-principal
+    hourly budget (``request.app.state.rate_limiters[bucket]``) is spent.
+
+    Keyed on ``principal.tenant`` — the same identity :class:`TenantQuota` keys
+    its concurrency slots on (``f"{issuer}:{subject}"`` for a bearer principal,
+    the configured tenant for an API key, ``DEFAULT_TENANT`` for the keyless dev
+    path). An ``admin`` principal is exempt from the bucket — logged, so the
+    exemption is visible in an access-anomaly review — but NOT from the request
+    bounds enforced elsewhere (:func:`bound_json_body`, ``top_k``, ``ids``,
+    ``limit``): those cap the SHAPE of one request and apply to every caller.
+
+    A 429 carries ``Retry-After`` (integer seconds, rounded up, floored at 1) so
+    a well-behaved client backs off instead of retrying straight into the same
+    wall.
+    """
+
+    async def _check(
+        request: Request,
+        principal: Principal = Depends(resolve_principal),
+    ) -> None:
+        limiter = request.app.state.rate_limiters[bucket]
+        if principal.role == ROLE_ADMIN:
+            log.info(
+                "rate limit bucket=%r bypassed for admin principal tenant=%r",
+                bucket,
+                principal.tenant,
+            )
+            return
+        allowed, retry_after = limiter.allow(principal.tenant)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=f"rate limit exceeded for {bucket!r}; retry later",
+                headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+            )
+
+    return _check
+
+
+async def bound_json_body(request: Request) -> None:
+    """413 when a JSON request body exceeds ``settings.max_json_body_bytes``.
+
+    Checks ``Content-Length`` first (cheap, no body read) and falls back to the
+    actual body length otherwise (a request without the header, or one that
+    understates it) — Starlette caches ``request.body()`` internally, so the
+    route's own Pydantic model parse re-reads the same cached bytes rather than
+    the stream a second time. ``max_json_body_bytes <= 0`` disables the check.
+
+    Applies to the JSON-bodied write endpoints (``POST /v1/ingest``,
+    ``POST /v1/collections``, ``POST /v1/collections/{id}/shares``) — NOT
+    ``POST /v1/ingest/upload``, which is multipart and bounded per-file by
+    ``max_document_bytes`` instead (see ``documents._stage_upload``).
+    """
+    max_bytes = settings.max_json_body_bytes
+    if max_bytes <= 0:
+        return
+    content_length = request.headers.get("content-length")
+    if content_length is not None and content_length.isdigit():
+        if int(content_length) > max_bytes:
+            raise HTTPException(
+                status_code=413, detail=f"request body exceeds {max_bytes} bytes"
+            )
+    body = await request.body()
+    if len(body) > max_bytes:
+        raise HTTPException(
+            status_code=413, detail=f"request body exceeds {max_bytes} bytes"
+        )

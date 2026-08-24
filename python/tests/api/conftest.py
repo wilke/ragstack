@@ -16,6 +16,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
+from ragstack.api.deps import build_rate_limiters
 from ragstack.api.main import app
 from ragstack.api.model_registry import ModelRegistry
 from ragstack.ingestion.backends import LocalAsyncIORunner
@@ -167,6 +168,10 @@ async def client():
     app.state.ingestor = ingestor
     app.state.generator = None  # no LLM by default → placeholder answer
     app.state.tenant_quota = tenant_quota
+    # Fresh per test, built from CURRENT settings — so a test's
+    # monkeypatch.setattr(settings, "rate_limit_...", ...) takes effect, and no
+    # test starts with a bucket already drawn down by a previous one.
+    app.state.rate_limiters = build_rate_limiters()
     app.state.retriever = HybridRetriever(vector_store, text_index, embedder)
     app.state.rewriters = {"passthrough": PassthroughRewriter()}  # no LLM in tests
     app.state.reranker = None  # rerank off by default → fused order

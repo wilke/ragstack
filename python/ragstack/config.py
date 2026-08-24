@@ -369,6 +369,36 @@ class Settings(BaseSettings):
     # the per-tenant bound buys little.
     tenant_max_concurrency: int = 0
 
+    # Per-principal request-RATE limits (issue #87), enforced by
+    # ragstack.ratelimit.TokenBucketLimiter via api/deps.py::rate_limited and keyed
+    # on principal.tenant — a per-process, in-memory token bucket (see the module
+    # docstring for the multi-process caveat: N replicas give N times the rate).
+    # <= 0 disables the corresponding bucket. One bucket covers both
+    # POST /v1/ingest and POST /v1/ingest/upload (they're the same write path by
+    # a different transport). An admin principal is exempt from the bucket
+    # (logged) but NOT from the request bounds below.
+    rate_limit_ingest_per_hour: int = 10
+    rate_limit_collections_create_per_hour: int = 5
+    rate_limit_shares_per_hour: int = 60
+
+    # Request bounds (issue #87) — validation, not rate limiting: these cap the
+    # SHAPE of a single request regardless of how often it's sent. <= 0 disables
+    # a bound. Out-of-bound params are a 422; an oversized JSON body is a 413.
+    #
+    # 1 MB cap on the JSON body of POST /v1/ingest, POST /v1/collections and
+    # POST /v1/collections/{id}/shares (ragstack.api.deps.bound_json_body).
+    # POST /v1/ingest/upload is multipart and bounded per-file by
+    # max_document_bytes instead — this setting does not apply to it.
+    max_json_body_bytes: int = 1_000_000
+    # QueryRequest.top_k / RetrieveRequest.top_k ceiling.
+    max_top_k: int = 100
+    # GET /v1/chunks: max entries in the comma-separated `ids` query param.
+    max_chunk_ids: int = 200
+    # Ceiling applied to `limit` query params on list endpoints (GET /v1/documents,
+    # GET /v1/admin/service-accounts). GET /v1/jobs's own limit (<=100) is already
+    # under this and is left as-is.
+    max_list_limit: int = 500
+
     # Ingestion job tracking. "memory" is process-local (lost on restart);
     # "sqlite" is durable single-process; "postgres" is the multi-process
     # checkpoint of record for the 500k path (uses postgres_dsn).

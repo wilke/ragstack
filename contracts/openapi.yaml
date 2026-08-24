@@ -133,8 +133,24 @@ paths:
             Unknown collection, one out of the caller's allowlist, or one the
             caller may not read — an unreadable collection is reported exactly
             like an unknown one so its existence is not leaked (ADR-0003 §2).
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "422":
           description: Validation error
+        "429":
+          description: >-
+            Rate limit exceeded (issue #87): more than
+            rate_limit_ingest_per_hour requests from this principal in the last
+            hour — the bucket is shared with POST /v1/ingest/upload. An admin
+            principal is exempt from this bucket (but not from the request
+            bounds above). Retry after the delay named in the `Retry-After`
+            header (seconds).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
         "503":
           description: >
             Ingest is disabled — the server has no INGEST_ROOT configured, so
@@ -204,6 +220,20 @@ paths:
           description: An uploaded file is not a PDF.
         "422":
           description: Validation error
+        "429":
+          description: >-
+            Rate limit exceeded (issue #87): more than
+            rate_limit_ingest_per_hour requests from this principal in the last
+            hour — the bucket is shared with POST /v1/ingest. An admin
+            principal is exempt from this bucket (but not from the request
+            bounds). Retry after the delay named in the `Retry-After` header
+            (seconds).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
         "503":
           description: >
             Ingest is disabled — the server has no INGEST_ROOT configured, so
@@ -246,11 +276,11 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum documents per page (1–1000).
+          description: Maximum documents per page (1–500).
           schema:
             type: integer
             minimum: 1
-            maximum: 1000
+            maximum: 500
             default: 100
         - name: cursor
           in: query
@@ -929,6 +959,21 @@ paths:
             A collection with the resolved id already exists, or the id carries
             residual access-control state owned by another subject (the create
             is rolled back rather than inheriting it)
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
+        "429":
+          description: >-
+            Rate limit exceeded (issue #87): more than
+            rate_limit_collections_create_per_hour requests from this principal
+            in the last hour. An admin principal is exempt from this bucket
+            (but not from the request bounds, nor from MAX_COLLECTIONS above).
+            Retry after the delay named in the `Retry-After` header (seconds).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
         "503":
           description: >-
             Authorization store unavailable — ownership could not be recorded,
@@ -1139,10 +1184,25 @@ paths:
             The grant violates an invariant — a duplicate active grant, a
             no-op grant to the current owner, a public write, or an unknown
             grantee vocabulary
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "422":
           description: >-
             An empty grantee, a bare username with a blank issuer, an unknown
             group id (`@group:<id>` that does not exist), or a non-read permission
+        "429":
+          description: >-
+            Rate limit exceeded (issue #87): more than
+            rate_limit_shares_per_hour requests from this principal in the last
+            hour. An admin principal is exempt from this bucket (but not from
+            the request bounds). Retry after the delay named in the
+            `Retry-After` header (seconds).
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
@@ -1548,7 +1608,9 @@ paths:
         `public`). `ids` is a comma-separated list — typically the
         `prev_chunk_id` / `next_chunk_id` carried in a Source's metadata — so a
         client can expand a retrieved chunk's neighbouring context. Unknown or
-        out-of-scope ids are silently omitted; order follows the request.
+        out-of-scope ids are silently omitted; order follows the request. More
+        than `max_chunk_ids` (default 200, issue #87) entries is a 422, not a
+        silent truncation.
       tags: [Query]
       security:
         - ApiKeyAuth: []
@@ -1557,7 +1619,7 @@ paths:
         - name: ids
           in: query
           required: false
-          description: Comma-separated chunk ids (capped at 20).
+          description: Comma-separated chunk ids (at most max_chunk_ids, default 200).
           schema: { type: string }
         - name: collection
           in: query
@@ -1579,6 +1641,8 @@ paths:
           description: Missing or invalid credential (API key or bearer identity)
         "404":
           description: Unknown collection, or one the caller may not read (read denial → 404).
+        "422":
+          description: More than max_chunk_ids entries in `ids` (default 200, issue #87).
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
