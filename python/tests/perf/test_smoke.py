@@ -1,14 +1,17 @@
 """Smoke test for the perf convention: an in-memory hybrid retrieve, timed over
 >= 20 reps with a generous budget so it never flakes on a loaded CI-less box.
-"""
-import asyncio
 
+This is the template file people will copy — it's an ``async def`` test using
+``assert_budget_async`` so the retriever (and anything else loop-bound) is
+built and measured in the same running event loop, rather than splitting a
+seed loop and a measure loop across separate ``asyncio.run`` calls.
+"""
 import pytest
 
 from ragstack.models import Chunk
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
-from tests.perf._budget import assert_budget
+from tests.perf._budget import assert_budget_async
 
 
 class _FakeEmbedder:
@@ -31,13 +34,14 @@ async def _seed() -> HybridRetriever:
 
 
 @pytest.mark.perf
-def test_inmemory_hybrid_retrieve_p95_budget():
-    retriever = asyncio.run(_seed())
+@pytest.mark.asyncio
+async def test_inmemory_hybrid_retrieve_p95_budget():
+    retriever = await _seed()
 
     async def _retrieve_once() -> None:
         await retriever.retrieve("ragstack perf", top_k=5, use_graph=False)
 
-    assert_budget(
+    await assert_budget_async(
         "inmemory_hybrid_retrieve",
         _retrieve_once,
         budget_s=0.05,
