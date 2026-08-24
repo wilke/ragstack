@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
     qdrant_collection: str = "ragstack"
+    # Per-request bound (seconds) on every Qdrant call the API makes. Unset, the
+    # client fell back to httpx's 5 s default — and a 4096-d search over a
+    # 25M-point collection takes longer than that whenever the host is under
+    # page-cache pressure, so healthy-but-slow searches surfaced as bare 500s
+    # (ReadTimeout → ResponseHandlingException). 30 s lets a slow search finish;
+    # what still times out is reported as 503 StoreUnavailable, not 500.
+    qdrant_timeout: int = 30
     # Upsert batching: chunk each upsert so one request never carries an oversized
     # payload (a single large-shard upsert makes the client raise
     # ResponseHandlingException). qdrant_upsert_concurrency > 1 pipelines the

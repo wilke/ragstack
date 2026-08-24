@@ -1,8 +1,11 @@
 """FastAPI application — entry point."""
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI
+import logging
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ragstack.api.deps import lifespan
 from ragstack.api.root_path import RootPathMiddleware
@@ -29,6 +32,9 @@ from ragstack.api.security import (
     resolve_tenant,
 )
 from ragstack.config import settings
+from ragstack.stores.errors import StoreUnavailable
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="RAGStack API",
@@ -38,6 +44,21 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+
+
+@app.exception_handler(StoreUnavailable)
+async def _store_unavailable(_: Request, exc: StoreUnavailable) -> JSONResponse:
+    """A backing store didn't answer (timeout, unreachable, 5xx). That is the
+    deployment's problem, not the caller's request — 503 with the reason and a
+    Retry-After, never a bare 500 (which reads as a bug and hides the cause)."""
+    log.warning("%s unavailable: %s", exc.store, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": f"{exc.store} unavailable: {exc}"},
+        headers={"Retry-After": "5"},
+    )
+
 
 app.add_middleware(
     CORSMiddleware,
