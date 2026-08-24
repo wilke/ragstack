@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_CHUNK_FORM } from "../lib/chunkers";
 import { AnswerCard } from "./AnswerCard";
 import { ChunkStrategyPicker } from "./ChunkStrategyPicker";
@@ -194,6 +194,42 @@ describe("static render", () => {
       // ...and the alternative that still works is still offered.
       expect(html).toContain("token");
     } finally {
+      if (orig) Object.defineProperty(globalThis, "window", orig);
+      else delete (globalThis as Record<string, unknown>).window;
+    }
+  });
+
+  it("renders the password field on an insecure page ONLY with the explicit override, warning kept", () => {
+    // VITE_ALLOW_PASSWORD_OVER_HTTP is a dev/demo opt-in. It must not remove
+    // the warning — the page is exactly as tamperable as before — and it must
+    // not fire on a value that merely looks affirmative.
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "window");
+    try {
+      Object.defineProperty(globalThis, "window", {
+        value: { isSecureContext: false },
+        configurable: true,
+      });
+      vi.stubEnv("VITE_ALLOW_PASSWORD_OVER_HTTP", "true");
+      const html = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(html).toMatch(/id="login-password"/);
+      expect(html).toContain("<form");
+      expect(html).toContain("enabled by configuration");
+      expect(html).toContain("loaded over plain HTTP");
+      expect(html).not.toContain("Password sign-in is unavailable here");
+      // The "goes over HTTPS, never sent to RAGStack" reassurance stays off:
+      // it would sit beside a warning saying the page cannot be trusted.
+      expect(html).not.toContain("never sent to RAGStack");
+
+      vi.stubEnv("VITE_ALLOW_PASSWORD_OVER_HTTP", "on");
+      const off = render(
+        createElement(LoginView, { setCredential: () => {}, onDone: () => {} }),
+      );
+      expect(off).not.toMatch(/id="login-password"/);
+      expect(off).toContain("Password sign-in is unavailable here");
+    } finally {
+      vi.unstubAllEnvs();
       if (orig) Object.defineProperty(globalThis, "window", orig);
       else delete (globalThis as Record<string, unknown>).window;
     }
