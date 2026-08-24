@@ -86,6 +86,8 @@ class ConfigResponse(BaseModel):
     ingest_shard_size: int
     tenant_max_concurrency: int
     max_document_bytes: int
+    # authorization capability switches
+    allow_user_collection_create: bool
     # observability
     log_level: str
 

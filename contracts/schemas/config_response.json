@@ -14,7 +14,7 @@
     "top_k", "rerank_enabled", "rerank_candidates", "reranker_model",
     "crossencoder_sidecar_url", "kg_extraction_enabled", "ingest_concurrency",
     "ingest_shard_size", "tenant_max_concurrency", "max_document_bytes",
-    "log_level"
+    "allow_user_collection_create", "log_level"
   ],
   "properties": {
     "vector_backend": { "type": "string" },
@@ -48,6 +48,7 @@
     "ingest_shard_size": { "type": "integer" },
     "tenant_max_concurrency": { "type": "integer" },
     "max_document_bytes": { "type": "integer" },
+    "allow_user_collection_create": { "type": "boolean" },
     "log_level": { "type": "string" }
   },
   "additionalProperties": false

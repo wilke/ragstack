@@ -135,6 +135,20 @@ class Settings(BaseSettings):
     # Applies to admins too (the limit is physical, not an authorization tier).
     # 0 disables the cap; the default matches the ADR's "alert at 100" line.
     max_collections: int = 100
+    # Capability gate on POST /v1/collections (issue #287): whether a non-admin
+    # principal may create a collection at all. ADR-0003 opened creation to any
+    # authenticated caller — this switch is for the deployment that must NOT do
+    # that, e.g. a read-only service account handed to an integration partner:
+    # every other write already 403s a non-owner, but creation is object-less
+    # (there is nothing yet to check an ACL against), so it was the one write
+    # that always succeeded regardless of intent. False makes creation
+    # admin-only; true (default) is the historical ADR-0003 behaviour, byte-for-
+    # byte unchanged. This is a blunt env-wide capability switch, not a role —
+    # see #287 for why a `reader` role was rejected (it would invert the
+    # fail-closed floor `_bearer_role` relies on). A `creators` group is the
+    # planned per-person-granularity follow-up (#245 already has what it needs);
+    # add one only when that granularity is actually asked for.
+    allow_user_collection_create: bool = True
     # Refuse an ingest whose build spec differs from the target collection's
     # recorded provenance (spec_hash over model|dim|chunk descriptor). Writing
     # vectors from a different embedder, or chunks from a different chunker, into

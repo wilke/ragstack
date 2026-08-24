@@ -215,7 +215,7 @@ curl -s $BASE/v1/config -H "$AUTH" | jq     # admin role required; 403 otherwise
  "chunk_method": "fixed_token", "chunk_size": 512, "chunk_overlap": 64,
  "top_k": 5, "rerank_enabled": true, "rerank_candidates": 50, "reranker_model": "BAAI/bge-reranker-v2-m3",
  "qdrant_collection_explicit": "demo_g1_sfr_tok512", "elasticsearch_index": "demo_g1_sfr_tok512",
- "max_document_bytes": 50000000, "ingest_concurrency": 4, "log_level": "INFO", "...": "32 keys, never a secret"}
+ "max_document_bytes": 50000000, "ingest_concurrency": 4, "log_level": "INFO", "...": "33 keys, never a secret"}
 ```
 
 That is the *effective* configuration of the deployment you are talking to.

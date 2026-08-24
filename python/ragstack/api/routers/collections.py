@@ -374,9 +374,25 @@ async def create_collection(
     ``id`` for a *named library*: the id is part of the physical name, so two
     libraries with identical build specs stay isolated from each other.
     """
-    # 0. Authorization: creation itself is open, but the build-spec fields stay
-    # admin-only — they change what every future ingest into the collection
-    # produces (and `embedding` names admin-registered infra).
+    # 0. Authorization: creation itself is open by default (ADR-0003), but a
+    # deployment can close that plane entirely for non-admins via the
+    # ALLOW_USER_COLLECTION_CREATE switch (#287) — e.g. a read-only service
+    # account, where every OTHER write already 403s a non-owner but creation is
+    # object-less (there is nothing yet to check an ACL against, so the ACL
+    # layer cannot express this). Checked first and unconditionally so it fully
+    # closes the endpoint regardless of what the body contains; admins are
+    # never subject to it.
+    if principal.role != ROLE_ADMIN and not settings.allow_user_collection_create:
+        raise HTTPException(
+            403,
+            "collection creation is disabled for non-admin callers "
+            "(ALLOW_USER_COLLECTION_CREATE=false); ask an operator to create it "
+            "or to enable the switch",
+        )
+
+    # 0a. The build-spec fields stay admin-only even when creation itself is
+    # open — they change what every future ingest into the collection produces
+    # (and `embedding` names admin-registered infra).
     if principal.role != ROLE_ADMIN and (body.embedding is not None or body.chunk is not None):
         raise HTTPException(
             403,

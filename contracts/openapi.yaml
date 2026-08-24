@@ -910,9 +910,12 @@ paths:
           description: Missing or invalid credential (API key or bearer identity)
         "403":
           description: >-
-            Caller supplied the admin-only `embedding`/`chunk` build-spec
+            Non-admin caller and the deployment has closed collection creation
+            entirely (`ALLOW_USER_COLLECTION_CREATE=false`, default true — a
+            capability gate, e.g. for a read-only service account); or the
+            caller supplied the admin-only `embedding`/`chunk` build-spec
             overrides without the admin role (omit both to create from the
-            server-default build spec), or the server's collection cap
+            server-default build spec); or the server's collection cap
             (`MAX_COLLECTIONS`) is reached — each collection costs physical
             store resources, so the count is enforced, not just monitored.
             The count is taken over the **durable registry**, atomically with
@@ -1796,6 +1799,7 @@ components:
         - ingest_shard_size
         - tenant_max_concurrency
         - max_document_bytes
+        - allow_user_collection_create
         - log_level
       properties:
         vector_backend: { type: string }
@@ -1831,6 +1835,7 @@ components:
         ingest_shard_size: { type: integer }
         tenant_max_concurrency: { type: integer }
         max_document_bytes: { type: integer }
+        allow_user_collection_create: { type: boolean }
         log_level: { type: string }
       additionalProperties: false
 
