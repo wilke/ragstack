@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import uuid
 from contextlib import closing
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
+
+from ragstack.collection_store import ensure_columns_postgres, ensure_columns_sqlite
+
+log = logging.getLogger(__name__)
 
 # Status vocabulary (mirror in contracts/openapi.yaml description).
 ACCEPTED = "accepted"
@@ -37,6 +42,14 @@ class IngestJob(BaseModel):
     # Caller-safe error label only (e.g. exception class name) — never raw paths
     # or upstream messages, which would leak internals through the poll endpoint.
     error: str = ""
+    # Stamped at create() from the caller's Principal (#130). Never exposed on
+    # IngestResponse — contracts/schemas/ingest_response.json forbids it via
+    # additionalProperties: false. "" means unstamped: a row written before this
+    # migration, or (in principle) an internal caller that opted out of scoping.
+    # An empty string never equals a real tenant, so it fails closed rather than
+    # being readable by whichever tenant happens to be named "" — see
+    # _apply_tenant_scope.
+    tenant_id: str = ""
 
 
 class JobItem(BaseModel):
@@ -66,9 +79,15 @@ _JOBS_DDL = (
     "  status TEXT NOT NULL,"
     "  source TEXT NOT NULL DEFAULT '',"
     "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
-    "  error TEXT NOT NULL DEFAULT ''"
+    "  error TEXT NOT NULL DEFAULT '',"
+    "  tenant_id TEXT NOT NULL DEFAULT ''"
     ")"
 )
+# Column -> DDL fragment, applied via ensure_columns_* (collection_store.py) so
+# a `jobs` table created by a pre-#130 build gets the column added in place —
+# CREATE TABLE IF NOT EXISTS only helps a brand-new file. Additive-only: never
+# a rename, retype, or drop (same convention as _COLLECTIONS_COLUMNS et al).
+_JOBS_COLUMNS: dict[str, str] = {"tenant_id": "TEXT NOT NULL DEFAULT ''"}
 _JOB_ITEMS_DDL = (
     "CREATE TABLE IF NOT EXISTS job_items ("
     "  job_id TEXT NOT NULL,"
@@ -111,18 +130,66 @@ def _fold_status_counts(rows: list[tuple[str, int]]) -> dict[str, int]:
     return counts
 
 
+def _apply_tenant_scope(
+    job: IngestJob | None, tenant_id: str | None, is_admin: bool
+) -> IngestJob | None:
+    """The tenant-scoping decision for ``JobStore.get()``, applied by every
+    backend after its own raw single-row fetch (#130).
+
+    ``tenant_id=None`` means an unscoped internal caller (e.g. the deep health
+    check's existence probe) — no filtering, exactly today's pre-#130 behaviour.
+    A scoped caller only sees a job whose stamped ``tenant_id`` matches theirs;
+    a legacy row (``tenant_id == ""``, written before this migration) matches no
+    real tenant string, so it fails closed by ordinary equality — the #209
+    convention. A scoped caller whose OWN ``tenant_id`` is ``""`` is refused
+    explicitly (never falls through to the equality check) rather than
+    relying on that equality accidentally doing the right thing — an empty
+    caller tenant is not reachable through the API today, but this function
+    is the boundary, so it states the invariant rather than assumes it.
+    ``is_admin`` is the one escape hatch, and it is a named, logged branch
+    (ADR-0003 §5), mirroring ``authz.resolve_access``'s admin-bypass: logged
+    on every use, not just when it changes the outcome, so the audit trail
+    counts and time-orders admin access to jobs regardless of owner.
+    """
+    if job is None or tenant_id is None:
+        return job
+    if is_admin:
+        log.info("jobstore admin-bypass: tenant=%s job_id=%s", tenant_id, job.job_id)
+        return job
+    if not tenant_id:
+        # A scoped caller whose OWN tenant is "" must not match a legacy ""
+        # row either — that would make the fail-closed convention above
+        # depend on no real caller ever being stamped "". Not reachable
+        # today (DEFAULT_TENANT is "default", blank api_key_tenants values
+        # are rejected at config load, and bearer subjects are always
+        # "issuer:sub"), but this helper IS the boundary, so state it rather
+        # than rely on every future caller upholding the invariant.
+        return None
+    return job if job.tenant_id == tenant_id else None
+
+
 @runtime_checkable
 class JobStore(Protocol):
     """Persist and update ingestion job state."""
 
-    async def create(self, source: str) -> IngestJob: ...
+    async def create(self, source: str, tenant_id: str = "") -> IngestJob: ...
 
-    async def get(self, job_id: str) -> IngestJob | None: ...
+    async def get(
+        self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
+    ) -> IngestJob | None:
+        """Fetch a job, tenant-scoped (#130). ``tenant_id=None`` is unscoped —
+        for internal callers only (e.g. the deep health check); every caller
+        reachable from the API must pass its principal's tenant. A mismatched
+        or unstamped (``tenant_id == ""``, pre-#130) job is reported exactly
+        like a missing one — ``None`` — unless ``is_admin``, a named, logged
+        bypass (ADR-0003 §5)."""
+        ...
 
     async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
         """Most-recent-first job list, capped at ``limit``. Powers the admin Ops
-        jobs panel. Not tenant-scoped — jobs aren't tenant-stamped yet, so the
-        endpoint is admin-only (an admin may see all runs)."""
+        jobs panel. Jobs are tenant-stamped as of #130, but this listing is not
+        yet scoped by it — still admin-only (an admin may see all runs); #100
+        tracks adding a tenant-scoped listing."""
         ...
 
     async def update(self, job_id: str, **fields: object) -> None: ...
@@ -163,16 +230,21 @@ class InMemoryJobStore:
         self._items: dict[str, dict[str, JobItem]] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self, source: str) -> IngestJob:
-        job = IngestJob(job_id=str(uuid.uuid4()), status=ACCEPTED, source=source)
+    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
+        job = IngestJob(
+            job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id
+        )
         async with self._lock:
             self._jobs[job.job_id] = job
         return job.model_copy()
 
-    async def get(self, job_id: str) -> IngestJob | None:
+    async def get(
+        self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
+    ) -> IngestJob | None:
         async with self._lock:
             job = self._jobs.get(job_id)
-            return job.model_copy() if job is not None else None
+            job = job.model_copy() if job is not None else None
+        return _apply_tenant_scope(job, tenant_id, is_admin)
 
     async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
         async with self._lock:
@@ -253,6 +325,9 @@ class SqliteJobStore:
         with closing(self._connect()) as conn, conn:
             conn.execute(_JOBS_DDL)
             conn.execute(_JOB_ITEMS_DDL)
+            # Additive migration for a `jobs` table created by a pre-#130 build —
+            # CREATE TABLE IF NOT EXISTS above is a no-op against an existing file.
+            ensure_columns_sqlite(conn, "jobs", _JOBS_COLUMNS)
 
     def _connect(self) -> sqlite3.Connection:
         # Callers must wrap this in ``closing(...)``: sqlite3's connection
@@ -265,29 +340,36 @@ class SqliteJobStore:
 
     @staticmethod
     def _row_to_job(row: tuple) -> IngestJob:
-        job_id, status, source, chunk_ids, error = row
+        job_id, status, source, chunk_ids, error, tenant_id = row
         return IngestJob(
             job_id=job_id,
             status=status,
             source=source,
             chunk_ids=json.loads(chunk_ids),
             error=error,
+            tenant_id=tenant_id,
         )
 
-    def _create_sync(self, source: str) -> IngestJob:
-        job = IngestJob(job_id=str(uuid.uuid4()), status=ACCEPTED, source=source)
+    def _create_sync(self, source: str, tenant_id: str) -> IngestJob:
+        job = IngestJob(
+            job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id
+        )
         with closing(self._connect()) as conn, conn:
             conn.execute(
-                "INSERT INTO jobs (job_id, status, source, chunk_ids, error)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (job.job_id, job.status, job.source, json.dumps(job.chunk_ids), job.error),
+                "INSERT INTO jobs (job_id, status, source, chunk_ids, error, tenant_id)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    job.job_id, job.status, job.source, json.dumps(job.chunk_ids),
+                    job.error, job.tenant_id,
+                ),
             )
         return job
 
     def _get_sync(self, job_id: str) -> IngestJob | None:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "SELECT job_id, status, source, chunk_ids, error FROM jobs WHERE job_id = ?",
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id"
+                " FROM jobs WHERE job_id = ?",
                 (job_id,),
             )
             row = cur.fetchone()
@@ -304,17 +386,20 @@ class SqliteJobStore:
                 (*sets.values(), job_id),
             )
 
-    async def create(self, source: str) -> IngestJob:
-        return await asyncio.to_thread(self._create_sync, source)
+    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
+        return await asyncio.to_thread(self._create_sync, source, tenant_id)
 
-    async def get(self, job_id: str) -> IngestJob | None:
-        return await asyncio.to_thread(self._get_sync, job_id)
+    async def get(
+        self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
+    ) -> IngestJob | None:
+        job = await asyncio.to_thread(self._get_sync, job_id)
+        return _apply_tenant_scope(job, tenant_id, is_admin)
 
     def _list_jobs_sync(self, limit: int) -> list[IngestJob]:
         # Implicit rowid ascends with insertion; DESC gives newest-first.
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "SELECT job_id, status, source, chunk_ids, error FROM jobs"
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id FROM jobs"
                 " ORDER BY rowid DESC LIMIT ?",
                 (limit,),
             )
@@ -439,36 +524,50 @@ class PostgresJobStore:
                     async with pool.acquire() as conn:
                         await conn.execute(_JOBS_DDL)
                         await conn.execute(_JOB_ITEMS_DDL)
+                        # Additive migration for a `jobs` table from a pre-#130
+                        # build — CREATE TABLE IF NOT EXISTS above is a no-op
+                        # against an existing table.
+                        await ensure_columns_postgres(conn, "jobs", _JOBS_COLUMNS)
                     self._pool = pool
         return self._pool
 
-    async def create(self, source: str) -> IngestJob:
-        job = IngestJob(job_id=str(uuid.uuid4()), status=ACCEPTED, source=source)
+    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
+        job = IngestJob(
+            job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id
+        )
         pool = await self._pool_()
         async with pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO jobs (job_id, status, source, chunk_ids, error) "
-                "VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO jobs (job_id, status, source, chunk_ids, error, tenant_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
                 job.job_id, job.status, job.source, json.dumps(job.chunk_ids), job.error,
+                job.tenant_id,
             )
         return job
 
-    async def get(self, job_id: str) -> IngestJob | None:
+    async def get(
+        self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
+    ) -> IngestJob | None:
         pool = await self._pool_()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT job_id, status, source, chunk_ids, error FROM jobs WHERE job_id = $1",
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id"
+                " FROM jobs WHERE job_id = $1",
                 job_id,
             )
-        if row is None:
-            return None
-        return IngestJob(
-            job_id=row["job_id"],
-            status=row["status"],
-            source=row["source"],
-            chunk_ids=json.loads(row["chunk_ids"]),
-            error=row["error"],
+        job = (
+            None
+            if row is None
+            else IngestJob(
+                job_id=row["job_id"],
+                status=row["status"],
+                source=row["source"],
+                chunk_ids=json.loads(row["chunk_ids"]),
+                error=row["error"],
+                tenant_id=row["tenant_id"],
+            )
         )
+        return _apply_tenant_scope(job, tenant_id, is_admin)
 
     async def list_jobs(self, limit: int = 25) -> list[IngestJob]:
         # The shared jobs schema has no monotonic created_at column, so order by
@@ -479,7 +578,7 @@ class PostgresJobStore:
         pool = await self._pool_()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT job_id, status, source, chunk_ids, error FROM jobs"
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id FROM jobs"
                 " ORDER BY ctid DESC LIMIT $1",
                 limit,
             )
@@ -490,6 +589,7 @@ class PostgresJobStore:
                 source=r["source"],
                 chunk_ids=json.loads(r["chunk_ids"]),
                 error=r["error"],
+                tenant_id=r["tenant_id"],
             )
             for r in rows
         ]

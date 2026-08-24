@@ -1,10 +1,11 @@
 """Ingest job listing for the Ops dashboard (role: ``admin``).
 
 Included under the ``require_role(ROLE_ADMIN)`` group in ``api/main.py``. Jobs
-aren't tenant-stamped yet (their ``source`` is a raw path — a cross-tenant leak
-if exposed to non-admins; see #85), so this list is **admin-only**: an admin may
-see every run. The single-job poll ``GET /v1/ingest/{job_id}`` stays the
-tenant-agnostic per-run endpoint.
+are tenant-stamped as of #130, but this listing is not yet scoped by it — their
+``source`` is a raw path (a cross-tenant leak if exposed to non-admins; see
+#85), so it stays **admin-only**: an admin may see every run. #100 tracks
+adding a tenant-scoped listing. The single-job poll ``GET /v1/ingest/{job_id}``
+is the endpoint that is tenant-scoped today (#130).
 """
 from __future__ import annotations
 

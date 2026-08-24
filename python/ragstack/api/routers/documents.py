@@ -30,7 +30,7 @@ from ragstack.api.deps import (
     get_ingestor,
     get_job_store,
 )
-from ragstack.api.security import Principal, resolve_principal, resolve_tenant
+from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
 from ragstack.ingestion.manifest import build_manifest
@@ -303,7 +303,7 @@ async def ingest(
         request.collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(source=request.source)
+    job = await job_store.create(source=request.source, tenant_id=principal.tenant)
     background_tasks.add_task(
         _run_ingest,
         job_store,
@@ -440,7 +440,7 @@ async def ingest_upload(
         collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(source="upload")
+    job = await job_store.create(source="upload", tenant_id=principal.tenant)
     # Staging dir is server-side root + tenant + the freshly minted job_id — none
     # client-controlled today — and each file dest is re-confined under it. But
     # confine the dir itself too: tenant is not validated (config.py accepts any
@@ -488,6 +488,7 @@ async def ingest_upload(
 @router.get("/ingest/{job_id}", response_model=IngestResponse)
 async def ingest_status(
     job_id: str,
+    principal: Principal = Depends(resolve_principal),
     job_store: JobStore = Depends(get_job_store),
 ) -> IngestResponse:
     """Poll ingestion job status: accepted → running → completed | failed.
@@ -495,8 +496,17 @@ async def ingest_status(
     `items` reports per-document progress (total/completed/failed/pending) for
     batch runs. An unrecognized job_id reports status "unknown" (200) rather than
     404, so polling is idempotent and matches the response contract.
+
+    Tenant-scoped (#130): a job stamped for another tenant resolves exactly like
+    an unrecognized one — status "unknown", same 200 shape — so this endpoint
+    never confirms that a foreign job_id exists (IDOR). An admin principal
+    bypasses the scope (ADR-0003 §5, logged in ``ragstack.jobstore``) and always
+    sees the real status, including for a legacy job written before jobs carried
+    a tenant stamp.
     """
-    job = await job_store.get(job_id)
+    job = await job_store.get(
+        job_id, tenant_id=principal.tenant, is_admin=principal.role == ROLE_ADMIN
+    )
     if job is None:
         return IngestResponse(job_id=job_id, status=UNKNOWN)
     counts = await job_store.item_counts(job_id)
