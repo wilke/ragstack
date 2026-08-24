@@ -128,6 +128,8 @@ include = ["ragstack*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["perf: performance budget tests (excluded by default)"]
+addopts = "-m 'not perf'"
 
 [tool.ruff]
 line-length = 100

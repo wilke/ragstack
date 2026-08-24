@@ -1,4 +1,4 @@
-.PHONY: help install-python test-python lint-python run-python \
+.PHONY: help install-python test-python perf-python lint-python run-python \
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
        test-conformance-authz test-conformance-identity-google \
@@ -22,6 +22,9 @@ install-python: ## Install Python package in dev mode
 
 test-python: ## Run Python unit + API tests
 	cd python && pytest tests/ -v
+
+perf-python: ## Run Python performance budget tests
+	cd python && pytest tests/ -m perf -v -s
 
 lint-python: ## Lint Python code
 	cd python && ruff check . && mypy ragstack/
