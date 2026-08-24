@@ -18,9 +18,17 @@ Layout of one version directory::
                          row-aligned with chunks.jsonl.gz
       receipt.json       the load stage's receipt(s), copied verbatim
       tombstone.json     DELETE versions only: the removed doc ids
-      triples.jsonl.zst  RESERVED (graph leg) — never written by this version
 
 A tombstone version holds only ``manifest.json`` + ``tombstone.json``.
+
+**The manifest's ``files`` map is what a reader follows.** It maps a *role* to
+the filename that plays it — ``{"manifest": "manifest.json", "chunks":
+"chunks.jsonl.gz", "vectors": "vectors.f32", "receipt": "receipt.json"}`` (or
+``manifest`` + ``tombstone``). Every non-manifest value must have a ``sha256``
+entry and every ``sha256`` key must be a value of the map; the reader never
+assumes a filename. The role ``triples`` (the graph leg, #350) is reserved and
+carries no file today. ``sha256``/``bytes`` are over the bytes **as stored**
+(the gzip stream), so verification needs no decompression.
 
 **vectors.f32 header** (64 bytes, all integers little-endian)::
 
@@ -32,7 +40,7 @@ A tombstone version holds only ``manifest.json`` + ``tombstone.json``.
     20      8     rows
     28      4     dtype code (1 = float32)
     32      1     byte order b"<"
-    33      31    zero padding
+    33      31    reserved — readers must ignore
 
 so ``len(file) == 64 + rows * dim * 4`` and a numpy consumer can
 ``memmap(path, dtype="<f4", offset=64, shape=(rows, dim))``. The geometry is
@@ -42,8 +50,11 @@ duplicated in ``manifest.json["vectors"]`` and the two must agree.
 package is not a project dependency and this repo does not add packages to a
 shared environment, so the chunks file is **gzip** (``chunks.jsonl.gz``,
 ``manifest["chunks_compression"] == "gzip"``). Readers resolve the chunks
-filename through the manifest, so a later zstd writer is a manifest change,
-not a format break.
+filename through the ``files`` role map and dispatch on
+``chunks_compression`` — ``gzip`` is the only value this reader supports and
+anything else is refused loudly (``ArchiveCorrupt: unsupported
+chunks_compression``), so a later zstd writer is a manifest change plus a
+reader branch, not a format break.
 
 **Streaming both ways.** The writer packs one input line at a time (a bounded
 block of lines when ``workers > 1``) straight into the two output streams and
@@ -80,9 +91,18 @@ CHUNKS_NAME = "chunks.jsonl.gz"
 VECTORS_NAME = "vectors.f32"
 RECEIPT_NAME = "receipt.json"
 TOMBSTONE_NAME = "tombstone.json"
-TRIPLES_NAME = "triples.jsonl.zst"  # reserved for the graph leg; never written here
+
+# Roles in manifest["files"]. "triples" (the graph leg) is reserved: no writer
+# emits it and this reader ignores it if present.
+ROLE_MANIFEST = "manifest"
+ROLE_CHUNKS = "chunks"
+ROLE_VECTORS = "vectors"
+ROLE_RECEIPT = "receipt"
+ROLE_TOMBSTONE = "tombstone"
+ROLE_TRIPLES = "triples"
 
 CHUNKS_COMPRESSION = "gzip"
+SUPPORTED_CHUNKS_COMPRESSION = ("gzip",)
 
 VEC_MAGIC = b"RSF32VEC"
 VEC_HEADER_VERSION = 1
@@ -317,7 +337,8 @@ def write_version(
         receipt_sha, receipt_size = _write_receipt(tmp / RECEIPT_NAME, receipts_list)
         manifest.update({
             "counts": {"chunks": rows, "docs": docs},
-            "files": [CHUNKS_NAME, VECTORS_NAME, RECEIPT_NAME],
+            "files": {ROLE_MANIFEST: MANIFEST_NAME, ROLE_CHUNKS: CHUNKS_NAME,
+                      ROLE_VECTORS: VECTORS_NAME, ROLE_RECEIPT: RECEIPT_NAME},
             "sha256": {CHUNKS_NAME: chunks_sha, VECTORS_NAME: vec_sha,
                        RECEIPT_NAME: receipt_sha},
             "bytes": {CHUNKS_NAME: chunks_size, VECTORS_NAME: vec_size,
@@ -430,7 +451,7 @@ def write_tombstone(
         sha, size = _sha256_file(tmp / TOMBSTONE_NAME)
         manifest.update({
             "counts": {"chunks": 0, "docs": len(ids)},
-            "files": [TOMBSTONE_NAME],
+            "files": {ROLE_MANIFEST: MANIFEST_NAME, ROLE_TOMBSTONE: TOMBSTONE_NAME},
             "sha256": {TOMBSTONE_NAME: sha},
             "bytes": {TOMBSTONE_NAME: size},
             "graph": False,
@@ -466,6 +487,12 @@ def read_manifest(version_dir: str | Path) -> dict[str, Any]:
         raise ArchiveCorrupt(f"{mpath}: missing sha256 map")
     if not isinstance(manifest.get("counts"), dict):
         raise ArchiveCorrupt(f"{mpath}: missing counts")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in files.items()):
+        raise ArchiveCorrupt(f"{mpath}: 'files' must be a role -> filename map")
+    if files.get(ROLE_MANIFEST) != MANIFEST_NAME:
+        raise ArchiveCorrupt(f"{mpath}: files.manifest must be {MANIFEST_NAME!r}")
     return manifest
 
 
@@ -477,6 +504,28 @@ def verify_version(version_dir: str | Path) -> dict[str, Any]:
     — nothing is trusted until everything checks out."""
     vdir = Path(version_dir)
     manifest = read_manifest(vdir)
+    files: dict[str, str] = manifest["files"]
+    tombstone = bool(manifest.get("has_tombstone"))
+    # Resolve roles BEFORE hashing: a manifest this reader cannot follow fails on
+    # that, not on a misleading hash message.
+    if tombstone:
+        if ROLE_TOMBSTONE not in files:
+            raise ArchiveCorrupt(f"{vdir}: tombstone version without a {ROLE_TOMBSTONE!r} file")
+    else:
+        for role in (ROLE_CHUNKS, ROLE_VECTORS):
+            if role not in files:
+                raise ArchiveCorrupt(f"{vdir}: manifest names no {role!r} file")
+        compression = manifest.get("chunks_compression")
+        if compression not in SUPPORTED_CHUNKS_COMPRESSION:
+            raise ArchiveCorrupt(
+                f"{vdir}: unsupported chunks_compression {compression!r} "
+                f"(this reader supports {', '.join(SUPPORTED_CHUNKS_COMPRESSION)})")
+    listed = {name for role, name in files.items() if role != ROLE_MANIFEST}
+    hashed = set(manifest["sha256"])
+    if listed != hashed:
+        raise ArchiveCorrupt(
+            f"{vdir}: files map {sorted(listed)} != sha256 entries {sorted(hashed)} — "
+            "every listed file must be hashed and nothing else")
     sizes = manifest.get("bytes") or {}
     for name, want in manifest["sha256"].items():
         path = vdir / name
@@ -488,22 +537,16 @@ def verify_version(version_dir: str | Path) -> dict[str, Any]:
         if name in sizes and int(sizes[name]) != size:
             raise ArchiveCorrupt(f"{path}: {size} bytes != manifest {sizes[name]}")
 
-    tombstone = bool(manifest.get("has_tombstone"))
     if tombstone:
-        if TOMBSTONE_NAME not in manifest["sha256"]:
-            raise ArchiveCorrupt(f"{vdir}: tombstone version without {TOMBSTONE_NAME}")
         return manifest
 
-    for name in (CHUNKS_NAME, VECTORS_NAME):
-        if name not in manifest["sha256"]:
-            raise ArchiveCorrupt(f"{vdir}: {name} not in manifest sha256 map")
     geom = manifest.get("vectors")
     if not isinstance(geom, dict):
         raise ArchiveCorrupt(f"{vdir}: manifest has no vectors geometry")
     if geom.get("dtype") != "float32" or geom.get("byte_order") != "little" \
             or int(geom.get("header_bytes", 0)) != VEC_HEADER_BYTES:
         raise ArchiveCorrupt(f"{vdir}: unsupported vectors geometry {geom}")
-    vpath = vdir / VECTORS_NAME
+    vpath = vdir / files[ROLE_VECTORS]
     with vpath.open("rb") as fh:
         dim, rows = parse_vector_header(fh.read(VEC_HEADER_BYTES))
     if dim != int(geom.get("dim", 0)) or rows != int(geom.get("rows", -1)):
@@ -535,8 +578,10 @@ def read_version(version_dir: str | Path) -> Iterator[tuple[dict[str, Any], arra
     rows = int(manifest["vectors"]["rows"])
     row_bytes = dim * _FLOAT32_BYTES
     seen = 0
-    with gzip.open(vdir / CHUNKS_NAME, "rt", encoding="utf-8") as chunks, \
-            (vdir / VECTORS_NAME).open("rb") as vfh:
+    files = manifest["files"]
+    # chunks_compression was verified to be gzip — the only branch there is.
+    with gzip.open(vdir / files[ROLE_CHUNKS], "rt", encoding="utf-8") as chunks, \
+            (vdir / files[ROLE_VECTORS]).open("rb") as vfh:
         vfh.seek(VEC_HEADER_BYTES)
         for line in chunks:
             if not line.strip():
@@ -562,8 +607,9 @@ def read_tombstone(version_dir: str | Path) -> list[str]:
     manifest = verify_version(vdir)
     if not manifest.get("has_tombstone"):
         raise ArchiveError(f"{vdir}: not a tombstone version")
-    tomb = json.loads((vdir / TOMBSTONE_NAME).read_text(encoding="utf-8"))
+    tpath = vdir / manifest["files"][ROLE_TOMBSTONE]
+    tomb = json.loads(tpath.read_text(encoding="utf-8"))
     ids = tomb.get("doc_ids") if isinstance(tomb, dict) else None
     if not isinstance(ids, list):
-        raise ArchiveCorrupt(f"{vdir}/{TOMBSTONE_NAME}: no doc_ids list")
+        raise ArchiveCorrupt(f"{tpath}: no doc_ids list")
     return [str(d) for d in ids]

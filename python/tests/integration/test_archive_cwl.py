@@ -150,6 +150,7 @@ def test_standalone_and_inlined_archive_tools_agree() -> None:
         for name, ref_in in ref["inputs"].items():
             got = tool["inputs"][name]
             assert got["inputBinding"] == ref_in["inputBinding"], (wf_name, name)
+            assert got.get("default") == ref_in.get("default"), (wf_name, name)
             if name != "receipt":
                 assert got["type"] == ref_in["type"], (wf_name, name)
         assert wf["outputs"]["archive"]["type"] == "Directory"

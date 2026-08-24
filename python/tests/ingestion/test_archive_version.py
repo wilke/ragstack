@@ -24,7 +24,6 @@ from ragstack.ingestion.archive import (
     MANIFEST_NAME,
     RECEIPT_NAME,
     TOMBSTONE_NAME,
-    TRIPLES_NAME,
     VEC_HEADER_BYTES,
     VECTORS_NAME,
     ArchiveCorrupt,
@@ -97,7 +96,6 @@ def test_round_trip_vectors_bit_identical(version_dir) -> None:
     assert vdir.name == "3"
     assert sorted(p.name for p in vdir.iterdir()) == sorted(
         [MANIFEST_NAME, CHUNKS_NAME, VECTORS_NAME, RECEIPT_NAME])
-    assert TRIPLES_NAME not in {p.name for p in vdir.iterdir()}
 
     rows = list(read_version(vdir))
     assert len(rows) == len(recs) == 9
@@ -129,7 +127,9 @@ def test_manifest_shape_and_sha256s_verify(version_dir) -> None:
     assert manifest["chunks_compression"] == "gzip"
     assert manifest["receipts"] == 1
     assert set(manifest["sha256"]) == {CHUNKS_NAME, VECTORS_NAME, RECEIPT_NAME}
-    assert manifest["files"] == [CHUNKS_NAME, VECTORS_NAME, RECEIPT_NAME]
+    assert manifest["files"] == {"manifest": MANIFEST_NAME, "chunks": CHUNKS_NAME,
+                                 "vectors": VECTORS_NAME, "receipt": RECEIPT_NAME}
+    assert "triples" not in manifest["files"]  # reserved role, no file today
     assert manifest["vectors"] == {"dim": DIM, "rows": 9, "dtype": "float32",
                                    "byte_order": "little", "header_bytes": VEC_HEADER_BYTES}
     # independent recomputation of every sha256 + size
@@ -307,6 +307,93 @@ def test_missing_file_and_wrong_format_tag(version_dir) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# the manifest role map drives the reader
+# --------------------------------------------------------------------------- #
+
+def _rewrite_manifest(vdir: Path, fn) -> None:
+    m = json.loads((vdir / MANIFEST_NAME).read_text())
+    fn(m)
+    (vdir / MANIFEST_NAME).write_text(json.dumps(m))
+
+
+def _rename_role(m: dict, role: str, new_name: str) -> None:
+    old = m["files"][role]
+    m["files"][role] = new_name
+    m["sha256"][new_name] = m["sha256"].pop(old)
+    m["bytes"][new_name] = m["bytes"].pop(old)
+
+
+def test_future_zstd_archive_is_refused_as_unsupported_not_missing(version_dir) -> None:
+    """(a) A consistent manifest naming chunks.jsonl.zst with chunks_compression
+    zstd must fail on the compression, not on a filename this reader guessed."""
+    vdir, _, _ = version_dir
+    (vdir / CHUNKS_NAME).rename(vdir / "chunks.jsonl.zst")
+
+    def fn(m):
+        _rename_role(m, "chunks", "chunks.jsonl.zst")
+        m["chunks_compression"] = "zstd"
+    _rewrite_manifest(vdir, fn)
+    with pytest.raises(ArchiveCorrupt, match="unsupported chunks_compression 'zstd'") as ei:
+        verify_version(vdir)
+    assert "sha256 map" not in str(ei.value)
+    _assert_nothing_yielded(vdir, "unsupported chunks_compression")
+
+
+def test_renamed_gzip_chunks_file_reads_through_role_map(version_dir, tmp_path) -> None:
+    """(b) The reader follows files.chunks / files.vectors / files.receipt."""
+    vdir, recs, _ = version_dir
+    (vdir / CHUNKS_NAME).rename(vdir / "chunks-v1.jsonl.gz")
+    (vdir / VECTORS_NAME).rename(vdir / "vec.bin")
+    (vdir / RECEIPT_NAME).rename(vdir / "load.json")
+
+    def fn(m):
+        _rename_role(m, "chunks", "chunks-v1.jsonl.gz")
+        _rename_role(m, "vectors", "vec.bin")
+        _rename_role(m, "receipt", "load.json")
+    _rewrite_manifest(vdir, fn)
+    rows = list(read_version(vdir))
+    assert [c["id"] for c, _ in rows] == [r["id"] for r in recs]
+    assert [v.tobytes() for _, v in rows] == [_f32(r["embedding"]) for r in recs]
+
+    # tombstone role too
+    write_tombstone(tmp_path / "t", 1, ["d1"], collection_id="c", tenant="t")
+    tdir = tmp_path / "t" / "1"
+    (tdir / TOMBSTONE_NAME).rename(tdir / "removed.json")
+    _rewrite_manifest(tdir, lambda m: _rename_role(m, "tombstone", "removed.json"))
+    assert read_tombstone(tdir) == ["d1"]
+
+
+def test_files_entry_without_sha256_is_corrupt(version_dir) -> None:
+    """(c) Every listed file must be hashed — and nothing unlisted may be."""
+    vdir, _, _ = version_dir
+    (vdir / "notes.txt").write_text("x")
+
+    def add_unhashed(m):
+        m["files"]["triples"] = "notes.txt"
+    _rewrite_manifest(vdir, add_unhashed)
+    _assert_nothing_yielded(vdir, "every listed file must be hashed")
+
+    def add_unlisted(m):
+        del m["files"]["triples"]
+        m["sha256"]["notes.txt"] = "0" * 64
+    _rewrite_manifest(vdir, add_unlisted)
+    _assert_nothing_yielded(vdir, "every listed file must be hashed and nothing else")
+
+
+def test_manifest_role_map_shape(version_dir) -> None:
+    vdir, _, _ = version_dir
+    _rewrite_manifest(vdir, lambda m: m.__setitem__("files", [CHUNKS_NAME, VECTORS_NAME]))
+    _assert_nothing_yielded(vdir, "'files' must be a role -> filename map")
+    _rewrite_manifest(vdir, lambda m: m.__setitem__(
+        "files", {"manifest": MANIFEST_NAME, "vectors": VECTORS_NAME, "receipt": RECEIPT_NAME}))
+    _assert_nothing_yielded(vdir, "names no 'chunks' file")
+    _rewrite_manifest(vdir, lambda m: m.__setitem__(
+        "files", {"manifest": "m.json", "chunks": CHUNKS_NAME, "vectors": VECTORS_NAME,
+                  "receipt": RECEIPT_NAME}))
+    _assert_nothing_yielded(vdir, "files.manifest must be 'manifest.json'")
+
+
+# --------------------------------------------------------------------------- #
 # writer input validation
 # --------------------------------------------------------------------------- #
 
@@ -362,7 +449,7 @@ def test_tombstone_version_contents(tmp_path: Path) -> None:
     assert m["has_tombstone"] is True
     assert m["graph"] is False
     assert m["counts"] == {"chunks": 0, "docs": 2}
-    assert m["files"] == [TOMBSTONE_NAME]
+    assert m["files"] == {"manifest": MANIFEST_NAME, "tombstone": TOMBSTONE_NAME}
     assert set(m["sha256"]) == {TOMBSTONE_NAME}
     assert "vectors" not in m
     assert json.loads((vdir / MANIFEST_NAME).read_text()) == m

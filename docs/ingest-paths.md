@@ -111,18 +111,21 @@ any task.
 ```
 <N>/
   manifest.json      identity + counts + sha256/bytes per file (below)
-  chunks.jsonl.gz    one JSON object per chunk: id, doc_id, content, metadata,
-                     start_char, end_char — NO vector. gzip, mtime=0, no filename
+  chunks.jsonl.gz    one record per chunk = the ragstack.embedding_file/v1
+                     record minus `embedding` (Chunk.model_dump(), UTF-8, sorted
+                     keys). gzip, mtime=0, no filename
   vectors.f32        64-byte header + float32 rows, little-endian, row i is
                      chunk line i of chunks.jsonl.gz
   receipt.json       the load stage's receipt, copied verbatim (pdf-ingest: the
                      load summary) — or a JSON ARRAY of the per-item receipts in
                      input order (pdf-ingest-scatter: one ShardReceipt per PDF)
   tombstone.json     DELETE versions only: {"format", "count", "doc_ids": [...]}
-  triples.jsonl.zst  RESERVED for the graph leg — never written today
 ```
 
-A tombstone version holds **only** `manifest.json` + `tombstone.json`.
+A tombstone version holds **only** `manifest.json` + `tombstone.json`. The
+filenames above are what the writer emits today; a reader never assumes them —
+it follows the manifest's **`files` role map** (below). The role `triples` (the
+graph leg, #350) is reserved and has no file today.
 
 **`manifest.json`** (keys sorted, no timestamps — a re-run of the step is
 byte-identical, like the receipts):
@@ -132,18 +135,18 @@ byte-identical, like the receipts):
 | `format` | `"ragstack-archive/1"` |
 | `collection_id`, `tenant`, `spec_hash`, `version`, `job_id` | identity: the registry id (not the store name), the tenant, the ADR-0002 build-spec hash, the version number (int), the RAGStack job id. Restore refuses a `spec_hash` that differs from the registry row. |
 | `counts` | `{"chunks": rows, "docs": distinct doc_ids}` (`chunks: 0` for a tombstone) |
-| `files` | the data files present, in order |
-| `sha256`, `bytes` | per file — every file is verified before a reader yields anything |
+| `files` | **role → filename map** the reader follows: `{"manifest": "manifest.json", "chunks": "chunks.jsonl.gz", "vectors": "vectors.f32", "receipt": "receipt.json"}`, or `manifest` + `tombstone` for a delete. Every non-manifest value must have a `sha256` entry and every `sha256` key must be a value of the map (nothing unlisted is trusted). `triples` is a reserved role with no value written. |
+| `sha256`, `bytes` | per file, over the bytes **as stored** (i.e. the gzip stream for chunks) — verification needs no decompression; every file is verified before a reader yields anything |
 | `vectors` | `{"dim", "rows", "dtype": "float32", "byte_order": "little", "header_bytes": 64}` — must agree with the file's own header (chunk versions only) |
-| `chunks_compression` | `"gzip"` |
+| `chunks_compression` | `"gzip"` — the reader dispatches on this; any other value is refused (`ArchiveCorrupt: unsupported chunks_compression`) |
 | `receipts` | how many receipt files went into `receipt.json` (1 = verbatim object, >1 = array) |
 | `graph` | `false` — the graph leg is not archived |
 | `has_tombstone` | `true` for a delete version |
 
 **`vectors.f32` header** (64 bytes, integers little-endian): `RSF32VEC` magic
 (8) · header version `1` (u32) · header length `64` (u32) · `dim` (u32) ·
-`rows` (u64) · dtype code `1` = float32 (u32) · byte order `<` (1) · zero
-padding. Hence `len(file) == 64 + rows × dim × 4`, and
+`rows` (u64) · dtype code `1` = float32 (u32) · byte order `<` (1) · 31
+reserved bytes (readers must ignore). Hence `len(file) == 64 + rows × dim × 4`, and
 `numpy.memmap(path, dtype="<f4", offset=64, shape=(rows, dim))` reads it
 directly. The reader (`read_version`) verifies every sha256, that the header
 and manifest geometry agree, and that the file size matches, **before** the
@@ -154,9 +157,11 @@ RSS — the JSONL embed file is never materialised as Python float lists.
 
 **Why gzip, not zstd.** The design names `chunks.jsonl.zst`; `zstandard` is
 not a project dependency and shared environments do not get new packages for
-one file, so the chunks file is gzip. Readers find the chunks filename through
-`manifest.files`, so a zstd writer later is a manifest change, not a format
-break. (Vectors are incompressible float32 either way.)
+one file, so the chunks file is gzip. Readers find the chunks file through the
+`files.chunks` role and dispatch on `chunks_compression` (only `gzip` today —
+anything else fails loudly rather than mis-reading), so a zstd writer later is
+a manifest change plus a reader branch, not a format break. (Vectors are
+incompressible float32 either way.)
 
 **Producing it.** `archive_version.py --version N --collection-id <id>
 --chunks <emb.jsonl…> --receipt <receipt.json…> --out <dir>` writes

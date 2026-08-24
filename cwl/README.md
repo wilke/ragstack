@@ -243,8 +243,15 @@ input key, because this workflow's input is `pdfs`, not `shards`:
 GoWeBackend(client, cwl, workflow_name="ragstack-pdf-ingest-scatter",
             shards_input_key="pdfs",   # default is "shards" (ingest-bulk.cwl)
             worker_group=None,         # must stay unset — see "Worker group matters"
-            static_inputs={"collection": ..., "embedding_url": [...], ...})
+            static_inputs={"collection": ..., "embedding_url": [...],
+                           "version": "1", "collection_id": ..., ...})
 ```
+
+`version` and `collection_id` are **required** workflow inputs since the archive
+step (#357). A static `version` in `gowe_workflow_inputs_json` is inherently
+**single-job** — every submission would write the same `versions/1/` — so it is
+only a stopgap until #353's API side assigns the version per job from the
+registry.
 
 > **Not reachable from config yet.** `shards_input_key` is a constructor argument
 > with no `Settings` field, and `make_ingest_backend` never passes it — so
