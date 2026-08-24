@@ -12,6 +12,7 @@ from ragstack.documents import (
     encode_cursor,
 )
 from ragstack.models import Chunk, ScoredChunk, Triple
+from ragstack.stores.filters import payload_matches, validate_filters
 from ragstack.tenancy import readable_tenants, tenant_of
 
 
@@ -24,7 +25,11 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     membership in the empty set is false, and reading it as "no constraint" would
     silently widen a scope key into a cross-tenant read. Only a key that is
     absent from ``filters`` is unconstrained. Keep in sync with ``_build_filter``
-    in stores/qdrant.py and ``_build_query`` in stores/elasticsearch.py."""
+    in stores/qdrant.py and ``_build_query`` in stores/elasticsearch.py.
+
+    Used by ``search()`` (free-form, client-suppliable filter keys). ``get_chunks``
+    uses the stricter, narrower-grammar ``payload_matches`` in stores/filters.py
+    instead — see its module docstring for why."""
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
         if isinstance(value, (list, tuple, set)):
@@ -118,7 +123,15 @@ class InMemoryVectorStore:
         self, chunk_ids: list[str], filters: dict[str, Any] | None = None
     ) -> list[Chunk]:
         """Fetch chunks by id, tenant-scoped via ``filters``; request order kept,
-        missing/invisible ids omitted."""
+        missing/invisible ids omitted.
+
+        Uses the shared, narrower-grammar ``payload_matches`` (stores/filters.py)
+        rather than ``_matches`` — the same predicate ``QdrantVectorStore.get_chunks``
+        applies, so the two stores can't diverge on which filter keys they honour
+        (#197). ``filters`` is validated before the ``ids`` early return — an
+        unsupported key must refuse the call outright, not get silently skipped
+        because there was nothing to filter."""
+        validate_filters(filters)
         ids = list(dict.fromkeys(chunk_ids))
         if not ids:
             return []
@@ -126,7 +139,7 @@ class InMemoryVectorStore:
         by_id = {
             c.id: c
             for c in self._chunks
-            if c.id in wanted and (not filters or _matches(c, filters))
+            if c.id in wanted and payload_matches(c.metadata, filters)
         }
         return [by_id[c] for c in ids if c in by_id]
 

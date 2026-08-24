@@ -26,6 +26,7 @@ from qdrant_client.models import (
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import StoreUnavailable, VectorDimMismatch
+from ragstack.stores.filters import payload_matches, validate_filters
 from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
 
 log = logging.getLogger(__name__)
@@ -388,7 +389,20 @@ class QdrantVectorStore:
         than filtering the (unindexed) ``chunk_id`` payload, which would scan the
         collection. Only ids under a readable tenant are ever computed, so the
         lookup is tenant-scoped by construction; with no readable scope it fails
-        closed (empty), mirroring ``count_tenants``."""
+        closed (empty), mirroring ``count_tenants``.
+
+        The ``retrieve`` only narrows by (id, tenant) — it cannot express the
+        *rest* of ``filters`` (e.g. ``collection``, #197) server-side, so every
+        returned record is re-checked against the full ``filters`` dict via the
+        shared ``payload_matches`` predicate (stores/filters.py) before being
+        kept. This also re-asserts ``tenant_id`` against the actual payload
+        rather than trusting the point-id derivation alone, matching what
+        ``InMemoryVectorStore.get_chunks`` has always done.
+
+        ``filters`` is validated FIRST, before the ids/tenants early return —
+        an unsupported key must refuse the call outright, not just get silently
+        skipped when the (id, tenant) narrowing happens to come back empty."""
+        validate_filters(filters)
         ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
         tenants = (filters or {}).get("tenant_id")
         if not ids or not isinstance(tenants, (list, tuple, set)) or not tenants:
@@ -402,7 +416,8 @@ class QdrantVectorStore:
         found: dict[str, Chunk] = {}
         for r in records:
             ch = _chunk_from_payload(r.payload, r.id)
-            found.setdefault(ch.id, ch)
+            if payload_matches(ch.metadata, filters):
+                found.setdefault(ch.id, ch)
         return [found[c] for c in ids if c in found]
 
     async def healthcheck(self) -> None:
@@ -535,7 +550,9 @@ def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     Only ``None`` or a dict with *no keys at all* means unfiltered; a key that is
     present with an empty list is a real (unsatisfiable) constraint. Keep this in
     sync with ``_matches`` in stores/memory.py and ``_build_query`` in
-    stores/elasticsearch.py.
+    stores/elasticsearch.py. (``get_chunks`` uses the stricter, narrower-grammar
+    ``payload_matches`` in stores/filters.py instead of this builder — see its
+    module docstring for why.)
 
     Why match-nothing rather than raising as ``_build_query`` does for its tenant
     key: this builder also serves the deliberately unscoped delete paths

@@ -1571,6 +1571,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChunksResponse"
+        "400":
+          description: >-
+            The resolved store rejected the scope filters it was asked to apply
+            (an unsupported filter key — refused rather than silently ignored, #197).
         "401":
           description: Missing or invalid credential (API key or bearer identity)
         "404":
