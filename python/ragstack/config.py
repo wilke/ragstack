@@ -342,11 +342,15 @@ class Settings(BaseSettings):
     # in-process (LocalAsyncIORunner); "gowe" submits them to the GoWe CWL engine
     # as a scatter workflow (GoWeBackend). See make_ingest_backend.
     #
-    # IMPORTANT — in "gowe" mode each manifest item's ``source`` is a **shard file**
-    # the GoWe workers read (a JSONL shard fed to ingest_shard.py), NOT an arbitrary
-    # document: the workflow, not the in-process pipeline, does the loading. Build
-    # the manifest from pre-sharded JSONL files. (Transparently sharding arbitrary
-    # /v1/ingest documents to GoWe is a separate follow-up.)
+    # In "gowe" mode the API submits AS THE CALLER (#203/#353): POST /v1/ingest
+    # takes a Workspace reference (``ws://…`` or ``/<user>/home/…``) and
+    # POST /v1/ingest/upload writes the PDFs into the caller's Workspace first;
+    # both then submit gowe_workflow_cwl (the scatter-per-PDF workflow) with
+    # ``ws://`` File inputs, the caller's BV-BRC token in the Authorization
+    # header, and output_destination = the collection's ``versions/`` folder.
+    # The engine pre-stages the inputs and post-stages the archive with that
+    # token; nothing is staged on the API host. Needs a bearer (BV-BRC) caller
+    # and a registered collection — an API-key principal gets 401.
     ingest_backend: str = "local"           # local | gowe
     # GoWe engine connection + workflow (used only when ingest_backend=gowe).
     gowe_url: str = "http://localhost:8091"
@@ -361,6 +365,14 @@ class Settings(BaseSettings):
     gowe_worker_group: str = ""              # route to a GoWe worker group (submission label)
     gowe_poll_interval: float = 5.0
     gowe_timeout: float = 7200.0
+    # The workflow's scattered File[] input and its per-item receipts output
+    # (#203 blocker b). Defaults match cwl/pdf-ingest-scatter.cwl — the workflow
+    # the API drives; the JSONL bulk workflow (ingest-bulk.cwl) names its input
+    # "shards", so set GOWE_SHARDS_INPUT_KEY=shards to drive that one. Safe to
+    # default to "pdfs": no INGEST_BACKEND=gowe deployment could exist before
+    # this — both ingest endpoints refused every non-local backend with 501.
+    gowe_shards_input_key: str = "pdfs"
+    gowe_receipts_output_key: str = "receipts"
 
     # BV-BRC Workspace (ragstack/workspace.py, #356): the JSON-RPC endpoint the
     # API writes a user's collection folder / sources to — always with the

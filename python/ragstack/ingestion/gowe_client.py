@@ -6,8 +6,18 @@ flow so ``GoWeBackend`` (and operators) can drive it from Python.
 
 Auth: BV-BRC token (anonymous submission is disabled on the deployed server). The
 token is a ``un=…|tokenid=…|expiry=…|sig=…`` string sent verbatim in the
-``Authorization`` header; it is loaded from ``$GOWE_TOKEN``/``$BVBRC_TOKEN`` or the
-usual token files (``~/.gowe/credentials.json``, ``~/.patric_token``, …).
+``Authorization`` header. Two sources, kept apart on purpose:
+
+* the client's OWN token — an operator credential for the bulk plane, loaded
+  from ``$GOWE_TOKEN``/``$BVBRC_TOKEN`` or the usual token files
+  (``~/.gowe/credentials.json``, ``~/.patric_token``, …) — and
+* a PER-CALL ``token=`` on :meth:`register_workflow` / :meth:`submit` /
+  :meth:`get_submission` / :meth:`wait` / :meth:`download` — the *caller's* credential when the API
+  submits as the user (#203/#353). It goes into that one request's
+  ``Authorization`` header and nowhere else: never stored on the client, never
+  logged, never echoed in an exception (transport errors are re-raised ``from
+  None`` with the exception's type name only, and any token that turns up in a
+  response body is scrubbed before it can reach a message).
 """
 from __future__ import annotations
 
@@ -59,6 +69,14 @@ def load_bvbrc_token() -> str | None:
     return None
 
 
+def _scrub(text: str, *tokens: str | None) -> str:
+    """Defence in depth: no message this module builds may carry a token."""
+    for tok in tokens:
+        if tok:
+            text = text.replace(tok, "[token]")
+    return text
+
+
 class GoWeClient:
     """Minimal async REST client for GoWe (register → submit → poll → download)."""
 
@@ -79,28 +97,49 @@ class GoWeClient:
         if self._owns_http:
             await self._http.aclose()
 
-    def _headers(self) -> dict[str, str]:
-        # GoWe accepts the raw token (it strips an optional "Bearer " prefix).
-        return {"Authorization": self._token} if self._token else {}
+    def _headers(self, token: str | None = None) -> dict[str, str]:
+        # GoWe accepts the raw token (it strips an optional "Bearer " prefix). A
+        # per-call token replaces the client's own for that request only.
+        tok = token or self._token
+        return {"Authorization": tok} if tok else {}
 
-    async def _request(self, method: str, path: str, **kw) -> httpx.Response:
-        resp = await self._http.request(
-            method, f"{self._base}{path}", headers=self._headers(), **kw
-        )
+    async def _request(
+        self, method: str, path: str, *, token: str | None = None, **kw: Any
+    ) -> httpx.Response:
+        try:
+            resp = await self._http.request(
+                method, f"{self._base}{path}", headers=self._headers(token), **kw
+            )
+        except httpx.HTTPError as exc:
+            # ``from None`` + type name only: an httpx error's text can include
+            # the request (and so the Authorization header) — never re-raise it.
+            raise GoWeError(
+                f"{method} {path}: transport error ({type(exc).__name__})"
+            ) from None
         if resp.status_code >= 400:
-            raise GoWeError(f"{method} {path} -> {resp.status_code}: {resp.text[:500]}")
+            body = _scrub(resp.text[:500], token, self._token)
+            raise GoWeError(f"{method} {path} -> {resp.status_code}: {body}")
         return resp
 
-    async def _json(self, method: str, path: str, **kw) -> Any:
-        return (await self._request(method, path, **kw)).json()
+    async def _json(
+        self, method: str, path: str, *, token: str | None = None, **kw: Any
+    ) -> Any:
+        return (await self._request(method, path, token=token, **kw)).json()
 
     # --- workflow / submission lifecycle ---------------------------------- #
     async def register_workflow(
-        self, name: str, cwl: str, labels: dict[str, str] | None = None
+        self,
+        name: str,
+        cwl: str,
+        labels: dict[str, str] | None = None,
+        *,
+        token: str | None = None,
     ) -> str:
-        """Register (or dedup-match) a CWL document; returns its ``wf_…`` id."""
+        """Register (or dedup-match) a CWL document; returns its ``wf_…`` id.
+        With ``token`` the registration is made as that user too, so a user
+        submission never depends on an operator credential being present."""
         body = {"name": name, "cwl": cwl, "labels": labels or {}}
-        data = (await self._json("POST", "/api/v1/workflows", json=body))["data"]
+        data = (await self._json("POST", "/api/v1/workflows", token=token, json=body))["data"]
         return data["id"]
 
     async def submit(
@@ -110,29 +149,44 @@ class GoWeClient:
         *,
         labels: dict[str, str] | None = None,
         output_destination: str | None = None,
+        token: str | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         """Submit a registered workflow with an inputs (job) object. Returns the
-        submission record (``id``, ``state``, …); ``dry_run`` validates only."""
+        submission record (``id``, ``state``, …); ``dry_run`` validates only.
+
+        ``token`` submits AS THAT USER: it is sent in this request's
+        ``Authorization`` header only (the engine authenticates the submission
+        with it, pre-stages ``ws://`` inputs and post-stages outputs to
+        ``output_destination`` with it). GoWe requires ``output_destination`` to
+        lie under that token owner's Workspace home and refuses otherwise."""
         body: dict[str, Any] = {"workflow_id": workflow_id, "inputs": inputs}
         if labels:
             body["labels"] = labels
         if output_destination:
             body["output_destination"] = output_destination
         path = "/api/v1/submissions" + ("?dry_run=true" if dry_run else "")
-        return (await self._json("POST", path, json=body))["data"]
+        return (await self._json("POST", path, token=token, json=body))["data"]
 
-    async def get_submission(self, sub_id: str) -> dict[str, Any]:
-        return (await self._json("GET", f"/api/v1/submissions/{sub_id}"))["data"]
+    async def get_submission(
+        self, sub_id: str, *, token: str | None = None
+    ) -> dict[str, Any]:
+        return (await self._json("GET", f"/api/v1/submissions/{sub_id}", token=token))["data"]
 
     async def wait(
-        self, sub_id: str, *, poll_interval: float = 3.0, timeout: float = 3600.0
+        self,
+        sub_id: str,
+        *,
+        poll_interval: float = 3.0,
+        timeout: float = 3600.0,
+        token: str | None = None,
     ) -> dict[str, Any]:
         """Poll a submission until it reaches a terminal state. Returns the final
-        record. Raises ``GoWeError`` on timeout (the submission keeps running)."""
+        record. Raises ``GoWeError`` on timeout (the submission keeps running).
+        ``token`` polls as the submitter (a submission is visible to its owner)."""
         deadline = time.monotonic() + timeout
         while True:
-            sub = await self.get_submission(sub_id)
+            sub = await self.get_submission(sub_id, token=token)
             if sub.get("state") in TERMINAL_STATES:
                 return sub
             if time.monotonic() >= deadline:
@@ -142,13 +196,13 @@ class GoWeClient:
                 )
             await asyncio.sleep(poll_interval)
 
-    async def download(self, location: str) -> bytes:
+    async def download(self, location: str, *, token: str | None = None) -> bytes:
         """Download an output file by its ``file://…`` location (must be under the
         server's allowed download dirs). Returns the response bytes verbatim — an
         empty body yields ``b""`` (we never read a server-side path off the local
         filesystem, which would be a footgun on a remote/containerized worker)."""
         resp = await self._request(
-            "GET", "/api/v1/files/download", params={"location": location}
+            "GET", "/api/v1/files/download", token=token, params={"location": location}
         )
         return resp.content
 

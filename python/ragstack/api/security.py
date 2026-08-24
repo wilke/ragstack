@@ -143,12 +143,21 @@ class Principal:
     token: str | None = None
     token_id: str | None = None
     token_exp: int | None = None
+    #: The verified identity's issuer label (``"bvbrc"`` | the OIDC label) and
+    #: bare subject, set only on the bearer path — ``""`` for API-key/keyless
+    #: principals. Carried explicitly rather than re-parsed out of ``tenant``:
+    #: an issuer label is free-form config and may itself contain a colon. The
+    #: subject is what names the caller's BV-BRC Workspace home
+    #: (``/<subject>/home/…``) when the API acts as the user (#203/#353).
+    issuer: str = ""
+    subject: str = ""
 
     def __repr__(self) -> str:
         token = "'***'" if self.token else repr(self.token)
         return (
             f"Principal(tenant={self.tenant!r}, role={self.role!r}, token={token}, "
-            f"token_id={self.token_id!r}, token_exp={self.token_exp!r})"
+            f"token_id={self.token_id!r}, token_exp={self.token_exp!r}, "
+            f"issuer={self.issuer!r}, subject={self.subject!r})"
         )
 
 
@@ -831,6 +840,8 @@ async def _principal_from_bearer(provider: IdentityProvider, credential: str) ->
         token=credential,
         token_id=identity.token_id,
         token_exp=identity.expires_at,
+        issuer=identity.issuer,
+        subject=identity.subject,
     )
 
 

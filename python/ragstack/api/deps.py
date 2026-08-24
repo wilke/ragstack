@@ -35,7 +35,7 @@ from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
 from ragstack.graph.extractor import LLMKGExtractor
-from ragstack.ingestion.backends import make_ingest_backend
+from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
 from ragstack.ingestion.chunkers import CHUNK_METHODS, make_chunker
 from ragstack.ingestion.doi_metadata import DoiEnricher, build_resolver
@@ -59,6 +59,7 @@ from ragstack.rewriting.rewriters import (
 from ragstack.scoring.scorers import RRFScorer, SidecarReranker
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
+from ragstack.workspace import WorkspaceClient
 
 log = logging.getLogger(__name__)
 
@@ -1502,6 +1503,15 @@ async def lifespan(app: FastAPI):
     app.state.collection_embed_bridges = collection_embed_bridges
     app.state.job_store = job_store
     app.state.ingestor = ingestor
+    # The distribution backend by itself (#203): the user ingest path under
+    # ingest_backend=gowe drives GoWeBackend.run_submission directly (per-job
+    # token + output_destination), bypassing ShardedIngestor.
+    app.state.ingest_backend = ingest_backend
+    # The BV-BRC Workspace client (#356/#353). Holds no credential — every call
+    # takes the caller's token; shares the app's http client.
+    app.state.workspace = WorkspaceClient(
+        settings.workspace_url, http_client, timeout=settings.workspace_timeout
+    )
     app.state.generator = (
         RagGenerator(llm, max_context_chars=settings.llm_max_context_chars)
         if llm is not None
@@ -1725,6 +1735,26 @@ def get_collection_store(request: Request) -> CollectionStore:
     if store is None:
         return JsonFileCollectionStore(settings)
     return store
+
+
+def get_ingest_backend(request: Request) -> IngestBackend | None:
+    """The configured distribution backend (``None`` when the app was assembled
+    without a lifespan and nothing installed one — the gowe ingest path then
+    reports 503 rather than guessing)."""
+    return getattr(request.app.state, "ingest_backend", None)
+
+
+def get_workspace(request: Request) -> WorkspaceClient:
+    """The Workspace client; built lazily over ``app.state.http_client`` when the
+    lifespan did not run (duck-typed ``app.state`` in tests)."""
+    ws = getattr(request.app.state, "workspace", None)
+    if ws is None:
+        ws = WorkspaceClient(
+            settings.workspace_url, request.app.state.http_client,
+            timeout=settings.workspace_timeout,
+        )
+        request.app.state.workspace = ws
+    return ws
 
 
 def get_model_registry(request: Request) -> ModelRegistry:

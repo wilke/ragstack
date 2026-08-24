@@ -233,6 +233,22 @@ class CollectionStore(Protocol):
         """Remove a spec. ``False`` when the id wasn't stored."""
         ...
 
+    async def next_version(self, cid: str) -> int:
+        """Reserve and return the next archive version number for ``cid``
+        (#203/#353): ``1`` on the first call, then ``2``, … — the ``versions/<n>/``
+        subfolder a GoWe ingest job's archive lands in. The increment is ONE
+        atomic statement in every backend, so two concurrent jobs on the same
+        collection can never be handed the same number. A number is consumed
+        when reserved, not when the job completes: a failed run leaves a gap,
+        and gaps are fine (``WorkspaceClient.list_versions`` lists what exists).
+
+        Raises ``KeyError`` for an id the store does not hold (the settings-
+        derived ``default`` entry has no row) and ``NotImplementedError`` from a
+        backend that cannot persist a counter (the JSON-file registry — dev only;
+        ``require_durable_backends`` already forbids it in production).
+        """
+        ...
+
     async def close(self) -> None: ...
 
 
@@ -458,6 +474,15 @@ class JsonFileCollectionStore:
             return False
         return await asyncio.to_thread(remove_spec_from_file, path, cid)
 
+    async def next_version(self, cid: str) -> int:
+        # The file format is the wire format (see CollectionSpec) and carries no
+        # bookkeeping; a counter kept only in this process would hand out
+        # ``versions/1/`` again after every restart. Refuse rather than collide.
+        raise NotImplementedError(
+            "the json collection registry cannot track archive versions; use "
+            "COLLECTION_STORE_BACKEND=sqlite or postgres"
+        )
+
     async def close(self) -> None:
         """No resources to release."""
 
@@ -469,6 +494,7 @@ class InMemoryCollectionStore:
         self._records: dict[str, CollectionRecord] = {
             s.id: make_record(s) for s in (specs or [])
         }
+        self._versions: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
     async def list_specs(self) -> list[CollectionSpec]:
@@ -505,7 +531,15 @@ class InMemoryCollectionStore:
 
     async def delete(self, cid: str) -> bool:
         async with self._lock:
+            self._versions.pop(cid, None)
             return self._records.pop(cid, None) is not None
+
+    async def next_version(self, cid: str) -> int:
+        async with self._lock:
+            if cid not in self._records:
+                raise KeyError(cid)
+            self._versions[cid] = n = self._versions.get(cid, 0) + 1
+            return n
 
     async def close(self) -> None:
         """No resources to release."""
@@ -538,7 +572,8 @@ _COLLECTIONS_DDL = (
     "  spec_hash TEXT NOT NULL DEFAULT '',"
     "  created_at TEXT NOT NULL DEFAULT '',"
     "  updated_at TEXT NOT NULL DEFAULT '',"
-    "  owner TEXT NOT NULL DEFAULT ''"
+    "  owner TEXT NOT NULL DEFAULT '',"
+    "  archive_version INTEGER NOT NULL DEFAULT 0"
     ")"
 )
 
@@ -563,7 +598,14 @@ _COLLECTIONS_COLUMNS: dict[str, str] = {
     "created_at": "TEXT NOT NULL DEFAULT ''",
     "updated_at": "TEXT NOT NULL DEFAULT ''",
     "owner": "TEXT NOT NULL DEFAULT ''",
+    # #203/#353: the last archive version number handed out by next_version().
+    # Store bookkeeping, deliberately NOT in _COLUMNS — put()/create() must never
+    # rewrite (reset) it when a spec is upserted.
+    "archive_version": "INTEGER NOT NULL DEFAULT 0",
 }
+#: Columns that exist for the store's own bookkeeping and are NOT part of the
+#: record row (_COLUMNS): migrated in, never read or written by put()/create().
+_BOOKKEEPING_COLUMNS = frozenset({"archive_version"})
 
 _COLUMNS = (
     "id", "label", "collection", "text_index", "embedding_api", "embedding_model",
@@ -726,6 +768,19 @@ class SqliteCollectionStore:
             cur = conn.execute("DELETE FROM collections WHERE id = ?", (cid,))
             return cur.rowcount > 0
 
+    def _next_version_sync(self, cid: str) -> int:
+        # One UPDATE … RETURNING: the increment and the read are a single
+        # statement under sqlite's write lock, so concurrent callers serialize.
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                "UPDATE collections SET archive_version = archive_version + 1 "
+                "WHERE id = ? RETURNING archive_version",
+                (cid,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(cid)
+        return int(row[0])
+
     async def list_specs(self) -> list[CollectionSpec]:
         return [r.spec for r in await self.list_records()]
 
@@ -743,6 +798,9 @@ class SqliteCollectionStore:
 
     async def delete(self, cid: str) -> bool:
         return await asyncio.to_thread(self._delete_sync, cid)
+
+    async def next_version(self, cid: str) -> int:
+        return await asyncio.to_thread(self._next_version_sync, cid)
 
     async def close(self) -> None:
         """No persistent connection to release."""
@@ -859,6 +917,20 @@ class PostgresCollectionStore:
         async with pool.acquire() as conn:
             status = await conn.execute("DELETE FROM collections WHERE id = $1", cid)
         return not status.endswith(" 0")
+
+    async def next_version(self, cid: str) -> int:
+        # A single UPDATE … RETURNING is atomic per row under MVCC: concurrent
+        # callers queue on the row lock and each sees the other's increment.
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            n = await conn.fetchval(
+                "UPDATE collections SET archive_version = archive_version + 1 "
+                "WHERE id = $1 RETURNING archive_version",
+                cid,
+            )
+        if n is None:
+            raise KeyError(cid)
+        return int(n)
 
     async def close(self) -> None:
         if self._pool is not None:

@@ -249,18 +249,24 @@ GoWeBackend(client, cwl, workflow_name="ragstack-pdf-ingest-scatter",
 
 `version` and `collection_id` are **required** workflow inputs since the archive
 step (#357). A static `version` in `gowe_workflow_inputs_json` is inherently
-**single-job** — every submission would write the same `versions/1/` — so it is
-only a stopgap until #353's API side assigns the version per job from the
-registry.
+**single-job** — every submission would write the same `versions/1/` — fine for
+a hand-driven run, but the API path below assigns them per job.
 
-> **Not reachable from config yet.** `shards_input_key` is a constructor argument
-> with no `Settings` field, and `make_ingest_backend` never passes it — so
-> `INGEST_BACKEND=gowe` + `GOWE_WORKFLOW_CWL=cwl/pdf-ingest-scatter.cwl` alone
-> would submit a `shards` input the workflow doesn't declare. Both `/v1/ingest`
-> and `/v1/ingest/upload` also still return **501** for any non-local backend, and
-> each `WorkItem.source` must be a path under the GoWe server's
-> `--upload-download-dirs`. Those are the remaining gaps between this workflow and
-> a browser upload (#203).
+> **Reachable from config since #203 (2a).** `GOWE_SHARDS_INPUT_KEY` (default
+> `pdfs`) and `GOWE_RECEIPTS_OUTPUT_KEY` (default `receipts`) are `Settings`
+> fields that `make_ingest_backend` threads into `GoWeBackend`; set
+> `GOWE_SHARDS_INPUT_KEY=shards` to drive `ingest-bulk.cwl` instead. Under
+> `INGEST_BACKEND=gowe` the API's `POST /v1/ingest` (a `ws://` Workspace
+> reference) and `POST /v1/ingest/upload` (PDFs written into the caller's
+> Workspace first) submit this workflow **as the caller** — the BV-BRC token in
+> the submission's `Authorization` header, `ws://` File inputs the engine
+> pre-stages, `output_destination = ws:///<user>/home/.ragstack/collections/<id>/versions/`
+> the engine post-stages the `archive` Directory to, and `version` /
+> `collection_id` / `spec_hash` / `job_id` / the collection's stores + chunk
+> spec supplied per job from the registry (the version counter is
+> `CollectionStore.next_version`). A COMPLETED submission with no `receipts`
+> output fails the job with `GoWeContractError` instead of reporting every
+> document failed. Option B (batch per task) is #203 2b.
 
 Failure semantics: `ingest_shard.py` exits non-zero on a failed shard, so a PDF
 with no extractable text (scanned/image-only → empty shard → `EmptyIngestError`)

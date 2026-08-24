@@ -136,11 +136,19 @@ def _make_gowe_backend(
     client = GoWeClient(
         base_url=settings.gowe_url, token=settings.gowe_token or None, http=http
     )
+    # The scattered input / receipts output names come from settings (#203
+    # blocker b): the PDF workflow scatters over ``pdfs``, the JSONL bulk one over
+    # ``shards``. Blank → the GoWeBackend defaults, so an older settings object
+    # (tests build a SimpleNamespace) keeps the bulk-workflow behaviour.
+    shards_key = (getattr(settings, "gowe_shards_input_key", "") or "").strip()
+    receipts_key = (getattr(settings, "gowe_receipts_output_key", "") or "").strip()
     return GoWeBackend(
         client,
         cwl,
         workflow_name=settings.gowe_workflow_name,
         static_inputs=static_inputs,
+        shards_input_key=shards_key or "shards",
+        receipts_output_key=receipts_key or "receipts",
         worker_group=settings.gowe_worker_group or None,
         poll_interval=settings.gowe_poll_interval,
         timeout=settings.gowe_timeout,
