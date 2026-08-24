@@ -26,6 +26,7 @@ from qdrant_client.models import (
 
 from ragstack.models import Chunk, ScoredChunk
 from ragstack.stores.errors import StoreUnavailable, VectorDimMismatch
+from ragstack.stores.filters import PAYLOAD_RESERVED as _PAYLOAD_RESERVED
 from ragstack.stores.filters import payload_matches, validate_filters
 from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
 
@@ -47,8 +48,6 @@ __all__ = [
     "collection_name",
     "CollectionHealth",
 ]
-
-_PAYLOAD_RESERVED = {"chunk_id", "doc_id", "content", "start_char", "end_char"}
 
 
 @dataclass(frozen=True)
@@ -397,7 +396,12 @@ class QdrantVectorStore:
         shared ``payload_matches`` predicate (stores/filters.py) before being
         kept. This also re-asserts ``tenant_id`` against the actual payload
         rather than trusting the point-id derivation alone, matching what
-        ``InMemoryVectorStore.get_chunks`` has always done.
+        ``InMemoryVectorStore.get_chunks`` has always done. That re-check
+        assumes every writer stamps ``tenant_id`` on the chunk it ingests —
+        true today (``ingestion/pipeline.py``, ``ingestion/load_embeddings.py``,
+        ``scripts/ingest_chunks.py`` all set ``chunk.metadata["tenant_id"]``
+        before the chunk reaches a store) — an unstamped chunk would simply
+        never match and would be omitted, not raise.
 
         ``filters`` is validated FIRST, before the ids/tenants early return —
         an unsupported key must refuse the call outright, not just get silently
@@ -550,9 +554,10 @@ def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     Only ``None`` or a dict with *no keys at all* means unfiltered; a key that is
     present with an empty list is a real (unsatisfiable) constraint. Keep this in
     sync with ``_matches`` in stores/memory.py and ``_build_query`` in
-    stores/elasticsearch.py. (``get_chunks`` uses the stricter, narrower-grammar
-    ``payload_matches`` in stores/filters.py instead of this builder — see its
-    module docstring for why.)
+    stores/elasticsearch.py. (``get_chunks`` uses ``payload_matches`` in
+    stores/filters.py instead of this builder — same bare-key grammar, plus a
+    refusal for the handful of keys that can never address a real chunk field;
+    see that module's docstring for why.)
 
     Why match-nothing rather than raising as ``_build_query`` does for its tenant
     key: this builder also serves the deliberately unscoped delete paths

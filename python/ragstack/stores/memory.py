@@ -28,8 +28,9 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     in stores/qdrant.py and ``_build_query`` in stores/elasticsearch.py.
 
     Used by ``search()`` (free-form, client-suppliable filter keys). ``get_chunks``
-    uses the stricter, narrower-grammar ``payload_matches`` in stores/filters.py
-    instead — see its module docstring for why."""
+    uses ``payload_matches`` in stores/filters.py instead — same bare-key
+    grammar, plus a refusal for the handful of keys that can never address a
+    real chunk field; see that module's docstring for why."""
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
         if isinstance(value, (list, tuple, set)):
@@ -125,12 +126,12 @@ class InMemoryVectorStore:
         """Fetch chunks by id, tenant-scoped via ``filters``; request order kept,
         missing/invisible ids omitted.
 
-        Uses the shared, narrower-grammar ``payload_matches`` (stores/filters.py)
-        rather than ``_matches`` — the same predicate ``QdrantVectorStore.get_chunks``
-        applies, so the two stores can't diverge on which filter keys they honour
-        (#197). ``filters`` is validated before the ``ids`` early return — an
-        unsupported key must refuse the call outright, not get silently skipped
-        because there was nothing to filter."""
+        Uses the shared ``payload_matches`` (stores/filters.py) rather than
+        ``_matches`` — the same predicate ``QdrantVectorStore.get_chunks`` applies,
+        so the two stores can't diverge on which filter keys they honour (#197).
+        ``filters`` is validated before the ``ids`` early return — a refused key
+        must reject the call outright, not get silently skipped because there was
+        nothing to filter."""
         validate_filters(filters)
         ids = list(dict.fromkeys(chunk_ids))
         if not ids:
