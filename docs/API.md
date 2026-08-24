@@ -737,6 +737,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `JOB_STORE_BACKEND`, `JOB_STORE_PATH` | ingest job store; same relative-path rule |
 | `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
 | `ACL_BACKFILL_OWNER` | subject that inherits ownership of pre-existing (creator-less) collections at first startup after the ACL rollout (default `legacy:admin`); those collections also get a `public` read grant so they stay world-readable exactly as before |
+| `WORKSPACE_URL`, `WORKSPACE_TIMEOUT` | the BV-BRC Workspace JSON-RPC endpoint the API writes a user's collection folder (`/<user>/home/.ragstack/collections/<id>/`) and uploaded sources to, and the per-request bound in seconds (default **60**). Every call carries the **caller's** token — there is no service identity — and bytes go to Shock at the upload-node URL the Workspace returns, so no Shock endpoint is configured (#356) |
 
 ---
 

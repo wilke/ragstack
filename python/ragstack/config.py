@@ -362,6 +362,13 @@ class Settings(BaseSettings):
     gowe_poll_interval: float = 5.0
     gowe_timeout: float = 7200.0
 
+    # BV-BRC Workspace (ragstack/workspace.py, #356): the JSON-RPC endpoint the
+    # API writes a user's collection folder / sources to — always with the
+    # caller's own token, never a server identity. Bytes go to Shock at the URL
+    # the Workspace returns per upload node, so there is no separate Shock setting.
+    workspace_url: str = "https://p3.theseed.org/services/Workspace"
+    workspace_timeout: float = 60.0            # per-request bound in seconds
+
     # Per-tenant concurrency cap (fairness on the shared embedding fleet): the
     # max in-flight ingest items + queries one tenant may have at once. 0 =
     # unlimited. For real isolation set this below embedding_max_concurrency —
