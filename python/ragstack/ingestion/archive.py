@@ -564,14 +564,21 @@ def verify_version(version_dir: str | Path) -> dict[str, Any]:
     return manifest
 
 
-def read_version(version_dir: str | Path) -> Iterator[tuple[dict[str, Any], array]]:
+def read_version(
+    version_dir: str | Path, *, manifest: dict[str, Any] | None = None
+) -> Iterator[tuple[dict[str, Any], array]]:
     """Verify, then stream ``(chunk_dict, vector)`` pairs — ``chunk_dict`` is the
     record as written (no ``embedding`` key) and ``vector`` an ``array('f')`` of
     ``dim`` floats (a fresh copy per row). Verification is complete before the
     first pair is yielded. A tombstone version yields nothing (see
-    :func:`read_tombstone`)."""
+    :func:`read_tombstone`).
+
+    ``manifest``: pass the dict :func:`verify_version` returned for THIS
+    directory to skip re-hashing (a replay verifies every version up front,
+    before its first write, and must not pay the sha256 pass twice)."""
     vdir = Path(version_dir)
-    manifest = verify_version(vdir)
+    if manifest is None:
+        manifest = verify_version(vdir)
     if manifest.get("has_tombstone"):
         return
     dim = int(manifest["vectors"]["dim"])
@@ -601,10 +608,30 @@ def read_version(version_dir: str | Path) -> Iterator[tuple[dict[str, Any], arra
         raise ArchiveCorrupt(f"{vdir}: {seen} chunk records != {rows} vector rows")
 
 
-def read_tombstone(version_dir: str | Path) -> list[str]:
-    """Verify a tombstone version and return its removed doc ids."""
+def iter_doc_ids(version_dir: str | Path, manifest: dict[str, Any]) -> Iterator[str]:
+    """The ``doc_id`` of every chunk record in a VERIFIED chunk version, in
+    row order (duplicates included) — a cheap pass over ``chunks.jsonl.gz``
+    that never touches the vectors. A replay uses it to delete each document's
+    prior chunks from the stores BEFORE streaming the version in, so a document
+    whose chunks span two upsert batches is not deleted by its own second
+    batch. Yields nothing for a tombstone version."""
+    if manifest.get("has_tombstone"):
+        return
     vdir = Path(version_dir)
-    manifest = verify_version(vdir)
+    with gzip.open(vdir / manifest["files"][ROLE_CHUNKS], "rt", encoding="utf-8") as chunks:
+        for line in chunks:
+            if line.strip():
+                yield str(json.loads(line).get("doc_id", ""))
+
+
+def read_tombstone(
+    version_dir: str | Path, *, manifest: dict[str, Any] | None = None
+) -> list[str]:
+    """Verify a tombstone version and return its removed doc ids (``manifest``
+    as for :func:`read_version`)."""
+    vdir = Path(version_dir)
+    if manifest is None:
+        manifest = verify_version(vdir)
     if not manifest.get("has_tombstone"):
         raise ArchiveError(f"{vdir}: not a tombstone version")
     tpath = vdir / manifest["files"][ROLE_TOMBSTONE]

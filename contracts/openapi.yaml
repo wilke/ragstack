@@ -53,8 +53,31 @@ paths:
             leaked (ADR-0003 §2).
         "422":
           description: Validation error
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR the
+            collection is `dormant` / `restoring` (#358): the first
+            authenticated read or ingest of a dormant collection submits a
+            restore from its Workspace archive (as the caller, with the caller's
+            token) and answers 503 while the restore runs — retry after the
+            delay named in `Retry-After` (seconds). A keyless / API-key caller
+            carries no user token, cannot trigger the restore, and gets 503
+            with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the lifecycle
+                (dormant / restoring) case.
+              required: false
+              schema:
+                type: integer
 
   /v1/retrieve:
     post:
@@ -80,8 +103,31 @@ paths:
             404, not a 403 — collection existence is not leaked, ADR-0003 §2).
         "422":
           description: Validation error
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR the
+            collection is `dormant` / `restoring` (#358): the first
+            authenticated read or ingest of a dormant collection submits a
+            restore from its Workspace archive (as the caller, with the caller's
+            token) and answers 503 while the restore runs — retry after the
+            delay named in `Retry-After` (seconds). A keyless / API-key caller
+            carries no user token, cannot trigger the restore, and gets 503
+            with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the lifecycle
+                (dormant / restoring) case.
+              required: false
+              schema:
+                type: integer
 
   /v1/ingest:
     post:
@@ -151,11 +197,32 @@ paths:
               required: true
               schema:
                 type: integer
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: >
+          description: >-
             Ingest is disabled — the server has no INGEST_ROOT configured, so
-            `source` cannot be confined — OR the authorization store is
-            unavailable (fail closed).
+            `source` cannot be confined; OR the authorization store is
+            unavailable (fail closed); OR the target collection is `dormant` /
+            `restoring` (#358): the first authenticated read or ingest of a
+            dormant collection submits a restore from its Workspace archive (as
+            the caller, with the caller's token) and answers 503 while it runs —
+            retry after the delay in `Retry-After` (seconds). A keyless /
+            API-key caller carries no user token, cannot trigger the restore,
+            and gets 503 with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the rate-limit
+                and lifecycle (dormant / restoring) cases.
+              required: false
+              schema:
+                type: integer
 
   /v1/ingest/upload:
     post:
@@ -234,11 +301,29 @@ paths:
               required: true
               schema:
                 type: integer
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: >
+          description: >-
             Ingest is disabled — the server has no INGEST_ROOT configured, so
-            uploads cannot be confined — OR the authorization store is
-            unavailable (fail closed).
+            uploads cannot be confined; OR the authorization store is
+            unavailable (fail closed); OR the target collection is `dormant` /
+            `restoring` (#358) — see POST /v1/ingest: a restore is submitted as
+            the caller and the request answers 503 with `Retry-After` while it
+            runs; a keyless / API-key caller cannot trigger it.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the rate-limit
+                and lifecycle (dormant / restoring) cases.
+              required: false
+              schema:
+                type: integer
 
   /v1/ingest/{job_id}:
     get:
@@ -311,8 +396,31 @@ paths:
           description: >-
             The caller may not read the (default) collection the listing targets
             — reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR the
+            collection is `dormant` / `restoring` (#358): the first
+            authenticated read or ingest of a dormant collection submits a
+            restore from its Workspace archive (as the caller, with the caller's
+            token) and answers 503 while the restore runs — retry after the
+            delay named in `Retry-After` (seconds). A keyless / API-key caller
+            carries no user token, cannot trigger the restore, and gets 503
+            with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the lifecycle
+                (dormant / restoring) case.
+              required: false
+              schema:
+                type: integer
 
   /v1/documents/{doc_id}:
     delete:
@@ -337,8 +445,31 @@ paths:
           description: >-
             The caller may not read the (default) collection the delete targets —
             reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR the
+            collection is `dormant` / `restoring` (#358): the first
+            authenticated read or ingest of a dormant collection submits a
+            restore from its Workspace archive (as the caller, with the caller's
+            token) and answers 503 while the restore runs — retry after the
+            delay named in `Retry-After` (seconds). A keyless / API-key caller
+            carries no user token, cannot trigger the restore, and gets 503
+            with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the lifecycle
+                (dormant / restoring) case.
+              required: false
+              schema:
+                type: integer
 
   /v1/graph/entities:
     get:
@@ -1081,6 +1212,79 @@ paths:
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
+  /v1/collections/{collection_id}/restore:
+    post:
+      operationId: restoreCollection
+      summary: Restore a dormant (or lost) collection from its Workspace archive
+      description: >-
+        Explicit, owner-or-admin counterpart of the on-access restore (#358,
+        phase 2 of #353). A collection whose physical stores were evicted is
+        `dormant`: only its archive — `versions/<n>/` under the owner's
+        Workspace, one directory per completed ingest or delete — still exists.
+        This lists those versions and submits the `restore-collection`
+        workflow **as the caller** (the caller's bearer token authenticates the
+        submission; the engine pre-stages every `ws://` version directory with
+        it), which replays them in order into the collection's stores: every
+        file's sha256 is verified and the manifest's `spec_hash` must equal the
+        registry row's BEFORE anything is written; chunk versions upsert both
+        legs with deterministic ids; tombstone versions delete by doc id.
+
+
+        Idempotent: `dormant` → submits and flips the row to `restoring`;
+        `restoring` → 202 without a second submission (the state is a
+        compare-and-swap, so concurrent callers cannot double-submit);
+        `active` / `archiving` → 202, nothing to do. Unlike the on-access path,
+        which answers 409 for a `lost` collection, an explicit restore MAY retry
+        from `lost` (the owner may have repaired the archive) — a verification
+        failure marks it `lost` again with the reason.
+
+
+        On completion the row flips `restoring → active`; on an engine failure
+        it returns to `dormant` with the error recorded; on a checksum /
+        spec-hash failure it becomes `lost` with the reason. Requires a bearer
+        (user) credential: an API-key principal carries no Workspace token and
+        is refused with 400.
+      tags: [Documents]
+      security:
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "202":
+          description: >-
+            Restore submitted, already in flight, or not needed — the body
+            reports the resulting state and (when this call submitted it) the
+            engine submission id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CollectionRestoreResponse"
+        "400":
+          description: >-
+            The caller presented no user (bearer) credential — a restore is
+            submitted as the user and needs their token; or the collection's
+            registry row records no owner subject, so its Workspace folder
+            cannot be located.
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: Caller can read the collection but is neither its owner nor an admin
+        "404":
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked — ADR-0003 §2)
+        "502":
+          description: >-
+            The Workspace listing or the workflow-engine submission failed; the
+            row is left `dormant` (or `lost`) with the reason recorded, so a
+            retry is safe.
+        "503":
+          description: Authorization store unavailable — refused (fail closed).
+
   /v1/collections/{collection_id}/shares:
     get:
       operationId: listCollectionShares
@@ -1648,8 +1852,31 @@ paths:
           description: Unknown collection, or one the caller may not read (read denial → 404).
         "422":
           description: More than max_chunk_ids entries in `ids` (default 200, issue #87).
+        "409":
+          description: >-
+            The collection is `lost` (#358): its Workspace archive is missing or
+            failed verification (sha256 / build-spec hash), so it cannot be
+            restored automatically. The body names the reason; after repairing
+            the archive the owner retries with
+            POST /v1/collections/{collection_id}/restore.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR the
+            collection is `dormant` / `restoring` (#358): the first
+            authenticated read or ingest of a dormant collection submits a
+            restore from its Workspace archive (as the caller, with the caller's
+            token) and answers 503 while the restore runs — retry after the
+            delay named in `Retry-After` (seconds). A keyless / API-key caller
+            carries no user token, cannot trigger the restore, and gets 503
+            with a message saying so.
+          headers:
+            Retry-After:
+              description: >-
+                Seconds to wait before retrying. Present for the lifecycle
+                (dormant / restoring) case.
+              required: false
+              schema:
+                type: integer
 
   /v1/graph/stats:
     get:
@@ -2184,6 +2411,28 @@ components:
         chunk_method: { type: [string, "null"] }
         chunk_size: { type: [integer, "null"] }
         default: { type: boolean }
+        state:
+          description: >-
+            Lifecycle state (#353/#358): active | archiving | dormant (only the
+            Workspace archive exists; the next authenticated read/ingest
+            triggers a restore and answers 503 + Retry-After) | restoring |
+            lost (archive missing or failed verification; 409 until an explicit
+            restore succeeds). Null/absent for an untracked collection (the
+            settings-derived default).
+          type: [string, "null"]
+          enum: [active, archiving, dormant, restoring, lost, null]
+        archive_pending:
+          description: >-
+            True when the last ingest/delete loaded but its archive step or
+            upload failed — the collection stays active, cannot be evicted, and
+            the owner's next authenticated call re-triggers the archive.
+          type: [boolean, "null"]
+        versions:
+          description: >-
+            Ordered archive version numbers on the registry row (`versions/<n>/`
+            in the owner's Workspace); a restore replays them in this order.
+          type: [array, "null"]
+          items: { type: integer }
         count:
           description: Vector-store count scoped to what this caller can retrieve (own + public, widened by a read share); null when unavailable.
           type: [integer, "null"]
@@ -2251,6 +2500,30 @@ components:
         ok:
           description: True when `failed` is empty — the collection and its data are fully gone.
           type: boolean
+      additionalProperties: false
+
+    CollectionRestoreResponse:
+      type: object
+      description: >-
+        Outcome of POST /v1/collections/{id}/restore (#358): the collection's
+        lifecycle state after the call. 202 in every accepted case — a restore
+        was submitted, one was already in flight, or none was needed.
+      required: [collection_id, state, message]
+      properties:
+        collection_id: { type: string }
+        state:
+          description: >-
+            State after this call: `restoring` when a restore is in flight
+            (submitted now or earlier), `active`/`archiving` when nothing had to
+            be done.
+          type: string
+          enum: [active, archiving, dormant, restoring, lost]
+        submission_id:
+          description: >-
+            The workflow-engine submission id when THIS call submitted the
+            restore; null when one was already in flight or none was needed.
+          type: [string, "null"]
+        message: { type: string }
       additionalProperties: false
 
     ShareGrantRequest:

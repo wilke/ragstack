@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collection_restore_response.json",
+  "title": "CollectionRestoreResponse",
+  "description": "Outcome of POST /v1/collections/{id}/restore (#358): the collection's lifecycle state after the request. 202 in every accepted case — a restore was submitted, one was already in flight, or the collection needs none (already active).",
+  "type": "object",
+  "required": [
+    "collection_id",
+    "state",
+    "message"
+  ],
+  "properties": {
+    "collection_id": {
+      "type": "string"
+    },
+    "state": {
+      "description": "Lifecycle state after this call: `restoring` when a restore is in flight (submitted now or earlier), `active`/`archiving` when nothing had to be done.",
+      "type": "string",
+      "enum": [
+        "active",
+        "archiving",
+        "dormant",
+        "restoring",
+        "lost"
+      ]
+    },
+    "submission_id": {
+      "description": "The workflow-engine submission id when THIS call submitted the restore; null when one was already in flight or none was needed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

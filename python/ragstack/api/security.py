@@ -888,6 +888,20 @@ async def resolve_principal(
     return principal
 
 
+def get_bearer_token(request: Request) -> str | None:
+    """The VERIFIED bearer credential of the request's principal, or ``None``
+    for an API-key / keyless caller. Read off ``request.state.principal`` (set
+    by :func:`resolve_principal`), never re-parsed from the header — a
+    credential that failed verification never reaches a :class:`Principal`.
+
+    Used by the paths that act AS THE USER (a restore submission, #358). NOTE
+    for the #203 merge: that branch adds an equivalent accessor for its
+    submit-as-user path; keep exactly one.
+    """
+    principal = getattr(request.state, "principal", None)
+    return principal.token if principal is not None else None
+
+
 def validate_role_settings() -> None:
     """Fail fast on a misconfigured RBAC setup (call at startup).
 

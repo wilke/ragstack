@@ -13,6 +13,20 @@
     "chunk_method": { "type": ["string", "null"] },
     "chunk_size": { "type": ["integer", "null"] },
     "default": { "type": "boolean" },
+    "state": {
+      "description": "Lifecycle state (#353/#358): `active` (physical stores exist) | `archiving` (an archive version is being written; reads/writes proceed) | `dormant` (only the Workspace archive exists; the next authenticated read/ingest triggers a restore and answers 503 + Retry-After) | `restoring` (a restore is in flight; 503 + Retry-After) | `lost` (the archive is missing or failed verification; 409 until an explicit restore succeeds). Null/absent for a collection the registry does not track (the settings-derived default).",
+      "type": ["string", "null"],
+      "enum": ["active", "archiving", "dormant", "restoring", "lost", null]
+    },
+    "archive_pending": {
+      "description": "True when the last ingest/delete loaded but its archive step or upload failed: the collection stays active, cannot be evicted, and the owner's next authenticated call re-triggers the archive. Null/absent when untracked.",
+      "type": ["boolean", "null"]
+    },
+    "versions": {
+      "description": "Ordered archive version numbers recorded on the registry row (`versions/<n>/` in the owner's Workspace); a restore replays them in this order. Null/absent when untracked.",
+      "type": ["array", "null"],
+      "items": { "type": "integer" }
+    },
     "count": {
       "description": "Tenant-scoped vector-store chunk count (own + public); null when unavailable.",
       "type": ["integer", "null"]
