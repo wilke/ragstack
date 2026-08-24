@@ -29,6 +29,7 @@ from ragstack.config import settings
 from ragstack.models import ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
 from ragstack.scoring.scorers import RRFScorer
+from ragstack.stores.filters import UnknownFilterKey
 from ragstack.tenancy import allowed_collection_ids, scope_filters
 
 log = logging.getLogger(__name__)
@@ -409,9 +410,14 @@ async def get_chunks(
     store = entry.vector_store
     if store is None:  # pragma: no cover - all wired entries carry a store
         return ChunksResponse(chunks=[])
-    chunks = await store.get_chunks(
-        id_list, scope_filters({}, tenant, await shared_scope(entry, registry, principal))
-    )
+    try:
+        chunks = await store.get_chunks(
+            id_list, scope_filters({}, tenant, await shared_scope(entry, registry, principal))
+        )
+    except UnknownFilterKey as e:
+        # Refuse rather than silently ignore an unsupported scope key (#197) —
+        # a store's shared predicate rejected it before any filtering happened.
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return ChunksResponse(
         chunks=[
             ChunkOut(doc_id=c.doc_id, chunk_id=c.id, content=c.content, metadata=c.metadata)
