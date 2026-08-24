@@ -122,7 +122,8 @@ async def amain(args, target=None) -> int:
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
         pipeline = await _build_pipeline(args, http, target)
         shard_id = args.shard_id or os.path.basename(args.shard)
-        receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id)
+        receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
+                                  embedding_file=args.embedding_file or None)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"chunks={receipt.n_chunks} → {args.out}"
@@ -148,6 +149,10 @@ def parse_args(argv=None):
     p.add_argument("shard", help="one JSONL shard file to ingest")
     p.add_argument("--out", default="receipt.json", help="output receipt path")
     p.add_argument("--shard-id", default=None, help="receipt shard id (default: basename)")
+    p.add_argument("--embedding-file", default="",
+                   help="also write the embedded chunks here (ragstack.embedding_file/v1) "
+                        "on the way to the stores — the archive step's input (#357). "
+                        "Removed again if the shard fails")
     p.add_argument("--tenant", default="public")
     # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
     # offline plane matches the online API's default instead of silently
