@@ -141,16 +141,30 @@ def _apply_tenant_scope(
     A scoped caller only sees a job whose stamped ``tenant_id`` matches theirs;
     a legacy row (``tenant_id == ""``, written before this migration) matches no
     real tenant string, so it fails closed by ordinary equality — the #209
-    convention. ``is_admin`` is the one escape hatch, and it is a named, logged
-    branch (ADR-0003 §5), mirroring ``authz.resolve_access``'s admin-bypass:
-    logged on every use, not just when it changes the outcome, so the audit
-    trail counts and time-orders admin access to jobs regardless of owner.
+    convention. A scoped caller whose OWN ``tenant_id`` is ``""`` is refused
+    explicitly (never falls through to the equality check) rather than
+    relying on that equality accidentally doing the right thing — an empty
+    caller tenant is not reachable through the API today, but this function
+    is the boundary, so it states the invariant rather than assumes it.
+    ``is_admin`` is the one escape hatch, and it is a named, logged branch
+    (ADR-0003 §5), mirroring ``authz.resolve_access``'s admin-bypass: logged
+    on every use, not just when it changes the outcome, so the audit trail
+    counts and time-orders admin access to jobs regardless of owner.
     """
     if job is None or tenant_id is None:
         return job
     if is_admin:
         log.info("jobstore admin-bypass: tenant=%s job_id=%s", tenant_id, job.job_id)
         return job
+    if not tenant_id:
+        # A scoped caller whose OWN tenant is "" must not match a legacy ""
+        # row either — that would make the fail-closed convention above
+        # depend on no real caller ever being stamped "". Not reachable
+        # today (DEFAULT_TENANT is "default", blank api_key_tenants values
+        # are rejected at config load, and bearer subjects are always
+        # "issuer:sub"), but this helper IS the boundary, so state it rather
+        # than rely on every future caller upholding the invariant.
+        return None
     return job if job.tenant_id == tenant_id else None
 
 

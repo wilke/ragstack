@@ -1,42 +1,26 @@
 """Live integration test for PostgresJobStore.
 
-Skipped unless asyncpg is installed and a Postgres reachable at TEST_PG_DSN
-(default the local ragstack DB). Uses a unique job_id and deletes only its own
-rows; it never calls fail_interrupted (which would touch other jobs in a shared
-database).
+Opt-in only (#130 follow-up) via the ``pg_test_dsn`` fixture (tests/conftest.py):
+skipped unless ``RAGSTACK_TEST_PG_DSN`` is set, and even then it runs entirely
+inside a throwaway schema that fixture creates and drops — never against
+``public`` on whatever server the DSN names. See that fixture's docstring for
+why the old always-on default DSN was removed.
 """
-import asyncio
-import os
-
 import pytest
 
-asyncpg = pytest.importorskip("asyncpg")
-
-from ragstack.jobstore import (  # noqa: E402
+from ragstack.jobstore import (
     COMPLETED,
     FAILED,
     PENDING,
     PostgresJobStore,
 )
 
-DSN = os.environ.get("TEST_PG_DSN", "postgresql://ragstack:ragstack@localhost/ragstack")
-
-
-async def _reachable() -> bool:
-    try:
-        conn = await asyncio.wait_for(asyncpg.connect(DSN), timeout=3)
-        await conn.close()
-        return True
-    except Exception:
-        return False
+pytest.importorskip("asyncpg")
 
 
 @pytest.mark.asyncio
-async def test_postgres_jobstore_roundtrip_and_resume():
-    if not await _reachable():
-        pytest.skip("postgres not reachable at TEST_PG_DSN")
-
-    store = PostgresJobStore(DSN)
+async def test_postgres_jobstore_roundtrip_and_resume(pg_test_dsn):
+    store = PostgresJobStore(pg_test_dsn)
     job = await store.create(source="/integration-test")
     try:
         # Job-level round-trip.
@@ -59,8 +43,6 @@ async def test_postgres_jobstore_roundtrip_and_resume():
             FAILED: 1,
         }
     finally:
-        pool = await store._pool_()
-        async with pool.acquire() as conn:
-            await conn.execute("DELETE FROM job_items WHERE job_id = $1", job.job_id)
-            await conn.execute("DELETE FROM jobs WHERE job_id = $1", job.job_id)
+        # No manual row cleanup needed: the whole schema is dropped when
+        # pg_test_dsn tears down. Just release the pool.
         await store.close()

@@ -121,11 +121,11 @@ async def test_core_op_not_admin_gated(
 #
 # Not covered here: GET /v1/ingest/{job_id}. It is NOT unauthenticated — the
 # documents router include carries the resolve_tenant gate, so a keyless-off
-# server returns 401 without a key. But the handler takes no tenant argument and
-# job_store.get(job_id) is not tenant-scoped, so any *authenticated* caller can
-# read another tenant's job status + chunk_ids: an authenticated-but-not-tenant-
-# scoped cross-tenant IDOR. Asserting it needs a two-tenant fixture; the fix
-# (tenant-stamping jobs) is tracked under #100.
+# server returns 401 without a key. #130 tenant-stamped jobs and scoped
+# job_store.get(job_id) by tenant_id (admin bypasses, logged, per ADR-0003
+# §5), closing the cross-tenant IDOR this comment used to describe. A real
+# assertion here still needs a two-tenant fixture this single-tenant probe
+# harness doesn't have; that conformance coverage is tracked under #100.
 # --------------------------------------------------------------------------- #
 _PROBE = "___conformance_authz_probe___"
 EXTRA_TENANT_OPS = [
