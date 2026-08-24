@@ -349,8 +349,11 @@ paths:
         - name: limit
           in: query
           required: false
+          description: Maximum entities returned (1–500).
           schema:
             type: integer
+            minimum: 1
+            maximum: 500
             default: 100
       responses:
         "200":
@@ -361,6 +364,8 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/EntityInfo"
+        "422":
+          description: limit is out of bounds (issue #87).
 
   /v1/graph/neighbors/{entity}:
     get:

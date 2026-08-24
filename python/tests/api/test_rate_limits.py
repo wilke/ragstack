@@ -85,7 +85,9 @@ async def test_rate_limit_is_per_principal_not_global(client, _two_principals):
     assert r.status_code == 200, r.text
 
 
-async def test_admin_is_exempt_from_the_bucket_but_not_from_bounds(client, _two_principals):
+async def test_admin_is_exempt_from_the_bucket_but_not_from_bounds(
+    client, _two_principals, caplog
+):
     # Exhaust the bucket as a plain user first...
     for _ in range(settings.rate_limit_ingest_per_hour + 3):
         await client.post("/v1/ingest", json={"source": "/tmp/x.txt"}, headers=_h("alice"))
@@ -93,10 +95,19 @@ async def test_admin_is_exempt_from_the_bucket_but_not_from_bounds(client, _two_
     assert r.status_code == 429, r.text
 
     # ...admin sails through the SAME number of calls (its own tenant, and
-    # exempt from the bucket regardless).
-    for _ in range(settings.rate_limit_ingest_per_hour + 3):
-        r = await client.post("/v1/ingest", json={"source": "/tmp/x.txt"}, headers=_h("admin"))
-        assert r.status_code == 200, r.text
+    # exempt from the bucket regardless) — and each bypass is logged, per spec.
+    with caplog.at_level("INFO", logger="ragstack.api.deps"):
+        for _ in range(settings.rate_limit_ingest_per_hour + 3):
+            r = await client.post(
+                "/v1/ingest", json={"source": "/tmp/x.txt"}, headers=_h("admin")
+            )
+            assert r.status_code == 200, r.text
+    bypass_logs = [
+        rec.getMessage() for rec in caplog.records if "bypassed for admin" in rec.getMessage()
+    ]
+    assert len(bypass_logs) == settings.rate_limit_ingest_per_hour + 3
+    assert "bucket='ingest'" in bypass_logs[0]
+    assert "tenant='admin'" in bypass_logs[0]
 
     # But admin is NOT exempt from the request bounds (413 body cap).
     oversized = "a" * (settings.max_json_body_bytes + 1)
@@ -188,6 +199,13 @@ async def test_chunk_ids_at_max_is_accepted(client):
 async def test_list_documents_limit_over_max_is_422(client):
     resp = await client.get(
         "/v1/documents", params={"limit": settings.max_list_limit + 1}
+    )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_graph_entities_limit_over_max_is_422(client):
+    resp = await client.get(
+        "/v1/graph/entities", params={"limit": settings.max_list_limit + 1}
     )
     assert resp.status_code == 422, resp.text
 

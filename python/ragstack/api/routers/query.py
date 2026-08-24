@@ -76,8 +76,10 @@ def _bound_top_k(v: int) -> int:
     request force an arbitrarily large fusion/rerank pool. Reads
     ``settings.max_top_k`` at VALIDATION time, not import time, so it tracks a
     settings override made after these classes were defined (module import is
-    long since done by the time a request arrives). ``max_top_k <= 0`` disables
-    the bound."""
+    long since done by the time a request arrives) — unlike the ``limit``
+    bounds declared as ``Query(..., le=settings.max_list_limit)`` elsewhere
+    (documents.py, service_accounts.py, graph.py), which ARE baked in at
+    import/route-registration time. ``max_top_k <= 0`` disables the bound."""
     limit = settings.max_top_k
     if limit > 0 and v > limit:
         raise ValueError(f"top_k must be <= {limit} (got {v})")

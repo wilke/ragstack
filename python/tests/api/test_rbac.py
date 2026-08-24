@@ -147,6 +147,58 @@ def test_validate_role_settings_passes_on_valid_config(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# validate_rate_limit_settings (issue #87): default_role=admin silently voids
+# the bucket for every keyless/unmapped caller — worth a startup warning, not
+# worth a boot failure.
+# --------------------------------------------------------------------------- #
+
+def test_default_role_admin_with_rate_limits_configured_warns(monkeypatch, caplog):
+    import logging
+
+    from ragstack.api.security import validate_rate_limit_settings
+
+    monkeypatch.setattr(security.settings, "default_role", ROLE_ADMIN)
+    monkeypatch.setattr(security.settings, "rate_limit_ingest_per_hour", 10)
+    monkeypatch.setattr(security.settings, "rate_limit_collections_create_per_hour", 0)
+    monkeypatch.setattr(security.settings, "rate_limit_shares_per_hour", 0)
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.security"):
+        validate_rate_limit_settings()  # no raise — a warning, never a boot failure
+    warnings = [r for r in caplog.records if "no-op" in r.message]
+    assert len(warnings) == 1
+    assert "rate_limit_ingest_per_hour=10" in warnings[0].message
+    # The two disabled buckets are not named — only the active one is.
+    assert "rate_limit_shares_per_hour" not in warnings[0].message
+
+
+def test_default_role_admin_with_no_rate_limits_configured_is_silent(monkeypatch, caplog):
+    import logging
+
+    from ragstack.api.security import validate_rate_limit_settings
+
+    monkeypatch.setattr(security.settings, "default_role", ROLE_ADMIN)
+    monkeypatch.setattr(security.settings, "rate_limit_ingest_per_hour", 0)
+    monkeypatch.setattr(security.settings, "rate_limit_collections_create_per_hour", 0)
+    monkeypatch.setattr(security.settings, "rate_limit_shares_per_hour", 0)
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.security"):
+        validate_rate_limit_settings()
+    assert caplog.records == []
+
+
+def test_default_role_user_with_rate_limits_configured_is_silent(monkeypatch, caplog):
+    """The exemption is admin-only — a non-admin default_role means the
+    limiter genuinely applies to keyless callers, so nothing to warn about."""
+    import logging
+
+    from ragstack.api.security import validate_rate_limit_settings
+
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    monkeypatch.setattr(security.settings, "rate_limit_ingest_per_hour", 10)
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.security"):
+        validate_rate_limit_settings()
+    assert caplog.records == []
+
+
+# --------------------------------------------------------------------------- #
 # ADR-0003 role vocabulary: researcher is an alias, engineer/manager are gone
 # --------------------------------------------------------------------------- #
 

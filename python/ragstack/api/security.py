@@ -945,6 +945,42 @@ def validate_role_settings() -> None:
                 )
 
 
+def validate_rate_limit_settings() -> None:
+    """Warn (never fail) at startup when a configured rate limit (issue #87)
+    would be a no-op for keyless/unmapped callers.
+
+    ``api/deps.py::rate_limited`` exempts an ``admin`` principal from the
+    bucket (logged, per request). ``default_role=admin`` means EVERY keyless
+    caller — and every API key not explicitly mapped in ``api_key_roles`` — IS
+    that admin principal, so a deployment shaped this way gets the exemption
+    for free on every request the limiter would otherwise gate. That may be
+    intentional (a single-operator/dev deployment), so this only warns; it is
+    not the startup-time RBAC misconfiguration ``validate_role_settings``
+    guards against, which is why it is a separate, non-raising check.
+    """
+    if settings.default_role != ROLE_ADMIN:
+        return
+    configured = {
+        "rate_limit_ingest_per_hour": settings.rate_limit_ingest_per_hour,
+        "rate_limit_collections_create_per_hour": (
+            settings.rate_limit_collections_create_per_hour
+        ),
+        "rate_limit_shares_per_hour": settings.rate_limit_shares_per_hour,
+    }
+    active = {name: value for name, value in configured.items() if value > 0}
+    if not active:
+        return
+    logger.warning(
+        "default_role=admin with %s configured: every keyless or "
+        "unmapped-key caller on this deployment IS an admin principal, and "
+        "an admin is exempt from the rate-limit bucket (issue #87) — so the "
+        "limiter is a no-op for them. If the intent is for the rate limit to "
+        "actually apply, set DEFAULT_ROLE=user and/or map callers to a "
+        "non-admin role via API_KEY_ROLES.",
+        ", ".join(f"{name}={value}" for name, value in active.items()),
+    )
+
+
 #: Upper bound on an ``ADMIN_SUBJECTS`` entry, matching the service-account
 #: router's ``_SUBJECT_MAX``: the value is compared against a users primary key
 #: and lands in log lines, so a paste accident must fail startup, not be stored.

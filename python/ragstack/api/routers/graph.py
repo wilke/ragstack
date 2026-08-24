@@ -97,7 +97,7 @@ async def graph_stats(
 @router.get("/entities", response_model=list[EntityInfo])
 async def list_entities(
     request: Request,
-    limit: int = 100,
+    limit: int = Query(default=100, ge=1, le=settings.max_list_limit),
     tenant: str = Depends(resolve_tenant),
     graph_store: GraphStore | None = Depends(get_graph_store),
 ) -> list[EntityInfo]:

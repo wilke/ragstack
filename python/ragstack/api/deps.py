@@ -1328,11 +1328,17 @@ async def lifespan(app: FastAPI):
     from ragstack.api.security import (
         validate_admin_role_cache_settings,
         validate_admin_subjects_settings,
+        validate_rate_limit_settings,
         validate_role_settings,
         validate_service_account_settings,
     )
 
     validate_role_settings()
+    # Not a hard failure like the checks above — default_role=admin plus a
+    # configured rate_limit_*_per_hour is a valid (if unusual) deployment
+    # shape, just one where the limiter quietly does nothing (issue #87: admin
+    # is exempt from the bucket).
+    validate_rate_limit_settings()
     # The bearer admin allowlist lives in the same vocabulary and the same
     # namespace rules, and it is the break-glass path: an entry that can never
     # match (colon-free, padded, reserved) is an operator who believes they have

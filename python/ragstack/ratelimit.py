@@ -19,6 +19,14 @@ that was never created, so eviction may only drop those — exactly the
 ceiling when every tracked principal is genuinely mid-budget; eviction is a
 leak guard, not a hard cap the hot path depends on.
 
+**Keying** mirrors ``TenantQuota`` exactly, because both key on
+``principal.tenant``: per-*principal* on the bearer path (``tenant`` is
+``issuer:sub``, one bucket per authenticated end user), per-*tenant* on the
+API-key path (several keys mapped to the same tenant share one bucket, by
+design — the tenant is the isolation unit, not the key), and one *global*
+bucket for every keyless/unmapped caller (they all resolve to
+``DEFAULT_TENANT``).
+
 **Per-process, in-memory — same caveat as** ``TenantQuota``. Each API
 worker/replica enforces its own bucket independently: N processes behind a
 load balancer give an effective ceiling of N times the configured rate, not
