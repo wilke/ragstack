@@ -49,7 +49,7 @@ document-level ndcg@10, largest library size in the run, on the
 per-query ndcg@10 difficulty quintiles under the shipping default,
 seed 0. n_tune=10,
 n_confirm=14, fixture
-`/home/wilke/Development/worktrees/ragstack-200/reports/g1-library-retrieval/fixtures/g1_scifact_split.json` @ `sha256:98a38e29be43552465fc76246936acf1f7b438dc61ad1af44432025a152bb28d`
+`<redacted: fixtures/g1_scifact_split.json>` @ `sha256:98a38e29be43552465fc76246936acf1f7b438dc61ad1af44432025a152bb28d`
 (derived).
 
 ## A/A resolution gate (protocol §6.4)

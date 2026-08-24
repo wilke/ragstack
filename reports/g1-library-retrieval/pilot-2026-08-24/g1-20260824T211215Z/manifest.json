@@ -17,24 +17,24 @@
     "threshold": 0.006666666666666667
   },
   "argv": [
-    "python/scripts/eval/g1_library_sweep.py",
-    "--doc-counts",
-    "50,100,200",
-    "--modes",
-    "hybrid,vector,bm25",
-    "--rerank",
-    "off,on",
-    "--require-clean",
-    "--qdrant-url",
-    "http://localhost:24041",
-    "--es-url",
-    "http://localhost:24043",
-    "--endpoints",
-    "http://localhost:9001,http://localhost:9002,http://localhost:9003,http://localhost:9004,http://localhost:9005,http://localhost:9006",
-    "--out-root",
-    "reports/g1-library-retrieval/runs/pilot-2026-08-24",
-    "--cache-dir",
-    "/tmp/claude-3581/-home-wilke-Development-ragstack/d2d3e28e-62e9-452e-8a2b-cf27464f9e80/scratchpad/full/cache"
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>",
+    "<redacted>"
   ],
   "build_spec": {
     "chunk_config": "fixed_tok512",
@@ -44,7 +44,7 @@
     "model": "Salesforce/SFR-Embedding-Mistral",
     "spec_hash": "2ae90d23"
   },
-  "cwd": "/home/wilke/Development/worktrees/ragstack-200",
+  "cwd": "<redacted>",
   "dataset": {
     "cache_dir": "/rag/cache",
     "corpus_sha256": "e3818b7f7a383e713ac21043c74b9264c2fa3221824e7c7f480e9e5cce3c096b",
@@ -256,12 +256,12 @@
         "dim": 4096,
         "embedding_api": "openai",
         "embedding_endpoints": [
-          "http://localhost:9001",
-          "http://localhost:9002",
-          "http://localhost:9003",
-          "http://localhost:9004",
-          "http://localhost:9005",
-          "http://localhost:9006"
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>"
         ],
         "ingested_at": "2026-08-24T21:12:17.949111+00:00",
         "model": "Salesforce/SFR-Embedding-Mistral",
@@ -680,12 +680,12 @@
         "dim": 4096,
         "embedding_api": "openai",
         "embedding_endpoints": [
-          "http://localhost:9001",
-          "http://localhost:9002",
-          "http://localhost:9003",
-          "http://localhost:9004",
-          "http://localhost:9005",
-          "http://localhost:9006"
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>"
         ],
         "ingested_at": "2026-08-24T21:12:20.177487+00:00",
         "model": "Salesforce/SFR-Embedding-Mistral",
@@ -1282,12 +1282,12 @@
         "dim": 4096,
         "embedding_api": "openai",
         "embedding_endpoints": [
-          "http://localhost:9001",
-          "http://localhost:9002",
-          "http://localhost:9003",
-          "http://localhost:9004",
-          "http://localhost:9005",
-          "http://localhost:9006"
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>",
+          "<redacted>"
         ],
         "ingested_at": "2026-08-24T21:12:16.166326+00:00",
         "model": "Salesforce/SFR-Embedding-Mistral",
@@ -1521,7 +1521,7 @@
     "n_confirm": 14,
     "n_queries": 24,
     "n_tune": 10,
-    "path": "/home/wilke/Development/worktrees/ragstack-200/reports/g1-library-retrieval/fixtures/g1_scifact_split.json",
+    "path": "<redacted>",
     "queries_sha256": "baaa074ed28bb8ee01591ac34ea052b750589dbea00e22fd8686bee5274136ea",
     "schema": "ragstack.g1_query_split/v1",
     "sha256": "sha256:98a38e29be43552465fc76246936acf1f7b438dc61ad1af44432025a152bb28d",
@@ -1535,7 +1535,7 @@
     "hit": false,
     "key": "9ae0e137941b764f",
     "n_vectors": 90,
-    "path": "/tmp/claude-3581/-home-wilke-Development-ragstack/d2d3e28e-62e9-452e-8a2b-cf27464f9e80/scratchpad/full/cache/scifact.2ae90d23.9ae0e137941b764f.json",
+    "path": "<redacted>",
     "sha256": "sha256:7cbe9260cbb2b783499650f32b4cf04e51708b568d2aafce67cad893efbc77a0",
     "spec_hash": "2ae90d23"
   },
@@ -1771,23 +1771,23 @@
     "model": "BAAI/bge-reranker-v2-m3",
     "revision": null,
     "revision_source": null,
-    "url": "http://localhost:50052"
+    "url": "<redacted>"
   },
   "run_id": "g1-20260824T211215Z",
   "runtime": {
-    "crossencoder_url": "http://localhost:50052",
+    "crossencoder_url": "<redacted>",
     "embed_concurrency": 16,
     "embedding_endpoints_live": [
-      "http://localhost:9001",
-      "http://localhost:9002",
-      "http://localhost:9003",
-      "http://localhost:9004",
-      "http://localhost:9005",
-      "http://localhost:9006"
+      "<redacted>",
+      "<redacted>",
+      "<redacted>",
+      "<redacted>",
+      "<redacted>",
+      "<redacted>"
     ],
-    "es_url": "http://localhost:24043",
+    "es_url": "<redacted>",
     "eval_concurrency": 8,
-    "host": "coconut",
+    "host": "<redacted>",
     "packages": {
       "datasets": "5.0.0",
       "elasticsearch": "8.19.3",
@@ -1801,7 +1801,7 @@
     },
     "platform": "Linux-6.8.0-111-generic-x86_64-with-glibc2.35",
     "python": "3.12.13",
-    "qdrant_url": "http://localhost:24041"
+    "qdrant_url": "<redacted>"
   },
   "sample_nesting": [
     {
