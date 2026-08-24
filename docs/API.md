@@ -148,8 +148,17 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `filters` | object | `{}` | metadata equality filters (ANDed); see [Metadata & filtering](#metadata--filtering) |
 | `use_graph` | bool | true | include the knowledge-graph retrieval leg |
 | `stream` | bool | false | reserved |
+| `collection` | string \| null | null | registry collection id to query; null = the default collection. Unknown **or unreadable** → `404` |
+| `retrieval_mode` | `hybrid` \| `vector` \| `bm25` | `hybrid` | which retrieval legs run: dense + BM25 fused, dense only, or keyword only. Graph leg is orthogonal (`use_graph`) |
+| `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
+| `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)` |
+| `llm` | string \| null | null | registered model id to generate with, this request only (`GET /v1/models/available`); unknown → 404, wrong task → 400 |
+| `reranker` | string \| null | null | registered model id to rerank with, this request only |
 
-**Response** (`QueryResponse`): `{ answer, sources[], rewritten_queries[] }`
+**Response** (`QueryResponse`): `{ answer, sources[], rewritten_queries[] }`. Each
+source is `{ doc_id, chunk_id, content, score, metadata }`; on API-ingested and
+current bulk-loaded corpora `metadata` carries `chunk_index`, `prev_chunk_id` and
+`next_chunk_id` for [context expansion](#get-v1chunks).
 
 ```bash
 curl -s http://localhost:8000/v1/query \
@@ -162,7 +171,9 @@ curl -s http://localhost:8000/v1/query \
 Same retrieval (hybrid + optional rerank) but no answer generation.
 
 **Request** (`RetrieveRequest`): `query` (required), `top_k` (5), `filters` (`{}`),
-`use_graph` (true). **Response** (`RetrieveResponse`): `{ sources[] }`.
+`use_graph` (true), plus the same `collection`, `retrieval_mode`, `rerank`,
+`rerank_candidates` and `reranker` fields as `/v1/query`. **Response**
+(`RetrieveResponse`): `{ sources[] }`.
 
 ```bash
 curl -s http://localhost:8000/v1/retrieve \
@@ -170,6 +181,26 @@ curl -s http://localhost:8000/v1/retrieve \
   -d '{"query": "mechanisms of antibiotic resistance", "top_k": 10,
        "filters": {"doc_type": "article"}}'
 ```
+
+### GET /v1/chunks
+
+Fetch chunks **by id** from a collection — context expansion around a hit.
+`ids` is a comma-separated list, **capped at 20**; typically the
+`prev_chunk_id` / `next_chunk_id` a source's metadata carries, so a client can
+page through the document one chunk at a time (each returned chunk carries its
+own neighbour ids — the ids are the cursor). `collection` defaults to the
+default collection. Tenant-scoped like every read (own + `public`): ids that do
+not exist or that the caller may not read are **silently omitted**; order
+follows the request. At a document's first/last chunk the neighbour id is
+absent (older bulk loads stamped the literal string `"None"`).
+
+```bash
+curl -s "http://localhost:8000/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
+  -H 'X-API-Key: kp'
+# {"chunks":[{"doc_id":"…","chunk_id":"…","content":"…","metadata":{…}}, …]}
+```
+
+`404` — unknown or unreadable collection. `503` — authorization store unavailable.
 
 ### POST /v1/collections
 
@@ -688,6 +719,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `EMBEDDING_SIDECAR_URL` / `EMBEDDING_ENDPOINTS` | embedding endpoint(s); multiple → load-balanced pool |
 | `EMBEDDING_MODEL`, `EMBEDDING_MODEL_DIM` | must match the ingested corpus |
 | `VECTOR_BACKEND` | `qdrant` \| `memory` |
+| `QDRANT_URL`, `QDRANT_TIMEOUT` | Qdrant instance; per-request bound in seconds (default **30**). Unset before #346 the client fell back to httpx's 5 s and a slow-but-healthy search surfaced as a bare 500; now a search that exceeds it is a **503** `qdrant unavailable: …` naming the collection, instance, cause and this knob |
 | `TEXT_BACKEND`, `ELASTICSEARCH_INDEX` | `elasticsearch` \| `memory` for BM25 |
 | `RERANK_ENABLED`, `RERANK_CANDIDATES`, `CROSSENCODER_SIDECAR_URL` | cross-encoder rerank stage |
 | `LLM_ENDPOINT`, `LLM_MODEL` | OpenAI-compatible chat endpoint for generation (empty → retrieval-only) |
@@ -735,6 +767,6 @@ extracted citation list); `--no-index` produces the catalog without embedding.
 | `403` | authenticated but not permitted — supplying an admin-only build-spec override, or writing/deleting a collection you don't own (only when you *can* read it; otherwise `404`) |
 | `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed) |
 | `422` | request body fails validation |
-| `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open |
+| `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open. Since #346 this includes a Qdrant search that exceeds `QDRANT_TIMEOUT` (`detail` starts `qdrant unavailable:`; a `Retry-After` header is set) |
 
 Error responses never leak filesystem paths or upstream exception text.

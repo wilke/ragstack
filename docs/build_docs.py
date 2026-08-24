@@ -47,6 +47,16 @@ PAGES = [
         blurb="Register models and assign them to tasks (embedding, LLM, reranker) at runtime — the design, the phased plan, and the as-built API.",
     ),
     dict(
+        src="USER-GUIDE.md", out="user-guide.html", label="User guide",
+        card="User guide",
+        blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
+    ),
+    dict(
+        src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
+        card="Cookbook — Using a deployment",
+        blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
+    ),
+    dict(
         src="cookbook-new-org-ingest.md", out="cookbook-new-org-ingest.html", label="Cookbook",
         card="Cookbook — New-Org Ingest",
         blurb="Stand up an API server for a new organization and bulk-ingest ~40k documents via GoWe, step by step.",

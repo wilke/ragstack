@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cookbook — using a RAGStack deployment · RAGStack</title>
+<style>
+  :root {
+    --paper:#fbfcfe; --panel:#fff; --ink:#141a22; --muted:#586374; --faint:#8a93a3;
+    --line:#e4e9f0; --accent:#1668b0; --accent-2:#0f4f88; --accent-soft:#e9f1fb;
+    --code-bg:#eef2f8; --code-ink:#274156; --sidebar:#f6f8fb; --panel-dark:#0f1622;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; scroll-padding-top:1.5rem; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+    font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+  a { color:var(--accent); text-underline-offset:2px; }
+
+  header.hero { border-bottom:1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(22,104,176,.05), rgba(22,104,176,0) 70%),
+      repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      repeating-linear-gradient(90deg, transparent, transparent 31px, rgba(22,104,176,.06) 32px),
+      var(--paper);
+  }
+  .hero-inner { max-width:1200px; margin:0 auto; padding:2.4rem 2rem 2rem; }
+  .home { display:inline-block; font-family:var(--mono); font-size:.75rem; letter-spacing:.06em;
+    text-decoration:none; color:var(--accent-2); margin-bottom:1rem; }
+  .home:hover { text-decoration:underline; }
+  .kicker { font-family:var(--mono); font-size:.72rem; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent-2); margin:0 0 .7rem; }
+  h1.title { font-size:clamp(1.7rem,3.4vw,2.6rem); line-height:1.12; margin:0 0 .6rem;
+    letter-spacing:-.02em; text-wrap:balance; max-width:24ch; }
+  .tagline { color:var(--muted); font-size:1.02rem; max-width:60ch; margin:0 0 1.1rem; }
+  .chips { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .chip { font-size:.74rem; font-family:var(--mono); padding:.28rem .6rem; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted); }
+  .chip a { color:var(--accent); text-decoration:none; }
+
+  footer { border-top:1px solid var(--line); margin-top:3rem; }
+  .foot-inner { max-width:1200px; margin:0 auto; padding:1.6rem 2rem 3rem; color:var(--muted);
+    font-size:.84rem; }
+  code { font-family:var(--mono); background:var(--code-bg); color:var(--code-ink);
+    padding:.12em .4em; border-radius:4px; overflow-wrap:break-word; }
+
+  .wrap { max-width:1200px; margin:0 auto; padding:0 2rem;
+    display:grid; grid-template-columns:280px minmax(0,1fr); gap:3rem; align-items:start; }
+  nav.side { position:sticky; top:0; max-height:100vh; overflow-y:auto; padding:1.6rem 0 3rem; font-size:.86rem; }
+  nav.side .side-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--faint); padding:0 0 .6rem; }
+  ul.toc, ul.toc-sub { list-style:none; margin:0; padding:0; }
+  ul.toc > li { margin:.1rem 0; }
+  ul.toc > li > a { display:block; padding:.28rem .6rem; border-radius:6px; color:var(--ink);
+    text-decoration:none; font-weight:550; border-left:2px solid transparent; }
+  ul.toc-sub { margin:.1rem 0 .5rem; }
+  ul.toc-sub > li > a { display:block; padding:.2rem .6rem .2rem 1.1rem; color:var(--muted);
+    text-decoration:none; font-size:.82rem; border-left:2px solid transparent; line-height:1.4; }
+  nav.side a:hover { color:var(--accent); background:var(--accent-soft); }
+  nav.side a.active { color:var(--accent-2); border-left-color:var(--accent); background:var(--accent-soft); }
+  main { padding:1.6rem 0 5rem; min-width:0; }
+  .content { max-width:60rem; }
+  .content code { font-size:.85em; }
+  h2 { font-size:1.5rem; letter-spacing:-.01em; margin:2.6rem 0 1rem; padding-top:.4rem;
+    line-height:1.2; scroll-margin-top:1rem; }
+  h2::before { content:""; display:block; width:44px; height:3px; background:var(--accent);
+    border-radius:2px; margin-bottom:.9rem; }
+  h3 { font-size:1.16rem; margin:2rem 0 .6rem; letter-spacing:-.01em; scroll-margin-top:1rem; }
+  h4 { font-size:1rem; margin:1.4rem 0 .5rem; color:var(--accent-2); }
+  p { margin:.7rem 0; }
+  strong { font-weight:650; color:#0d1620; }
+  hr { border:0; border-top:1px solid var(--line); margin:2.4rem 0; }
+  .headanchor { color:var(--faint); text-decoration:none; font-weight:400; margin-left:.4rem;
+    opacity:0; font-size:.8em; }
+  h2:hover .headanchor, h3:hover .headanchor { opacity:1; }
+  a code { color:var(--accent); background:var(--accent-soft); }
+  ul, ol { padding-left:1.3rem; margin:.6rem 0; }
+  li { margin:.28rem 0; }
+  li::marker { color:var(--faint); }
+  blockquote { margin:1.1rem 0; padding:.7rem 1.1rem; border-left:3px solid var(--accent);
+    background:var(--accent-soft); border-radius:0 8px 8px 0; color:#233; }
+  blockquote p { margin:.3rem 0; }
+  /* Fenced code blocks (bash etc.) — dark panel against the light page. */
+  pre { background:var(--panel-dark); color:#dce3ee; padding:1rem 1.1rem; border-radius:8px;
+    overflow-x:auto; font-size:.82rem; line-height:1.55; margin:1.1rem 0; border:1px solid #1c2740; }
+  pre code { background:none; color:inherit; padding:0; font-size:inherit; white-space:pre; }
+  .tablewrap { overflow-x:auto; margin:1.2rem 0; border-radius:8px; -webkit-overflow-scrolling:touch; }
+  .tablewrap table { border-collapse:collapse; min-width:100%; font-size:.9rem; }
+  th, td { border:1px solid var(--line); padding:.5rem .7rem; text-align:left; vertical-align:top; }
+  td code, th code { white-space:nowrap; }
+  thead th { background:var(--sidebar); font-family:var(--mono); font-size:.78rem;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted); white-space:nowrap; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .diagram { margin:1.3rem 0; padding:1.1rem; border:1px solid var(--line); border-radius:10px;
+    background:var(--panel); overflow-x:auto; box-shadow:0 1px 2px rgba(20,30,50,.03); }
+  .diagram pre.mermaid { margin:0; text-align:center; }
+  .diagram pre.mermaid:not([data-processed]) { color:var(--faint); font-family:var(--mono); font-size:.8rem; }
+  .foot-inner code { font-size:.8rem; }
+  @media (max-width:920px) {
+    .wrap { grid-template-columns:1fr; gap:0; }
+    nav.side { position:static; max-height:none; border-bottom:1px solid var(--line); padding:1rem 0; }
+    main { padding-top:1rem; }
+  }
+</style>
+</head>
+<body>
+<header class="hero"><div class="hero-inner">
+  <a class="home" href="index.html">&larr; RAGStack docs</a>
+  <p class="kicker">RAGStack · Documentation</p>
+  <h1 class="title">Cookbook — using a RAGStack deployment</h1>
+  <p class="tagline">Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.</p>
+  <div class="chips">
+      <span class="chip">Cookbook</span>
+      <span class="chip"><a href="https://github.com/wilke/ragstack">github.com/wilke/ragstack &rarr;</a></span>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <nav class="side" id="side"><div class="side-title">Contents</div>
+<ul class="toc">
+<li><a href="#1-who-am-i-and-what-can-i-read">1. Who am I, and what can I read?</a>
+</li>
+<li><a href="#2-list-the-collections">2. List the collections</a>
+</li>
+<li><a href="#3-create-a-collection">3. Create a collection</a>
+</li>
+<li><a href="#4-put-pdfs-in-it-and-watch-the-job">4. Put PDFs in it and watch the job</a>
+</li>
+<li><a href="#5-share-it--or-make-it-public">5. Share it — or make it public</a>
+</li>
+<li><a href="#6-ask-a-question">6. Ask a question</a>
+</li>
+<li><a href="#7-tune-the-retrieval-per-request">7. Tune the retrieval per request</a>
+</li>
+<li><a href="#8-read-around-a-hit--the-previous-and-next-chunks">8. Read around a hit — the previous and next chunks</a>
+</li>
+<li><a href="#9-see-how-the-deployment-is-configured">9. See how the deployment is configured</a>
+</li>
+<li><a href="#10-when-it-doesnt-work">10. When it doesn't work</a>
+</li>
+</ul>
+  </nav>
+  <main><article class="content" id="content">
+<p><em>Copy-paste recipes for the questions people actually ask: pick a deployment,
+sign in, make a collection, put papers in it, ask it things, read around a hit,
+see how the server is configured. The concepts behind each step are in the
+<a href="user-guide.html">user guide</a>; the reference is <a href="https://github.com/wilke/ragstack/blob/main/docs/API.md">API.md</a>. Provisioning a
+whole new deployment is a different cookbook:
+<a href="cookbook-new-org-ingest.html">cookbook-new-org-ingest.md</a>.</em></p>
+<p>Every recipe assumes two shell variables. Set them once:</p>
+<pre><code class="language-bash"># 0. Pick a deployment (see the table in the user guide) and a credential.
+export BASE=http://coconut.cels.anl.gov:9000/ragstack/demo/api
+
+# EITHER a key the operator gave you …
+export AUTH=&quot;X-API-Key: rk-your-key-here&quot;
+# … OR your own BV-BRC identity (dev and lucid-next accept ONLY this):
+p3-login &lt;your-bvbrc-username&gt;            # writes ~/.patric_token
+export AUTH=&quot;Authorization: $(cat ~/.patric_token)&quot;
+
+curl -s $BASE/health                       # {&quot;status&quot;:&quot;ok&quot;} — no credential needed
+</code></pre>
+<p>Never send both headers in one request (<code>400</code>). <code>jq</code> is optional but every
+recipe is easier to read with it.</p>
+<hr />
+<h2 id="1-who-am-i-and-what-can-i-read">1. Who am I, and what can I read?</h2>
+<pre><code class="language-bash">curl -s $BASE/v1/stats/tenants -H &quot;$AUTH&quot; | jq '{tenant, role, readable, auth_enabled}'
+</code></pre>
+<pre><code class="language-json">{&quot;tenant&quot;: &quot;demo-ops&quot;, &quot;role&quot;: &quot;admin&quot;, &quot;readable&quot;: [&quot;demo-ops&quot;, &quot;public&quot;], &quot;auth_enabled&quot;: true}
+</code></pre>
+<p><code>tenant</code> is the scope your writes land in; <code>readable</code> is what your reads cover
+(always your own scope plus the shared <code>public</code> one). The same response lists
+every collection in each readable scope with its counts — the full picture of
+what this credential can see.</p>
+<h2 id="2-list-the-collections">2. List the collections</h2>
+<pre><code class="language-bash">curl -s $BASE/v1/collections -H &quot;$AUTH&quot; \
+  | jq '.default, (.collections[] | {id, label, count, text_count, chunk_method, dim})'
+</code></pre>
+<pre><code class="language-json">&quot;default&quot;
+{&quot;id&quot;:&quot;open-access&quot;,&quot;label&quot;:&quot;open-access&quot;,&quot;count&quot;:47625155,&quot;text_count&quot;:47625155,&quot;chunk_method&quot;:&quot;fixed_token&quot;,&quot;dim&quot;:4096}
+</code></pre>
+<p><code>.default</code> is the id used when a request omits <code>collection</code>. <code>count</code> is the
+vector-store count <em>as visible to you</em>; <code>text_count</code> the BM25 side — they
+should match.</p>
+<h2 id="3-create-a-collection">3. Create a collection</h2>
+<pre><code class="language-bash">curl -s -X POST $BASE/v1/collections -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;id&quot;: &quot;my-papers&quot;, &quot;label&quot;: &quot;My papers&quot;}' | jq
+</code></pre>
+<ul>
+<li><code>201</code> → it exists, built with the server-default embedding model + chunker,
+  <strong>private to you</strong>.</li>
+<li><code>409</code> → that id is taken (or, with <code>id</code> omitted, a corpus with this exact
+  build spec already exists — that is the same store, use it).</li>
+<li><code>403</code> → you passed <code>embedding</code>/<code>chunk</code> without the admin role, or the
+  deployment is at its collection cap.</li>
+</ul>
+<p>Omit <code>id</code> when you want a content-addressed corpus rather than a named library;
+see <a href="user-guide.html#3-create-a-collection">user guide §3</a>.</p>
+<h2 id="4-put-pdfs-in-it-and-watch-the-job">4. Put PDFs in it and watch the job</h2>
+<pre><code class="language-bash">JOB=$(curl -s -X POST $BASE/v1/ingest/upload -H &quot;$AUTH&quot; \
+        -F collection=my-papers -F files=@paper1.pdf -F files=@paper2.pdf | jq -r .job_id)
+
+# poll until status is completed (or failed)
+watch -n 5 &quot;curl -s $BASE/v1/ingest/$JOB -H '$AUTH' | jq '{status, error, chunks, items}'&quot;
+
+# the count climbs as chunks land
+curl -s $BASE/v1/collections -H &quot;$AUTH&quot; | jq '.collections[] | select(.id==&quot;my-papers&quot;) | .count'
+</code></pre>
+<p>PDFs only (<code>415</code> otherwise), ≤ 50 MB each (<code>413</code>), ≤ 50 files per request.
+<code>GET /v1/documents</code> lists your documents (paginated: <code>limit</code>, <code>cursor</code>);
+<code>DELETE /v1/documents/{doc_id}</code> removes one document's chunks.</p>
+<h2 id="5-share-it--or-make-it-public">5. Share it — or make it public</h2>
+<pre><code class="language-bash"># read access for one BV-BRC user (a bare username is qualified to bvbrc:&lt;username&gt;)
+curl -s -X POST $BASE/v1/collections/my-papers/shares -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;grantee&quot;: &quot;colleague@patricbrc.org&quot;, &quot;permission&quot;: &quot;read&quot;}'
+
+# world-readable (every caller's &quot;public&quot; scope)
+curl -s -X POST $BASE/v1/collections/my-papers/shares -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;grantee&quot;: &quot;@public&quot;, &quot;permission&quot;: &quot;read&quot;}'
+
+# a group (@group:&lt;id&gt;, must exist) or a service account (@service:&lt;subject&gt;) work the same way;
+# the response echoes the resolved subject so a typo is visible
+
+# list / revoke
+curl -s $BASE/v1/collections/my-papers/shares -H &quot;$AUTH&quot; | jq
+curl -s -X DELETE $BASE/v1/collections/my-papers/shares/&lt;share_id&gt; -H &quot;$AUTH&quot;
+</code></pre>
+<p>Only the owner (or an admin) can share, upload into, or delete the collection;
+someone with a <code>read</code> share can query it. <code>POST …/owner</code> transfers ownership —
+and takes your own access with it. Details: <a href="https://github.com/wilke/ragstack/blob/main/docs/API.md#collection-shares">API.md → Collection shares</a>.</p>
+<h2 id="6-ask-a-question">6. Ask a question</h2>
+<p>Full RAG — answer plus the sources it was grounded on:</p>
+<pre><code class="language-bash">curl -s -X POST $BASE/v1/query -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;query&quot;: &quot;how do efflux pumps confer multidrug resistance?&quot;,
+       &quot;collection&quot;: &quot;open-access&quot;, &quot;top_k&quot;: 5}' \
+  | jq '{answer, rewritten_queries, sources: [.sources[] | {chunk_id, score, title: .metadata.title, doi: .metadata.doi}]}'
+</code></pre>
+<p>Retrieval only — the ranked passages, no LLM:</p>
+<pre><code class="language-bash">curl -s -X POST $BASE/v1/retrieve -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;query&quot;: &quot;efflux pumps multidrug resistance&quot;, &quot;collection&quot;: &quot;open-access&quot;, &quot;top_k&quot;: 5}' \
+  | jq '.sources[] | {chunk_id, score, section: .metadata.section_title, title: .metadata.title}'
+</code></pre>
+<p>One source, in full:</p>
+<pre><code class="language-json">{&quot;doc_id&quot;: &quot;5f94e8b5-…&quot;, &quot;chunk_id&quot;: &quot;f3020aa7-…&quot;, &quot;score&quot;: 0.0164,
+ &quot;content&quot;: &quot;…the passage…&quot;,
+ &quot;metadata&quot;: {&quot;title&quot;: &quot;…&quot;, &quot;authors&quot;: &quot;…&quot;, &quot;journal&quot;: &quot;…&quot;, &quot;doi&quot;: &quot;10.…&quot;, &quot;pmcid&quot;: &quot;PMC…&quot;,
+              &quot;section_title&quot;: &quot;Results&quot;, &quot;chunk_index&quot;: 1,
+              &quot;prev_chunk_id&quot;: &quot;3fa12cef-…&quot;, &quot;next_chunk_id&quot;: &quot;c6304b79-…&quot;, &quot;source_url&quot;: &quot;…&quot;}}
+</code></pre>
+<p><code>404</code> means the collection is unknown <strong>or not readable by you</strong> — check
+recipe 2.</p>
+<h2 id="7-tune-the-retrieval-per-request">7. Tune the retrieval per request</h2>
+<p>All of these are request fields; none of them change the server.</p>
+<pre><code class="language-bash"># keyword-only (exact terms, no embedding), no rerank, more hits
+-d '{&quot;query&quot;: &quot;blaKPC-2 Klebsiella&quot;, &quot;collection&quot;: &quot;open-access&quot;,
+     &quot;retrieval_mode&quot;: &quot;bm25&quot;, &quot;rerank&quot;: false, &quot;top_k&quot;: 20}'
+
+# dense-only, and force the cross-encoder on with a deeper pool
+-d '{&quot;query&quot;: &quot;…&quot;, &quot;retrieval_mode&quot;: &quot;vector&quot;, &quot;rerank&quot;: true, &quot;rerank_candidates&quot;: 100}'
+
+# restrict by metadata (equality, ANDed) — any field the ingester stamped
+-d '{&quot;query&quot;: &quot;…&quot;, &quot;filters&quot;: {&quot;journal&quot;: &quot;mBio&quot;}}'
+
+# let the LLM expand the question first (needs an LLM on the deployment)
+-d '{&quot;query&quot;: &quot;…&quot;, &quot;rewrite_strategies&quot;: [&quot;passthrough&quot;, &quot;multiquery&quot;]}'
+
+# a different registered model, for this request only
+curl -s $BASE/v1/models/available -H &quot;$AUTH&quot;           # {&quot;models&quot;:[{&quot;id&quot;:…,&quot;task&quot;:&quot;llm&quot;|&quot;reranker&quot;,…}]}
+-d '{&quot;query&quot;: &quot;…&quot;, &quot;llm&quot;: &quot;&lt;model id&gt;&quot;}'
+</code></pre>
+<h2 id="8-read-around-a-hit--the-previous-and-next-chunks">8. Read around a hit — the previous and next chunks</h2>
+<p>Every source carries the ids of its neighbours in the same document. Fetch them
+by id (up to 20 per call, order preserved, anything you may not read silently
+omitted):</p>
+<pre><code class="language-bash"># take the top hit's neighbours…
+curl -s -X POST $BASE/v1/retrieve -H &quot;$AUTH&quot; -H 'Content-Type: application/json' \
+  -d '{&quot;query&quot;: &quot;efflux pumps multidrug resistance&quot;, &quot;collection&quot;: &quot;open-access&quot;, &quot;top_k&quot;: 1}' \
+  &gt; hit.json
+IDS=$(jq -r '.sources[0].metadata | [.prev_chunk_id, .next_chunk_id] | map(select(. != null and . != &quot;None&quot;)) | join(&quot;,&quot;)' hit.json)
+
+# …and fetch them
+curl -s &quot;$BASE/v1/chunks?collection=open-access&amp;ids=$IDS&quot; -H &quot;$AUTH&quot; \
+  | jq '.chunks[] | {chunk_id, idx: .metadata.chunk_index, next: .metadata.next_chunk_id, content: .content[:120]}'
+</code></pre>
+<p>Each returned chunk carries its own <code>prev_chunk_id</code> / <code>next_chunk_id</code>, so
+repeating the second call with the new <code>next_chunk_id</code> walks forward one chunk
+per call — the ids are the cursor. A whole document, forward from a hit:</p>
+<pre><code class="language-bash">NEXT=$(jq -r '.sources[0].metadata.next_chunk_id' hit.json)
+while [ -n &quot;$NEXT&quot; ] &amp;&amp; [ &quot;$NEXT&quot; != &quot;null&quot; ] &amp;&amp; [ &quot;$NEXT&quot; != &quot;None&quot; ]; do
+  C=$(curl -s &quot;$BASE/v1/chunks?collection=open-access&amp;ids=$NEXT&quot; -H &quot;$AUTH&quot; | jq '.chunks[0]')
+  echo &quot;$C&quot; | jq -r '&quot;[\(.metadata.chunk_index)] \(.content[:100])…&quot;'
+  NEXT=$(echo &quot;$C&quot; | jq -r '.metadata.next_chunk_id')
+done
+</code></pre>
+<p>(At a document's first/last chunk the neighbour is <code>null</code> — or the literal
+string <code>"None"</code> on corpora bulk-loaded before that was tightened; the guard
+above handles both.) In the UI this is the <strong>‹ prev / next ›</strong> walker on a
+source card in <em>Evidence</em>.</p>
+<h2 id="9-see-how-the-deployment-is-configured">9. See how the deployment is configured</h2>
+<pre><code class="language-bash">curl -s $BASE/v1/config -H &quot;$AUTH&quot; | jq     # admin role required; 403 otherwise
+</code></pre>
+<pre><code class="language-json">{&quot;vector_backend&quot;: &quot;qdrant&quot;, &quot;text_backend&quot;: &quot;elasticsearch&quot;, &quot;graph_backend&quot;: &quot;disabled&quot;,
+ &quot;embedding_api&quot;: &quot;openai&quot;, &quot;embedding_model&quot;: &quot;Salesforce/SFR-Embedding-Mistral&quot;, &quot;embedding_model_dim&quot;: 4096,
+ &quot;chunk_method&quot;: &quot;fixed_token&quot;, &quot;chunk_size&quot;: 512, &quot;chunk_overlap&quot;: 64,
+ &quot;top_k&quot;: 5, &quot;rerank_enabled&quot;: true, &quot;rerank_candidates&quot;: 50, &quot;reranker_model&quot;: &quot;BAAI/bge-reranker-v2-m3&quot;,
+ &quot;qdrant_collection_explicit&quot;: &quot;demo_g1_sfr_tok512&quot;, &quot;elasticsearch_index&quot;: &quot;demo_g1_sfr_tok512&quot;,
+ &quot;max_document_bytes&quot;: 50000000, &quot;ingest_concurrency&quot;: 4, &quot;log_level&quot;: &quot;INFO&quot;, &quot;...&quot;: &quot;32 keys, never a secret&quot;}
+</code></pre>
+<p>That is the <em>effective</em> configuration of the deployment you are talking to.
+The complete catalogue of options — every one an environment variable named
+after the field in upper case — is <code>python/ragstack/config.py</code>; the ones an
+operator is expected to set, with their gotchas, are tabulated in
+<a href="https://github.com/wilke/ragstack/blob/main/docs/API.md#configuration-server">API.md → Configuration</a>.</p>
+<h2 id="10-when-it-doesnt-work">10. When it doesn't work</h2>
+<div class="tablewrap"><table>
+<thead>
+<tr>
+<th>You see</th>
+<th>It means</th>
+<th>Do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>401 missing or invalid API key</code> / <code>invalid or expired bearer credential</code></td>
+<td>wrong key, expired token, or a token sent to a deployment without identity support</td>
+<td>recipe 1 against the right <code>$BASE</code>; <code>p3-login</code> again</td>
+</tr>
+<tr>
+<td><code>400 present exactly one credential</code></td>
+<td>both headers sent</td>
+<td>unset one</td>
+</tr>
+<tr>
+<td><code>403</code> on <code>POST /v1/collections</code></td>
+<td>you sent <code>embedding</code>/<code>chunk</code>, or the cap is reached</td>
+<td>drop the override; ask an admin</td>
+</tr>
+<tr>
+<td><code>404</code> on a collection you know exists</td>
+<td>you cannot read it</td>
+<td>ask the owner for a share (recipe 5)</td>
+</tr>
+<tr>
+<td><code>409</code> on create</td>
+<td>id taken / spec exists</td>
+<td>pick another id, or use the existing one</td>
+</tr>
+<tr>
+<td><code>422</code></td>
+<td>body failed validation</td>
+<td>read <code>detail</code> — usually a wrong type or an unknown <code>retrieval_mode</code></td>
+</tr>
+<tr>
+<td><code>503 qdrant unavailable: … ReadTimeout … QDRANT_TIMEOUT</code></td>
+<td>the vector store was too slow for this request (host under load)</td>
+<td>retry after <code>Retry-After</code>; if it persists, tell the operator — it is the deployment, not your request</td>
+</tr>
+<tr>
+<td><code>503</code> on ingest</td>
+<td><code>INGEST_ROOT</code> unset on that deployment</td>
+<td>operator setting; uploads are disabled there</td>
+</tr>
+<tr>
+<td>UI says "not signed in" right after signing in</td>
+<td>that backend has no identity provider, so the token is not an authentication input</td>
+<td>switch to a deployment that verifies tokens, or use a key</td>
+</tr>
+<tr>
+<td>The answer is <code>[LLM not configured]</code></td>
+<td>no LLM on this deployment</td>
+<td>the sources are real; use <code>/v1/retrieve</code>, or pass <code>llm</code> if a model is registered</td>
+</tr>
+</tbody>
+</table></div>
+  </article></main>
+</div>
+
+<footer><div class="foot-inner">Generated from the repo markdown via <code>docs/build_docs.py</code> · <a href="https://github.com/wilke/ragstack">https://github.com/wilke/ragstack</a></div></footer>
+
+<script>
+  (function () {
+    var content = document.getElementById("content");
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) {
+      var a = document.createElement("a");
+      a.href = "#" + h.id; a.className = "headanchor"; a.textContent = "#";
+      a.setAttribute("aria-label", "Link to this section"); h.appendChild(a);
+    });
+    var links = {};
+    document.querySelectorAll("nav.side a[href^='#']").forEach(function (a) {
+      links[a.getAttribute("href").slice(1)] = a;
+    });
+    var current = null;
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var a = links[e.target.id]; if (!a || a === current) return;
+        if (current) current.classList.remove("active");
+        a.classList.add("active"); current = a; a.scrollIntoView({ block: "nearest" });
+      });
+    }, { rootMargin: "0px 0px -80% 0px", threshold: 0 });
+    content.querySelectorAll("h2[id], h3[id]").forEach(function (h) { obs.observe(h); });
+  })();
+</script>
+</body>
+</html>
