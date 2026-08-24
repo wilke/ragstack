@@ -83,9 +83,9 @@ the scatter.
 **3. The online plane stays Python.** Gateway, tenancy, ACLs, retrieval fan-in, RRF, and
 the embedder pool remain in `python/`. The Go embedding-router of ADR-0001 is
 **withdrawn**. The ingest/query bulkhead that #116 asks for is real but is an isolation
-property, not a language property: two pool configurations (or two disjoint endpoint
-sets, which is what the tenant model of ADR-0005 already gives the fleet) in the existing
-`PooledEmbedder`, not a new deployable.
+property, not a language property: two pool configurations in the existing
+`PooledEmbedder` — an ingest pool and a query pool over the fleet that ADR-0005 keeps as
+shared plumbing — not a new deployable.
 
 **4. Go by measured trigger — the path is kept open, the scaffold is frozen.** No parity
 work on the Go API (#41, the `TODO(parity)` items) until one of these fires:
