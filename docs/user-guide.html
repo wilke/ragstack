@@ -458,7 +458,7 @@ neighbours:</p>
 #            {&quot;doc_id&quot;:&quot;…&quot;,&quot;chunk_id&quot;:&quot;1656f49a-…&quot;,&quot;content&quot;:&quot;…&quot;,&quot;metadata&quot;:{…}}]}
 </code></pre>
 <ul>
-<li><code>ids</code> is comma-separated, <strong>capped at 20</strong> per call; order follows the request.</li>
+<li><code>ids</code> is comma-separated, up to <strong>200</strong> per call (<code>422</code> above); order follows the request.</li>
 <li>Ids you may not read, or that do not exist, are silently omitted — the
   response is only ever what is visible to you.</li>
 <li>At a document's edges the neighbour id is absent: the first chunk has no
