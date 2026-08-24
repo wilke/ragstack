@@ -28,10 +28,9 @@ Grammar:
 * A bare key (``tenant_id``, ``collection``, ``source``, any chunk metadata
   field) is looked up directly against ``Chunk.metadata`` — exactly what
   ``_build_filter``/``_matches``/``_build_query`` already do for ``search()``.
-* ``metadata.<key>`` is accepted too, as an explicit alias: the prefix is
-  stripped before lookup, so ``metadata.source`` and bare ``source`` address
-  the same field. Useful for a caller that wants to be unambiguous that a key
-  targets metadata rather than a reserved/refused one below.
+* ``metadata.<key>`` is NOT an alias. The three search builders take bare
+  keys only (``_matches`` looks a ``metadata.x`` key up literally), and this
+  predicate must agree with them on every key — so it does the same.
 * Every other key is a payload lookup — there is nothing left to refuse... The
   ONE exception is the finite set of keys that can never appear on
   ``Chunk.metadata`` in the first place: :data:`PAYLOAD_RESERVED`
@@ -53,8 +52,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
-
-_METADATA_PREFIX = "metadata."
 
 #: Reserved ``Chunk`` fields that ``_chunk_from_payload`` (stores/qdrant.py)
 #: pops OUT of a record's payload before it becomes ``Chunk.metadata`` — so a
@@ -82,13 +79,12 @@ class UnknownFilterKey(ValueError):
 
 
 def _resolve_key(key: str) -> str:
-    """The metadata field ``key`` addresses, or raise if ``key`` (after
-    stripping an optional ``metadata.`` prefix) is in the refused set (module
-    docstring)."""
-    field = key[len(_METADATA_PREFIX) :] if key.startswith(_METADATA_PREFIX) else key
-    if field in _REFUSED_KEYS:
+    """The metadata field ``key`` addresses — the key itself, looked up
+    literally like ``_matches`` does — or raise if it is in the refused set
+    (module docstring)."""
+    if key in _REFUSED_KEYS:
         raise UnknownFilterKey(key)
-    return field
+    return key
 
 
 def validate_filters(filters: Mapping[str, Any] | None) -> None:

@@ -110,9 +110,9 @@ async def test_memory_honours_bare_metadata_filter_key():
     assert [c.id for c in got] == ["a"]
 
 
-async def test_memory_honours_metadata_prefixed_alias():
-    """``metadata.<key>`` is accepted too — the prefix is stripped, so it
-    addresses the same field as the bare key above."""
+async def test_memory_metadata_prefix_is_literal_like_search():
+    """``metadata.<key>`` is NOT an alias: ``search()`` looks it up literally
+    and finds nothing, so ``get_chunks`` must agree (parity over convenience)."""
     store = InMemoryVectorStore()
     await store.upsert(
         [
@@ -124,7 +124,11 @@ async def test_memory_honours_metadata_prefixed_alias():
         ["a", "b"],
         filters={"tenant_id": ["alice", "public"], "metadata.source": "paper.pdf"},
     )
-    assert [c.id for c in got] == ["a"]
+    assert got == []
+    hits = await store.search(
+        [1.0, 0.0], 5, filters={"tenant_id": ["alice", "public"], "metadata.source": "paper.pdf"}
+    )
+    assert hits == []
 
 
 @pytest.mark.parametrize("bad_key", ["doc_id", "chunk_id", "content", "library_id"])
@@ -212,7 +216,7 @@ async def test_qdrant_honours_bare_metadata_filter_key():
     assert [c.id for c in got] == ["a"]
 
 
-async def test_qdrant_honours_metadata_prefixed_alias():
+async def test_qdrant_metadata_prefix_is_literal():
     recs = dict(
         [
             _record("a", "alice", source="paper.pdf"),
@@ -224,7 +228,7 @@ async def test_qdrant_honours_metadata_prefixed_alias():
         ["a", "b"],
         filters={"tenant_id": ["alice", "public"], "metadata.source": "paper.pdf"},
     )
-    assert [c.id for c in got] == ["a"]
+    assert got == []
 
 
 @pytest.mark.parametrize("bad_key", ["doc_id", "chunk_id", "content", "library_id"])
