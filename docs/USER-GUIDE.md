@@ -120,7 +120,20 @@ the header's user menu.
 | `401` | Unknown key, or an invalid/expired token. Also what you get when a deployment has no identity provider and you sent a token. |
 | `403` | Authenticated, but not allowed: an admin-only field, or writing a collection you can read but do not own. |
 | `404` | Unknown collection **or one you may not read** — deliberately indistinguishable, so private collections cannot be probed. |
+| `413` | Your JSON body is over the deployment's size cap (creating/ingesting/sharing), or an uploaded file is over `max_document_bytes`. |
+| `422` | Request validation failed, or you're over a bound like `top_k`, `GET /v1/chunks` `ids`, or a list `limit`. |
+| `429` | You've hit the per-hour rate limit on this write endpoint (issue #87) — see below. |
 | `503` | A backing store did not answer (authorization store, or — since #346 — a Qdrant search that exceeded `QDRANT_TIMEOUT`). Fail-closed, never a silent allow. Retry after the `Retry-After` header. |
+
+**Rate limits**: creating collections, ingesting documents (path or upload,
+shared budget) and granting shares are each capped per hour, per caller — a
+`429` carries a `Retry-After` header telling you how long to wait. The limit is
+enforced **per API process**, so a multi-replica deployment's effective ceiling
+is higher than the configured number, not exactly it. A rejected request still
+usually spends a token toward that hour (a validation error, an authorization
+denial, a bad upload) — only an unauthenticated call and an oversized body
+don't — so retrying a broken request in a loop burns your own budget rather
+than getting free attempts.
 
 ---
 
@@ -250,7 +263,8 @@ curl -s "$BASE/v1/chunks?collection=open-access&ids=c6304b79-…,1656f49a-…" -
 #            {"doc_id":"…","chunk_id":"1656f49a-…","content":"…","metadata":{…}}]}
 ```
 
-- `ids` is comma-separated, **capped at 20** per call; order follows the request.
+- `ids` is comma-separated, **up to 200 ids; 422 above** per call (issue #87);
+  order follows the request.
 - Ids you may not read, or that do not exist, are silently omitted — the
   response is only ever what is visible to you.
 - At a document's edges the neighbour id is absent: the first chunk has no

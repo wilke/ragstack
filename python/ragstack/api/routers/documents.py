@@ -24,11 +24,13 @@ from ragstack.api.access import enforce_access
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
     BuildSpecMismatch,
+    bound_json_body,
     build_ingestor_for,
     check_ingest_build_spec,
     get_collections,
     get_ingestor,
     get_job_store,
+    rate_limited,
 )
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
@@ -235,7 +237,11 @@ class DocumentInfo(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-@router.post("/ingest", response_model=IngestResponse)
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    dependencies=[Depends(bound_json_body), Depends(rate_limited("ingest"))],
+)
 async def ingest(
     request: IngestRequest,
     http_request: Request,
@@ -386,7 +392,12 @@ async def _stage_upload(
         )
 
 
-@router.post("/ingest/upload", response_model=IngestResponse, status_code=202)
+@router.post(
+    "/ingest/upload",
+    response_model=IngestResponse,
+    status_code=202,
+    dependencies=[Depends(rate_limited("ingest"))],
+)
 async def ingest_upload(
     http_request: Request,
     background_tasks: BackgroundTasks,
@@ -529,7 +540,7 @@ async def ingest_status(
 @router.get("/documents", response_model=list[DocumentInfo])
 async def list_documents(
     response: Response,
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=settings.max_list_limit),
     cursor: str | None = Query(
         default=None,
         description="Opaque pagination token from a prior response's "

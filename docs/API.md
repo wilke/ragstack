@@ -185,7 +185,8 @@ curl -s http://localhost:8000/v1/retrieve \
 ### GET /v1/chunks
 
 Fetch chunks **by id** from a collection — context expansion around a hit.
-`ids` is a comma-separated list, **capped at 20**; typically the
+`ids` is a comma-separated list, **up to 200 ids; 422 above** (issue #87 —
+`max_chunk_ids`); typically the
 `prev_chunk_id` / `next_chunk_id` a source's metadata carries, so a client can
 page through the document one chunk at a time (each returned chunk carries its
 own neighbour ids — the ids are the cursor). `collection` defaults to the
@@ -200,7 +201,8 @@ curl -s "http://localhost:8000/v1/chunks?collection=open-access&ids=<prev_id>,<n
 # {"chunks":[{"doc_id":"…","chunk_id":"…","content":"…","metadata":{…}}, …]}
 ```
 
-`404` — unknown or unreadable collection. `503` — authorization store unavailable.
+`404` — unknown or unreadable collection. `422` — more than `max_chunk_ids`
+ids. `503` — authorization store unavailable.
 
 ### POST /v1/collections
 
@@ -767,7 +769,31 @@ extracted citation list); `--no-index` produces the catalog without embedding.
 | `401` | unknown/invalid API key |
 | `403` | authenticated but not permitted — supplying an admin-only build-spec override, or writing/deleting a collection you don't own (only when you *can* read it; otherwise `404`) |
 | `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed) |
-| `422` | request body fails validation |
+| `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) on `POST /v1/ingest`, `POST /v1/collections` or `POST /v1/collections/{id}/shares`; or an uploaded file exceeds `max_document_bytes` |
+| `422` | request body fails validation, or a request-shape bound is exceeded (`top_k`, `GET /v1/chunks` `ids`, a list `limit`) |
+| `429` | rate limit exceeded (issue #87) — see below |
 | `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open. Since #346 this includes a Qdrant search that exceeds `QDRANT_TIMEOUT` (`detail` starts `qdrant unavailable:`; a `Retry-After` header is set) |
 
 Error responses never leak filesystem paths or upstream exception text.
+
+### Rate limits (issue #87)
+
+`POST /v1/ingest`, `POST /v1/ingest/upload` (one shared bucket), `POST /v1/collections`
+and `POST /v1/collections/{id}/shares` each enforce a per-principal, per-hour
+budget (defaults: 10, 5, and 60 respectively) — a token bucket keyed on the
+caller's tenant. Exceeding it returns `429` with a `Retry-After` header (seconds
+to wait). An `admin` principal is exempt from the bucket (but not from the
+request-shape bounds above); if a deployment runs keyless with `DEFAULT_ROLE=admin`,
+every caller inherits that exemption and the limiter becomes a no-op — the
+server logs a warning at startup when that combination is configured.
+
+**The limiter is per API process**, with no cross-process or cross-replica
+coordination: N replicas behind a load balancer give an effective ceiling of N
+times the configured rate, not the configured rate itself — the same caveat
+`TENANT_MAX_CONCURRENCY` documents.
+
+A request that spends a token but is then rejected for an ordinary reason
+(`422` validation, `403`/`404` authorization, `415` a bad upload) still counts
+against the hour — only `401` (never reaches the limiter) and `413` (checked
+before the bucket) do not. This is intentional, not a bug: a client retrying a
+broken payload in a loop burns its own hour rather than getting free retries.

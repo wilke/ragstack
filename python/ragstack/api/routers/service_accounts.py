@@ -58,6 +58,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ragstack.api.security import Principal, clean_stored_text, resolve_principal
+from ragstack.config import settings
 from ragstack.user_store import (
     RESERVED_SERVICE_SUBJECTS,
     UserInvariantError,
@@ -278,7 +279,7 @@ async def list_service_accounts(
             "lists every registered service account."
         ),
     ),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=settings.max_list_limit),
     principal: Principal = Depends(resolve_principal),
 ) -> ServiceAccountsResponse:
     """Every registered service account, oldest first (admin only).
