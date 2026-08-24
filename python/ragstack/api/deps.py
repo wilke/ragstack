@@ -154,6 +154,7 @@ def _build_vector_store():
             collection=collection,
             vector_size=settings.embedding_model_dim,
             api_key=settings.qdrant_api_key or None,
+            timeout=settings.qdrant_timeout,
             upsert_batch_size=settings.qdrant_upsert_batch_size,
             upsert_concurrency=settings.qdrant_upsert_concurrency,
         )
@@ -312,6 +313,7 @@ async def build_collection_entry(
         collection=spec.collection,
         vector_size=spec.embedding_model_dim,
         api_key=settings.qdrant_api_key or None,
+        timeout=settings.qdrant_timeout,
     )
     ti = _build_text_index_for(spec.es_index())
     # Best-effort readiness — a collection that isn't reachable yet shouldn't abort

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.exceptions import ApiException
 from qdrant_client.models import (
     Condition,
     Distance,
@@ -24,7 +25,7 @@ from qdrant_client.models import (
 )
 
 from ragstack.models import Chunk, ScoredChunk
-from ragstack.stores.errors import VectorDimMismatch
+from ragstack.stores.errors import StoreUnavailable, VectorDimMismatch
 from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
 
 log = logging.getLogger(__name__)
@@ -175,7 +176,11 @@ class QdrantVectorStore:
     ) -> None:
         # `timeout` (seconds) bounds each request; raise it for heavy ops (large
         # filtered deletes) so they fail fast/explicitly instead of hanging.
+        # None leaves qdrant-client on httpx's 5 s default — the API passes
+        # settings.qdrant_timeout so a slow search is not mistaken for an outage.
         self._client = AsyncQdrantClient(url=url, api_key=api_key or None, timeout=timeout)
+        self._url = url
+        self._timeout = timeout
         self._collection = collection
         self._vector_size = vector_size
         self._distance = distance
@@ -292,13 +297,21 @@ class QdrantVectorStore:
     ) -> list[ScoredChunk]:
         q_filter = _build_filter(filters)
         # qdrant-client >= 1.10 deprecated `search()` in favour of `query_points()`.
-        response = await self._client.query_points(
-            collection_name=self._collection,
-            query=query_vector,
-            limit=top_k,
-            query_filter=q_filter,
-            with_payload=True,
-        )
+        try:
+            response = await self._client.query_points(
+                collection_name=self._collection,
+                query=query_vector,
+                limit=top_k,
+                query_filter=q_filter,
+                with_payload=True,
+            )
+        except ApiException as e:
+            # ResponseHandlingException wraps the transport error (ReadTimeout,
+            # ConnectError); UnexpectedResponse is a Qdrant-side non-2xx. Both are
+            # "the store didn't answer", not a bug in this request — surface them
+            # as StoreUnavailable so the API answers 503 with the reason instead
+            # of a bare 500 and a 40-frame httpx traceback.
+            raise StoreUnavailable("qdrant", self._describe_failure(e)) from e
         return [
             ScoredChunk(
                 chunk=_chunk_from_payload(r.payload, r.id),
@@ -307,6 +320,21 @@ class QdrantVectorStore:
             )
             for r in response.points
         ]
+
+    def _describe_failure(self, e: Exception) -> str:
+        """One readable line: what failed, where, and the knob that bounds it."""
+        cause = getattr(e, "source", None) or getattr(e, "__cause__", None)
+        inner = cause if cause is not None else e
+        reason = f"{type(inner).__name__}: {inner}".rstrip(": ")
+        bound = (
+            f"{self._timeout}s (QDRANT_TIMEOUT)"
+            if self._timeout is not None
+            else "client default 5s (QDRANT_TIMEOUT unset)"
+        )
+        return (
+            f"qdrant search on {self._collection!r} at {self._url} failed — {reason}; "
+            f"per-request timeout is {bound}"
+        )
 
     async def count_tenants(self, tenants: list[str]) -> int:
         """Count points visible to ``tenants`` (own + public) via a FILTERED
