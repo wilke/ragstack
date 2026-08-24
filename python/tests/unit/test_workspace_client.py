@@ -25,6 +25,7 @@ from ragstack.workspace import (
     WorkspaceError,
     WorkspaceNotFound,
     WorkspaceTooLarge,
+    _multipart_frame,
 )
 
 TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIG"
@@ -322,8 +323,7 @@ async def test_upload_source_rejects_bad_filename(client, fake):
     assert fake.requests == []
 
 
-async def test_upload_source_shock_error_is_typed(client, fake):
-    fake.objects.clear()
+async def test_upload_source_shock_error_is_typed_and_placeholder_removed(client, fake):
     original = fake._shock
 
     def failing(req: httpx.Request) -> httpx.Response:
@@ -335,6 +335,62 @@ async def test_upload_source_shock_error_is_typed(client, fake):
             await client.upload_source(TOKEN, BASE + "/sources", "a.txt", _chunks(b"1"), max_bytes=10)
     finally:
         fake._shock = original  # type: ignore[method-assign]
+    assert BASE + "/sources/a.txt" not in fake.objects
+    assert [m for m, _ in fake.rpc_calls] == ["Workspace.create", "Workspace.delete"]
+    # A retry of the same name is not blocked by a leftover empty object.
+    uri = await client.upload_source(TOKEN, BASE + "/sources", "a.txt", _chunks(b"12"), max_bytes=10)
+    assert uri.endswith("/sources/a.txt") and fake.objects[BASE + "/sources/a.txt"]["size"] == 2
+
+
+async def test_upload_source_cleans_up_when_no_upload_node_or_stream_fails(client, fake):
+    fake.rpc_create_orig = fake.rpc_create  # type: ignore[attr-defined]
+
+    def no_node(params):
+        out = fake.rpc_create_orig(params)  # type: ignore[attr-defined]
+        out[0][0][11] = ""
+        return out
+
+    fake.rpc_create = no_node  # type: ignore[method-assign]
+    with pytest.raises(WorkspaceError, match="no upload node"):
+        await client.upload_source(TOKEN, BASE + "/sources", "n.txt", _chunks(b"1"), max_bytes=10)
+    fake.rpc_create = fake.rpc_create_orig  # type: ignore[method-assign]
+    assert BASE + "/sources/n.txt" not in fake.objects
+
+    async def broken():
+        yield b"ab"
+        raise OSError("disk read failed")
+
+    with pytest.raises(OSError):
+        await client.upload_source(TOKEN, BASE + "/sources", "s.txt", broken(), max_bytes=10)
+    assert BASE + "/sources/s.txt" not in fake.objects
+    assert fake.shock_uploads == []
+
+
+async def test_upload_source_sized_sends_content_length(client, fake):
+    data = b"q" * 5000
+    await client.upload_source(TOKEN, BASE + "/sources", "s.pdf", _chunks(data, 999),
+                               max_bytes=5000, size=5000)
+    shock_req = next(r for r in fake.requests if r.url.host == "shock.test")
+    head, tail = _multipart_frame("s.pdf")
+    assert int(shock_req.headers["Content-Length"]) == len(head) + 5000 + len(tail)
+    assert "transfer-encoding" not in shock_req.headers
+    assert fake.shock_uploads == [("node-1", 5000)]
+
+
+async def test_upload_source_sized_refuses_before_any_rpc(client, fake):
+    with pytest.raises(WorkspaceTooLarge):
+        await client.upload_source(TOKEN, BASE + "/sources", "big.pdf", _chunks(b"x" * 11),
+                                   max_bytes=10, size=11)
+    assert fake.requests == [] and fake.objects == {}
+
+
+@pytest.mark.parametrize("actual", [4, 9])
+async def test_upload_source_sized_stream_must_match_declared_size(client, fake, actual):
+    with pytest.raises(WorkspaceError, match="declared"):
+        await client.upload_source(TOKEN, BASE + "/sources", "m.txt", _chunks(b"x" * actual, 3),
+                                   max_bytes=100, size=6)
+    assert BASE + "/sources/m.txt" not in fake.objects
+    assert [m for m, _ in fake.rpc_calls] == ["Workspace.create", "Workspace.delete"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,12 +400,15 @@ async def test_upload_source_shock_error_is_typed(client, fake):
 
 async def test_list_versions_orders_numerically(client, fake):
     fake._mkdir_p(BASE + "/versions")
-    for name in ("10", "9", "2", "1", "notes", "07"):
-        fake._mkdir_p(f"{BASE}/versions/{name}")
+    for name in ("10", "9", "2", "1", "notes", "07", "7", "\u00b2", "\u0663", ""):
+        if name:
+            fake._mkdir_p(f"{BASE}/versions/{name}")
     fake.objects[BASE + "/versions/manifest.json"] = {"type": "json", "metadata": {}, "size": 1,
                                                        "shock": ""}
     got = await client.list_versions(TOKEN, "ws://" + BASE)
+    # "07" (non-canonical), "²" and "٣" (str.isdigit() says yes) are skipped.
     assert [n for n, _ in got] == [1, 2, 7, 9, 10]
+    assert got[2] == (7, f"ws://{BASE}/versions/7")
     assert got[-1] == (10, f"ws://{BASE}/versions/10")
     assert fake.rpc_calls == [("Workspace.ls", {"paths": [BASE + "/versions"]})]
 

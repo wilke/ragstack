@@ -24,7 +24,8 @@ typespec (``Workspace.spec`` / ``WorkspaceImpl.pm``) and GoWe's clients:
   ``Workspace.update_metadata`` ``{objects: [[path, user_metadata]], append: 1}``.
 * an object's ``meta`` is the tuple ``[name, type, parent_path, creation_time,
   id, owner, size, user_metadata, auto_metadata, user_perm, global_perm,
-  shock_url]`` (the parent path carries a trailing slash).
+  shock_url]`` (``parent_path`` is the containing folder as the service reports it;
+  nothing here depends on it).
 * bytes go to Shock as ``PUT <shock_url>`` (the URL the create call returned),
   ``multipart/form-data`` with one ``upload`` file field and
   ``Authorization: OAuth <token>``; the body is streamed, never buffered.
@@ -59,6 +60,7 @@ _AUTH_RE = re.compile(r"authentication required|token validation failed|insuffic
                       r"|permission denied|not authorized", re.I)
 _NOT_FOUND_RE = re.compile(r"not found|does not exist", re.I)
 _FOLDER_TYPES = frozenset({"folder", "modelfolder"})
+_VERSION_RE = re.compile(r"[0-9]+")
 _EXT_TYPES = {"pdf": "pdf", "txt": "txt"}
 _ids = itertools.count(1)
 
@@ -96,7 +98,12 @@ class WorkspaceTooLarge(WorkspaceError):
 
 @dataclass(frozen=True)
 class WorkspaceObject:
-    """One parsed ObjectMeta tuple (see the module docstring for the layout)."""
+    """One parsed ObjectMeta tuple (see the module docstring for the layout).
+
+    ``path`` is ``meta[2]`` joined with ``name``; the spec describes ``[2]`` as the
+    object's path and the service reports the containing folder there, so treat
+    ``path`` as informational — no method here relies on it.
+    """
 
     name: str
     type: str
@@ -223,7 +230,10 @@ class WorkspaceClient:
         Idempotent: the metadata is written exactly once (at creation, or as a
         one-time backfill on a folder that exists with none of the keys). A
         folder that already carries *different* ``ragstack.*`` values belongs to
-        another collection build and is refused rather than overwritten.
+        another collection build and is refused rather than overwritten. Two
+        concurrent first calls with different ``spec_hash`` values can race on the
+        create (last write wins server-side); that is accepted because collection
+        creation is a single-writer path.
         Returns the ``ws://`` URI of the collection folder.
         """
         base = collection_folder(subject, collection_id)
@@ -266,6 +276,7 @@ class WorkspaceClient:
         stream: Any,
         *,
         max_bytes: int,
+        size: int | None = None,
     ) -> str:
         """Stream ``stream`` into ``<folder>/<filename>`` via Shock; return its ``ws://`` URI.
 
@@ -273,46 +284,67 @@ class WorkspaceClient:
         ``read(n)`` (e.g. Starlette's ``UploadFile``) or a sync binary file-like.
         Bytes are forwarded in :data:`STREAM_CHUNK` pieces — the file is never
         held in memory. The byte count is checked as it flows, so an oversized
-        stream raises :class:`WorkspaceTooLarge` *before* the upload completes;
-        the empty placeholder object this call created is then removed
-        (best-effort). An existing object of the same name is never overwritten.
+        stream raises :class:`WorkspaceTooLarge` *before* the upload completes.
+
+        ``size`` (when the caller knows it) does two things: a ``size > max_bytes``
+        stream is refused before any RPC is made, and the Shock ``PUT`` carries a
+        ``Content-Length`` (what both reference clients send) instead of chunked
+        transfer encoding; a stream that does not match the declared size is a
+        :class:`WorkspaceError`. Whatever fails after the upload node was created
+        — no node in the reply, a transport error, a stream error, a Shock
+        non-2xx, too large — the empty placeholder object is removed again
+        (best-effort) so a retry of the same name is not blocked. An existing
+        object of the same name is never overwritten.
         """
         if max_bytes < 0:
             raise ValueError("max_bytes must be >= 0")
+        if size is not None and size < 0:
+            raise ValueError("size must be >= 0")
         dest = f"{ws_path(folder)}/{_segment(filename, 'filename')}"
+        if size is not None and size > max_bytes:
+            raise WorkspaceTooLarge(filename, max_bytes)
         result = await self._rpc(
             token, "Workspace.create",
             {"objects": [[dest, _object_type(filename), {}, None]], "createUploadNodes": 1},
         )
-        created = _objects(result)
-        if not created or not created[0].shock_url:
-            raise WorkspaceError(f"Workspace returned no upload node for {dest}")
-        shock_url = created[0].shock_url
-        if not shock_url.startswith(("http://", "https://")):
-            raise WorkspaceError(f"Workspace returned a non-HTTP upload URL for {dest}")
-
         try:
-            resp = await self.http.put(
-                shock_url,
-                content=_multipart(filename, _bounded(stream, filename, max_bytes)),
-                headers={
-                    "Authorization": f"OAuth {token}",
-                    "Content-Type": f"multipart/form-data; boundary={_BOUNDARY}",
-                },
-                timeout=self.timeout,
-            )
-        except WorkspaceTooLarge:
+            created = _objects(result)
+            if not created or not created[0].shock_url:
+                raise WorkspaceError(f"Workspace returned no upload node for {dest}")
+            shock_url = created[0].shock_url
+            if not shock_url.startswith(("http://", "https://")):
+                raise WorkspaceError(f"Workspace returned a non-HTTP upload URL for {dest}")
+            head, tail = _multipart_frame(filename)
+            headers = {
+                "Authorization": f"OAuth {token}",
+                "Content-Type": f"multipart/form-data; boundary={_BOUNDARY}",
+            }
+            if size is not None:
+                headers["Content-Length"] = str(len(head) + size + len(tail))
+            try:
+                resp = await self.http.put(
+                    shock_url,
+                    content=_multipart(head, tail, _bounded(stream, filename, max_bytes, size)),
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+            except WorkspaceError:
+                raise
+            except httpx.HTTPError as exc:
+                raise WorkspaceError(
+                    f"Shock upload of {dest} failed: {_scrub(str(exc), token)}"
+                ) from None
+            self._check_shock(resp, dest, token)
+        except Exception:  # not BaseException: never await an RPC during cancellation
             await self._discard_placeholder(token, dest)
             raise
-        except httpx.HTTPError as exc:
-            raise WorkspaceError(f"Shock upload of {dest} failed: {_scrub(str(exc), token)}") from None
-        self._check_shock(resp, dest, token)
         log.debug("workspace: uploaded %s", dest)
         return ws_uri(dest)
 
     async def list_versions(self, token: str, collection_folder: str) -> list[tuple[int, str]]:
         """``[(n, ws_uri)]`` for the numeric subfolders of ``<collection_folder>/versions``,
-        ordered numerically (``10`` after ``9``). Non-numeric entries are ignored.
+        ordered numerically (``10`` after ``9``). Only canonical ASCII decimal names
+        count (``7``, not ``07`` or a Unicode digit); anything else is skipped.
         Raises :class:`WorkspaceNotFound` when the ``versions/`` folder is missing.
         """
         versions = f"{ws_path(collection_folder)}/versions"
@@ -332,8 +364,12 @@ class WorkspaceClient:
         found: list[tuple[int, str]] = []
         for meta in entries:
             obj = WorkspaceObject.from_meta(meta)
-            if obj.is_folder and obj.name.isdigit():
+            if not obj.is_folder:
+                continue
+            if _VERSION_RE.fullmatch(obj.name) and str(int(obj.name)) == obj.name:
                 found.append((int(obj.name), ws_uri(f"{versions}/{obj.name}")))
+            else:
+                log.debug("workspace: skipping non-version entry %r in %s", obj.name, versions)
         found.sort(key=lambda t: t[0])
         return found
 
@@ -446,25 +482,40 @@ async def _iter_stream(stream: Any) -> AsyncIterator[bytes]:
             yield chunk
 
 
-async def _bounded(stream: Any, filename: str, max_bytes: int) -> AsyncIterator[bytes]:
+async def _bounded(
+    stream: Any, filename: str, max_bytes: int, size: int | None = None
+) -> AsyncIterator[bytes]:
     """Forward chunks, raising :class:`WorkspaceTooLarge` the moment the running
-    total exceeds ``max_bytes`` — mid-body, so the upload never completes."""
+    total exceeds ``max_bytes`` — mid-body, so the upload never completes. With a
+    declared ``size`` the stream must also match it exactly (the ``Content-Length``
+    already went out), else :class:`WorkspaceError`."""
     total = 0
     async for chunk in _iter_stream(stream):
         total += len(chunk)
         if total > max_bytes:
             raise WorkspaceTooLarge(filename, max_bytes)
+        if size is not None and total > size:
+            raise WorkspaceError(f"stream for {filename!r} is longer than the declared size {size}")
         yield chunk
+    if size is not None and total != size:
+        raise WorkspaceError(f"stream for {filename!r} was {total} bytes, declared {size}")
 
 
-async def _multipart(filename: str, chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    """Frame ``chunks`` as a single ``upload`` file field (what Shock expects)."""
+def _multipart_frame(filename: str) -> tuple[bytes, bytes]:
+    """The fixed bytes around a single ``upload`` file field (what Shock expects)."""
     safe = filename.replace('"', "%22").replace("\r", "").replace("\n", "")
-    yield (
+    head = (
         f"--{_BOUNDARY}\r\n"
         f'Content-Disposition: form-data; name="upload"; filename="{safe}"\r\n'
         "Content-Type: application/octet-stream\r\n\r\n"
     ).encode()
+    tail = f"\r\n--{_BOUNDARY}--\r\n".encode()
+    return head, tail
+
+
+async def _multipart(head: bytes, tail: bytes, chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Frame ``chunks`` between the precomputed multipart ``head`` and ``tail``."""
+    yield head
     async for chunk in chunks:
         yield chunk
-    yield f"\r\n--{_BOUNDARY}--\r\n".encode()
+    yield tail
