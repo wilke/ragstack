@@ -1,0 +1,39 @@
+{
+  "confirm": [
+    "1290",
+    "13",
+    "1332",
+    "146",
+    "248",
+    "384",
+    "501",
+    "513",
+    "587",
+    "674",
+    "700",
+    "715",
+    "821",
+    "852"
+  ],
+  "dataset": "scifact",
+  "difficulty_cell": "n50_hybrid_rrf60_d10_rr0",
+  "difficulty_metric": "ndcg@10",
+  "n_queries": 24,
+  "queries_sha256": "baaa074ed28bb8ee01591ac34ea052b750589dbea00e22fd8686bee5274136ea",
+  "schema": "ragstack.g1_query_split/v1",
+  "split_query_ids_sha256": "sha256:f55dc364694d59b911d11f0b4ff2c5d5f69307f9aef125ef39250fa2e4069681",
+  "split_seed": 0,
+  "tune": [
+    "1024",
+    "1163",
+    "1363",
+    "237",
+    "421",
+    "507",
+    "57",
+    "660",
+    "728",
+    "982"
+  ],
+  "tune_fraction": 0.4
+}
