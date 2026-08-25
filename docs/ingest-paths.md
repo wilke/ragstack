@@ -176,6 +176,30 @@ version from the registry), plus optional `spec_hash` / `job_id`. In the
 scatter workflow, `ingest_shard.py --embedding-file` writes each PDF's embedded
 chunks on their way to the stores, which is what the archive step packs.
 
+## Restore: replaying an archive (#358)
+
+A collection whose stores were evicted is `dormant` on the registry; the first
+authenticated read or ingest (or `POST /v1/collections/{id}/restore`) submits
+[`cwl/restore-collection.cwl`](../cwl/restore-collection.cwl) **as the user**
+over the `ws://` `versions/<n>/` directories and answers **503 + `Retry-After`**
+until it completes (`restoring`); a refused archive (sha256 / geometry /
+`spec_hash` mismatch — loader exit 3, before any store is created) makes it
+`lost` → 409 until the owner repairs the archive and restores explicitly.
+`load_embeddings.py --replay DIR…` is the tool: verify every version, then per
+version delete each document's prior chunks and stream the upserts (tombstones
+delete by doc id). The API-side settings, all at the end of `config.py`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `collection_access_flush_seconds` | `60` | `last_accessed_at` is batched in-process and flushed in one registry write this often (and at shutdown) — never per request. |
+| `collection_state_cache_seconds` | `5` | How long the resolution path memoizes a row's state; also the cross-process lag for a state change made elsewhere. |
+| `collection_restore_retry_after` | `30` | `Retry-After` (seconds) on the 503 while `dormant`/`restoring`. |
+| `collection_restore_timeout` | `3600` | A `restoring` row older than this with no live watcher in this process is presumed orphaned and reset to `dormant`; also the watcher's poll timeout. |
+| `collection_restore_poll_interval` | `5` | Seconds between submission polls. |
+| `collection_restore_cwl` | `""` | Absolute path to `restore-collection.cwl`; empty = the repo copy next to the package. |
+| `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
+| `collection_restore_inputs_json` | `{}` | Extra/overriding static inputs — typically `qdrant_url` / `es_url` as seen from the worker. Worker group comes from `gowe_worker_group`. |
+
 ## Known gaps
 
 Be clear-eyed about what does **not** work today:

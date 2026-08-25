@@ -45,6 +45,7 @@ from ragstack.acl_store import (
     ShareInvariantError,
     get_acl_store,
 )
+from ragstack.api.lifecycle import enforce_lifecycle
 from ragstack.api.security import Principal
 from ragstack.authz import Action, AuthzUnavailable, resolve_access, resolve_read_many
 from ragstack.config import settings
@@ -94,12 +95,25 @@ async def enforce_access(
     a collection the caller can't read either), 403 (write/owner denied on a
     readable collection), or 503 (store unavailable). Returns ``None`` on allow.
     Read/write are skipped when auth is unconfigured; ``owner`` is always
-    enforced (see the module docstring)."""
+    enforced (see the module docstring).
+
+    An ALLOWED ``read``/``write`` then passes the collection LIFECYCLE gate
+    (:mod:`ragstack.api.lifecycle`, #358): a ``dormant`` collection triggers
+    one restore and answers 503 + ``Retry-After``, ``restoring`` is 503,
+    ``lost`` is 409. It runs AFTER authorization on purpose — a lifecycle
+    answer for a collection the caller may not read would be an existence
+    oracle — and on both allow paths, including the keyless/open one, since
+    dormancy is a property of the stores, not of who is asking. ``owner``
+    actions (delete, share, transfer, the explicit restore) are never gated:
+    managing a dormant collection must not require restoring it."""
     if action != "owner" and not auth_configured():
+        await enforce_lifecycle(principal, collection_id, action)
         return
     store = store if store is not None else get_acl_store()
     decision = await _decide(principal, collection_id, action, store)
     if decision.allowed:
+        if action != "owner":
+            await enforce_lifecycle(principal, collection_id, action)
         return
     if action != "read":
         # A write/owner denial is only reported as 403 when the caller could

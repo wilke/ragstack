@@ -35,6 +35,21 @@ Four backends, selected by ``collection_store_backend``:
 Migration: pointing an existing deployment at ``sqlite``/``postgres`` seeds the
 empty table once from the configured ``collections_file`` (see
 :func:`seed_from_json`), so nobody has to hand-transcribe a registry.
+
+Lifecycle (#353 / #358). Every record also carries the collection's lifecycle
+bookkeeping — ``state`` (``active | archiving | dormant | restoring | lost``),
+``versions`` (the ordered archive version numbers restore replays),
+``archive_pending`` (the last load's archive step failed: not evictable) and
+``last_accessed_at`` (eviction's LRU key). These live on
+:class:`CollectionRecord`, never on :class:`CollectionSpec` (the frozen JSON file
+format): the SQL backends add columns (additive migration), the JSON backend
+keeps them in a sidecar ``{collections_file}.lifecycle.json`` under the same
+``flock``, and the memory backend holds them in the record. State changes are
+compare-and-swap (:meth:`CollectionStore.set_state` with ``expect``), which is
+what lets N concurrent requests on a dormant collection produce exactly one
+restore submission. ``last_accessed_at`` is NEVER written per request:
+:class:`AccessTracker` batches touches in-process and flushes every
+``collection_access_flush_seconds`` (and at shutdown).
 """
 from __future__ import annotations
 
@@ -44,7 +59,7 @@ import logging
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -147,17 +162,98 @@ class CollectionSpec(BaseModel):
                          self.chunk_descriptor())
 
 
+# Lifecycle states (#353). Mirror in contracts/schemas/collection_info.json.
+ACTIVE = "active"        #: physical stores exist; reads/writes proceed
+ARCHIVING = "archiving"  #: an archive version is being written; reads/writes proceed
+DORMANT = "dormant"      #: only the Workspace archive exists; first access restores
+RESTORING = "restoring"  #: a restore submission is in flight; 503 + Retry-After
+LOST = "lost"            #: archive missing or failed verification; 409 until repaired
+STATES = frozenset({ACTIVE, ARCHIVING, DORMANT, RESTORING, LOST})
+
+
 class CollectionRecord(BaseModel):
     """A stored spec plus the store's own bookkeeping.
 
     ``spec_hash`` is denormalized onto the row deliberately: it is what an ingest
     guard compares against, and recomputing it from the row would silently follow
-    any future change to the hash function instead of reporting drift."""
+    any future change to the hash function instead of reporting drift.
+
+    The lifecycle fields (#353/#358) are store bookkeeping too — they are NOT
+    part of the spec, so the JSON file format is untouched — and are preserved
+    across :meth:`CollectionStore.put` (a spec upsert never resets a state)."""
 
     spec: CollectionSpec
     spec_hash: str = ""
     created_at: str = ""
     updated_at: str = ""
+    #: ``active | archiving | dormant | restoring | lost`` (:data:`STATES`).
+    state: str = ACTIVE
+    #: Why the row is in its state — the recorded error for ``dormant`` after a
+    #: failed restore, the verification failure for ``lost``; '' otherwise.
+    state_reason: str = ""
+    #: ISO-8601 UTC of the last state change; '' for a row that never changed.
+    #: The restore watchdog uses it to un-stick a ``restoring`` row whose API
+    #: process died mid-restore.
+    state_changed_at: str = ""
+    #: Ordered archive version numbers (``versions/<n>/`` in the owner's
+    #: Workspace). Restore replays them in this order.
+    versions: list[int] = Field(default_factory=list)
+    #: The last load happened but its archive step/upload failed: the collection
+    #: stays active, cannot be evicted, and the owner's next call retries.
+    archive_pending: bool = False
+    #: ISO-8601 UTC of the last read/ingest that touched it (batched writes).
+    last_accessed_at: str = ""
+
+
+#: The record fields that are lifecycle bookkeeping (as opposed to the spec and
+#: the create/update stamps). One list, used by every backend to preserve them
+#: across a spec upsert and to serialise them.
+LIFECYCLE_FIELDS = (
+    "state", "state_reason", "state_changed_at", "versions", "archive_pending",
+    "last_accessed_at",
+)
+
+
+def lifecycle_of(rec: CollectionRecord) -> dict[str, Any]:
+    """The lifecycle fields of ``rec`` as a plain dict (JSON-serialisable)."""
+    return {f: getattr(rec, f) for f in LIFECYCLE_FIELDS}
+
+
+def with_lifecycle(rec: CollectionRecord, data: dict[str, Any] | None) -> CollectionRecord:
+    """``rec`` with its lifecycle fields replaced by ``data`` (missing keys keep
+    the defaults). Tolerates a stale/partial dict, e.g. an older sidecar file."""
+    if not data:
+        return rec
+    update: dict[str, Any] = {}
+    for f in LIFECYCLE_FIELDS:
+        if f in data:
+            update[f] = data[f]
+    if "versions" in update:
+        update["versions"] = [int(v) for v in (update["versions"] or [])]
+    if "archive_pending" in update:
+        update["archive_pending"] = bool(update["archive_pending"])
+    if "state" in update and update["state"] not in STATES:
+        log.warning("collection %r: unknown lifecycle state %r; treating as %s",
+                    rec.spec.id, update["state"], ACTIVE)
+        update["state"] = ACTIVE
+    return rec.model_copy(update=update)
+
+
+def evictable(rec: CollectionRecord) -> bool:
+    """May the eviction policy (#359) make this collection dormant?
+
+    Only an ``active`` collection whose archive is CURRENT: ``archive_pending``
+    means the last load's archive step failed, so evicting would lose data that
+    exists nowhere else; an empty ``versions`` list means no archive was ever
+    written, for the same reason. Every other state is either mid-transition or
+    already off the physical stores."""
+    return rec.state == ACTIVE and not rec.archive_pending and bool(rec.versions)
+
+
+def _check_state(state: str) -> str:
+    if state not in STATES:
+        raise ValueError(f"unknown collection lifecycle state {state!r}; valid: {sorted(STATES)}")
+    return state
 
 
 class CreateOutcome(StrEnum):
@@ -233,6 +329,37 @@ class CollectionStore(Protocol):
         """Remove a spec. ``False`` when the id wasn't stored."""
         ...
 
+    # -- lifecycle (#353 / #358) ------------------------------------------ #
+
+    async def set_state(
+        self, cid: str, state: str, *, expect: str | None = None, reason: str = ""
+    ) -> bool:
+        """Move ``cid`` to ``state`` (recording ``reason`` and the change time).
+
+        With ``expect`` this is a **compare-and-swap**: the write happens only
+        if the stored state is ``expect`` at that moment, atomically in every
+        backend, and the return value says whether THIS call made the change.
+        That is the whole mechanism behind "N concurrent requests on a dormant
+        collection submit exactly one restore": each CASes ``dormant →
+        restoring`` and only the winner submits. ``False`` also for an unknown
+        id."""
+        ...
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        """Record archive version ``version`` on the row (idempotent — a version
+        already listed is not duplicated). Returns the full ordered list, or
+        ``[]`` for an unknown id."""
+        ...
+
+    async def set_archive_pending(self, cid: str, pending: bool) -> bool:
+        """Flag/clear "the last load's archive is missing" (blocks eviction)."""
+        ...
+
+    async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
+        """Stamp ``last_accessed_at`` on every listed id in ONE write. Callers
+        must batch through :class:`AccessTracker` — this is never called per
+        request. Returns the number of rows updated."""
+
     async def next_version(self, cid: str) -> int:
         """Reserve and return the next archive version number for ``cid``
         (#203/#353): ``1`` on the first call, then ``2``, … — the ``versions/<n>/``
@@ -250,6 +377,72 @@ class CollectionStore(Protocol):
         ...
 
     async def close(self) -> None: ...
+
+
+class AccessTracker:
+    """Batches ``last_accessed_at`` touches: an in-process dirty set flushed
+    every ``flush_seconds`` and at shutdown — never a registry write per request.
+
+    ``touch`` is synchronous and I/O-free (a set insert) so the request path
+    pays nothing. ``flush`` writes the whole batch through ONE
+    :meth:`CollectionStore.touch_accessed` call; a failing store keeps the ids
+    dirty for the next flush instead of dropping them. ``writes`` counts store
+    calls, which is what the batching test asserts on."""
+
+    def __init__(self, store: CollectionStore, flush_seconds: float = 60.0) -> None:
+        self._store = store
+        self._flush_seconds = max(0.05, float(flush_seconds))
+        self._dirty: set[str] = set()
+        self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self.writes = 0
+        self.touched = 0
+
+    def touch(self, cid: str) -> None:
+        if cid:
+            self._dirty.add(cid)
+            self.touched += 1
+
+    @property
+    def pending(self) -> int:
+        return len(self._dirty)
+
+    async def flush(self) -> int:
+        """Write every dirty id (one store call). Returns how many were flushed."""
+        async with self._lock:
+            ids, self._dirty = self._dirty, set()
+            if not ids:
+                return 0
+            try:
+                await self._store.touch_accessed(sorted(ids), _now())
+                self.writes += 1
+            except Exception:  # noqa: BLE001 — retry on the next flush, never lose the batch
+                log.warning("collection access tracker: flush of %d id(s) failed; "
+                            "retrying next round", len(ids), exc_info=True)
+                self._dirty |= ids
+                return 0
+            return len(ids)
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._flush_seconds)
+            await self.flush()
+
+    def start(self) -> None:
+        """Start the periodic flush (needs a running loop). Idempotent."""
+        if self._task is None or self._task.done():
+            self._task = asyncio.get_running_loop().create_task(self._loop())
+
+    async def stop(self) -> None:
+        """Cancel the periodic flush and write whatever is still dirty."""
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 — shutting down
+                pass
+        await self.flush()
 
 
 # --------------------------------------------------------------------------- #
@@ -350,6 +543,46 @@ def write_json_file(path: str, data: list[Any]) -> None:
         raise
 
 
+def lifecycle_path(path: str) -> str:
+    """The JSON backend's lifecycle sidecar: ``{collections_file}.lifecycle.json``.
+
+    A separate file because the registry file's format is frozen (every field
+    of :class:`CollectionSpec` is that format), and lifecycle is store
+    bookkeeping, not spec. It is read and written under the SAME flock as the
+    registry file, so a state CAS is cross-process on this backend too."""
+    return f"{path}.lifecycle.json"
+
+
+def read_lifecycle_file(path: str) -> dict[str, dict[str, Any]]:
+    """``{collection id: lifecycle dict}`` from the sidecar ({} when absent or
+    unreadable — a corrupt sidecar must not make the registry unreadable; it
+    degrades to "everything active", which is the pre-lifecycle behaviour)."""
+    lp = lifecycle_path(path)
+    if not os.path.exists(lp):
+        return {}
+    try:
+        with open(lp, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("collections lifecycle sidecar %s unreadable (%s); ignoring", lp, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_lifecycle_file(path: str, data: dict[str, dict[str, Any]]) -> None:
+    write_json_file(lifecycle_path(path), data)  # type: ignore[arg-type]
+
+
+def _drop_lifecycle_entry(path: str, cid: str) -> None:
+    """Forget ``cid``'s lifecycle (called under the lock, on delete and on a
+    fresh create): the id namespace is reusable, and a stale ``dormant`` row
+    inherited by the next collection minted under the same id would 503 it."""
+    data = read_lifecycle_file(path)
+    if cid in data:
+        del data[cid]
+        write_lifecycle_file(path, data)
+
+
 def append_spec_to_file(path: str, spec: CollectionSpec) -> bool:
     """Upsert ``spec`` into the JSON registry at ``path``, under the file lock.
 
@@ -390,6 +623,7 @@ def create_spec_in_file(path: str, spec: CollectionSpec, *, limit: int | None) -
             return CreateOutcome.AT_CAP
         existing.append(spec.model_dump())
         write_json_file(path, existing)
+        _drop_lifecycle_entry(path, spec.id)  # a new collection starts `active`
     return CreateOutcome.CREATED
 
 
@@ -403,6 +637,7 @@ def remove_spec_from_file(path: str, cid: str) -> bool:
         if len(kept) == len(existing):
             return False
         write_json_file(path, kept)
+        _drop_lifecycle_entry(path, cid)
     return True
 
 
@@ -417,6 +652,9 @@ class JsonFileCollectionStore:
 
     def __init__(self, settings: Any) -> None:
         self._settings = settings
+        # Lifecycle for an inline/unset registry (no file to put a sidecar next
+        # to): process-local, like the registry itself is then.
+        self._inline_lifecycle: dict[str, dict[str, Any]] = {}
 
     @property
     def path(self) -> str:
@@ -439,14 +677,28 @@ class JsonFileCollectionStore:
     async def list_specs(self) -> list[CollectionSpec]:
         return await asyncio.to_thread(self.load_specs_sync)
 
-    async def list_records(self) -> list[CollectionRecord]:
+    def _records_sync(self) -> list[CollectionRecord]:
         # The file format carries no timestamps (adding them would change it), so
         # created_at/updated_at are empty here. That is a real limitation of this
         # backend, not a bug: use sqlite/postgres if you need registration times.
+        # Lifecycle comes from the sidecar (or the inline dict), read under the
+        # same lock as the registry so a record is never half of each.
+        path = self.path
+        if path:
+            with json_file_lock(path):
+                rows = read_json_file(path)
+                lifecycle = read_lifecycle_file(path)
+            specs = specs_from_rows(rows)
+        else:
+            specs = parse_specs(self._inline)
+            lifecycle = self._inline_lifecycle
         return [
-            CollectionRecord(spec=s, spec_hash=s.spec_hash())
-            for s in await self.list_specs()
+            with_lifecycle(CollectionRecord(spec=s, spec_hash=s.spec_hash()), lifecycle.get(s.id))
+            for s in specs
         ]
+
+    async def list_records(self) -> list[CollectionRecord]:
+        return await asyncio.to_thread(self._records_sync)
 
     async def get(self, cid: str) -> CollectionRecord | None:
         for r in await self.list_records():
@@ -474,6 +726,73 @@ class JsonFileCollectionStore:
             return False
         return await asyncio.to_thread(remove_spec_from_file, path, cid)
 
+    # -- lifecycle: one locked read-modify-write of the sidecar per call ---- #
+
+    def _mutate_lifecycle_sync(self, fn: Any) -> Any:
+        """Run ``fn(known_ids, lifecycle) -> (result, changed)`` under the file
+        lock and persist the sidecar when ``changed``. ``known_ids`` lets a
+        mutation refuse an id the registry does not hold."""
+        path = self.path
+        if not path:
+            specs = parse_specs(self._inline)
+            result, _changed = fn({s.id for s in specs}, self._inline_lifecycle)
+            return result
+        with json_file_lock(path):
+            ids = {d.get("id") for d in read_json_file(path) if isinstance(d, dict)}
+            data = read_lifecycle_file(path)
+            result, changed = fn(ids, data)
+            if changed:
+                write_lifecycle_file(path, data)
+        return result
+
+    async def set_state(
+        self, cid: str, state: str, *, expect: str | None = None, reason: str = ""
+    ) -> bool:
+        _check_state(state)
+
+        def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[bool, bool]:
+            if cid not in ids:
+                return False, False
+            entry = data.setdefault(cid, _lifecycle_default())
+            if expect is not None and entry.get("state", ACTIVE) != expect:
+                return False, False
+            _apply_state(entry, state, reason)
+            return True, True
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[list[int], bool]:
+            if cid not in ids:
+                return [], False
+            entry = data.setdefault(cid, _lifecycle_default())
+            return _apply_version(entry, version)
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
+    async def set_archive_pending(self, cid: str, pending: bool) -> bool:
+        def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[bool, bool]:
+            if cid not in ids:
+                return False, False
+            entry = data.setdefault(cid, _lifecycle_default())
+            entry["archive_pending"] = bool(pending)
+            return True, True
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
+    async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
+        wanted = set(ids)
+        at = stamp or _now()
+
+        def fn(known: set[str], data: dict[str, dict[str, Any]]) -> tuple[int, bool]:
+            n = 0
+            for cid in wanted & known:
+                data.setdefault(cid, _lifecycle_default())["last_accessed_at"] = at
+                n += 1
+            return n, n > 0
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
     async def next_version(self, cid: str) -> int:
         # The file format is the wire format (see CollectionSpec) and carries no
         # bookkeeping; a counter kept only in this process would hand out
@@ -485,6 +804,30 @@ class JsonFileCollectionStore:
 
     async def close(self) -> None:
         """No resources to release."""
+
+
+def _lifecycle_default() -> dict[str, Any]:
+    return {"state": ACTIVE, "state_reason": "", "state_changed_at": "",
+            "versions": [], "archive_pending": False, "last_accessed_at": ""}
+
+
+def _apply_state(entry: dict[str, Any], state: str, reason: str) -> None:
+    entry["state"] = state
+    entry["state_reason"] = reason or ""
+    entry["state_changed_at"] = _now()
+
+
+def _apply_version(entry: dict[str, Any], version: int) -> tuple[list[int], bool]:
+    """Idempotent append into ``entry['versions']`` -> (list, changed)."""
+    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+        raise ValueError(f"version must be a non-negative integer, got {version!r}")
+    versions = [int(v) for v in (entry.get("versions") or [])]
+    if version in versions:
+        return versions, False
+    versions.append(version)
+    entry["versions"] = versions
+    return versions, True
+
 
 
 class InMemoryCollectionStore:
@@ -512,10 +855,58 @@ class InMemoryCollectionStore:
     async def put(self, spec: CollectionSpec) -> bool:
         async with self._lock:
             prior = self._records.get(spec.id)
-            self._records[spec.id] = make_record(
-                spec, created_at=prior.created_at if prior else ""
+            rec = make_record(spec, created_at=prior.created_at if prior else "")
+            # A spec upsert never resets the lifecycle (a re-put of a dormant
+            # collection's spec must not make it "active" with no stores).
+            self._records[spec.id] = (
+                with_lifecycle(rec, lifecycle_of(prior)) if prior else rec
             )
         return True
+
+    # -- lifecycle: the asyncio lock makes each mutation atomic ------------- #
+
+    async def set_state(
+        self, cid: str, state: str, *, expect: str | None = None, reason: str = ""
+    ) -> bool:
+        _check_state(state)
+        async with self._lock:
+            rec = self._records.get(cid)
+            if rec is None or (expect is not None and rec.state != expect):
+                return False
+            self._records[cid] = rec.model_copy(update={
+                "state": state, "state_reason": reason or "", "state_changed_at": _now(),
+            })
+            return True
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        async with self._lock:
+            rec = self._records.get(cid)
+            if rec is None:
+                return []
+            entry = {"versions": list(rec.versions)}
+            versions, changed = _apply_version(entry, version)
+            if changed:
+                self._records[cid] = rec.model_copy(update={"versions": versions})
+            return list(versions)
+
+    async def set_archive_pending(self, cid: str, pending: bool) -> bool:
+        async with self._lock:
+            rec = self._records.get(cid)
+            if rec is None:
+                return False
+            self._records[cid] = rec.model_copy(update={"archive_pending": bool(pending)})
+            return True
+
+    async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
+        at = stamp or _now()
+        async with self._lock:
+            n = 0
+            for cid in set(ids):
+                rec = self._records.get(cid)
+                if rec is not None:
+                    self._records[cid] = rec.model_copy(update={"last_accessed_at": at})
+                    n += 1
+            return n
 
     async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
         # The asyncio lock is the whole mechanism: this store is process-local, so
@@ -573,7 +964,13 @@ _COLLECTIONS_DDL = (
     "  created_at TEXT NOT NULL DEFAULT '',"
     "  updated_at TEXT NOT NULL DEFAULT '',"
     "  owner TEXT NOT NULL DEFAULT '',"
-    "  archive_version INTEGER NOT NULL DEFAULT 0"
+    "  archive_version INTEGER NOT NULL DEFAULT 0,"
+    "  state TEXT NOT NULL DEFAULT 'active',"
+    "  state_reason TEXT NOT NULL DEFAULT '',"
+    "  state_changed_at TEXT NOT NULL DEFAULT '',"
+    "  versions TEXT NOT NULL DEFAULT '[]',"
+    "  archive_pending INTEGER NOT NULL DEFAULT 0,"
+    "  last_accessed_at TEXT NOT NULL DEFAULT ''"
     ")"
 )
 
@@ -602,6 +999,14 @@ _COLLECTIONS_COLUMNS: dict[str, str] = {
     # Store bookkeeping, deliberately NOT in _COLUMNS — put()/create() must never
     # rewrite (reset) it when a spec is upserted.
     "archive_version": "INTEGER NOT NULL DEFAULT 0",
+    # Lifecycle (#353/#358) — additive; a table from an older build gets them
+    # with their defaults, i.e. every existing collection is `active`.
+    "state": "TEXT NOT NULL DEFAULT 'active'",
+    "state_reason": "TEXT NOT NULL DEFAULT ''",
+    "state_changed_at": "TEXT NOT NULL DEFAULT ''",
+    "versions": "TEXT NOT NULL DEFAULT '[]'",
+    "archive_pending": "INTEGER NOT NULL DEFAULT 0",
+    "last_accessed_at": "TEXT NOT NULL DEFAULT ''",
 }
 #: Columns that exist for the store's own bookkeeping and are NOT part of the
 #: record row (_COLUMNS): migrated in, never read or written by put()/create().
@@ -612,7 +1017,11 @@ _COLUMNS = (
     "embedding_model_dim", "embedding_endpoints", "embedding_sidecar_url",
     "chunk_method", "chunk_size", "chunk_overlap", "chunk_params",
     "spec_hash", "created_at", "updated_at", "owner",
+    *LIFECYCLE_FIELDS,
 )
+#: Columns a spec upsert (``put``) must NOT overwrite: the lifecycle is store
+#: state that a re-put of the spec has no business resetting.
+_PUT_COLUMNS = tuple(c for c in _COLUMNS if c != "id" and c not in LIFECYCLE_FIELDS)
 _SELECT = f"SELECT {', '.join(_COLUMNS)} FROM collections"
 # Plain inserts (no ON CONFLICT clause) for the create path: a create that finds
 # the id present must NOT upsert, so the "do nothing on conflict" behaviour is a
@@ -656,6 +1065,8 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
         s.embedding_model_dim, json.dumps(s.embedding_endpoints), s.embedding_sidecar_url,
         s.chunk_method, s.chunk_size, s.chunk_overlap, json.dumps(s.chunk_params),
         rec.spec_hash, rec.created_at, rec.updated_at, s.owner,
+        rec.state, rec.state_reason, rec.state_changed_at, json.dumps(rec.versions),
+        1 if rec.archive_pending else 0, rec.last_accessed_at,
     )
 
 
@@ -663,8 +1074,9 @@ def _row_to_record(row: Any) -> CollectionRecord:
     (
         rid, label, collection, text_index, api, model, dim, endpoints, sidecar,
         method, size, overlap, params, shash, created, updated, owner,
+        state, state_reason, state_changed, versions, pending, accessed,
     ) = tuple(row)
-    return CollectionRecord(
+    rec = CollectionRecord(
         spec=CollectionSpec(
             id=rid, label=label, owner=owner or "", collection=collection,
             text_index=text_index,
@@ -676,6 +1088,11 @@ def _row_to_record(row: Any) -> CollectionRecord:
         ),
         spec_hash=shash, created_at=created, updated_at=updated,
     )
+    return with_lifecycle(rec, {
+        "state": state or ACTIVE, "state_reason": state_reason or "",
+        "state_changed_at": state_changed or "", "versions": json.loads(versions or "[]"),
+        "archive_pending": bool(pending), "last_accessed_at": accessed or "",
+    })
 
 
 class SqliteCollectionStore:
@@ -722,7 +1139,9 @@ class SqliteCollectionStore:
                 "SELECT created_at FROM collections WHERE id = ?", (spec.id,)
             ).fetchone()
             rec = make_record(spec, created_at=prior[0] if prior else "")
-            assignments = ", ".join(f"{c} = excluded.{c}" for c in _COLUMNS if c != "id")
+            # Lifecycle columns are deliberately absent from the UPDATE list:
+            # an existing row keeps its state/versions; a new row gets defaults.
+            assignments = ", ".join(f"{c} = excluded.{c}" for c in _PUT_COLUMNS)
             conn.execute(
                 f"INSERT INTO collections ({', '.join(_COLUMNS)}) "
                 f"VALUES ({', '.join('?' * len(_COLUMNS))}) "
@@ -730,6 +1149,73 @@ class SqliteCollectionStore:
                 _record_to_row(rec),
             )
         return True
+
+    # -- lifecycle ---------------------------------------------------------- #
+
+    def _set_state_sync(self, cid: str, state: str, expect: str | None, reason: str) -> bool:
+        # One UPDATE with the expectation in its WHERE clause: sqlite serialises
+        # writers, so the compare and the swap are one atomic statement and the
+        # rowcount says whether this caller won.
+        with closing(self._connect()) as conn, conn:
+            sql = ("UPDATE collections SET state = ?, state_reason = ?, "
+                   "state_changed_at = ? WHERE id = ?")
+            params: list[Any] = [state, reason or "", _now(), cid]
+            if expect is not None:
+                sql += " AND state = ?"
+                params.append(expect)
+            return conn.execute(sql, params).rowcount > 0
+
+    def _append_version_sync(self, cid: str, version: int) -> list[int]:
+        with closing(self._connect()) as conn:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")  # read-modify-write under the write lock
+            try:
+                row = conn.execute("SELECT versions FROM collections WHERE id = ?", (cid,)).fetchone()
+                if row is None:
+                    conn.execute("ROLLBACK")
+                    return []
+                entry = {"versions": json.loads(row[0] or "[]")}
+                versions, changed = _apply_version(entry, version)
+                if changed:
+                    conn.execute("UPDATE collections SET versions = ? WHERE id = ?",
+                                 (json.dumps(versions), cid))
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return versions
+
+    def _set_archive_pending_sync(self, cid: str, pending: bool) -> bool:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute("UPDATE collections SET archive_pending = ? WHERE id = ?",
+                               (1 if pending else 0, cid))
+            return cur.rowcount > 0
+
+    def _touch_sync(self, ids: list[str], stamp: str) -> int:
+        if not ids:
+            return 0
+        with closing(self._connect()) as conn, conn:
+            marks = ", ".join("?" * len(ids))
+            cur = conn.execute(
+                f"UPDATE collections SET last_accessed_at = ? WHERE id IN ({marks})",
+                (stamp, *ids),
+            )
+            return cur.rowcount
+
+    async def set_state(
+        self, cid: str, state: str, *, expect: str | None = None, reason: str = ""
+    ) -> bool:
+        _check_state(state)
+        return await asyncio.to_thread(self._set_state_sync, cid, state, expect, reason)
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        return await asyncio.to_thread(self._append_version_sync, cid, version)
+
+    async def set_archive_pending(self, cid: str, pending: bool) -> bool:
+        return await asyncio.to_thread(self._set_archive_pending_sync, cid, pending)
+
+    async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
+        return await asyncio.to_thread(self._touch_sync, sorted(set(ids)), stamp or _now())
 
     def _create_sync(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
         """Count and insert as ONE serialized unit, via ``BEGIN IMMEDIATE``.
@@ -873,7 +1359,8 @@ class PostgresCollectionStore:
 
     async def put(self, spec: CollectionSpec) -> bool:
         placeholders = ", ".join(f"${i + 1}" for i in range(len(_COLUMNS)))
-        assignments = ", ".join(f"{c} = excluded.{c}" for c in _COLUMNS if c != "id")
+        # Lifecycle columns stay out of the UPDATE list (see the sqlite twin).
+        assignments = ", ".join(f"{c} = excluded.{c}" for c in _PUT_COLUMNS)
         pool = await self._pool_()
         async with pool.acquire() as conn:
             prior = await conn.fetchval(
@@ -917,6 +1404,75 @@ class PostgresCollectionStore:
         async with pool.acquire() as conn:
             status = await conn.execute("DELETE FROM collections WHERE id = $1", cid)
         return not status.endswith(" 0")
+
+    # -- lifecycle ---------------------------------------------------------- #
+
+    @staticmethod
+    def _rows(status: str) -> int:
+        """``"UPDATE 3"`` -> 3 (asyncpg's command-tag status string)."""
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except ValueError:  # pragma: no cover - defensive
+            return 0
+
+    async def set_state(
+        self, cid: str, state: str, *, expect: str | None = None, reason: str = ""
+    ) -> bool:
+        _check_state(state)
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            if expect is None:
+                status = await conn.execute(
+                    "UPDATE collections SET state = $1, state_reason = $2, "
+                    "state_changed_at = $3 WHERE id = $4",
+                    state, reason or "", _now(), cid,
+                )
+            else:
+                # The compare is in the WHERE clause: a single row-locked UPDATE,
+                # so two concurrent CASes from different processes cannot both
+                # see `expect` and both succeed.
+                status = await conn.execute(
+                    "UPDATE collections SET state = $1, state_reason = $2, "
+                    "state_changed_at = $3 WHERE id = $4 AND state = $5",
+                    state, reason or "", _now(), cid, expect,
+                )
+        return self._rows(status) > 0
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        pool = await self._pool_()
+        async with pool.acquire() as conn, conn.transaction():
+            raw = await conn.fetchval(
+                "SELECT versions FROM collections WHERE id = $1 FOR UPDATE", cid
+            )
+            if raw is None:
+                return []
+            entry = {"versions": json.loads(raw or "[]")}
+            versions, changed = _apply_version(entry, version)
+            if changed:
+                await conn.execute("UPDATE collections SET versions = $1 WHERE id = $2",
+                                   json.dumps(versions), cid)
+        return versions
+
+    async def set_archive_pending(self, cid: str, pending: bool) -> bool:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                "UPDATE collections SET archive_pending = $1 WHERE id = $2",
+                1 if pending else 0, cid,
+            )
+        return self._rows(status) > 0
+
+    async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
+        wanted = sorted(set(ids))
+        if not wanted:
+            return 0
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                "UPDATE collections SET last_accessed_at = $1 WHERE id = ANY($2::text[])",
+                stamp or _now(), wanted,
+            )
+        return self._rows(status)
 
     async def next_version(self, cid: str) -> int:
         # A single UPDATE … RETURNING is atomic per row under MVCC: concurrent

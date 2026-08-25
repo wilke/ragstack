@@ -50,9 +50,15 @@ from ragstack.api.deps import (
 )
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.scope import count_scope
-from ragstack.api.security import ROLE_ADMIN, ROLE_USER, Principal, resolve_principal
+from ragstack.api.security import (
+    ROLE_ADMIN,
+    ROLE_USER,
+    Principal,
+    gowe_caller,
+    resolve_principal,
+)
 from ragstack.authz import AuthzUnavailable, resolve_access
-from ragstack.collection_store import CollectionStore, CreateOutcome
+from ragstack.collection_store import CollectionRecord, CollectionStore, CreateOutcome
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.chunkers import CHUNK_METHODS
@@ -99,6 +105,11 @@ class CollectionInfo(BaseModel):
     chunk_method: str | None = None  # from the registry label (may be operator-asserted)
     chunk_size: int | None = None
     default: bool
+    # Lifecycle (#353/#358), from the registry row; null for a collection the
+    # registry does not track (the settings-derived default entry).
+    state: str | None = None  # active | archiving | dormant | restoring | lost
+    archive_pending: bool | None = None
+    versions: list[int] | None = None
     count: int | None = None  # vector-store tenant-filtered count; null when unavailable
     text_count: int | None = None  # text-index (BM25) tenant-filtered count; for a vector↔text parity check
     provenance: Provenance | None = None  # verified lineage from the manifest
@@ -115,6 +126,7 @@ def _collection_info(
     text_count: int | None = None,
     *,
     is_default: bool = False,
+    record: CollectionRecord | None = None,
 ) -> CollectionInfo:
     """Assemble a CollectionInfo from a built entry + its (tenant-scoped) vector
     and text counts, folding in verified provenance from the manifest when
@@ -124,7 +136,10 @@ def _collection_info(
     — supplied by the caller, deliberately NOT read off the entry. The entry's
     own ``is_shared_surface`` flag answers a different question (legacy
     tenant-stamped surface) and carries authz exemptions with it; see
-    ``CollectionEntry.is_shared_surface``."""
+    ``CollectionEntry.is_shared_surface``.
+
+    ``record`` is the durable registry row, whose lifecycle fields (state /
+    archive_pending / versions, #358) are reported when present."""
     m = read_manifest(settings.collection_manifest_dir, entry.collection)
     prov = (
         Provenance(
@@ -154,16 +169,32 @@ def _collection_info(
         chunk_method=entry.chunk_method or None,
         chunk_size=entry.chunk_size,
         default=is_default,
+        state=record.state if record is not None else None,
+        archive_pending=record.archive_pending if record is not None else None,
+        versions=list(record.versions) if record is not None else None,
         count=count,
         text_count=text_count,
         provenance=prov,
     )
 
 
+async def _records_by_id(store: CollectionStore) -> dict[str, CollectionRecord]:
+    """Registry rows keyed by id — ONE read for the whole listing. A store
+    that cannot answer degrades to no lifecycle fields rather than failing the
+    listing: the state is informational here (the gate on the read paths is
+    what enforces it)."""
+    try:
+        return {r.spec.id: r for r in await store.list_records()}
+    except Exception:  # noqa: BLE001 — listing must not depend on lifecycle
+        log.warning("collections: registry rows unavailable; omitting lifecycle", exc_info=True)
+        return {}
+
+
 @router.get("/collections", response_model=CollectionsResponse)
 async def list_collections(
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
+    store: CollectionStore = Depends(get_collection_store),
 ) -> CollectionsResponse:
     """Registry collections with tenant-scoped counts and chunk-strategy labels.
 
@@ -199,8 +230,11 @@ async def list_collections(
             *(probe_tenant_count(e.text_index, sc) for e, sc in zip(entries, scopes, strict=True))
         ),
     )
+    records = await _records_by_id(store)
     infos = [
-        _collection_info(e, vc, tc, is_default=e.id == registry.default_id)
+        _collection_info(
+            e, vc, tc, is_default=e.id == registry.default_id, record=records.get(e.id)
+        )
         for e, vc, tc in zip(entries, vec_counts, txt_counts, strict=True)
     ]
     # The reported default must be one of the listed ids: the registry default
@@ -684,7 +718,129 @@ async def create_collection(
     count = await probe_tenant_count(built.vector_store, tenants)
     # A just-created collection is never the pointer target: making it one is a
     # separate, deliberate act (DEFAULT_COLLECTION_ID / a stored preference).
-    return _collection_info(built, count, is_default=False)
+    return _collection_info(
+        built, count, is_default=False, record=(await _records_by_id(store)).get(cid)
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Restore a dormant collection (#358, phase 2 of #353)
+# --------------------------------------------------------------------------- #
+
+
+class CollectionRestoreResponse(BaseModel):
+    collection_id: str
+    state: str
+    submission_id: str | None = None
+    message: str
+
+
+@router.post(
+    "/collections/{collection_id}/restore",
+    status_code=202,
+    response_model=CollectionRestoreResponse,
+)
+async def restore_collection(
+    collection_id: str,
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
+    store: CollectionStore = Depends(get_collection_store),
+) -> CollectionRestoreResponse:
+    """Explicit, owner-or-admin counterpart of the on-access restore.
+
+    A ``dormant`` collection's physical stores are gone; only its archive —
+    ``versions/<n>/`` in the owner's Workspace — remains. This lists those
+    versions and submits the ``restore-collection`` workflow AS THE CALLER
+    (the bearer token authenticates the submission and the engine pre-stages
+    every ``ws://`` version directory with it), then watches it: COMPLETED
+    flips the row ``restoring → active``; an engine failure returns it to
+    ``dormant`` with the error recorded; a verification failure (sha256 /
+    ``spec_hash``) marks it ``lost`` with the reason.
+
+    Idempotent — ``restoring`` answers 202 without a second submission (the
+    transition is a compare-and-swap, so concurrent callers cannot
+    double-submit) and ``active``/``archiving`` answer 202 with nothing to do.
+    Unlike the on-access path, which 409s a ``lost`` collection, THIS endpoint
+    may retry from ``lost``: it is the owner's way back after repairing the
+    archive. A caller without a BV-BRC user token (API key / keyless / another
+    issuer) is refused with 400 — a restore is submitted as the user and has no
+    other identity to use (``security.gowe_caller``, shared with ingest).
+    The ``owner`` action is never lifecycle-gated, so managing a dormant
+    collection does not require restoring it first."""
+    from ragstack.api.lifecycle import get_lifecycle_gate
+    from ragstack.collection_store import (
+        ACTIVE,
+        ARCHIVING,
+        DORMANT,
+        LOST,
+        RESTORING,
+    )
+    from ragstack.restore import RestoreError
+
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+    await enforce_access(principal, entry.id, "owner")
+
+    caller = gowe_caller(principal)  # the one caller rule (api/security.py)
+    if caller is None:
+        raise HTTPException(
+            400,
+            "a restore is submitted as the user and needs a BV-BRC bearer (user) "
+            "credential; this request carries none (API-key / keyless callers and "
+            "other issuers have no Workspace identity)",
+        )
+    token, _subject = caller
+    rec = await store.get(entry.id)
+    if rec is None:
+        raise HTTPException(
+            409,
+            f"collection {collection_id!r} is not tracked by the registry "
+            "(the settings-derived default has no archive lifecycle)",
+        )
+    gate = get_lifecycle_gate()
+    if gate is None or gate.restorer is None:
+        raise HTTPException(503, "restore is not configured on this server (no workflow engine)")
+
+    if rec.state in (ACTIVE, ARCHIVING):
+        return CollectionRestoreResponse(
+            collection_id=collection_id, state=rec.state,
+            message="nothing to restore: the collection's stores are present",
+        )
+    if rec.state == RESTORING and not gate.is_stale_restore(rec):
+        return CollectionRestoreResponse(
+            collection_id=collection_id, state=RESTORING,
+            message="a restore is already in progress",
+        )
+    # dormant, lost, or an orphaned `restoring`: CAS from the observed state.
+    assert rec.state in (DORMANT, LOST, RESTORING)
+    won = await store.set_state(
+        collection_id, RESTORING, expect=rec.state,
+        reason=f"restore requested by {principal.tenant} (explicit)",
+    )
+    gate.invalidate(collection_id)
+    if not won:
+        # Somebody else moved it between our read and our CAS — report what
+        # it is now; a concurrent restore is exactly the idempotent case.
+        now = await store.get(collection_id)
+        return CollectionRestoreResponse(
+            collection_id=collection_id, state=now.state if now else rec.state,
+            message="state changed concurrently; no new restore submitted",
+        )
+    try:
+        sub_id = await gate.restorer.submit(rec, token)
+    except RestoreError as e:
+        gate.invalidate(collection_id)
+        raise HTTPException(
+            502, f"restore of {collection_id!r} could not be submitted: {e} "
+                 f"(collection left {e.state})",
+        ) from None
+    gate.invalidate(collection_id)
+    return CollectionRestoreResponse(
+        collection_id=collection_id, state=RESTORING, submission_id=sub_id,
+        message="restore submitted; reads and ingests answer 503 with Retry-After until it completes",
+    )
 
 
 class PurgeFailure(BaseModel):

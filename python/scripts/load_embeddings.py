@@ -16,6 +16,18 @@ this tool. Until then it loads at full rate (safe on an uncapped Qdrant).
 Idempotent: deterministic ids + upsert-only + per-doc delete-prior, so re-running
 (engine retry / resume) overwrites in place.
 
+**Replay mode** (``--replay``, #358): instead of embedding files, an ORDERED list
+of archive version directories (``ragstack-archive/1``, the ``versions/<n>/``
+folders the ingest workflows archive into the owner's Workspace) — the
+restore-collection workflow's tool. Every version is verified (sha256s,
+geometry, and ``manifest.spec_hash == --spec-hash``, the registry row's) BEFORE
+anything is written — or created: the physical stores are ensured only after
+verification passes. A refusal exits **3** with an ``ArchiveCorrupt:`` /
+``SpecMismatch:`` line (the API marks the collection ``lost``); a registry
+disagreement between this worker and the API exits **2**; a mid-stream failure
+exits **1** (both leave it ``dormant``, retried). Chunk versions replace their
+documents and upsert both legs; tombstone versions delete by doc id.
+
 Usage::
 
     python scripts/load_embeddings.py shard.s0.emb.jsonl shard.s1.emb.jsonl \
@@ -33,7 +45,13 @@ import sys
 
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.embedding_file import read_header
-from ragstack.ingestion.load_embeddings import run_load_file
+from ragstack.ingestion.load_embeddings import (
+    REPLAY_BATCH,
+    ReplayRefused,
+    run_load_file,
+    run_replay,
+    verify_replay,
+)
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import merge_summary
@@ -72,6 +90,18 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # file must agree — a wrong-dim file (e.g. 768-d BGE into a 4096-d SFR
         # collection) is caught here, before the collection is created/written.
         dims = set()
+        if getattr(args, "replay", None):
+            # The archive manifests carry the geometry (already verified by
+            # _replay before this runs); a tombstone-only version has none,
+            # and the registry entry's dim is authoritative anyway
+            # (check_build below refuses a disagreeing archive).
+            from ragstack.ingestion.archive import read_manifest
+
+            for vdir in args.replay:
+                geom = read_manifest(vdir).get("vectors") or {}
+                if geom.get("dim"):
+                    dims.add(int(geom["dim"]))
+            dims = dims or {target.dim}
         for f in args.embeddings:
             d = read_header(f).get("dim")
             if not d:
@@ -107,13 +137,75 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         tindex = ElasticsearchTextIndex(url=args.es_url, index=es_index,
                                         refresh_on_write=not args.bulk_refresh)
         await tindex.ensure_index()
+    # Replay does its own per-version delete-prior (a document's chunks may
+    # span two upsert batches, and index_chunks' per-batch delete would remove
+    # the first batch's rows) — see run_replay.
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
                              embedder=_NoEmbed(), vector_store=vstore, text_index=tindex,
                              delete_concurrency=args.delete_concurrency,
-                             delete_prior=not args.no_delete_prior)
+                             delete_prior=not (args.no_delete_prior
+                                               or getattr(args, "replay", None)))
+
+
+async def _replay(args, target) -> int:
+    """``--replay``: verify every version, THEN build the stores, then replay.
+
+    Exit codes are the API's classification signal (restore.py): **3** = the
+    archive was refused (nothing written, not even the physical collection —
+    verification runs before ``_build_pipeline`` ensures it) → ``lost``;
+    **2** = the worker's registry disagrees with the API's (a deployment
+    misconfiguration, retried once fixed) → ``dormant``; **1** = a mid-stream
+    failure after verification → ``dormant``, retried.
+    """
+    spec_hash = args.spec_hash or (target.spec.spec_hash() if target is not None else "")
+    if target is not None and args.spec_hash and target.spec.spec_hash() != args.spec_hash:
+        # The API passed the registry row's hash; the worker resolved the same
+        # id to a different spec. Not an archive problem — the two processes
+        # read different registries — so exit 2 (dormant, retried), not 3.
+        print(f"registry disagreement: --spec-hash {args.spec_hash!r} != registry entry "
+              f"{target.collection_id!r} spec_hash {target.spec.spec_hash()!r} as this "
+              "worker reads it; fix the worker's registry configuration",
+              file=sys.stderr, flush=True)
+        return 2
+    collection_id = target.collection_id if target is not None else (args.collection_id or "")
+    try:
+        manifests = verify_replay(list(args.replay), spec_hash=spec_hash,
+                                  collection_id=collection_id)
+    except ReplayRefused as e:
+        # Nothing was written — and nothing created: the stores are ensured
+        # only below. Exit 3 is what the API's restore watcher classifies as
+        # `lost` (the marker line is its secondary signal).
+        print(str(e), file=sys.stderr, flush=True)
+        return 3
+    pipeline = await _build_pipeline(args, target)
+    tindex = pipeline.text_index
+    can_park = args.bulk_refresh and hasattr(tindex, "bulk_load_refresh")
+    prior = await tindex.bulk_load_refresh(True) if can_park else None
+    try:
+        summary = await run_replay(
+            pipeline, list(args.replay), spec_hash=spec_hash, collection_id=collection_id,
+            batch_size=args.replay_batch, delete_concurrency=args.delete_concurrency,
+            log=lambda msg: print(msg, flush=True), manifests=manifests,
+        )
+    finally:
+        if can_park:
+            await tindex.restore_refresh(prior)
+            await tindex.refresh()
+    out = summary.as_dict()
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=2, sort_keys=True)
+    print(f"replayed {summary.n_versions} version(s): {summary.n_chunks} chunk(s) upserted, "
+          f"{summary.n_docs_deleted} doc(s) tombstoned in {summary.seconds:.1f}s → {args.out}",
+          flush=True)
+    if summary.status != "completed":
+        print(summary.error, file=sys.stderr, flush=True)
+        return 1
+    return 0
 
 
 async def amain(args, target=None) -> int:
+    if getattr(args, "replay", None):
+        return await _replay(args, target)
     pipeline = await _build_pipeline(args, target)
     # Files hold disjoint document sets and chunk ids are deterministic, so
     # concurrent files cannot race on a doc_id or duplicate a point (#323). Receipts
@@ -180,7 +272,20 @@ async def amain(args, target=None) -> int:
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("embeddings", nargs="+", help="one or more JSONL embedding files")
+    p.add_argument("embeddings", nargs="*", help="one or more JSONL embedding files "
+                   "(omit with --replay)")
+    p.add_argument("--replay", nargs="+", metavar="VERSION_DIR", default=[],
+                   help="RESTORE mode (#358): replay these ragstack-archive/1 version "
+                        "directories IN ORDER instead of loading embedding files. Every "
+                        "directory is verified (sha256s, geometry, spec_hash) before any "
+                        "write; a failure exits 3 with an ArchiveCorrupt:/SpecMismatch: "
+                        "line and nothing written. Chunk versions replace their documents, "
+                        "tombstone versions delete by doc id")
+    p.add_argument("--spec-hash", default="",
+                   help="with --replay: the registry row's build-spec hash every manifest "
+                        "must match (default: the resolved entry's own hash)")
+    p.add_argument("--replay-batch", type=int, default=REPLAY_BATCH,
+                   help=f"with --replay: chunks per upsert batch (default {REPLAY_BATCH})")
     p.add_argument("--out", default="load-summary.json", help="output summary path")
     p.add_argument("--tenant", default=None,
                    help="override tenant (default: each file's header tenant)")
@@ -254,6 +359,10 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if bool(args.replay) == bool(args.embeddings):
+        raise SystemExit("give either embedding files or --replay VERSION_DIR..., not both/neither")
+    if args.replay and args.replay_batch < 1:
+        raise SystemExit("--replay-batch must be >= 1")
     # Resolve the registry entry before any store is created or written (#263).
     # The in-memory backend is the dev/test path and owns no physical store, so
     # it has nothing to register.

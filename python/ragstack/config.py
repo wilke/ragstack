@@ -682,6 +682,40 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     otel_exporter_otlp_endpoint: str = ""
 
+    # --- Collection lifecycle / restore (#358, phase 2 of #353) ------------ #
+    # Kept together at the end of the class to stay clear of the ingest
+    # (#203) settings above.
+    #
+    # `last_accessed_at` (eviction's LRU key, #359) is NEVER written per
+    # request: the API keeps an in-process dirty set of touched collection ids
+    # and flushes it to the registry in ONE write every this-many seconds (and
+    # at shutdown).
+    collection_access_flush_seconds: float = 60.0
+    # How long the resolution path memoizes a collection's registry row
+    # (state) — the lifecycle check on every read/ingest is one cached read.
+    # This is also the cross-process lag for a state change made elsewhere
+    # (an eviction by a sibling instance); transitions made by THIS process
+    # invalidate the entry immediately.
+    collection_state_cache_seconds: float = 5.0
+    # `Retry-After` (seconds) sent with the 503 while a collection is
+    # dormant/restoring.
+    collection_restore_retry_after: int = 30
+    # A `restoring` row older than this (its `state_changed_at`) is presumed
+    # orphaned — the API process that submitted it died before flipping the
+    # state — and is moved back to `dormant` so the next access restores again
+    # instead of 503ing forever. Also the watcher's poll timeout.
+    collection_restore_timeout: float = 3600.0
+    collection_restore_poll_interval: float = 5.0
+    # ABSOLUTE path to cwl/restore-collection.cwl. Empty = the repo's copy next
+    # to this package (a source checkout); set it explicitly in a container.
+    collection_restore_cwl: str = ""
+    collection_restore_workflow_name: str = "ragstack-restore-collection"
+    # Extra/overriding static inputs for the restore workflow as a JSON object
+    # — typically `qdrant_url` / `es_url` AS SEEN FROM THE WORKER, when those
+    # differ from this API's own `qdrant_url` / `elasticsearch_url` (the
+    # defaults). The worker group comes from `gowe_worker_group`.
+    collection_restore_inputs_json: str = "{}"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

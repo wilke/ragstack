@@ -888,6 +888,24 @@ async def resolve_principal(
     return principal
 
 
+def gowe_caller(principal: Principal) -> tuple[str, str] | None:
+    """``(token, workspace subject)`` for a workflow submission made AS the
+    caller (#203 ingest, #358 restore), or ``None`` when this principal cannot
+    make one.
+
+    The engine authenticates the submission with a BV-BRC user token and
+    pre-/post-stages ``ws://`` paths under that user's Workspace home; there is
+    no fallback identity (and none may be added). So an API-key / keyless
+    principal, or a bearer identity from another issuer, cannot use these
+    paths. The ONE implementation of that rule — the ingest router maps
+    ``None`` to 401, the restore endpoint to 400, the lifecycle gate to a 503
+    that says a user token is required.
+    """
+    if not principal.token or principal.issuer != "bvbrc" or not principal.subject:
+        return None
+    return principal.token, principal.subject
+
+
 def validate_role_settings() -> None:
     """Fail fast on a misconfigured RBAC setup (call at startup).
 

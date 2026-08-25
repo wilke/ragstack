@@ -7,6 +7,7 @@ fallback keeps unit tests and demo runs functional without infra.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -23,6 +24,7 @@ from ragstack.api.collections import (
     CollectionRegistry,
     CollectionSpec,
 )
+from ragstack.api.lifecycle import LifecycleGate, reset_lifecycle_gate, set_lifecycle_gate
 from ragstack.api.model_registry import ModelEntry, ModelRegistry
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
 from ragstack.collection_store import (
@@ -1300,6 +1302,61 @@ def _validate_production_settings() -> None:
             )
 
 
+def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> LifecycleGate:
+    """The collection lifecycle gate (#358): registry-state enforcement on the
+    resolution path, the batched last-accessed tracker, and the restorer.
+
+    The restorer submits ``restore-collection`` AS THE USER: one tokenless
+    GoWe client over the app's shared http client, the caller's token passed
+    per call (no server identity, no token retained — the #203 ingest shape),
+    and the owner's version directories listed through the Workspace client
+    with the same token.
+    Extra static workflow inputs (worker-side store URLs) come from
+    ``collection_restore_inputs_json``.
+    """
+    from ragstack.collection_store import AccessTracker
+    from ragstack.ingestion.gowe_client import GoWeClient
+    from ragstack.restore import CollectionRestorer
+    from ragstack.workspace import WorkspaceClient
+
+    try:
+        extra = json.loads(settings.collection_restore_inputs_json or "{}")
+        if not isinstance(extra, dict):
+            raise ValueError("not a JSON object")
+    except ValueError as e:
+        log.warning("collection_restore_inputs_json is invalid (%s); ignoring", e)
+        extra = {}
+    static_inputs = {
+        "qdrant_url": settings.qdrant_url,
+        "es_url": settings.elasticsearch_url,
+        **extra,
+    }
+    workspace = WorkspaceClient(
+        settings.workspace_url, http, timeout=settings.workspace_timeout
+    )
+    tracker = AccessTracker(store, flush_seconds=settings.collection_access_flush_seconds)
+    gate = LifecycleGate(
+        store,
+        tracker=tracker,
+        cache_seconds=settings.collection_state_cache_seconds,
+        retry_after=settings.collection_restore_retry_after,
+        restore_timeout=settings.collection_restore_timeout,
+    )
+    gate.restorer = CollectionRestorer(
+        store,
+        workspace=workspace,
+        gowe=GoWeClient(settings.gowe_url, token="", http=http),
+        cwl_path=settings.collection_restore_cwl,
+        workflow_name=settings.collection_restore_workflow_name,
+        static_inputs=static_inputs,
+        worker_group=settings.gowe_worker_group,
+        poll_interval=settings.collection_restore_poll_interval,
+        timeout=settings.collection_restore_timeout,
+        on_change=gate.invalidate,
+    )
+    return gate
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
@@ -1530,6 +1587,18 @@ async def lifespan(app: FastAPI):
     await seed_from_json(collection_store, settings)
     app.state.collection_store = collection_store
 
+    # Collection lifecycle (#358): the gate every collection-scoped read/ingest
+    # passes through after authorization (dormant → one restore + 503,
+    # restoring → 503, lost → 409), the batched last-accessed tracker, and the
+    # restorer that submits `restore-collection` AS THE USER over the app's
+    # shared http client. Installed as a module singleton the way the ACL store
+    # is, because `enforce_access` has no request handle.
+    lifecycle_gate = _build_lifecycle_gate(collection_store, http_client)
+    set_lifecycle_gate(lifecycle_gate)
+    if lifecycle_gate.tracker is not None:
+        lifecycle_gate.tracker.start()
+    app.state.lifecycle_gate = lifecycle_gate
+
     # The user-profile + ACL store (ADR-0004 decisions 1/4-6). ONE object, ONE
     # database: every ACL store also satisfies the UserStore protocol (shares live
     # in the same tenant DB as users), so we build the ACL store here and install
@@ -1639,6 +1708,16 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Lifecycle first, while the http client and the registry are still
+        # open: in-flight restore submissions/watchers finish (or are logged),
+        # and the last-accessed dirty set is flushed in ONE write.
+        try:
+            await lifecycle_gate.drain()
+            if lifecycle_gate.tracker is not None:
+                await lifecycle_gate.tracker.stop()
+        except Exception:  # noqa: BLE001 — shutdown must not raise
+            log.warning("lifecycle gate shutdown failed", exc_info=True)
+        reset_lifecycle_gate()
         await http_client.aclose()
         # Release the job store's resources (PostgresJobStore's asyncpg pool;
         # a no-op for the in-memory / sqlite stores).
