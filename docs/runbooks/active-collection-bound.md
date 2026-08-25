@@ -17,10 +17,10 @@ the minimum of the three.
 |---|---|
 | Per-collection cost at 35k chunks (Qdrant) | **+306 memory mappings, +0.8 threads, +704 MiB RSS, +1 fd, 1,107 MiB on disk** |
 | Per-collection cost at 35k chunks (ES) | **+2 shards (1 primary + 1 unassigned replica), +47 MiB RSS, +30 MiB store, ~0 threads, heap flat** |
-| Binding ceiling | **RAM** (200 GB share ÷ 751 MiB per collection) → **n = 254** |
+| Binding ceiling | **RAM** (assumed 200 GB share ÷ 751 MiB per collection) → **n = 254** at the full share, **152** with the same 60 % budget the other ceilings get |
 | Next ceilings | ES shards 300 (60 % of `max_shards_per_node`), Qdrant mappings 514, threads ≫ 10⁶ |
-| Recommended `MAX_COLLECTIONS` for the dev tenant | **250** (currently 100 — safe, conservative) |
-| Cold build of one 35k-chunk collection (create + upsert + settle) | **108.6 s mean** (107–112 s) |
+| Recommended `MAX_COLLECTIONS` for the dev tenant | **keep 100 now; ~150 is defensible without further measurement; 250 only once the share is stated and the RSS split is measured** (see below) |
+| Cold build of one 35k-chunk collection | **108.6 s mean** wall (107–112 s), of which **~101 s store-side** (create + upsert + settle) and ~8 s client-side vector generation |
 
 ## Measurement table
 
@@ -58,26 +58,29 @@ The curve is linear — the step-to-step deltas are flat from 1 to 10 (Qdrant ma
 
 ### Cold-build wall time per collection
 
-| collection | create (s) | Qdrant upsert (s) | ES bulk (s) | Qdrant settle to green (s) | ES refresh+flush (s) | total (s) |
-|---|---|---|---|---|---|---|
-| nmeasure_1 | 0.4 | 92.0 | 3.6 | 8.0 | 0.6 | 112.3 |
-| nmeasure_2 | 0.3 | 89.7 | 3.1 | 6.0 | 0.6 | 107.4 |
-| nmeasure_3 | 0.3 | 89.5 | 4.1 | 6.0 | 0.6 | 108.3 |
-| nmeasure_4 | 0.3 | 89.4 | 4.2 | 6.0 | 0.8 | 108.6 |
-| nmeasure_5 | 0.4 | 88.9 | 4.1 | 6.0 | 0.9 | 108.6 |
-| nmeasure_6 | 0.4 | 88.5 | 4.1 | 6.0 | 0.6 | 107.5 |
-| nmeasure_7 | 0.4 | 89.1 | 4.1 | 6.0 | 0.6 | 108.2 |
-| nmeasure_8 | 0.3 | 88.9 | 3.9 | 6.0 | 0.6 | 107.3 |
-| nmeasure_9 | 0.3 | 89.3 | 3.9 | 6.0 | 0.6 | 108.1 |
-| nmeasure_10 | 0.3 | 89.5 | 3.8 | 8.0 | 0.6 | 109.7 |
-| **mean** | 0.3 | 89.5 | 3.9 | 6.4 | 0.6 | **108.6** |
+| collection | create (s) | Qdrant upsert (s) | ES bulk (s) | client-side generation (s) | Qdrant settle to green (s) | ES refresh+flush (s) | store-side (s) | total wall (s) |
+|---|---|---|---|---|---|---|---|---|
+| nmeasure_1 | 0.4 | 92.0 | 3.6 | 7.6 | 8.0 | 0.6 | 104.7 | 112.3 |
+| nmeasure_2 | 0.3 | 89.7 | 3.1 | 7.8 | 6.0 | 0.6 | 99.6 | 107.4 |
+| nmeasure_3 | 0.3 | 89.5 | 4.1 | 7.8 | 6.0 | 0.6 | 100.5 | 108.3 |
+| nmeasure_4 | 0.3 | 89.4 | 4.2 | 7.8 | 6.0 | 0.8 | 100.8 | 108.6 |
+| nmeasure_5 | 0.4 | 88.9 | 4.1 | 8.3 | 6.0 | 0.9 | 100.3 | 108.6 |
+| nmeasure_6 | 0.4 | 88.5 | 4.1 | 7.9 | 6.0 | 0.6 | 99.6 | 107.5 |
+| nmeasure_7 | 0.4 | 89.1 | 4.1 | 8.0 | 6.0 | 0.6 | 100.2 | 108.2 |
+| nmeasure_8 | 0.3 | 88.9 | 3.9 | 7.5 | 6.0 | 0.6 | 99.8 | 107.3 |
+| nmeasure_9 | 0.3 | 89.3 | 3.9 | 8.0 | 6.0 | 0.6 | 100.1 | 108.1 |
+| nmeasure_10 | 0.3 | 89.5 | 3.8 | 7.5 | 8.0 | 0.6 | 102.2 | 109.7 |
+| **mean** | 0.3 | 89.5 | 3.9 | 7.8 | 6.4 | 0.6 | **100.8** | **108.6** |
 
-**~1.8 min per 35k-chunk collection**, 137 batches of 256 at ~0.65 s each, serial
-(`upsert_concurrency=1`, the product default), from a client on the same host. This is
-the lower bound for the *restore* cold start #358 budgeted at ~1 min: a real restore
-also has to read the archive and re-embed or replay vectors, and the ten builds here
-were run back to back without contention. The optimizer settles within 6–8 s of the
-last upsert; ES is negligible (4 s of bulk, sub-second refresh).
+"Client-side generation" is the time the script spent producing the random vectors and
+chunks between requests (`t_upsert − t_upsert_qdrant − t_upsert_es`); it is inside the
+wall total but is not store work. **Store-side: ~100 s per 35k-chunk collection**
+(99.6–104.7 s) — create + 137 serial batches of 256 at ~0.65 s each
+(`upsert_concurrency=1`, the product default) + a 6–8 s optimizer settle; ES is
+negligible (4 s of bulk, sub-second refresh). That ~100 s is the **floor** for the
+*restore* cold start #358 budgeted at ~1 min: a real restore also has to read the
+archive and re-embed or replay vectors, and these builds ran back to back on an
+otherwise idle tenant.
 
 ## Per-collection deltas
 
@@ -95,7 +98,7 @@ slope is shown beside it because ES's first index absorbs a one-off warm-up.
 | ES threads (`/proc`) | 32.4 | **0.9** | +316 on the first index only (write/bulk pool threads sized to 384 cores, created lazily); flat thereafter |
 | ES JVM threads | 31.6 | **0.0** | same |
 | ES RSS | 47 MiB | 19 MiB | |
-| ES heap used | flat (GC noise; 1,024 MiB max) | | |
+| ES heap used | flat (GC noise; 1,024 MiB max) | | ten 30 MiB indices say nothing about heap at hundreds of shards on a 1 GiB heap — **not measured** |
 | ES shards | **2.0** | 2.0 | 1 primary + 1 replica (unassigned on a single node but counted against `cluster.max_shards_per_node`) |
 | ES store | 30 MiB | 30 MiB | |
 
@@ -109,63 +112,104 @@ delta.
 |---|---|---|---|---|
 | Qdrant memory mappings | `vm.max_map_count` = 262,144 (per process) | 157,286 | 305.9 | **514** |
 | Qdrant threads | user-slice cgroup `pids.max` = 1,384,119 (binds before `ulimit -u` 6,189,434 and `threads-max` 12,378,869; shared by every instance in the user slice) | 830,471 | 0.8 | ~1,038,000 — not a constraint |
-| RAM (Qdrant + ES RSS) | **assumed** 200 GB tenant share = 195,313 MiB (nothing in `tenant.env`/`provision.env` states it; Qdrant's `Max locked memory` ≈ 189 GiB is consistent with it) | — (formula uses the full share) | 704 + 47 = 751 MiB | **254** (Qdrant alone: 271; with a 60 % budget on RAM too: 152) |
+| RAM (Qdrant + ES RSS) | **assumed** 200 GB tenant share = 190,735 MiB (nothing in `tenant.env`/`provision.env` states it — see "Limits" below) | — (#359's formula uses the full share; at 60 %: 114,441 MiB) | 704 + 47 = 751 MiB | **254** at the full share (Qdrant alone: 271); **152** with the 60 % budget |
 | ES shards (extra, ADR-0003 named it) | `cluster.max_shards_per_node` = 1,000 × 1 data node | 600 | 2 | **300** (298 net of the 4 shards in use) |
 | ES memory mappings | `vm.max_map_count` = 262,144 | 157,286 | 146.2 | 1,075 |
 
-**`n = min(514, ~10⁶, 254) = 254 — RAM binds**, under the 200 GB assumption. It is
-not a comfortable margin over the next two (ES shards 300, mappings 514), and it is
-the one ceiling that depends on an assumed number, so the two things to revisit are
+**`n = min(514, ~10⁶, 254) = 254 — RAM binds**, under the 200 GB assumption.
+
+**The 60 % budget was applied to mappings and threads but not to RAM, and RAM is the
+ceiling that binds** — that single choice is the difference between n = 254 and
+n = 152. #359 prescribed the formulas that way (RAM as "the tenant's share divided by
+the delta"), so 254 is the number the issue asked for; 152 is what a uniform 60 %
+headroom policy gives. Both are recorded because the recommendation below rests on the
+gap between them. Two smaller notes on the RSS delta: ES RSS is not linear — two-thirds
+of its 47 MiB is the first index's JVM warm-up, and the 1→10 slope of 19 MiB gives
+n = 264 at the full share — so 254 is the conservative reading; and Qdrant's `VmHWM`
+tracked `VmRSS` throughout (peak 7,196 MiB at step 7 against 7,012 MiB steady, i.e. the
+optimizer-merge transient was ≤ 184 MiB in this run), which is what headroom at the top
+of the range would have to absorb.
+
+It is not a comfortable margin over the next two (ES shards 300, mappings 514), and it
+is the one ceiling that depends on an assumed number, so the two things to revisit are
 (a) the actual RAM share for the tenant and (b) whether the product should put vectors
 `on_disk` for dormant-able collections — that would move RAM off the top of the list
 and make ES shards (300) the bound.
 
-Two caveats that matter more than the arithmetic:
+Three caveats that matter more than the arithmetic:
 
 1. **RAM is a chunk budget, not a collection budget.** 547 of the 704 MiB per collection
    is the raw vectors, so a 100k-chunk collection costs ~3× a 35k one. n = 254 is
    valid for a tenant whose collections *average* ≤ 35k chunks at 4096-d; the
-   underlying budget is ~200 GB ÷ 20 KiB per chunk ≈ 9.5 M chunks resident across all
-   active collections. Mappings, by contrast, scale with segment count (bounded by the
-   optimizer's default), and threads with neither — those two really are
-   per-collection.
+   underlying budget is 190,735 MiB ÷ 20.6 KiB per chunk ≈ 9.5 M chunks resident across
+   all active collections. Mappings also scale with data — #288 measured 162 VMAs for an
+   empty collection and ~20,000 for multi-million-point ones — so n_maps = 514 is a
+   35k-chunk figure just like n_RAM. Only threads are independent of both.
 2. **Nothing here measured query-time cost** — a cross-collection fan-out or Qdrant's
    consensus/restart time with 250 collections (ADR-0003 lists "restart time" as the
    second failure as the count grows). Set the cap, then measure restart with the
    collections in place before relying on the top of the range.
+3. **The vectors and documents are synthetic.** #359 asked for real embed outputs; this
+   run used random unit-norm float32 vectors and ~300-byte random documents because
+   the cost being measured is process-level. Raw-vector RSS (547 of the 704 MiB) and the
+   mapping count are content-invariant — the headline ceilings move by less than ~2 %
+   with real data. The HNSW graph may be slightly *over*-estimated (random data keeps
+   near the maximum number of links per node; real embeddings prune more). The ES store
+   and Qdrant payload disk are *under*-estimated by several-fold for real 1–2 KB chunks
+   (30 MiB per index here) — but ES is not the binder, so `n` is unaffected.
 
 ### Recommended `MAX_COLLECTIONS` for the dev tenant
 
-**250** (n rounded down), meaning *active* collections once #359 part 2 lands. The
-current explicit value, 100, is well inside every ceiling and can stay until eviction
-exists; there is no need to raise it before then. Keep the ADR-0003 alert at 100
-active as the early warning — at that point Qdrant will hold ~70 GB of vectors and
-~40k mappings.
+- **Keep 100 now.** It is well inside every ceiling and nothing needs it raised before
+  eviction (#359 part 2) exists. At 100 active 35k-chunk collections Qdrant will hold
+  ~69 GiB RSS (~53 GiB / 57 GB of it raw vectors) and ~40k mappings.
+- **~150 is defensible without further measurement**: it is the uniform-60 % number
+  (152) rounded, and it clears the ES-shard (300) and mapping (514) ceilings by 2× and
+  3×.
+- **250 (n = 254 rounded down) only once** (a) the tenant's RAM share is actually
+  stated — in `provision.env` or ADR-0005 — rather than assumed, and (b) the RSS split
+  has been measured so the share is compared against the right number: RSS here mixes
+  anonymous pages (the in-RAM vectors and graph, which only RAM can hold) with
+  file-backed pages (mmapped segments, which the kernel can drop under pressure).
+
+The measurement for (b) is one line per sample — add it to the script's `proc_sample`
+next time, together with PSS from `smaps_rollup`:
+
+```bash
+grep -E 'RssAnon|RssFile|RssShmem|VmHWM' /proc/<qdrant-pid>/status
+grep -E '^Pss:' /proc/<qdrant-pid>/smaps_rollup
+```
+
+`VmHWM` was collected this time (see above); the anon/file split was not.
+
+`MAX_COLLECTIONS` means *active* collections once part 2 lands.
 
 ## Comparison with ADR-0003's empty-collection figures
 
 ADR-0003 (measured 2026-08-04, 17 empty collections): *"an empty collection already
 costs 8 segments, ~104 files and ~496 KB, and 17 collections drive 1,561 threads and
-61,219 mmaps"* — i.e. ≈ 92 threads and ≈ 3,600 mappings per collection if one divides
-the process totals by 17.
+61,219 mmaps"*. #288 has since corrected both attributions: the thread pools are sized
+by `nproc` (384), not by collection count, and the mmap total was 70 % two
+multi-million-point collections — the measured cost of an **empty** collection is
+**162 VMAs** (8 segments, 178 files / 728 KB on the current path), and a collection
+holding millions of points costs **~20,000**. This run supplies the middle point of
+that curve.
 
-| | ADR-0003 (empty, totals ÷ 17) | This run (35k chunks, marginal) |
-|---|---|---|
-| threads per collection | ~92 | **0.8** |
-| mappings per collection | ~3,600 | **306** |
-| segments per collection | 8 | 7–8 |
-| threads with N collections | 1,561 at N = 17 | 1,548 at N = 2, 1,556 at N = 12 |
+| | ADR-0003 as written (totals ÷ 17) | #288 (empty, attributed) | This run (35k chunks, marginal) | #288 (multi-million points) |
+|---|---|---|---|---|
+| threads per collection | ~92 | ~0–1 | **0.8** | ~0–1 |
+| mappings per collection | ~3,600 | **162** | **306** | ~20,000 |
+| segments per collection | 8 | 8 | 7–8 | — |
+| threads with N collections | 1,561 at N = 17 | — | 1,548 at N = 2, 1,556 at N = 12 | — |
 
-The loaded numbers are *lower*, not higher, because ADR-0003's per-collection figures
-are process totals divided by the count: Qdrant on this 384-core host starts ~1,550
-threads and ~9,500 mappings with two collections, and that baseline — not the
-collections — is what its 17-collection totals were made of. The marginal cost of a
-collection is ~1 thread and ~300 mappings, empty or loaded (the files an empty
-collection creates are mostly mmapped too, hence ~104 files ≈ the same order as the
-306 mappings here). What *does* grow with load is RAM and disk, which the ADR did not
-measure and which turn out to be the binding ceiling. The ADR's "budget ~100–150 per
-instance" therefore stands as a conservative default; the measured bound for this
-tenant at this chunk size is 254.
+So the marginal thread cost is nil, as #288 said, and mappings scale with data: 162
+empty → 306 at 35k chunks → ~20k at millions. The mapping ceiling is therefore a
+per-chunk-size figure (514 collections *at 35k chunks*), not a constant, and what
+binds first on this tenant is RAM, which neither the ADR nor #288 measured. ADR-0003's
+"budget ~100–150 per instance" stands as an operational default — #288's suggested
+amendment (VMA ceiling instead of thread exhaustion, 162 VMAs per empty collection) can
+now add the loaded marginal figures from here: +306 VMAs, +704 MiB RSS, +1,107 MiB disk
+per 35k-chunk collection at 4096-d.
 
 ## What the numbers say
 
@@ -173,9 +217,11 @@ tenant at this chunk size is 254.
   failure order (RAM → restart time → thread exhaustion ~1000 → crash ~2000) came from
   reports on small hosts; here the process already runs 1,550 threads at rest and adds
   <1 per collection.
-- **Mappings are comfortably second.** 514 collections before 60 % of
-  `vm.max_map_count`; the sysctl is per-process, so the tenant's Qdrant and ES do not
-  compete for it.
+- **Mappings are comfortably second — at this chunk size.** 514 collections before
+  60 % of `vm.max_map_count`; the sysctl is per-process, so the tenant's Qdrant and ES
+  do not compete for it. But #288's ~20,000 VMAs for a multi-million-point collection
+  means a handful of large collections would consume the same address space as
+  hundreds of 35k ones; the mapping budget, like RAM, is really a data budget.
 - **ES is cheap per collection** (30 MiB store, 19 MiB RSS, no threads) but
   `max_shards_per_node` counts the unassigned replica, so each collection costs 2 of
   the 1,000. `number_of_replicas: 0` on single-node tenants would double that ceiling
@@ -251,14 +297,19 @@ Observed on the dev host:
 | `ulimit -u` / `Max processes` (Qdrant, ES) | 6,189,434 | per user (rlimit) |
 | `pids.max`, session scope cgroup | `max` | — |
 | **`pids.max`, user-slice cgroup** | **1,384,119** | **every task of the user — all 11 apptainer instances share it** |
-| `Max locked memory` (Qdrant) | 202,854,146,048 B ≈ 189 GiB | per process |
+| `Max locked memory` (Qdrant) | 202,854,146,048 B = MemTotal ÷ 8 — the session-default `RLIMIT_MEMLOCK` every process inherits (`ulimit -l` in a plain host shell gives the same 198,099,752 KiB); it caps `mlock`'d pages, never RSS, and says nothing about a tenant share | per process |
 | Host RAM | 1,511 GiB, no swap | host |
 
 The thread ceiling that binds is therefore the **user-slice `pids.max` (1,384,119)** —
 tighter than the rlimit and than `threads-max`, and shared by every service in the user
-slice, not just this tenant's Qdrant. The `Max locked memory` figure is consistent with
-a ~200 GB per-tenant provisioning intent, but nothing in `provision.env` states a RAM
-share, so **200 GB for the dev tenant is an assumption** (as instructed by #359).
+slice, not just this tenant's Qdrant.
+
+**The 200 GB RAM share is an unenforced policy assumption**, taken as #359 instructed.
+Nothing in `tenant.env`, `provision.env` or the provisioning script states a share, no
+cgroup memory limit applies to the instance (`memory.limit_in_bytes` is unset at both
+the session and user-slice level), and the true ceiling is the host's 1,511 GiB shared
+with the other tenants' Qdrant/ES instances, the sidecars and vLLM. Whoever states the
+share — `provision.env` or ADR-0005 — sets `n`.
 
 ### Build + sample script
 
@@ -269,14 +320,46 @@ built, sampled and deleted) confirmed the loop end to end. Per collection it: cr
 both stores through the adapters; upserts 35,000 synthetic chunks in batches of 256
 (random unit-norm float32 4096-d vectors, ~300-byte random content, a small metadata
 map — `tenant_id`, `collection`, `title`, `year`); polls `GET /collections/<name>` until
-`status == green` for three consecutive polls 2 s apart (it deliberately does **not**
-wait for `indexed_vectors_count == points_count`: with the optimizer's default segment
-count 35k points ≈ 4.4k per segment, which is *below* `indexing_threshold=10000`, so a
-segment may never get an HNSW graph — see "What the numbers say"); refreshes + flushes
-the ES index and waits for `merges.current == 0`; sleeps 10 s; samples.
+`status == green` for three consecutive polls 2 s apart; refreshes + flushes the ES
+index and waits for `merges.current == 0`; sleeps 10 s; samples.
+
+The settle condition is *green*, not `indexed_vectors_count == points_count`. The
+script's docstring justifies that by "segments may stay under `indexing_threshold`",
+which is wrong in its reasoning though right in its effect: Qdrant's
+`indexing_threshold` is denominated in **kilobytes of vectors per segment** (default
+10,000 KB, "1 kB = 1 vector of size 256" — qdrant-client 1.18 `OptimizersConfig`),
+so at 4096-d a segment crosses it at ~625 vectors and every segment here (~4.4k
+points ≈ 70 MB) was indexed, as the observed `indexed_vectors_count` 34,560–35,000
+shows. The small unindexed tail is the freshly appended segment that has not yet been
+optimized; waiting for it to reach exactly `points_count` could stall on a segment that
+stays under the threshold, so green plus a stability window is the right condition.
 
 Cleanup: `nmeasure.py cleanup ...` deletes every `nmeasure_*` collection and index,
 re-lists both stores and the Qdrant storage directory, and takes one more sample.
+
+### Leave nothing behind (do this every time)
+
+1. Delete every `nmeasure_*` collection and index (`nmeasure.py cleanup`).
+2. Re-list both stores and the host storage directory and require all three empty —
+   the run above ended with:
+
+   ```
+   remaining nmeasure_* qdrant collections: []
+   remaining nmeasure_* es indices: []
+   remaining nmeasure_* qdrant storage dirs on host: []
+   ```
+
+   and an independent `GET /collections` / `_cat/indices` / `_cat/shards` check
+   confirmed the tenant back at its two pre-existing collections and indices, zero
+   `nmeasure_*` shards.
+3. Take one more host sample (the `after-cleanup` row) — it is the reclaim evidence and
+   the baseline-drift check.
+4. The smoke run's prefix (`nmeasure_smoke_`) was verified the same way, with the same
+   three empty listings, before the real run started.
+
+The raw samples from this run are committed beside this file as
+[`active-collection-bound.steps.jsonl`](active-collection-bound.steps.jsonl) (one JSON
+object per line: thirteen host samples and ten build-timing records; no pids or URLs).
 
 <details><summary><code>nmeasure.py</code> (verbatim)</summary>
 
