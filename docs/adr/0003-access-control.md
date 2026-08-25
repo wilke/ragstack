@@ -136,7 +136,12 @@ the one Qdrant itself supports.
 
 **The escape hatch stays open.** The physical store name is derived and never exposed — the
 API surfaces only `id`. A collection can later be backed by a shared store without an API
-change, which is what makes deferring #230 safe rather than merely cheap.
+change, which is what makes deferring #230 safe rather than merely cheap. *(Clarified with
+[#276](https://github.com/wilke/ragstack/issues/276): this guards the id↔store
+**decoupling**, not the spelling. A corpus created without an explicit id — and, since
+#276, the settings-derived corpus — takes its content-addressed name as its `id`; that id
+is a registry key that happens to equal the store's current name, stays stable through
+`QDRANT_COLLECTION_EXPLICIT`, and can still be re-backed by another store later.)*
 
 ## Alternatives considered
 

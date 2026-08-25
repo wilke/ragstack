@@ -36,6 +36,7 @@ from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -79,7 +80,7 @@ def _register(*entries: CollectionEntry) -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), *entries], default_id="default"
+        [_entry(SHARED_ID, True), *entries], default_id=SHARED_ID
     )
 
 
@@ -127,7 +128,8 @@ async def test_chunks_endpoint_is_gated_too(client):
 
 
 async def test_legacy_backfilled_collection_stays_anonymous_readable(client):
-    # The conftest seeds `default` exactly as the startup backfill would: owned by
+    # The conftest seeds the shared collection (SHARED_ID) exactly as the startup
+    # backfill would: owned by
     # legacy:admin + public read. A stranger who owns nothing still reads it.
     r = await client.post("/v1/retrieve", json={"query": "x"}, headers=_h("stranger"))
     assert r.status_code == 200, r.text
@@ -317,9 +319,10 @@ async def test_list_filters_to_readable_collections(client):
     )
     body = (await client.get("/v1/collections", headers=_h("stranger"))).json()
     ids = {c["id"] for c in body["collections"]}
-    # stranger sees: default (public), its own `owned`, and `open` (public) —
+    # stranger sees: the shared collection (public), its own `owned`, and `open`
+    # (public) —
     # never `private_to_owner`.
-    assert ids == {"default", "owned", "open"}
+    assert ids == {SHARED_ID, "owned", "open"}
 
 
 async def test_admin_list_sees_everything(client):
@@ -327,7 +330,7 @@ async def test_admin_list_sees_everything(client):
     await _own("a", "owner")
     await _own("b", "stranger")
     body = (await client.get("/v1/collections", headers=_h("admin"))).json()
-    assert {"default", "a", "b"} <= {c["id"] for c in body["collections"]}
+    assert {SHARED_ID, "a", "b"} <= {c["id"] for c in body["collections"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -375,7 +378,7 @@ async def test_backfill_is_idempotent_across_two_startups():
     from ragstack.api.access import backfill_collection_owners
 
     store = InMemoryAclStore()
-    reg = CollectionRegistry([_entry("default", True), _entry("legacy")], default_id="default")
+    reg = CollectionRegistry([_entry(SHARED_ID, True), _entry("legacy")], default_id=SHARED_ID)
     set_acl_store(store)
 
     n1 = await backfill_collection_owners(reg, store, "legacy:admin")
@@ -406,8 +409,8 @@ async def test_backfill_repairs_a_lost_owner_row_privately():
     store = InMemoryAclStore()
     set_acl_store(store)
     reg = CollectionRegistry(
-        [_entry("default", True), _entry("was-private", owner="alice")],
-        default_id="default",
+        [_entry(SHARED_ID, True), _entry("was-private", owner="alice")],
+        default_id=SHARED_ID,
     )
     await backfill_collection_owners(reg, store, "legacy:admin")
     assert await store.owner_of("was-private") == "alice"  # repaired, not claimed
@@ -427,7 +430,7 @@ async def test_backfill_retries_a_missed_public_grant_but_never_resurrects():
 
     store = InMemoryAclStore()
     set_acl_store(store)
-    reg = CollectionRegistry([_entry("default", True), _entry("legacy")], default_id="default")
+    reg = CollectionRegistry([_entry(SHARED_ID, True), _entry("legacy")], default_id=SHARED_ID)
     # Simulate the crash: owner row landed, public row didn't.
     await store.grant("legacy", GU, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
     n = await backfill_collection_owners(reg, store, "legacy:admin")
@@ -469,7 +472,7 @@ async def test_backfill_never_refuses_but_logs_a_warning_over_quota(monkeypatch,
     # not at what any particular registry lists.)
     await store.grant("already-1", GU, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
     await store.grant("already-2", GU, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
-    reg = CollectionRegistry([_entry("default", True), _entry("legacy")], default_id="default")
+    reg = CollectionRegistry([_entry(SHARED_ID, True), _entry("legacy")], default_id=SHARED_ID)
     with caplog.at_level(logging.WARNING):
         n = await backfill_collection_owners(reg, store, "legacy:admin")
     assert n == 2  # 'default' and 'legacy' both repaired/assigned; never refused
@@ -494,7 +497,7 @@ async def test_backfill_never_publishes_a_real_owner_whose_spec_owner_was_lost()
     store = InMemoryAclStore()
     set_acl_store(store)
     # Blank spec.owner (legacy-looking) but bob genuinely owns it.
-    reg = CollectionRegistry([_entry("default", True), _entry("bobs")], default_id="default")
+    reg = CollectionRegistry([_entry(SHARED_ID, True), _entry("bobs")], default_id=SHARED_ID)
     await store.grant("bobs", GU, "bvbrc:bob", PERM_OWNER, granted_by="bvbrc:bob")
     await backfill_collection_owners(reg, store, "legacy:admin")
     assert await store.owner_of("bobs") == "bvbrc:bob"  # untouched

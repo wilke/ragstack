@@ -13,6 +13,10 @@
     "chunk_method": { "type": ["string", "null"] },
     "chunk_size": { "type": ["integer", "null"] },
     "default": { "type": "boolean" },
+    "is_default": {
+      "description": "True on exactly one listed entry: the collection a request resolves to when it omits `collection` (the `default` pointer, DEFAULT_COLLECTION_ID). `default` is a pointer, never a registry entry of its own (ADR-0002 decision 5); this flag says which real entry it names. This is the canonical long-term field — the older `default` (same value) collides in name with `CollectionsResponse.default`, which is the id string; clients should read `is_default`. Optional so older servers stay conformant.",
+      "type": "boolean"
+    },
     "state": {
       "description": "Lifecycle state (#353/#358): `active` (physical stores exist) | `archiving` (an archive version is being written; reads/writes proceed) | `dormant` (only the Workspace archive exists; the next authenticated read/ingest triggers a restore and answers 503 + Retry-After) | `restoring` (a restore is in flight; 503 + Retry-After) | `lost` (the archive is missing or failed verification; 409 until an explicit restore succeeds). Null/absent for a collection the registry does not track (the settings-derived default).",
       "type": ["string", "null"],

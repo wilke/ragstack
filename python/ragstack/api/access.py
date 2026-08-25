@@ -49,6 +49,7 @@ from ragstack.acl_store import (
 from ragstack.api.lifecycle import enforce_lifecycle
 from ragstack.api.security import Principal
 from ragstack.authz import Action, AuthzUnavailable, resolve_access, resolve_read_many
+from ragstack.collection_store import RESERVED_COLLECTION_ID
 from ragstack.config import settings
 from ragstack.identity import get_identity_provider
 
@@ -332,6 +333,36 @@ async def _warn_if_over_owner_quota(store: AclStore, subject: str, collection_id
         )
 
 
+async def _legacy_surface_unpublished(store: AclStore) -> bool | None:
+    """Was the settings-derived surface UN-published under the pointer name
+    ``default`` — the id a pre-#276 registry kept its ACL rows under?
+
+    Decided on the LATEST public-read row under the old id: revoked → the
+    owner's last word was to un-publish (``True``); active → it was public
+    (``False``); no such row → no opinion (``False``). Soft revocation keeps
+    every row, so "any revoked row exists" would misread un-publish → re-publish
+    as un-published. ``None`` means the lookback itself FAILED: the caller must
+    not publish on that boot — defaulting to publish on the error path would be
+    the #275 leak by way of a store hiccup on exactly the first post-upgrade
+    boot."""
+    try:
+        rows = await store.shares_for(RESERVED_COLLECTION_ID, include_revoked=True)
+    except Exception:  # noqa: BLE001 — never abort startup; but never publish blind
+        log.warning("backfill: legacy %r history unavailable", RESERVED_COLLECTION_ID,
+                    exc_info=True)
+        return None
+    public = [
+        r for r in rows
+        if r.grantee_type == GRANTEE_GROUP
+        and r.grantee_id == PUBLIC_GROUP
+        and r.permission == PERM_READ
+    ]
+    if not public:
+        return False
+    latest = max(public, key=lambda r: (r.granted_at, r.id))
+    return bool(latest.revoked_at)
+
+
 async def backfill_collection_owners(
     registry: Any, store: AclStore, owner_subject: str
 ) -> int:
@@ -384,6 +415,34 @@ async def backfill_collection_owners(
             and r.permission == PERM_READ
             for r in history
         )
+        if not ever_public_read and getattr(entry, "is_shared_surface", False):
+            # #276 moved the settings-derived surface from the synthetic id
+            # `default` to its real (physical) id, so its ACL history starts
+            # over under the new id — and "never granted public read" would
+            # then re-publish a corpus whose owner deliberately UN-published it
+            # under the old id (#276's hazard 4, mirrored). Only the publish
+            # decision looks back, at the LATEST public-read row under the old
+            # id; the owner row is written under the new id as usual, and
+            # moving the old rows themselves is the merge script's job. A
+            # failed lookback skips the publish for this boot (retried next
+            # boot) rather than publishing blind.
+            unpublished = await _legacy_surface_unpublished(store)
+            if unpublished is None:
+                log.warning(
+                    "acl backfill: NOT publishing %r this boot — the legacy %r "
+                    "history could not be read, so whether it was un-published "
+                    "is unknown; retried on the next boot (#276)",
+                    entry.id, RESERVED_COLLECTION_ID,
+                )
+                ever_public_read = True  # treat as decided: no grant this boot
+            elif unpublished:
+                log.info(
+                    "acl backfill: NOT publishing %r — its public-read grant was "
+                    "revoked under the legacy %r id; un-publishing survives the "
+                    "rename (#276)",
+                    entry.id, RESERVED_COLLECTION_ID,
+                )
+                ever_public_read = True
         touched = False
         creator = getattr(entry, "owner", "") or ""
         if creator:

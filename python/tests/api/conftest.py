@@ -30,6 +30,11 @@ from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.rewriting.rewriters import PassthroughRewriter
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 
+#: The id of the conftest's settings-derived (legacy shared-surface) entry —
+#: its physical collection name. `default` is the POINTER at it, never an entry
+#: (#276); tests that used to grant/query the collection `default` name this.
+SHARED_ID = "ragstack"
+
 
 class _FakeEmbedder:
     """Deterministic constant-dimension embedder — no network."""
@@ -64,7 +69,8 @@ def _isolate_qdrant(monkeypatch):
 @pytest.fixture(autouse=True)
 def _acl_store():
     """A fresh in-memory ACL store per test, seeded exactly like the startup
-    backfill would for the conftest's pre-existing ``default`` collection: owned
+    backfill would for the conftest's pre-existing shared collection (id
+    ``SHARED_ID`` — its physical name; ``default`` is the pointer, #276): owned
     by ``legacy:admin`` and ``read``-granted to the ``public`` group (so it stays
     world-readable, the pre-ownership behaviour). ASGITransport skips the lifespan,
     so nothing else installs or backfills the store.
@@ -88,7 +94,7 @@ def _acl_store():
     def _seed(grantee_type: str, grantee_id: str, permission: str) -> None:
         rec = ShareRecord(
             id=uuid.uuid4().hex,
-            collection_id="default",
+            collection_id=SHARED_ID,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
             permission=permission,
@@ -178,18 +184,19 @@ async def client():
     # The lifespan builds app.state.collections (the multi-collection registry the
     # query/retrieve/collections routers resolve through); ASGITransport skips the
     # lifespan, so build a one-entry registry over the in-memory doubles here — the
-    # single-collection default path.
+    # single-collection path. The entry carries its PHYSICAL name as its id, as
+    # the real registry build does (#276); `default` is the pointer at it.
     app.state.collections = CollectionRegistry(
         [
             CollectionEntry(
-                id="default", label="default", collection="ragstack",
+                id=SHARED_ID, label=SHARED_ID, collection=SHARED_ID,
                 model="test-model", dim=4, chunk_method="fixed", chunk_size=None,
                 chunk_overlap=None, chunk_params={},
                 is_shared_surface=True, retriever=_StateRetriever(),
                 vector_store=vector_store, text_index=text_index,
             )
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
     # Model registry (Phase 1) + a real http client for apply_assignment to hand
     # to any swapped OpenAILLM/SidecarReranker (construction only — no network).

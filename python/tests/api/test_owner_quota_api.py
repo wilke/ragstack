@@ -35,6 +35,7 @@ from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
 from ragstack.config import settings
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -136,7 +137,7 @@ def _register(*cids: str) -> None:
     here) already registered, so entries accumulate rather than replace."""
     app.state.collections = CollectionRegistry(
         [*app.state.collections.entries(), *(_entry(c) for c in cids)],
-        default_id="default",
+        default_id=SHARED_ID,
     )
 
 

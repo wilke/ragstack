@@ -509,6 +509,42 @@ def json_file_lock(path: str) -> Iterator[None]:
                 os.close(fd)
 
 
+#: The `default` POINTER's name (#276, ADR-0002 decision 5). Never a registry
+#: row: a request that omits ``collection`` resolves THROUGH this name to a real
+#: id, and a row stored under it is a relic of the registry that synthesised
+#: one. Every durable backend drops such a row on read and removes it on its
+#: next write; ``ragstack.api.collections`` re-exports the constant.
+RESERVED_COLLECTION_ID = "default"
+
+_legacy_row_warned: set[str] = set()
+
+
+def _warn_legacy_default_row(where: str) -> None:
+    """Log ONCE per store (per process) that a reserved-id row was ignored —
+    the migration's startup line. Listing runs on every request, so this must
+    not repeat."""
+    if where in _legacy_row_warned:
+        return
+    _legacy_row_warned.add(where)
+    log.warning(
+        "collection store (%s): ignoring a legacy %r registry row — that id names "
+        "the POINTER a request resolves through when it omits 'collection', not a "
+        "collection (#276); it will be removed on the store's next write",
+        where, RESERVED_COLLECTION_ID,
+    )
+
+
+def drop_reserved_rows(rows: list[Any], where: str) -> list[Any]:
+    """The raw registry rows without a legacy ``default`` row (logged once)."""
+    kept = [
+        d for d in rows
+        if not (isinstance(d, dict) and d.get("id") == RESERVED_COLLECTION_ID)
+    ]
+    if len(kept) != len(rows):
+        _warn_legacy_default_row(where)
+    return kept
+
+
 def specs_from_rows(rows: list[Any]) -> list[CollectionSpec]:
     """Validate a list of registry entry dicts, rejecting duplicate ids."""
     specs = [CollectionSpec.model_validate(d) for d in rows]
@@ -528,7 +564,7 @@ def parse_specs(raw: str) -> list[CollectionSpec]:
         raise RuntimeError(f"collections config is not valid JSON: {e}") from e
     if not isinstance(data, list):
         raise RuntimeError("collections config must be a JSON list of specs")
-    return specs_from_rows(data)
+    return specs_from_rows(drop_reserved_rows(data, "collections_json"))
 
 
 def spec_row(spec: CollectionSpec) -> dict[str, Any]:
@@ -625,7 +661,7 @@ def append_spec_to_file(path: str, spec: CollectionSpec) -> bool:
     if not path:
         return False
     with json_file_lock(path):
-        existing = read_json_file(path)
+        existing = drop_reserved_rows(read_json_file(path), path)
         row = spec_row(spec)
         for i, d in enumerate(existing):
             if isinstance(d, dict) and d.get("id") == spec.id:
@@ -649,7 +685,7 @@ def create_spec_in_file(path: str, spec: CollectionSpec, *, limit: int | None) -
     if not path:
         return CreateOutcome.UNSUPPORTED  # inline/unset registry: nothing to reserve in
     with json_file_lock(path):
-        existing = read_json_file(path)
+        existing = drop_reserved_rows(read_json_file(path), path)
         if any(isinstance(d, dict) and d.get("id") == spec.id for d in existing):
             return CreateOutcome.DUPLICATE
         if limit is not None and _count_physical_rows(existing, read_lifecycle_file(path)) >= limit:
@@ -667,8 +703,8 @@ def _count_physical_rows(rows: list[Any], lifecycle: dict[str, dict[str, Any]]) 
     it authorizes."""
     n = 0
     for d in rows:
-        if not isinstance(d, dict):
-            continue
+        if not isinstance(d, dict) or d.get("id") == RESERVED_COLLECTION_ID:
+            continue  # a legacy pointer-name row holds no slot (#276)
         entry = lifecycle.get(str(d.get("id", "")))
         if entry is None or entry.get("state", ACTIVE) in PHYSICAL:
             n += 1
@@ -680,13 +716,19 @@ def remove_spec_from_file(path: str, cid: str) -> bool:
     if not path or not os.path.exists(path):
         return False
     with json_file_lock(path):
-        existing = read_json_file(path)
+        raw = read_json_file(path)
+        existing = drop_reserved_rows(raw, path)
         kept = [d for d in existing if not (isinstance(d, dict) and d.get("id") == cid)]
-        if len(kept) == len(existing):
+        if len(kept) == len(raw):
             return False
+        # Written even when only the legacy `default` row went: "removed on the
+        # next write" (#276) — and the caller's answer is still whether ITS id
+        # was present.
         write_json_file(path, kept)
         _drop_lifecycle_entry(path, cid)
-    return True
+        if len(existing) != len(raw):
+            _drop_lifecycle_entry(path, RESERVED_COLLECTION_ID)
+    return len(kept) != len(existing)
 
 
 class JsonFileCollectionStore:
@@ -719,7 +761,7 @@ class JsonFileCollectionStore:
         if path:
             with json_file_lock(path):
                 rows = read_json_file(path)
-            return specs_from_rows(rows)
+            return specs_from_rows(drop_reserved_rows(rows, path))
         return parse_specs(self._inline)
 
     async def list_specs(self) -> list[CollectionSpec]:
@@ -736,7 +778,7 @@ class JsonFileCollectionStore:
             with json_file_lock(path):
                 rows = read_json_file(path)
                 lifecycle = read_lifecycle_file(path)
-            specs = specs_from_rows(rows)
+            specs = specs_from_rows(drop_reserved_rows(rows, path))
         else:
             specs = parse_specs(self._inline)
             lifecycle = self._inline_lifecycle
@@ -883,7 +925,7 @@ class InMemoryCollectionStore:
 
     def __init__(self, specs: list[CollectionSpec] | None = None) -> None:
         self._records: dict[str, CollectionRecord] = {
-            s.id: make_record(s) for s in (specs or [])
+            s.id: make_record(s) for s in (specs or []) if s.id != RESERVED_COLLECTION_ID
         }
         self._versions: dict[str, int] = {}
         self._lock = asyncio.Lock()
@@ -1128,6 +1170,19 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
     )
 
 
+_DROP_LEGACY_DEFAULT_SQLITE = "DELETE FROM collections WHERE id = ?"
+_DROP_LEGACY_DEFAULT_POSTGRES = "DELETE FROM collections WHERE id = $1"
+
+
+def _live_rows(rows: list[Any], where: str) -> list[Any]:
+    """DB rows minus a legacy ``default`` row (``id`` is column 0), logged once
+    — the SQL twin of :func:`drop_reserved_rows`."""
+    kept = [r for r in rows if r[0] != RESERVED_COLLECTION_ID]
+    if len(kept) != len(rows):
+        _warn_legacy_default_row(where)
+    return kept
+
+
 def _row_to_record(row: Any) -> CollectionRecord:
     (
         rid, label, collection, text_index, api, model, dim, endpoints, sidecar,
@@ -1185,15 +1240,18 @@ class SqliteCollectionStore:
     def _list_sync(self) -> list[CollectionRecord]:
         with closing(self._connect()) as conn, conn:
             rows = conn.execute(_SELECT + _ORDER).fetchall()
-        return [_row_to_record(r) for r in rows]
+        return [_row_to_record(r) for r in _live_rows(rows, self._path)]
 
     def _get_sync(self, cid: str) -> CollectionRecord | None:
+        if cid == RESERVED_COLLECTION_ID:
+            return None  # the pointer name is never a row (#276)
         with closing(self._connect()) as conn, conn:
             row = conn.execute(_SELECT + " WHERE id = ?", (cid,)).fetchone()
         return _row_to_record(row) if row is not None else None
 
     def _put_sync(self, spec: CollectionSpec) -> bool:
         with closing(self._connect()) as conn, conn:
+            conn.execute(_DROP_LEGACY_DEFAULT_SQLITE, (RESERVED_COLLECTION_ID,))
             prior = conn.execute(
                 "SELECT created_at FROM collections WHERE id = ?", (spec.id,)
             ).fetchone()
@@ -1291,6 +1349,9 @@ class SqliteCollectionStore:
             conn.isolation_level = None  # manual BEGIN/COMMIT
             conn.execute("BEGIN IMMEDIATE")
             try:
+                # "Removed on the next write" (#276) — inside the same
+                # transaction as the count, so a lingering row holds no slot.
+                conn.execute(_DROP_LEGACY_DEFAULT_SQLITE, (RESERVED_COLLECTION_ID,))
                 if conn.execute(
                     "SELECT 1 FROM collections WHERE id = ?", (spec.id,)
                 ).fetchone() is not None:
@@ -1313,6 +1374,9 @@ class SqliteCollectionStore:
 
     def _delete_sync(self, cid: str) -> bool:
         with closing(self._connect()) as conn, conn:
+            conn.execute(_DROP_LEGACY_DEFAULT_SQLITE, (RESERVED_COLLECTION_ID,))
+            if cid == RESERVED_COLLECTION_ID:
+                return False  # never a registered id; nothing of the caller's went
             cur = conn.execute("DELETE FROM collections WHERE id = ?", (cid,))
             return cur.rowcount > 0
 
@@ -1411,9 +1475,11 @@ class PostgresCollectionStore:
         pool = await self._pool_()
         async with pool.acquire() as conn:
             rows = await conn.fetch(_SELECT + _ORDER)
-        return [_row_to_record(tuple(r)) for r in rows]
+        return [_row_to_record(r) for r in _live_rows([tuple(r) for r in rows], "postgres")]
 
     async def get(self, cid: str) -> CollectionRecord | None:
+        if cid == RESERVED_COLLECTION_ID:
+            return None  # the pointer name is never a row (#276)
         pool = await self._pool_()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(_SELECT + " WHERE id = $1", cid)
@@ -1425,6 +1491,7 @@ class PostgresCollectionStore:
         assignments = ", ".join(f"{c} = excluded.{c}" for c in _PUT_COLUMNS)
         pool = await self._pool_()
         async with pool.acquire() as conn:
+            await conn.execute(_DROP_LEGACY_DEFAULT_POSTGRES, RESERVED_COLLECTION_ID)
             prior = await conn.fetchval(
                 "SELECT created_at FROM collections WHERE id = $1", spec.id
             )
@@ -1452,6 +1519,9 @@ class PostgresCollectionStore:
             await conn.execute(
                 "SELECT pg_advisory_xact_lock($1)", _COLLECTIONS_CREATE_LOCK_KEY
             )
+            # "Removed on the next write" (#276), under the same lock as the
+            # count so a lingering row holds no slot.
+            await conn.execute(_DROP_LEGACY_DEFAULT_POSTGRES, RESERVED_COLLECTION_ID)
             if await conn.fetchval("SELECT 1 FROM collections WHERE id = $1", spec.id):
                 return CreateOutcome.DUPLICATE
             if limit is not None:
@@ -1467,6 +1537,9 @@ class PostgresCollectionStore:
     async def delete(self, cid: str) -> bool:
         pool = await self._pool_()
         async with pool.acquire() as conn:
+            await conn.execute(_DROP_LEGACY_DEFAULT_POSTGRES, RESERVED_COLLECTION_ID)
+            if cid == RESERVED_COLLECTION_ID:
+                return False  # never a registered id; nothing of the caller's went
             status = await conn.execute("DELETE FROM collections WHERE id = $1", cid)
         return not status.endswith(" 0")
 

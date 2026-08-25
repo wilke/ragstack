@@ -151,7 +151,9 @@ async def stats_stores(
     single-collection graph figure.
     """
     tenants = readable_tenants(principal.tenant)
-    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    allowed = registry.permitted(
+        allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    )
     entries = [e for e in registry.entries() if allowed is None or e.id in allowed]
     entries = await filter_readable(principal, entries)
     # Keyed by physical store, per leg — an entry's ES index need not be named
@@ -244,7 +246,9 @@ async def stats_tenants(
     to an estimate — for three fields that need no store at all.
     """
     tenants = readable_tenants(principal.tenant)
-    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    allowed = registry.permitted(
+        allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    )
     entries = [e for e in registry.entries() if allowed is None or e.id in allowed]
     # Same owner-aware visibility filter as GET /v1/collections: the allowlist
     # gates WHICH collections a tenant may see, ownership gates whether it may READ

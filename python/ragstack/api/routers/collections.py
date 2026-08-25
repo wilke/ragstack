@@ -41,6 +41,7 @@ from ragstack.api.collections import (
     CollectionEntry,
     CollectionRegistry,
     CollectionSpec,
+    is_reserved_collection_id,
 )
 from ragstack.api.deps import (
     bound_json_body,
@@ -111,6 +112,10 @@ class CollectionInfo(BaseModel):
     chunk_method: str | None = None  # from the registry label (may be operator-asserted)
     chunk_size: int | None = None
     default: bool
+    # The same answer under its explicit name (#276): is this the entry the
+    # `default` POINTER currently resolves to? True on exactly one listed entry.
+    # `default` itself is never listed — it is not a collection.
+    is_default: bool = False
     # Lifecycle (#353/#358), from the registry row; null for a collection the
     # registry does not track (the settings-derived default entry).
     state: str | None = None  # active | archiving | dormant | restoring | lost
@@ -175,6 +180,7 @@ def _collection_info(
         chunk_method=entry.chunk_method or None,
         chunk_size=entry.chunk_size,
         default=is_default,
+        is_default=is_default,
         state=record.state if record is not None else None,
         archive_pending=record.archive_pending if record is not None else None,
         versions=list(record.versions) if record is not None else None,
@@ -196,6 +202,21 @@ async def _records_by_id(store: CollectionStore) -> dict[str, CollectionRecord]:
         return {}
 
 
+def _refuse_pointer_name(collection_id: str, registry: CollectionRegistry) -> None:
+    """409 when a management route is addressed to the literal pointer name
+    ``default``. Resolving it through would act on a collection the caller
+    never named — the same rule ``DELETE /v1/collections/default`` applies —
+    and the ACL rows of share / revoke / transfer / restore are keyed by the
+    REAL id, so the caller must say which one (#276)."""
+    if is_reserved_collection_id(collection_id):
+        raise HTTPException(
+            409,
+            f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection; "
+            f"it currently resolves to {registry.default_id!r} — address that id "
+            "explicitly if that is what you mean",
+        )
+
+
 @router.get("/collections", response_model=CollectionsResponse)
 async def list_collections(
     principal: Principal = Depends(resolve_principal),
@@ -209,7 +230,9 @@ async def list_collections(
     The reported ``default`` is the caller's effective default (the registry
     default when permitted, else the caller's first accessible collection) so it
     is always one of the listed ids."""
-    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    allowed = registry.permitted(
+        allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    )
     entries = [
         e for e in registry.entries() if allowed is None or e.id in allowed
     ]
@@ -528,18 +551,18 @@ async def create_collection(
         settings.qdrant_collection, emb_model, emb_dim, chunk=desc, name=body.id or None
     )
     cid = body.id or physical
-    if cid == RESERVED_COLLECTION_ID:
-        # `default` names the POINTER, not a collection. It used to be
-        # unmintable only by accident — the synthetic entry always occupied the
-        # id, so `registry.has(cid)` below happened to 409. Now that the entry is
-        # not synthesised when a spec already serves the store (#275), that
-        # accident is gone on exactly the deployments where a user-minted
-        # `default` would be most confusing.
+    if is_reserved_collection_id(cid):
+        # `default` names the POINTER, not a collection (#276). It used to be
+        # unmintable only by accident — a synthetic entry occupied the id, so
+        # `registry.has(cid)` below happened to 409. No entry is synthesised any
+        # more, so the refusal is explicit: 409, the same answer a taken id
+        # gets, because the name is permanently taken — by the pointer.
         raise HTTPException(
-            400,
+            409,
             f"{RESERVED_COLLECTION_ID!r} is reserved: it names the collection a "
-            "request resolves to when it omits 'collection', not a collection "
-            "you can create. Pick another id.",
+            "request resolves to when it omits 'collection' "
+            "(DEFAULT_COLLECTION_ID), not a collection you can create. Pick "
+            "another id.",
         )
     if registry.has(cid):
         await _raise_id_taken(principal, cid)
@@ -805,6 +828,7 @@ async def restore_collection(
     other identity to use (``security.gowe_caller``, shared with ingest).
     The ``owner`` action is never lifecycle-gated, so managing a dormant
     collection does not require restoring it first."""
+    _refuse_pointer_name(collection_id, registry)
     from ragstack.api.lifecycle import get_lifecycle_gate
     from ragstack.collection_store import (
         ACTIVE,
@@ -1005,6 +1029,16 @@ async def delete_collection(
     same id starts with a clean slate instead of inheriting the deleted one's
     owner or ``public`` grant.
     """
+    if is_reserved_collection_id(collection_id):
+        # The pointer's own name. There is nothing to delete under it, and
+        # resolving it through to the target would delete a collection the
+        # caller never named.
+        raise HTTPException(
+            409,
+            f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection; "
+            f"it currently resolves to {registry.default_id!r} — delete that id "
+            "explicitly if that is what you mean",
+        )
     # TWO guards, because this used to be one by accident. The pointer target and
     # the legacy shared surface were always the same entry, so `== default_id`
     # incidentally protected the flagship corpus. Repoint the pointer and that
@@ -1379,6 +1413,7 @@ async def create_share(
     ``grant_option`` is not exposed (defaults false). A duplicate active grant is
     a 409. A 404 hides an unknown/unreadable collection; 403 a readable non-owned
     one; 503 a store outage."""
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1498,6 +1533,7 @@ async def revoke_share(
     a mismatch (or unknown id) is a 404, never a cross-collection revoke. The
     active owner row is not revocable through this endpoint (that would strip
     ownership; use delete/transfer)."""
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1665,6 +1701,7 @@ async def transfer_collection_owner(
     never-seen subject's owned count is always 0 and would otherwise make the
     quota fully evadable; 503 for a store outage (fail closed).
     """
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:

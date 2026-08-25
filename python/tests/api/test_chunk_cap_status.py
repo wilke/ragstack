@@ -31,6 +31,7 @@ from ragstack.api.security import ROLE_ADMIN, ROLE_USER
 from ragstack.collection_store import CollectionSpec, InMemoryCollectionStore
 from ragstack.ingestion.chunk_cap import CHUNK_CAP_EXCEEDED, format_refusal, is_cap_refusal
 from ragstack.ingestion.receipts import COMPLETED, FAILED, ShardReceipt
+from tests.api.conftest import SHARED_ID
 from tests.api.test_ingest_gowe_path import (  # noqa: F401 — the `gowe` fixture
     AUTH,
     TENANT,
@@ -82,7 +83,7 @@ async def _install(cid: str, owner: str, **spec_over) -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [*app.state.collections.entries(), _entry(cid, owner)], default_id="default",
+        [*app.state.collections.entries(), _entry(cid, owner)], default_id=SHARED_ID,
     )
     spec = CollectionSpec(id=cid, owner=owner, collection=f"{cid}_phys", embedding_model="test-model",
                           embedding_model_dim=4, chunk_method="fixed", chunk_size=40,

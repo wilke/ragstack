@@ -46,6 +46,7 @@ from ragstack.restore import DEFAULT_CWL, CollectionRestorer, classify_failure
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.workspace import WorkspaceNotFound, collection_folder, ws_uri
+from tests.api.conftest import SHARED_ID
 from tests.archive_support import chunk_version, tamper_manifest, tombstone_version
 
 pytestmark = pytest.mark.asyncio
@@ -569,7 +570,7 @@ async def test_listing_reports_the_lifecycle_fields(client, identity, world):
     assert by_id[CID]["archive_pending"] is False
     assert by_id[CID]["versions"] == [1, 2]
     # The settings-derived default is not registry-tracked: fields are null.
-    assert by_id["default"]["state"] is None and by_id["default"]["versions"] is None
+    assert by_id[SHARED_ID]["state"] is None and by_id[SHARED_ID]["versions"] is None
 
 
 # --------------------------------------------------------------------------- #

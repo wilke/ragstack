@@ -99,6 +99,11 @@ Two consequences worth stating, because both were nearly missed:
 
 - **`default` is a pointer, not an entry.** It names which collection a request resolves to
   when it omits `collection` (`DEFAULT_COLLECTION_ID`), and is a reserved, uncreatable id.
+  *(Landed 2026-08-24, [#276](https://github.com/wilke/ragstack/issues/276): no registry row
+  is synthesised for it; the settings-derived collection is registered under its physical
+  name, the same rule a corpus created without an explicit id follows; `collection=default`
+  in a request means the same as omitting it; a legacy `default` row in a durable registry is
+  ignored on read and removed on the next write.)*
 - **"Is the default" and "is the legacy shared surface" are different questions.** The
   latter carries authz exemptions — no share-based scope widening, and read-not-write on
   the omitted-collection ingest and document-delete paths — because there per-chunk
