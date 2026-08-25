@@ -28,7 +28,10 @@
 # Exit 3 = the archive was REFUSED (ArchiveCorrupt:/SpecMismatch: on stderr —
 # permanent, the engine must not retry). Exit 4 = the version's own triples
 # exceed `max_triples` (graph_cap_exceeded: … on stderr — permanent; the API
-# classifies the job by this code). Exit 1 = a write failure (retryable).
+# classifies the job by this code). Exit 1 = RETRYABLE: the LLM endpoint failed
+# for every attempted chunk or for more than `max_failed_fraction` of them
+# (llm_unavailable: … on stderr; nothing written — an outage must never be
+# archived as an empty graph), or a write failure.
 #
 # CONTAINERIZED (#135): runs in the ragstack-worker image; both docker keys are
 # declared (GoWe reads dockerPull, cwltool --singularity reads dockerImageId —
@@ -71,7 +74,9 @@ inputs:
   tenant:
     type: string
     default: "public"
-    doc: "Fallback tenant for a triple whose chunk carries no tenant_id."
+    doc: "The tenant the caller expects — informational: the tool prints a
+      note when the manifest disagrees. Triples keep their chunk's tenant_id
+      (the manifest's tenant is the fallback), never this value."
     inputBinding: {prefix: --tenant, position: 4}
   spec_hash:
     type: ["null", string]
@@ -103,13 +108,21 @@ inputs:
     default: 0
     doc: "Keep at most N triples per chunk (0 = unbounded)."
     inputBinding: {prefix: --max-triples-per-chunk, position: 10}
+  max_failed_fraction:
+    type: float
+    default: 0.5
+    doc: "Refuse the run (exit 1, RETRYABLE, nothing written, no delta) when
+      more than this share of the attempted chunks failed their LLM call — and
+      always when every one did: an outage is not an empty graph, and a
+      delivered empty leg would be permanent (idempotent per version)."
+    inputBinding: {prefix: --max-failed-fraction, position: 11}
   job_id:
     type: ["null", string]
     doc: "The RAGStack job id (recorded by the API; not used by the tool)."
 
 arguments:
-  - {position: 11, prefix: --out, valueFrom: "."}
-  - {position: 12, prefix: --summary, valueFrom: extract-graph-summary.json}
+  - {position: 12, prefix: --out, valueFrom: "."}
+  - {position: 13, prefix: --summary, valueFrom: extract-graph-summary.json}
 
 outputs:
   archive:

@@ -73,6 +73,16 @@ def _extract_json_object(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+class ExtractionFailed(RuntimeError):
+    """The LLM call for ONE chunk failed (transport error, non-2xx, timeout,
+    an empty/shape-less reply from the server). Distinct from a legitimate
+    empty result (``{"triples": []}``): the model was never able to answer.
+    :meth:`LLMKGExtractor.extract` swallows it per chunk (the ingest contract —
+    the graph leg degrades, ingest succeeds); :meth:`LLMKGExtractor.extract_chunk`
+    raises it so a driver that writes an ARCHIVE can tell an outage from a
+    version with no facts (#350) — a delivered empty leg would be permanent."""
+
+
 class LLMKGExtractor:
     """Extract triples from chunks via an OpenAI-compatible LLM.
 
@@ -107,7 +117,11 @@ class LLMKGExtractor:
         # pipeline, so it can't differ within a single extract() call.
         seen: set[tuple[str, str, str, str]] = set()
         for chunk in selected:
-            for triple in await self.extract_chunk(chunk):
+            try:
+                found = await self.extract_chunk(chunk)
+            except ExtractionFailed:
+                continue  # logged where it happened; the ingest must not fail
+            for triple in found:
                 key = (triple.subject, triple.predicate, triple.object, triple.doc_id)
                 if key in seen:
                     continue
@@ -117,26 +131,30 @@ class LLMKGExtractor:
 
     async def extract_chunk(self, chunk: Chunk) -> list[Triple]:
         """Extract triples from ONE chunk — the unit a concurrent driver
-        (``graph.extract_version``, #350) fans out over. Any LLM/parse error →
-        ``[]``, never raised. Not deduplicated across chunks: the caller does
-        that in whatever order it collects results."""
+        (``graph.extract_version``, #350) fans out over. A failed LLM CALL
+        raises :class:`ExtractionFailed` (the driver counts it); a reply the
+        model did give but that parses to nothing is ``[]`` — a malformed
+        answer is treated as "no facts", as the ingest path always has. Not
+        deduplicated across chunks: the caller does that in whatever order it
+        collects results."""
         return await self._extract_chunk(chunk)
 
     async def _extract_chunk(self, chunk: Chunk) -> list[Triple]:
-        """Extract triples from one chunk. Any LLM/parse error → ``[]``."""
+        """Extract triples from one chunk. An LLM call failure raises
+        :class:`ExtractionFailed` (logged); a parse failure → ``[]``."""
         if not chunk.content.strip():
             return []
         try:
             raw = await self._llm.complete_text(  # type: ignore[attr-defined]
                 _PROMPT.format(text=chunk.content)
             )
-        except Exception:
+        except Exception as e:
             log.warning(
                 "kg extraction: LLM call failed for chunk %r; skipping",
                 chunk.id,
                 exc_info=True,
             )
-            return []
+            raise ExtractionFailed(f"chunk {chunk.id!r}: {type(e).__name__}") from e
         return self._parse(raw, chunk.doc_id, chunk.id, chunk.content)
 
     def _parse(

@@ -39,8 +39,13 @@ from ragstack.graph.budget import (
     graph_cap_refusal_of,
     is_graph_cap_refusal,
 )
-from ragstack.graph.extract_version import ExtractRefused, extract_version, load_chunks
-from ragstack.graph.extractor import LLMKGExtractor
+from ragstack.graph.extract_version import (
+    ExtractionUnavailable,
+    ExtractRefused,
+    extract_version,
+    load_chunks,
+)
+from ragstack.graph.extractor import ExtractionFailed, LLMKGExtractor
 from ragstack.ingestion import archive
 from ragstack.ingestion.archive import (
     ROLE_TRIPLES,
@@ -86,15 +91,18 @@ class SentenceLLM:
     the evidence — so the evidence-containment check in the extractor passes
     and the stamping path is exercised end to end."""
 
-    def __init__(self, *, empty: bool = False) -> None:
+    def __init__(self, *, empty: bool = False, fail_on: tuple[str, ...] = ()) -> None:
         self.empty = empty
+        self.fail_on = fail_on  # chunks whose text contains one of these: the call fails
         self.calls = 0
 
     async def complete_text(self, prompt: str, **_kw: object) -> str:
         self.calls += 1
+        text = prompt.rsplit("Text:\n", 1)[-1].strip()
+        if any(marker in text for marker in self.fail_on):
+            raise ConnectionError("endpoint down")
         if self.empty:
             return json.dumps({"triples": []})
-        text = prompt.rsplit("Text:\n", 1)[-1].strip()
         first = _SENTENCE_END.split(text, 1)[0]
         subject, obj = first.rstrip(".").split(" is ", 1)
         return json.dumps({"triples": [
@@ -275,6 +283,95 @@ async def test_delta_directory_holds_exactly_the_two_files_and_merges_like_post_
         "chunks.jsonl.gz", "manifest.json", "receipt.json", TRIPLES_NAME, "vectors.f32"]
     assert [c["id"] for c, _ in read_version(vdir)] == ["c3-0", "c3-1", "c3-2"]
     assert len(list(read_triples(vdir, manifest=merged))) == 3
+
+
+# --------------------------------------------------------------------------- #
+# an LLM outage is not an empty graph (exit 1, retryable, nothing written)
+# --------------------------------------------------------------------------- #
+
+TEN = [f"Drug{i} is a compound. Chunk {i} text." for i in range(10)]
+
+
+@pytest.mark.asyncio
+async def test_extract_chunk_raises_on_a_failed_call_but_extract_still_swallows():
+    from ragstack.models import Chunk
+
+    llm = SentenceLLM(fail_on=("Chunk 1 ",))
+    ex = LLMKGExtractor(llm)
+    ok = Chunk(id="a", doc_id="d", content=TEN[0])
+    bad = Chunk(id="b", doc_id="d", content=TEN[1])
+    assert len(await ex.extract_chunk(ok)) == 1
+    with pytest.raises(ExtractionFailed, match="'b'"):
+        await ex.extract_chunk(bad)
+    # The ingest contract is unchanged: extract() degrades per chunk.
+    assert [t.chunk_id for t in await ex.extract([ok, bad])] == ["a"]
+    # A reply the model DID give but that parses to nothing is empty, not failed.
+    class Garbage:
+        async def complete_text(self, prompt, **_kw):
+            return "no json here"
+    assert await LLMKGExtractor(Garbage()).extract_chunk(ok) == []
+
+
+@pytest.mark.asyncio
+async def test_every_chunk_failing_is_refused_and_nothing_is_written(tmp_path: Path):
+    vdir = _version(tmp_path / "a", 1, TEN)
+    out = tmp_path / "out" / "1"
+    with pytest.raises(ExtractionUnavailable, match="10 of 10 attempted chunk"):
+        await extract_version(vdir, LLMKGExtractor(SentenceLLM(fail_on=("Chunk",))),
+                              out_dir=out)
+    assert not out.exists() and verify_version(vdir)["graph"] is False
+    # Empty-text chunks are never "attempted": a version of only blanks is
+    # not an outage (it is an empty leg).
+    blanks = _version(tmp_path / "b", 1, ["", "   "])
+    summary = await extract_version(blanks, LLMKGExtractor(SentenceLLM(fail_on=("x",))))
+    assert summary.n_chunks_empty == 2 and summary.n_chunks_failed == 0
+    assert summary.manifest["graph"] is True and summary.n_triples == 0
+
+
+@pytest.mark.asyncio
+async def test_partial_failures_below_the_threshold_are_delivered_and_recorded(tmp_path: Path):
+    vdir = _version(tmp_path, 1, TEN)
+    llm = SentenceLLM(fail_on=("Chunk 1 ", "Chunk 4 ", "Chunk 7 "))
+    summary = await extract_version(vdir, LLMKGExtractor(llm))
+    assert summary.n_chunks_failed == 3 and summary.n_triples == 7
+    m = verify_version(vdir)
+    assert m["graph"] is True and m["counts"]["triples"] == 7
+    assert m["graph_extraction"]["n_chunks_failed"] == 3
+    assert m["graph_extraction"]["n_chunks_without_triples"] == 0
+    assert summary.as_dict()["n_chunks_failed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_failures_above_the_threshold_are_refused(tmp_path: Path):
+    vdir = _version(tmp_path, 1, TEN)
+    six = tuple(f"Chunk {i} " for i in range(6))
+    with pytest.raises(ExtractionUnavailable, match="6 of 10"):
+        await extract_version(vdir, LLMKGExtractor(SentenceLLM(fail_on=six)))
+    assert verify_version(vdir)["graph"] is False
+    # The threshold is a setting: at 0.6, six of ten is delivered.
+    summary = await extract_version(vdir, LLMKGExtractor(SentenceLLM(fail_on=six)),
+                                    max_failed_fraction=0.6)
+    assert summary.n_chunks_failed == 6 and summary.manifest["graph"] is True
+
+
+def test_cli_exits_1_on_an_outage_with_no_delta(tmp_path: Path, monkeypatch, capsys):
+    vdir = _version(tmp_path / "archive", 1, TEN)
+    monkeypatch.setattr(extract_cli, "_build_llm",
+                        lambda args: (SentenceLLM(fail_on=("Chunk",)), "dead"))
+    rc = extract_cli.main(["--version-dir", str(vdir), "--out", str(tmp_path / "w"),
+                           "--summary", str(tmp_path / "s.json")])
+    err = capsys.readouterr().err
+    assert rc == 1 and "llm_unavailable: 10 of 10" in err
+    assert not (tmp_path / "w").exists() and not (tmp_path / "s.json").exists()
+    monkeypatch.setattr(extract_cli, "_build_llm",
+                        lambda args: (SentenceLLM(fail_on=("Chunk 2 ",)), "flaky"))
+    rc = extract_cli.main(["--version-dir", str(vdir), "--out", str(tmp_path / "w"),
+                           "--summary", str(tmp_path / "s.json")])
+    assert rc == 0
+    assert json.loads((tmp_path / "s.json").read_text())["n_chunks_failed"] == 1
+    assert archive.read_manifest(tmp_path / "w" / "1")["graph_extraction"]["n_chunks_failed"] == 1
+    with pytest.raises(SystemExit):
+        extract_cli.main(["--version-dir", str(vdir), "--max-failed-fraction", "1.5"])
 
 
 # --------------------------------------------------------------------------- #

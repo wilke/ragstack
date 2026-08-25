@@ -547,7 +547,15 @@ class Settings(BaseSettings):
     #     load tool with one live count; a load that would cross it is refused
     #     whole (job error `graph_cap_exceeded`, nothing loaded). 0 disables.
     #   * graph_extraction_jobs_per_owner — in-flight extraction jobs one owner
-    #     may have at once (429 + Retry-After beyond it; admins exempt).
+    #     may have at once (429 + Retry-After beyond it; admins exempt). A
+    #     COLLECTION never has more than one in flight regardless of caller
+    #     (two deltas post-staged onto the same versions/<n>/ would interleave).
+    #   * graph_extraction_max_failed_fraction — the share of a version's
+    #     attempted chunks whose LLM call may fail before the extract tool
+    #     refuses the run as an outage (exit 1, retryable, nothing archived);
+    #     every attempted chunk failing always refuses. A delivered empty leg
+    #     would be permanent (idempotent per version), so an outage must not
+    #     become one.
     # The workflow's LLM endpoint/model default to llm_endpoint/llm_model as
     # the WORKER sees them and the graph store URI to neo4j_uri; override any
     # of those (and add worker-side settings) through graph_extract_inputs_json,
@@ -556,6 +564,7 @@ class Settings(BaseSettings):
     # NEO4J_PASSWORD from its own environment.
     graph_max_triples_per_collection: int = 200_000
     graph_extraction_jobs_per_owner: int = 1
+    graph_extraction_max_failed_fraction: float = 0.5
     graph_extract_concurrency: int = 8
     graph_extract_cwl: str = ""              # ABSOLUTE path; empty = the repo copy
     graph_extract_workflow_name: str = "ragstack-graph-extract"

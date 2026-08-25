@@ -79,6 +79,11 @@ inputs:
   max_triples_per_chunk:
     type: int
     default: 0
+  max_failed_fraction:
+    type: float
+    default: 0.5
+    doc: "Share of attempted chunks whose LLM call may fail before the extract
+      step refuses the run as an outage (exit 1, retryable, nothing archived)."
   graph_backend:
     type: string
     default: "neo4j"
@@ -104,6 +109,7 @@ steps:
       concurrency: concurrency
       max_triples: max_triples
       max_triples_per_chunk: max_triples_per_chunk
+      max_failed_fraction: max_failed_fraction
       job_id: job_id
     out: [archive, summary]
     run:
@@ -151,11 +157,15 @@ steps:
           type: int
           default: 0
           inputBinding: {prefix: --max-triples-per-chunk, position: 10}
+        max_failed_fraction:
+          type: float
+          default: 0.5
+          inputBinding: {prefix: --max-failed-fraction, position: 11}
         job_id:
           type: ["null", string]
       arguments:
-        - {position: 11, prefix: --out, valueFrom: "."}
-        - {position: 12, prefix: --summary, valueFrom: extract-graph-summary.json}
+        - {position: 12, prefix: --out, valueFrom: "."}
+        - {position: 13, prefix: --summary, valueFrom: extract-graph-summary.json}
       outputs:
         archive:
           type: Directory

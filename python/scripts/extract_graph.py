@@ -23,8 +23,11 @@ Exit codes (the API classifies a FAILED submission by them):
   4  the version's own triples exceed ``--max-triples`` (the graph budget):
      ``graph_cap_exceeded: live=? incoming=I cap=C would_fit=W`` on stderr,
      nothing written
-  1  anything else (an LLM endpoint that is down fails every chunk silently —
-     the extractor degrades — so this is a write failure, not an LLM one)
+  1  RETRYABLE: the LLM endpoint failed for every attempted chunk, or for more
+     than ``--max-failed-fraction`` of them (``llm_unavailable: …`` on stderr)
+     — an outage is not an empty graph, and a delivered empty leg would be
+     permanent (the endpoint is idempotent per version) — or a write failure.
+     Nothing is written, no delta is emitted.
 
 The LLM API key, when the endpoint needs one, comes from ``$OPENAI_API_KEY``
 in the task's environment — never from the command line, which the engine
@@ -50,6 +53,8 @@ from pathlib import Path
 from ragstack.graph.budget import GRAPH_CAP_REFUSED_EXIT_CODE, GraphCapExceeded
 from ragstack.graph.extract_version import (
     DEFAULT_CONCURRENCY,
+    DEFAULT_MAX_FAILED_FRACTION,
+    ExtractionUnavailable,
     ExtractRefused,
     extract_version,
 )
@@ -103,8 +108,9 @@ def parse_args(argv=None):
     p.add_argument("--collection-id", default="",
                    help="registry collection id the manifest must name (refused otherwise)")
     p.add_argument("--tenant", default="",
-                   help="tenant stamped on triples whose chunk carries no tenant_id "
-                        "(default: the manifest's tenant)")
+                   help="the tenant the caller expects; only a note is printed when it "
+                        "disagrees with the manifest. Triples keep their chunk's tenant_id "
+                        "(the manifest's tenant is the fallback), never this value")
     p.add_argument("--spec-hash", default="",
                    help="the registry row's build-spec hash the manifest must carry")
     p.add_argument("--llm-endpoint", default=os.getenv("LLM_ENDPOINT", ""),
@@ -121,6 +127,11 @@ def parse_args(argv=None):
                         "live graph")
     p.add_argument("--max-triples-per-chunk", type=int, default=0,
                    help="keep at most N triples per chunk (0 = unbounded)")
+    p.add_argument("--max-failed-fraction", type=float, default=DEFAULT_MAX_FAILED_FRACTION,
+                   help="refuse the run (exit 1, retryable, nothing written) when more than "
+                        "this share of the attempted chunks failed their LLM call — and "
+                        "always when every one did (default "
+                        f"{DEFAULT_MAX_FAILED_FRACTION})")
     p.add_argument("--out", default=".",
                    help="parent directory for the <N>/ delta (default: cwd)")
     p.add_argument("--summary", default="extract-graph-summary.json",
@@ -167,12 +178,16 @@ async def amain(args) -> int:
         summary = await extract_version(
             vdir, extractor, out_dir=out_dir, concurrency=args.concurrency,
             collection_id=args.collection_id, spec_hash=args.spec_hash,
-            max_triples=args.max_triples, extractor_name=name,
-            log=lambda msg: print(msg, flush=True),
+            max_triples=args.max_triples, max_failed_fraction=args.max_failed_fraction,
+            extractor_name=name, log=lambda msg: print(msg, flush=True),
         )
     except ExtractRefused as e:
         print(str(e), file=sys.stderr, flush=True)
         return REFUSED_EXIT_CODE
+    except ExtractionUnavailable as e:
+        print(str(e), file=sys.stderr, flush=True)
+        print("refused: LLM unavailable; nothing written (retryable)", flush=True)
+        return 1
     except GraphCapExceeded as e:
         print(str(e), file=sys.stderr, flush=True)
         print("refused: nothing written", flush=True)
@@ -196,6 +211,8 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     if args.concurrency < 1:
         raise SystemExit("--concurrency must be >= 1")
+    if not 0.0 <= args.max_failed_fraction <= 1.0:
+        raise SystemExit("--max-failed-fraction must be between 0 and 1")
     return asyncio.run(amain(args))
 
 

@@ -48,7 +48,14 @@ from ragstack.identity import (
 from ragstack.ingestion.gowe_backend import OUTPUT_STAGING_FAILED
 from ragstack.ingestion.gowe_client import GoWeError
 from ragstack.jobstore import KIND_GRAPH, KIND_INGEST
-from ragstack.workspace import WorkspaceNotFound, collection_folder, ws_path, ws_uri
+from ragstack.workspace import (
+    WorkspaceAuthError,
+    WorkspaceNotFound,
+    WorkspaceStat,
+    collection_folder,
+    ws_path,
+    ws_uri,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,10 +63,13 @@ REPO = Path(__file__).resolve().parents[3]
 TOKENS = {
     "alice": "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=ALICESECRETSIG",
     "bob": "un=bob@patricbrc.org|tokenid=t-2|expiry=9999999999|sig=BOBSECRETSIG",
+    "root": "un=root@patricbrc.org|tokenid=t-3|expiry=9999999999|sig=ROOTSECRETSIG",
 }
-SUBJECTS = {"alice": "alice@patricbrc.org", "bob": "bob@patricbrc.org"}
+SUBJECTS = {"alice": "alice@patricbrc.org", "bob": "bob@patricbrc.org",
+            "root": "root@patricbrc.org"}
 ALICE = f"bvbrc:{SUBJECTS['alice']}"
 BOB = f"bvbrc:{SUBJECTS['bob']}"
+ROOT = f"bvbrc:{SUBJECTS['root']}"  # an ADMIN_SUBJECTS entry (admin by operator fiat)
 FOLDER = collection_folder(SUBJECTS["alice"], "lib1")
 VERSIONS = ws_uri(f"{FOLDER}/versions") + "/"
 
@@ -77,11 +87,18 @@ class _Provider:
         raise IdentityInvalid("no")
 
 
+LEG_BYTES = 1234
+
+
 def _manifest(version: int, *, tombstone: bool = False, graph: bool = False) -> dict[str, Any]:
     m: dict[str, Any] = {"format": "ragstack-archive/1", "collection_id": "lib1",
                          "tenant": ALICE, "spec_hash": "x", "version": version,
                          "has_tombstone": tombstone, "graph": graph,
-                         "files": {"manifest": "manifest.json"}, "sha256": {}, "counts": {}}
+                         "files": {"manifest": "manifest.json"}, "sha256": {}, "counts": {},
+                         "bytes": {}}
+    if graph:
+        m["files"]["triples"] = "triples.jsonl.gz"
+        m["bytes"]["triples.jsonl.gz"] = LEG_BYTES
     return m
 
 
@@ -90,15 +107,29 @@ class FakeWorkspace:
 
     def __init__(self) -> None:
         self.versions: dict[int, dict[str, Any]] = {}
+        #: version -> size of its triples.jsonl.gz in the Workspace (absent = no file)
+        self.legs: dict[int, int] = {}
         self.calls: list[tuple[str, str, str]] = []
         self.missing = False
+        self.forbidden = False
 
     async def list_versions(self, token: str, folder: str) -> list[tuple[int, str]]:
         self.calls.append((token, "ls", folder))
         if self.missing:
             raise WorkspaceNotFound(f"{folder}/versions does not exist")
+        if self.forbidden:
+            raise WorkspaceAuthError("Workspace.ls: permission denied")
         assert folder == FOLDER
         return [(n, ws_uri(f"{folder}/versions/{n}")) for n in sorted(self.versions)]
+
+    async def stat(self, token: str, path: str) -> WorkspaceStat:
+        self.calls.append((token, "stat", path))
+        prefix = f"{FOLDER}/versions/"
+        assert path.startswith(prefix) and path.endswith("/triples.jsonl.gz"), path
+        n = int(path[len(prefix):].split("/")[0])
+        if n not in self.legs:
+            return WorkspaceStat(path=path, exists=False)
+        return WorkspaceStat(path=path, exists=True, type="unspecified", size=self.legs[n])
 
     async def read_file(self, token: str, path: str) -> bytes:
         self.calls.append((token, "read", path))
@@ -181,6 +212,7 @@ async def world(client, monkeypatch, _acl_store):
     """A bearer world: ``lib1`` owned by alice (bob may read it), versions
     1 (chunks), 2 (chunks, the latest chunk version), 3 (a tombstone)."""
     monkeypatch.setattr(security.settings, "identity_provider", "bvbrc")
+    monkeypatch.setattr(security.settings, "admin_subjects", [ROOT])
     set_identity_provider(_Provider())
     workspace = FakeWorkspace()
     workspace.versions = {1: _manifest(1), 2: _manifest(2), 3: _manifest(3, tombstone=True)}
@@ -349,23 +381,57 @@ async def test_idempotent_per_version(client, world):
     assert r2.json()["job_id"] is None and r2.json()["submission_id"] is None
     assert r2.json()["version"] == 2 and "already" in r2.json()["message"]
     assert len(world.gowe.submissions) == 1
-    # The archive says the leg exists but the row does not know (extracted
+    # The archive REALLY holds the leg (manifest graph: true AND the triples
+    # file at its recorded size) but the row does not know (extracted
     # elsewhere, or a watcher that died): a no-op that repairs the row.
-    world.workspace.versions[1]["graph"] = True
+    world.workspace.versions[1] = _manifest(1, graph=True)
+    world.workspace.legs[1] = LEG_BYTES
     r3 = await _post(client, version=1)
     assert r3.status_code == 202 and r3.json()["job_id"] is None
     assert (await world.store.get("lib1")).graph_archived_versions == [2, 1]
     assert len(world.gowe.submissions) == 1
+    assert (TOKENS["alice"], "stat", f"{FOLDER}/versions/1/triples.jsonl.gz") in world.workspace.calls
 
 
-async def test_second_in_flight_extraction_per_owner_is_429_with_retry_after(client, world):
+async def test_half_applied_delivery_is_resubmitted_never_recorded(client, world):
+    """The engine uploads a Directory's listing in filename order —
+    manifest.json BEFORE triples.jsonl.gz — so an upload that fails between
+    the two leaves a manifest saying graph: true with no triples file (the
+    same end state as an engine crash mid-upload, which the delivery timeout
+    turns into a failed job). That must read as NOT extracted: the next POST
+    resubmits, and the row is never 'repaired' with an undelivered leg."""
+    world.workspace.versions[2] = _manifest(2, graph=True)  # manifest only, no file
+    r = await _post(client)
+    assert r.status_code == 202 and r.json()["job_id"], r.text
+    assert len(world.gowe.submissions) == 1
+    assert world.gowe.submissions[0]["inputs"]["version"] == "2"
+    assert (await world.store.get("lib1")).graph_archived_versions == []
+    stats = [c for c in world.workspace.calls if c[1] == "stat"]
+    assert stats == [(TOKENS["alice"], "stat", f"{FOLDER}/versions/2/triples.jsonl.gz")]
+    await world.runner.drain()
+    assert (await world.store.get("lib1")).graph_archived_versions == [2]
+    # A file of the WRONG size (a truncated upload) is not the leg either.
+    world.workspace.versions[1] = _manifest(1, graph=True)
+    world.workspace.legs[1] = LEG_BYTES - 1
+    r = await _post(client, version=1)
+    assert r.status_code == 202 and r.json()["job_id"]
+    assert len(world.gowe.submissions) == 2
+    await world.runner.drain()
+    assert (await world.store.get("lib1")).graph_archived_versions == [2, 1]
+
+
+async def test_second_in_flight_extraction_is_429_with_retry_after(client, world):
+    """Same owner, same collection: the per-collection guard answers first
+    (the per-owner guard — ``graph_extraction_jobs_per_owner`` — covers a
+    second collection of the same owner; its count is pinned by the job
+    store test)."""
     world.gowe.hold = True
     r1 = await _post(client)
     assert r1.status_code == 202
     r2 = await _post(client, version=1)
     assert r2.status_code == 429, r2.text
     assert r2.headers["Retry-After"] == "30"
-    assert "still in flight" in r2.json()["detail"]
+    assert "in flight" in r2.json()["detail"]
     assert len(world.gowe.submissions) == 1
     # Bob (a reader) is 403, not 429 — the guard runs after authorization.
     assert (await _post(client, "bob")).status_code == 403
@@ -375,6 +441,39 @@ async def test_second_in_flight_extraction_per_owner_is_429_with_retry_after(cli
     r3 = await _post(client, version=1)
     assert r3.status_code == 202 and r3.json()["job_id"]
     assert len(world.gowe.submissions) == 2
+
+
+async def test_one_extraction_per_collection_whoever_calls(client, world):
+    """The per-owner guard exempts admins; the per-COLLECTION guard exempts
+    nobody — two concurrent extractions of the same version would post-stage
+    two deltas onto one versions/<n>/ and interleave them."""
+    world.gowe.hold = True
+    r_owner = await _post(client, "alice")
+    r_admin = await _post(client, "root")
+    codes = sorted([r_owner.status_code, r_admin.status_code])
+    assert codes == [202, 429], (r_owner.text, r_admin.text)
+    refused = r_admin if r_admin.status_code == 429 else r_owner
+    assert refused.headers["Retry-After"] == "30"
+    assert "already in flight" in refused.json()["detail"]
+    assert len(world.gowe.submissions) == 1
+    # The admin's job counts too: the OWNER is refused while it runs.
+    world.gowe.release()
+    await world.runner.drain()
+    world.gowe.hold = True
+    world.gowe._released.clear()
+    r = await _post(client, "root", version=1)
+    assert r.status_code == 202 and r.json()["job_id"]
+    r = await _post(client, "alice", version=1)
+    assert r.status_code == 429
+    assert await app.state.job_store.active_for_collection("lib1", kind=KIND_GRAPH) == 1
+    world.gowe.release()
+
+
+async def test_workspace_refusing_the_token_is_403(client, world):
+    world.workspace.forbidden = True
+    r = await _post(client)
+    assert r.status_code == 403 and "cannot read the owner's archive" in r.json()["detail"]
+    assert world.gowe.submissions == [] and app.state.job_store._jobs == {}
 
 
 async def test_an_active_graph_job_does_not_block_uploads(client, world):

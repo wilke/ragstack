@@ -262,8 +262,28 @@ then does the registry row record the version in `graph_archived_versions`
 eviction's graph drop on (#380: eviction may only destroy what exists somewhere
 else). `upload_failed` fails the job `OUTPUT_STAGING_FAILED` with nothing
 recorded (the triples were loaded; the leg is not archived). **Idempotent per
-version**: a version whose leg exists (the row, or the archived manifest itself —
-which also repairs the row) answers 202 with `job_id: null`.
+version**: a version whose leg exists answers 202 with `job_id: null` — "exists"
+meaning the row says so, or the archived manifest says `graph: true` **and** the
+triples file is `stat`ed present at the manifest's recorded size (then the row is
+repaired too). The manifest alone is never trusted: the engine uploads a
+Directory's listing in filename order, `manifest.json` before `triples.jsonl.gz`,
+so an upload failing between the two — or an engine crash mid-upload, which
+leaves `output_state: uploading` forever and the job failed by the delivery
+timeout — leaves a manifest claiming a leg that was never delivered; that state
+reads as *not extracted*, the next `POST` resubmits, and the extract tool
+overwrites the stale entries. **One extraction per collection in flight**,
+whoever the caller (admins included): two deltas post-staged onto one
+`versions/<n>/` would interleave manifest and triples into an `ArchiveCorrupt`
+archive, so a second `POST` for a collection with a `graph` job running is 429.
+
+**An outage is not an empty graph.** `LLMKGExtractor.extract_chunk` raises
+`ExtractionFailed` when the LLM *call* failed (a reply the model did give but that
+parses to nothing is "no facts", as on the ingest path); the driver counts those
+as `n_chunks_failed` (in `graph_extraction`) and refuses the run — exit **1**,
+retryable, nothing written, no delta — when every attempted chunk failed or the
+failed share exceeds `graph_extraction_max_failed_fraction` (default 0.5, the
+workflow input `max_failed_fraction`). Delivering `graph: true` with zero triples
+after an outage would be permanent under idempotency-per-version.
 
 **Restore** replays the leg: `load_embeddings.py --replay` loads a version's
 triples (scoped to the collection, never capped — it re-admits what was archived)

@@ -485,17 +485,23 @@ message}` — the job (kind `graph`) is polled at `GET /v1/ingest/{job_id}`
 (unchanged shape) and completes only once the engine reports the leg
 **delivered**; only then does the registry record the version in
 `graph_archived_versions` (what eviction's graph drop will be gated on, #380).
-**Idempotent per version**: a version whose leg already exists answers 202 with
+**Idempotent per version**: a version whose leg already exists (the row, or the
+archived manifest with the triples file `stat`ed present at its recorded size — a
+manifest alone is a half-applied delivery and is resubmitted) answers 202 with
 `job_id: null` and submits nothing. Refusals: **401** no BV-BRC user (bearer)
 token — the submission is made as the user, so API-key/keyless callers cannot
 (checked before the id is looked up, so it leaks nothing); **403** readable but
-not owned; **404** unknown/unreadable; **409** no registry row (the settings-
-derived default) or not `active`/`archiving` (restore it first); **400** no
-owner subject on the row, no archive / no chunk version, `version` absent or a
-tombstone; **429 + `Retry-After`** a second extraction while one is in flight
-(`graph_extraction_jobs_per_owner`, default 1; admins exempt); **502** the
-engine/Workspace refused (the job is `failed` with the class label); **503** no
-workflow engine configured. A load refused at the triple budget fails the job
+not owned, or the caller's token cannot read the owner's archive; **404**
+unknown/unreadable; **409** no registry row (the settings-derived default) or not
+`active`/`archiving` (restore it first); **400** no owner subject on the row, no
+archive / no chunk version, `version` absent or a tombstone; **429 +
+`Retry-After`** an extraction of this *collection* is already in flight (whoever
+started it, admins included), or the caller has
+`graph_extraction_jobs_per_owner` (default 1; admins exempt) in flight; **502**
+the engine/Workspace refused (the job is `failed` with the class label); **503**
+no workflow engine configured. An LLM outage never becomes an empty leg: the
+extract step exits 1 (retryable) when every attempted chunk — or more than
+`graph_extraction_max_failed_fraction` of them — failed its call. A load refused at the triple budget fails the job
 `graph_cap_exceeded` with nothing loaded and nothing archived; `upload_failed`
 fails it `OUTPUT_STAGING_FAILED` with nothing recorded.
 
@@ -885,7 +891,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
 | `ACL_BACKFILL_OWNER` | subject that inherits ownership of pre-existing (creator-less) collections at first startup after the ACL rollout (default `legacy:admin`); those collections also get a `public` read grant so they stay world-readable exactly as before |
 | `WORKSPACE_URL`, `WORKSPACE_TIMEOUT` | the BV-BRC Workspace JSON-RPC endpoint the API writes a user's collection folder (`/<user>/home/.ragstack/collections/<id>/`) and uploaded sources to, and the per-request bound in seconds (default **60**). Every call carries the **caller's** token — there is no service identity — and bytes go to Shock at the upload-node URL the Workspace returns, so no Shock endpoint is configured (#356) |
-| `GRAPH_MAX_TRIPLES_PER_COLLECTION`, `GRAPH_EXTRACTION_JOBS_PER_OWNER` | the graph leg's budgets (#350, #291's siblings): one collection's graph may hold at most **200,000** triples (checked once per extraction by the load tool with one live count; a load that would cross it is refused whole — job error `graph_cap_exceeded`, nothing loaded, nothing archived; `0` disables), and one owner may have **1** extraction in flight (a second `POST /v1/collections/{id}/graph` is `429` + `Retry-After`; admins exempt) |
+| `GRAPH_MAX_TRIPLES_PER_COLLECTION`, `GRAPH_EXTRACTION_JOBS_PER_OWNER`, `GRAPH_EXTRACTION_MAX_FAILED_FRACTION` | the graph leg's budgets (#350, #291's siblings): one collection's graph may hold at most **200,000** triples (checked once per extraction by the load tool with one live count; a load that would cross it is refused whole — job error `graph_cap_exceeded`, nothing loaded, nothing archived; `0` disables); one owner may have **1** extraction in flight (a second `POST /v1/collections/{id}/graph` is `429` + `Retry-After`; admins exempt — but a *collection* never has more than one in flight, whoever calls); and the share of a version's attempted chunks whose LLM call may fail (default **0.5**) before the extract step refuses the run as an outage — exit 1, retryable, nothing archived — so an outage never becomes a delivered empty leg |
 | `GRAPH_EXTRACT_CONCURRENCY`, `GRAPH_EXTRACT_CWL`, `GRAPH_EXTRACT_WORKFLOW_NAME`, `GRAPH_EXTRACT_INPUTS_JSON` | how the extraction runs on the engine: LLM calls in flight per job (default **8**), the absolute path of `graph-extract.cwl` (empty = the repo copy), the name it registers under, and a JSON object merged over the static workflow inputs — the LLM endpoint/model and the graph store URI default to `LLM_ENDPOINT` / `LLM_MODEL` / `NEO4J_URI` *as the worker sees them*, so override them here when the worker's view differs. Neo4j credentials are never inputs: the worker reads `NEO4J_USER` / `NEO4J_PASSWORD` from its own environment; the LLM API key, if any, from its `OPENAI_API_KEY` |
 
 ---

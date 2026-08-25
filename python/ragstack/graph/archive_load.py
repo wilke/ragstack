@@ -66,6 +66,16 @@ async def load_triples(
     (manifest + triples, no chunks) is enough. A verified manifest without a
     ``triples`` role loads nothing. ``cap`` (``None`` = unlimited) is checked
     against the manifest's ``counts.triples`` BEFORE the first write.
+
+    **Duplication across versions on restore.** A replay loads every
+    version's leg in order and never deletes a chunk version's prior triples
+    (``_delete_docs(graph=False)``, #380's trade-off), so a document ingested
+    in two versions contributes both legs: the SAME fact — identical
+    ``(subject, predicate, object, doc_id, tenant_id, collection)`` — MERGEs
+    into one edge (evidence fields last-writer-wins), while a REPHRASED fact
+    becomes a second edge with the same doc and collection. Reads are
+    confidence-floored and collection-scoped, so the duplicate is noise, not
+    a leak; a tombstone version removes both.
     """
     if not collection:
         raise ValueError("load_triples needs the collection's physical name to stamp")

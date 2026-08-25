@@ -978,10 +978,15 @@ async def extract_collection_graph(
     chunk is ~10x the embed cost — so it never runs unless asked.
 
     Idempotent per version: a version whose leg already exists (the registry's
-    ``graph_archived_versions``, or the archived manifest itself) answers 202
-    with ``job_id: null`` and no submission. One extraction per owner in
-    flight (``graph_extraction_jobs_per_owner``; admins exempt, logged) — a
-    second is **429 + Retry-After**, like the upload guard. Refusals: no
+    ``graph_archived_versions``, or the archived manifest — trusted only once
+    the triples file is stat'ed present at its recorded size, since the engine
+    uploads the manifest first and a half-applied delivery says ``graph: true``
+    with no file) answers 202 with ``job_id: null`` and no submission. Two
+    guards, both **429 + Retry-After**: one extraction per COLLECTION in
+    flight, whoever the caller (admins included — two deltas post-staged onto
+    the same ``versions/<n>/`` would interleave into an ``ArchiveCorrupt``
+    archive), and ``graph_extraction_jobs_per_owner`` per caller (admins
+    exempt, logged), like the upload guard. Refusals: no
     BV-BRC bearer (the submission is made as the user) → 401; not the owner →
     403; unknown/unreadable → 404; a collection with no registry row, or one
     not ``active`` (restore it first) → 409; no owner subject / no archive /
@@ -1038,12 +1043,24 @@ async def extract_collection_graph(
         raise HTTPException(e.status, f"graph extraction of {collection_id!r}: {e}") from None
     if chosen.number in rec.graph_archived_versions or chosen.already_extracted:
         if chosen.number not in rec.graph_archived_versions:
-            # The archive says the leg exists (extracted elsewhere, or a
-            # watcher that died before recording it): repair the row.
+            # The archive REALLY holds the leg (manifest + the triples file at
+            # its recorded size — extracted elsewhere, or a watcher that died
+            # before recording it): repair the row. A manifest alone never
+            # gets here (ChosenVersion.already_extracted), so a half-applied
+            # delivery is resubmitted instead of recorded.
             await store.append_graph_version(entry.id, chosen.number)
         return GraphExtractResponse(
             collection_id=collection_id, version=chosen.number,
             message=f"version {chosen.number} already has its graph leg; nothing to do",
+        )
+    # Per COLLECTION first, no exemption: the archive is the shared resource.
+    running = await job_store.active_for_collection(entry.id, kind=KIND_GRAPH)
+    if running:
+        raise HTTPException(
+            429,
+            f"a graph extraction of collection {collection_id!r} is already in flight; "
+            "poll it (GET /v1/ingest/{job_id}) and retry once it is completed or failed",
+            headers={"Retry-After": str(GRAPH_EXTRACT_RETRY_AFTER)},
         )
     if principal.role == ROLE_ADMIN:
         log.info("graph-extract per-owner guard bypassed for admin principal tenant=%r",

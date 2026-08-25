@@ -41,8 +41,17 @@ async def _assert_kinds(store) -> None:
     listed = {j.job_id: j.kind for j in await store.list_jobs(limit=10)}
     assert listed[graph.job_id] == KIND_GRAPH and listed[ingest.job_id] == ""
     # Eviction's in-flight view counts every kind: a running extraction pins
-    # its collection like an ingest does.
+    # its collection like an ingest does; the per-collection extraction guard
+    # counts graph jobs only.
     assert await store.active_for_collection("c") == 1
+    assert await store.active_for_collection("c", kind=KIND_GRAPH) == 0
+    assert await store.active_for_collection("c", kind=KIND_INGEST) == 1
+    second = await store.create("graph-extract:c@2", tenant_id="v", collection_id="c",
+                                kind=KIND_GRAPH)
+    assert await store.active_for_collection("c", kind=KIND_GRAPH) == 1
+    assert await store.active_for_collection("c") == 2
+    await store.update(second.job_id, status="failed")
+    assert await store.active_for_collection("c", kind=KIND_GRAPH) == 0
     assert "c" in await store.active_collection_ids()
 
 

@@ -1442,6 +1442,7 @@ def _build_graph_extract_runner(
         "graph_backend": settings.graph_backend if settings.graph_backend in ("neo4j", "memory")
         else "neo4j",
         "max_triples_per_chunk": settings.kg_extraction_max_triples_per_chunk,
+        "max_failed_fraction": settings.graph_extraction_max_failed_fraction,
         **extra,
     }
     return GraphExtractRunner(

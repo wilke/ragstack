@@ -1478,11 +1478,20 @@ paths:
         on that, #380).
 
 
-        Idempotent per version: a version whose leg already exists answers 202
-        with `job_id: null` and submits nothing. Requires a bearer (BV-BRC user)
-        credential — the submission is made as the user, and the archive lives
-        in the owner's Workspace (an admin's token must be able to read it and
-        write `versions/<n>/` there).
+        Idempotent per version: a version whose leg already exists — the
+        registry row says so, or the archived manifest says `graph: true` AND
+        the triples file is present at its recorded size (a manifest alone is
+        a half-applied delivery: the engine uploads it first, and the next
+        call resubmits) — answers 202 with `job_id: null` and submits nothing.
+        A collection never has more than one extraction in flight, whoever
+        the caller (two deltas post-staged onto one `versions/<n>/` would
+        interleave): 429 + `Retry-After`. An LLM outage never becomes an
+        empty leg — the extract step exits 1 (retryable) when every attempted
+        chunk, or more than `graph_extraction_max_failed_fraction` of them,
+        failed its call. Requires a bearer (BV-BRC user) credential — the
+        submission is made as the user, and the archive lives in the owner's
+        Workspace (an admin's token must be able to read it and write
+        `versions/<n>/` there).
       tags: [Documents]
       security:
         - BearerIdentity: []
@@ -1514,16 +1523,18 @@ paths:
           description: >-
             The collection's registry row records no owner subject (its
             Workspace archive cannot be located); the archive folder is
-            missing or holds no chunk version; `version` names a version that
-            is absent or a tombstone; or the caller's token cannot read the
-            owner's archive.
+            missing or holds no chunk version; or `version` names a version
+            that is absent or a tombstone.
         "401":
           description: >-
             Missing or invalid credential — or a credential that is not a
             BV-BRC user (bearer) token: an API-key or keyless caller cannot
             submit as the user.
         "403":
-          description: Caller can read the collection but is neither its owner nor an admin
+          description: >-
+            Caller can read the collection but is neither its owner nor an
+            admin; or the caller's token cannot read the owner's Workspace
+            archive.
         "404":
           description: >-
             Unknown collection id, or one the caller may not read (unreadable ==
@@ -1535,10 +1546,11 @@ paths:
             it first: the graph is loaded into a live collection's scope).
         "429":
           description: >-
-            The caller already has `graph_extraction_jobs_per_owner`
-            extraction(s) in flight (jobs of kind `graph` that are
-            `accepted`/`running` and written to within the last 6 h). Retry
-            after `Retry-After`; admins are exempt.
+            An extraction of this collection is already in flight (a job of
+            kind `graph` that is `accepted`/`running` and written to within
+            the last 6 h — whoever started it, admins included), or the caller
+            already has `graph_extraction_jobs_per_owner` extraction(s) in
+            flight (admins exempt from this one). Retry after `Retry-After`.
           headers:
             Retry-After:
               description: Seconds to wait before retrying.

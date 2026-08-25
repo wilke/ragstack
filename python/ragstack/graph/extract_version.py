@@ -28,6 +28,17 @@ with what the caller expects is :class:`ExtractRefused` (the CLI exits 3,
 permanent — the archive is the problem); more triples than ``max_triples``
 is :class:`GraphCapExceeded` (exit 4, the graph budget) and the leg is NOT
 written.
+
+**An LLM outage is not an empty graph.** :meth:`LLMKGExtractor.extract_chunk`
+raises :class:`~ragstack.graph.extractor.ExtractionFailed` when the CALL
+failed (as opposed to a reply with no facts); the driver counts those as
+``n_chunks_failed`` (recorded in the manifest's ``graph_extraction``) and
+REFUSES the run — :class:`ExtractionUnavailable`, CLI exit 1, retryable,
+nothing written, no delta emitted — when every attempted chunk failed or the
+failed fraction exceeds ``max_failed_fraction`` (default 0.5). Otherwise a
+delivered ``graph: true`` leg with zero triples would be permanent: the
+endpoint is idempotent per version, so the version's documents would never
+enter the graph.
 """
 from __future__ import annotations
 
@@ -39,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from ragstack.graph.budget import GraphCapExceeded
+from ragstack.graph.extractor import ExtractionFailed
 from ragstack.ingestion import archive
 from ragstack.ingestion.archive import ArchiveCorrupt, ArchiveError
 from ragstack.models import Chunk, Triple
@@ -47,6 +59,23 @@ from ragstack.models import Chunk, Triple
 #: requests, so this is the throughput lever; it is bounded so one extraction
 #: job cannot monopolise the shared endpoint.
 DEFAULT_CONCURRENCY = 8
+#: Default share of attempted chunks whose LLM call may fail before the run is
+#: refused as an outage (``graph_extraction_max_failed_fraction``).
+DEFAULT_MAX_FAILED_FRACTION = 0.5
+
+
+class ExtractionUnavailable(RuntimeError):
+    """The LLM endpoint failed for every attempted chunk, or for more than
+    ``max_failed_fraction`` of them: an outage, not a corpus with no facts.
+    Raised BEFORE the leg is written (nothing on disk); the CLI exits 1 so the
+    engine may retry."""
+
+    def __init__(self, failed: int, attempted: int, max_fraction: float) -> None:
+        self.failed, self.attempted, self.max_fraction = failed, attempted, max_fraction
+        super().__init__(
+            f"llm_unavailable: {failed} of {attempted} attempted chunk(s) failed their LLM "
+            f"call (max_failed_fraction={max_fraction}); refusing to archive an empty graph"
+        )
 
 
 class ExtractRefused(RuntimeError):
@@ -67,7 +96,8 @@ class ExtractionSummary:
     version: int = 0
     n_chunks: int = 0
     n_chunks_empty: int = 0  #: chunks with no text (skipped without an LLM call)
-    n_chunks_without_triples: int = 0  #: LLM answered with no fact (or failed)
+    n_chunks_without_triples: int = 0  #: the LLM answered, with no fact in it
+    n_chunks_failed: int = 0  #: the LLM CALL failed (transport / server error)
     n_triples: int = 0
     n_duplicates: int = 0
     seconds: float = 0.0
@@ -79,6 +109,7 @@ class ExtractionSummary:
             "version": self.version, "n_chunks": self.n_chunks,
             "n_chunks_empty": self.n_chunks_empty,
             "n_chunks_without_triples": self.n_chunks_without_triples,
+            "n_chunks_failed": self.n_chunks_failed,
             "n_triples": self.n_triples, "n_duplicates": self.n_duplicates,
             "seconds": round(self.seconds, 3), "out_dir": self.out_dir,
             "chunks_per_second": round(self.n_chunks / self.seconds, 2) if self.seconds else None,
@@ -134,15 +165,20 @@ async def extract_triples(
     ``concurrency`` calls in flight; return the deduplicated triples in chunk
     order, each stamped with its chunk's ``tenant_id`` (else ``tenant``).
     ``extractor`` is any object with ``async extract_chunk(chunk) ->
-    list[Triple]`` (:class:`ragstack.graph.extractor.LLMKGExtractor`)."""
+    list[Triple]`` that raises :class:`ExtractionFailed` when the call itself
+    failed (:class:`ragstack.graph.extractor.LLMKGExtractor`); those chunks
+    are counted in ``summary.n_chunks_failed`` and yield nothing."""
     sem = asyncio.Semaphore(max(1, int(concurrency)))
     summary = summary if summary is not None else ExtractionSummary()
 
-    async def _one(chunk: Chunk) -> list[Triple]:
+    async def _one(chunk: Chunk) -> list[Triple] | None:
         if not chunk.content.strip():
             return []
         async with sem:
-            return list(await extractor.extract_chunk(chunk))
+            try:
+                return list(await extractor.extract_chunk(chunk))
+            except ExtractionFailed:
+                return None
 
     per_chunk = await asyncio.gather(*(_one(c) for c in chunks))
     out: list[Triple] = []
@@ -150,6 +186,9 @@ async def extract_triples(
     for chunk, found in zip(chunks, per_chunk, strict=True):
         if not chunk.content.strip():
             summary.n_chunks_empty += 1
+            continue
+        if found is None:
+            summary.n_chunks_failed += 1
             continue
         if not found:
             summary.n_chunks_without_triples += 1
@@ -178,15 +217,19 @@ async def extract_version(
     collection_id: str = "",
     spec_hash: str = "",
     max_triples: int = 0,
+    max_failed_fraction: float = DEFAULT_MAX_FAILED_FRACTION,
     extractor_name: str = "",
     log: Callable[[str], None] | None = None,
 ) -> ExtractionSummary:
-    """The whole step: verify, extract, budget, write the leg.
+    """The whole step: verify, extract, refuse an outage, budget, write the leg.
 
     ``out_dir`` — where the delta (``manifest.json`` + ``triples.jsonl.gz``)
     goes; ``None`` writes in place. ``max_triples`` > 0 refuses (before writing)
-    a version whose own triples exceed it. ``extractor_name`` is recorded in
-    the manifest's ``graph_extraction`` provenance (the model name).
+    a version whose own triples exceed it. ``max_failed_fraction`` — the share
+    of attempted (non-empty) chunks whose LLM call may fail; every attempted
+    chunk failing, or more than this share, is :class:`ExtractionUnavailable`
+    (nothing written). ``extractor_name`` is recorded in the manifest's
+    ``graph_extraction`` provenance (the model name).
     """
     say = log if log is not None else (lambda *_a: None)
     t0 = time.perf_counter()
@@ -199,12 +242,17 @@ async def extract_version(
         chunks, extractor, concurrency=concurrency, tenant=str(manifest.get("tenant") or ""),
         summary=summary,
     )
+    attempted = summary.n_chunks - summary.n_chunks_empty
+    if attempted and (summary.n_chunks_failed == attempted
+                      or summary.n_chunks_failed / attempted > max_failed_fraction):
+        raise ExtractionUnavailable(summary.n_chunks_failed, attempted, max_failed_fraction)
     if max_triples and max_triples > 0 and len(triples) > max_triples:
         raise GraphCapExceeded(None, len(triples), max_triples)
     extraction = {
         "derived_by": "llm", "extractor": extractor_name or type(extractor).__name__,
         "n_chunks": summary.n_chunks, "n_chunks_empty": summary.n_chunks_empty,
         "n_chunks_without_triples": summary.n_chunks_without_triples,
+        "n_chunks_failed": summary.n_chunks_failed,
         "concurrency": int(concurrency),
     }
     summary.manifest = archive.write_triples(

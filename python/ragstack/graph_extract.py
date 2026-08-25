@@ -15,7 +15,17 @@ workflow's only output — the version-named delta Directory — back onto
   eviction's graph drop on (#380: eviction may only destroy what exists
   somewhere else);
 * ``upload_failed`` → the job fails with ``OUTPUT_STAGING_FAILED`` (the
-  triples were loaded, the leg is not archived: NOT recorded);
+  triples were loaded, the leg is not archived: NOT recorded). The engine
+  uploads a Directory's listing in filename order — ``manifest.json`` BEFORE
+  ``triples.jsonl.gz`` — so a failure between the two leaves the Workspace
+  with a manifest that says ``graph: true`` and no triples file (a half-
+  applied delivery); and an engine crash mid-upload leaves the submission's
+  ``output_state`` at ``uploading`` forever (the post-stager skips it), which
+  the delivery-timeout turns into a failed job. Both recover the same way:
+  :meth:`GraphExtractRunner.choose_version` never trusts ``graph: true`` on
+  its own — it ``stat``s the triples file (present, size == the manifest's
+  ``bytes``) before calling a version extracted, so the next ``POST`` simply
+  resubmits and the extract tool overwrites the stale entries;
 * FAILED with the load tool's exit 4 → ``graph_cap_exceeded`` (nothing loaded);
 * any other terminal state → the job fails with the state named.
 
@@ -70,16 +80,21 @@ def _scrub(text: str, token: str) -> str:
 class ChosenVersion:
     """What :meth:`GraphExtractRunner.choose_version` found."""
 
-    __slots__ = ("manifest", "number", "uri")
+    __slots__ = ("leg_delivered", "manifest", "number", "uri")
 
-    def __init__(self, number: int, uri: str, manifest: dict[str, Any]) -> None:
+    def __init__(
+        self, number: int, uri: str, manifest: dict[str, Any], *, leg_delivered: bool = False
+    ) -> None:
         self.number = number
         self.uri = uri
         self.manifest = manifest
+        #: The manifest claims ``graph: true`` AND the triples file is really
+        #: there with the recorded size — the only state that counts as done.
+        self.leg_delivered = leg_delivered
 
     @property
     def already_extracted(self) -> bool:
-        return bool(self.manifest.get("graph"))
+        return self.leg_delivered
 
 
 class GraphExtractRunner:
@@ -179,7 +194,7 @@ class GraphExtractRunner:
         except WorkspaceAuthError as e:
             raise GraphExtractError(
                 f"the caller's token cannot read the owner's archive ({folder}): {e}",
-                status=400,
+                status=403,
             ) from e
         except WorkspaceError as e:
             raise GraphExtractError(f"Workspace listing failed: {e}") from e
@@ -207,10 +222,43 @@ class GraphExtractRunner:
                         "extract a graph from", status=400,
                     )
                 continue
-            return ChosenVersion(number, uri, manifest)
+            delivered = await self._leg_delivered(token, uri, manifest)
+            return ChosenVersion(number, uri, manifest, leg_delivered=delivered)
         raise GraphExtractError(
             "the archive holds no chunk version (only tombstones)", status=400,
         )
+
+    async def _leg_delivered(self, token: str, uri: str, manifest: dict[str, Any]) -> bool:
+        """Is the graph leg REALLY there? ``graph: true`` in the manifest is
+        necessary, not sufficient (module docstring: the manifest is uploaded
+        first, so a half-applied delivery says true with no file). One
+        ``stat`` of the triples file: present, and — when the manifest records
+        its size — that size. Anything else is "not extracted": resubmit."""
+        if not manifest.get("graph"):
+            return False
+        raw_files = manifest.get("files")
+        files: dict[str, Any] = raw_files if isinstance(raw_files, dict) else {}
+        name = str(files.get("triples") or "")
+        if not name:
+            return False
+        path = f"{ws_path(uri)}/{name}"
+        try:
+            st = await self._workspace.stat(token, path)
+        except WorkspaceError as e:
+            raise GraphExtractError(f"could not stat {path}: {e}") from e
+        if not st.exists or st.is_folder:
+            log.warning("graph-extract: %s says graph: true but %s is missing — "
+                        "a half-applied delivery; treating the version as not extracted",
+                        ws_path(uri), name)
+            return False
+        raw_sizes = manifest.get("bytes")
+        sizes: dict[str, Any] = raw_sizes if isinstance(raw_sizes, dict) else {}
+        want = sizes.get(name)
+        if want is not None and int(want) != int(st.size):
+            log.warning("graph-extract: %s: %s is %d bytes, manifest says %s — treating "
+                        "the version as not extracted", ws_path(uri), name, st.size, want)
+            return False
+        return True
 
     async def _manifest(self, token: str, uri: str) -> dict[str, Any]:
         import json

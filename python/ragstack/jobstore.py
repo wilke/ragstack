@@ -324,10 +324,13 @@ class JobStore(Protocol):
         ...
 
     async def active_for_collection(
-        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER,
+        kind: str | None = None,
     ) -> int:
         """How many in-flight, non-stale jobs target ``collection_id`` (0 =
-        safe to evict on this axis)."""
+        safe to evict on this axis). ``kind`` (#350): ``None`` counts every
+        kind (eviction's view); a string counts that kind only (the
+        one-extraction-per-collection guard)."""
         ...
 
     async def close(self) -> None:
@@ -451,7 +454,8 @@ class InMemoryJobStore:
             }
 
     async def active_for_collection(
-        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER,
+        kind: str | None = None,
     ) -> int:
         if not collection_id:
             return 0
@@ -460,7 +464,7 @@ class InMemoryJobStore:
             return sum(
                 1 for j in self._jobs.values()
                 if j.collection_id == collection_id and j.status in ACTIVE
-                and j.updated_at > cutoff
+                and j.updated_at > cutoff and (kind is None or j.kind == kind)
             )
 
     async def close(self) -> None:
@@ -649,25 +653,30 @@ class SqliteJobStore:
             )
             return {row[0] for row in cur.fetchall()}
 
-    def _active_for_collection_sync(self, collection_id: str, cutoff: str) -> int:
+    def _active_for_collection_sync(
+        self, collection_id: str, cutoff: str, kind: str | None
+    ) -> int:
+        sql = ("SELECT COUNT(*) FROM jobs WHERE collection_id = ? AND status IN (?, ?)"
+               " AND updated_at > ?")
+        params: list[object] = [collection_id, *ACTIVE, cutoff]
+        if kind is not None:
+            sql += " AND kind = ?"
+            params.append(kind)
         with closing(self._connect()) as conn, conn:
-            cur = conn.execute(
-                "SELECT COUNT(*) FROM jobs WHERE collection_id = ? AND status IN (?, ?)"
-                " AND updated_at > ?",
-                (collection_id, *ACTIVE, cutoff),
-            )
+            cur = conn.execute(sql, params)
             return int(cur.fetchone()[0])
 
     async def active_collection_ids(self, *, stale_after: timedelta = STALE_AFTER) -> set[str]:
         return await asyncio.to_thread(self._active_collection_ids_sync, _cutoff(stale_after))
 
     async def active_for_collection(
-        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER,
+        kind: str | None = None,
     ) -> int:
         if not collection_id:
             return 0
         return await asyncio.to_thread(
-            self._active_for_collection_sync, collection_id, _cutoff(stale_after)
+            self._active_for_collection_sync, collection_id, _cutoff(stale_after), kind
         )
 
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
@@ -928,17 +937,25 @@ class PostgresJobStore:
         return {r["collection_id"] for r in rows}
 
     async def active_for_collection(
-        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER,
+        kind: str | None = None,
     ) -> int:
         if not collection_id:
             return 0
         pool = await self._pool_()
         async with pool.acquire() as conn:
-            n = await conn.fetchval(
-                "SELECT COUNT(*) FROM jobs WHERE collection_id = $1 AND status IN ($2, $3)"
-                " AND updated_at > $4",
-                collection_id, *ACTIVE, _cutoff(stale_after),
-            )
+            if kind is None:
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM jobs WHERE collection_id = $1"
+                    " AND status IN ($2, $3) AND updated_at > $4",
+                    collection_id, *ACTIVE, _cutoff(stale_after),
+                )
+            else:
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM jobs WHERE collection_id = $1"
+                    " AND status IN ($2, $3) AND updated_at > $4 AND kind = $5",
+                    collection_id, *ACTIVE, _cutoff(stale_after), kind,
+                )
         return int(n or 0)
 
     async def close(self) -> None:
