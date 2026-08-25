@@ -21,6 +21,9 @@ type Source struct {
 	Content  string         `json:"content"`
 	Score    float64        `json:"score"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// Collection is the registry collection id the source came from; set only
+	// on a multi-collection request (`collections`, issue #253).
+	Collection string `json:"collection,omitempty"`
 	// Context holds the source's neighbours (context_window > 0), ordered by
 	// Position; omitted when none were attached.
 	Context []ContextChunk `json:"context,omitempty"`

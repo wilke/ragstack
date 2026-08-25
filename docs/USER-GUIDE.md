@@ -246,6 +246,7 @@ The request fields that matter to a user:
 | Field | Default | What it does |
 |---|---|---|
 | `collection` | the deployment's default | Which registry collection to search. Unknown *or unreadable* → `404`. `GET /v1/collections` lists what you can see; the entry with `is_default: true` is the one an omitted `collection` resolves to. `default` is that pointer's name, not a collection: sending `collection=default` is the same as omitting it, and the deployment's built-in corpus appears under its own (content-addressed) id — which changes, together with its access grants, if the operator changes the embedding model or chunker. |
+| `collections` | `null` | Search **several** collections at once — `["open-access", "my-notes"]`, up to 5 unique ids (more, duplicates, or together with `collection` → `422`). One retrieval leg runs per collection, the legs are fused (RRF), reranked once, and cut to `top_k`; every source says which collection it came from in `collection`, and a document you have in two collections shows up once per collection. Every id is checked *before* anything runs: one you can't read → `404` for the whole request, one that is dormant → `503` + `Retry-After` for the whole request (its restore is kicked off, retry later). `["x"]` is exactly `"collection": "x"` plus the stamp. |
 | `top_k` | 5 | How many sources to return. |
 | `retrieval_mode` | `hybrid` | `hybrid` (dense + BM25, fused), `vector` (dense only — meaning-similar text without shared words), `bm25` (keyword only — fast, rewards exact terms). |
 | `rerank` | `null` | `true`/`false` force the cross-encoder on/off for this request; `null` keeps the deployment's setting. `rerank_candidates` sets the pool it re-scores. |
@@ -254,8 +255,8 @@ The request fields that matter to a user:
 | `use_graph` | `true` | Include the knowledge-graph leg where a deployment has one (most don't — `graph_backend` is `disabled`). |
 | `llm`, `reranker` | `null` | A registered model id from `GET /v1/models/available`, for this request only. |
 
-Every source is `{doc_id, chunk_id, content, score, metadata}`. On the
-scholarly corpora the metadata carries `title`, `authors`, `journal`, `doi`,
+Every source is `{doc_id, chunk_id, content, score, metadata}` — plus
+`collection` on a `collections` request. On the scholarly corpora the metadata carries `title`, `authors`, `journal`, `doi`,
 `pmcid`, `section_title`, `chunk_index`, `source_url`, and the neighbour ids
 described next.
 

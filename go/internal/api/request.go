@@ -19,6 +19,10 @@ type QueryRequest struct {
 	Stream            *bool          `json:"stream,omitempty"`
 	// Collection selects which registry collection to query; nil = default.
 	Collection *string `json:"collection,omitempty"`
+	// Collections (issue #253): 1–5 unique registry collection ids to query
+	// together — one retrieval leg per id, RRF-fused, reranked once. Mutually
+	// exclusive with Collection. Schema mirror only (handler is a stub).
+	Collections []string `json:"collections,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
 	// ContextWindow (issue #322): prev/next neighbour hops to attach to each
@@ -41,6 +45,8 @@ type RetrieveRequest struct {
 	UseGraph *bool          `json:"use_graph,omitempty"`
 	// Collection selects which registry collection to retrieve from; nil = default.
 	Collection *string `json:"collection,omitempty"`
+	// Collections mirrors QueryRequest.Collections (issue #253); mutually exclusive with Collection.
+	Collections []string `json:"collections,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
 	// ContextWindow mirrors QueryRequest.ContextWindow (issue #322); 0 = none, max 3.

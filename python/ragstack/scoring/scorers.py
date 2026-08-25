@@ -31,17 +31,30 @@ class RRFScorer:
         return scored if top_k is None else scored[:top_k]
 
     def fuse(self, ranked_lists: list[list[ScoredChunk]]) -> list[ScoredChunk]:
-        """Fuse multiple ranked lists using RRF."""
-        scores: dict[str, float] = {}
-        chunks: dict[str, Chunk] = {}
+        """Fuse multiple ranked lists using RRF.
+
+        Identity is ``(collection, chunk id)``: a chunk that several lists rank
+        is one candidate whose reciprocal ranks add up — unless the lists come
+        from different collections (``ScoredChunk.collection``, stamped by the
+        multi-collection fan-out of issue #253), in which case the same chunk
+        id from two collections is two candidates, each keeping its own stamp.
+        With no stamps (every ``collection`` ``None`` — the single-collection
+        path, and the vector/BM25/graph legs inside one retriever) this is
+        exactly the chunk-id keyed fusion it always was.
+        """
+        scores: dict[tuple[str | None, str], float] = {}
+        chunks: dict[tuple[str | None, str], Chunk] = {}
         for ranked in ranked_lists:
             for rank, scored in enumerate(ranked):
-                cid = scored.chunk.id
-                scores[cid] = scores.get(cid, 0.0) + 1.0 / (self.k + rank + 1)
-                chunks[cid] = scored.chunk
+                key = (scored.collection, scored.chunk.id)
+                scores[key] = scores.get(key, 0.0) + 1.0 / (self.k + rank + 1)
+                chunks[key] = scored.chunk
         fused = [
-            ScoredChunk(chunk=chunks[cid], score=score, retrieval_method="hybrid")
-            for cid, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            ScoredChunk(
+                chunk=chunks[key], score=score, retrieval_method="hybrid",
+                collection=key[0],
+            )
+            for key, score in sorted(scores.items(), key=lambda x: x[1], reverse=True)
         ]
         return fused
 

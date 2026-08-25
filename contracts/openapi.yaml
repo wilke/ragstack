@@ -50,9 +50,13 @@ paths:
           description: >-
             Unknown collection, or one the caller may not read — a read denial is
             reported as 404, not 403, so a private collection's existence is not
-            leaked (ADR-0003 §2).
+            leaked (ADR-0003 §2). With `collections`, any one member unknown or
+            unreadable is a 404 for the whole request, before any retrieval
+            runs (#253).
         "422":
-          description: Validation error
+          description: >-
+            Validation error — including `collections` together with
+            `collection`, more than 5 ids, duplicates, or an empty list (#253).
         "409":
           description: >-
             The collection is `lost` (#358): its Workspace archive is missing or
@@ -101,8 +105,12 @@ paths:
           description: >-
             Unknown collection, or one the caller may not read (a read denial is a
             404, not a 403 — collection existence is not leaked, ADR-0003 §2).
+            With `collections`, any one member unknown or unreadable is a 404
+            for the whole request, before any retrieval runs (#253).
         "422":
-          description: Validation error
+          description: >-
+            Validation error — including `collections` together with
+            `collection`, more than 5 ids, duplicates, or an empty list (#253).
         "409":
           description: >-
             The collection is `lost` (#358): its Workspace archive is missing or
@@ -2446,6 +2454,28 @@ components:
             collection; an unknown id returns 404. See GET /v1/collections.
           type: [string, "null"]
           default: null
+        collections:
+          description: >-
+            Multi-collection fused retrieval (issue #253): registry collection
+            ids to query together. Every id is resolved and read-authorized
+            BEFORE any retrieval runs (an unknown or unreadable id is a 404 for
+            the whole request — no partial answers; a dormant member is a 503 +
+            Retry-After for the whole request); then one single-collection
+            retrieval leg runs per id, concurrently, the legs are fused with
+            RRF, reranked once over the union and cut to top_k. Each returned
+            Source carries the member it came from in `collection`; a document
+            present in two collections appears once per collection. Mutually
+            exclusive with `collection` (both → 422). 1 to 5 unique ids (more,
+            duplicates, or an empty list → 422); a single id behaves exactly
+            like `collection`. Never expressed as one many-valued store filter
+            — one leg per collection.
+          type: [array, "null"]
+          items:
+            type: string
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          default: null
         retrieval_mode:
           description: >-
             Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only),
@@ -2531,6 +2561,28 @@ components:
             Registry collection id to retrieve from. null (default) uses the
             default collection; an unknown id returns 404. See GET /v1/collections.
           type: [string, "null"]
+          default: null
+        collections:
+          description: >-
+            Multi-collection fused retrieval (issue #253): registry collection
+            ids to retrieve from together. Every id is resolved and read-authorized
+            BEFORE any retrieval runs (an unknown or unreadable id is a 404 for
+            the whole request — no partial answers; a dormant member is a 503 +
+            Retry-After for the whole request); then one single-collection
+            retrieval leg runs per id, concurrently, the legs are fused with
+            RRF, reranked once over the union and cut to top_k. Each returned
+            Source carries the member it came from in `collection`; a document
+            present in two collections appears once per collection. Mutually
+            exclusive with `collection` (both → 422). 1 to 5 unique ids (more,
+            duplicates, or an empty list → 422); a single id behaves exactly
+            like `collection`. Never expressed as one many-valued store filter
+            — one leg per collection.
+          type: [array, "null"]
+          items:
+            type: string
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
           default: null
         retrieval_mode:
           description: >-
@@ -3523,6 +3575,12 @@ components:
         metadata:
           type: object
           default: {}
+        collection:
+          description: >-
+            The registry collection id this source came from. Present only on a
+            multi-collection request (`collections`, issue #253) — a
+            single-collection request's response is unchanged.
+          type: string
         context:
           description: >-
             Neighbouring chunks of the same document, attached only when the

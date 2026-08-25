@@ -7,6 +7,7 @@ failure modes are normative — ``IdentityInvalid`` → 401 vs ``IdentityUnavail
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from ragstack.documents import DocumentSummary
@@ -154,7 +155,7 @@ class GraphStore(Protocol):
         entity: str,
         depth: int = 1,
         tenant_id: str | None = None,
-        collection: str | None = None,
+        collection: str | Sequence[str] | None = None,
     ) -> list[Triple]: ...
 
     async def list_entities(

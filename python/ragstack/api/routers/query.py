@@ -7,10 +7,14 @@ from collections.abc import AsyncIterator
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ragstack.api.access import enforce_access
-from ragstack.api.collections import CollectionRegistry, is_reserved_collection_id
+from ragstack.api.collections import (
+    CollectionEntry,
+    CollectionRegistry,
+    is_reserved_collection_id,
+)
 from ragstack.api.deps import (
     build_generator_for,
     build_reranker_for,
@@ -28,7 +32,11 @@ from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.models import ContextChunk, ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
-from ragstack.retrieval.retriever import expand_context
+from ragstack.retrieval.retriever import (
+    CollectionLeg,
+    MultiCollectionRetriever,
+    expand_context,
+)
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.stores.filters import UnknownFilterKey
 from ragstack.tenancy import allowed_collection_ids, scope_filters
@@ -43,6 +51,12 @@ _RRF = RRFScorer(k=settings.rrf_k)
 # round trip, and three chunks either side is already more than an answer
 # prompt can use. Part of the contract (contracts/schemas/*_request.json).
 MAX_CONTEXT_WINDOW = 3
+
+# Hard cap on ``collections`` (issue #253): one retrieval leg per member, so N
+# bounds the fan-out (N × per-leg depth candidates into ONE rerank). Five is
+# the per-owner collection quota (#290) — what one user can own. Part of the
+# contract (``maxItems`` in contracts/schemas/*_request.json).
+MAX_QUERY_COLLECTIONS = 5
 
 
 async def _expand_query(
@@ -92,6 +106,23 @@ def _bound_top_k(v: int) -> int:
     return v
 
 
+def _check_collections(collection: str | None, collections: list[str] | None) -> None:
+    """Shared ``collections`` rules for both request models (issue #253),
+    beyond what the field bounds (1–5 items) already enforce: it is mutually
+    exclusive with the singular ``collection``, and its ids are unique
+    (``uniqueItems`` in the contract) — a duplicate would be the same leg
+    twice, double-counting every hit in the fusion. Each violation is a 422."""
+    if collections is None:
+        return
+    if collection is not None:
+        raise ValueError(
+            "collection and collections are mutually exclusive; pass one id as "
+            "collection or several as collections"
+        )
+    if len(set(collections)) != len(collections):
+        raise ValueError("collections must not contain duplicates")
+
+
 class QueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1)
@@ -109,6 +140,12 @@ class QueryRequest(BaseModel):
     # Which registry collection to query. ``None`` uses the default collection.
     # An unknown id is a 404 (explicit selection fails loudly). See GET /v1/collections.
     collection: str | None = None
+    # Multi-collection fused retrieval (issue #253): 1–5 unique registry ids,
+    # one single-collection leg each, RRF-fused, reranked once. Mutually
+    # exclusive with ``collection`` (both → 422); see _validate_collections.
+    collections: list[str] | None = Field(
+        default=None, min_length=1, max_length=MAX_QUERY_COLLECTIONS
+    )
     # Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or
     # bm25 (sparse only). The graph leg is orthogonal (see use_graph).
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
@@ -130,6 +167,11 @@ class QueryRequest(BaseModel):
     def _validate_top_k(cls, v: int) -> int:
         return _bound_top_k(v)
 
+    @model_validator(mode="after")
+    def _validate_collections(self) -> QueryRequest:
+        _check_collections(self.collection, self.collections)
+        return self
+
 
 class QueryResponse(BaseModel):
     answer: str
@@ -147,6 +189,10 @@ class RetrieveRequest(BaseModel):
     rerank_candidates: int | None = Field(default=None, ge=1)
     # See QueryRequest — which registry collection to retrieve from.
     collection: str | None = None
+    # See QueryRequest — multi-collection fused retrieval (#253).
+    collections: list[str] | None = Field(
+        default=None, min_length=1, max_length=MAX_QUERY_COLLECTIONS
+    )
     # See QueryRequest — hybrid | vector | bm25.
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
     # See QueryRequest — same server-side context expansion.
@@ -158,6 +204,11 @@ class RetrieveRequest(BaseModel):
     @classmethod
     def _validate_top_k(cls, v: int) -> int:
         return _bound_top_k(v)
+
+    @model_validator(mode="after")
+    def _validate_collections(self) -> RetrieveRequest:
+        _check_collections(self.collection, self.collections)
+        return self
 
 
 class RetrieveResponse(BaseModel):
@@ -207,7 +258,8 @@ async def _maybe_rerank(
     if reranker is None or not scored:
         return scored
     try:
-        return await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
+        reranked = await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
+        return _restamp(scored, reranked)
     except asyncio.CancelledError:
         raise
     except (KeyError, ValueError) as e:
@@ -219,6 +271,29 @@ async def _maybe_rerank(
     except Exception:
         log.warning("rerank unavailable; using fused order", exc_info=True)
         return scored
+
+
+def _restamp(pool: list[ScoredChunk], reranked: list[ScoredChunk]) -> list[ScoredChunk]:
+    """Carry each candidate's ``collection`` stamp (issue #253) across a
+    rerank, which rebuilds ``ScoredChunk``s from the bare chunks it was handed.
+    Every in-repo ``Scorer`` returns the very ``Chunk`` objects it received, so
+    the stamp is recovered by object identity — and the multi-collection
+    wrapper hands the reranker a distinct copy per (collection, chunk), so
+    identity is unambiguous even for a document present in two collections.
+    A scorer that rebuilt its chunks falls back to the chunk id, when that is
+    unambiguous. A pool with no stamps at all (the single-collection path) is
+    returned untouched."""
+    if not any(s.collection is not None for s in pool):
+        return reranked
+    by_obj = {id(s.chunk): s.collection for s in pool}
+    by_id: dict[str, str | None] = {}
+    for s in pool:
+        by_id[s.chunk.id] = None if s.chunk.id in by_id else s.collection
+    out = []
+    for r in reranked:
+        cid = by_obj.get(id(r.chunk), by_id.get(r.chunk.id))
+        out.append(r if r.collection == cid else r.model_copy(update={"collection": cid}))
+    return out
 
 
 async def _retrieve_fused(
@@ -283,13 +358,21 @@ async def _retrieve_fused(
     return scored[:top_k]
 
 
+#: Context-expansion key: (collection stamp, chunk id) — the same identity RRF
+#: fusion uses, so a document present in two collections keeps its neighbours
+#: apart per collection. ``None`` stamp on the single-collection path.
+_SourceKey = tuple[str | None, str]
+
+
 def _to_sources(
     scored: list[ScoredChunk],
-    context: dict[str, list[ContextChunk]] | None = None,
+    context: dict[_SourceKey, list[ContextChunk]] | None = None,
 ) -> list[Source]:
     """Sources in ``scored`` order. ``context`` (from :func:`_expand_sources`)
-    is keyed by chunk id; a source with no entry gets no ``context`` key at all
-    (omitted from the response — see ``Source``), never an empty list."""
+    is keyed by (collection, chunk id); a source with no entry gets no
+    ``context`` key at all (omitted from the response — see ``Source``), never
+    an empty list. ``collection`` is the multi-collection stamp (#253), omitted
+    the same way when absent."""
     context = context or {}
     return [
         Source(
@@ -298,28 +381,48 @@ def _to_sources(
             content=r.chunk.content,
             score=r.score,
             metadata=_source_metadata(r.chunk),
-            context=context.get(r.chunk.id),
+            context=context.get((r.collection, r.chunk.id)),
+            collection=r.collection,
         )
         for r in scored
     ]
 
 
 async def _expand_sources(
-    store: Any, scored: list[ScoredChunk], window: int, filters: dict[str, Any]
-) -> dict[str, list[ContextChunk]]:
+    targets: dict[str | None, tuple[Any, dict[str, Any]]],
+    scored: list[ScoredChunk],
+    window: int,
+) -> dict[_SourceKey, list[ContextChunk]]:
     """Server-side context expansion (issue #322) for the final, already
     reranked and truncated ``scored`` list: the neighbours to attach, per
-    source chunk id. Runs AFTER ``_retrieve_fused`` so it can't touch the
-    ranking; ``filters`` is the same scoped dict retrieval used, so a neighbour
-    outside the caller's scope is never returned (#197). ``window=0`` (the
-    default) is a no-op with no store call. A refused filter key is a 400,
-    exactly as ``GET /v1/chunks`` answers it."""
-    if window <= 0 or not scored or store is None:
+    (collection, chunk id). Runs AFTER ``_retrieve_fused`` so it can't touch
+    the ranking. ``targets`` maps each collection stamp — ``None`` on the
+    single-collection path, the registry id per member on a multi-collection
+    one (#253) — to ``(vector_store, scoped filters)``: the SAME store and the
+    SAME scoped filter dict that collection's retrieval leg used, so a
+    neighbour outside the caller's scope in that collection is never returned
+    (#197), and a source's neighbours are only ever looked up in the
+    collection it came from. One ``expand_context`` per collection, run
+    concurrently: at most ``N × window`` batched ``get_chunks`` calls
+    (``≤ 5 × 3``). ``window=0`` (the default) is a no-op with no store call.
+    A refused filter key is a 400, exactly as ``GET /v1/chunks`` answers it."""
+    if window <= 0 or not scored:
         return {}
+    jobs: list[tuple[str | None, Any]] = []
+    for cid, (store, filters) in targets.items():
+        subset = [s for s in scored if s.collection == cid]
+        if store is None or not subset:
+            continue
+        jobs.append((cid, expand_context(store, subset, window, filters)))
     try:
-        return await expand_context(store, scored, window, filters)
+        results = await asyncio.gather(*(job for _, job in jobs))
     except UnknownFilterKey as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    out: dict[_SourceKey, list[ContextChunk]] = {}
+    for (cid, _), found in zip(jobs, results, strict=True):
+        for chunk_id, ctx in found.items():
+            out[(cid, chunk_id)] = ctx
+    return out
 
 
 def _source_metadata(chunk: Any) -> dict[str, Any]:
@@ -405,6 +508,74 @@ async def _resolve_entry(
     return entry
 
 
+async def _resolve_retrieval(
+    registry: CollectionRegistry,
+    collection: str | None,
+    collections: list[str] | None,
+    principal: Principal,
+    tenant: str,
+    filters: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str | None, tuple[Any, dict[str, Any]]]]:
+    """What a retrieve/query request runs over: ``(retriever, filters,
+    expansion targets)``.
+
+    Single collection (``collections`` absent): exactly the pre-#253 path —
+    the entry's own retriever and one scoped filter dict, keyed ``None``.
+
+    Multi-collection (``collections`` given): EVERY id is resolved through the
+    registry, the tenant allowlist and ``enforce_access(read)`` — in request
+    order, BEFORE any retrieval leg runs. The first refusal is the answer for
+    the whole request: unknown / unreadable → 404 (the read seam never
+    distinguishes the two, so membership is not leaked — same as the singular
+    path), a dormant or restoring member → 503 + ``Retry-After`` (the
+    lifecycle gate inside ``enforce_access`` submits that member's restore
+    exactly as a single-collection read would; nothing else runs, no partial
+    answer), a lost member → 409. Two ids that resolve to the same entry (the
+    ``default`` pointer next to its target) are the same leg twice → 422.
+    Share-based scope widening (:func:`shared_scope`) is computed ONCE per
+    member and reused for both its retrieval leg and its context expansion.
+    The result is a :class:`MultiCollectionRetriever` over the members' own
+    retrievers — one single-collection leg each — and the caller's UNSCOPED
+    filters (the wrapper scopes them per leg); the graph leg, when a graph
+    store is wired, is one neighbourhood query across the members' physical
+    collections."""
+    if collections is None:
+        entry = await _resolve_entry(registry, collection, principal)
+        scoped = scope_filters(filters, tenant, await shared_scope(entry, registry, principal))
+        return entry.retriever, scoped, {None: (entry.vector_store, scoped)}
+    entries: list[CollectionEntry] = []
+    for cid in collections:
+        entries.append(await _resolve_entry(registry, cid, principal))
+    if len({e.id for e in entries}) != len(entries):
+        raise HTTPException(
+            status_code=422,
+            detail="collections: two ids resolve to the same collection",
+        )
+    legs: list[CollectionLeg] = []
+    targets: dict[str | None, tuple[Any, dict[str, Any]]] = {}
+    for entry in entries:
+        extra = await shared_scope(entry, registry, principal)
+        legs.append(
+            CollectionLeg(
+                id=entry.id,
+                retriever=entry.retriever,
+                physical=entry.collection,
+                vector_store=entry.vector_store,
+                extra_tenants=extra,
+            )
+        )
+        targets[entry.id] = (entry.vector_store, scope_filters(filters, tenant, extra))
+    first = entries[0].retriever
+    retriever = MultiCollectionRetriever(
+        legs,
+        graph_store=getattr(first, "graph_store", None),
+        rrf_scorer=RRFScorer(k=settings.rrf_k),
+        graph_context_score=getattr(first, "graph_context_score", settings.graph_context_score),
+        graph_context_depth=getattr(first, "graph_context_depth", settings.graph_context_depth),
+    )
+    return retriever, filters, targets
+
+
 def _override_model(builder, models: ModelRegistry, http, model_id: str | None, default):
     """Per-request model override: build from the registered ``model_id`` when
     given (via ``builder`` — build_generator_for / build_reranker_for), else return
@@ -435,12 +606,10 @@ async def retrieve(
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
-    entry = await _resolve_entry(registry, request.collection, principal)
-    retriever = entry.retriever
-    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    filters = scope_filters(
-        request.filters, tenant, await shared_scope(entry, registry, principal)
+    retriever, filters, targets = await _resolve_retrieval(
+        registry, request.collection, request.collections, principal, tenant, request.filters
     )
+    reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -454,9 +623,7 @@ async def retrieve(
         tenant_id=tenant,
         mode=request.retrieval_mode,
     )
-    context = await _expand_sources(
-        entry.vector_store, scored, request.context_window, filters
-    )
+    context = await _expand_sources(targets, scored, request.context_window)
     return RetrieveResponse(sources=_to_sources(scored, context))
 
 
@@ -541,10 +708,8 @@ async def query(
     """
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    entry = await _resolve_entry(registry, request.collection, principal)
-    retriever = entry.retriever
-    filters = scope_filters(
-        request.filters, tenant, await shared_scope(entry, registry, principal)
+    retriever, filters, targets = await _resolve_retrieval(
+        registry, request.collection, request.collections, principal, tenant, request.filters
     )
     variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(
@@ -565,9 +730,7 @@ async def query(
     # list and only decorates the sources. The generator sees the decorated
     # sources, so with ``context_window > 0`` the answer is grounded in each
     # passage plus its neighbours (see RagGenerator._format_context).
-    context = await _expand_sources(
-        entry.vector_store, scored, request.context_window, filters
-    )
+    context = await _expand_sources(targets, scored, request.context_window)
     sources = _to_sources(scored, context)
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)

@@ -49,6 +49,17 @@
       "type": ["string", "null"],
       "default": null
     },
+    "collections": {
+      "description": "Multi-collection fused retrieval (issue #253): registry collection ids to query together. Every id is resolved and read-authorized BEFORE any retrieval runs (an unknown or unreadable id is a 404 for the whole request — no partial answers; a dormant member is a 503 + Retry-After for the whole request); then one single-collection retrieval leg runs per id, concurrently, the legs are fused with RRF, reranked once over the union and cut to top_k. Each returned Source carries the member it came from in `collection`; a document present in two collections appears once per collection. Mutually exclusive with `collection` (both → 422). 1 to 5 unique ids (more, duplicates, or an empty list → 422); a single id behaves exactly like `collection`. Never expressed as one many-valued store filter — one leg per collection.",
+      "type": ["array", "null"],
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "default": null
+    },
     "retrieval_mode": {
       "description": "Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or bm25 (sparse only). The graph leg is orthogonal (use_graph).",
       "type": "string",

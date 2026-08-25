@@ -1,12 +1,14 @@
 """Retrieval pipeline — hybrid vector + BM25 + graph retrieval."""
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ragstack.models import Chunk, ContextChunk, ScoredChunk
 from ragstack.protocols import GraphStore, TextIndex, VectorStore
 from ragstack.scoring.scorers import RRFScorer
-from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
+from ragstack.tenancy import DEFAULT_TENANT, readable_tenants, scope_filters
 
 if TYPE_CHECKING:
     from ragstack.ingestion.boilerplate import BoilerplateConfig
@@ -218,48 +220,288 @@ class HybridRetriever:
         Without the stamps, ``tenancy.tenant_of`` reads the default tenant for
         every graph result, so a post-retrieval re-check can only pass or fail
         the whole leg wholesale instead of evaluating it per chunk."""
-        from ragstack.models import Chunk
-
-        triples = await self.graph_store.query_neighborhood(  # type: ignore[union-attr]
+        assert self.graph_store is not None
+        return await graph_context(
+            self.graph_store,
             query,
+            top_k,
+            tenant_id,
+            [self.collection] if self.collection is not None else None,
             depth=self.graph_context_depth,
-            tenant_id=tenant_id,
-            collection=self.collection,
+            score=self.graph_context_score,
+            min_confidence=self._min_confidence(),
         )
-        if tenant_id is not None:
-            allowed = set(readable_tenants(tenant_id))
-            triples = [t for t in triples if t.tenant_id in allowed]
-        if self.collection is not None:
-            triples = [t for t in triples if t.collection == self.collection]
-        # Evidence floor (#347). NOTE this deliberately fails OPEN, the opposite
-        # of the two scope re-checks above and of the #209 convention (an
-        # unstamped ``collection`` is invisible). Tenant/collection are safety
-        # boundaries, where "unknown" must mean "not yours". Confidence is a
-        # quality axis on a field that did not exist before #347: failing closed
-        # would make every pre-existing triple vanish the moment the field was
-        # added — a silent corpus-wide regression, not a safety property. So an
-        # unstamped triple has confidence 0, the default floor is 0, and it
-        # passes; an operator opts into filtering by raising the floor.
-        triples = filter_by_confidence(triples, self._min_confidence())
-        chunks = []
-        for triple in triples[:top_k]:
-            content = f"{triple.subject} {triple.predicate} {triple.object}"
-            metadata: dict[str, Any] = {"tenant_id": triple.tenant_id or DEFAULT_TENANT}
-            if triple.collection:
-                metadata["collection"] = triple.collection
-            chunks.append(
+
+
+async def graph_context(
+    graph_store: GraphStore,
+    query: str,
+    top_k: int,
+    tenant_id: str | None,
+    collections: list[str] | None,
+    *,
+    depth: int = 1,
+    score: float = 0.5,
+    min_confidence: int = 0,
+) -> list[ScoredChunk]:
+    """The graph leg as a free function: ONE ``query_neighborhood`` call scoped
+    to ``tenant_id`` and to ``collections`` — one physical collection name (the
+    single-collection retriever, passed as the bare name so the store's
+    single-value predicate is byte-identical to before) or several (the
+    multi-collection fan-out of issue #253, passed as a list: ``collection IN
+    [...]``, exact on Neo4j and on the in-memory store — a graph property
+    predicate, not an HNSW payload filter, so #199 does not apply). ``None``
+    is the deliberately unscoped dev/library read. Both scopes are re-checked
+    on the way back, per :meth:`HybridRetriever._graph_context`; the
+    ``min_confidence`` evidence floor (#347) is applied after them and fails
+    OPEN (see the comment below). ``top_k`` is the pseudo-chunk budget of the
+    whole call — with several collections it is shared across them, not
+    ``top_k`` each. Every pseudo-chunk carries ``metadata["collection"]`` =
+    its triple's physical collection, which is how the fan-out maps it back
+    to a registry id."""
+    triples = await graph_store.query_neighborhood(
+        query,
+        depth=depth,
+        tenant_id=tenant_id,
+        collection=(
+            None if collections is None
+            else collections[0] if len(collections) == 1
+            else list(collections)
+        ),
+    )
+    if tenant_id is not None:
+        allowed = set(readable_tenants(tenant_id))
+        triples = [t for t in triples if t.tenant_id in allowed]
+    if collections is not None:
+        wanted = set(collections)
+        triples = [t for t in triples if t.collection in wanted]
+    # Evidence floor (#347). NOTE this deliberately fails OPEN, the opposite
+    # of the two scope re-checks above and of the #209 convention (an
+    # unstamped ``collection`` is invisible). Tenant/collection are safety
+    # boundaries, where "unknown" must mean "not yours". Confidence is a
+    # quality axis on a field that did not exist before #347: failing closed
+    # would make every pre-existing triple vanish the moment the field was
+    # added — a silent corpus-wide regression, not a safety property. So an
+    # unstamped triple has confidence 0, the default floor is 0, and it
+    # passes; an operator opts into filtering by raising the floor.
+    triples = filter_by_confidence(triples, min_confidence)
+    chunks = []
+    for triple in triples[:top_k]:
+        content = f"{triple.subject} {triple.predicate} {triple.object}"
+        metadata: dict[str, Any] = {"tenant_id": triple.tenant_id or DEFAULT_TENANT}
+        if triple.collection:
+            metadata["collection"] = triple.collection
+        chunks.append(
+            ScoredChunk(
+                chunk=Chunk(
+                    id=f"graph-{triple.subject}-{triple.predicate}-{triple.object}",
+                    doc_id=triple.doc_id,
+                    content=content,
+                    metadata=metadata,
+                ),
+                score=score,
+                retrieval_method="graph",
+            )
+        )
+    return chunks
+
+
+# --------------------------------------------------------------------------- #
+# Multi-collection fan-out (issue #253)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class CollectionLeg:
+    """One member of a multi-collection request: its registry id, its
+    already-collection-scoped retriever (the stores behind a
+    :class:`HybridRetriever` ARE per-collection), the physical collection name
+    its graph triples are stamped with, and the extra writer-tenants the
+    caller may read in THIS collection (share-based widening, computed once
+    per entry by the router and reused for context expansion)."""
+
+    id: str
+    retriever: Any
+    physical: str = ""
+    vector_store: Any = None
+    extra_tenants: list[str] = field(default_factory=list)
+
+    def filters(self, filters: dict[str, Any] | None, tenant_id: str | None) -> dict[str, Any] | None:
+        """The scoped filter dict this leg's stores see: the caller's filters
+        plus ``tenant_id``'s readable tenants widened by this leg's
+        ``extra_tenants`` — always single-collection by construction (the
+        scope is the store, never a many-valued ``collection`` predicate).
+        ``tenant_id=None`` is the unscoped library path: filters pass through."""
+        if tenant_id is None:
+            return filters
+        return scope_filters(filters or {}, tenant_id, self.extra_tenants)
+
+
+class MultiCollectionRetriever:
+    """N single-collection legs, run concurrently, fused with RRF — never one
+    many-valued store filter (#199, #354).
+
+    Implements the same ``retrieve`` surface as :class:`HybridRetriever` so the
+    router's fusion/rerank/shaping code (``_retrieve_fused``) drives it
+    unchanged. Semantics:
+
+    * ``retrieve(query, top_k=depth, ...)`` runs every leg with that SAME
+      ``top_k`` — the per-leg candidate depth the single-collection path uses —
+      and returns the fused UNION un-truncated (at most ``N × depth``
+      candidates, ``N ≤ 5``): the caller reranks ONCE over the union and cuts
+      to its ``top_k`` afterwards. This is deliberately more than ``depth``
+      results.
+    * Every result is stamped with its leg's registry id
+      (``ScoredChunk.collection``) on a shallow copy of the chunk, so identity
+      is ``(collection, chunk id)`` through fusion, rerank and shaping, and a
+      document present in two collections appears once per collection. The
+      copy also makes each stamped candidate a distinct object, which is what
+      the router's post-rerank restamp relies on.
+    * One leg is not fused at all — its ranked list is returned as-is (with
+      the stamp), so ``collections: [x]`` is byte-for-byte ``collection: x``
+      plus the stamp, graph leg included.
+    * With two or more legs the legs run WITHOUT their own graph leg and the
+      graph is ONE neighbourhood query with ``collection IN [physical names]``
+      (:func:`graph_context`), fused as one more ranked list; each graph
+      pseudo-chunk is stamped with the registry id its triple's collection maps
+      to (co-resident stores map to the first such leg).
+    * Shaping (``shape`` / ``max_per_doc`` / ``demote_boilerplate``) mirrors
+      the first leg's so the router's ``_shaping_active`` sees the same
+      configuration it would for one collection (settings are process-wide).
+    """
+
+    def __init__(
+        self,
+        legs: list[CollectionLeg],
+        *,
+        graph_store: GraphStore | None = None,
+        rrf_scorer: RRFScorer | None = None,
+        graph_context_score: float = 0.5,
+        graph_context_depth: int = 1,
+        graph_min_confidence: int | None = None,
+    ) -> None:
+        if not legs:
+            raise ValueError("MultiCollectionRetriever needs at least one leg")
+        self.legs = legs
+        self.graph_store = graph_store
+        self.rrf = rrf_scorer or RRFScorer()
+        self.graph_context_score = graph_context_score
+        self.graph_context_depth = graph_context_depth
+        # Evidence floor for the one graph query (#347); ``None`` = the setting
+        # at query time, exactly as HybridRetriever reads it.
+        self.graph_min_confidence = graph_min_confidence
+        first = legs[0].retriever
+        self.max_per_doc = int(getattr(first, "max_per_doc", 0) or 0)
+        self.demote_boilerplate = bool(getattr(first, "demote_boilerplate", False))
+
+    @property
+    def collections(self) -> list[str]:
+        return [leg.id for leg in self.legs]
+
+    def shape(self, fused: list[ScoredChunk]) -> list[ScoredChunk]:
+        """The first leg's shaping (stable demotions, identical settings for
+        every leg); a leg without one is a no-op."""
+        shaper = getattr(self.legs[0].retriever, "shape", None)
+        return shaper(fused) if callable(shaper) else fused
+
+    def _min_confidence(self) -> int:
+        if self.graph_min_confidence is None:
+            from ragstack.config import settings
+
+            return settings.graph_min_confidence
+        return self.graph_min_confidence
+
+    @staticmethod
+    def _stamp(scored: list[ScoredChunk], cid: str) -> list[ScoredChunk]:
+        return [
+            ScoredChunk(
+                chunk=s.chunk.model_copy(),
+                score=s.score,
+                retrieval_method=s.retrieval_method,
+                collection=cid,
+            )
+            for s in scored
+        ]
+
+    async def _leg(
+        self,
+        leg: CollectionLeg,
+        query: str,
+        top_k: int,
+        filters: dict[str, Any] | None,
+        use_graph: bool,
+        tenant_id: str | None,
+        mode: str,
+    ) -> list[ScoredChunk]:
+        ranked = await leg.retriever.retrieve(
+            query,
+            top_k=top_k,
+            filters=leg.filters(filters, tenant_id),
+            use_graph=use_graph,
+            tenant_id=tenant_id,
+            mode=mode,
+        )
+        return self._stamp(ranked, leg.id)
+
+    async def _graph(
+        self, query: str, top_k: int, tenant_id: str | None
+    ) -> list[ScoredChunk]:
+        """One neighbourhood query over every leg's physical collection, its
+        pseudo-chunks stamped with the owning leg's registry id."""
+        if self.graph_store is None:
+            return []
+        by_physical: dict[str, str] = {}
+        for leg in self.legs:
+            if leg.physical:
+                by_physical.setdefault(leg.physical, leg.id)
+        if not by_physical:
+            return []
+        chunks = await graph_context(
+            self.graph_store,
+            query,
+            top_k,
+            tenant_id,
+            list(by_physical),
+            depth=self.graph_context_depth,
+            score=self.graph_context_score,
+            min_confidence=self._min_confidence(),
+        )
+        out: list[ScoredChunk] = []
+        for c in chunks:
+            cid = by_physical.get(str(c.chunk.metadata.get("collection", "")))
+            if cid is None:
+                continue  # re-check already excluded it; belt and braces
+            out.append(
                 ScoredChunk(
-                    chunk=Chunk(
-                        id=f"graph-{triple.subject}-{triple.predicate}-{triple.object}",
-                        doc_id=triple.doc_id,
-                        content=content,
-                        metadata=metadata,
-                    ),
-                    score=self.graph_context_score,
-                    retrieval_method="graph",
+                    chunk=c.chunk, score=c.score,
+                    retrieval_method=c.retrieval_method, collection=cid,
                 )
             )
-        return chunks
+        return out
+
+    async def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        use_graph: bool = True,
+        tenant_id: str | None = None,
+        mode: str = "hybrid",
+    ) -> list[ScoredChunk]:
+        """Run every leg concurrently at depth ``top_k`` and return the
+        RRF-fused union (see the class docstring — NOT cut to ``top_k``)."""
+        if len(self.legs) == 1:
+            return await self._leg(
+                self.legs[0], query, top_k, filters, use_graph, tenant_id, mode
+            )
+        tasks = [
+            self._leg(leg, query, top_k, filters, False, tenant_id, mode)
+            for leg in self.legs
+        ]
+        if use_graph and self.graph_store is not None:
+            tasks.append(self._graph(query, top_k, tenant_id))
+        ranked_lists = await asyncio.gather(*tasks)
+        return self.rrf.fuse([r for r in ranked_lists if r])
 
 
 # --------------------------------------------------------------------------- #

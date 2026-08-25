@@ -149,6 +149,7 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `use_graph` | bool | true | include the knowledge-graph retrieval leg |
 | `stream` | bool | false | reserved |
 | `collection` | string \| null | null | registry collection id to query; null = the default collection. Unknown **or unreadable** → `404` |
+| `collections` | string[] \| null | null | [multi-collection fused retrieval](#multi-collection-retrieval-collections) (issue #253): 1–5 unique registry ids to query together; mutually exclusive with `collection` (both, more than 5, duplicates or `[]` → `422`). Every id is resolved and read-authorized before any retrieval runs: one unknown/unreadable → `404`, one dormant → `503` + `Retry-After`, for the whole request |
 | `retrieval_mode` | `hybrid` \| `vector` \| `bm25` | `hybrid` | which retrieval legs run: dense + BM25 fused, dense only, or keyword only. Graph leg is orthogonal (`use_graph`) |
 | `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
 | `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)` |
@@ -157,11 +158,13 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `reranker` | string \| null | null | registered model id to rerank with, this request only |
 
 **Response** (`QueryResponse`): `{ answer, sources[], rewritten_queries[] }`. Each
-source is `{ doc_id, chunk_id, content, score, metadata, context? }`; on API-ingested and
+source is `{ doc_id, chunk_id, content, score, metadata, context?, collection? }`; on API-ingested and
 current bulk-loaded corpora `metadata` carries `chunk_index`, `prev_chunk_id` and
 `next_chunk_id` for client-side [context expansion](#get-v1chunks). `context` is
 present only when the request set `context_window > 0` and at least one neighbour
 is visible — see [Context expansion](#context-expansion-context_window).
+`collection` is present only on a `collections` request — the registry id the
+source came from.
 
 ```bash
 curl -s http://localhost:8000/v1/query \
@@ -174,7 +177,7 @@ curl -s http://localhost:8000/v1/query \
 Same retrieval (hybrid + optional rerank) but no answer generation.
 
 **Request** (`RetrieveRequest`): `query` (required), `top_k` (5), `filters` (`{}`),
-`use_graph` (true), plus the same `collection`, `retrieval_mode`, `rerank`,
+`use_graph` (true), plus the same `collection`, `collections`, `retrieval_mode`, `rerank`,
 `rerank_candidates`, `context_window` and `reranker` fields as `/v1/query`. **Response**
 (`RetrieveResponse`): `{ sources[] }`.
 
@@ -183,6 +186,46 @@ curl -s http://localhost:8000/v1/retrieve \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"query": "mechanisms of antibiotic resistance", "top_k": 10,
        "filters": {"doc_type": "article"}}'
+```
+
+### Multi-collection retrieval (`collections`)
+
+`collections: [id, …]` on `/v1/query` and `/v1/retrieve` (issue #253) searches
+several registry collections in one request — the open-access corpus next to
+the main one, or "everything I can see". Semantics:
+
+- **Resolution first.** Every id goes through the registry, the tenant
+  allowlist and the read seam (`enforce_access(read)`) in request order
+  *before any retrieval runs*. The first refusal answers the whole request —
+  no partial answers: unknown or unreadable → `404` (leak-safe, exactly as the
+  singular form); a `dormant`/`restoring` member → `503` + `Retry-After` (the
+  dormant member's restore is submitted as the caller, as a single-collection
+  read would; nothing else runs — a request with two dormant members restores
+  them one retry at a time); a `lost` member → `409`. Two ids resolving to the
+  same collection → `422`.
+- **One leg per collection, never one many-valued filter.** Each member is
+  retrieved by its own already-collection-scoped retriever, at the same
+  per-leg candidate depth the singular path uses, all legs concurrently. The
+  legs are fused with RRF, the union is **reranked once**, then cut to
+  `top_k`. A many-valued store filter (`collection IN […]`) is never used on
+  the vector/BM25 stores (#199, #354); the knowledge-graph leg, where one is
+  wired, is one neighbourhood query across the members (exact on Neo4j).
+- **Provenance.** Every source carries `collection` — the registry id it came
+  from. A document present in two collections appears once per collection,
+  each copy stamped with its own id (they share a `chunk_id`, not a
+  collection). `context_window` neighbours are fetched per source from *its*
+  collection with that collection's scope.
+- **Cap.** 1–5 unique ids (`maxItems: 5`, the per-owner collection quota);
+  mutually exclusive with `collection`. `collections: ["x"]` is byte-for-byte
+  `collection: "x"` plus the stamp.
+
+```bash
+curl -s http://localhost:8000/v1/retrieve \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"query": "efflux pumps and multidrug resistance", "top_k": 5,
+       "collections": ["open-access", "my-notes"]}'
+# {"sources":[{"doc_id":"…","chunk_id":"…","content":"…","score":0.0328,
+#              "metadata":{…},"collection":"open-access"}, …]}
 ```
 
 ### Context expansion (`context_window`)
