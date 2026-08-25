@@ -485,3 +485,42 @@ class InMemoryGraphStore:
             else:
                 keep[k] = t
         self._by_key = keep
+
+    async def delete_collection(self, tenant_id: str | None, collection: str) -> int:
+        """Drop every triple stamped ``collection`` (#380) — one tenant's when
+        ``tenant_id`` is given (exact equality: the shared ``public`` corpus is
+        never the caller's to delete), every tenant's when ``None`` (the
+        collection-wide form eviction and purge use, #295). Returns the number
+        removed; a repeat call removes 0.
+
+        There is no separate orphan sweep here: entities are derived from the
+        triples on every read (``list_entities`` / ``stats``), so an entity
+        whose last edge went with the collection is gone the same instant —
+        and one shared by name with another collection is still reachable
+        through that collection's surviving triples, exactly as Neo4j's
+        per-collection node identity keeps it.
+
+        The entity index (#349) is kept in step by dropping the affected
+        ``(tenant_id, collection)`` buckets whole rather than decrementing per
+        triple: a bucket is exactly the names of that scope's triples, and this
+        delete removes every one of them, so the bucket's counts all reach zero
+        — the same end state as ``_index(t, -1)`` per triple, in O(buckets).
+        Left in place, the stale names would be false positives for
+        ``match_entities`` and, with selection capped, could displace a live
+        entity from another collection."""
+        if not collection:
+            raise ValueError("delete_collection needs a collection; '' would match unstamped triples")
+        before = len(self._by_key)
+        self._by_key = {
+            k: t
+            for k, t in self._by_key.items()
+            if not (
+                t.collection == collection
+                and (tenant_id is None or t.tenant_id == tenant_id)
+            )
+        }
+        self._entity_refs = {
+            scope: names for scope, names in self._entity_refs.items()
+            if not (scope[1] == collection and (tenant_id is None or scope[0] == tenant_id))
+        }
+        return before - len(self._by_key)

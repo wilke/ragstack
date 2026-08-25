@@ -42,11 +42,15 @@ says no: a record whose physical stores are the derived default's, or an
 (the purge guard's ``_shared_store_users`` case — dropping one id's store
 destroys the other's data), is never a candidate.
 
-The graph leg: one graph backend holds every collection's triples and the
-``GraphStore`` protocol has no per-collection delete (only ``delete_by_doc``),
-so an evicted collection's triples stay until the per-collection delete lands
-(tracked as #380, the graph leg of #353).
-Reads of them are already collection-scoped, so nothing leaks meanwhile.
+The graph leg (#380, the graph leg of #353): one graph backend holds every
+collection's triples, stamped ``(tenant_id, collection)`` (#209), so the
+third drop is ``GraphStore.delete_collection(tenant_id=None, collection)`` —
+collection-wide, like the Qdrant/ES drops, which destroy every tenant's
+chunks in the collection. It is passed in by the caller (``graph_store=``,
+the app's single instance) and is a target only when one is configured: with
+no graph backend there is nothing to drop and nothing to report. Best-effort
+like the other two — a failed graph delete leaves the row ``dormant`` with
+``graph`` named in ``state_reason``.
 
 This module imports nothing from ``ragstack.api``: the registry is duck-typed
 (``entries()`` / ``has()`` / ``resolve()`` over entries with ``collection``,
@@ -89,6 +93,7 @@ REASONS: tuple[str, ...] = (
 # Physical-store targets, named as the purge report names them.
 TARGET_VECTORS = "vectors"
 TARGET_TEXT = "text_index"
+TARGET_GRAPH = "graph"
 
 
 def parse_stamp(value: str) -> float | None:
@@ -323,11 +328,22 @@ class EvictionOutcome:
         return self.evicted and not self.failed
 
 
-async def drop_stores(entry: Any) -> tuple[list[str], list[str], list[tuple[str, str]]]:
-    """Drop ``entry``'s Qdrant collection and ES index, best-effort per target,
-    never raising: ``(deleted, absent, failed)`` with ``failed`` as
-    ``(target, error)`` pairs. Shared with the purge path so the two cannot
-    drift on what "dropped" means."""
+async def drop_stores(
+    entry: Any, *, graph_store: Any = None,
+) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """Drop ``entry``'s Qdrant collection, ES index and — when ``graph_store``
+    is given — its triples, best-effort per target, never raising:
+    ``(deleted, absent, failed)`` with ``failed`` as ``(target, error)``
+    pairs. Shared with the purge path so the two cannot drift on what
+    "dropped" means.
+
+    The graph leg is ``delete_collection(tenant_id=None, entry.collection)``
+    (#380): collection-wide, because the two physical drops are — a
+    tenant-scoped delete would leave a co-writer's edges for the next owner
+    of the name (#295). Its count maps onto the same three buckets: ``> 0``
+    removed → deleted, ``0`` → absent (idempotent, like a store that was
+    already gone). No graph store → no ``graph`` target at all, so a
+    deployment without a graph backend reports exactly what it dropped."""
     deleted: list[str] = []
     absent: list[str] = []
     failed: list[tuple[str, str]] = []
@@ -335,6 +351,8 @@ async def drop_stores(entry: Any) -> tuple[list[str], list[str], list[tuple[str,
         (TARGET_VECTORS, getattr(entry.vector_store, "drop_collection", None)),
         (TARGET_TEXT, getattr(entry.text_index, "drop_index", None)),
     ]
+    if graph_store is not None:
+        drops.append((TARGET_GRAPH, _graph_drop(graph_store, entry.collection)))
     for target, fn in drops:
         if fn is None:
             failed.append((target, "backend does not support dropping"))
@@ -349,8 +367,24 @@ async def drop_stores(entry: Any) -> tuple[list[str], list[str], list[tuple[str,
     return deleted, absent, failed
 
 
+def _graph_drop(graph_store: Any, collection: str) -> Callable[[], Any] | None:
+    """The graph leg as a ``drop_*``-shaped callable (``True`` = something was
+    there), or ``None`` for a backend without ``delete_collection`` so it is
+    reported as unsupported like a store without ``drop_collection``."""
+    delete = getattr(graph_store, "delete_collection", None)
+    if delete is None:
+        return None
+
+    async def _drop() -> bool:
+        return bool(await delete(None, collection))
+
+    return _drop
+
+
 def _physical_name(entry: Any, target: str) -> str:
-    return entry.collection if target == TARGET_VECTORS else entry.es_index()
+    # The graph leg's "physical" name is the stamp its triples carry — the
+    # collection name — so the leftover message names what to sweep by hand.
+    return entry.es_index() if target == TARGET_TEXT else entry.collection
 
 
 async def evict(
@@ -360,12 +394,15 @@ async def evict(
     *,
     in_flight: Collection[str] = frozenset(),
     on_change: Callable[[str], None] | None = None,
+    graph_store: Any = None,
 ) -> list[EvictionOutcome]:
     """Make each of ``ids`` dormant: CAS ``active → dormant`` on the registry
     row FIRST, then drop the physical stores (module docstring). ``on_change``
     is called with the id after every row write (the lifecycle gate's cache
     invalidation). ``in_flight`` is re-checked here as well as at selection:
-    a job accepted between the two must still win."""
+    a job accepted between the two must still win. ``graph_store`` is the
+    process-wide graph backend, if any: the victim's triples are the third
+    drop (:func:`drop_stores`)."""
     outcomes: list[EvictionOutcome] = []
     for cid in ids:
         if not registry.has(cid):
@@ -406,7 +443,7 @@ async def evict(
             continue
         # 2. The drops, best-effort per target.
         entry = registry.resolve(cid)
-        deleted, absent, failed = await drop_stores(entry)
+        deleted, absent, failed = await drop_stores(entry, graph_store=graph_store)
         if failed:
             leftovers = "; ".join(
                 f"{target} {_physical_name(entry, target)!r} still present ({error})"

@@ -203,6 +203,25 @@ class GraphStore(Protocol):
         collection's triples for a doc_id that exists in both."""
         ...
 
+    async def delete_collection(self, tenant_id: str | None, collection: str) -> int:
+        """Delete every triple stamped ``collection`` (#380) and sweep the
+        entities that lost their last edge; return the number of triples
+        (edges) removed, so a second call returns ``0`` — the idempotency signal
+        the eviction/purge report turns into ``absent``.
+
+        ``collection`` is required and never crossed: another collection's
+        triples — even for the same ``doc_id`` or entity name — are untouched
+        (#209). ``tenant_id`` narrows the delete to ONE tenant's triples by
+        exact equality (never the readable set — ``public`` is not the
+        caller's to delete); ``None`` is the deliberate collection-wide form
+        the physical-store drops use: eviction and purge destroy the whole
+        Qdrant collection regardless of who wrote which chunk, so the graph leg
+        must do the same or a reused collection inherits the previous owner's
+        edges (#295, the direction that issue asked to be chosen explicitly).
+        An empty ``collection`` is refused (``ValueError``) rather than matching
+        unstamped legacy triples."""
+        ...
+
 
 @runtime_checkable
 class KGExtractor(Protocol):

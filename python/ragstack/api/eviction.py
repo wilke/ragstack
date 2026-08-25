@@ -179,6 +179,7 @@ async def run_eviction(
     return await evict(
         registry, store, [v.collection_id for v in victims],
         in_flight=in_flight, on_change=on_change,
+        graph_store=getattr(app_state, "graph_store", None),  # the graph leg (#380)
     )
 
 

@@ -498,3 +498,103 @@ async def test_evict_rechecks_in_flight_and_skips_unregistered_and_unknown_ids()
     assert not by_id["unknown"].evicted
     assert (await store.get("lib")).state == ACTIVE
     assert log == []  # no writes, no drops
+
+
+# --------------------------------------------------------------------------- #
+# the graph leg (#380)
+# --------------------------------------------------------------------------- #
+
+
+class _Graph:
+    """A GraphStore double for the third drop: records the scope it was called
+    with, returns ``count`` edges removed (0 = nothing there), or fails."""
+
+    def __init__(self, log: list, *, count: int = 3, fail: bool = False):
+        self.log, self.count, self.fail = log, count, fail
+        self.calls: list[tuple[str | None, str]] = []
+
+    async def delete_collection(self, tenant_id, collection):
+        self.calls.append((tenant_id, collection))
+        self.log.append(("drop", f"graph:{collection}"))
+        if self.fail:
+            raise RuntimeError("ServiceUnavailable: graph backend unreachable")
+        return self.count
+
+
+async def _dormant_victim(store, log, cid="lib"):
+    rec = _rec(cid)
+    await store.put(rec.spec)
+    await store.append_version(cid, 1)
+    return rec, _entry_for(rec, log)
+
+
+@pytest.mark.asyncio
+async def test_evict_drops_the_collections_triples_collection_wide_after_the_stores():
+    log: list = []
+    store = _RecordingStore(log)
+    rec, entry = await _dormant_victim(store, log)
+    graph = _Graph(log)
+
+    [o] = await evict(_Registry(entry), store, ["lib"], graph_store=graph)
+
+    assert o.evicted and o.ok
+    assert o.deleted == ["vectors", "text_index", "graph"] and o.absent == [] and o.failed == []
+    # Called with the physical collection name (the stamp the triples carry)
+    # and tenant_id=None: every tenant's triples, like the store drops.
+    assert graph.calls == [(None, rec.spec.collection)]
+    assert log[-1] == ("drop", "graph:ragstack_lib_lib")  # after the swap and both stores
+
+
+@pytest.mark.asyncio
+async def test_evict_reports_a_triple_free_collection_as_graph_absent():
+    log: list = []
+    store = _RecordingStore(log)
+    _, entry = await _dormant_victim(store, log)
+    [o] = await evict(_Registry(entry), store, ["lib"], graph_store=_Graph(log, count=0))
+    assert o.evicted and o.ok
+    assert o.deleted == ["vectors", "text_index"] and o.absent == ["graph"]
+
+
+@pytest.mark.asyncio
+async def test_evict_keeps_dormant_and_names_graph_in_the_reason_when_the_graph_delete_fails():
+    """Best-effort like the other legs: the row stays ``dormant`` (the archive
+    is current; the stores ARE gone) and ``graph`` is the leftover the store
+    inventory will report."""
+    log: list = []
+    store = _RecordingStore(log)
+    _, entry = await _dormant_victim(store, log)
+    changes: list[str] = []
+
+    [o] = await evict(_Registry(entry), store, ["lib"], graph_store=_Graph(log, fail=True),
+                      on_change=changes.append)
+
+    assert o.evicted and not o.ok and o.state == DORMANT
+    assert o.deleted == ["vectors", "text_index"]
+    assert o.failed == [("graph", "RuntimeError: ServiceUnavailable: graph backend unreachable")]
+    row = await store.get("lib")
+    assert row.state == DORMANT
+    assert "leftover physical store(s): graph 'ragstack_lib_lib' still present" in row.state_reason
+    assert "graph backend unreachable" in row.state_reason
+    assert changes == ["lib", "lib"]
+
+
+@pytest.mark.asyncio
+async def test_evict_without_a_graph_store_has_no_graph_target():
+    """``graph_backend=disabled``: nothing to drop, nothing claimed — the
+    outcome is exactly the two-leg one."""
+    log: list = []
+    store = _RecordingStore(log)
+    _, entry = await _dormant_victim(store, log)
+    [o] = await evict(_Registry(entry), store, ["lib"])
+    assert o.ok and o.deleted == ["vectors", "text_index"] and o.absent == []
+    assert all(not name.startswith("graph:") for kind, name, *_ in log if kind == "drop")
+
+
+@pytest.mark.asyncio
+async def test_a_graph_backend_without_delete_collection_is_reported_unsupported():
+    log: list = []
+    store = _RecordingStore(log)
+    _, entry = await _dormant_victim(store, log)
+    [o] = await evict(_Registry(entry), store, ["lib"], graph_store=object())
+    assert o.evicted and not o.ok
+    assert o.failed == [("graph", "backend does not support dropping")]

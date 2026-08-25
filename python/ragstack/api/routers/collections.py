@@ -931,18 +931,19 @@ class PurgeFailure(BaseModel):
     Its presence means the physical resource may still exist — the purge does not
     roll back, so this is the operator's to-do list, not a warning to ignore."""
 
-    target: str  # vectors | text_index | manifest
+    target: str  # vectors | text_index | graph | manifest
     error: str
 
 
 class PurgeReport(BaseModel):
     """What a ``purge=true`` delete actually destroyed.
 
-    Deliberately three lists rather than a boolean: a purge touches four
-    independent systems (registry, Qdrant, Elasticsearch, manifest file) that can
-    each succeed, be already-gone, or fail on their own. Reporting them
-    separately is what lets a partial failure be *honest* instead of a 500 that
-    hides the three deletions that did land."""
+    Deliberately three lists rather than a boolean: a purge touches five
+    independent systems (registry, Qdrant, Elasticsearch, the graph store's
+    triples for this collection, manifest file) that can each succeed, be
+    already-gone, or fail on their own. Reporting them separately is what lets
+    a partial failure be *honest* instead of a 500 that hides the deletions
+    that did land."""
 
     collection_id: str
     purged: bool  # false for the default unregister-only delete
@@ -961,6 +962,7 @@ class PurgeReport(BaseModel):
 _TARGET_REGISTRY = "registry"
 _TARGET_VECTORS = "vectors"
 _TARGET_TEXT = "text_index"
+_TARGET_GRAPH = "graph"  # the collection's triples (#295/#380); only when a graph store exists
 _TARGET_MANIFEST = "manifest"
 
 
@@ -982,14 +984,23 @@ def _shared_store_users(registry: CollectionRegistry, entry: CollectionEntry) ->
     )
 
 
-async def _purge_physical(entry: CollectionEntry, report: PurgeReport) -> None:
-    """Drop this collection's physical stores + manifest, recording each outcome
-    on ``report``. Never raises and never rolls back: a Qdrant drop that succeeded
-    cannot be undone by an ES failure, so pretending otherwise would be a lie.
-    Each target is independent, so one failure must not skip the rest."""
-    # The two store legs share the eviction path's drop (ops/evict.drop_stores)
-    # so "dropped" cannot mean two things; the target names are the same.
-    deleted, absent, failed = await drop_stores(entry)
+async def _purge_physical(
+    entry: CollectionEntry, report: PurgeReport, *, graph_store: Any = None,
+) -> None:
+    """Drop this collection's physical stores, its triples + manifest, recording
+    each outcome on ``report``. Never raises and never rolls back: a Qdrant drop
+    that succeeded cannot be undone by an ES failure, so pretending otherwise
+    would be a lie. Each target is independent, so one failure must not skip
+    the rest.
+
+    ``graph_store`` is the app's single graph backend (``None`` when disabled,
+    and then no ``graph`` target is reported). Its delete is COLLECTION-WIDE —
+    every tenant's triples stamped with this collection — because the store
+    drops are: a reused collection name must not inherit the previous owner's
+    edges (#295), and a co-writer's edges are as gone as their chunks."""
+    # The store legs share the eviction path's drop (ops/evict.drop_stores) so
+    # "dropped" cannot mean two things; the target names are the same.
+    deleted, absent, failed = await drop_stores(entry, graph_store=graph_store)
     report.deleted.extend(deleted)
     report.absent.extend(absent)
     report.failed.extend(PurgeFailure(target=t, error=e) for t, e in failed)
@@ -1012,12 +1023,14 @@ async def _purge_physical(entry: CollectionEntry, report: PurgeReport) -> None:
 )
 async def delete_collection(
     collection_id: str,
+    request: Request,
     principal: Principal = Depends(resolve_principal),
     purge: bool = Query(
         False,
         description=(
-            "Also delete the physical Qdrant collection, the Elasticsearch index and the "
-            "provenance manifest. Default false: unregister only (the binding, not the data)."
+            "Also delete the physical Qdrant collection, the Elasticsearch index, the "
+            "collection's knowledge-graph triples and the provenance manifest. Default "
+            "false: unregister only (the binding, not the data)."
         ),
     ),
     registry: CollectionRegistry = Depends(get_collections),
@@ -1152,7 +1165,9 @@ async def delete_collection(
         failed=[],
         ok=True,
     )
-    await _purge_physical(entry, report)
+    await _purge_physical(
+        entry, report, graph_store=getattr(request.app.state, "graph_store", None),
+    )
     report.ok = not report.failed
     log.info(
         "purged collection %r (store=%s): deleted=%s absent=%s failed=%s",

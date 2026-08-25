@@ -67,10 +67,11 @@ class CountingTextIndex(InMemoryTextIndex):
         await super().delete(doc_id, tenant_id)
 
 
-def _pipeline(vstore=None, tindex=None) -> IngestionPipeline:
+def _pipeline(vstore=None, tindex=None, *, graph_store=None, collection=None) -> IngestionPipeline:
     return IngestionPipeline(
         loader=JsonlLoader(), chunker=RecursiveCharacterChunker(), embedder=_NoEmbed(),
         vector_store=vstore or CountingVectorStore(), text_index=tindex or CountingTextIndex(),
+        graph_store=graph_store, collection=collection,
         delete_prior=False,
     )
 
@@ -277,3 +278,80 @@ def test_cli_refuses_both_or_neither_mode(tmp_path):
     with pytest.raises(SystemExit):
         load_cli.main(["x.emb.jsonl", "--replay", str(tmp_path),
                        "--vector-backend", "memory", "--text-backend", "memory"])
+
+
+# --------------------------------------------------------------------------- #
+# the graph leg (#380): a tombstone removes the doc's triples, in THIS collection
+# --------------------------------------------------------------------------- #
+
+
+async def test_tombstone_removes_the_docs_triples_from_the_restored_collection_only(versions):
+    from ragstack.models import Triple
+    from ragstack.stores.memory import InMemoryGraphStore
+
+    def triple(doc_id: str, collection: str, tenant: str = "alice") -> Triple:
+        return Triple(subject=f"S-{doc_id}", predicate="mentions", object="O",
+                      doc_id=doc_id, tenant_id=tenant, collection=collection)
+
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        # the restored collection: the tombstoned docs (two tenants — a restore
+        # is collection-wide, like its chunk deletes) and a doc no version
+        # touches, which survives (a doc a chunk version RE-INGESTS loses its
+        # prior triples to that version's delete-prior, exactly like its chunks)
+        triple("doc-0", "corpus_x"), triple("doc-4", "corpus_x", tenant="public"),
+        triple("doc-99", "corpus_x"),
+        # another collection holding the SAME doc ids: must be untouched (#209)
+        triple("doc-0", "corpus_y"), triple("doc-4", "corpus_y"),
+    ])
+    p = _pipeline(graph_store=graph, collection="corpus_x")
+
+    summary = await run_replay(p, versions["dirs"], spec_hash=SPEC)
+
+    assert summary.status == "completed" and summary.n_docs_deleted == 2
+    left_x = {(t.doc_id, t.tenant_id) for t in graph._triples if t.collection == "corpus_x"}
+    assert left_x == {("doc-99", "alice")}
+    left_y = {t.doc_id for t in graph._triples if t.collection == "corpus_y"}
+    assert left_y == {"doc-0", "doc-4"}
+
+
+async def test_replay_without_a_graph_store_is_unchanged(versions):
+    """The graph leg is optional: a worker with no graph backend replays
+    exactly as before (no attribute errors, same chunk set)."""
+    p = _pipeline()
+    assert p.graph_store is None
+    summary = await run_replay(p, versions["dirs"], spec_hash=SPEC)
+    assert summary.status == "completed" and summary.n_docs_deleted == 2
+
+
+def test_cli_replay_builds_the_pipeline_with_the_collection_stamp(versions, tmp_path, monkeypatch):
+    """``_delete_docs`` scopes ``delete_by_doc`` by ``pipeline.collection``; a
+    worker whose pipeline had no stamp would delete UNSCOPED — every
+    collection's copy of the doc id. The CLI must therefore hand the registry
+    entry's physical collection name to the pipeline, and the graph store only
+    when the durable backend is configured (an in-memory one is process-local
+    and holds nothing)."""
+    import asyncio
+    import types
+
+    from ragstack.config import settings
+
+    built: dict[str, object] = {}
+    real = load_cli.IngestionPipeline
+
+    def spy(*a, **kw):
+        built.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(load_cli, "IngestionPipeline", spy)
+    monkeypatch.setattr(settings, "graph_backend", "memory")
+    args = types.SimpleNamespace(
+        vector_backend="memory", text_backend="memory", backpressure=False,
+        backpressure_poll=2.0, replay=[str(d) for d in versions["dirs"]],
+        delete_concurrency=2, no_delete_prior=False, embeddings=[],
+    )
+    target = types.SimpleNamespace(collection="ragstack_phys_x")
+    asyncio.run(load_cli._build_pipeline(args, target))
+    assert built["collection"] == "ragstack_phys_x"
+    assert built["graph_store"] is None  # memory graph: nothing durable to delete
+    assert built["delete_prior"] is False

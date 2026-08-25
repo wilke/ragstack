@@ -1288,8 +1288,10 @@ paths:
         unregistered.
 
 
-        With `purge=true` the physical Qdrant collection, the Elasticsearch index
-        and the provenance manifest are deleted too. **Irreversible**: the
+        With `purge=true` the physical Qdrant collection, the Elasticsearch index,
+        the collection's knowledge-graph triples (every tenant's — the `graph`
+        target, present only when a graph backend is configured) and the
+        provenance manifest are deleted too. **Irreversible**: the
         embeddings are destroyed and can only be recovered by re-ingesting. The
         response is a 200 `CollectionPurgeReport` describing exactly what was
         removed, what was already absent, and what failed — a partial failure
