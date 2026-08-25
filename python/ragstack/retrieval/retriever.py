@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ragstack.models import ScoredChunk
+from ragstack.models import Chunk, ContextChunk, ScoredChunk
 from ragstack.protocols import GraphStore, TextIndex, VectorStore
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
@@ -226,3 +226,100 @@ class HybridRetriever:
                 )
             )
         return chunks
+
+
+# --------------------------------------------------------------------------- #
+# Server-side context expansion (issue #322)
+# --------------------------------------------------------------------------- #
+
+#: Metadata keys stamped by ``ingestion.chunkers.link_neighbors``, by walk direction.
+_LINK_KEYS = {-1: "prev_chunk_id", 1: "next_chunk_id"}
+
+
+def _neighbour_id(chunk: Chunk, direction: int) -> str | None:
+    """The id of ``chunk``'s neighbour in ``direction`` (-1 = prev, +1 = next),
+    or ``None`` at a document edge. Corpora bulk-loaded before the linker was
+    tightened stamped the literal string ``"None"`` there (docs/USER-GUIDE.md);
+    treat it — and an empty string — as "no link" too."""
+    raw = chunk.metadata.get(_LINK_KEYS[direction])
+    if raw is None:
+        return None
+    link = str(raw).strip()
+    return link if link and link != "None" else None
+
+
+async def expand_context(
+    store: VectorStore,
+    scored: list[ScoredChunk],
+    window: int,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, list[ContextChunk]]:
+    """Walk each returned source's ``prev_chunk_id`` / ``next_chunk_id`` up to
+    ``window`` hops each way and return, per source chunk id, its visible
+    neighbours ordered by position (negative = before). A post-rerank,
+    post-truncation step: ``scored`` is read, never modified — the ranking is
+    unchanged and no neighbour is merged into it.
+
+    Round trips: the neighbour ids of ALL sources at a given hop are fetched in
+    ONE batched ``store.get_chunks`` call — one per hop, so ``window`` (≤ 3)
+    calls at most and exactly one at ``window=1``, independent of ``top_k``. A
+    hop's ids can't be known before the previous hop's chunks are in hand (ids
+    are opaque uuid5s, not derivable from ``chunk_index``), which is why it is
+    one call per hop rather than one per request; a hop that needs nothing new
+    (every id already in hand) makes no call at all.
+
+    Scope: ``filters`` is the request's scoped filter dict (user filters +
+    tenant scope — the same predicate ``search()`` used, #197), so a neighbour
+    the caller may not read is simply not returned by the store and the walk
+    stops there for that direction: it is omitted, and nothing beyond it is
+    reached through it. Document boundaries (no link) end the walk the same way.
+
+    De-duplication: a neighbour that is itself one of the returned sources is
+    walked THROUGH (its links are already in hand, so no fetch) but NOT attached
+    as context — its content is already in the response as a scored source.
+    Raises ``UnknownFilterKey`` (stores/filters.py) unchanged if ``filters``
+    carries a key ``get_chunks`` refuses; the caller maps it to a 400.
+    """
+    if window <= 0 or not scored:
+        return {}
+    known: dict[str, Chunk] = {s.chunk.id: s.chunk for s in scored}
+    source_ids = set(known)
+    # Per source, per direction: the chunk the walk is currently standing on.
+    cursors: dict[str, dict[int, Chunk]] = {
+        cid: {-1: chunk, 1: chunk} for cid, chunk in known.items()
+    }
+    found: dict[str, list[ContextChunk]] = {}
+    for hop in range(1, window + 1):
+        # (source id, direction, neighbour id) for every live walk at this hop.
+        steps: list[tuple[str, int, str]] = []
+        needed: dict[str, None] = {}  # ordered set of ids not yet in hand
+        for cid, dirs in cursors.items():
+            for direction, at in list(dirs.items()):
+                nid = _neighbour_id(at, direction)
+                if nid is None:
+                    del dirs[direction]  # document edge: this walk is over
+                    continue
+                steps.append((cid, direction, nid))
+                if nid not in known:
+                    needed[nid] = None
+        if not steps:
+            break
+        if needed:
+            for c in await store.get_chunks(list(needed), filters):
+                known[c.id] = c
+        for cid, direction, nid in steps:
+            neighbour = known.get(nid)
+            if neighbour is None:
+                # Not visible to this caller (out of scope) or dangling: omit,
+                # and stop this direction — nothing beyond it is reachable.
+                del cursors[cid][direction]
+                continue
+            cursors[cid][direction] = neighbour
+            if nid in source_ids:
+                continue  # already a scored source: don't duplicate its content
+            found.setdefault(cid, []).append(
+                ContextChunk(chunk_id=nid, position=direction * hop, content=neighbour.content)
+            )
+    for ctx in found.values():
+        ctx.sort(key=lambda c: c.position)
+    return found

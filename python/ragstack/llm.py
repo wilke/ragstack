@@ -104,11 +104,31 @@ class RagGenerator:
         """The underlying chat client — used by the models benchmark probe."""
         return self._llm
 
+    @staticmethod
+    def _passage_text(s: Source) -> str:
+        """The text a source contributes to the prompt: its content alone, or —
+        when the request asked for ``context_window > 0`` and neighbours were
+        attached — its neighbours and itself concatenated in document order
+        (``position`` ascending), each part under a clear delimiter so the
+        model can still tell the matched passage from its surroundings. The
+        citation number stays on the whole block: it is one source."""
+        if not s.context:
+            return s.content
+        before = [c.content for c in s.context if c.position < 0]
+        after = [c.content for c in s.context if c.position > 0]
+        parts: list[str] = []
+        if before:
+            parts.append("(context before)\n" + "\n".join(before))
+        parts.append("(passage)\n" + s.content)
+        if after:
+            parts.append("(context after)\n" + "\n".join(after))
+        return "\n".join(parts)
+
     def _format_context(self, sources: list[Source]) -> str:
         parts: list[str] = []
         used = 0
         for i, s in enumerate(sources, start=1):
-            block = f"[{i}] {s.content}"
+            block = f"[{i}] {self._passage_text(s)}"
             sep = 2 if parts else 0  # the "\n\n" join adds 2 chars between blocks
             if parts and used + sep + len(block) > self._max_context_chars:
                 break  # at the budget; stop adding passages

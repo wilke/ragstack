@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 
 class Document(BaseModel):
@@ -55,11 +55,46 @@ class ScoredChunk(BaseModel):
     retrieval_method: str = "hybrid"  # vector | bm25 | graph | hybrid
 
 
+class ContextChunk(BaseModel):
+    """One neighbouring chunk attached to a :class:`Source` by server-side
+    context expansion (``context_window``, issue #322). ``position`` is the
+    offset from the source in chunks: ``-1`` is the immediately preceding chunk,
+    ``1`` the following one. Carries no score — the score belongs to the
+    matched chunk only."""
+
+    chunk_id: str
+    position: int
+    content: str
+
+
 class Source(BaseModel):
-    """A source reference returned in query responses."""
+    """A source reference returned in query responses.
+
+    ``context`` is the source's document neighbours (``context_window > 0``),
+    ordered by position, or ``None`` — and a ``None`` is OMITTED from the
+    serialized form rather than emitted as ``"context": null``, so a request
+    that did not ask for expansion gets a response byte-identical to the one it
+    got before the field existed (the contract lists ``context`` as optional,
+    not nullable). Only the ``context`` key is touched: ``metadata`` values that
+    are ``None`` (``prev_chunk_id`` on a document's first chunk) still serialize
+    as ``null``, exactly as before — which is why this is a targeted serializer
+    and not ``exclude_none``.
+    """
 
     doc_id: str
     chunk_id: str
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
+    context: list[ContextChunk] | None = None
+
+    # Deliberately no return annotation: with one, pydantic replaces the model's
+    # serialization JSON schema (what /openapi.json shows for Source) by the
+    # annotation's — an opaque ``{"type": "object"}``. Unannotated, it keeps the
+    # field-level schema.
+    @model_serializer(mode="wrap")
+    def _omit_absent_context(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        if data.get("context") is None:
+            data.pop("context", None)
+        return data

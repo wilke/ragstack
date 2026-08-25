@@ -2450,6 +2450,20 @@ components:
           type: string
           enum: [hybrid, vector, bm25]
           default: hybrid
+        context_window:
+          description: >-
+            Server-side context expansion (issue #322): after fusion, rerank and
+            the top_k cut, walk each returned source's prev_chunk_id /
+            next_chunk_id up to this many hops each way and attach the
+            neighbours as the Source's context (ranking unchanged; never merged
+            into the scored list). Scoped by the same filters and tenant scope
+            as the retrieval; a neighbour the caller may not read is omitted; a
+            neighbour that is itself a returned source is not duplicated.
+            0 (default) leaves the response as before. Above 3 is a 422.
+          type: integer
+          minimum: 0
+          maximum: 3
+          default: 0
         llm:
           description: >-
             Registered model id to generate the answer with for THIS request only
@@ -2521,6 +2535,20 @@ components:
           type: string
           enum: [hybrid, vector, bm25]
           default: hybrid
+        context_window:
+          description: >-
+            Server-side context expansion (issue #322): after fusion, rerank and
+            the top_k cut, walk each returned source's prev_chunk_id /
+            next_chunk_id up to this many hops each way and attach the
+            neighbours as the Source's context (ranking unchanged; never merged
+            into the scored list). Scoped by the same filters and tenant scope
+            as the retrieval; a neighbour the caller may not read is omitted; a
+            neighbour that is itself a returned source is not duplicated.
+            0 (default) leaves the response as before. Above 3 is a 422.
+          type: integer
+          minimum: 0
+          maximum: 3
+          default: 0
         reranker:
           description: >-
             Registered model id to rerank with for THIS request only. Unknown id
@@ -3452,6 +3480,33 @@ components:
         metadata:
           type: object
           default: {}
+        context:
+          description: >-
+            Neighbouring chunks of the same document, attached only when the
+            request set context_window > 0 and at least one neighbour is
+            visible; absent otherwise. Ordered by position (negative = before
+            the source, positive = after). A neighbour that is itself a
+            returned source is omitted here rather than duplicated.
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextChunk"
+
+    ContextChunk:
+      type: object
+      description: >-
+        One neighbouring chunk attached to a Source by context_window (#322).
+      required: [chunk_id, position, content]
+      properties:
+        chunk_id:
+          type: string
+        position:
+          description: >-
+            Offset from the source in chunks: -1 is the immediately preceding
+            chunk, 1 the following one.
+          type: integer
+        content:
+          type: string
+      additionalProperties: false
 
     JobItemCounts:
       type: object

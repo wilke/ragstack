@@ -21,6 +21,27 @@
     "metadata": {
       "type": "object",
       "default": {}
+    },
+    "context": {
+      "description": "Neighbouring chunks of the same document, attached only when the request set context_window > 0 and at least one neighbour is visible; absent otherwise. Ordered by position (negative = before the source, positive = after). A neighbour that is itself a returned source is omitted here rather than duplicated.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["chunk_id", "position", "content"],
+        "properties": {
+          "chunk_id": {
+            "type": "string"
+          },
+          "position": {
+            "description": "Offset from the source in chunks: -1 is the immediately preceding chunk, 1 the following one.",
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false

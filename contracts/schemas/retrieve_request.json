@@ -44,6 +44,13 @@
       "enum": ["hybrid", "vector", "bm25"],
       "default": "hybrid"
     },
+    "context_window": {
+      "description": "Server-side context expansion (issue #322): after fusion, rerank and the top_k cut, walk each returned source's prev_chunk_id / next_chunk_id up to this many hops each way and attach the neighbours as the Source's context (ranking unchanged; never merged into the scored list). Scoped by the same filters and tenant scope as the retrieval; a neighbour the caller may not read is omitted; a neighbour that is itself a returned source is not duplicated. 0 (default) leaves the response as before. Above 3 is a 422.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "default": 0
+    },
     "reranker": {
       "description": "Registered model id to rerank with for THIS request only. Unknown id 404; non-reranker model 400. See GET /v1/models/available.",
       "type": ["string", "null"],
