@@ -21,6 +21,7 @@ from ragstack.acl_store import (
     PERM_OWNER,
     PERM_READ,
     PUBLIC_GROUP,
+    OwnerQuotaExceededError,
     ShareInvariantError,
     ShareNotFoundError,
     ShareRecord,
@@ -29,6 +30,7 @@ from ragstack.acl_store import (
 from ragstack.api.access import (
     enforce_access,
     filter_readable,
+    owner_quota_exceeded_response,
     revoke_collection_acl,
     write_owner_row,
 )
@@ -416,6 +418,13 @@ async def create_collection(
     (model, dim, chunk), so the same spec is idempotent (409 on a repeat). Supply
     ``id`` for a *named library*: the id is part of the physical name, so two
     libraries with identical build specs stay isolated from each other.
+
+    Per-owner quota (issue #290): the creator would own more than
+    ``MAX_COLLECTIONS_PER_OWNER`` (default 5) active collections after this one
+    → 409 with a structured ``{owned, limit}`` detail, checked atomically with
+    the owner-row write. Admin is exempt from this quota (logged), but not from
+    ``MAX_COLLECTIONS`` above, which is physical protection for the store
+    instances (ADR-0005 decision 5) and applies to admins too.
     """
     # 0. Authorization: creation itself is open by default (ADR-0003), but a
     # deployment can close that plane entirely for non-admins via the
@@ -696,7 +705,9 @@ async def create_collection(
     # startup could mis-handle. (A crash inside this window self-heals instead:
     # the backfill repairs the owner row from the spec-recorded creator above.)
     try:
-        await write_owner_row(get_acl_store(), cid, principal.tenant)
+        await write_owner_row(
+            get_acl_store(), cid, principal.tenant, is_admin=principal.role == ROLE_ADMIN
+        )
     except HTTPException:
         registry.remove(cid)
         try:
@@ -1628,8 +1639,12 @@ async def transfer_collection_owner(
     Statuses: 400 for a group subject; 404 for an unknown collection or one the
     caller cannot read (unreadable == unknown — the same leak-safe posture as the
     share endpoints); 403 for a readable collection the caller does not own; 409
-    for a subject that already owns it, or a collection with no active owner row
-    to transfer from; 422 for a malformed subject; 503 for a store outage (fail
+    for a subject that already owns it, a collection with no active owner row to
+    transfer from, or the incoming subject already at/over
+    ``MAX_COLLECTIONS_PER_OWNER`` (issue #290 — structured ``{owned, limit}``
+    detail; the source keeps ownership, and this is what blocks both the
+    create-at-limit/transfer-away/create-again evasion and quota-poisoning a
+    colleague); 422 for a malformed subject; 503 for a store outage (fail
     closed).
     """
     try:
@@ -1706,8 +1721,34 @@ async def transfer_collection_owner(
                 "transfer: ensure_provisional(%s) failed", new_owner, exc_info=True
             )
 
+    # Per-owner quota (issue #290) — enforced on ACQUISITION, and transfer is
+    # one of the two acquisition points (the other is create's write_owner_row):
+    # unchecked, this is exactly how the quota is evaded (create at the limit,
+    # transfer one away, create again) and weaponised (transfer junk onto a
+    # colleague to fill THEIR quota — that attack is what this check blocks).
+    # Admin is exempt from the quota, same as `enforce_access` above already
+    # exempted them from the owner gate itself — logged, mirroring
+    # ADR-0003 decision 5's admin-bypass pattern. It is NOT exempt from the
+    # per-tenant MAX_COLLECTIONS cap (unaffected here: that cap is charged at
+    # create, not at transfer, since transfer moves ownership without minting
+    # a new physical store).
+    owner_quota: int | None = None
+    if principal.role == ROLE_ADMIN:
+        log.info(
+            "owner-quota admin-bypass: actor=%s new_owner=%s collection=%r",
+            principal.tenant, new_owner, entry.id,
+        )
+    elif settings.max_collections_per_owner > 0:
+        owner_quota = settings.max_collections_per_owner
+
     try:
-        rec = await store.transfer_owner(entry.id, new_owner, actor=principal.tenant)
+        rec = await store.transfer_owner(
+            entry.id, new_owner, actor=principal.tenant, owner_quota=owner_quota
+        )
+    except OwnerQuotaExceededError as e:
+        # The source keeps ownership: `transfer_owner` checks the quota BEFORE
+        # either write, inside the same transaction as both — nothing changed.
+        raise owner_quota_exceeded_response(e) from e
     except ShareInvariantError as e:
         # The owner row vanished between the read above and here, or the incoming
         # subject collides with an invariant. Nothing changed (the store validates

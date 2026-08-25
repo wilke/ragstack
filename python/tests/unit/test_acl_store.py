@@ -384,9 +384,13 @@ async def test_postgres_store_shares_the_sqlite_schema():
         assert "NOT NULL" not in frag or "DEFAULT" in frag, name
     # The invariants that cannot ride ensure_columns are their own
     # CREATE UNIQUE INDEX IF NOT EXISTS statements (shared-dialect syntax).
-    active, owner = acl._SHARES_INDEXES
+    active, owner, owned_by = acl._SHARES_INDEXES
     assert "UNIQUE INDEX" in active and "WHERE revoked_at = ''" in active
     assert "UNIQUE INDEX" in owner and "permission = 'owner'" in owner
+    # count_owned's supporting index (#290) is deliberately NOT unique — a
+    # grantee legitimately holds many active owner rows.
+    assert "UNIQUE" not in owned_by
+    assert "(grantee_id, permission)" in owned_by and "WHERE revoked_at = ''" in owned_by
     assert isinstance(PostgresAclStore("postgresql://x/y"), object)
 
 

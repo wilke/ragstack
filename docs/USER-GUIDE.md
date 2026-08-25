@@ -168,7 +168,13 @@ curl -s -X POST $BASE/v1/collections \
   by anyone else until shared. `409` on an id collision; `403` when the
   deployment's `MAX_COLLECTIONS` cap (default 100) is reached — that cap applies
   to admins too — or when the deployment has set
-  `ALLOW_USER_COLLECTION_CREATE=false` (creation is then admin-only).
+  `ALLOW_USER_COLLECTION_CREATE=false` (creation is then admin-only). You are
+  also capped at `MAX_COLLECTIONS_PER_OWNER` collections owned at once (default
+  **5**) — `409` with the count and the limit if you're already there; admins
+  are exempt from this one. Transferring ownership (`POST
+  /v1/collections/{id}/owner`) is checked the same way on the *recipient's*
+  side, so you can't dodge your own quota by handing a collection off and
+  creating another.
 
 Then put documents in it. PDFs go through the multipart upload; it answers
 `202` with a job you poll:
@@ -310,10 +316,10 @@ Three layers, from the one you can read as a user to the one that is the truth:
    deployment you are talking to: backends, store URLs and index names,
    embedding model and dimension, chunking, `top_k`, rerank settings, ingest
    limits (including the per-collection chunk cap), the
-   `ALLOW_USER_COLLECTION_CREATE` capability switch, log level — 37
-   keys, **no secrets** (keys, passwords, DSNs and the key→tenant maps are
-   never returned). Requires the `admin` role; the UI's *Ops* page renders it
-   when it is readable.
+   `ALLOW_USER_COLLECTION_CREATE` capability switch,
+   `MAX_COLLECTIONS_PER_OWNER`, log level — 38 keys, **no secrets** (keys,
+   passwords, DSNs and the key→tenant maps are never returned). Requires the
+   `admin` role; the UI's *Ops* page renders it when it is readable.
 
    ```bash
    curl -s $BASE/v1/config -H "X-API-Key: $ADMIN_KEY" | jq

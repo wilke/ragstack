@@ -182,6 +182,24 @@ class Settings(BaseSettings):
     # planned per-person-granularity follow-up (#245 already has what it needs);
     # add one only when that granularity is actually asked for.
     allow_user_collection_create: bool = True
+    # Per-OWNER collection quota (issue #290), distinct from the per-tenant
+    # MAX_COLLECTIONS above: that cap protects the tenant's physical stores and
+    # applies to every collection regardless of who owns it; this one bounds how
+    # many collections any single principal may OWN at once, counting active
+    # `owner` rows in the ACL store (`AclStore.count_owned`). Measured/assumed
+    # usage today is 2-5 collections per person (issue #290's 2026-08-24 sizing
+    # comment); 5 constrains nobody legitimate. Enforced on ACQUISITION — both
+    # `POST /v1/collections` (create) and `POST /v1/collections/{id}/owner`
+    # (transfer) — not just creation, which is trivially evadable (create at the
+    # limit, transfer one away, create again) and weaponisable (transfer junk
+    # collections onto a colleague to fill their quota). Admins are EXEMPT from
+    # this quota (an explicit, logged branch) — unlike MAX_COLLECTIONS, which is
+    # physical protection ADR-0005 decision 5 applies to admins too; this one is
+    # an authorization-style limit on acquisition, not a physical bound.
+    # `backfill_collection_owners` never refuses regardless of this setting — it
+    # repairs existing state at boot and logs a WARNING when a repair pushes an
+    # owner over quota instead. 0 disables the cap (mirrors MAX_COLLECTIONS).
+    max_collections_per_owner: int = 5
     # Refuse an ingest whose build spec differs from the target collection's
     # recorded provenance (spec_hash over model|dim|chunk descriptor). Writing
     # vectors from a different embedder, or chunks from a different chunker, into

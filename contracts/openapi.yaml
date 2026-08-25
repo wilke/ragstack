@@ -1177,7 +1177,13 @@ paths:
           description: >-
             A collection with the resolved id already exists, or the id carries
             residual access-control state owned by another subject (the create
-            is rolled back rather than inheriting it)
+            is rolled back rather than inheriting it); or the caller already
+            owns `max_collections_per_owner` collections (default 5, issue
+            #290) — a structured `{owned, limit}` detail, checked atomically
+            with the owner-row write. Admin is exempt from this quota (logged),
+            but not from `MAX_COLLECTIONS` above (ADR-0005 decision 5 — that
+            one is physical protection for the store instances and applies to
+            admins too)
         "413":
           description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "429":
@@ -1641,8 +1647,15 @@ paths:
         "409":
           description: >-
             The subject already owns the collection (a handover that never
-            happened must not churn the audit trail), or the collection has no
-            active owner row to transfer from
+            happened must not churn the audit trail), the collection has no
+            active owner row to transfer from, or the incoming subject already
+            owns `max_collections_per_owner` collections (default 5, issue
+            #290) — a structured `{owned, limit}` detail, checked atomically
+            with the revoke+grant pair; the current owner keeps the collection.
+            This is what blocks both the create-at-limit/transfer-away/
+            create-again evasion and transferring junk onto a colleague to
+            fill their quota. The ACTING principal is exempt from this check
+            when it is an admin (logged), same as the owner gate above.
         "422":
           description: >-
             A malformed subject — empty/whitespace, a degenerate `issuer:subject`
