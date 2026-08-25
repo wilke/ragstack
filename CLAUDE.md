@@ -85,6 +85,13 @@ The scripts honour `RAG_DATA` and `RAG_IMAGES` env vars (defaulting to `$HERE/da
 ## Working notes
 
 - Worktrees and subagents: place git worktrees and subagent isolation directories under `~/Development/worktrees/` (not next to this repo, not in `/tmp`).
+
+### How work gets done here
+
+- **Delegate implementation to subagents**, one task per worktree under `~/Development/worktrees/`. Match the model to the task: a mechanical, well-specified change is fine on a smaller model; a new external contract, a durable on-disk format, or anything touching authorization or data loss gets the strongest one.
+- **Use Fable to plan and to review.** Every PR gets a Fable review before merge, and any operation that touches live infrastructure gets a Fable plan before it starts. The reviewer *verifies independently* — runs the suite, reproduces the claim, probes the failure mode — rather than reading the diff and agreeing. Reviews in this repo have caught what green tests could not: fakes encoding a wrong engine contract, a vacuous test that passed with the guard removed, a 1.7 GB memory regression, three separate test paths defaulting to production.
+- **Never stop a service by process-name pattern.** `pkill -f "uvicorn …"` once took down every API on the host — production runs the same command line as every scratch server (#402). Stop by the pid recorded at launch (`… & echo $! > "$scratch/api.pid"`), or resolve by port and verify `/proc/<pid>/cwd` first. Scratch servers bind an ephemeral high port. `pgrep` returning nothing is a fleet-wide alarm, not proof your cleanup worked.
+- **Tests that need live stores use the dev tenant** (`/rag/data/tenants/dev/config/tenant.env`) — never a production instance, never a default URL: the defaults on this host resolve to production (#363, #369, #392). Prefer no live store at all — in-memory backends with `QDRANT_URL`/`ELASTICSEARCH_URL` pointed at `http://127.0.0.1:1`, so a leak fails loudly instead of silently reaching production. When a live store is genuinely needed, prefix scratch collections unmistakably and delete them with a verifying listing.
 - Port convention: Python = 8000, Go = 8080. Don't swap them — the conformance Make targets and `.env.example` (`PORT=8080`) hardcode this split.
 - Both implementations must conform to the same JSON schemas; if a field name differs between them, the schema/OpenAPI is authoritative and the diverging side is the bug.
 - **Before adding a gotcha workaround**, check [MEMORY.md](MEMORY.md) — it may already be documented. After spending >15 min debugging a non-obvious failure, add an entry there.
