@@ -449,6 +449,38 @@ async def test_backfill_retries_a_missed_public_grant_but_never_resurrects():
     ] == []
 
 
+async def test_backfill_never_refuses_but_logs_a_warning_over_quota(monkeypatch, caplog):
+    """Issue #290: the per-owner quota is enforced on ACQUISITION at create and
+    transfer, but backfill repairs/assigns ownership of EXISTING registry rows
+    at boot — refusing there would fail the boot over state that predates the
+    quota entirely. It must grant regardless and only log a WARNING when doing
+    so pushes the owner over."""
+    from ragstack.acl_store import GRANTEE_USER as GU
+    from ragstack.acl_store import InMemoryAclStore, set_acl_store
+    from ragstack.api.access import backfill_collection_owners
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "max_collections_per_owner", 2)
+    store = InMemoryAclStore()
+    set_acl_store(store)
+    # The backfill owner already holds the quota's worth of collections —
+    # exactly the state a long-lived legacy tenant accumulates over many boots.
+    # (Not registered — count_owned looks at the ACL store's rows directly,
+    # not at what any particular registry lists.)
+    await store.grant("already-1", GU, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
+    await store.grant("already-2", GU, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
+    reg = CollectionRegistry([_entry("default", True), _entry("legacy")], default_id="default")
+    with caplog.at_level(logging.WARNING):
+        n = await backfill_collection_owners(reg, store, "legacy:admin")
+    assert n == 2  # 'default' and 'legacy' both repaired/assigned; never refused
+    assert await store.owner_of("legacy") == "legacy:admin"
+    assert await store.count_owned("legacy:admin") == 4  # well over the quota of 2
+    assert any(
+        "quota" in r.message.lower()
+        for r in caplog.records if r.levelno == logging.WARNING
+    ), [r.message for r in caplog.records]
+
+
 async def test_backfill_never_publishes_a_real_owner_whose_spec_owner_was_lost():
     """Defence in depth (independent review finding #2): a collection with a REAL
     active owner but a blank spec.owner — a future backend that dropped the field,

@@ -42,6 +42,7 @@ from ragstack.acl_store import (
     PERM_READ,
     PUBLIC_GROUP,
     AclStore,
+    OwnerQuotaExceededError,
     ShareInvariantError,
     get_acl_store,
 )
@@ -68,6 +69,27 @@ def _unavailable() -> HTTPException:
     return HTTPException(
         status_code=503,
         detail="authorization store unavailable; refusing to serve (fail closed)",
+    )
+
+
+def owner_quota_exceeded_response(e: OwnerQuotaExceededError) -> HTTPException:
+    """The one 409 shape for the per-owner quota (issue #290), shared by
+    ``write_owner_row`` (create) and ``transfer_collection_owner`` (transfer)
+    so the two acquisition sites can never disagree about what the caller sees.
+    Structured ``detail`` (``owned``/``limit``), not just a message, so a caller
+    can act on the numbers without parsing prose."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "owner_quota_exceeded",
+            "owned": e.owned,
+            "limit": e.limit,
+            "message": (
+                f"already owns {e.owned} collection(s), at the quota of {e.limit} "
+                "(MAX_COLLECTIONS_PER_OWNER); free one up (delete or transfer it "
+                "away) before acquiring another"
+            ),
+        },
     )
 
 
@@ -162,7 +184,9 @@ async def filter_readable(
     return [e for e in entries if decisions[e.id].allowed]
 
 
-async def write_owner_row(store: AclStore, collection_id: str, owner_subject: str) -> None:
+async def write_owner_row(
+    store: AclStore, collection_id: str, owner_subject: str, *, is_admin: bool = False
+) -> None:
     """Grant ``owner`` of ``collection_id`` to ``owner_subject`` (also its own
     grantor). Called AFTER the registry entry is durably persisted, so the FK-by-
     convention holds.
@@ -176,6 +200,13 @@ async def write_owner_row(store: AclStore, collection_id: str, owner_subject: st
       (residual ACL state / a concurrent claim — the id is not this caller's);
       the same subject already owning it is the idempotent success (a concurrent
       startup backfill repairing from the spec-recorded creator got there first);
+    - the subject is already at or over ``MAX_COLLECTIONS_PER_OWNER`` → **409**
+      with ``{owned, limit}`` (issue #290) — checked atomically, in the SAME
+      transaction as the grant, by ``AclStore.grant(..., owner_quota=...)``, so
+      it is not evadable by a caller racing this same code path. ``is_admin``
+      exempts the caller from this quota only — ADR-0005 decision 5's per-tenant
+      ``MAX_COLLECTIONS`` still applies to admins (that is physical protection
+      for the store instances, not an authorization tier; this quota is);
     - any other store failure → **503** (fail closed, the #196 lesson)."""
     ep = getattr(store, "ensure_provisional", None)
     if ep is not None:
@@ -188,12 +219,21 @@ async def write_owner_row(store: AclStore, collection_id: str, owner_subject: st
             log.warning(
                 "owner-row: ensure_provisional(%s) failed", owner_subject, exc_info=True
             )
+    owner_quota: int | None = None
+    if is_admin:
+        log.info(
+            "owner-quota admin-bypass: subject=%s collection=%r", owner_subject, collection_id
+        )
+    elif settings.max_collections_per_owner > 0:
+        owner_quota = settings.max_collections_per_owner
     try:
         await store.grant(
             collection_id, GRANTEE_USER, owner_subject, PERM_OWNER,
-            granted_by=owner_subject,
+            granted_by=owner_subject, owner_quota=owner_quota,
         )
         return
+    except OwnerQuotaExceededError as e:
+        raise owner_quota_exceeded_response(e) from e
     except ShareInvariantError:
         try:
             existing = await store.owner_of(collection_id)
@@ -270,6 +310,28 @@ async def _try_grant(
         )
 
 
+async def _warn_if_over_owner_quota(store: AclStore, subject: str, collection_id: str) -> None:
+    """Backfill NEVER refuses (it repairs existing state at boot; failing here
+    would fail the boot), but the per-owner quota's existence would otherwise be
+    silently defeated by whatever ownership the backfill repairs or assigns —
+    log instead, per issue #290's task spec. Best-effort: a count failure is not
+    worth aborting startup over."""
+    limit = settings.max_collections_per_owner
+    if limit <= 0:
+        return
+    try:
+        owned = await store.count_owned(subject)
+    except Exception:  # noqa: BLE001 — accounting only, never fatal to boot
+        log.warning("backfill: count_owned(%s) failed", subject, exc_info=True)
+        return
+    if owned > limit:
+        log.warning(
+            "acl backfill: owner %s now owns %d collection(s) (quota %d) after "
+            "granting owner of %r; backfill never refuses",
+            subject, owned, limit, collection_id,
+        )
+
+
 async def backfill_collection_owners(
     registry: Any, store: AclStore, owner_subject: str
 ) -> int:
@@ -333,6 +395,7 @@ async def backfill_collection_owners(
                     "acl backfill: repaired lost owner row of %r → %s (private)",
                     entry.id, creator,
                 )
+                await _warn_if_over_owner_quota(store, creator, entry.id)
                 touched = True
         else:
             # No recorded creator. Distinguish a genuinely pre-ownership legacy
@@ -355,6 +418,7 @@ async def backfill_collection_owners(
                     await _try_grant(
                         store, entry.id, GRANTEE_USER, owner_subject, PERM_OWNER
                     )
+                    await _warn_if_over_owner_quota(store, owner_subject, entry.id)
                     touched = True
                 if not ever_public_read:
                     await _try_grant(

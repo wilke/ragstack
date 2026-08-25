@@ -1177,7 +1177,13 @@ paths:
           description: >-
             A collection with the resolved id already exists, or the id carries
             residual access-control state owned by another subject (the create
-            is rolled back rather than inheriting it)
+            is rolled back rather than inheriting it); or the caller already
+            owns `max_collections_per_owner` collections (default 5, issue
+            #290) — a structured `{owned, limit}` detail, checked atomically
+            with the owner-row write. Admin is exempt from this quota (logged),
+            but not from `MAX_COLLECTIONS` above (ADR-0005 decision 5 — that
+            one is physical protection for the store instances and applies to
+            admins too)
         "413":
           description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "429":
@@ -1602,7 +1608,11 @@ paths:
         collection survives untouched. `subject` resolves with the same rules as a
         share `grantee`, except that the group forms (`@public`, `@group:<id>`)
         are rejected — ownership is grantable to users only. A subject that has
-        never authenticated is pre-provisioned, exactly as a share grantee is.
+        never authenticated is pre-provisioned, exactly as a share grantee is —
+        for an ADMIN actor. A non-admin actor naming a subject who has never
+        signed in (and is not a registered service account) is refused with
+        422 instead (issue #290): unlike a share, ownership feeds the per-owner
+        quota, and a never-seen recipient's owned count is always 0.
       tags: [Query]
       security:
         - ApiKeyAuth: []
@@ -1641,13 +1651,27 @@ paths:
         "409":
           description: >-
             The subject already owns the collection (a handover that never
-            happened must not churn the audit trail), or the collection has no
-            active owner row to transfer from
+            happened must not churn the audit trail), the collection has no
+            active owner row to transfer from, or the incoming subject already
+            owns `max_collections_per_owner` collections (default 5, issue
+            #290) — a structured `{owned, limit}` detail, checked atomically
+            with the revoke+grant pair; the current owner keeps the collection.
+            This is what blocks both the create-at-limit/transfer-away/
+            create-again evasion and transferring junk onto a colleague to
+            fill their quota. The RECIPIENT is exempt from this check when
+            THEY are an admin (logged) — not the acting principal: an
+            admin-initiated transfer to a full non-admin colleague still 409s,
+            so this endpoint can't be used as a backdoor around that
+            colleague's own quota.
         "422":
           description: >-
             A malformed subject — empty/whitespace, a degenerate `issuer:subject`
             half, a bare username with a blank issuer, or a reserved/colon-bearing
-            `@service:` subject
+            `@service:` subject; or (issue #290, non-admin actor only) a
+            recipient who has never signed in and is not a registered service
+            account, refused before any row is minted for them — an admin
+            actor is exempt (logged), since handing a collection to a
+            successor who has not signed in yet is a legitimate admin action
         "503":
           description: Authorization store unavailable — refused (fail closed).
 

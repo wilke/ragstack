@@ -94,6 +94,7 @@ class ConfigResponse(BaseModel):
     upload_content_types: list[str]
     # authorization capability switches
     allow_user_collection_create: bool
+    max_collections_per_owner: int
     # observability
     log_level: str
 

@@ -86,6 +86,24 @@ class ShareNotFoundError(KeyError):
     """The referenced share id does not exist."""
 
 
+class OwnerQuotaExceededError(Exception):
+    """A ``grant``/``transfer_owner`` call asking for an owner-quota check
+    (``owner_quota=...``) found the grantee already at or over it (issue #290).
+
+    Deliberately NOT a :class:`ShareInvariantError` — a caller distinguishing
+    "invalid grant" (409, generic message) from "quota exceeded" (409, structured
+    ``{owned, limit}`` detail) must not have the two collapse into one ``except``
+    clause. Carries the numbers the HTTP layer reports back to the caller.
+    """
+
+    def __init__(self, owned: int, limit: int) -> None:
+        self.owned = owned
+        self.limit = limit
+        super().__init__(
+            f"grantee already owns {owned} collection(s), at or over the quota of {limit}"
+        )
+
+
 class ShareRecord(BaseModel):
     """One row of the ``shares`` table. ``revoked_at == ''`` means active."""
 
@@ -146,7 +164,17 @@ _SHARES_INDEX_OWNER = (
     "ON shares (collection_id) "
     "WHERE permission = 'owner' AND revoked_at = ''"
 )
-_SHARES_INDEXES = (_SHARES_INDEX_ACTIVE, _SHARES_INDEX_OWNER)
+# Issue #290: count_owned(subject) and the owner-quota check both need "how many
+# active owner rows does this grantee hold", across every collection. Neither
+# existing index leads with grantee_id (shares_active leads with collection_id;
+# shares_active_owner has no grantee_id at all), so that query would otherwise
+# be a full table scan. Not UNIQUE — a grantee legitimately holds many owner rows.
+_SHARES_INDEX_OWNED_BY = (
+    "CREATE INDEX IF NOT EXISTS shares_active_owned_by "
+    "ON shares (grantee_id, permission) "
+    "WHERE revoked_at = ''"
+)
+_SHARES_INDEXES = (_SHARES_INDEX_ACTIVE, _SHARES_INDEX_OWNER, _SHARES_INDEX_OWNED_BY)
 
 # Advisory-lock key serializing the shares DDL across processes. Postgres's
 # CREATE TABLE/INDEX IF NOT EXISTS is racy under concurrent execution (the loser
@@ -155,6 +183,16 @@ _SHARES_INDEXES = (_SHARES_INDEX_ACTIVE, _SHARES_INDEX_OWNER)
 # fail one startup nondeterministically. Any stable 64-bit constant works; this
 # one is arbitrary but fixed ("ragstack shares DDL").
 _SHARES_DDL_LOCK_KEY = 0x7261675F73686172  # b"rag_shar" as an int64
+
+# Advisory-lock key serializing the owner-quota count-then-write on postgres
+# (issue #290, PostgresAclStore.grant/transfer_owner). At READ COMMITTED
+# (postgres' default) a concurrent transaction's uncommitted INSERT is
+# invisible, so K grantees-at-limit-minus-one each count the same number and
+# all K commit — a plain "COUNT(*) ... < N" check has exactly this hole.
+# pg_advisory_xact_lock serializes the whole count-then-write against every
+# other quota-checked call and is released by COMMIT/ROLLBACK. Distinct from
+# _SHARES_DDL_LOCK_KEY (same namespace, must not collide).
+_SHARES_OWNER_QUOTA_LOCK_KEY = 0x7261675F71756F74  # b"rag_quot" as an int64
 
 # Column -> DDL fragment for additive migration of a table created by an older
 # build. Every entry MUST be nullable or defaulted.
@@ -359,9 +397,21 @@ class AclStore(Protocol):
         permission: str,
         granted_by: str,
         grant_option: bool = False,
+        *,
+        owner_quota: int | None = None,
     ) -> ShareRecord:
         """Write one active share row. Raises :class:`ShareInvariantError` on
-        any invariant violation (see :func:`_check_grant`)."""
+        any invariant violation (see :func:`_check_grant`).
+
+        ``owner_quota`` (issue #290): when not ``None`` AND ``permission ==
+        'owner'``, the grantee's active-owner-row count (elsewhere, excluding
+        ``collection_id`` itself so a same-subject idempotent re-grant of THIS
+        collection is never mistaken for growth) is checked against it
+        atomically, in the SAME transaction/critical section as the insert —
+        raising :class:`OwnerQuotaExceededError` rather than writing the row
+        when the grantee is already at or over it. Ignored for every other
+        permission and every other caller (``None`` is the default so backfill
+        and share grants are unaffected)."""
         ...
 
     async def revoke(self, share_id: str, revoked_by: str) -> list[ShareRecord]:
@@ -386,13 +436,30 @@ class AclStore(Protocol):
         arrive with #245)."""
         ...
 
+    async def count_owned(self, subject: str) -> int:
+        """How many collections ``subject`` actively owns right now (issue
+        #290) — an indexed count over ``shares_active_owned_by``, not a scan of
+        every collection's share list. The read side of the per-owner quota;
+        see ``owner_quota`` on :meth:`grant`/:meth:`transfer_owner` for the
+        atomic write-side check."""
+        ...
+
     async def transfer_owner(
-        self, collection_id: str, new_owner: str, actor: str
+        self, collection_id: str, new_owner: str, actor: str, *, owner_quota: int | None = None
     ) -> ShareRecord:
         """ADR-0004's reassignment pair: atomically revoke the current owner
         row (non-cascading) and grant ``owner`` to ``new_owner``. Raises
         :class:`ShareInvariantError` when there is no active owner or the new
-        grant is invalid — in which case nothing changes."""
+        grant is invalid — in which case nothing changes.
+
+        ``owner_quota`` (issue #290): when not ``None``, ``new_owner``'s active-
+        owner-row count is checked against it in the SAME transaction as the
+        revoke+grant, raising :class:`OwnerQuotaExceededError` (leaving the
+        current owner untouched) rather than completing the handover when the
+        incoming owner is already at or over it — the check that closes both
+        the create-at-limit/transfer-away/create-again evasion (the recipient's
+        own quota eventually refuses) and the quota-poisoning attack (transfer
+        junk onto a colleague)."""
         ...
 
     async def close(self) -> None: ...
@@ -417,6 +484,13 @@ class InMemoryAclStore(InMemoryUserStore):
             if r.collection_id == collection_id and r.active
         ]
 
+    def _count_owned_excluding(self, grantee_id: str, exclude_collection_id: str) -> int:
+        return sum(
+            1 for r in self._shares.values()
+            if r.active and r.grantee_type == GRANTEE_USER and r.grantee_id == grantee_id
+            and r.permission == PERM_OWNER and r.collection_id != exclude_collection_id
+        )
+
     async def grant(
         self,
         collection_id: str,
@@ -425,14 +499,31 @@ class InMemoryAclStore(InMemoryUserStore):
         permission: str,
         granted_by: str,
         grant_option: bool = False,
+        *,
+        owner_quota: int | None = None,
     ) -> ShareRecord:
+        # Single event loop, no `await` between the count and the write below —
+        # that IS the atomicity (issue #290's memory-backend requirement); the
+        # lock only excludes another coroutine's unrelated critical section.
         async with self._lock:
+            if owner_quota is not None and permission == PERM_OWNER:
+                owned = self._count_owned_excluding(grantee_id, collection_id)
+                if owned >= owner_quota:
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(
                 collection_id, grantee_type, grantee_id, permission, granted_by, grant_option
             )
             _check_grant(self._active(collection_id), rec)
             self._shares[rec.id] = rec
             return rec.model_copy(deep=True)
+
+    async def count_owned(self, subject: str) -> int:
+        async with self._lock:
+            return sum(
+                1 for r in self._shares.values()
+                if r.active and r.grantee_type == GRANTEE_USER and r.grantee_id == subject
+                and r.permission == PERM_OWNER
+            )
 
     async def revoke(self, share_id: str, revoked_by: str) -> list[ShareRecord]:
         async with self._lock:
@@ -480,7 +571,7 @@ class InMemoryAclStore(InMemoryUserStore):
             return [r.model_copy(deep=True) for r in rows]
 
     async def transfer_owner(
-        self, collection_id: str, new_owner: str, actor: str
+        self, collection_id: str, new_owner: str, actor: str, *, owner_quota: int | None = None
     ) -> ShareRecord:
         async with self._lock:
             active = self._active(collection_id)
@@ -498,6 +589,12 @@ class InMemoryAclStore(InMemoryUserStore):
                 raise ShareInvariantError(
                     f"{new_owner!r} already owns collection {collection_id!r}"
                 )
+            if owner_quota is not None:
+                # No `await` before this check or after it up to the write below
+                # — same single-event-loop atomicity as `grant`.
+                owned = self._count_owned_excluding(new_owner, collection_id)
+                if owned >= owner_quota:
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             # Validate against the post-revoke state BEFORE mutating — atomic.
             _check_grant([r for r in active if r.id != current.id], rec)
@@ -554,8 +651,24 @@ class SqliteAclStore(SqliteUserStore):
         permission: str,
         granted_by: str,
         grant_option: bool,
+        owner_quota: int | None = None,
     ) -> ShareRecord:
         with closing(self._connect()) as conn, conn:
+            if owner_quota is not None and permission == PERM_OWNER:
+                # BEGIN IMMEDIATE, not the implicit deferred transaction (issue
+                # #290): it takes sqlite's RESERVED write lock up front, before
+                # the count, so the count-then-insert is atomic against every
+                # other writer — a deferred transaction would only acquire the
+                # lock at the INSERT, by which point a concurrent grant may
+                # already have landed and the count that authorized this insert
+                # would be stale. Same pattern as
+                # ``user_store.SqliteUserStore._set_role_sync``. `with conn:`
+                # (the outer context manager) rolls this back on any exception,
+                # including ``OwnerQuotaExceededError`` below.
+                conn.execute("BEGIN IMMEDIATE")
+                owned = self._count_owned_rows(conn, grantee_id, collection_id)
+                if owned >= owner_quota:
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(
                 collection_id, grantee_type, grantee_id, permission, granted_by, grant_option
             )
@@ -584,6 +697,40 @@ class SqliteAclStore(SqliteUserStore):
                 )
                 revoked.append(_mark_revoked(by_id[sid], revoked_by, stamp))
         return revoked
+
+    @staticmethod
+    def _count_owned_rows(
+        conn: sqlite3.Connection, grantee_id: str, exclude_collection_id: str = ""
+    ) -> int:
+        # `exclude_collection_id` (issue #290): a same-subject idempotent
+        # re-grant of THIS collection (a concurrent backfill / retried create)
+        # must not be mistaken for growth by the caller's own quota check.
+        # Two SQL strings, not one query with a never-matching default ('' is
+        # rejected by `_check_grant`, so it COULD be a permanent no-op param) —
+        # because `collection_id` is not a column of ``shares_active_owned_by``
+        # (grantee_id, permission), so filtering on it at all defeats the
+        # covering-index scan: sqlite must fetch the row to compare
+        # collection_id even when the filter can never exclude anything. The
+        # public count (perf budget: #290/#355, <1ms p95 @ 10k rows) always
+        # takes the bare form; only the write-side quota check pays for the
+        # exclusion, and only while it needs it.
+        if exclude_collection_id:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM shares WHERE grantee_id = ? AND permission = 'owner' "
+                "AND revoked_at = '' AND collection_id != ?",
+                (grantee_id, exclude_collection_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM shares WHERE grantee_id = ? AND permission = 'owner' "
+                "AND revoked_at = ''",
+                (grantee_id,),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _count_owned_sync(self, subject: str) -> int:
+        with closing(self._connect()) as conn, conn:
+            return self._count_owned_rows(conn, subject)
 
     def _owner_of_sync(self, collection_id: str) -> str | None:
         with closing(self._connect()) as conn, conn:
@@ -617,9 +764,14 @@ class SqliteAclStore(SqliteUserStore):
         return [_row_to_share(r) for r in rows]
 
     def _transfer_owner_sync(
-        self, collection_id: str, new_owner: str, actor: str
+        self, collection_id: str, new_owner: str, actor: str, owner_quota: int | None = None
     ) -> ShareRecord:
         with closing(self._connect()) as conn, conn:
+            if owner_quota is not None:
+                # Same BEGIN IMMEDIATE rationale as `_grant_sync` — the
+                # recipient's owned-count check must be atomic against a
+                # concurrent transfer/create landing them another collection.
+                conn.execute("BEGIN IMMEDIATE")
             active = self._active_rows(conn, collection_id)
             current = next((r for r in active if r.permission == PERM_OWNER), None)
             if current is None:
@@ -635,6 +787,13 @@ class SqliteAclStore(SqliteUserStore):
                 raise ShareInvariantError(
                     f"{new_owner!r} already owns collection {collection_id!r}"
                 )
+            if owner_quota is not None:
+                owned = self._count_owned_rows(conn, new_owner, collection_id)
+                if owned >= owner_quota:
+                    # Raised before either write below — the source keeps its
+                    # owner row, `with conn:` rolls back nothing because
+                    # nothing was written yet.
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             _check_grant([r for r in active if r.id != current.id], rec)
             # Revoke-then-grant inside one transaction: an exception (including
@@ -654,10 +813,13 @@ class SqliteAclStore(SqliteUserStore):
         permission: str,
         granted_by: str,
         grant_option: bool = False,
+        *,
+        owner_quota: int | None = None,
     ) -> ShareRecord:
         return await asyncio.to_thread(
             self._grant_sync,
             collection_id, grantee_type, grantee_id, permission, granted_by, grant_option,
+            owner_quota,
         )
 
     async def revoke(self, share_id: str, revoked_by: str) -> list[ShareRecord]:
@@ -674,11 +836,14 @@ class SqliteAclStore(SqliteUserStore):
     async def grants_for_subject(self, subject: str) -> list[ShareRecord]:
         return await asyncio.to_thread(self._grants_for_subject_sync, subject)
 
+    async def count_owned(self, subject: str) -> int:
+        return await asyncio.to_thread(self._count_owned_sync, subject)
+
     async def transfer_owner(
-        self, collection_id: str, new_owner: str, actor: str
+        self, collection_id: str, new_owner: str, actor: str, *, owner_quota: int | None = None
     ) -> ShareRecord:
         return await asyncio.to_thread(
-            self._transfer_owner_sync, collection_id, new_owner, actor
+            self._transfer_owner_sync, collection_id, new_owner, actor, owner_quota
         )
 
 
@@ -740,6 +905,25 @@ class PostgresAclStore(PostgresUserStore):
                 raise ShareInvariantError(str(e)) from e
             raise
 
+    @staticmethod
+    async def _count_owned_rows(conn: Any, grantee_id: str, exclude_collection_id: str = "") -> int:
+        # `exclude_collection_id`: see the sqlite twin — two SQL strings so the
+        # public count (no exclusion needed) doesn't pay for a predicate on a
+        # column outside the (grantee_id, permission) index.
+        if exclude_collection_id:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM shares WHERE grantee_id = $1 AND permission = 'owner' "
+                "AND revoked_at = '' AND collection_id != $2",
+                grantee_id, exclude_collection_id,
+            )
+        else:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM shares WHERE grantee_id = $1 AND permission = 'owner' "
+                "AND revoked_at = ''",
+                grantee_id,
+            )
+        return int(n or 0)
+
     async def grant(
         self,
         collection_id: str,
@@ -748,15 +932,29 @@ class PostgresAclStore(PostgresUserStore):
         permission: str,
         granted_by: str,
         grant_option: bool = False,
+        *,
+        owner_quota: int | None = None,
     ) -> ShareRecord:
         pool = await self._pool_()
         async with pool.acquire() as conn, conn.transaction():
+            if owner_quota is not None and permission == PERM_OWNER:
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock($1)", _SHARES_OWNER_QUOTA_LOCK_KEY
+                )
+                owned = await self._count_owned_rows(conn, grantee_id, collection_id)
+                if owned >= owner_quota:
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(
                 collection_id, grantee_type, grantee_id, permission, granted_by, grant_option
             )
             _check_grant(await self._active_rows(conn, collection_id), rec)
             await self._insert_share(conn, rec)
         return rec
+
+    async def count_owned(self, subject: str) -> int:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            return await self._count_owned_rows(conn, subject)
 
     async def revoke(self, share_id: str, revoked_by: str) -> list[ShareRecord]:
         pool = await self._pool_()
@@ -814,10 +1012,14 @@ class PostgresAclStore(PostgresUserStore):
         return [_row_to_share(tuple(r)) for r in rows]
 
     async def transfer_owner(
-        self, collection_id: str, new_owner: str, actor: str
+        self, collection_id: str, new_owner: str, actor: str, *, owner_quota: int | None = None
     ) -> ShareRecord:
         pool = await self._pool_()
         async with pool.acquire() as conn, conn.transaction():
+            if owner_quota is not None:
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock($1)", _SHARES_OWNER_QUOTA_LOCK_KEY
+                )
             active = await self._active_rows(conn, collection_id)
             current = next((r for r in active if r.permission == PERM_OWNER), None)
             if current is None:
@@ -833,6 +1035,10 @@ class PostgresAclStore(PostgresUserStore):
                 raise ShareInvariantError(
                     f"{new_owner!r} already owns collection {collection_id!r}"
                 )
+            if owner_quota is not None:
+                owned = await self._count_owned_rows(conn, new_owner, collection_id)
+                if owned >= owner_quota:
+                    raise OwnerQuotaExceededError(owned, owner_quota)
             rec = _new_share(collection_id, GRANTEE_USER, new_owner, PERM_OWNER, actor, False)
             _check_grant([r for r in active if r.id != current.id], rec)
             await conn.execute(
