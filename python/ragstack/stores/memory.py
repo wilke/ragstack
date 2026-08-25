@@ -120,6 +120,10 @@ class InMemoryVectorStore:
             return 0
         return sum(1 for c in self._chunks if tenant_of(c) in allowed)
 
+    async def count(self) -> int:
+        """Every chunk in the store — the live figure the chunk cap reads (#291)."""
+        return len(self._chunks)
+
     async def get_chunks(
         self, chunk_ids: list[str], filters: dict[str, Any] | None = None
     ) -> list[Chunk]:

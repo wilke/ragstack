@@ -20,7 +20,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from ragstack.api.access import enforce_access
+from ragstack.api.access import enforce_access, is_user_created
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.deps import (
     BuildSpecMismatch,
@@ -45,6 +45,11 @@ from ragstack.api.security import (
 )
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
+from ragstack.ingestion.chunk_cap import (
+    CHUNK_CAP_EXCEEDED,
+    effective_chunk_cap,
+    is_cap_refusal,
+)
 from ragstack.ingestion.gowe_backend import (
     OUTPUT_STAGING_FAILED,
     GoWeBackend,
@@ -101,6 +106,7 @@ async def _run_ingest(
     tenant_id: str,
     target: CollectionEntry | None = None,
     every_file: bool = False,
+    collection_store: CollectionStore | None = None,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -116,6 +122,12 @@ async def _run_ingest(
     manifest filter drop them into a ``completed`` job with fewer items than
     files. A directory ingest (``POST /v1/ingest``) keeps the filter: a corpus
     tree legitimately holds files that are not documents.
+
+    The per-collection chunk cap (#291) is resolved here, once per job
+    (:func:`_chunk_cap_for`: the registry override, else the deployment default
+    for a user-created collection) and enforced inside ``ingest_manifest`` —
+    one live count, before the first write. A refused job is ``failed`` with
+    the ``chunk_cap_exceeded`` label; its items carry the four numbers.
     """
     await job_store.update(job_id, status=RUNNING)
     try:
@@ -126,12 +138,23 @@ async def _run_ingest(
         )
         if every_file:
             manifest = await _fail_unsupported_items(job_store, job_id, manifest)
+        cap = (
+            await _chunk_cap_for(target, collection_store)
+            if collection_store is not None else None
+        )
+        # The keyword travels only when a cap applies, so an uncapped run is the
+        # call it always was (duck-typed ingestors included).
         results = await ingestor.ingest_manifest(
-            manifest, job_id=job_id, tenant_id=tenant_id
+            manifest, job_id=job_id, tenant_id=tenant_id,
+            **({"chunk_cap": cap} if cap is not None else {}),
         )
     except Exception as e:
         log.warning("ingest job %s failed: %s", job_id, e)
-        await job_store.update(job_id, status=FAILED, error=type(e).__name__)
+        # Caller-safe label: the class name, unless the error type carries an
+        # actionable constant (ChunkCapExceeded.job_error, the item convention).
+        await job_store.update(
+            job_id, status=FAILED, error=getattr(e, "job_error", type(e).__name__)
+        )
         return
 
     counts = await job_store.item_counts(job_id)
@@ -186,6 +209,39 @@ async def _fail_unsupported_items(
             job_id, len(dropped), len(manifest.items), NO_LOADER_LABEL,
         )
     return Manifest(items=keep)
+
+
+async def _chunk_cap_for(
+    target: CollectionEntry | None,
+    collection_store: CollectionStore,
+    record: CollectionRecord | None = None,
+) -> int | None:
+    """The chunk cap (#291) for one ingest job into ``target``, or ``None``.
+
+    Resolved ONCE per job, before it runs: the registry entry's ``max_chunks``
+    override wins (``0`` exempts); otherwise ``max_chunks_per_collection``
+    applies iff the collection is user-created (:func:`is_user_created`: an
+    owner row whose owner is not an admin). The legacy shared surface
+    (``target is None``) is a curated corpus and is never capped. ``record``
+    (the row a gowe caller already fetched) saves the registry read. A registry
+    that cannot answer is treated as "no override" — the derivation still
+    applies, so an outage can never lift a cap."""
+    if target is None or target.is_shared_surface:
+        return None
+    if record is None:
+        try:
+            record = await collection_store.get(target.id)
+        except Exception:  # noqa: BLE001 — no override readable; derive instead
+            log.warning("chunk cap: registry row for %r unreadable; deriving the cap",
+                        target.id, exc_info=True)
+            record = None
+    override = record.spec.max_chunks if record is not None else None
+    # The owner/role lookups run only when the override does not decide.
+    user_created = override is None and await is_user_created(target.id)
+    return effective_chunk_cap(
+        override=override, user_created=user_created,
+        default_cap=settings.max_chunks_per_collection,
+    )
 
 
 async def _authorize_ingest_target(
@@ -427,14 +483,25 @@ async def _reserve_version(entry: CollectionEntry, collection_store: CollectionS
 
 
 def _gowe_inputs(
-    entry: CollectionEntry, record: CollectionRecord, version: int, job_id: str, tenant: str
+    entry: CollectionEntry,
+    record: CollectionRecord,
+    version: int,
+    job_id: str,
+    tenant: str,
+    *,
+    max_chunks: int | None = None,
 ) -> dict[str, Any]:
     """Per-job workflow inputs (cwl/pdf-ingest-scatter.cwl): the archive's
     identity (``version``/``collection_id``/``spec_hash``/``job_id``) and the
     target collection's physical stores + build spec, so the run writes where
     the API serves and chunks the way the collection was built (ADR-0002).
     Everything else (embedding endpoints, store URLs, …) comes from
-    ``gowe_workflow_inputs_json``; these override it."""
+    ``gowe_workflow_inputs_json``; these override it.
+
+    ``max_chunks`` (#291): the job's chunk cap, threaded to the worker's
+    ``ingest_shard --max-chunks`` — the worker has the store URLs, so it
+    performs the same one-count check before its first write. Sent only when
+    a cap applies (the workflow input defaults to 0 = unlimited)."""
     inputs: dict[str, Any] = {
         "version": str(version),
         "collection_id": entry.id,
@@ -454,6 +521,8 @@ def _gowe_inputs(
         inputs["chunk_size"] = entry.chunk_size
     if entry.chunk_overlap is not None:
         inputs["chunk_overlap"] = entry.chunk_overlap
+    if max_chunks is not None and max_chunks > 0:
+        inputs["max_chunks"] = int(max_chunks)
     return inputs
 
 
@@ -547,6 +616,10 @@ async def _run_gowe_ingest(
         counts = await job_store.item_counts(job_id)
         final = _final_status(counts)
         fields: dict[str, object] = {"status": final}
+        if final == FAILED and any(is_cap_refusal(r.error) for r in run.results):
+            # The worker refused the shard(s) at the chunk cap (#291): the
+            # receipts carry the numbers per item; the job carries the label.
+            fields["error"] = CHUNK_CAP_EXCEEDED
         if run.archive_ref:
             fields["archive_ref"] = run.archive_ref
         if len(run.results) == 1 and run.results[0].status == COMPLETED:
@@ -732,6 +805,7 @@ async def ingest(
         workspace = get_workspace(http_request)
         # Every refusal precedes the job: a version-reservation failure (json
         # registry → 503) must not leave an `accepted` job nobody will run.
+        cap = await _chunk_cap_for(entry, collection_store, record)
         version = await _reserve_version(entry, collection_store)
         job = await job_store.create(
             source=request.source, tenant_id=principal.tenant, collection_id=entry.id
@@ -742,7 +816,7 @@ async def ingest(
             backend,
             job.job_id,
             [WorkItem(item_id=ws_path(uri), source=uri)],
-            _gowe_inputs(entry, record, version, job.job_id, tenant),
+            _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
             token,
             f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
             entry,
@@ -789,6 +863,7 @@ async def ingest(
         request.source,
         tenant,
         target,
+        collection_store=get_collection_store(http_request),
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 
@@ -1072,6 +1147,7 @@ async def ingest_upload(
         # Reserve the version BEFORE writing sources: a registry that cannot
         # (json → 503) must not leave files uploaded with no version to run
         # under. A rejected upload then leaves a gap in the numbering — fine.
+        cap = await _chunk_cap_for(entry, collection_store, record)
         version = await _reserve_version(entry, collection_store)
         job = await job_store.create(
             source="upload", tenant_id=principal.tenant, collection_id=entry.id
@@ -1089,7 +1165,7 @@ async def ingest_upload(
             backend,
             job.job_id,
             items,
-            _gowe_inputs(entry, record, version, job.job_id, tenant),
+            _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
             token,
             f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
             entry,
@@ -1160,6 +1236,7 @@ async def ingest_upload(
         tenant,
         target,
         True,  # every staged file becomes an item; unsupported suffixes fail visibly
+        collection_store=get_collection_store(http_request),
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 

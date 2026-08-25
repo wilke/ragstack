@@ -434,7 +434,9 @@ async def test_json_file_format_is_unchanged(tmp_path):
     raw = open(settings.collections_file, encoding="utf-8").read()
     data = json.loads(raw)
     assert isinstance(data, list) and len(data) == 1
-    assert set(data[0]) == set(CollectionSpec.model_fields)
+    # ``max_chunks`` (#291) is an optional override and is written ONLY when
+    # set — the file an unset entry produces is exactly the pre-#291 file.
+    assert set(data[0]) == set(CollectionSpec.model_fields) - {"max_chunks"}
     assert raw == json.dumps(data, indent=2)
 
 

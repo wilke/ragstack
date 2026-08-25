@@ -114,6 +114,14 @@ class CollectionSpec(BaseModel):
     chunk_size: int | None = None
     chunk_overlap: int | None = None
     chunk_params: dict[str, Any] = Field(default_factory=dict)
+    # Per-collection chunk-cap OVERRIDE (#291), admin-set on the registry entry
+    # (there is no PATCH route: edit the row / the file). ``None`` (the default)
+    # derives the cap — ``settings.max_chunks_per_collection`` for a
+    # user-created collection, unlimited for a curated one; ``0`` exempts the
+    # collection explicitly; ``N`` caps it at N chunks. Serialised into the JSON
+    # registry file ONLY when set (:func:`spec_row`), so an existing file stays
+    # byte-identical until an admin actually sets an override.
+    max_chunks: int | None = Field(default=None, ge=0)
 
     def es_index(self) -> str:
         """The ES index this entry's BM25 leg reads/writes. It rides on
@@ -523,6 +531,16 @@ def parse_specs(raw: str) -> list[CollectionSpec]:
     return specs_from_rows(data)
 
 
+def spec_row(spec: CollectionSpec) -> dict[str, Any]:
+    """``spec`` as a registry-file row. Optional, unset fields (``max_chunks``
+    is ``None``) are dropped so the file format is unchanged for every entry
+    that does not use them — an override appears in the file only once set."""
+    row = spec.model_dump()
+    if row.get("max_chunks") is None:
+        row.pop("max_chunks", None)
+    return row
+
+
 def read_json_file(path: str) -> list[dict[str, Any]]:
     """The raw entry dicts in ``path`` ([] when absent). Preserves unknown keys —
     a hand-authored file may carry comment fields (prod's ``_alias_note``), and a
@@ -608,7 +626,7 @@ def append_spec_to_file(path: str, spec: CollectionSpec) -> bool:
         return False
     with json_file_lock(path):
         existing = read_json_file(path)
-        row = spec.model_dump()
+        row = spec_row(spec)
         for i, d in enumerate(existing):
             if isinstance(d, dict) and d.get("id") == spec.id:
                 existing[i] = row
@@ -636,7 +654,7 @@ def create_spec_in_file(path: str, spec: CollectionSpec, *, limit: int | None) -
             return CreateOutcome.DUPLICATE
         if limit is not None and _count_physical_rows(existing, read_lifecycle_file(path)) >= limit:
             return CreateOutcome.AT_CAP
-        existing.append(spec.model_dump())
+        existing.append(spec_row(spec))
         write_json_file(path, existing)
         _drop_lifecycle_entry(path, spec.id)  # a new collection starts `active`
     return CreateOutcome.CREATED
@@ -996,6 +1014,7 @@ _COLLECTIONS_DDL = (
     "  created_at TEXT NOT NULL DEFAULT '',"
     "  updated_at TEXT NOT NULL DEFAULT '',"
     "  owner TEXT NOT NULL DEFAULT '',"
+    "  max_chunks INTEGER,"
     "  archive_version INTEGER NOT NULL DEFAULT 0,"
     "  state TEXT NOT NULL DEFAULT 'active',"
     "  state_reason TEXT NOT NULL DEFAULT '',"
@@ -1027,6 +1046,8 @@ _COLLECTIONS_COLUMNS: dict[str, str] = {
     "created_at": "TEXT NOT NULL DEFAULT ''",
     "updated_at": "TEXT NOT NULL DEFAULT ''",
     "owner": "TEXT NOT NULL DEFAULT ''",
+    # #291: the admin-set chunk-cap override (NULL = derive; see CollectionSpec).
+    "max_chunks": "INTEGER",
     # #203/#353: the last archive version number handed out by next_version().
     # Store bookkeeping, deliberately NOT in _COLUMNS — put()/create() must never
     # rewrite (reset) it when a spec is upserted.
@@ -1048,7 +1069,7 @@ _COLUMNS = (
     "id", "label", "collection", "text_index", "embedding_api", "embedding_model",
     "embedding_model_dim", "embedding_endpoints", "embedding_sidecar_url",
     "chunk_method", "chunk_size", "chunk_overlap", "chunk_params",
-    "spec_hash", "created_at", "updated_at", "owner",
+    "spec_hash", "created_at", "updated_at", "owner", "max_chunks",
     *LIFECYCLE_FIELDS,
 )
 #: Columns a spec upsert (``put``) must NOT overwrite: the lifecycle is store
@@ -1101,7 +1122,7 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
         s.id, s.label, s.collection, s.text_index, s.embedding_api, s.embedding_model,
         s.embedding_model_dim, json.dumps(s.embedding_endpoints), s.embedding_sidecar_url,
         s.chunk_method, s.chunk_size, s.chunk_overlap, json.dumps(s.chunk_params),
-        rec.spec_hash, rec.created_at, rec.updated_at, s.owner,
+        rec.spec_hash, rec.created_at, rec.updated_at, s.owner, s.max_chunks,
         rec.state, rec.state_reason, rec.state_changed_at, json.dumps(rec.versions),
         1 if rec.archive_pending else 0, rec.last_accessed_at,
     )
@@ -1110,7 +1131,7 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
 def _row_to_record(row: Any) -> CollectionRecord:
     (
         rid, label, collection, text_index, api, model, dim, endpoints, sidecar,
-        method, size, overlap, params, shash, created, updated, owner,
+        method, size, overlap, params, shash, created, updated, owner, max_chunks,
         state, state_reason, state_changed, versions, pending, accessed,
     ) = tuple(row)
     rec = CollectionRecord(
@@ -1122,6 +1143,7 @@ def _row_to_record(row: Any) -> CollectionRecord:
             embedding_sidecar_url=sidecar, chunk_method=method,
             chunk_size=size, chunk_overlap=overlap,
             chunk_params=json.loads(params or "{}"),
+            max_chunks=int(max_chunks) if max_chunks is not None else None,
         ),
         spec_hash=shash, created_at=created, updated_at=updated,
     )

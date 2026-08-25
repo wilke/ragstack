@@ -47,6 +47,7 @@ import httpx
 
 from ragstack.embed_pool import make_embedder_auto
 from ragstack.ingestion.boilerplate import filter_from_mode
+from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE, is_cap_refusal
 from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -137,7 +138,7 @@ async def amain(args, target=None) -> int:
         shard_id = args.shard_id or os.path.basename(args.shard)
         receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
                                   embedding_file=args.embedding_file or None,
-                                  report=report)
+                                  report=report, max_chunks=max(0, args.max_chunks))
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
           f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
@@ -158,6 +159,14 @@ async def amain(args, target=None) -> int:
             embedding_endpoints=list(args.embedding_url),
             corpus=f"shard {shard_id}",
         )
+    if is_cap_refusal(receipt.error):
+        # The chunk cap (#291), checked BEFORE the generic rule: a cap refusal
+        # is a whole-job refusal by spec, so it IS a task failure — with its own
+        # exit code (the deterministic signal the API classifies the FAILED
+        # submission by) and the refusal line on stderr (the scheduler keeps
+        # the first part of stderr on the submission's error record).
+        print(receipt.error, file=sys.stderr, flush=True)
+        return CAP_REFUSED_EXIT_CODE
     return 0 if receipt.status == COMPLETED else 1
 
 
@@ -177,6 +186,15 @@ def parse_args(argv=None):
                         "their constant error (e.g. a scanned PDF's), and its inputs "
                         "list lets an all-skipped batch be reported per document (#203)")
     p.add_argument("--tenant", default="public")
+    p.add_argument("--max-chunks", type=int, default=0,
+                   help="per-collection chunk cap (#291): refuse this batch, whole, "
+                        "when the collection's live chunk count plus the batch's "
+                        "chunks would exceed N (one count, before any write; the "
+                        "receipt reports live/incoming/cap/would_fit under the "
+                        f"chunk_cap_exceeded label and the tool exits {CAP_REFUSED_EXIT_CODE}). "
+                        "0 (default) = unlimited. The API derives it per job: the "
+                        "collection's registry override, else MAX_CHUNKS_PER_COLLECTION "
+                        "for a user-created collection")
     # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
     # offline plane matches the online API's default instead of silently
     # producing chunks the API path would have tagged.

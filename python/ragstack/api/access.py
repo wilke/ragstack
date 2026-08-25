@@ -370,3 +370,69 @@ async def backfill_collection_owners(
             backfilled, owner_subject,
         )
     return backfilled
+
+
+# --------------------------------------------------------------------------- #
+# Chunk cap (#291): is this collection USER-CREATED? (read-only helper)
+# --------------------------------------------------------------------------- #
+
+
+async def _subject_is_admin(subject: str) -> bool:
+    """Does ``subject`` hold the admin role by any of the deployment's role
+    sources — ``ADMIN_SUBJECTS``, an admin API key mapped to this tenant (or
+    the keyless default tenant under an admin ``default_role``), or a stored
+    ``users.role`` grant? The stored lookup fails CLOSED (``False``), which for
+    the chunk cap is the safe direction: an owner that cannot be confirmed as
+    admin is treated as a user and the cap applies (refusal is recoverable;
+    unbounded growth is not)."""
+    from ragstack.api.security import (
+        ROLE_ADMIN,
+        _stored_role_is_admin,
+        admin_subject_allowlist,
+        normalize_role,
+    )
+    from ragstack.tenancy import DEFAULT_TENANT
+
+    if subject in admin_subject_allowlist():
+        return True
+    if not settings.api_keys:
+        if subject == DEFAULT_TENANT and normalize_role(settings.default_role) == ROLE_ADMIN:
+            return True
+    else:
+        # Mirrors _principal_from_key: a key absent from api_key_roles gets
+        # default_role, so under default_role=admin every mapped tenant is admin.
+        for key in settings.api_keys:
+            role = settings.api_key_roles.get(key, settings.default_role)
+            if (
+                normalize_role(role) == ROLE_ADMIN
+                and settings.api_key_tenants.get(key, DEFAULT_TENANT) == subject
+            ):
+                return True
+    return await _stored_role_is_admin(subject)
+
+
+async def is_user_created(collection_id: str, store: AclStore | None = None) -> bool:
+    """Is ``collection_id`` a USER-CREATED collection for the per-collection
+    chunk cap (#291)? True when it has an active owner row (the row
+    :func:`write_owner_row` grants at create) AND that owner is not an admin:
+    not the backfill owner (``acl_backfill_owner`` — a legacy/curated corpus),
+    and not an admin by any role source (:func:`_subject_is_admin`). Ownership
+    is read live, so a transfer to a user brings the cap with it.
+
+    Read-only, and it fails TOWARD the cap: an ACL store that cannot answer
+    makes the collection count as user-created (the job is refused only if it
+    would actually cross the cap — nothing is lost, and a retry succeeds once
+    the store is back), because the alternative — an outage silently lifting a
+    quota — is the fail-open the rest of this module refuses."""
+    store = store if store is not None else get_acl_store()
+    try:
+        owner = await store.owner_of(collection_id)
+    except Exception:  # noqa: BLE001 — unknown ownership: the cap applies
+        log.warning(
+            "chunk cap: owner_of(%r) failed; treating the collection as user-created",
+            collection_id, exc_info=True,
+        )
+        return True
+    if not owner or owner == settings.acl_backfill_owner:
+        return False
+    return not await _subject_is_admin(owner)

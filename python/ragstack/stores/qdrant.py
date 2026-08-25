@@ -376,6 +376,24 @@ class QdrantVectorStore:
             )
         return int(resp.count)
 
+    async def count(self) -> int:
+        """Every point in the collection — the live figure the per-collection
+        chunk cap compares against, ONCE per ingest job (#291). Unfiltered on
+        purpose (the cap bounds the collection, not a tenant's stripe), so it is
+        for the ingest path only — a reader gets ``count_tenants``. Same exact-
+        with-estimate-fallback pattern as ``count_tenants``: an exact count of
+        a capped (<= 50k) collection is instant, and a curated giant under an
+        explicit override falls back to Qdrant's segment estimate rather than
+        hanging the job."""
+        try:
+            resp = await self._client.count(
+                collection_name=self._collection, exact=True, timeout=_COUNT_TIMEOUT_S,
+            )
+        except Exception as e:  # noqa: BLE001 — exact timed out on a giant collection
+            log.debug("exact count on %r fell back to estimate: %s", self._collection, e)
+            resp = await self._client.count(collection_name=self._collection, exact=False)
+        return int(resp.count)
+
     async def get_chunks(
         self, chunk_ids: list[str], filters: dict[str, Any] | None = None
     ) -> list[Chunk]:

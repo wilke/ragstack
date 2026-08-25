@@ -71,6 +71,14 @@ class VectorStore(Protocol):
         (``prev_chunk_id`` / ``next_chunk_id``) for context expansion."""
         ...
 
+    async def count(self) -> int:
+        """The number of chunks the WHOLE store (this collection) holds — the
+        live figure the per-collection chunk cap (#291) is checked against,
+        once per ingest job. Deliberately unfiltered: the cap bounds the
+        collection, not a tenant's stripe of it. Never expose this to a
+        non-admin reader (``count_tenants`` is the scoped count)."""
+        ...
+
 
 @runtime_checkable
 class TextIndex(Protocol):

@@ -14,6 +14,7 @@
     "top_k", "rerank_enabled", "rerank_candidates", "reranker_model",
     "crossencoder_sidecar_url", "kg_extraction_enabled", "ingest_concurrency",
     "ingest_shard_size", "tenant_max_concurrency", "max_document_bytes",
+    "max_chunks_per_collection",
     "max_upload_files", "max_upload_bytes_per_request", "upload_content_types",
     "allow_user_collection_create", "log_level"
   ],
@@ -49,6 +50,7 @@
     "ingest_shard_size": { "type": "integer" },
     "tenant_max_concurrency": { "type": "integer" },
     "max_document_bytes": { "type": "integer" },
+    "max_chunks_per_collection": { "type": "integer" },
     "max_upload_files": { "type": "integer" },
     "max_upload_bytes_per_request": { "type": "integer" },
     "upload_content_types": { "type": "array", "items": { "type": "string" } },

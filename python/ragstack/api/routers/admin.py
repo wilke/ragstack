@@ -86,6 +86,8 @@ class ConfigResponse(BaseModel):
     ingest_shard_size: int
     tenant_max_concurrency: int
     max_document_bytes: int
+    # per-collection chunk cap for user-created collections (#291)
+    max_chunks_per_collection: int
     # POST /v1/ingest/upload bounds (#202)
     max_upload_files: int
     max_upload_bytes_per_request: int
