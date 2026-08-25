@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -21,6 +21,7 @@ from ragstack.acl_store import (
     PERM_OWNER,
     PERM_READ,
     PUBLIC_GROUP,
+    AclStore,
     OwnerQuotaExceededError,
     ShareInvariantError,
     ShareNotFoundError,
@@ -28,6 +29,7 @@ from ragstack.acl_store import (
     get_acl_store,
 )
 from ragstack.api.access import (
+    _subject_is_admin,
     enforce_access,
     filter_readable,
     owner_quota_exceeded_response,
@@ -69,7 +71,7 @@ from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
-from ragstack.user_store import RESERVED_SERVICE_SUBJECTS
+from ragstack.user_store import RESERVED_SERVICE_SUBJECTS, UserRecord
 
 log = logging.getLogger(__name__)
 
@@ -1585,6 +1587,17 @@ class OwnerTransferResponse(BaseModel):
     share: ShareInfo  # the new, active owner row
 
 
+async def _get_user_record(store: AclStore, subject: str) -> UserRecord | None:
+    """``AclStore`` is documented (``acl_store.py``'s own module docstring) to
+    always ALSO satisfy ``UserStore`` — one store object, one database, both
+    tables — but ``get`` isn't declared on the narrower ``AclStore`` Protocol
+    itself, so mypy can't see it through that type. ``cast``, not a runtime
+    ``getattr`` guard: every real backend has it (this is a compile-time
+    typing gap, not a genuine "maybe absent" case like ``ensure_provisional``
+    elsewhere in this file, which IS optional)."""
+    return await cast(Any, store).get(subject)
+
+
 @router.post(
     "/collections/{collection_id}/owner",
     response_model=OwnerTransferResponse,
@@ -1644,8 +1657,13 @@ async def transfer_collection_owner(
     ``MAX_COLLECTIONS_PER_OWNER`` (issue #290 — structured ``{owned, limit}``
     detail; the source keeps ownership, and this is what blocks both the
     create-at-limit/transfer-away/create-again evasion and quota-poisoning a
-    colleague); 422 for a malformed subject; 503 for a store outage (fail
-    closed).
+    colleague; the RECIPIENT's admin-ness exempts, not the acting principal's —
+    an admin actor cannot use this endpoint to push a non-admin colleague over
+    their own quota); 422 for a malformed subject, OR (non-admin actor only,
+    issue #290) a recipient who has never signed in and is not a registered
+    service account — refused before any row is minted for them, since a
+    never-seen subject's owned count is always 0 and would otherwise make the
+    quota fully evadable; 503 for a store outage (fail closed).
     """
     try:
         entry = registry.resolve(collection_id)
@@ -1705,10 +1723,48 @@ async def transfer_collection_owner(
             409, f"{new_owner!r} already owns collection {entry.id!r}"
         )
 
+    # Never-seen-recipient gate (issue #290, HIGH finding 1) — BEFORE
+    # ensure_provisional, which would otherwise silently mint the ghost's row
+    # as a side effect of a request we are about to refuse. `_resolve_grantee`
+    # validates no existence, so an unauthenticated caller could otherwise
+    # transfer to a subject nobody has ever logged in as; that subject's owned
+    # count is always 0, which makes the per-owner quota fully evadable
+    # (create at the limit, transfer to `ghost-0`, create again, transfer to
+    # `ghost-1`, ... — bounded only by the create-side RATE limiter, not by
+    # any state check). A registered service account (`provisional=False`,
+    # possibly `last_seen_at=''` since it authenticates per-request rather
+    # than "logging in") always passes. Admin actor is exempt (logged):
+    # offboarding a collection to a successor who has not signed in yet is a
+    # legitimate admin action, and this is the ACTOR's own admin-ness — the
+    # owner-gate exemption above already established that principal may act
+    # here at all.
+    try:
+        recipient_rec = await _get_user_record(store, new_owner)
+    except Exception as e:  # noqa: BLE001 — fail closed: an unanswerable store
+        # must never let a ghost recipient through unexamined
+        raise HTTPException(
+            503, "authorization store unavailable; refusing to serve (fail closed)"
+        ) from e
+    never_seen = recipient_rec is None or (
+        recipient_rec.provisional and not recipient_rec.last_seen_at
+    )
+    if never_seen:
+        if principal.role != ROLE_ADMIN:
+            raise HTTPException(
+                422,
+                f"unknown recipient {new_owner!r}: must have signed in at least "
+                "once or be a registered service account",
+            )
+        log.info(
+            "owner-quota: admin-actor=%s transferring to never-seen recipient=%s "
+            "collection=%r (offboarding to a successor who has not signed in yet)",
+            principal.tenant, new_owner, entry.id,
+        )
+
     # Pre-provision the incoming owner's users row (mirrors create_share and
-    # write_owner_row): a subject that has never authenticated still needs a row
-    # for the FK-by-convention to hold. A colon-free subject is a SERVICE account
-    # — we are its issuer, so the row's issuer is ''.
+    # write_owner_row): the admin-to-ghost case above still needs a row for the
+    # FK-by-convention to hold. A colon-free subject is a SERVICE account — we
+    # are its issuer, so the row's issuer is ''.
     ep = getattr(store, "ensure_provisional", None)
     if ep is not None:
         new_owner_issuer = (
@@ -1726,20 +1782,34 @@ async def transfer_collection_owner(
     # unchecked, this is exactly how the quota is evaded (create at the limit,
     # transfer one away, create again) and weaponised (transfer junk onto a
     # colleague to fill THEIR quota — that attack is what this check blocks).
-    # Admin is exempt from the quota, same as `enforce_access` above already
-    # exempted them from the owner gate itself — logged, mirroring
-    # ADR-0003 decision 5's admin-bypass pattern. It is NOT exempt from the
-    # per-tenant MAX_COLLECTIONS cap (unaffected here: that cap is charged at
+    #
+    # The exemption is the RECIPIENT's admin-ness, NOT the acting principal's:
+    # the quota bounds what a subject OWNS, and an admin actor handing a
+    # collection to a non-admin colleague must not be a backdoor around that
+    # colleague's own limit (the poisoning case, reachable by admins if this
+    # were keyed on the actor). Create keys its own exemption to the owner
+    # because there the actor and the acquiring subject are the same principal
+    # (`access.py`'s `write_owner_row` call passes `is_admin=principal.role ==
+    # ROLE_ADMIN` for exactly that reason) — transfer is the one acquisition
+    # site where they can differ. NOT exempt from the per-tenant
+    # MAX_COLLECTIONS cap either way (unaffected here: that cap is charged at
     # create, not at transfer, since transfer moves ownership without minting
     # a new physical store).
+    recipient_is_admin = await _subject_is_admin(new_owner)
     owner_quota: int | None = None
-    if principal.role == ROLE_ADMIN:
+    if recipient_is_admin:
         log.info(
-            "owner-quota admin-bypass: actor=%s new_owner=%s collection=%r",
-            principal.tenant, new_owner, entry.id,
+            "owner-quota admin-bypass: new_owner=%s (recipient is admin) actor=%s "
+            "collection=%r", new_owner, principal.tenant, entry.id,
         )
     elif settings.max_collections_per_owner > 0:
         owner_quota = settings.max_collections_per_owner
+    if principal.role == ROLE_ADMIN and not recipient_is_admin:
+        log.info(
+            "owner-quota: admin-actor=%s transferring to non-admin new_owner=%s "
+            "collection=%r (quota still applies to the recipient)",
+            principal.tenant, new_owner, entry.id,
+        )
 
     try:
         rec = await store.transfer_owner(

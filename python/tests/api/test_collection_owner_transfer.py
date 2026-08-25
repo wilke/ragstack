@@ -19,8 +19,18 @@ and a registry rebuilt per test. Note that the test tenants are COLON-FREE
 subjects, so a transfer *to* one of them uses the ``@service:`` form — a bare
 name would be qualified to ``bvbrc:<name>`` (the same trap the share tests
 document).
+Issue #290 added a gate this file's fixtures must satisfy: a NON-ADMIN
+transfer to a subject who has never signed in (and is not a registered
+service account) is now refused with 422, so a never-seen recipient's owned
+count can't be used to evade the per-owner quota. ``owner``/``stranger``/
+``admin`` are the three subjects real transfers move things between in this
+file, so an autouse fixture marks them as having signed in — the tests about
+the gate itself (below, "never-seen subject") use a distinct, deliberately
+unregistered subject instead.
 """
 from __future__ import annotations
+
+import logging
 
 import pytest
 
@@ -52,6 +62,18 @@ def _principals(monkeypatch):
     )
     monkeypatch.setattr(security.settings, "api_key_roles", {"k-admin": ROLE_ADMIN})
     monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+
+
+@pytest.fixture(autouse=True)
+async def _signed_in():
+    """Issue #290's never-seen-recipient gate: mark the three test tenants as
+    having signed in so it doesn't interfere with tests about OTHER transfer
+    behavior. Safe to run after conftest.py's autouse ``_acl_store`` (a parent
+    conftest's autouse fixtures instantiate before the test module's own),
+    which is what installs the store ``get_acl_store()`` returns here."""
+    store = get_acl_store()
+    for who in KEYS:
+        await store.upsert_seen(who, "bvbrc")
 
 
 def _h(who: str) -> dict:
@@ -438,26 +460,52 @@ async def test_unknown_body_field_is_rejected(client):
 # --------------------------------------------------------------------------- #
 
 
-async def test_transfer_to_a_never_seen_user_provisions_their_row(client):
-    """Consistent with shares: there is no BV-BRC existence check, so the users
-    row is pre-provisioned and the resolved subject is echoed back — the only
-    defence against a typo'd (unreachable) owner."""
+async def test_non_admin_transfer_to_a_never_seen_subject_is_422(client):
+    """Issue #290: unlike a share grantee, an OWNER transfer now requires the
+    recipient to have signed in at least once (or be a registered service
+    account) when the actor is non-admin — a never-seen recipient always owns
+    0 collections, which would otherwise make the per-owner quota fully
+    evadable (create at the limit, transfer to a fresh ghost, create again,
+    ...). Refused BEFORE any row is minted: the ghost must not appear in the
+    store afterward."""
     _register(_entry("lib"))
     await _own("lib", "owner")
     r = await client.post(
         "/v1/collections/lib/owner",
-        json={"subject": "alice@patricbrc.org"},
-        headers=_h("owner"),
+        json={"subject": "ghost@patricbrc.org"},
+        headers=_h("owner"),  # non-admin
     )
+    assert r.status_code == 422, r.text
+    assert "signed in" in r.text.lower()
+    assert await get_acl_store().owner_of("lib") == "owner"  # untouched
+    assert await get_acl_store().get("bvbrc:ghost@patricbrc.org") is None  # never minted
+
+
+async def test_admin_transfer_to_a_never_seen_subject_is_allowed_and_logs(client, caplog):
+    """Admin actor is exempt from the gate (logged): offboarding a collection
+    to a successor who has not signed in yet is a legitimate admin action. The
+    row is still pre-provisioned and the resolved subject echoed back, exactly
+    as the old (now non-admin-only) behavior did."""
+    _register(_entry("lib"))
+    await _own("lib", "owner")
+    with caplog.at_level(logging.INFO):
+        r = await client.post(
+            "/v1/collections/lib/owner",
+            json={"subject": "successor@patricbrc.org"},
+            headers=_h("admin"),
+        )
     assert r.status_code == 200, r.text
-    assert r.json()["owner"] == "bvbrc:alice@patricbrc.org"
+    assert r.json()["owner"] == "bvbrc:successor@patricbrc.org"
+    assert any(
+        "never-seen recipient" in rec.message for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
 
     store = get_acl_store()
-    assert await store.get("bvbrc:alice@patricbrc.org") is not None
+    assert await store.get("bvbrc:successor@patricbrc.org") is not None
     from ragstack.authz import resolve_access
 
     decision = await resolve_access(
-        "bvbrc:alice@patricbrc.org", ROLE_USER, "lib", "owner", store
+        "bvbrc:successor@patricbrc.org", ROLE_USER, "lib", "owner", store
     )
     assert decision.allowed is True
 

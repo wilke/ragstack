@@ -1608,7 +1608,11 @@ paths:
         collection survives untouched. `subject` resolves with the same rules as a
         share `grantee`, except that the group forms (`@public`, `@group:<id>`)
         are rejected — ownership is grantable to users only. A subject that has
-        never authenticated is pre-provisioned, exactly as a share grantee is.
+        never authenticated is pre-provisioned, exactly as a share grantee is —
+        for an ADMIN actor. A non-admin actor naming a subject who has never
+        signed in (and is not a registered service account) is refused with
+        422 instead (issue #290): unlike a share, ownership feeds the per-owner
+        quota, and a never-seen recipient's owned count is always 0.
       tags: [Query]
       security:
         - ApiKeyAuth: []
@@ -1654,13 +1658,20 @@ paths:
             with the revoke+grant pair; the current owner keeps the collection.
             This is what blocks both the create-at-limit/transfer-away/
             create-again evasion and transferring junk onto a colleague to
-            fill their quota. The ACTING principal is exempt from this check
-            when it is an admin (logged), same as the owner gate above.
+            fill their quota. The RECIPIENT is exempt from this check when
+            THEY are an admin (logged) — not the acting principal: an
+            admin-initiated transfer to a full non-admin colleague still 409s,
+            so this endpoint can't be used as a backdoor around that
+            colleague's own quota.
         "422":
           description: >-
             A malformed subject — empty/whitespace, a degenerate `issuer:subject`
             half, a bare username with a blank issuer, or a reserved/colon-bearing
-            `@service:` subject
+            `@service:` subject; or (issue #290, non-admin actor only) a
+            recipient who has never signed in and is not a registered service
+            account, refused before any row is minted for them — an admin
+            actor is exempt (logged), since handing a collection to a
+            successor who has not signed in yet is a legitimate admin action
         "503":
           description: Authorization store unavailable — refused (fail closed).
 
