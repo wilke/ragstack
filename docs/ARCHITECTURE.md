@@ -164,7 +164,9 @@ ownership model will sit on.
 - **retrieval/retriever.py** — `HybridRetriever` runs dense + BM25 (+ optional graph) legs
   and fuses them with RRF. `retrieval_mode` selects `hybrid` | `vector` | `bm25`.
   The graph leg extracts entities from the query first (#349): the query is tokenised
-  (word split, lower-cased, punctuation stripped), its 1–`graph_query_ngram_max`-grams are
+  (word split, lower-cased, punctuation stripped; a 1-gram in `GRAPH_QUERY_STOPWORDS` — articles,
+  prepositions, pronouns, auxiliaries — is skipped, longer n-grams keep them), its
+  1–`graph_query_ngram_max`-grams are
   matched **exactly** against the entity names in the caller's `(tenant, collection)` scope in
   one indexed `GraphStore.match_entities` call (Neo4j: `toLower(e.name) IN $candidates` plus
   the scope predicates — never `CONTAINS` over the sentence), and the longest matches

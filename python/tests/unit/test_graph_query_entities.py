@@ -26,7 +26,7 @@ import pytest
 from ragstack.config import settings
 from ragstack.models import Triple
 from ragstack.protocols import GraphStore
-from ragstack.retrieval.retriever import HybridRetriever, query_candidates
+from ragstack.retrieval.retriever import GRAPH_QUERY_STOPWORDS, HybridRetriever, query_candidates
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 
 TENANT = "alice"
@@ -214,21 +214,21 @@ async def test_cap_at_five_entities_longest_first_then_query_order():
 
 async def test_entity_cap_and_ngram_max_are_configurable():
     store = _SpyStore()
-    await store.add_triples([_t(n, "is_a", "x") for n in ["a", "b", "c", "b c"]])
+    await store.add_triples([_t(n, "is_a", "x") for n in ["ax", "bx", "cx", "bx cx"]])
     r = _retriever(store, graph_query_entity_max=2, graph_query_ngram_max=1)
-    await r.retrieve("a b c", top_k=10, use_graph=True, tenant_id=TENANT)
-    # ngram_max=1: "b c" is never a candidate; entity_max=2: only the first two.
-    assert store.neighborhood_calls == ["a", "b"]
+    await r.retrieve("ax bx cx", top_k=10, use_graph=True, tenant_id=TENANT)
+    # ngram_max=1: "bx cx" is never a candidate; entity_max=2: only the first two.
+    assert store.neighborhood_calls == ["ax", "bx"]
 
 
 async def test_defaults_come_from_settings_at_query_time(monkeypatch):
     store = _SpyStore()
-    await store.add_triples([_t(n, "is_a", "x") for n in ["a", "b", "c"]])
+    await store.add_triples([_t(n, "is_a", "x") for n in ["ax", "bx", "cx"]])
     r = _retriever(store)
     assert r.graph_query_entity_max is None and r.graph_query_ngram_max is None
     monkeypatch.setattr(settings, "graph_query_entity_max", 1)
-    await r.retrieve("a b c", top_k=10, use_graph=True, tenant_id=TENANT)
-    assert store.neighborhood_calls == ["a"]
+    await r.retrieve("ax bx cx", top_k=10, use_graph=True, tenant_id=TENANT)
+    assert store.neighborhood_calls == ["ax"]
 
 
 # --------------------------------------------------------------------------- #
@@ -315,7 +315,7 @@ async def test_leg_still_rechecks_tenant_collection_and_confidence():
 def test_query_candidates_ngrams_lowercased_deduped_in_order():
     cands = query_candidates("Does Aspirin, aspirin help?", 3)
     assert [c.text for c in cands] == [
-        "does", "aspirin", "help",
+        "aspirin", "help",                        # "does" is a stopword 1-gram
         "does aspirin", "aspirin aspirin", "aspirin help",
         "does aspirin aspirin", "aspirin aspirin help",
     ]
@@ -326,6 +326,31 @@ def test_query_candidates_ngrams_lowercased_deduped_in_order():
     assert query_candidates("...", 3) == []
     assert [c.text for c in query_candidates("covid-19 e. coli", 2)] == [
         "covid-19", "e", "coli", "covid-19 e", "e coli"]
+
+
+def test_stopwords_are_dropped_as_1_grams_but_kept_inside_longer_ngrams():
+    texts = [c.text for c in query_candidates("the bank of england", 3)]
+    assert "the" not in texts and "of" not in texts
+    assert "bank of england" in texts and "bank of" in texts and "of england" in texts
+    # No minimum length: 2-letter biomedical abbreviations are real entities,
+    # and "no" (nitric oxide) is deliberately not a stopword.
+    assert [c.text for c in query_candidates("MI TB IL no", 1)] == ["mi", "tb", "il", "no"]
+    assert {"the", "of", "and", "is", "it"} <= GRAPH_QUERY_STOPWORDS
+    assert not {"mi", "tb", "il", "no"} & GRAPH_QUERY_STOPWORDS
+
+
+async def test_stopword_entities_in_scope_do_not_eat_cap_slots():
+    """The coordinator's case: entities literally named "the" and "of" exist in
+    scope. Without the filter they tie with "aspirin" on length, win on query
+    order, and cost neighbourhood calls; with it only the real entity fires."""
+    store = _SpyStore()
+    await store.add_triples([
+        _t("the", "is_a", "junk"), _t("of", "is_a", "junk"), _t("aspirin", "is_a", "NSAID"),
+    ])
+    got = await _retriever(store).retrieve(
+        "the role of aspirin in the heart", top_k=10, use_graph=True, tenant_id=TENANT)
+    assert store.neighborhood_calls == ["aspirin"]
+    assert _contents(got) == {"aspirin is_a NSAID"}
 
 
 # --------------------------------------------------------------------------- #

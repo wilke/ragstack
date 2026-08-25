@@ -21,6 +21,33 @@ if TYPE_CHECKING:
 #: dropped, so "aspirin," and "aspirin" are the same token.
 _TOKEN_RE = re.compile(r"\w+(?:[-']\w+)*")
 
+#: English function words that are never a 1-gram entity candidate (#349). With
+#: an entity literally named "the" or "of" in scope, "the role of aspirin in the
+#: heart" would match ['the', 'of', 'aspirin'] — the stopwords tie with the real
+#: entity on length, win on query order, and eat cap slots and neighbourhood
+#: calls. Applied to 1-grams ONLY: multi-grams keep them ("bank of england").
+#: Deliberately NOT a minimum length — 2-letter biomedical abbreviations (MI,
+#: TB, IL) are real entities — and "no" is left out for the same reason (NO,
+#: nitric oxide). Articles, prepositions, conjunctions, pronouns, auxiliaries.
+GRAPH_QUERY_STOPWORDS: frozenset[str] = frozenset({
+    # articles / determiners
+    "a", "an", "the", "this", "that", "these", "those", "some", "any", "each",
+    # prepositions
+    "of", "in", "on", "at", "to", "for", "from", "by", "with", "about", "into",
+    "onto", "over", "under", "after", "before", "between", "through", "during",
+    "without", "within", "among", "against", "than", "as", "via", "per",
+    # conjunctions
+    "and", "or", "but", "nor", "so", "if", "because", "while", "whether", "then",
+    # pronouns / question words
+    "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his", "she",
+    "her", "it", "its", "they", "them", "their", "what", "which", "who", "whom",
+    "whose", "how", "when", "where", "why",
+    # auxiliaries / common verbs
+    "am", "is", "are", "was", "were", "be", "been", "being", "do", "does", "did",
+    "have", "has", "had", "can", "could", "will", "would", "shall", "should",
+    "may", "might", "must", "not",
+})
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -36,14 +63,18 @@ class Candidate:
 def query_candidates(query: str, ngram_max: int) -> list[Candidate]:
     """The distinct 1..``ngram_max``-grams of ``query`` as entity-name
     candidates: a simple regex word split, lower-cased, punctuation stripped,
-    tokens re-joined with single spaces. Ordered by n then position, and a text
-    that occurs twice keeps its first position. Pure string work — no model."""
+    tokens re-joined with single spaces. A 1-gram in :data:`GRAPH_QUERY_STOPWORDS`
+    is skipped (longer n-grams containing it are not). Ordered by n then
+    position, and a text that occurs twice keeps its first position. Pure
+    string work — no model."""
     tokens = _TOKEN_RE.findall(query.lower())
     seen: set[str] = set()
     out: list[Candidate] = []
     for n in range(1, max(1, ngram_max) + 1):
         for i in range(len(tokens) - n + 1):
             text = " ".join(tokens[i:i + n])
+            if n == 1 and text in GRAPH_QUERY_STOPWORDS:
+                continue
             if text not in seen:
                 seen.add(text)
                 out.append(Candidate(text, n, i))
