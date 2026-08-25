@@ -18,6 +18,24 @@ from ragstack.tenancy import readable_tenants
 log = logging.getLogger(__name__)
 
 
+def _widening_eligible(entry: CollectionEntry, registry: CollectionRegistry) -> bool:
+    """Is ``entry`` a candidate for owner-tenant widening at all, independent of
+    who owns it? False for the shared multi-tenant surface (``is_shared_surface``
+    — ``tenant_id`` IS its isolation, and its ownership is only a backfill
+    artifact) and for a collection that is CO-RESIDENT with another registry
+    entry (same physical Qdrant collection or ES index): the store filters by
+    ``tenant_id`` alone, no ``collection_id`` predicate, so widening one of a
+    pair would leak the other's chunks too. Shared by :func:`shared_scope` and
+    :func:`shared_scope_many` so the two guards can't drift apart."""
+    if entry.is_shared_surface:
+        return False
+    return not any(
+        e.collection == entry.collection or e.es_index() == entry.es_index()
+        for e in registry.entries()
+        if e.id != entry.id
+    )
+
+
 async def shared_scope(
     entry: CollectionEntry, registry: CollectionRegistry, principal: Principal
 ) -> list[str]:
@@ -32,37 +50,20 @@ async def shared_scope(
     (:func:`_resolve_entry`), so exposing the owner's tenant — which stamps exactly
     this collection's chunks — for this query is precisely the grant, no wider.
 
-    Two collections that share one physical store break that "no wider": the store
-    filters by ``tenant_id`` alone (no ``collection_id`` predicate), so widening to
-    the owner's tenant would also surface the owner's chunks in a *co-resident*
-    collection that was never shared. So widening is confined to a collection whose
-    store is exclusively its own. The ``default`` collection is likewise excluded:
-    it is the shared multi-tenant surface where ``tenant_id`` IS the isolation and
-    its ownership is only a backfill artifact — widening there would inject the
-    backfill owner's tenant into every caller's scope.
+    See :func:`_widening_eligible` for the co-residency / shared-surface guards.
 
     A no-op when auth is unconfigured (the single open dev tenant) or when the
     caller already is the owner. Fail-soft: a store hiccup returns no extra tenant
-    (the caller still sees own + public) — it never widens scope on error."""
+    (the caller still sees own + public) — it never widens scope on error.
+
+    Single-entry — used by the query path (one collection per request). A
+    listing resolving this for every entry it shows should call
+    :func:`shared_scope_many` instead: this issues one ``owner_of`` ACL round
+    trip per call, which is fine for one collection and an N+1 for N of them
+    (issue #314)."""
     if not auth_configured():
         return []
-    # The default collection is the multi-tenant shared surface — never widen it.
-    if entry.is_shared_surface:
-        return []
-    # Co-resident store (another registry entry points at the same physical
-    # collection): widening by tenant_id would cross the collection boundary the
-    # filter can't express. Under-expose (safe) rather than leak the neighbour.
-    # BOTH legs: an ES index shared with another entry aliases exactly as a
-    # shared Qdrant collection does — the text store filters on tenant_id alone,
-    # with no collection predicate — and every other co-residency guard in the
-    # codebase (deps._build_collection_registry, _shared_store_users) compares
-    # both. Checking only the vector leg let a co-resident index leak through the
-    # BM25 side.
-    if any(
-        e.collection == entry.collection or e.es_index() == entry.es_index()
-        for e in registry.entries()
-        if e.id != entry.id
-    ):
+    if not _widening_eligible(entry, registry):
         return []
     try:
         owner = await get_acl_store().owner_of(entry.id)
@@ -74,6 +75,40 @@ async def shared_scope(
     if owner and owner != principal.tenant:
         return [owner]
     return []
+
+
+async def shared_scope_many(
+    entries: list[CollectionEntry], registry: CollectionRegistry, principal: Principal
+) -> dict[str, list[str]]:
+    """Batch counterpart of :func:`shared_scope` — same semantics and guards,
+    per entry, but ONE ``AclStore.owners_of`` round trip for the whole list
+    instead of one ``owner_of`` call per entry (issue #314: the listing
+    endpoints — ``GET /v1/collections``, ``/v1/stats/stores``,
+    ``/v1/stats/tenants`` — each paid N ACL calls resolving count scope for N
+    entries). The result always has one key per entry in ``entries``.
+
+    ``owners_of`` is part of the ``AclStore`` protocol and every backend
+    implements it (in-memory, sqlite, Postgres) — no per-entry fallback here:
+    one would silently reinstate the N+1 this function exists to remove, for a
+    store shape nothing in the tree actually produces."""
+    if not auth_configured():
+        return {e.id: [] for e in entries}
+    eligible = [e for e in entries if _widening_eligible(e, registry)]
+    owners: dict[str, str | None] = {}
+    if eligible:
+        try:
+            owners = await get_acl_store().owners_of([e.id for e in eligible])
+        except Exception:  # noqa: BLE001 — never widen scope on a store hiccup
+            log.warning(
+                "scope: owners_of(...) failed for %d entries; not widening read scope",
+                len(eligible), exc_info=True,
+            )
+            owners = {}
+    out: dict[str, list[str]] = {}
+    for e in entries:
+        owner = owners.get(e.id)
+        out[e.id] = [owner] if owner and owner != principal.tenant else []
+    return out
 
 
 async def count_scope(
@@ -89,5 +124,19 @@ async def count_scope(
 
     Widening is per COLLECTION, so it is resolved per entry rather than once per
     request: entry A may be shared with the caller while entry B is not.
+
+    Single-entry, like :func:`shared_scope` — a listing should use
+    :func:`count_scope_many`.
     """
     return [*readable_tenants(principal.tenant), *await shared_scope(entry, registry, principal)]
+
+
+async def count_scope_many(
+    entries: list[CollectionEntry], registry: CollectionRegistry, principal: Principal
+) -> dict[str, list[str]]:
+    """Batch counterpart of :func:`count_scope`, built on
+    :func:`shared_scope_many` — same per-entry semantics, one ACL round trip
+    for the whole listing (issue #314)."""
+    extra = await shared_scope_many(entries, registry, principal)
+    base = readable_tenants(principal.tenant)
+    return {e.id: [*base, *extra[e.id]] for e in entries}

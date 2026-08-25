@@ -426,6 +426,14 @@ class AclStore(Protocol):
         """Subject of the single active owner row, or ``None``."""
         ...
 
+    async def owners_of(self, collection_ids: list[str]) -> dict[str, str | None]:
+        """Batch counterpart of :meth:`owner_of` — one round trip for every id
+        in ``collection_ids`` instead of one per id (issue #314: a listing
+        endpoint resolving per-collection count scope was paying N ``owner_of``
+        calls). Every key of ``collection_ids`` is present in the result,
+        mapped to ``None`` when that collection has no active owner row."""
+        ...
+
     async def shares_for(
         self, collection_id: str, include_revoked: bool = False
     ) -> list[ShareRecord]: ...
@@ -546,6 +554,17 @@ class InMemoryAclStore(InMemoryUserStore):
                 if r.permission == PERM_OWNER:
                     return r.grantee_id
             return None
+
+    async def owners_of(self, collection_ids: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = dict.fromkeys(collection_ids)
+        if not collection_ids:
+            return out
+        wanted = set(collection_ids)
+        async with self._lock:
+            for r in self._shares.values():
+                if r.active and r.permission == PERM_OWNER and r.collection_id in wanted:
+                    out[r.collection_id] = r.grantee_id
+        return out
 
     async def shares_for(
         self, collection_id: str, include_revoked: bool = False
@@ -741,6 +760,22 @@ class SqliteAclStore(SqliteUserStore):
             ).fetchone()
         return row[0] if row is not None else None
 
+    def _owners_of_sync(self, collection_ids: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = dict.fromkeys(collection_ids)
+        if not collection_ids:
+            return out
+        placeholders = ", ".join("?" * len(collection_ids))
+        with closing(self._connect()) as conn, conn:
+            rows = conn.execute(
+                "SELECT collection_id, grantee_id FROM shares "
+                f"WHERE collection_id IN ({placeholders}) AND permission = 'owner' "
+                "AND revoked_at = ''",
+                tuple(collection_ids),
+            ).fetchall()
+        for cid, grantee_id in rows:
+            out[cid] = grantee_id
+        return out
+
     def _shares_for_sync(self, collection_id: str, include_revoked: bool) -> list[ShareRecord]:
         where = " WHERE collection_id = ?"
         if not include_revoked:
@@ -827,6 +862,9 @@ class SqliteAclStore(SqliteUserStore):
 
     async def owner_of(self, collection_id: str) -> str | None:
         return await asyncio.to_thread(self._owner_of_sync, collection_id)
+
+    async def owners_of(self, collection_ids: list[str]) -> dict[str, str | None]:
+        return await asyncio.to_thread(self._owners_of_sync, collection_ids)
 
     async def shares_for(
         self, collection_id: str, include_revoked: bool = False
@@ -986,6 +1024,21 @@ class PostgresAclStore(PostgresUserStore):
                 collection_id,
             )
         return row[0] if row is not None else None
+
+    async def owners_of(self, collection_ids: list[str]) -> dict[str, str | None]:
+        out: dict[str, str | None] = dict.fromkeys(collection_ids)
+        if not collection_ids:
+            return out
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT collection_id, grantee_id FROM shares "
+                "WHERE collection_id = ANY($1) AND permission = 'owner' AND revoked_at = ''",
+                collection_ids,
+            )
+        for row in rows:
+            out[row[0]] = row[1]
+        return out
 
     async def shares_for(
         self, collection_id: str, include_revoked: bool = False

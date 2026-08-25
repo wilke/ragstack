@@ -280,6 +280,25 @@ async def test_owner_of_reflects_the_single_active_owner_row(tmp_path, backend):
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
+async def test_owners_of_batches_the_single_active_owner_per_collection(tmp_path, backend):
+    """Batch counterpart of owner_of (issue #314) — one round trip resolving
+    every id in ``collection_ids``, agreeing with owner_of id-by-id."""
+    store = _stores(tmp_path)[backend]
+    assert await store.owners_of([]) == {}
+
+    await store.grant(COLL, "user", OWNER, "owner", granted_by=OWNER)
+    revoked_coll = "col-was-owned"
+    revoked = await store.grant(revoked_coll, "user", ALICE, "owner", granted_by=ALICE)
+    await store.revoke(revoked.id, revoked_by=ALICE)
+    unknown_coll = "col-never-existed"
+
+    result = await store.owners_of([COLL, revoked_coll, unknown_coll])
+    assert result == {COLL: OWNER, revoked_coll: None, unknown_coll: None}
+    assert result[COLL] == await store.owner_of(COLL)
+    assert result[revoked_coll] == await store.owner_of(revoked_coll)
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 async def test_grants_for_subject_sees_direct_and_public_only(tmp_path, backend):
     store = _stores(tmp_path)[backend]
     mine = await store.grant(COLL, "user", ALICE, "read", granted_by=OWNER)
