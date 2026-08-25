@@ -74,6 +74,10 @@ class JobItem(BaseModel):
 # since ingestion runs as in-process background tasks, cannot have survived a
 # process restart.
 _TERMINAL = (COMPLETED, FAILED)
+# In-flight states — what ``count_active`` counts (#202: one running ingest job
+# per principal). ``unknown`` is never stored, so this is the complement of
+# _TERMINAL over the stored statuses.
+ACTIVE = (ACCEPTED, RUNNING)
 # Error label for jobs whose worker died with the process (see fail_interrupted).
 INTERRUPTED = "interrupted"
 
@@ -98,6 +102,13 @@ _JOBS_COLUMNS: dict[str, str] = {
     "tenant_id": "TEXT NOT NULL DEFAULT ''",
     "archive_ref": "TEXT NOT NULL DEFAULT ''",  # #203: the gowe run's archive location
 }
+# count_active's lookup (#202) is (tenant_id, status) — indexed so the per-upload
+# admission check stays a point lookup as the jobs table grows. Both dialects
+# accept this form; applied after the column migration so it can name tenant_id
+# on a pre-#130 table too.
+_JOBS_ACTIVE_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS jobs_tenant_status ON jobs (tenant_id, status)"
+)
 _JOB_ITEMS_DDL = (
     "CREATE TABLE IF NOT EXISTS job_items ("
     "  job_id TEXT NOT NULL,"
@@ -226,6 +237,14 @@ class JobStore(Protocol):
 
     async def item_counts(self, job_id: str) -> dict[str, int]: ...
 
+    async def count_active(self, tenant_id: str) -> int:
+        """Number of this tenant's jobs that are still in flight (status in
+        :data:`ACTIVE`: ``accepted`` or ``running``). The admission check
+        behind ``api/deps.py::single_inflight_ingest`` (#202). Exact equality
+        on ``tenant_id`` — an unstamped legacy row (``""``) never counts for a
+        real tenant."""
+        ...
+
     async def close(self) -> None:
         """Release any held resources (e.g. a connection pool). No-op for the
         in-memory / connection-per-op stores."""
@@ -318,6 +337,16 @@ class InMemoryJobStore:
                 counts[it.status] = counts.get(it.status, 0) + 1
             return counts
 
+    async def count_active(self, tenant_id: str) -> int:
+        # A plain scan: the dev/test store holds at most a few thousand jobs,
+        # and a scan needs no index kept in step with create/update/fail_interrupted.
+        async with self._lock:
+            return sum(
+                1
+                for j in self._jobs.values()
+                if j.tenant_id == tenant_id and j.status in ACTIVE
+            )
+
     async def close(self) -> None:
         """No resources to release."""
 
@@ -338,6 +367,7 @@ class SqliteJobStore:
             # Additive migration for a `jobs` table created by a pre-#130 build —
             # CREATE TABLE IF NOT EXISTS above is a no-op against an existing file.
             ensure_columns_sqlite(conn, "jobs", _JOBS_COLUMNS)
+            conn.execute(_JOBS_ACTIVE_INDEX_DDL)
 
     def _connect(self) -> sqlite3.Connection:
         # Callers must wrap this in ``closing(...)``: sqlite3's connection
@@ -470,6 +500,14 @@ class SqliteJobStore:
             )
             return _fold_status_counts(cur.fetchall())
 
+    def _count_active_sync(self, tenant_id: str) -> int:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE tenant_id = ? AND status IN (?, ?)",
+                (tenant_id, *ACTIVE),
+            )
+            return int(cur.fetchone()[0])
+
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
         await asyncio.to_thread(self._add_items_sync, job_id, items)
 
@@ -490,6 +528,9 @@ class SqliteJobStore:
 
     async def item_counts(self, job_id: str) -> dict[str, int]:
         return await asyncio.to_thread(self._item_counts_sync, job_id)
+
+    async def count_active(self, tenant_id: str) -> int:
+        return await asyncio.to_thread(self._count_active_sync, tenant_id)
 
     async def close(self) -> None:
         """No persistent connection to release — each op opens and closes its own."""
@@ -539,6 +580,7 @@ class PostgresJobStore:
                         # build — CREATE TABLE IF NOT EXISTS above is a no-op
                         # against an existing table.
                         await ensure_columns_postgres(conn, "jobs", _JOBS_COLUMNS)
+                        await conn.execute(_JOBS_ACTIVE_INDEX_DDL)
                     self._pool = pool
         return self._pool
 
@@ -673,6 +715,15 @@ class PostgresJobStore:
                 job_id,
             )
         return _fold_status_counts([(r["status"], r["n"]) for r in rows])
+
+    async def count_active(self, tenant_id: str) -> int:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM jobs WHERE tenant_id = $1 AND status IN ($2, $3)",
+                tenant_id, *ACTIVE,
+            )
+        return int(n or 0)
 
     async def close(self) -> None:
         if self._pool is not None:

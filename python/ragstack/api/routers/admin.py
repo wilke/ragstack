@@ -86,6 +86,10 @@ class ConfigResponse(BaseModel):
     ingest_shard_size: int
     tenant_max_concurrency: int
     max_document_bytes: int
+    # POST /v1/ingest/upload bounds (#202)
+    max_upload_files: int
+    max_upload_bytes_per_request: int
+    upload_content_types: list[str]
     # authorization capability switches
     allow_user_collection_create: bool
     # observability

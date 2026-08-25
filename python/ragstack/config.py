@@ -329,9 +329,32 @@ class Settings(BaseSettings):
     # caps input size as a DoS guard; 0 disables the cap.
     ingest_root: str = ""
     max_document_bytes: int = 50_000_000
-    # POST /v1/ingest/upload: cap the number of files accepted per multipart
-    # request (a DoS guard on top of the per-file max_document_bytes cap).
+    # POST /v1/ingest/upload bounds (#202 phase 2c). Together with the per-file
+    # max_document_bytes these cap the SHAPE of one upload request:
+    #   max_upload_files              ≤ N files per request            → 413
+    #   max_upload_bytes_per_request  sum of the files' bytes           → 413
+    #                                 (checked against the declared sizes before
+    #                                 anything is staged or written, and again as
+    #                                 a running total while streaming; 0 disables)
+    #   upload_content_types          content-type allowlist            → 415
+    #                                 (PDFs are also %PDF-sniffed). Accepts a
+    #                                 comma list or a JSON array from the env.
+    # One running ingest job per principal (429 + Retry-After while a job of the
+    # caller's is accepted/running) is api/deps.py::single_inflight_ingest — not
+    # a setting; an admin principal is exempt (logged), like the rate bucket.
     max_upload_files: int = 50
+    max_upload_bytes_per_request: int = 500_000_000
+    upload_content_types: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "application/pdf", "text/plain", "text/markdown",
+            "application/xml", "text/xml",  # JATS
+        ]
+    )
+
+    @field_validator("upload_content_types", mode="before")
+    @classmethod
+    def _split_upload_content_types(cls, value: object) -> object:
+        return _split_list_env(value)
 
     # Sharded (batch/directory) ingestion: how many documents process at once
     # and how many per shard. Bounds in-flight work for large directories.

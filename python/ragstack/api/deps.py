@@ -1934,6 +1934,52 @@ def rate_limited(bucket: str):
     return _check
 
 
+# Retry-After (seconds) on the one-in-flight-job 429 below: a poll hint for a
+# well-behaved client, not a lease — the job it waits on may take much longer.
+INFLIGHT_RETRY_AFTER_SECONDS = 30
+
+
+async def single_inflight_ingest(
+    request: Request,
+    principal: Principal = Depends(resolve_principal),
+) -> None:
+    """FastAPI dependency: 429 + ``Retry-After`` while the caller already has
+    an ingest job in flight — one whose ``tenant_id`` is ``principal.tenant``
+    and whose status is ``accepted`` or ``running`` in the job store (#202).
+
+    One running ingest job per principal is the spec's admission rule for
+    ``POST /v1/ingest/upload``: the per-request bounds cap the shape of ONE
+    request, and the hourly bucket caps how many — this is what stops a user
+    from stacking N 500 MB runs on the fleet at once. It is a job-store query
+    (``JobStore.count_active``, indexed on the SQL stores), not a bucket: the
+    slot frees itself the moment the job reaches a terminal state, with no
+    lease to leak. An ``admin`` principal is exempt — logged, so the exemption
+    is visible in an access-anomaly review — exactly like :func:`rate_limited`.
+
+    A rejected upload (415/413) is marked ``failed`` before the error is
+    re-raised on both upload branches, so a refusal never blocks the retry.
+    Caveat: the Postgres store's ``fail_interrupted`` is a no-op (#7), so a job
+    left ``running`` by a crashed worker keeps that principal blocked until an
+    operator resolves it.
+    """
+    if principal.role == ROLE_ADMIN:
+        log.info(
+            "single-inflight ingest check bypassed for admin principal tenant=%r",
+            principal.tenant,
+        )
+        return
+    active = await request.app.state.job_store.count_active(principal.tenant)
+    if active:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "an ingest job of yours is still in flight; poll "
+                "GET /v1/ingest/{job_id} and retry once it is completed or failed"
+            ),
+            headers={"Retry-After": str(INFLIGHT_RETRY_AFTER_SECONDS)},
+        )
+
+
 async def bound_json_body(request: Request) -> None:
     """413 when a JSON request body exceeds ``settings.max_json_body_bytes``.
 

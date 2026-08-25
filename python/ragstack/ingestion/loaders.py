@@ -42,6 +42,24 @@ class LoaderError(Exception):
     embed raw filesystem paths or upstream exception text in it."""
 
 
+# The per-item job error recorded for a PDF that yields no text (#202): an
+# actionable, constant, caller-safe string (no filename — the item id already
+# names the file), so it can be counted per job with a GROUP BY on the SQL job
+# stores. ``NO_TEXT_LABEL`` is the short label the INFO count line carries.
+NO_TEXT_ERROR = "no extractable text (scanned PDF?)"
+NO_TEXT_LABEL = "no_text"
+
+
+class NoTextExtracted(LoaderError):
+    """A PDF opened and parsed fine but produced no text at all — an image-only
+    (scanned) PDF, or one whose text is outlined. Distinguished from the other
+    ``LoaderError`` cases so the job records the actionable ``job_error`` string
+    per item instead of a bare class name, and so the count of such items per
+    job is visible (the data #202's OCR decision needs)."""
+
+    job_error = NO_TEXT_ERROR
+
+
 def confine_to_root(source: str, root: str | Path | None) -> Path:
     """Resolve ``source`` and confine it to ``root`` (the LFI / path-traversal
     guard). Returns the resolved path; raises ``LoaderError`` if it escapes root.
@@ -128,7 +146,7 @@ class PdfLoader:
         if not content:
             # Scanned/image-only PDFs yield no extractable text; surface it as a
             # typed loader error rather than silently ingesting an empty document.
-            raise LoaderError(f"no extractable text in PDF '{path.name}'")
+            raise NoTextExtracted(f"no extractable text in PDF '{path.name}' (scanned PDF?)")
         metadata: dict[str, object] = {"filename": path.name, "pages": len(pages)}
         if embedded_doi:
             metadata["doi"] = embedded_doi
