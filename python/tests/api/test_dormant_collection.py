@@ -42,7 +42,7 @@ from ragstack.identity import (
 )
 from ragstack.ingestion.gowe_client import GoWeError
 from ragstack.ingestion.load_embeddings import ReplayRefused, verify_replay
-from ragstack.restore import DEFAULT_CWL, CollectionRestorer
+from ragstack.restore import DEFAULT_CWL, CollectionRestorer, classify_failure
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from ragstack.workspace import WorkspaceNotFound, collection_folder, ws_uri
@@ -94,6 +94,9 @@ class FakeEngine:
     FAILED record carrying the loader's marker line. ``hold`` keeps every
     submission non-terminal until :meth:`release`."""
 
+    #: GoWe keeps only the first 1000 characters of a failed task's stderr.
+    STDERR_KEEP = 1000
+
     def __init__(self, workspace: FakeWorkspace) -> None:
         self.workspace = workspace
         self.submissions: list[dict] = []
@@ -101,6 +104,13 @@ class FakeEngine:
         self.records: dict[str, dict] = {}
         self.hold = False
         self._released = asyncio.Event()
+        # What the loader writes to stderr BEFORE the marker line (store
+        # client warnings from building the pipeline); real runs have plenty.
+        self.stderr_prefix = ""
+        # How many times `wait` gives up (its own timeout) before returning.
+        self.wait_timeouts = 0
+        # ...and whether the engine forgets the submission at that moment.
+        self.forget_on_timeout = False
 
     def _local(self, location: str) -> Path:
         for folder, versions in self.workspace.folders.items():
@@ -118,8 +128,15 @@ class FakeEngine:
             verify_replay(dirs, spec_hash=inputs["spec_hash"], collection_id=inputs["collection_id"])
             record = {"id": sub_id, "state": "COMPLETED", "outputs": {}}
         except ReplayRefused as e:
-            record = {"id": sub_id, "state": "FAILED",
-                      "error": f"step replay exited 3: {e}"}
+            # The real terminal record: error.{code, message, context.{stderr,
+            # exit_code}}, stderr truncated to its first 1000 characters —
+            # the loader's marker line comes AFTER whatever the pipeline build
+            # printed, so it may or may not fall inside the window.
+            stderr = (self.stderr_prefix + str(e) + "\n")[: self.STDERR_KEEP]
+            record = {"id": sub_id, "state": "FAILED", "error": {
+                "code": "TASK_FAILED", "message": "step replay failed",
+                "context": {"stderr": stderr, "exit_code": 3},
+            }}
         self.records[sub_id] = record
         return {"id": sub_id, "state": "PENDING"}
 
@@ -152,9 +169,18 @@ class FakeGoWeClient:
         return self.engine.submit(self.token, inputs, labels)
 
     async def get_submission(self, sub_id: str) -> dict:
+        if sub_id not in self.engine.records:
+            raise GoWeError(f"GET /api/v1/submissions/{sub_id} -> 404")
+        if self.engine.hold:
+            return {"id": sub_id, "state": "RUNNING"}
         return self.engine.records[sub_id]
 
     async def wait(self, sub_id: str, *, poll_interval: float = 0, timeout: float = 0) -> dict:
+        if self.engine.wait_timeouts > 0:
+            self.engine.wait_timeouts -= 1
+            if self.engine.forget_on_timeout:
+                self.engine.records.pop(sub_id, None)
+            raise GoWeError(f"submission {sub_id} not terminal after {timeout}s (state=RUNNING)")
         return await self.engine.terminal(sub_id)
 
     async def close(self) -> None:
@@ -352,6 +378,96 @@ async def test_tampered_manifest_makes_the_collection_lost(client, identity, wor
     resp = await _retrieve(client)
     assert resp.status_code == 409
     assert "SpecMismatch" in resp.json()["detail"]
+
+
+async def test_marker_beyond_the_engines_stderr_window_still_classifies_as_lost(
+    client, identity, world,
+):
+    """The engine keeps the first 1000 chars of stderr; the loader's marker
+    line comes after the pipeline build's client warnings, so it is often
+    outside the window. The exit code (3) is what decides `lost`."""
+    store, gate, engine = world["store"], world["gate"], world["engine"]
+    engine.stderr_prefix = ("UserWarning: Failed to obtain server version. Unable to check "
+                            "client-server compatibility.\n") * 15  # > 1000 chars
+    tamper_manifest(world["versions"][0], spec_hash="deadbeef")
+    await store.set_state(CID, DORMANT)
+    gate.invalidate(CID)
+    assert (await _retrieve(client)).status_code == 503
+    await gate.drain()
+    record = engine.records["sub_1"]
+    assert "SpecMismatch" not in record["error"]["context"]["stderr"]  # the case that bit
+    rec = await store.get(CID)
+    assert rec.state == LOST, rec.state_reason
+    assert "exit 3" in rec.state_reason and "submission=sub_1" in rec.state_reason
+    assert (await _retrieve(client)).status_code == 409
+
+
+async def test_classify_failure_is_exit_code_first():
+    ctx = {"stderr": "warnings only, no marker in the window", "exit_code": 3}
+    state, reason = classify_failure({"id": "s", "state": "FAILED",
+                                      "error": {"code": "TASK_FAILED", "message": "m", "context": ctx}})
+    assert state == LOST and "exit 3" in reason
+    # Marker in the window is the secondary signal (exit code unknown).
+    state, reason = classify_failure({"id": "s", "state": "FAILED", "error": {
+        "code": "TASK_FAILED", "message": "m",
+        "context": {"stderr": "junk\nArchiveCorrupt: vectors.f32: sha256 x != y\nmore"}}})
+    assert state == LOST and reason.endswith("ArchiveCorrupt: vectors.f32: sha256 x != y")
+    # Any other exit code without a marker: dormant, retried (2 = registry
+    # disagreement, 1 = mid-stream) — the exit code is recorded.
+    for code in (1, 2, 137):
+        state, reason = classify_failure({"id": "s", "state": "FAILED", "error": {
+            "code": "TASK_FAILED", "message": "worker OOM",
+            "context": {"stderr": "", "exit_code": code}}})
+        assert state == DORMANT and f"(exit {code})" in reason and "worker OOM" in reason
+    # A record with no error at all (CANCELLED) is dormant too.
+    assert classify_failure({"id": "s", "state": "CANCELLED"})[0] == DORMANT
+
+
+async def test_wait_timeout_does_not_demote_while_the_engine_still_runs(
+    client, identity, world,
+):
+    """`client.wait` giving up (its own timeout) is not the engine stopping:
+    the watcher confirms with get_submission, keeps `restoring`, waits again —
+    and the gate's watchdog leaves a row this process is still watching
+    alone, however old it looks. Otherwise the next access would submit a
+    SECOND restore over the same versions while the first still runs."""
+    store, gate, engine = world["store"], world["gate"], world["engine"]
+    engine.hold = True           # the engine keeps running…
+    engine.wait_timeouts = 1     # …while the first wait() gives up
+    await store.set_state(CID, DORMANT)
+    gate.invalidate(CID)
+    assert (await _retrieve(client)).status_code == 503
+    while len(engine.submissions) == 0:
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)  # the watcher has hit the timeout and re-checked by now
+    assert (await store.get(CID)).state == RESTORING
+    assert "submission=sub_1" in (await store.get(CID)).state_reason
+    assert gate.restorer.watching(CID)
+    # Make the row LOOK orphaned: the watchdog must still not reset it.
+    gate.restore_timeout = 1.0
+    rec = await store.get(CID)
+    store._records[CID] = rec.model_copy(update={"state_changed_at": "2020-01-01T00:00:00+00:00"})
+    gate.invalidate(CID)
+    resp = await _retrieve(client)
+    assert resp.status_code == 503 and resp.headers["Retry-After"] == "30"
+    assert len(engine.submissions) == 1
+    assert (await store.get(CID)).state == RESTORING
+    engine.release()
+    await gate.drain()
+    assert (await store.get(CID)).state == ACTIVE
+    assert len(engine.submissions) == 1
+
+
+async def test_unreadable_submission_after_a_wait_failure_demotes(client, identity, world):
+    store, gate, engine = world["store"], world["gate"], world["engine"]
+    engine.wait_timeouts = 1
+    engine.forget_on_timeout = True  # the engine forgot it: get_submission 404s
+    await store.set_state(CID, DORMANT)
+    gate.invalidate(CID)
+    assert (await _retrieve(client)).status_code == 503
+    await gate.drain()
+    rec = await store.get(CID)
+    assert rec.state == DORMANT and "no longer reports" in rec.state_reason
 
 
 async def test_missing_archive_folder_makes_the_collection_lost(client, identity, world):

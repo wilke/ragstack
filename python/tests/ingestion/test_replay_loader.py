@@ -247,15 +247,26 @@ def test_cli_replay_writes_a_summary(versions, tmp_path, capsys):
     assert "replayed 4 version(s)" in capsys.readouterr().out
 
 
-def test_cli_replay_refusal_exits_3_with_the_marker_line(versions, tmp_path, capsys):
+def test_cli_replay_refusal_exits_3_with_the_marker_line(versions, tmp_path, capsys, monkeypatch):
     tamper_manifest(versions["dirs"][0], spec_hash="deadbeef")
     out = tmp_path / "summary.json"
+    # Verification runs BEFORE the stores are built/ensured: a refused archive
+    # must not leave a freshly created physical collection behind.
+    built = []
+    real = load_cli._build_pipeline
+
+    async def spy(args, target=None):
+        built.append(True)
+        return await real(args, target)
+
+    monkeypatch.setattr(load_cli, "_build_pipeline", spy)
     rc = load_cli.main([
         "--replay", *map(str, versions["dirs"]), "--spec-hash", SPEC,
         "--vector-backend", "memory", "--text-backend", "memory", "--out", str(out),
     ])
     assert rc == 3
     assert not out.exists()  # nothing written, not even a summary
+    assert built == []       # and no store was ensured
     err = capsys.readouterr().err
     assert err.startswith("SpecMismatch:")
 

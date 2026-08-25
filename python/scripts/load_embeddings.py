@@ -21,8 +21,11 @@ of archive version directories (``ragstack-archive/1``, the ``versions/<n>/``
 folders the ingest workflows archive into the owner's Workspace) — the
 restore-collection workflow's tool. Every version is verified (sha256s,
 geometry, and ``manifest.spec_hash == --spec-hash``, the registry row's) BEFORE
-anything is written; a failure exits 3 with an ``ArchiveCorrupt:`` /
-``SpecMismatch:`` line and nothing written. Chunk versions replace their
+anything is written — or created: the physical stores are ensured only after
+verification passes. A refusal exits **3** with an ``ArchiveCorrupt:`` /
+``SpecMismatch:`` line (the API marks the collection ``lost``); a registry
+disagreement between this worker and the API exits **2**; a mid-stream failure
+exits **1** (both leave it ``dormant``, retried). Chunk versions replace their
 documents and upsert both legs; tombstone versions delete by doc id.
 
 Usage::
@@ -47,6 +50,7 @@ from ragstack.ingestion.load_embeddings import (
     ReplayRefused,
     run_load_file,
     run_replay,
+    verify_replay,
 )
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -87,19 +91,14 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
         # collection) is caught here, before the collection is created/written.
         dims = set()
         if getattr(args, "replay", None):
-            # The archive manifests carry the geometry; a tombstone-only
-            # version has none, and the registry entry's dim is authoritative
-            # anyway (check_build below refuses a disagreeing archive).
-            from ragstack.ingestion.archive import ArchiveCorrupt, read_manifest
+            # The archive manifests carry the geometry (already verified by
+            # _replay before this runs); a tombstone-only version has none,
+            # and the registry entry's dim is authoritative anyway
+            # (check_build below refuses a disagreeing archive).
+            from ragstack.ingestion.archive import read_manifest
 
             for vdir in args.replay:
-                try:
-                    geom = read_manifest(vdir).get("vectors") or {}
-                except ArchiveCorrupt as e:
-                    # Same marker line as the full verification would print:
-                    # nothing has been created or written yet.
-                    print(f"ArchiveCorrupt: {e}", file=sys.stderr, flush=True)
-                    raise SystemExit(3) from None
+                geom = read_manifest(vdir).get("vectors") or {}
                 if geom.get("dim"):
                     dims.add(int(geom["dim"]))
             dims = dims or {target.dim}
@@ -148,19 +147,37 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
                                                or getattr(args, "replay", None)))
 
 
-async def _replay(args, pipeline, target) -> int:
-    """``--replay``: verify every version, then replay them in order."""
+async def _replay(args, target) -> int:
+    """``--replay``: verify every version, THEN build the stores, then replay.
+
+    Exit codes are the API's classification signal (restore.py): **3** = the
+    archive was refused (nothing written, not even the physical collection —
+    verification runs before ``_build_pipeline`` ensures it) → ``lost``;
+    **2** = the worker's registry disagrees with the API's (a deployment
+    misconfiguration, retried once fixed) → ``dormant``; **1** = a mid-stream
+    failure after verification → ``dormant``, retried.
+    """
     spec_hash = args.spec_hash or (target.spec.spec_hash() if target is not None else "")
     if target is not None and args.spec_hash and target.spec.spec_hash() != args.spec_hash:
         # The API passed the registry row's hash; the worker resolved the same
-        # id to a different spec. That is a registry disagreement between the
-        # two processes, and writing anything under it would be exactly the
-        # incoherent index ADR-0002 forbids.
-        print(f"SpecMismatch: --spec-hash {args.spec_hash!r} != registry entry "
-              f"{target.collection_id!r} spec_hash {target.spec.spec_hash()!r}",
+        # id to a different spec. Not an archive problem — the two processes
+        # read different registries — so exit 2 (dormant, retried), not 3.
+        print(f"registry disagreement: --spec-hash {args.spec_hash!r} != registry entry "
+              f"{target.collection_id!r} spec_hash {target.spec.spec_hash()!r} as this "
+              "worker reads it; fix the worker's registry configuration",
               file=sys.stderr, flush=True)
-        return 3
+        return 2
     collection_id = target.collection_id if target is not None else (args.collection_id or "")
+    try:
+        manifests = verify_replay(list(args.replay), spec_hash=spec_hash,
+                                  collection_id=collection_id)
+    except ReplayRefused as e:
+        # Nothing was written — and nothing created: the stores are ensured
+        # only below. Exit 3 is what the API's restore watcher classifies as
+        # `lost` (the marker line is its secondary signal).
+        print(str(e), file=sys.stderr, flush=True)
+        return 3
+    pipeline = await _build_pipeline(args, target)
     tindex = pipeline.text_index
     can_park = args.bulk_refresh and hasattr(tindex, "bulk_load_refresh")
     prior = await tindex.bulk_load_refresh(True) if can_park else None
@@ -168,14 +185,8 @@ async def _replay(args, pipeline, target) -> int:
         summary = await run_replay(
             pipeline, list(args.replay), spec_hash=spec_hash, collection_id=collection_id,
             batch_size=args.replay_batch, delete_concurrency=args.delete_concurrency,
-            log=lambda msg: print(msg, flush=True),
+            log=lambda msg: print(msg, flush=True), manifests=manifests,
         )
-    except ReplayRefused as e:
-        # Nothing was written. The marker line is what the API's restore
-        # watcher looks for to mark the collection `lost` (vs. a retryable
-        # engine failure).
-        print(str(e), file=sys.stderr, flush=True)
-        return 3
     finally:
         if can_park:
             await tindex.restore_refresh(prior)
@@ -193,9 +204,9 @@ async def _replay(args, pipeline, target) -> int:
 
 
 async def amain(args, target=None) -> int:
-    pipeline = await _build_pipeline(args, target)
     if getattr(args, "replay", None):
-        return await _replay(args, pipeline, target)
+        return await _replay(args, target)
+    pipeline = await _build_pipeline(args, target)
     # Files hold disjoint document sets and chunk ids are deterministic, so
     # concurrent files cannot race on a doc_id or duplicate a point (#323). Receipts
     # are collected positionally, so the summary is identical to the serial run

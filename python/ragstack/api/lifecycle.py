@@ -152,7 +152,12 @@ class LifecycleGate:
                 ),
             )
         if state == RESTORING:
-            if not self.is_stale_restore(rec):
+            # The watchdog is for a row ORPHANED by a dead process. One this
+            # process is still watching is merely slow — resetting it would
+            # submit a second restore over the same versions while the engine
+            # is still running the first.
+            watched = self.restorer is not None and self.restorer.watching(cid)
+            if watched or not self.is_stale_restore(rec):
                 raise self._retry(cid, state, "a restore is in progress; retry shortly")
             # Orphaned restore: un-stick it, then treat as dormant below.
             if await self.store.set_state(

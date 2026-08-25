@@ -222,6 +222,7 @@ async def run_replay(
     batch_size: int = REPLAY_BATCH,
     delete_concurrency: int = 8,
     log: Any = None,
+    manifests: list[dict[str, Any]] | None = None,
 ) -> ReplaySummary:
     """Restore a collection by replaying ``version_dirs`` in order.
 
@@ -237,12 +238,18 @@ async def run_replay(
     * tombstone version — delete its doc ids from both legs.
 
     ``pipeline`` must have been built with ``delete_prior=False``; this
-    function asserts it rather than silently double-deleting.
+    function asserts it rather than silently double-deleting. ``manifests``:
+    the list :func:`verify_replay` already returned for these directories
+    (the CLI verifies BEFORE it creates the physical stores) — skips the
+    second verification pass.
     """
     if getattr(pipeline, "_delete_prior", False):
         raise ValueError("run_replay needs a pipeline built with delete_prior=False")
     t0 = time.perf_counter()
-    manifests = verify_replay(version_dirs, spec_hash=spec_hash, collection_id=collection_id)
+    if manifests is None:
+        manifests = verify_replay(version_dirs, spec_hash=spec_hash, collection_id=collection_id)
+    elif len(manifests) != len(version_dirs):
+        raise ValueError("manifests must correspond one-to-one to version_dirs")
     summary = ReplaySummary(n_versions=len(manifests))
     say = log if log is not None else (lambda *_a, **_k: None)
     try:
@@ -275,8 +282,10 @@ async def run_replay(
             summary.versions.append(entry)
     except ArchiveError as e:
         # A file that verified but then failed to stream (a race with a writer
-        # is the only way) — report it under the same marker; the run is
-        # partial and the API keeps the collection `restoring` -> `dormant`.
-        summary.status, summary.error = FAILED, f"ArchiveCorrupt: {e}"
+        # is the only way). Deliberately NOT reported under the refusal marker
+        # and NOT exit 3: the archive verified, the run is merely partial, so
+        # the collection goes back to `dormant` and the next access retries —
+        # idempotent ids make the re-run converge.
+        summary.status, summary.error = FAILED, f"replay failed mid-stream: {type(e).__name__}: {e}"
     summary.seconds = time.perf_counter() - t0
     return summary

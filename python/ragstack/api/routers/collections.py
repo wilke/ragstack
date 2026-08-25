@@ -791,7 +791,7 @@ async def restore_collection(
             "credential; this request carries none (API-key / keyless callers "
             "have no Workspace identity)",
         )
-    rec = await store.get(collection_id)
+    rec = await store.get(entry.id)
     if rec is None:
         raise HTTPException(
             409,

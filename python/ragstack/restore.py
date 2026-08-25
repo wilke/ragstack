@@ -40,7 +40,7 @@ from ragstack.collection_store import (
     CollectionRecord,
     CollectionStore,
 )
-from ragstack.ingestion.gowe_client import GoWeError
+from ragstack.ingestion.gowe_client import TERMINAL_STATES, GoWeError
 from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceError,
@@ -52,8 +52,7 @@ log = logging.getLogger(__name__)
 
 #: Markers the loader prints (and raises) when it REFUSES an archive: a sha256 /
 #: geometry failure or a build-spec hash that disagrees with the registry row.
-#: A FAILED submission whose record carries one of these is a ``lost``
-#: collection (the archive is bad), not a retryable engine failure.
+#: Secondary signal only — the exit code (:data:`REFUSED_EXIT_CODE`) decides.
 FAILURE_MARKERS = ("ArchiveCorrupt", "SpecMismatch")
 
 #: The workflow input that carries the version directories (restore-collection.cwl).
@@ -83,24 +82,70 @@ def workspace_subject(owner: str) -> str:
     return subject if sep else owner
 
 
+#: The loader's exit code when it REFUSES an archive (`load_embeddings.py
+#: --replay`): verification failed before any write. Declared as a
+#: ``permanentFailCodes`` entry in restore-collection.cwl, so the engine does
+#: not retry it either. Exit 2 is a registry disagreement between the API and
+#: the worker (a deployment misconfiguration — retried once an operator fixes
+#: it), exit 1 a mid-stream failure; both stay ``dormant``.
+REFUSED_EXIT_CODE = 3
+
+
+def _submission_error(record: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """GoWe's terminal failure record is ``error: {code, message, context:
+    {stderr, exit_code, …}}`` (the scheduler copies the failed task's stderr in,
+    truncated to its first 1000 characters). Returns ``(context, message)``,
+    tolerating a bare string ``error`` or a missing one."""
+    err = record.get("error")
+    if isinstance(err, dict):
+        ctx = err.get("context")
+        return (ctx if isinstance(ctx, dict) else {}), str(err.get("message") or err.get("code") or "")
+    return {}, (str(err) if err else str(record.get("message") or ""))
+
+
 def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
     """Decide what a non-COMPLETED terminal submission record means.
 
-    The record is searched (as JSON text — GoWe's failure fields are not
-    pinned here) for the loader's refusal markers; one present means the
-    archive failed verification and the collection is ``lost`` with that
-    reason. Anything else is an engine-side failure: ``dormant`` with the
-    submission state recorded, so the next access tries again."""
-    text = json.dumps(record, default=str)
+    DETERMINISTIC first: ``error.context.exit_code == 3`` is the loader's
+    refusal code (sha256 / geometry / spec_hash failure, before any write) →
+    ``lost``. The refusal marker in the captured stderr is only a SECONDARY
+    signal, because the engine keeps just the first 1000 characters of stderr
+    and the loader builds its stores (client warnings and all) before it
+    prints the marker — so the marker can fall outside the window while the
+    exit code never does. Anything else is an engine-side or retryable failure:
+    ``dormant`` with the state and message recorded, so the next access tries
+    again."""
+    ctx, message = _submission_error(record)
+    stderr = str(ctx.get("stderr") or "")
+    exit_code = ctx.get("exit_code")
+    try:
+        code = int(exit_code) if exit_code is not None else None
+    except (TypeError, ValueError):
+        code = None
+    sub = record.get("id", "?")
+    if code == REFUSED_EXIT_CODE:
+        marker = _marker_line(stderr) or _marker_line(message)
+        return LOST, (f"archive refused by the loader (exit {REFUSED_EXIT_CODE})"
+                      + (f": {marker}" if marker else f"; submission {sub}"))
+    marker = _marker_line(stderr) or _marker_line(message) or _marker_line(
+        json.dumps(record, default=str))
+    if marker:
+        return LOST, f"archive refused by the loader: {marker}"
+    state = record.get("state") or "FAILED"
+    detail = f": {message[:200]}" if message else ""
+    if code is not None:
+        detail += f" (exit {code})"
+    return DORMANT, f"restore submission {sub} ended {state}{detail}"
+
+
+def _marker_line(text: str) -> str:
+    """The first ``ArchiveCorrupt: …`` / ``SpecMismatch: …`` line in ``text``
+    (trimmed to 200 chars), or ``''``."""
     for marker in FAILURE_MARKERS:
         idx = text.find(marker)
         if idx >= 0:
-            snippet = text[idx: idx + 200].split("\\n", 1)[0].rstrip('"}] ')
-            return LOST, f"archive refused by the loader: {snippet}"
-    state = record.get("state") or "FAILED"
-    err = record.get("error") or record.get("message") or ""
-    detail = f": {str(err)[:200]}" if err else ""
-    return DORMANT, f"restore submission {record.get('id', '?')} ended {state}{detail}"
+            return text[idx: idx + 200].replace("\\n", "\n").split("\n", 1)[0].rstrip('"}] ')
+    return ""
 
 
 def _scrub(text: str, token: str) -> str:
@@ -143,7 +188,7 @@ class CollectionRestorer:
         self._on_change = on_change
         # Strong refs to in-flight watchers (a bare fire-and-forget task is
         # GC-able mid-flight, and a dropped one leaves the row `restoring`).
-        self._watchers: set[asyncio.Task] = set()
+        self._watchers: dict[str, asyncio.Task] = {}
         self.submissions: list[dict[str, Any]] = []  # what was submitted (tests)
 
     # -- helpers ------------------------------------------------------------ #
@@ -199,6 +244,13 @@ class CollectionRestorer:
             reason = _scrub(f"restore submission failed: {type(e).__name__}: {e}", token)
             await self._set(cid, DORMANT, reason)
             raise RestoreError(reason) from e
+        # Record the submission id on the row (no schema change — it rides in
+        # the reason string) so an operator can check the engine by hand.
+        await self._store.set_state(
+            cid, RESTORING, expect=RESTORING, reason=f"restore submitted: submission={sub_id}"
+        )
+        if self._on_change is not None:
+            self._on_change(cid)
         self.watch(cid, sub_id, token)
         return sub_id
 
@@ -261,33 +313,72 @@ class CollectionRestorer:
 
     def watch(self, cid: str, sub_id: str, token: str) -> asyncio.Task:
         """Poll ``sub_id`` to its terminal state in the background and flip the
-        row. Strongly referenced until done; :meth:`drain` awaits them all."""
+        row. Strongly referenced (keyed by collection) until done;
+        :meth:`drain` awaits them all."""
         task = asyncio.get_running_loop().create_task(self._watch(cid, sub_id, token))
-        self._watchers.add(task)
-        task.add_done_callback(self._watchers.discard)
+        self._watchers[cid] = task
+
+        def _forget(done: asyncio.Task) -> None:
+            if self._watchers.get(cid) is done:
+                del self._watchers[cid]
+
+        task.add_done_callback(_forget)
         return task
+
+    def watching(self, cid: str) -> bool:
+        """Is THIS process still watching a restore of ``cid``? The lifecycle
+        gate's watchdog must not reset a ``restoring`` row whose watcher is
+        alive — the row is old only because the engine is slow, and a reset
+        would double the load (a second submission over the same versions)."""
+        task = self._watchers.get(cid)
+        return task is not None and not task.done()
+
+    async def _terminal(self, client: Any, cid: str, sub_id: str) -> dict[str, Any] | None:
+        """``client.wait`` until terminal — but a wait that gives up (its own
+        timeout, a transport blip) does NOT mean the engine stopped. Confirm
+        with one ``get_submission``: terminal → that record; still running →
+        keep the row ``restoring`` and wait again; unreachable/404 → ``None``
+        (the caller demotes to ``dormant``). Demoting on a mere wait timeout
+        while the engine keeps running is how the next access would submit a
+        second restore over the same versions."""
+        while True:
+            try:
+                return await client.wait(
+                    sub_id, poll_interval=self.poll_interval, timeout=self.timeout
+                )
+            except GoWeError as e:
+                try:
+                    probe = await client.get_submission(sub_id)
+                except GoWeError as e2:
+                    log.warning("restore %r: %s: wait failed (%s) and the submission "
+                                "cannot be read back (%s); demoting", cid, sub_id, e, e2)
+                    return None
+                if probe.get("state") in TERMINAL_STATES:
+                    return probe
+                log.warning("restore %r: %s: wait gave up (%s) but the engine still "
+                            "reports %s; keeping `restoring` and waiting again",
+                            cid, sub_id, e, probe.get("state"))
 
     async def _watch(self, cid: str, sub_id: str, token: str) -> None:
         client = self._gowe_factory(token)
         try:
-            final = await client.wait(
-                sub_id, poll_interval=self.poll_interval, timeout=self.timeout
-            )
-        except GoWeError as e:
-            await self._set(cid, DORMANT, _scrub(f"restore {sub_id}: {e}", token))
-            return
+            final = await self._terminal(client, cid, sub_id)
         except Exception as e:  # noqa: BLE001 — a watcher must never die silently
             await self._set(cid, DORMANT,
                             _scrub(f"restore {sub_id}: watcher failed: {type(e).__name__}: {e}", token))
             return
         finally:
             await _close(client)
+        if final is None:
+            await self._set(cid, DORMANT,
+                            f"restore {sub_id}: the engine no longer reports the submission")
+            return
         if final.get("state") == "COMPLETED":
             if await self._set(cid, ACTIVE, ""):
                 log.info("restore %r: %s COMPLETED; collection is active", cid, sub_id)
             return
         state, reason = classify_failure(final)
-        await self._set(cid, state, _scrub(reason, token))
+        await self._set(cid, state, _scrub(f"{reason} [submission={sub_id}]", token))
         log.warning("restore %r: %s -> %s (%s)", cid, sub_id, state, reason)
 
     @property
@@ -297,7 +388,7 @@ class CollectionRestorer:
     async def drain(self) -> None:
         """Await every in-flight watcher (shutdown, tests)."""
         while self._watchers:
-            await asyncio.gather(*list(self._watchers), return_exceptions=True)
+            await asyncio.gather(*list(self._watchers.values()), return_exceptions=True)
 
 
 async def _close(client: Any) -> None:

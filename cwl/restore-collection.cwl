@@ -15,9 +15,12 @@
 # Every version is verified BEFORE the first write: each file's sha256 and byte
 # size against its manifest, the vectors geometry, and the manifest's
 # `spec_hash` against `spec_hash` below — the registry row's build-spec hash
-# (ADR-0002's guard applied to an archive the user can edit). Any failure exits
-# non-zero with an `ArchiveCorrupt:` / `SpecMismatch:` line and NOTHING is
-# written, so the API marks the collection `lost` rather than half-restored.
+# (ADR-0002's guard applied to an archive the user can edit). A failure exits
+# **3** (`permanentFailCodes`, an `ArchiveCorrupt:` / `SpecMismatch:` line on
+# stderr) with NOTHING written — not even the physical stores, which are
+# created only after verification — so the API marks the collection `lost`
+# rather than half-restored. Exit 2 = the worker's registry disagrees with the
+# API's (misconfiguration), exit 1 = a mid-stream failure: both retryable.
 # Then, in order: a chunk version deletes each of its documents' prior chunks
 # and upserts both legs (deterministic ids — a re-run after a crash converges);
 # a tombstone version deletes its doc ids from both legs. Streaming: the
@@ -93,6 +96,11 @@ steps:
           dockerImageId: ragstack-worker.sif
         NetworkAccess:
           networkAccess: true
+      # Exit 3 = the loader REFUSED the archive (verification failed before any
+      # write): permanent — the engine must not retry it, and the API reads
+      # this exit code off the failed submission to mark the collection `lost`.
+      # Exit 2 (registry disagreement) / 1 (mid-stream) stay retryable.
+      permanentFailCodes: [3]
       baseCommand: [python, /opt/ragstack/scripts/load_embeddings.py]
       inputs:
         versions:
