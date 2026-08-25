@@ -48,6 +48,8 @@ from ragstack.api.deps import (
     build_collection_entry,
     get_collection_store,
     get_collections,
+    get_graph_extract_runner,
+    get_job_store,
     get_model_registry,
     materialize_config_manifest_for_spec,
     probe_tenant_count,
@@ -73,6 +75,7 @@ from ragstack.collection_store import CollectionRecord, CollectionStore, CreateO
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
@@ -923,6 +926,170 @@ async def restore_collection(
     return CollectionRestoreResponse(
         collection_id=collection_id, state=RESTORING, submission_id=sub_id,
         message="restore submitted; reads and ingests answer 503 with Retry-After until it completes",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Graph extraction over an archived version (#350, phase 6 of #201)
+# --------------------------------------------------------------------------- #
+
+
+#: Retry-After (seconds) on the per-owner extraction guard's 429 — the ingest
+#: guard's value; a refused caller polls the job it already has.
+GRAPH_EXTRACT_RETRY_AFTER = 30
+
+
+class GraphExtractResponse(BaseModel):
+    """Mirror of contracts/schemas/graph_extract_response.json."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    collection_id: str
+    version: int
+    job_id: str | None = None
+    submission_id: str | None = None
+    message: str
+
+
+@router.post(
+    "/collections/{collection_id}/graph",
+    status_code=202,
+    response_model=GraphExtractResponse,
+)
+async def extract_collection_graph(
+    collection_id: str,
+    version: int | None = Query(
+        default=None, ge=0,
+        description="The archived version to extract from (default: the latest chunk version)",
+    ),
+    principal: Principal = Depends(resolve_principal),
+    registry: CollectionRegistry = Depends(get_collections),
+    store: CollectionStore = Depends(get_collection_store),
+    job_store: JobStore = Depends(get_job_store),
+    runner: Any = Depends(get_graph_extract_runner),
+) -> GraphExtractResponse:
+    """Extract the knowledge graph of ONE archived version of the collection
+    (owner or admin): submits ``graph-extract.cwl`` AS THE CALLER over the
+    latest chunk version's ``ws://`` directory (or ``?version=n``), which
+    extracts triples from its chunks with the LLM, archives them as the
+    version's ``triples`` leg (``manifest.graph = true``) and loads them into
+    the graph store scoped by ``(tenant, collection)``, within the collection's
+    triple budget. Off the ingest critical path by design — one LLM call per
+    chunk is ~10x the embed cost — so it never runs unless asked.
+
+    Idempotent per version: a version whose leg already exists (the registry's
+    ``graph_archived_versions``, or the archived manifest — trusted only once
+    the triples file is stat'ed present at its recorded size, since the engine
+    uploads the manifest first and a half-applied delivery says ``graph: true``
+    with no file) answers 202 with ``job_id: null`` and no submission. Two
+    guards, both **429 + Retry-After**: one extraction per COLLECTION in
+    flight, whoever the caller (admins included — two deltas post-staged onto
+    the same ``versions/<n>/`` would interleave into an ``ArchiveCorrupt``
+    archive), and ``graph_extraction_jobs_per_owner`` per caller (admins
+    exempt, logged), like the upload guard. Refusals: no
+    BV-BRC bearer (the submission is made as the user) → 401; not the owner →
+    403; unknown/unreadable → 404; a collection with no registry row, or one
+    not ``active`` (restore it first) → 409; no owner subject / no archive /
+    a tombstone or missing version → 400; no engine configured → 503.
+
+    Completion is two-phase: the job completes only once the engine reports
+    the leg DELIVERED to ``versions/<n>/`` (post-staging overwrites the
+    version's manifest — the one intended overwrite — and adds the triples
+    file), and only then is the version recorded in the row's
+    ``graph_archived_versions``, the flag eviction's graph drop will be gated
+    on (#380). A load refused at the cap fails the job ``graph_cap_exceeded``
+    with nothing loaded and nothing archived.
+    """
+    _refuse_pointer_name(collection_id, registry)
+    from ragstack.collection_store import ACTIVE, ARCHIVING
+    from ragstack.graph_extract import GraphExtractError
+
+    # The caller rule first (the ingest path's order): a principal that cannot
+    # submit as the user is refused before the collection is even looked up —
+    # a 401 says nothing about whether the id exists.
+    caller = gowe_caller(principal)  # the one caller rule (api/security.py)
+    if caller is None:
+        raise HTTPException(
+            401,
+            "graph extraction is submitted as the user and needs a BV-BRC user token "
+            "(bearer); API-key / keyless callers and other issuers have no Workspace identity",
+        )
+    token, _subject = caller
+    try:
+        entry = registry.resolve(collection_id)
+    except KeyError:
+        raise HTTPException(404, f"unknown collection {collection_id!r}") from None
+    await enforce_access(principal, entry.id, "owner")
+    rec = await store.get(entry.id)
+    if rec is None:
+        raise HTTPException(
+            409,
+            f"collection {collection_id!r} is not tracked by the registry "
+            "(the settings-derived default has no archive to extract from)",
+        )
+    if runner is None:
+        raise HTTPException(
+            503, "graph extraction is not configured on this server (no workflow engine)"
+        )
+    if rec.state not in (ACTIVE, ARCHIVING):
+        raise HTTPException(
+            409,
+            f"collection {collection_id!r} is {rec.state}: its graph is loaded into a live "
+            "collection's scope; restore it first (POST /v1/collections/{id}/restore)",
+        )
+    try:
+        chosen = await runner.choose_version(rec, token, version=version)
+    except GraphExtractError as e:
+        raise HTTPException(e.status, f"graph extraction of {collection_id!r}: {e}") from None
+    if chosen.number in rec.graph_archived_versions or chosen.already_extracted:
+        if chosen.number not in rec.graph_archived_versions:
+            # The archive REALLY holds the leg (manifest + the triples file at
+            # its recorded size — extracted elsewhere, or a watcher that died
+            # before recording it): repair the row. A manifest alone never
+            # gets here (ChosenVersion.already_extracted), so a half-applied
+            # delivery is resubmitted instead of recorded.
+            await store.append_graph_version(entry.id, chosen.number)
+        return GraphExtractResponse(
+            collection_id=collection_id, version=chosen.number,
+            message=f"version {chosen.number} already has its graph leg; nothing to do",
+        )
+    # Per COLLECTION first, no exemption: the archive is the shared resource.
+    running = await job_store.active_for_collection(entry.id, kind=KIND_GRAPH)
+    if running:
+        raise HTTPException(
+            429,
+            f"a graph extraction of collection {collection_id!r} is already in flight; "
+            "poll it (GET /v1/ingest/{job_id}) and retry once it is completed or failed",
+            headers={"Retry-After": str(GRAPH_EXTRACT_RETRY_AFTER)},
+        )
+    if principal.role == ROLE_ADMIN:
+        log.info("graph-extract per-owner guard bypassed for admin principal tenant=%r",
+                 principal.tenant)
+    else:
+        active = await job_store.count_active(principal.tenant, kind=KIND_GRAPH)
+        if active >= max(1, settings.graph_extraction_jobs_per_owner):
+            raise HTTPException(
+                429,
+                f"a graph extraction of yours is still in flight ({active} of "
+                f"{settings.graph_extraction_jobs_per_owner} allowed); poll "
+                "GET /v1/ingest/{job_id} and retry once it is completed or failed",
+                headers={"Retry-After": str(GRAPH_EXTRACT_RETRY_AFTER)},
+            )
+    job = await job_store.create(
+        source=f"graph-extract:{entry.id}@{chosen.number}", tenant_id=principal.tenant,
+        collection_id=entry.id, kind=KIND_GRAPH,
+    )
+    try:
+        sub_id = await runner.submit(rec, token, job_id=job.job_id, chosen=chosen)
+    except GraphExtractError as e:
+        raise HTTPException(
+            e.status, f"graph extraction of {collection_id!r} could not be submitted: {e}",
+        ) from None
+    return GraphExtractResponse(
+        collection_id=collection_id, version=chosen.number, job_id=job.job_id,
+        submission_id=sub_id,
+        message=f"graph extraction of version {chosen.number} submitted; poll "
+                f"GET /v1/ingest/{job.job_id}",
     )
 
 

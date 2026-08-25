@@ -129,12 +129,20 @@ any task.
                      each with a `docs` row per document: its `error` and its
                      `chunk_ids`)
   tombstone.json     DELETE versions only: {"format", "count", "doc_ids": [...]}
+  triples.jsonl.gz   the GRAPH leg (#350), present only after the extract-graph
+                     workflow ran over this version: one Triple record per line
+                     (Triple.model_dump(): subject/predicate/object, doc_id,
+                     tenant_id, and the #347 evidence fields — evidence,
+                     chunk_id, derived_by, confidence, subject_id, object_id;
+                     `collection` is empty, the loader stamps it). gzip, mtime=0
 ```
 
 A tombstone version holds **only** `manifest.json` + `tombstone.json`. The
 filenames above are what the writer emits today; a reader never assumes them —
-it follows the manifest's **`files` role map** (below). The role `triples` (the
-graph leg, #350) is reserved and has no file today.
+it follows the manifest's **`files` role map** (below). The `triples` role is
+**not** written by the ingest workflows: it is added to an existing chunk version
+later, by the extract-graph step ([below](#graph-extraction-the-triples-leg-350)),
+together with a rewritten `manifest.json` (`graph: true`).
 
 **`manifest.json`** (keys sorted, no timestamps — a re-run of the step is
 byte-identical, like the receipts):
@@ -143,13 +151,14 @@ byte-identical, like the receipts):
 |---|---|
 | `format` | `"ragstack-archive/1"` |
 | `collection_id`, `tenant`, `spec_hash`, `version`, `job_id` | identity: the registry id (not the store name), the tenant, the ADR-0002 build-spec hash, the version number (int), the RAGStack job id. Restore refuses a `spec_hash` that differs from the registry row. |
-| `counts` | `{"chunks": rows, "docs": distinct doc_ids}` (`chunks: 0` for a tombstone) |
-| `files` | **role → filename map** the reader follows: `{"manifest": "manifest.json", "chunks": "chunks.jsonl.gz", "vectors": "vectors.f32", "receipt": "receipt.json"}`, or `manifest` + `tombstone` for a delete. Every non-manifest value must have a `sha256` entry and every `sha256` key must be a value of the map (nothing unlisted is trusted). `triples` is a reserved role with no value written. |
+| `counts` | `{"chunks": rows, "docs": distinct doc_ids}` (`chunks: 0` for a tombstone); plus `"triples": n` once the graph leg exists |
+| `files` | **role → filename map** the reader follows: `{"manifest": "manifest.json", "chunks": "chunks.jsonl.gz", "vectors": "vectors.f32", "receipt": "receipt.json"}`, or `manifest` + `tombstone` for a delete, plus `"triples": "triples.jsonl.gz"` once the graph leg exists. Every non-manifest value must have a `sha256` entry and every `sha256` key must be a value of the map (nothing unlisted is trusted). |
 | `sha256`, `bytes` | per file, over the bytes **as stored** (i.e. the gzip stream for chunks) — verification needs no decompression; every file is verified before a reader yields anything |
 | `vectors` | `{"dim", "rows", "dtype": "float32", "byte_order": "little", "header_bytes": 64}` — must agree with the file's own header (chunk versions only) |
 | `chunks_compression` | `"gzip"` — the reader dispatches on this; any other value is refused (`ArchiveCorrupt: unsupported chunks_compression`) |
 | `receipts` | how many receipt files went into `receipt.json` (1 = verbatim object, >1 = array) |
-| `graph` | `false` — the graph leg is not archived |
+| `graph` | `false` as written by the ingest workflows; `true` once the extract-graph step added the `triples` leg. The reader requires the two to agree: `graph: true` without a `triples` role (or the reverse) is `ArchiveCorrupt` — a half-applied extraction, refused rather than guessed at |
+| `graph_extraction` | only with `graph: true`: `{"derived_by": "llm", "extractor": <model>, "n_chunks", "n_chunks_empty", "n_chunks_without_triples", "concurrency"}` — the leg's provenance |
 | `has_tombstone` | `true` for a delete version |
 
 **`vectors.f32` header** (64 bytes, integers little-endian): `RSF32VEC` magic
@@ -179,6 +188,119 @@ take `version` and `collection_id` as **required** inputs (the API assigns the
 version from the registry), plus optional `spec_hash` / `job_id`. In the
 scatter workflow, `ingest_shard.py --embedding-file` writes each PDF's embedded
 chunks on their way to the stores, which is what the archive step packs.
+
+## Graph extraction: the `triples` leg (#350)
+
+> Phase 6 of #201. `cwl/extract-graph.cwl` (the tool), `cwl/graph-extract.cwl`
+> (the workflow: extract → load), `python/scripts/extract_graph.py` /
+> `load_graph.py`, `python/ragstack/graph/{extract_version,archive_load,budget}.py`;
+> API side `python/ragstack/graph_extract.py` + `POST /v1/collections/{id}/graph`.
+
+The knowledge graph is a **leg of the collection lifecycle**, archived, restored
+and (once #380's eviction half lands) evicted with the collection — but it is
+**never part of an ingest**: one LLM call per chunk is roughly an order of
+magnitude more than embedding it, so extraction is an explicit, opt-in, budgeted
+step over an *already archived* version. Nothing runs until the owner (or an
+admin) calls `POST /v1/collections/{id}/graph[?version=n]`, which submits
+`graph-extract.cwl` **as the user** over one `versions/<n>/` directory (the
+latest chunk version by default; tombstones are skipped):
+
+1. **`extract`** (`extract_graph.py`) reads that version's `chunks.jsonl.gz` —
+   text only, the vectors are never touched — and runs `LLMKGExtractor` over
+   every chunk with `concurrency` calls in flight (`graph_extract_concurrency`,
+   default 8). Every triple carries the #347 stamps: `chunk_id`, `evidence` (the
+   verbatim span the model quoted, kept only if it occurs in the chunk),
+   `derived_by: "llm"`, `confidence: 1` (the no-launder cap); `tenant_id` comes
+   from the chunk's own metadata; `collection` is left **empty** — the physical
+   store name is registry knowledge the loader stamps, so the archive stays
+   portable. Results are written in chunk order, deduplicated on
+   `(subject, predicate, object, doc_id)`, so the same model output gives a
+   byte-identical leg. The step emits a **delta directory named by the version**
+   holding exactly `manifest.json` (the complete manifest, rewritten:
+   `files.triples`, its sha256/bytes, `counts.triples`, `graph: true`,
+   `graph_extraction`) and `triples.jsonl.gz`.
+2. **`load`** (`load_graph.py`) verifies the leg (manifest + the triples file's
+   sha256 — a delta has no chunks to verify), resolves the **physical** collection
+   name from the registry entry named by `collection_id` (never the command line;
+   the worker sees the same registry the API does, as for restore), takes **one**
+   live count of that collection's triples, and refuses the whole load — exit 4,
+   nothing written — when `live + incoming` would exceed the budget; otherwise it
+   upserts in batches, every triple stamped `collection = <physical name>`
+   (idempotent: both graph stores MERGE on the triple's key). Neo4j credentials
+   come from the worker's environment, never from a workflow input.
+3. The delta Directory is the workflow's **only** output. GoWe post-stages a
+   Directory output's listing under `<output_destination>/<basename>/` by
+   basename **with overwrite** (`pkg/bvbrc/workspace.go` `WorkspaceUpload`,
+   `Overwrite: true`; `scheduler/workspace.go` `stageFileInTree`), so it lands
+   *on* `versions/<n>/`: `manifest.json` is overwritten — **the one intended
+   overwrite of an archived file** — `triples.jsonl.gz` is added, and the
+   chunk/vector/receipt files already there are untouched because they are not
+   in the output. Post-staging happens only for COMPLETED submissions, so a
+   `load` refusal (or any step failure) delivers nothing: the archive is never
+   half-updated.
+
+**Budgets** (`config.py`, #291's siblings): `graph_max_triples_per_collection`
+(default **200,000** — the 50k chunk cap × ~4 triples per prose chunk, with
+headroom; `0` disables) is checked once per job by `load` with one live
+`GraphStore.stats(collection=…)` count (collection-wide, every tenant — the
+collection is the unit), and by `extract` against its own output alone (a
+version that could never be loaded is refused before its leg is written); the
+refusal line is `graph_cap_exceeded: live=L incoming=I cap=C would_fit=W` on
+stderr (`live=?` from `extract`) and the API classifies the FAILED submission
+by `error.context.exit_code == 4` into the job error `graph_cap_exceeded`, as
+the chunk cap does. `graph_extraction_jobs_per_owner` (default **1**) bounds
+in-flight extractions per owner — a second is **429 + `Retry-After`**, like the
+upload guard; admins are exempt. Extractions are jobs of kind `graph`
+(`IngestJob.kind`, an additive column; `""` is an ingest — every legacy row) and
+count **separately** from the one-in-flight ingest rule: a multi-hour extraction
+does not freeze the owner's uploads.
+
+**Completion is two-phase**, exactly as for the ingest archive: the job completes
+only when the engine reports the delta **delivered** (`output_state`), and only
+then does the registry row record the version in `graph_archived_versions`
+(additive lifecycle column, all four backends) — the flag a follow-up gates
+eviction's graph drop on (#380: eviction may only destroy what exists somewhere
+else). `upload_failed` fails the job `OUTPUT_STAGING_FAILED` with nothing
+recorded (the triples were loaded; the leg is not archived). **Idempotent per
+version**: a version whose leg exists answers 202 with `job_id: null` — "exists"
+meaning the row says so, or the archived manifest says `graph: true` **and** the
+triples file is `stat`ed present at the manifest's recorded size (then the row is
+repaired too). The manifest alone is never trusted: the engine uploads a
+Directory's listing in filename order, `manifest.json` before `triples.jsonl.gz`,
+so an upload failing between the two — or an engine crash mid-upload, which
+leaves `output_state: uploading` forever and the job failed by the delivery
+timeout — leaves a manifest claiming a leg that was never delivered; that state
+reads as *not extracted*, the next `POST` resubmits, and the extract tool
+overwrites the stale entries. **One extraction per collection in flight**,
+whoever the caller (admins included): two deltas post-staged onto one
+`versions/<n>/` would interleave manifest and triples into an `ArchiveCorrupt`
+archive, so a second `POST` for a collection with a `graph` job running is 429.
+
+**An outage is not an empty graph.** `LLMKGExtractor.extract_chunk` raises
+`ExtractionFailed` when the LLM *call* failed (a reply the model did give but that
+parses to nothing is "no facts", as on the ingest path); the driver counts those
+as `n_chunks_failed` (in `graph_extraction`) and refuses the run — exit **1**,
+retryable, nothing written, no delta — when every attempted chunk failed or the
+failed share exceeds `graph_extraction_max_failed_fraction` (default 0.5, the
+workflow input `max_failed_fraction`). Delivering `graph: true` with zero triples
+after an outage would be permanent under idempotency-per-version.
+
+**Restore** replays the leg: `load_embeddings.py --replay` loads a version's
+triples (scoped to the collection, never capped — it re-admits what was archived)
+right after that version's chunks, when the worker's pipeline has a graph store
+(#399 gives it one under `GRAPH_BACKEND=neo4j`). A version without a leg replays
+exactly as before.
+
+**Throughput is measured, not budgeted** (#355): the number that sizes
+`graph_extraction_jobs_per_owner` is chunks/s against the real LLM endpoint over
+a ~35k-chunk collection, recorded on #350 when the container run happens. The
+hermetic perf test (`tests/perf/test_extract_graph_perf.py`) prints the driver's
+rate over 100 chunks at concurrency 8 against a 10 ms fake LLM.
+
+**Running it by hand** (cwltool, no engine): `RAGSTACK_FAKE_LLM=1` swaps a
+deterministic fake for the endpoint; `graph_backend: memory` + an inline
+`COLLECTIONS_JSON` registry make the load step hermetic —
+`tests/integration/test_graph_extract_cwl.py` is the worked example.
 
 ## Batch semantics on the GoWe path (#203 2b)
 
@@ -249,7 +371,8 @@ capacity") with the row left `dormant`, so the physically-present count never ex
 the bound across creates and restores.
 `load_embeddings.py --replay DIR…` is the tool: verify every version, then per
 version delete each document's prior chunks and stream the upserts (tombstones
-delete by doc id). The API-side settings, all at the end of `config.py`:
+delete by doc id), and load a version's graph leg after its chunks when one exists
+and the worker has a graph store (#350). The API-side settings, all at the end of `config.py`:
 
 | Setting | Default | Meaning |
 |---|---|---|

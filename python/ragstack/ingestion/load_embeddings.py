@@ -121,6 +121,8 @@ class ReplaySummary:
     n_versions: int = 0
     n_chunks: int = 0
     n_docs_deleted: int = 0
+    #: Triples loaded from the versions' graph legs (#350); 0 without a graph store.
+    n_triples: int = 0
     status: str = COMPLETED
     error: str = ""
     seconds: float = 0.0
@@ -129,7 +131,8 @@ class ReplaySummary:
         return {
             "mode": "replay", "status": self.status, "error": self.error,
             "n_versions": self.n_versions, "n_chunks": self.n_chunks,
-            "n_docs_deleted": self.n_docs_deleted, "seconds": round(self.seconds, 3),
+            "n_docs_deleted": self.n_docs_deleted, "n_triples": self.n_triples,
+            "seconds": round(self.seconds, 3),
             "versions": self.versions,
         }
 
@@ -299,6 +302,21 @@ async def run_replay(
                               "n_docs": len(doc_ids), "n_docs_replaced": n_deleted})
                 summary.n_chunks += n_chunks
                 say(f"[{vdir}] chunks: replaced {len(doc_ids)} doc(s), upserted {n_chunks} chunk(s)")
+                # The graph leg (#350): a version the extract-graph workflow
+                # ran over carries triples.jsonl.gz (manifest graph: true,
+                # verified above with everything else). Loaded AFTER the
+                # chunks, scoped to this collection, never capped — it
+                # restores what was archived. Skipped when the pipeline has
+                # no graph store (the worker's choice, not this function's).
+                if manifest.get("graph") and pipeline.graph_store is not None:
+                    from ragstack.graph.archive_load import load_triples
+
+                    loaded = await load_triples(
+                        vdir, pipeline.graph_store, collection=pipeline.collection or "",
+                        manifest=manifest, log=say,
+                    )
+                    entry["n_triples"] = loaded.n_triples
+                    summary.n_triples += loaded.n_triples
             summary.versions.append(entry)
     except ArchiveError as e:
         # A file that verified but then failed to stream (a race with a writer

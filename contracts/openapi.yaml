@@ -1447,6 +1447,127 @@ paths:
               schema:
                 type: integer
 
+  /v1/collections/{collection_id}/graph:
+    post:
+      operationId: extractCollectionGraph
+      summary: Extract the knowledge graph of one archived version (owner-or-admin)
+      description: >-
+        The graph leg of the collection lifecycle (#350, phase 6 of #201).
+        Submits the `graph-extract` workflow **as the caller** over ONE
+        archived chunk version — the latest by default, or `?version=n` —
+        which runs the LLM triple extractor over that version's chunks (one
+        call per chunk, bounded concurrency), archives the result beside the
+        version as its `triples` leg (`triples.jsonl.gz`; the version's
+        `manifest.json` is rewritten with `graph: true` — the one intended
+        overwrite of an archived file) and loads the triples into the graph
+        store scoped by `(tenant, collection)`. Off by default and never part
+        of an ingest: nothing runs until this is called, once per version.
+
+
+        Budgeted: the collection's graph may hold at most
+        `graph_max_triples_per_collection` triples (200,000 by default); a load
+        that would cross it is refused whole by the worker — nothing loaded,
+        nothing archived — and the job ends `failed` with the error
+        `graph_cap_exceeded`. One extraction per owner in flight
+        (`graph_extraction_jobs_per_owner`, default 1; admins exempt) — a
+        second answers 429 with `Retry-After`. Extractions are tracked as jobs
+        of kind `graph` and polled at `GET /v1/ingest/{job_id}` (unchanged
+        shape): the job completes only once the engine reports the leg
+        DELIVERED to the owner's Workspace, and only then does the registry row
+        record the version as graph-archived (eviction's graph drop is gated
+        on that, #380).
+
+
+        Idempotent per version: a version whose leg already exists — the
+        registry row says so, or the archived manifest says `graph: true` AND
+        the triples file is present at its recorded size (a manifest alone is
+        a half-applied delivery: the engine uploads it first, and the next
+        call resubmits) — answers 202 with `job_id: null` and submits nothing.
+        A collection never has more than one extraction in flight, whoever
+        the caller (two deltas post-staged onto one `versions/<n>/` would
+        interleave): 429 + `Retry-After`. An LLM outage never becomes an
+        empty leg — the extract step exits 1 (retryable) when every attempted
+        chunk, or more than `graph_extraction_max_failed_fraction` of them,
+        failed its call. Requires a bearer (BV-BRC user) credential — the
+        submission is made as the user, and the archive lives in the owner's
+        Workspace (an admin's token must be able to read it and write
+        `versions/<n>/` there).
+      tags: [Documents]
+      security:
+        - BearerIdentity: []
+      parameters:
+        - name: collection_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: query
+          required: false
+          description: >-
+            The archived version number to extract from. Default: the latest
+            chunk version (tombstone versions are skipped).
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "202":
+          description: >-
+            Extraction submitted (`job_id` + the engine `submission_id`), or
+            already done for that version (`job_id: null`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphExtractResponse"
+        "400":
+          description: >-
+            The collection's registry row records no owner subject (its
+            Workspace archive cannot be located); the archive folder is
+            missing or holds no chunk version; or `version` names a version
+            that is absent or a tombstone.
+        "401":
+          description: >-
+            Missing or invalid credential — or a credential that is not a
+            BV-BRC user (bearer) token: an API-key or keyless caller cannot
+            submit as the user.
+        "403":
+          description: >-
+            Caller can read the collection but is neither its owner nor an
+            admin; or the caller's token cannot read the owner's Workspace
+            archive.
+        "404":
+          description: >-
+            Unknown collection id, or one the caller may not read (unreadable ==
+            unknown, so existence is not leaked — ADR-0003 §2)
+        "409":
+          description: >-
+            The collection has no registry row (the settings-derived default),
+            or is not `active`/`archiving` (dormant, restoring or lost — restore
+            it first: the graph is loaded into a live collection's scope).
+        "429":
+          description: >-
+            An extraction of this collection is already in flight (a job of
+            kind `graph` that is `accepted`/`running` and written to within
+            the last 6 h — whoever started it, admins included), or the caller
+            already has `graph_extraction_jobs_per_owner` extraction(s) in
+            flight (admins exempt from this one). Retry after `Retry-After`.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              required: true
+              schema:
+                type: integer
+        "502":
+          description: >-
+            The Workspace listing / manifest read or the workflow-engine
+            submission failed; the job (when one was minted) is `failed` with
+            the error class as its label, so a retry is safe.
+        "503":
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR graph
+            extraction is not configured on this server (no workflow engine,
+            or the workflow file is unreadable).
+
   /v1/collections/{collection_id}/shares:
     get:
       operationId: listCollectionShares
@@ -2801,6 +2922,34 @@ components:
           description: >-
             The workflow-engine submission id when THIS call submitted the
             restore; null when one was already in flight or none was needed.
+          type: [string, "null"]
+        message: { type: string }
+      additionalProperties: false
+
+    GraphExtractResponse:
+      type: object
+      description: >-
+        Outcome of POST /v1/collections/{id}/graph (#350): which archived
+        version the graph is extracted from and the job to poll. 202 in every
+        accepted case — an extraction was submitted, or the version's graph leg
+        already existed (`job_id: null`).
+      required: [collection_id, version, message]
+      properties:
+        collection_id: { type: string }
+        version:
+          description: The archived version the extraction reads (or already covers).
+          type: integer
+          minimum: 0
+        job_id:
+          description: >-
+            The job to poll at GET /v1/ingest/{job_id} (kind `graph`); null
+            when the version already had its graph leg and nothing was
+            submitted.
+          type: [string, "null"]
+        submission_id:
+          description: >-
+            The workflow-engine submission id when THIS call submitted the
+            extraction; null otherwise.
           type: [string, "null"]
         message: { type: string }
       additionalProperties: false

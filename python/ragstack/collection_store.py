@@ -39,8 +39,9 @@ empty table once from the configured ``collections_file`` (see
 Lifecycle (#353 / #358). Every record also carries the collection's lifecycle
 bookkeeping — ``state`` (``active | archiving | dormant | restoring | lost``),
 ``versions`` (the ordered archive version numbers restore replays),
-``archive_pending`` (the last load's archive step failed: not evictable) and
-``last_accessed_at`` (eviction's LRU key). These live on
+``archive_pending`` (the last load's archive step failed: not evictable),
+``last_accessed_at`` (eviction's LRU key) and ``graph_archived_versions``
+(the versions whose graph leg is archived, #350). These live on
 :class:`CollectionRecord`, never on :class:`CollectionSpec` (the frozen JSON file
 format): the SQL backends add columns (additive migration), the JSON backend
 keeps them in a sidecar ``{collections_file}.lifecycle.json`` under the same
@@ -217,6 +218,13 @@ class CollectionRecord(BaseModel):
     archive_pending: bool = False
     #: ISO-8601 UTC of the last read/ingest that touched it (batched writes).
     last_accessed_at: str = ""
+    #: The archive versions whose GRAPH leg exists (#350): ``versions/<n>/``
+    #: holds ``triples.jsonl.gz`` with ``manifest.graph: true``, recorded only
+    #: once the extract-graph run's output was DELIVERED to the Workspace. The
+    #: flag eviction's graph drop is gated on (#380): a collection's triples
+    #: may be destroyed only when every chunk version it replays from carries
+    #: its leg — otherwise the evicted graph could never be rebuilt.
+    graph_archived_versions: list[int] = Field(default_factory=list)
 
 
 #: The record fields that are lifecycle bookkeeping (as opposed to the spec and
@@ -224,7 +232,7 @@ class CollectionRecord(BaseModel):
 #: across a spec upsert and to serialise them.
 LIFECYCLE_FIELDS = (
     "state", "state_reason", "state_changed_at", "versions", "archive_pending",
-    "last_accessed_at",
+    "last_accessed_at", "graph_archived_versions",
 )
 
 
@@ -244,6 +252,10 @@ def with_lifecycle(rec: CollectionRecord, data: dict[str, Any] | None) -> Collec
             update[f] = data[f]
     if "versions" in update:
         update["versions"] = [int(v) for v in (update["versions"] or [])]
+    if "graph_archived_versions" in update:
+        update["graph_archived_versions"] = [
+            int(v) for v in (update["graph_archived_versions"] or [])
+        ]
     if "archive_pending" in update:
         update["archive_pending"] = bool(update["archive_pending"])
     if "state" in update and update["state"] not in STATES:
@@ -404,6 +416,13 @@ class CollectionStore(Protocol):
 
     async def set_archive_pending(self, cid: str, pending: bool) -> bool:
         """Flag/clear "the last load's archive is missing" (blocks eviction)."""
+        ...
+
+    async def append_graph_version(self, cid: str, version: int) -> list[int]:
+        """Record that archive version ``version``'s GRAPH leg exists (#350) —
+        idempotent, like :meth:`append_version`; the caller writes it only
+        after the extract-graph output was delivered. Returns the full list
+        (ascending insertion order), or ``[]`` for an unknown id."""
         ...
 
     async def touch_accessed(self, ids: Iterable[str], stamp: str | None = None) -> int:
@@ -917,6 +936,15 @@ class JsonFileCollectionStore:
 
         return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
 
+    async def append_graph_version(self, cid: str, version: int) -> list[int]:
+        def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[list[int], bool]:
+            if cid not in ids:
+                return [], False
+            entry = data.setdefault(cid, _lifecycle_default())
+            return _apply_version(entry, version, key="graph_archived_versions")
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
     async def set_archive_pending(self, cid: str, pending: bool) -> bool:
         def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[bool, bool]:
             if cid not in ids:
@@ -955,7 +983,8 @@ class JsonFileCollectionStore:
 
 def _lifecycle_default() -> dict[str, Any]:
     return {"state": ACTIVE, "state_reason": "", "state_changed_at": "",
-            "versions": [], "archive_pending": False, "last_accessed_at": ""}
+            "versions": [], "archive_pending": False, "last_accessed_at": "",
+            "graph_archived_versions": []}
 
 
 def _apply_state(entry: dict[str, Any], state: str, reason: str) -> None:
@@ -964,15 +993,18 @@ def _apply_state(entry: dict[str, Any], state: str, reason: str) -> None:
     entry["state_changed_at"] = _now()
 
 
-def _apply_version(entry: dict[str, Any], version: int) -> tuple[list[int], bool]:
-    """Idempotent append into ``entry['versions']`` -> (list, changed)."""
+def _apply_version(
+    entry: dict[str, Any], version: int, *, key: str = "versions"
+) -> tuple[list[int], bool]:
+    """Idempotent append into ``entry[key]`` (``versions``, or the graph leg's
+    ``graph_archived_versions``) -> (list, changed)."""
     if not isinstance(version, int) or isinstance(version, bool) or version < 0:
         raise ValueError(f"version must be a non-negative integer, got {version!r}")
-    versions = [int(v) for v in (entry.get("versions") or [])]
+    versions = [int(v) for v in (entry.get(key) or [])]
     if version in versions:
         return versions, False
     versions.append(version)
-    entry["versions"] = versions
+    entry[key] = versions
     return versions, True
 
 
@@ -1059,6 +1091,17 @@ class InMemoryCollectionStore:
                 self._records[cid] = rec.model_copy(update={"versions": versions})
             return list(versions)
 
+    async def append_graph_version(self, cid: str, version: int) -> list[int]:
+        async with self._lock:
+            rec = self._records.get(cid)
+            if rec is None:
+                return []
+            entry = {"graph_archived_versions": list(rec.graph_archived_versions)}
+            versions, changed = _apply_version(entry, version, key="graph_archived_versions")
+            if changed:
+                self._records[cid] = rec.model_copy(update={"graph_archived_versions": versions})
+            return list(versions)
+
     async def set_archive_pending(self, cid: str, pending: bool) -> bool:
         async with self._lock:
             rec = self._records.get(cid)
@@ -1141,7 +1184,8 @@ _COLLECTIONS_DDL = (
     "  state_changed_at TEXT NOT NULL DEFAULT '',"
     "  versions TEXT NOT NULL DEFAULT '[]',"
     "  archive_pending INTEGER NOT NULL DEFAULT 0,"
-    "  last_accessed_at TEXT NOT NULL DEFAULT ''"
+    "  last_accessed_at TEXT NOT NULL DEFAULT '',"
+    "  graph_archived_versions TEXT NOT NULL DEFAULT '[]'"
     ")"
 )
 
@@ -1180,6 +1224,9 @@ _COLLECTIONS_COLUMNS: dict[str, str] = {
     "versions": "TEXT NOT NULL DEFAULT '[]'",
     "archive_pending": "INTEGER NOT NULL DEFAULT 0",
     "last_accessed_at": "TEXT NOT NULL DEFAULT ''",
+    # #350: the versions whose graph leg is archived (JSON list) — additive; an
+    # older table's rows get '[]', i.e. "no graph leg archived yet".
+    "graph_archived_versions": "TEXT NOT NULL DEFAULT '[]'",
 }
 #: Columns that exist for the store's own bookkeeping and are NOT part of the
 #: record row (_COLUMNS): migrated in, never read or written by put()/create().
@@ -1252,6 +1299,7 @@ def _record_to_row(rec: CollectionRecord) -> tuple:
         rec.spec_hash, rec.created_at, rec.updated_at, s.owner, s.max_chunks,
         rec.state, rec.state_reason, rec.state_changed_at, json.dumps(rec.versions),
         1 if rec.archive_pending else 0, rec.last_accessed_at,
+        json.dumps(rec.graph_archived_versions),
     )
 
 
@@ -1272,7 +1320,7 @@ def _row_to_record(row: Any) -> CollectionRecord:
     (
         rid, label, collection, text_index, api, model, dim, endpoints, sidecar,
         method, size, overlap, params, shash, created, updated, owner, max_chunks,
-        state, state_reason, state_changed, versions, pending, accessed,
+        state, state_reason, state_changed, versions, pending, accessed, graph_versions,
     ) = tuple(row)
     rec = CollectionRecord(
         spec=CollectionSpec(
@@ -1291,6 +1339,7 @@ def _row_to_record(row: Any) -> CollectionRecord:
         "state": state or ACTIVE, "state_reason": state_reason or "",
         "state_changed_at": state_changed or "", "versions": json.loads(versions or "[]"),
         "archive_pending": bool(pending), "last_accessed_at": accessed or "",
+        "graph_archived_versions": json.loads(graph_versions or "[]"),
     })
 
 
@@ -1367,19 +1416,25 @@ class SqliteCollectionStore:
                 params.append(expect)
             return conn.execute(sql, params).rowcount > 0
 
-    def _append_version_sync(self, cid: str, version: int) -> list[int]:
+    def _append_version_sync(
+        self, cid: str, version: int, column: str = "versions"
+    ) -> list[int]:
+        # ``column`` is one of the two JSON-list lifecycle columns (never
+        # caller input): "versions" or "graph_archived_versions".
         with closing(self._connect()) as conn:
             conn.isolation_level = None
             conn.execute("BEGIN IMMEDIATE")  # read-modify-write under the write lock
             try:
-                row = conn.execute("SELECT versions FROM collections WHERE id = ?", (cid,)).fetchone()
+                row = conn.execute(
+                    f"SELECT {column} FROM collections WHERE id = ?", (cid,)
+                ).fetchone()
                 if row is None:
                     conn.execute("ROLLBACK")
                     return []
-                entry = {"versions": json.loads(row[0] or "[]")}
-                versions, changed = _apply_version(entry, version)
+                entry = {column: json.loads(row[0] or "[]")}
+                versions, changed = _apply_version(entry, version, key=column)
                 if changed:
-                    conn.execute("UPDATE collections SET versions = ? WHERE id = ?",
+                    conn.execute(f"UPDATE collections SET {column} = ? WHERE id = ?",
                                  (json.dumps(versions), cid))
                 conn.execute("COMMIT")
             except BaseException:
@@ -1449,6 +1504,11 @@ class SqliteCollectionStore:
 
     async def append_version(self, cid: str, version: int) -> list[int]:
         return await asyncio.to_thread(self._append_version_sync, cid, version)
+
+    async def append_graph_version(self, cid: str, version: int) -> list[int]:
+        return await asyncio.to_thread(
+            self._append_version_sync, cid, version, "graph_archived_versions"
+        )
 
     async def set_archive_pending(self, cid: str, pending: bool) -> bool:
         return await asyncio.to_thread(self._set_archive_pending_sync, cid, pending)
@@ -1720,20 +1780,28 @@ class PostgresCollectionStore:
             )
         return RestoreAdmission.ADMITTED if self._rows(status) > 0 else RestoreAdmission.MOVED
 
-    async def append_version(self, cid: str, version: int) -> list[int]:
+    async def _append_list(self, cid: str, version: int, column: str) -> list[int]:
+        # ``column`` is one of the two JSON-list lifecycle columns (never
+        # caller input): "versions" or "graph_archived_versions".
         pool = await self._pool_()
         async with pool.acquire() as conn, conn.transaction():
             raw = await conn.fetchval(
-                "SELECT versions FROM collections WHERE id = $1 FOR UPDATE", cid
+                f"SELECT {column} FROM collections WHERE id = $1 FOR UPDATE", cid
             )
             if raw is None:
                 return []
-            entry = {"versions": json.loads(raw or "[]")}
-            versions, changed = _apply_version(entry, version)
+            entry = {column: json.loads(raw or "[]")}
+            versions, changed = _apply_version(entry, version, key=column)
             if changed:
-                await conn.execute("UPDATE collections SET versions = $1 WHERE id = $2",
+                await conn.execute(f"UPDATE collections SET {column} = $1 WHERE id = $2",
                                    json.dumps(versions), cid)
         return versions
+
+    async def append_version(self, cid: str, version: int) -> list[int]:
+        return await self._append_list(cid, version, "versions")
+
+    async def append_graph_version(self, cid: str, version: int) -> list[int]:
+        return await self._append_list(cid, version, "graph_archived_versions")
 
     async def set_archive_pending(self, cid: str, pending: bool) -> bool:
         pool = await self._pool_()
