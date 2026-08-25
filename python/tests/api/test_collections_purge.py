@@ -2,7 +2,10 @@
 
 The default delete drops the registry *binding* only, which is why every
 create/delete cycle in the UI leaves an orphaned Qdrant collection + ES index +
-manifest behind. ``purge=true`` opts in to destroying those too.
+manifest behind. ``purge=true`` opts in to destroying those too — and, since
+#380 (closing #295), the collection's knowledge-graph triples: the ``graph``
+target, reported like the others and present whenever the app has a graph
+store (the test app always does).
 
 These tests drive the registry directly (rather than through POST /v1/collections)
 because the created entry would otherwise carry a real ``QdrantVectorStore``
@@ -16,7 +19,7 @@ from ragstack.api.collections import CollectionEntry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN
 from ragstack.config import settings
-from ragstack.models import Chunk
+from ragstack.models import Chunk, Triple
 from ragstack.provenance import CollectionManifest, read_manifest, write_manifest
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from tests.api.conftest import SHARED_ID
@@ -71,23 +74,74 @@ def _manifest(manifest_dir, collection: str) -> None:
 # --- the happy path -------------------------------------------------------- #
 
 
-async def test_purge_removes_vectors_text_and_manifest(client, manifests):
+def _triple(collection: str, *, tenant: str = "default", doc_id: str = "d1") -> Triple:
+    return Triple(subject="Alice", predicate="knows", object="Bob",
+                  doc_id=doc_id, tenant_id=tenant, collection=collection)
+
+
+async def test_purge_removes_vectors_text_graph_and_manifest(client, manifests):
     _, vs, ti = _add("phys_purge_me", cid="purge-me")
     await _populate(vs, ti)
     _manifest(manifests, "phys_purge_me")
+    graph = app.state.graph_store
+    # Triples in the purged collection from TWO tenants (the purge is
+    # collection-wide, like the store drops), plus a sibling collection's
+    # triple for the same doc id that must survive (#209).
+    await graph.add_triples([
+        _triple("phys_purge_me"), _triple("phys_purge_me", tenant="other", doc_id="d2"),
+        _triple("phys_sibling"),
+    ])
 
     r = await client.delete("/v1/collections/purge-me?purge=true")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["purged"] is True and body["ok"] is True
     assert body["store"] == "phys_purge_me" and body["text_index"] == "phys_purge_me"
-    assert set(body["deleted"]) == {"registry", "vectors", "text_index", "manifest"}
+    assert set(body["deleted"]) == {"registry", "vectors", "text_index", "graph", "manifest"}
     assert body["absent"] == [] and body["failed"] == []
 
     # the data itself, not just the report
     assert await vs.count_tenants(["default"]) == 0
     assert await ti.count_tenants(["default"]) == 0
     assert read_manifest(str(manifests), "phys_purge_me") is None
+    assert await graph.stats(tenant_id=None, collection="phys_purge_me") == (0, 0)
+    assert await graph.stats(tenant_id=None, collection="phys_sibling") == (2, 1)
+
+
+async def test_purge_reports_a_failed_graph_delete_and_still_drops_the_rest(client, manifests):
+    """The graph leg is best-effort like the others: a backend outage is named
+    under ``failed`` as ``graph``, the store drops that landed are reported as
+    landed, and the binding is gone either way."""
+    _, vs, ti = _add("phys_graph_down", cid="graph-down")
+    await _populate(vs, ti)
+    _manifest(manifests, "phys_graph_down")
+
+    class _Down:
+        async def delete_collection(self, tenant_id, collection):
+            raise RuntimeError("ServiceUnavailable: graph backend unreachable")
+
+    app.state.graph_store = _Down()
+    r = await client.delete("/v1/collections/graph-down?purge=true")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert set(body["deleted"]) == {"registry", "vectors", "text_index", "manifest"}
+    assert [f["target"] for f in body["failed"]] == ["graph"]
+    assert "graph backend unreachable" in body["failed"][0]["error"]
+    assert await vs.count_tenants(["default"]) == 0
+
+
+async def test_purge_without_a_graph_store_reports_no_graph_target(client, manifests):
+    """``graph_backend=disabled``: nothing to drop, so the report does not
+    claim a target it never attempted (neither deleted nor absent)."""
+    _, vs, ti = _add("phys_no_graph", cid="no-graph")
+    await _populate(vs, ti)
+    app.state.graph_store = None
+    r = await client.delete("/v1/collections/no-graph?purge=true")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "graph" not in body["deleted"] and "graph" not in body["absent"]
+    assert body["failed"] == [] and body["ok"] is True
     listed = {c["id"] for c in (await client.get("/v1/collections")).json()["collections"]}
     assert "purge-me" not in listed
 
@@ -265,7 +319,7 @@ async def test_purging_already_gone_targets_is_not_an_error(client, manifests):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True and body["deleted"] == ["registry"]
-    assert set(body["absent"]) == {"vectors", "text_index", "manifest"}
+    assert set(body["absent"]) == {"vectors", "text_index", "graph", "manifest"}
 
 
 async def test_repeat_purge_of_the_same_store_is_safe(client, manifests):
@@ -280,7 +334,7 @@ async def test_repeat_purge_of_the_same_store_is_safe(client, manifests):
     r = await client.delete("/v1/collections/twice-b?purge=true")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    assert set(r.json()["absent"]) == {"vectors", "text_index", "manifest"}
+    assert set(r.json()["absent"]) == {"vectors", "text_index", "graph", "manifest"}
 
 
 class _BrokenTextIndex(InMemoryTextIndex):

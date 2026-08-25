@@ -192,18 +192,34 @@ def _chunk_from_record(rec: dict[str, Any], vector: Any) -> Chunk:
     )
 
 
-async def _delete_docs(pipeline: IngestionPipeline, doc_ids: set[str], concurrency: int) -> int:
-    """Delete ``doc_ids`` from both legs (and the graph leg when present),
-    collection-wide (``tenant_id=None``): a restored collection is the owner's
-    unit — the shared multi-tenant surface has no registry row and can never be
-    dormant, so there is no other tenant's copy of a doc id to protect here."""
+async def _delete_docs(
+    pipeline: IngestionPipeline, doc_ids: set[str], concurrency: int, *, graph: bool,
+) -> int:
+    """Delete ``doc_ids`` from both store legs — and, only when ``graph`` is
+    set, from the graph leg — collection-wide (``tenant_id=None``): a restored
+    collection is the owner's unit — the shared multi-tenant surface has no
+    registry row and can never be dormant, so there is no other tenant's copy
+    of a doc id to protect here.
+
+    ``graph`` is True for a TOMBSTONE version only (#380): it mirrors the
+    user's own delete, so the doc's triples go with its chunks. A CHUNK
+    version's delete-prior passes False: the archive has no triples leg yet
+    (``archive.py`` records ``"graph": False``; replay has no extractor), so
+    the re-upsert that follows brings the chunks back but could never bring
+    the triples back — deleting them here would turn every restore into a
+    silent, unrecoverable graph loss. The accepted trade-off: after a restore,
+    a doc that a later version re-ingested can still carry the triples its
+    EARLIER version derived (stale, never wrong-collection: they stay stamped
+    with this collection and doc id). The graph leg is fail-open by design
+    (#347) and reads are confidence-floored, so a stale triple is the lesser
+    evil; the triples archive leg (#350) retires the trade-off."""
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def _one(doc_id: str) -> None:
         async with sem:
             await pipeline.vector_store.delete(doc_id, tenant_id=None)
             await pipeline.text_index.delete(doc_id, tenant_id=None)
-            if pipeline.graph_store is not None:
+            if graph and pipeline.graph_store is not None:
                 await pipeline.graph_store.delete_by_doc(
                     doc_id, tenant_id=None, collection=pipeline.collection
                 )
@@ -235,7 +251,9 @@ async def run_replay(
       the pipeline's delete-prior OFF (a document spanning two batches must
       not be deleted by its own second batch). Later versions therefore
       override earlier ones exactly as the live ingests did.
-    * tombstone version — delete its doc ids from both legs.
+    * tombstone version — delete its doc ids from both legs and, when the
+      pipeline has a graph store, their triples (the one place replay touches
+      the graph: a chunk version's delete-prior leaves triples alone).
 
     ``pipeline`` must have been built with ``delete_prior=False``; this
     function asserts it rather than silently double-deleting. ``manifests``:
@@ -257,13 +275,15 @@ async def run_replay(
             entry: dict[str, Any] = {"dir": str(vdir), "version": manifest.get("version")}
             if manifest.get("has_tombstone"):
                 ids = archive.read_tombstone(vdir, manifest=manifest)
-                n = await _delete_docs(pipeline, set(ids), delete_concurrency)
+                n = await _delete_docs(pipeline, set(ids), delete_concurrency, graph=True)
                 entry.update({"kind": "tombstone", "n_docs_deleted": n})
                 summary.n_docs_deleted += n
                 say(f"[{vdir}] tombstone: deleted {n} doc(s)")
             else:
                 doc_ids = set(archive.iter_doc_ids(vdir, manifest))
-                n_deleted = await _delete_docs(pipeline, doc_ids, delete_concurrency)
+                # delete-prior on the two store legs ONLY — see _delete_docs for
+                # why the graph leg must survive a chunk version
+                n_deleted = await _delete_docs(pipeline, doc_ids, delete_concurrency, graph=False)
                 n_chunks = 0
                 batch: list[Chunk] = []
                 for rec, vec in archive.read_version(vdir, manifest=manifest):

@@ -176,6 +176,13 @@ async def run_eviction(
     except Exception:  # noqa: BLE001 — keep the plan-time answer rather than evict blind
         log.warning("eviction: re-querying in-flight jobs failed; using the plan-time set",
                     exc_info=True)
+    # The graph leg is deliberately NOT passed (``graph_store=`` stays
+    # ``None``): eviction may only destroy what exists somewhere else, and the
+    # archive has no triples leg yet (``archive.py`` writes ``"graph": False``
+    # and replay has no extractor), so a dropped graph could never be rebuilt.
+    # ``evict(graph_store=)`` is plumbed and unit-tested for the day #350's
+    # triples archive lands; until then an evicted collection's triples stay,
+    # collection-scoped on every read (#380, the eviction half).
     return await evict(
         registry, store, [v.collection_id for v in victims],
         in_flight=in_flight, on_change=on_change,

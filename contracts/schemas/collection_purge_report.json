@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "collection_purge_report.json",
   "title": "CollectionPurgeReport",
-  "description": "Body of DELETE /v1/collections/{collection_id}?purge=true. A purge touches four independent systems (the registry binding, the Qdrant collection, the Elasticsearch index, the provenance manifest) that can each succeed, be already-gone, or fail on their own, so the outcome is three lists rather than a boolean — that is what makes a partial failure reportable instead of a 500 that hides the deletions which did land. Nothing is ever rolled back. Target names: registry | vectors | text_index | manifest.",
+  "description": "Body of DELETE /v1/collections/{collection_id}?purge=true. A purge touches five independent systems (the registry binding, the Qdrant collection, the Elasticsearch index, the collection's knowledge-graph triples, the provenance manifest) that can each succeed, be already-gone, or fail on their own, so the outcome is three lists rather than a boolean — that is what makes a partial failure reportable instead of a 500 that hides the deletions which did land. Nothing is ever rolled back. Target names: registry | vectors | text_index | graph | manifest. The `graph` target appears only when the server has a graph backend configured; its delete is collection-wide (every tenant's triples stamped with this collection), matching the store drops.",
   "type": "object",
   "required": ["collection_id", "purged", "store", "text_index", "deleted", "absent", "failed", "ok"],
   "properties": {
@@ -41,7 +41,7 @@
         "properties": {
           "target": {
             "type": "string",
-            "description": "Which target failed (vectors | text_index | manifest)."
+            "description": "Which target failed (vectors | text_index | graph | manifest)."
           },
           "error": {
             "type": "string",

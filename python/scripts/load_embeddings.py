@@ -151,11 +151,36 @@ async def _build_pipeline(args, target=None) -> IngestionPipeline:
     # Replay does its own per-version delete-prior (a document's chunks may
     # span two upsert batches, and index_chunks' per-batch delete would remove
     # the first batch's rows) — see run_replay.
+    replay = bool(getattr(args, "replay", None))
+    # The graph leg rides along ONLY for replay (#380): a tombstone version
+    # must drop its documents' triples too, scoped to THIS collection — the
+    # stamp `collection=` is what keeps `delete_by_doc` from crossing into
+    # another collection's copy of the same doc id (#209). The load path
+    # deliberately gets none: it never wrote triples, so it has none to drop.
+    graph_store = _graph_store_for_replay() if replay and target is not None else None
     return IngestionPipeline(loader=JsonlLoader(), chunker=RecursiveCharacterChunker(),
                              embedder=_NoEmbed(), vector_store=vstore, text_index=tindex,
+                             graph_store=graph_store,
+                             collection=target.collection if target is not None else None,
                              delete_concurrency=args.delete_concurrency,
-                             delete_prior=not (args.no_delete_prior
-                                               or getattr(args, "replay", None)))
+                             delete_prior=not (args.no_delete_prior or replay))
+
+
+def _graph_store_for_replay():
+    """The durable graph backend the API writes triples to, built from the
+    same settings (``GRAPH_BACKEND`` / ``NEO4J_*``) — or ``None``. Only
+    ``neo4j`` counts: an in-memory graph is process-local, so a worker's copy
+    would hold nothing to delete. Constructed directly rather than through
+    ``api.deps`` so the worker stays free of the FastAPI app."""
+    from ragstack.config import settings
+
+    if settings.graph_backend != "neo4j":
+        return None
+    from ragstack.stores.neo4j import Neo4jGraphStore
+
+    return Neo4jGraphStore(uri=settings.neo4j_uri, user=settings.neo4j_user,
+                           password=settings.neo4j_password,
+                           database=settings.neo4j_database or None)
 
 
 async def _replay(args, target) -> int:
@@ -202,6 +227,8 @@ async def _replay(args, target) -> int:
         if can_park:
             await tindex.restore_refresh(prior)
             await tindex.refresh()
+        if pipeline.graph_store is not None and hasattr(pipeline.graph_store, "close"):
+            await pipeline.graph_store.close()
     out = summary.as_dict()
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, indent=2, sort_keys=True)

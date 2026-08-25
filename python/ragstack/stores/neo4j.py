@@ -413,6 +413,58 @@ class Neo4jGraphStore:
         async with self._session() as session:
             await session.run(query, **params)
 
+    async def delete_collection(self, tenant_id: str | None, collection: str) -> int:
+        """Delete every ``:REL`` edge stamped ``collection`` (#380) — one tenant's
+        when ``tenant_id`` is given (exact equality, never the readable set),
+        every tenant's when ``None`` (the collection-wide form eviction and
+        purge use, #295) — then sweep the collection's now-edgeless ``:Entity``
+        nodes. Returns the number of edges removed (0 on a repeat).
+
+        Two statements, each batched with ``CALL { … } IN TRANSACTIONS OF 1000
+        ROWS`` so a large collection never has to fit one transaction's memory.
+        Neo4j 5 quirk: that clause runs ONLY in an implicit (auto-commit)
+        transaction — ``session.run`` is one; wrapping it in
+        ``execute_write``/an explicit ``BEGIN`` fails with "CALL { … } IN
+        TRANSACTIONS … is not allowed in an open transaction" — so this method
+        must stay on ``session.run``. The edge match is DIRECTED (``->``): an
+        undirected pattern yields each relationship once per direction and
+        would double the count. Nit for later: the importing ``CALL { WITH r
+        … }`` form is deprecated in the newest 5.x in favour of the variable-
+        scope clause ``CALL (r) { … }``; both are accepted by every 5.x the
+        stack deploys, so the older spelling stays until the floor moves.
+
+        The sweep is the endpoint-scoped one ``delete_by_doc`` uses (PR #35),
+        applied to the whole stamp: node identity is ``(name, tenant_id,
+        collection)`` and edges are only ever MERGE'd between identically
+        stamped nodes, so a node of this collection can only lose edges to this
+        delete — the ``NOT (e)--()`` guard keeps it honest rather than
+        assuming so — and an entity of the same name in another collection is a
+        different node, untouched."""
+        if not collection:
+            raise ValueError("delete_collection needs a collection; '' would match unstamped triples")
+        params: dict[str, Any] = {"collection": collection}
+        props = "collection: $collection"
+        if tenant_id is not None:
+            params["tenant_id"] = tenant_id
+            props = "tenant_id: $tenant_id, " + props
+        edges = (
+            "MATCH ()-[r:REL {" + props + "}]->() "
+            "CALL { WITH r DELETE r } IN TRANSACTIONS OF 1000 ROWS "
+            "RETURN count(r) AS deleted"
+        )
+        sweep = (
+            "MATCH (e:Entity {" + props + "}) WHERE NOT (e)--() "
+            "CALL { WITH e DELETE e } IN TRANSACTIONS OF 1000 ROWS "
+            "RETURN count(e) AS swept"
+        )
+        async with self._session() as session:
+            result = await session.run(edges, **params)
+            rec = await result.single()
+            deleted = int(rec["deleted"]) if rec is not None and rec.get("deleted") is not None else 0
+            result = await session.run(sweep, **params)
+            await result.single()  # consume: an unconsumed auto-commit result may not have run
+        return deleted
+
     async def _run_triples(self, query: str, params: dict[str, Any]) -> list[Triple]:
         async with self._session() as session:
             result = await session.run(query, **params)
