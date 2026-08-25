@@ -172,6 +172,10 @@ Three caveats that matter more than the arithmetic:
   anonymous pages (the in-RAM vectors and graph, which only RAM can hold) with
   file-backed pages (mmapped segments, which the kernel can drop under pressure).
 
+When a tenant approaches this bound rather than needing it raised, see
+[tenant-scale-out.md](tenant-scale-out.md) for provisioning a second tenant and
+moving users to it instead.
+
 The measurement for (b) is one line per sample — add it to the script's `proc_sample`
 next time, together with PSS from `smaps_rollup`:
 
