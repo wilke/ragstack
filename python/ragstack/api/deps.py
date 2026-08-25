@@ -1306,10 +1306,11 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     """The collection lifecycle gate (#358): registry-state enforcement on the
     resolution path, the batched last-accessed tracker, and the restorer.
 
-    The restorer submits ``restore-collection`` AS THE USER: a GoWe client is
-    built per submission with the caller's token over the app's shared http
-    client (no server identity, no token retained), and the owner's version
-    directories are listed through the Workspace client with the same token.
+    The restorer submits ``restore-collection`` AS THE USER: one tokenless
+    GoWe client over the app's shared http client, the caller's token passed
+    per call (no server identity, no token retained — the #203 ingest shape),
+    and the owner's version directories listed through the Workspace client
+    with the same token.
     Extra static workflow inputs (worker-side store URLs) come from
     ``collection_restore_inputs_json``.
     """
@@ -1344,7 +1345,7 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     gate.restorer = CollectionRestorer(
         store,
         workspace=workspace,
-        gowe_factory=lambda token: GoWeClient(settings.gowe_url, token=token, http=http),
+        gowe=GoWeClient(settings.gowe_url, token="", http=http),
         cwl_path=settings.collection_restore_cwl,
         workflow_name=settings.collection_restore_workflow_name,
         static_inputs=static_inputs,

@@ -44,7 +44,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from ragstack.api.security import Principal
+from ragstack.api.security import Principal, gowe_caller
 from ragstack.collection_store import (
     ACTIVE,
     ARCHIVING,
@@ -170,13 +170,17 @@ class LifecycleGate:
             rec = await self.record(cid)
             if rec is None or rec.state != DORMANT:
                 raise self._retry(cid, rec.state if rec else "?", "a restore is in progress; retry shortly")
-        # dormant
-        if not principal.token:
+        # dormant. The restore is submitted AS THE CALLER, which needs a BV-BRC
+        # user token (the one rule, security.gowe_caller): an API-key / keyless
+        # caller or a bearer identity from another issuer cannot trigger it.
+        caller = gowe_caller(principal)
+        if caller is None:
             raise self._retry(
                 cid, DORMANT,
                 "its stores were evicted and only its Workspace archive remains; "
-                "a user (bearer) token is required to restore it — retry with one",
+                "a BV-BRC user (bearer) token is required to restore it — retry with one",
             )
+        token, _subject = caller
         if self.restorer is None:
             raise self._retry(
                 cid, DORMANT,
@@ -188,7 +192,7 @@ class LifecycleGate:
         )
         self.invalidate(cid)
         if won:
-            self._spawn(self._submit(rec, principal.token))
+            self._spawn(self._submit(rec, token))
         raise self._retry(
             cid, RESTORING,
             "a restore from its Workspace archive was submitted; retry shortly",

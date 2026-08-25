@@ -312,8 +312,11 @@ async def test_upload_writes_sources_then_submits_once_as_the_user(client, gowe)
     assert job.archive_ref == VERSIONS + "1"
     assert job.tenant_id == TENANT and job.source == "upload"
 
-    # The per-job registry cost: one read (spec_hash) + one write (next_version).
-    assert store.calls == {"get": 1, "next_version": 1}
+    # The per-job registry cost: one read (spec_hash) + one write (next_version)
+    # + one write on delivery (append_version: the list restore replays, #358).
+    assert store.calls == {"get": 1, "next_version": 1, "append_version": 1}
+    row = await store._inner.get("lib1")
+    assert row.versions == [1] and row.archive_pending is False
 
 
 @pytest.mark.asyncio
@@ -344,6 +347,13 @@ async def test_upload_failed_is_output_staging_failed(client, gowe):
     poll = await client.get(f"/v1/ingest/{job.job_id}", headers=AUTH)
     # The load happened but was never reported: items stay pending, not failed.
     assert poll.json()["items"] == {"total": 2, "completed": 0, "failed": 0, "pending": 2}
+    # #358: the registry row says the archive is missing — the reserved
+    # version is NOT recorded (restore must not replay a folder that does not
+    # exist) and archive_pending blocks eviction until #353's retry re-archives.
+    row = await gowe["store"]._inner.get("lib1")
+    assert row.versions == [] and row.archive_pending is True
+    assert gowe["store"].calls.get("append_version", 0) == 0
+    assert gowe["store"].calls.get("set_archive_pending") == 1
 
 
 @pytest.mark.asyncio
@@ -356,7 +366,8 @@ async def test_version_increments_across_jobs(client, gowe):
     js = app.state.job_store
     refs = [(await js.get(r.json()["job_id"])).archive_ref for r in (r1, r2)]
     assert refs == [VERSIONS + "1", VERSIONS + "2"]
-    assert gowe["store"].calls == {"get": 2, "next_version": 2}
+    assert gowe["store"].calls == {"get": 2, "next_version": 2, "append_version": 2}
+    assert (await gowe["store"]._inner.get("lib1")).versions == [1, 2]
 
 
 @pytest.mark.parametrize("source", [

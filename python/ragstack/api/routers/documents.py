@@ -35,7 +35,13 @@ from ragstack.api.deps import (
     get_workspace,
     rate_limited,
 )
-from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal, resolve_tenant
+from ragstack.api.security import (
+    ROLE_ADMIN,
+    Principal,
+    gowe_caller,
+    resolve_principal,
+    resolve_tenant,
+)
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
 from ragstack.ingestion.gowe_backend import (
@@ -302,7 +308,8 @@ def _gowe_caller(principal: Principal) -> tuple[str, str]:
     no fallback identity (and none may be added). So an API-key / keyless
     principal, or a bearer identity from another issuer, cannot use this path.
     """
-    if not principal.token or principal.issuer != "bvbrc" or not principal.subject:
+    caller = gowe_caller(principal)  # the one implementation (api/security.py)
+    if caller is None:
         raise HTTPException(
             status_code=401,
             detail=(
@@ -311,7 +318,7 @@ def _gowe_caller(principal: Principal) -> tuple[str, str]:
                 "non-BV-BRC identity cannot submit"
             ),
         )
-    return principal.token, principal.subject
+    return caller
 
 
 def _workspace_reference(source: str) -> str:
@@ -426,12 +433,22 @@ async def _run_gowe_ingest(
     target: CollectionEntry,
     source: str,
     workspace: WorkspaceClient,
+    *,
+    collection_store: CollectionStore | None = None,
+    version: int | None = None,
 ) -> None:
     """Background worker for the GoWe path: submit as the user, wait for
     completion AND delivery, checkpoint one result per item, record the archive
     location. Never raises — every failure lands on the job as a caller-safe
     label (an exception's class name; :data:`OUTPUT_STAGING_FAILED` when the
     engine could not deliver the archive).
+
+    Reconciles the registry's two version records (#358): the reserved
+    ``version`` (the counter, ``next_version``) is appended to the row's
+    ordered ``versions`` list — what a restore replays — only once the
+    archive was DELIVERED; a staging failure sets ``archive_pending`` on the
+    row instead (the load happened, the archive does not exist: not evictable,
+    and #353's retry hook re-archives it on the owner's next call).
 
     Bypasses ``ShardedIngestor`` on purpose: ``GoWeBackend`` ignores the
     per-shard callable (the engine runs the tools), so nothing in that path
@@ -452,9 +469,16 @@ async def _run_gowe_ingest(
             )
         except OutputStagingFailed as e:
             # Loaded into the stores, but no archive exists in the Workspace: the
-            # engine's own label, so #353's archive_pending retry can find it.
+            # engine's own label on the job, and archive_pending on the registry
+            # row — the collection must not be evicted until it is re-archived.
             log.error("ingest job %s: %s", job_id, e)
             await job_store.update(job_id, status=FAILED, error=OUTPUT_STAGING_FAILED)
+            if collection_store is not None:
+                try:
+                    await collection_store.set_archive_pending(target.id, True)
+                except Exception:  # noqa: BLE001 — the job already records the failure
+                    log.warning("ingest job %s: could not flag archive_pending on %r",
+                                job_id, target.id, exc_info=True)
             return
         except GoWeError as e:
             # Message is engine-facing (scrubbed of tokens by GoWeClient); the
@@ -463,6 +487,14 @@ async def _run_gowe_ingest(
             await job_store.update(job_id, status=FAILED, error=type(e).__name__)
             return
 
+        if run.archive_ref and collection_store is not None and version is not None:
+            # Delivered: the reserved number now names a real versions/<n>/ —
+            # record it in the order restore will replay.
+            try:
+                await collection_store.append_version(target.id, version)
+            except Exception:  # noqa: BLE001 — the archive exists; the list is repairable
+                log.warning("ingest job %s: could not record version %s on %r",
+                            job_id, version, target.id, exc_info=True)
         for r in run.results:
             await job_store.mark_item(
                 job_id, r.item_id, status=r.status, chunk_ids=r.chunk_ids, error=r.error
@@ -655,6 +687,8 @@ async def ingest(
             entry,
             request.source,
             workspace,
+            collection_store=collection_store,
+            version=version,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
     # Fail closed when ingest is unconfined. `request.source` is a server-side
@@ -861,6 +895,8 @@ async def ingest_upload(
             entry,
             "upload",
             workspace,
+            collection_store=collection_store,
+            version=version,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
     if not settings.ingest_root.strip():

@@ -53,6 +53,7 @@ pytestmark = pytest.mark.asyncio
 OWNER = "bvbrc:alice@patricbrc.org"
 ALICE_TOKEN = "alice-token"
 BOB_TOKEN = "bob-token"
+CAROL_TOKEN = "carol-oidc-token"  # a verified bearer from ANOTHER issuer
 CID = "lib"
 SPEC_HASH = "cafe0001"
 
@@ -63,13 +64,16 @@ SPEC_HASH = "cafe0001"
 
 
 class FakeProvider:
-    """Two bearer identities: alice (the owner) and bob (a stranger)."""
+    """Three bearer identities: alice (the owner), bob (a stranger) and carol
+    (a verified identity from a non-BV-BRC issuer — no Workspace)."""
 
     async def authenticate(self, credential: str) -> Identity:
-        who = {ALICE_TOKEN: "alice@patricbrc.org", BOB_TOKEN: "bob@patricbrc.org"}.get(credential)
+        who = {ALICE_TOKEN: ("alice@patricbrc.org", "bvbrc"),
+               BOB_TOKEN: ("bob@patricbrc.org", "bvbrc"),
+               CAROL_TOKEN: ("carol", "google")}.get(credential)
         if who is None:
             raise IdentityInvalid("no")
-        return Identity(subject=who, issuer="bvbrc", token_id=credential,
+        return Identity(subject=who[0], issuer=who[1], token_id=credential,
                         expires_at=int(time.time()) + 3600)
 
 
@@ -151,40 +155,43 @@ class FakeEngine:
 
 
 class FakeGoWeClient:
-    """What ``CollectionRestorer`` builds per submission (``gowe_factory``)."""
+    """The tokenless shared ``GoWeClient`` shape: every call takes the caller's
+    token per call (``token=``) — what #375's ingest path and this restorer
+    both drive."""
 
-    def __init__(self, engine: FakeEngine, token: str) -> None:
+    def __init__(self, engine: FakeEngine) -> None:
         self.engine = engine
-        self.token = token
-        self.closed = False
 
-    async def register_workflow(self, name: str, cwl: str, labels=None) -> str:
+    async def register_workflow(self, name: str, cwl: str, labels=None, *, token=None) -> str:
         assert "restore-collection" in cwl or "cwlVersion" in cwl
+        assert token, "registration must be made as the user"
         return "wf_restore"
 
-    async def submit(self, workflow_id: str, inputs: dict, *, labels=None, **_kw) -> dict:
+    async def submit(self, workflow_id: str, inputs: dict, *, labels=None, token=None,
+                     output_destination=None, **_kw) -> dict:
         assert workflow_id == "wf_restore"
-        if not self.token:
+        assert output_destination is None  # a restore has nothing to post-stage
+        if not token:
             raise GoWeError("POST /api/v1/submissions -> 401: token required")
-        return self.engine.submit(self.token, inputs, labels)
+        return self.engine.submit(token, inputs, labels)
 
-    async def get_submission(self, sub_id: str) -> dict:
+    async def get_submission(self, sub_id: str, *, token=None) -> dict:
+        assert token
         if sub_id not in self.engine.records:
             raise GoWeError(f"GET /api/v1/submissions/{sub_id} -> 404")
         if self.engine.hold:
             return {"id": sub_id, "state": "RUNNING"}
         return self.engine.records[sub_id]
 
-    async def wait(self, sub_id: str, *, poll_interval: float = 0, timeout: float = 0) -> dict:
+    async def wait(self, sub_id: str, *, poll_interval: float = 0, timeout: float = 0,
+                   token=None, require_delivery: bool = False, **_kw) -> dict:
+        assert token and require_delivery is False
         if self.engine.wait_timeouts > 0:
             self.engine.wait_timeouts -= 1
             if self.engine.forget_on_timeout:
                 self.engine.records.pop(sub_id, None)
             raise GoWeError(f"submission {sub_id} not terminal after {timeout}s (state=RUNNING)")
         return await self.engine.terminal(sub_id)
-
-    async def close(self) -> None:
-        self.closed = True
 
 
 class _FakeEmbedder:
@@ -244,7 +251,7 @@ async def world(client, _acl_store, tmp_path, monkeypatch):
     gate = LifecycleGate(store, tracker=tracker, cache_seconds=5.0, retry_after=30,
                          restore_timeout=3600)
     gate.restorer = CollectionRestorer(
-        store, workspace=workspace, gowe_factory=lambda tok: FakeGoWeClient(engine, tok),
+        store, workspace=workspace, gowe=FakeGoWeClient(engine),
         cwl_path=DEFAULT_CWL, static_inputs={"qdrant_url": "http://q", "es_url": "http://e"},
         worker_group="ragstack", poll_interval=0, timeout=60, on_change=gate.invalidate,
     )
@@ -350,6 +357,29 @@ async def test_keyless_caller_cannot_trigger_a_restore(client, world):
     assert "user (bearer) token is required" in resp.json()["detail"]
     assert world["engine"].submissions == []
     assert (await world["store"].get(CID)).state == DORMANT
+
+
+async def test_non_bvbrc_bearer_cannot_trigger_a_restore(
+    client, identity, world, _acl_store, monkeypatch,
+):
+    """A verified identity from another issuer has no BV-BRC Workspace and no
+    token the engine accepts (security.gowe_caller): 503 saying so, nothing
+    submitted, the row stays dormant."""
+    from ragstack.acl_store import PERM_READ
+
+    await _acl_store.grant(CID, GRANTEE_USER, "google:carol", PERM_READ, granted_by=OWNER)
+    await world["store"].set_state(CID, DORMANT)
+    world["gate"].invalidate(CID)
+    resp = await _retrieve(client, token=CAROL_TOKEN)
+    assert resp.status_code == 503 and resp.headers["Retry-After"] == "30"
+    assert "BV-BRC user (bearer) token is required" in resp.json()["detail"]
+    assert world["engine"].submissions == []
+    assert (await world["store"].get(CID)).state == DORMANT
+    # ...and the explicit endpoint refuses the same caller with 400 even as an
+    # admin (the owner gate passes; there is still no Workspace identity).
+    monkeypatch.setattr(security.settings, "admin_subjects", ["google:carol"])
+    resp = await client.post(f"/v1/collections/{CID}/restore", headers=_auth(CAROL_TOKEN))
+    assert resp.status_code == 400 and world["engine"].submissions == []
 
 
 async def test_lost_collection_is_409_with_the_reason(client, identity, world):

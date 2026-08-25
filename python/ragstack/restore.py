@@ -155,9 +155,10 @@ def _scrub(text: str, token: str) -> str:
 class CollectionRestorer:
     """Submit and watch ``restore-collection`` runs.
 
-    ``gowe_factory(token)`` builds a GoWe client authenticated as the caller
-    (the app's shared http client underneath); ``workspace`` lists the owner's
-    versions with the same token. ``on_change(cid)`` is the lifecycle gate's
+    ``gowe`` is a tokenless :class:`GoWeClient` over the app's shared http
+    client; every engine call here passes the caller's token per call
+    (``token=``), exactly as the #203 ingest path does. ``workspace`` lists the
+    owner's versions with the same token. ``on_change(cid)`` is the lifecycle gate's
     cache invalidation, called after every state write here.
     """
 
@@ -166,7 +167,7 @@ class CollectionRestorer:
         store: CollectionStore,
         *,
         workspace: Any,
-        gowe_factory: Callable[[str], Any],
+        gowe: Any,
         cwl_path: str | Path = "",
         workflow_name: str = "ragstack-restore-collection",
         static_inputs: dict[str, Any] | None = None,
@@ -177,7 +178,7 @@ class CollectionRestorer:
     ) -> None:
         self._store = store
         self._workspace = workspace
-        self._gowe_factory = gowe_factory
+        self._gowe = gowe
         self._cwl_path = Path(cwl_path) if cwl_path else DEFAULT_CWL
         self._cwl_text: str | None = None
         self.workflow_name = workflow_name
@@ -291,17 +292,18 @@ class CollectionRestorer:
             log.warning("restore %r: Workspace versions %s != registry versions %s; "
                         "replaying what the Workspace holds", cid, present, recorded)
         inputs = self.inputs_for(rec, versions)
-        client = self._gowe_factory(token)
         try:
-            wf_id = await client.register_workflow(self.workflow_name, self._cwl())
+            wf_id = await self._gowe.register_workflow(
+                self.workflow_name, self._cwl(), token=token
+            )
             labels = {"worker_group": self.worker_group} if self.worker_group else None
-            sub = await client.submit(wf_id, inputs, labels=labels)
+            # No output_destination: a restore produces nothing to post-stage
+            # (the load summary stays with the engine), so no delivery wait.
+            sub = await self._gowe.submit(wf_id, inputs, labels=labels, token=token)
         except GoWeError as e:
             raise RestoreError(
                 f"workflow engine refused the restore submission: {e}", state=DORMANT
             ) from e
-        finally:
-            await _close(client)
         sub_id = str(sub.get("id") or "")
         if not sub_id:
             raise RestoreError("workflow engine returned no submission id", state=DORMANT)
@@ -333,7 +335,7 @@ class CollectionRestorer:
         task = self._watchers.get(cid)
         return task is not None and not task.done()
 
-    async def _terminal(self, client: Any, cid: str, sub_id: str) -> dict[str, Any] | None:
+    async def _terminal(self, cid: str, sub_id: str, token: str) -> dict[str, Any] | None:
         """``client.wait`` until terminal — but a wait that gives up (its own
         timeout, a transport blip) does NOT mean the engine stopped. Confirm
         with one ``get_submission``: terminal → that record; still running →
@@ -343,12 +345,13 @@ class CollectionRestorer:
         second restore over the same versions."""
         while True:
             try:
-                return await client.wait(
-                    sub_id, poll_interval=self.poll_interval, timeout=self.timeout
+                return await self._gowe.wait(
+                    sub_id, poll_interval=self.poll_interval, timeout=self.timeout,
+                    token=token, require_delivery=False,
                 )
             except GoWeError as e:
                 try:
-                    probe = await client.get_submission(sub_id)
+                    probe = await self._gowe.get_submission(sub_id, token=token)
                 except GoWeError as e2:
                     log.warning("restore %r: %s: wait failed (%s) and the submission "
                                 "cannot be read back (%s); demoting", cid, sub_id, e, e2)
@@ -360,15 +363,12 @@ class CollectionRestorer:
                             cid, sub_id, e, probe.get("state"))
 
     async def _watch(self, cid: str, sub_id: str, token: str) -> None:
-        client = self._gowe_factory(token)
         try:
-            final = await self._terminal(client, cid, sub_id)
+            final = await self._terminal(cid, sub_id, token)
         except Exception as e:  # noqa: BLE001 — a watcher must never die silently
             await self._set(cid, DORMANT,
                             _scrub(f"restore {sub_id}: watcher failed: {type(e).__name__}: {e}", token))
             return
-        finally:
-            await _close(client)
         if final is None:
             await self._set(cid, DORMANT,
                             f"restore {sub_id}: the engine no longer reports the submission")
@@ -390,12 +390,3 @@ class CollectionRestorer:
         while self._watchers:
             await asyncio.gather(*list(self._watchers.values()), return_exceptions=True)
 
-
-async def _close(client: Any) -> None:
-    close = getattr(client, "close", None)
-    if close is None:
-        return
-    try:
-        await close()
-    except Exception:  # noqa: BLE001 — closing a per-call client is best-effort
-        log.debug("restore: gowe client close failed", exc_info=True)

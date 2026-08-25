@@ -54,7 +54,7 @@ from ragstack.api.security import (
     ROLE_ADMIN,
     ROLE_USER,
     Principal,
-    get_bearer_token,
+    gowe_caller,
     resolve_principal,
 )
 from ragstack.authz import AuthzUnavailable, resolve_access
@@ -742,7 +742,6 @@ class CollectionRestoreResponse(BaseModel):
 )
 async def restore_collection(
     collection_id: str,
-    request: Request,
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
     store: CollectionStore = Depends(get_collection_store),
@@ -763,8 +762,9 @@ async def restore_collection(
     double-submit) and ``active``/``archiving`` answer 202 with nothing to do.
     Unlike the on-access path, which 409s a ``lost`` collection, THIS endpoint
     may retry from ``lost``: it is the owner's way back after repairing the
-    archive. A caller without a user token (API key / keyless) is refused with
-    400 — a restore is submitted as the user and has no other identity to use.
+    archive. A caller without a BV-BRC user token (API key / keyless / another
+    issuer) is refused with 400 — a restore is submitted as the user and has no
+    other identity to use (``security.gowe_caller``, shared with ingest).
     The ``owner`` action is never lifecycle-gated, so managing a dormant
     collection does not require restoring it first."""
     from ragstack.api.lifecycle import get_lifecycle_gate
@@ -783,14 +783,15 @@ async def restore_collection(
         raise HTTPException(404, f"unknown collection {collection_id!r}") from None
     await enforce_access(principal, entry.id, "owner")
 
-    token = get_bearer_token(request)
-    if not token:
+    caller = gowe_caller(principal)  # the one caller rule (api/security.py)
+    if caller is None:
         raise HTTPException(
             400,
-            "a restore is submitted as the user and needs a bearer (user) "
-            "credential; this request carries none (API-key / keyless callers "
-            "have no Workspace identity)",
+            "a restore is submitted as the user and needs a BV-BRC bearer (user) "
+            "credential; this request carries none (API-key / keyless callers and "
+            "other issuers have no Workspace identity)",
         )
+    token, _subject = caller
     rec = await store.get(entry.id)
     if rec is None:
         raise HTTPException(

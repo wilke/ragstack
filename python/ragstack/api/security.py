@@ -888,18 +888,22 @@ async def resolve_principal(
     return principal
 
 
-def get_bearer_token(request: Request) -> str | None:
-    """The VERIFIED bearer credential of the request's principal, or ``None``
-    for an API-key / keyless caller. Read off ``request.state.principal`` (set
-    by :func:`resolve_principal`), never re-parsed from the header — a
-    credential that failed verification never reaches a :class:`Principal`.
+def gowe_caller(principal: Principal) -> tuple[str, str] | None:
+    """``(token, workspace subject)`` for a workflow submission made AS the
+    caller (#203 ingest, #358 restore), or ``None`` when this principal cannot
+    make one.
 
-    Used by the paths that act AS THE USER (a restore submission, #358). NOTE
-    for the #203 merge: that branch adds an equivalent accessor for its
-    submit-as-user path; keep exactly one.
+    The engine authenticates the submission with a BV-BRC user token and
+    pre-/post-stages ``ws://`` paths under that user's Workspace home; there is
+    no fallback identity (and none may be added). So an API-key / keyless
+    principal, or a bearer identity from another issuer, cannot use these
+    paths. The ONE implementation of that rule — the ingest router maps
+    ``None`` to 401, the restore endpoint to 400, the lifecycle gate to a 503
+    that says a user token is required.
     """
-    principal = getattr(request.state, "principal", None)
-    return principal.token if principal is not None else None
+    if not principal.token or principal.issuer != "bvbrc" or not principal.subject:
+        return None
+    return principal.token, principal.subject
 
 
 def validate_role_settings() -> None:
