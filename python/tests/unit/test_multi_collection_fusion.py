@@ -33,6 +33,7 @@ from ragstack.collection_store import DORMANT, CollectionSpec, InMemoryCollectio
 from ragstack.config import settings
 from ragstack.models import Chunk, ScoredChunk, Triple
 from ragstack.retrieval.retriever import (
+    STAMP_KEY,
     CollectionLeg,
     HybridRetriever,
     MultiCollectionRetriever,
@@ -292,14 +293,53 @@ async def test_rerank_runs_once_over_the_union_and_keeps_the_stamps():
 
     reranker = CountingReranker()
     scored = await _retrieve_fused(
-        wrapper, reranker, "q", ["q"], 4, {}, False, rerank=True, rerank_candidates=3,
+        wrapper, reranker, "q", ["q"], 2, {}, False, rerank=True, rerank_candidates=4,
         tenant_id="alice",
     )
-    assert reranker.calls == [6]  # one call, the whole union (2 legs × depth 3)
-    assert len(scored) == 4
+    # One call, over the fused union CUT to the rerank pool (rerank_candidates
+    # = 4, not 2 legs × depth 4 = 8): the pool is the cost the caller budgets.
+    assert reranker.calls == [4]
+    assert len(scored) == 2
     assert all(s.retrieval_method == "reranked" for s in scored)
     for s in scored:
         assert s.collection == ("A" if s.chunk.id.startswith("a-") else "B")
+        assert STAMP_KEY not in s.chunk.metadata or s.chunk.metadata[STAMP_KEY] == s.collection
+
+
+async def test_stamp_survives_a_reranker_that_copies_its_chunks():
+    """The ``Scorer`` protocol does not promise the same chunk objects back. A
+    document present in BOTH collections is the hard case: by chunk id alone
+    the two copies are indistinguishable, so the stamp has to ride on each
+    copy itself."""
+    shared = Chunk(id="shared-0", doc_id="shared", content="the same passage",
+                   metadata={"tenant_id": "public"})
+    a = Fixture("A", [shared] + chunks("a", 1))
+    b = Fixture("B", [shared.model_copy()] + chunks("b", 1))
+    wrapper = MultiCollectionRetriever([a.leg(), b.leg()])
+
+    class CopyingReranker:
+        async def score(self, query, candidates, top_k=None):
+            out = [ScoredChunk(chunk=c.model_copy(), score=float(len(candidates) - i),
+                               retrieval_method="reranked") for i, c in enumerate(candidates)]
+            return out if top_k is None else out[:top_k]
+
+    scored = await _retrieve_fused(
+        wrapper, CopyingReranker(), "q", ["q"], 4, {}, False, rerank=True,
+        rerank_candidates=4, tenant_id="alice",
+    )
+    copies = sorted(s.collection for s in scored if s.chunk.id == "shared-0")
+    assert copies == ["A", "B"]
+    assert all(s.collection in {"A", "B"} for s in scored)
+    # The store's own chunk was never stamped — only the per-leg copies.
+    assert STAMP_KEY not in shared.metadata
+
+
+async def test_union_is_not_cut_without_a_reranker():
+    a, b = Fixture("A", chunks("a", 3)), Fixture("B", chunks("b", 3))
+    wrapper = MultiCollectionRetriever([a.leg(), b.leg()])
+    scored = await _retrieve_fused(wrapper, None, "q", ["q"], 5, {}, False, tenant_id="alice")
+    assert len(scored) == 5  # the final top_k cut only; both collections present
+    assert {s.collection for s in scored} == {"A", "B"}
 
 
 # --------------------------------------------------------------------------- #

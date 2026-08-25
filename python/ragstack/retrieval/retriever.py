@@ -310,6 +310,15 @@ async def graph_context(
 # Multi-collection fan-out (issue #253)
 # --------------------------------------------------------------------------- #
 
+#: Metadata key carrying the registry-collection stamp on the per-leg COPY of
+#: a retrieved chunk. The stamp has to survive a reranker, and the ``Scorer``
+#: protocol only promises ``ScoredChunk``s over the candidate chunks — not the
+#: same objects (a scorer may ``model_copy()`` them), so object identity is not
+#: enough. The key rides on the copy only (the store's own chunk is never
+#: mutated) and is stripped before the chunk's metadata reaches a ``Source``
+#: (``routers.query._source_metadata``).
+STAMP_KEY = "_rs_collection"
+
 
 @dataclass
 class CollectionLeg:
@@ -351,12 +360,15 @@ class MultiCollectionRetriever:
       candidates, ``N ≤ 5``): the caller reranks ONCE over the union and cuts
       to its ``top_k`` afterwards. This is deliberately more than ``depth``
       results.
-    * Every result is stamped with its leg's registry id
-      (``ScoredChunk.collection``) on a shallow copy of the chunk, so identity
-      is ``(collection, chunk id)`` through fusion, rerank and shaping, and a
-      document present in two collections appears once per collection. The
-      copy also makes each stamped candidate a distinct object, which is what
-      the router's post-rerank restamp relies on.
+    * Every result is stamped with its leg's registry id — on
+      ``ScoredChunk.collection`` AND, on a shallow copy of the chunk, under
+      ``metadata[STAMP_KEY]`` — so identity is ``(collection, chunk id)``
+      through fusion, rerank and shaping, and a document present in two
+      collections appears once per collection. The metadata stamp is what a
+      reranker cannot lose, whatever it does with the chunk objects.
+    * RRF ties resolve in request order: the fusion is a stable sort over the
+      legs as listed, so at equal fused score the earlier collection's chunk
+      ranks first.
     * One leg is not fused at all — its ranked list is returned as-is (with
       the stamp), so ``collections: [x]`` is byte-for-byte ``collection: x``
       plus the stamp, graph leg included.
@@ -413,9 +425,13 @@ class MultiCollectionRetriever:
 
     @staticmethod
     def _stamp(scored: list[ScoredChunk], cid: str) -> list[ScoredChunk]:
+        """Stamp ``cid`` on a per-leg copy of each chunk (see ``STAMP_KEY``):
+        the store's own object and its metadata dict are left untouched."""
         return [
             ScoredChunk(
-                chunk=s.chunk.model_copy(),
+                chunk=s.chunk.model_copy(
+                    update={"metadata": {**s.chunk.metadata, STAMP_KEY: cid}}
+                ),
                 score=s.score,
                 retrieval_method=s.retrieval_method,
                 collection=cid,
@@ -471,12 +487,7 @@ class MultiCollectionRetriever:
             cid = by_physical.get(str(c.chunk.metadata.get("collection", "")))
             if cid is None:
                 continue  # re-check already excluded it; belt and braces
-            out.append(
-                ScoredChunk(
-                    chunk=c.chunk, score=c.score,
-                    retrieval_method=c.retrieval_method, collection=cid,
-                )
-            )
+            out.extend(self._stamp([c], cid))
         return out
 
     async def retrieve(
@@ -489,7 +500,10 @@ class MultiCollectionRetriever:
         mode: str = "hybrid",
     ) -> list[ScoredChunk]:
         """Run every leg concurrently at depth ``top_k`` and return the
-        RRF-fused union (see the class docstring — NOT cut to ``top_k``)."""
+        RRF-fused union (see the class docstring — NOT cut to ``top_k``; the
+        router cuts it to the rerank pool, or to its own ``top_k``). The graph
+        pseudo-chunk budget ``top_k`` is one budget for the whole call, shared
+        across the members."""
         if len(self.legs) == 1:
             return await self._leg(
                 self.legs[0], query, top_k, filters, use_graph, tenant_id, mode

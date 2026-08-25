@@ -33,6 +33,7 @@ from ragstack.config import settings
 from ragstack.models import ContextChunk, ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
 from ragstack.retrieval.retriever import (
+    STAMP_KEY,
     CollectionLeg,
     MultiCollectionRetriever,
     expand_context,
@@ -241,6 +242,13 @@ def _shaping_active(retriever: Any) -> bool:
     )
 
 
+def _fans_out(retriever: Any) -> bool:
+    """Is ``retriever`` a multi-collection fan-out over more than one leg (#253)
+    — i.e. does its ``retrieve`` return a fused UNION wider than the depth it
+    was asked for? One leg returns the leg's own list, exactly ``depth``."""
+    return isinstance(retriever, MultiCollectionRetriever) and len(retriever.legs) > 1
+
+
 async def _maybe_rerank(
     reranker, query: str, scored: list[ScoredChunk], top_k: int | None
 ) -> list[ScoredChunk]:
@@ -276,22 +284,19 @@ async def _maybe_rerank(
 def _restamp(pool: list[ScoredChunk], reranked: list[ScoredChunk]) -> list[ScoredChunk]:
     """Carry each candidate's ``collection`` stamp (issue #253) across a
     rerank, which rebuilds ``ScoredChunk``s from the bare chunks it was handed.
-    Every in-repo ``Scorer`` returns the very ``Chunk`` objects it received, so
-    the stamp is recovered by object identity — and the multi-collection
-    wrapper hands the reranker a distinct copy per (collection, chunk), so
-    identity is unambiguous even for a document present in two collections.
-    A scorer that rebuilt its chunks falls back to the chunk id, when that is
-    unambiguous. A pool with no stamps at all (the single-collection path) is
-    returned untouched."""
+    The stamp is read from the chunk's own metadata (``STAMP_KEY``, written on
+    the per-leg copy by the multi-collection wrapper), so it survives a scorer
+    that copies or rebuilds its chunks — the ``Scorer`` protocol does not
+    promise the same objects back — and is unambiguous for a document present
+    in two collections (each copy carries its own key). Object identity is
+    only the fallback for a chunk that somehow lost its metadata. A pool with
+    no stamps at all (the single-collection path) is returned untouched."""
     if not any(s.collection is not None for s in pool):
         return reranked
     by_obj = {id(s.chunk): s.collection for s in pool}
-    by_id: dict[str, str | None] = {}
-    for s in pool:
-        by_id[s.chunk.id] = None if s.chunk.id in by_id else s.collection
     out = []
     for r in reranked:
-        cid = by_obj.get(id(r.chunk), by_id.get(r.chunk.id))
+        cid = r.chunk.metadata.get(STAMP_KEY) or by_obj.get(id(r.chunk))
         out.append(r if r.collection == cid else r.model_copy(update={"collection": cid}))
     return out
 
@@ -346,6 +351,19 @@ async def _retrieve_fused(
             )
         )
         scored = _RRF.fuse(list(ranked))
+    # Multi-collection fan-out (#253): the wrapper returns the fused UNION of
+    # its legs (up to N × depth candidates). The rerank pool is a cost the
+    # caller budgets with ``rerank_candidates`` (the pool "fed to the
+    # reranker", per the contract), so the union is cut to ``depth`` here —
+    # after fusion, before the one rerank. A no-op at N=1 (the leg returned
+    # exactly ``depth``) and on the singular path, and skipped without a
+    # reranker, where shaping still gets the whole union to promote from and
+    # the final cut is ``top_k`` below. Per-collection recall into the pool is
+    # roughly depth/N under RRF interleaving; raise ``rerank_candidates`` for
+    # more. Only the fan-out is cut: a single retriever's pool is whatever it
+    # returned for ``depth`` (test stubs may hand back more), exactly as before.
+    if active is not None and _fans_out(retriever):
+        scored = scored[:depth]
     # Post-fusion shaping (per-document cap / boilerplate demotion) has to be the
     # LAST step before the top_k cut: reranking re-sorts the whole pool and would
     # otherwise undo it. When shaping is active we therefore keep the reranker's
@@ -435,6 +453,10 @@ def _source_metadata(chunk: Any) -> dict[str, Any]:
     tell). Attach them only when meaningful (``end > start``); chunks/stores
     without offsets leave them absent."""
     md = dict(chunk.metadata)
+    # The multi-collection stamp (#253) rides on the chunk copy's metadata only
+    # to survive the reranker; it is reported as ``Source.collection``, never
+    # as a metadata key (the single-collection golden guards this).
+    md.pop(STAMP_KEY, None)
     if chunk.end_char > chunk.start_char:
         md.setdefault("start_char", chunk.start_char)
         md.setdefault("end_char", chunk.end_char)

@@ -152,7 +152,7 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `collections` | string[] \| null | null | [multi-collection fused retrieval](#multi-collection-retrieval-collections) (issue #253): 1–5 unique registry ids to query together; mutually exclusive with `collection` (both, more than 5, duplicates or `[]` → `422`). Every id is resolved and read-authorized before any retrieval runs: one unknown/unreadable → `404`, one dormant → `503` + `Retry-After`, for the whole request |
 | `retrieval_mode` | `hybrid` \| `vector` \| `bm25` | `hybrid` | which retrieval legs run: dense + BM25 fused, dense only, or keyword only. Graph leg is orthogonal (`use_graph`) |
 | `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
-| `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)` |
+| `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)`. With `collections` each leg fetches this many and the fused union is cut to it before the single rerank — per-collection recall into the pool is ~`rerank_candidates / N` under RRF interleaving; raise it for more |
 | `context_window` | int (0–3) | 0 | server-side [context expansion](#context-expansion-context_window): walk each returned source's `prev_chunk_id` / `next_chunk_id` this many hops each way and attach the neighbours as the source's `context`. `0` = off (response unchanged); above `3` → `422` |
 | `llm` | string \| null | null | registered model id to generate with, this request only (`GET /v1/models/available`); unknown → 404, wrong task → 400 |
 | `reranker` | string \| null | null | registered model id to rerank with, this request only |
@@ -206,10 +206,11 @@ the main one, or "everything I can see". Semantics:
 - **One leg per collection, never one many-valued filter.** Each member is
   retrieved by its own already-collection-scoped retriever, at the same
   per-leg candidate depth the singular path uses, all legs concurrently. The
-  legs are fused with RRF, the union is **reranked once**, then cut to
-  `top_k`. A many-valued store filter (`collection IN […]`) is never used on
+  legs are fused with RRF (ties resolve in request order), the union is cut
+  to `rerank_candidates` and **reranked once**, then cut to `top_k`. A many-valued store filter (`collection IN […]`) is never used on
   the vector/BM25 stores (#199, #354); the knowledge-graph leg, where one is
-  wired, is one neighbourhood query across the members (exact on Neo4j).
+  wired, is one neighbourhood query across the members (exact on Neo4j) with
+  one pseudo-chunk budget shared across them, not one per member.
 - **Provenance.** Every source carries `collection` — the registry id it came
   from. A document present in two collections appears once per collection,
   each copy stamped with its own id (they share a `chunk_id`, not a

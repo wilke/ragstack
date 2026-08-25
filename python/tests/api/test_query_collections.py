@@ -16,7 +16,7 @@ import pytest
 from ragstack.api.collections import CollectionEntry
 from ragstack.api.main import app
 from ragstack.ingestion.chunkers import link_neighbors_by_document
-from ragstack.models import Chunk
+from ragstack.models import Chunk, ScoredChunk
 from ragstack.retrieval.retriever import HybridRetriever
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
 from tests.api.conftest import _FakeEmbedder
@@ -105,6 +105,8 @@ async def test_contract_shape_on_both_endpoints(client, two_collections, endpoin
     # Ranked by fused score, strictly non-increasing.
     scores = [s["score"] for s in sources]
     assert scores == sorted(scores, reverse=True)
+    # The internal stamp never reaches the metadata the caller sees.
+    assert all("_rs_collection" not in s["metadata"] for s in sources)
 
 
 async def test_served_openapi_declares_collections_and_the_stamp(client):
@@ -213,3 +215,44 @@ async def test_default_pointer_next_to_its_target_is_422(client, two_collections
     resp = await client.post(endpoint, json={"query": "x", "collections": ["default", SHARED_ID]})
     assert resp.status_code == 422, resp.text
     assert "same collection" in resp.json()["detail"]
+
+
+class _CopyingReranker:
+    """A Scorer that hands back COPIES of the candidate chunks (the protocol
+    allows it) — the case that loses an identity-based stamp."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def score(self, query, candidates, top_k=None):
+        self.calls += 1
+        out = []
+        for i, c in enumerate(candidates):
+            bonus = 100.0 if "BM25" in c.content else 0.0
+            out.append(ScoredChunk(chunk=c.model_copy(), score=bonus - i, retrieval_method="reranked"))
+        out.sort(key=lambda s: s.score, reverse=True)
+        return out if top_k is None else out[:top_k]
+
+
+@pytest.mark.parametrize("endpoint", ENDPOINTS)
+async def test_copying_reranker_keeps_both_stamps_and_both_contexts(
+    client, two_collections, endpoint
+):
+    app.state.reranker = _CopyingReranker()
+    try:
+        resp = await client.post(
+            endpoint,
+            json={"query": "How does BM25 work?", "top_k": 2, "collections": ["col_a", "col_b"],
+                  "rerank": True, "context_window": 1},
+        )
+        assert resp.status_code == 200, resp.text
+        assert app.state.reranker.calls == 1
+        sources = resp.json()["sources"]
+        by_collection = {s["collection"]: s for s in sources}
+        assert set(by_collection) == {"col_a", "col_b"}
+        assert all(s["chunk_id"] == "shared-c1" for s in sources)
+        assert [c["content"] for c in by_collection["col_a"]["context"]] == ["A before", "A after"]
+        assert [c["content"] for c in by_collection["col_b"]["context"]] == ["B before", "B after"]
+        assert all("_rs_collection" not in s["metadata"] for s in sources)
+    finally:
+        app.state.reranker = None

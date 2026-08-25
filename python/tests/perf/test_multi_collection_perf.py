@@ -3,7 +3,8 @@
 Two promises. The N legs run CONCURRENTLY: the wall time of a five-leg
 retrieval is at most 1.5× the slowest single leg (each fake leg sleeps, so a
 serial fan-out would take 5× and fail loudly). And the reranker is called
-EXACTLY ONCE per request, over the fused union — never once per leg.
+EXACTLY ONCE per request, over the fused union cut to ``rerank_candidates``
+— never once per leg, never over N × the pool.
 """
 import asyncio
 import time
@@ -85,7 +86,8 @@ async def test_exactly_one_rerank_call_over_the_union():
             rerank=True, rerank_candidates=20, tenant_id="alice",
         )
         assert len(scored) == 5 and all(s.collection for s in scored)
-    # One rerank per request, each over the whole union (5 legs × depth 20).
-    assert reranker.calls == [_N_LEGS * 20] * _N
+    # One rerank per request, over the fused union CUT to rerank_candidates —
+    # the pool the caller budgets, not 5 legs × 20.
+    assert reranker.calls == [20] * _N
     print(f"PERF multi_collection_rerank_calls: {len(reranker.calls)} calls for {_N} requests, "
-          f"pool={_N_LEGS * 20}")
+          f"pool={reranker.calls[0]} (rerank_candidates=20, legs={_N_LEGS})")
