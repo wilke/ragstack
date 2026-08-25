@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict
 from ragstack.api.collections import CollectionRegistry
 from ragstack.api.deps import derived_default_stores
 from ragstack.api.lifecycle import get_lifecycle_gate
-from ragstack.collection_store import ACTIVE, CollectionRecord, CollectionStore
+from ragstack.collection_store import PHYSICAL, CollectionRecord, CollectionStore
 from ragstack.ops.evict import (
     REASONS,
     EvictionOutcome,
@@ -145,7 +145,7 @@ async def plan_eviction(
     in_flight = await _in_flight(app_state)
     victims, shortfall = choose_victims(
         records, need, now=time.time(), in_flight=in_flight,
-        protected=make_protected(registry, derived=derived_default_stores()),
+        protected=make_protected(registry, derived=derived_default_stores(), records=records),
         registered={e.id for e in registry.entries()},
     )
     return victims, shortfall, in_flight
@@ -156,9 +156,23 @@ async def run_eviction(
     victims: list[Victim], in_flight: frozenset[str],
 ) -> list[EvictionOutcome]:
     """Evict the chosen victims, invalidating the lifecycle gate's cached row
-    after every registry write so readers see ``dormant`` at once."""
+    after every registry write so readers see ``dormant`` at once.
+
+    The in-flight set is RE-QUERIED here, immediately before the act: a job
+    minted between selection and now (``in_flight`` is the plan-time answer,
+    kept only as the fallback when the job store cannot answer) must still
+    win. What remains is the window between a request passing the gate on a
+    cached ``active`` row and its job being minted — the CAS can land inside
+    it. That is closed only by the loader failing on the dropped store; the
+    archive step still packs the embed outputs, so nothing is lost — the job
+    fails and is re-run against the restored collection."""
     gate = get_lifecycle_gate()
     on_change = gate.invalidate if gate is not None else None
+    try:
+        in_flight = await _in_flight(app_state)
+    except Exception:  # noqa: BLE001 — keep the plan-time answer rather than evict blind
+        log.warning("eviction: re-querying in-flight jobs failed; using the plan-time set",
+                    exc_info=True)
     return await evict(
         registry, store, [v.collection_id for v in victims],
         in_flight=in_flight, on_change=on_change,
@@ -192,7 +206,9 @@ def insufficient_storage(
 ) -> HTTPException:
     """The create path's 507: the active bound is met and nothing could be
     evicted (``shortfall`` names why), or ``why`` says what else went wrong
-    (the freed slot was taken concurrently; the chosen row moved under us)."""
+    (the freed slot was taken concurrently; the chosen row moved under us) —
+    those are transient, so they carry ``Retry-After``."""
+    headers = None if why is None else {"Retry-After": "5"}
     if why is None:
         assert shortfall is not None
         why = f"no active collection can be evicted to make room — {shortfall.describe()}"
@@ -203,6 +219,7 @@ def insufficient_storage(
         "by evicting the least-recently-accessed collection whose archive is current. "
         "Delete unused collections, wait for in-flight ingests and pending archives, "
         "or have the operator raise MAX_COLLECTIONS",
+        headers=headers,
     )
 
 
@@ -227,10 +244,11 @@ async def make_room_for_create(
 
 def active_count(records: list[CollectionRecord], registry: CollectionRegistry) -> int:
     """The in-process fallback count when the durable store cannot reserve
-    (inline/unset registry): every registry entry whose row is ``active``,
-    an entry with no row (the settings-derived default) counting as active."""
+    (inline/unset registry): every registry entry whose row holds its stores
+    (``PHYSICAL``), an entry with no row (the settings-derived default)
+    counting as present."""
     by_id = {r.spec.id: r for r in records}
     return sum(
         1 for e in registry.entries()
-        if e.id not in by_id or by_id[e.id].state == ACTIVE
+        if e.id not in by_id or by_id[e.id].state in PHYSICAL
     )

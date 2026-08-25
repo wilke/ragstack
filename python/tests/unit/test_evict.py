@@ -347,6 +347,30 @@ def test_a_store_two_registry_ids_share_is_protected():
     assert not protected(solo, registry, derived=DERIVED)
 
 
+def test_a_sibling_that_exists_only_in_the_durable_store_still_protects():
+    """The review's counterexample: ``c1`` and ``c2`` sit over ONE physical
+    store in the durable registry, but this process's registry holds only
+    ``c1`` (a hand-authored ``collections_file`` row, or a CLI write after
+    startup). Without the durable rows, ``c1`` would be evicted and ``c2``'s
+    data dropped with it."""
+    c1 = _rec("c1", collection="phys_shared", accessed_ago=1_000)
+    c2 = _rec("c2", collection="phys_shared", accessed_ago=10)
+    registry = _registry_for(c1)  # c2 is NOT served here
+    assert protected(c1, registry, derived=DERIVED) is False  # the hole, registry-only
+    assert protected(c1, registry, derived=DERIVED, records=[c1, c2]) is True
+    victims, shortfall = choose_victims(
+        [c1, c2], 1, now=NOW,
+        protected=make_protected(registry, derived=DERIVED, records=[c1, c2]),
+        registered={"c1"},
+    )
+    assert victims == []
+    assert shortfall.reasons[REASON_PROTECTED] == 2  # c2 is protected by c1 too
+    # A durable sibling over the ES leg only is the same case.
+    h1 = _rec("h1", collection="phys_h1", text_index="shared_es")
+    h2 = _rec("h2", collection="phys_h2", text_index="shared_es")
+    assert protected(h1, _registry_for(h1), derived=DERIVED, records=[h1, h2]) is True
+
+
 # --------------------------------------------------------------------------- #
 # the act
 # --------------------------------------------------------------------------- #

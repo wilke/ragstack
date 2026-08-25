@@ -135,10 +135,12 @@ class Settings(BaseSettings):
     # Applies to admins too (the limit is physical, not an authorization tier).
     # 0 disables the cap; the default matches the ADR's "alert at 100" line.
     #
-    # Since #359 this bounds ACTIVE collections (`state == active`: physical
-    # stores exist), not registered ones. A `dormant` collection — evicted to
-    # its Workspace archive, restored on first access (#353/#358) — holds no
-    # Qdrant/ES slot and is not counted. At the bound, POST /v1/collections
+    # Since #359 this bounds PHYSICALLY PRESENT collections (`state` in
+    # collection_store.PHYSICAL: active, plus archiving/restoring, which hold
+    # or are rebuilding their stores), not registered ones. A `dormant`
+    # collection — evicted to its Workspace archive, restored on first access
+    # (#353/#358) — holds no Qdrant/ES slot and is not counted. Only `active`
+    # rows are evictable, so the bound is met by them. At the bound, POST /v1/collections
     # evicts exactly one least-recently-accessed collection whose archive is
     # current (never one with an in-flight ingest job, never one over the
     # legacy shared surface's stores — ops/evict.py) and proceeds; when nothing

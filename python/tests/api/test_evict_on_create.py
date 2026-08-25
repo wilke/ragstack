@@ -242,6 +242,7 @@ async def test_create_is_507_when_nothing_is_evictable(client, monkeypatch, worl
     assert r.status_code == 507, r.text
     detail = r.json()["detail"]
     assert detail.startswith("active collection bound reached (4)")
+    assert "Retry-After" not in r.headers  # nothing to wait for: not transient
     assert "needed 1, found 0" in detail
     for fragment in ("not_active=3", "archive_pending=1", "no_archive=1", "in_flight=1",
                      "protected=0", "unregistered=0"):
@@ -321,6 +322,7 @@ async def test_a_concurrent_create_taking_the_freed_slot_is_507_not_a_second_evi
     r = await client.post("/v1/collections", json={"id": "new-one"})
     assert r.status_code == 507, r.text
     assert "concurrent create took the slot" in r.json()["detail"]
+    assert r.headers["Retry-After"] == "5"  # transient: the next attempt may find room
     states = await world.states()
     assert states["lib-0"] == DORMANT and states["lib-1"] == ACTIVE  # exactly one eviction
     assert "thief" in states

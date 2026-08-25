@@ -44,7 +44,8 @@ destroys the other's data), is never a candidate.
 
 The graph leg: one graph backend holds every collection's triples and the
 ``GraphStore`` protocol has no per-collection delete (only ``delete_by_doc``),
-so an evicted collection's triples stay until #353's graph phase adds one.
+so an evicted collection's triples stay until the per-collection delete lands
+(tracked as #<pending>, the graph leg of #353).
 Reads of them are already collection-scoped, so nothing leaks meanwhile.
 
 This module imports nothing from ``ragstack.api``: the registry is duck-typed
@@ -110,7 +111,9 @@ class Shortfall:
     """How far :func:`choose_victims` fell short of ``need`` and why: a count
     per :data:`REASONS` key over every record examined (the counts are over
     ALL records, not just the ones inspected before ``need`` was met, so a
-    dry-run plan shows the whole picture)."""
+    dry-run plan shows the whole picture). Eligible records beyond ``need``
+    appear in neither ``victims`` nor ``reasons`` — they were simply not
+    needed — so ``found + sum(reasons)`` may be less than the record count."""
 
     needed: int
     found: int
@@ -239,31 +242,47 @@ def protected_stores(registry: Any, derived: tuple[str, str] | None) -> frozense
 
 
 def make_protected(
-    registry: Any, *, derived: tuple[str, str] | None = None
+    registry: Any,
+    *,
+    derived: tuple[str, str] | None = None,
+    records: Iterable[CollectionRecord] = (),
 ) -> Callable[[CollectionRecord], bool]:
     """Build :func:`protected` for ``registry`` ONCE (the leg sets are
-    precomputed) so selection over a thousand records stays O(n)."""
+    precomputed) so selection over a thousand records stays O(n).
+
+    ``records`` are the DURABLE registry rows: a sibling over the same store
+    may exist only there (a hand-authored ``collections_file`` row, a CLI
+    write after startup — the window ``_shared_store_users`` exists for) and
+    not in this process's registry, and it must still protect the store."""
     legs = protected_stores(registry, derived)
     claimants: dict[str, set[str]] = {}
     for entry in registry.entries():
         claimants.setdefault(entry.collection, set()).add(entry.id)
         claimants.setdefault(entry.es_index(), set()).add(entry.id)
+    for rec in records:
+        claimants.setdefault(rec.spec.collection, set()).add(rec.spec.id)
+        claimants.setdefault(rec.spec.es_index(), set()).add(rec.spec.id)
 
     def _protected(rec: CollectionRecord) -> bool:
         spec = rec.spec
         own = (spec.collection, spec.es_index())
         if any(leg in legs for leg in own):
             return True
-        # Sibling-shared: another registry id serves either leg (a
-        # hand-authored alias, or the half-shared shape the purge guard also
-        # refuses). Dropping this id's store would destroy the other's data.
+        # Sibling-shared: another registry id — in this process or only in
+        # the durable store — serves either leg (a hand-authored alias, or
+        # the half-shared shape the purge guard also refuses). Dropping this
+        # id's store would destroy the other's data.
         return any(claimants.get(leg, set()) - {spec.id} for leg in own)
 
     return _protected
 
 
 def protected(
-    rec: CollectionRecord, registry: Any, *, derived: tuple[str, str] | None = None
+    rec: CollectionRecord,
+    registry: Any,
+    *,
+    derived: tuple[str, str] | None = None,
+    records: Iterable[CollectionRecord] = (),
 ) -> bool:
     """May eviction NEVER drop this record's physical stores?
 
@@ -273,9 +292,10 @@ def protected(
     carrying every tenant's data, whether served by the synthesised
     ``default`` entry or by a spec that claims it (ADR-0002 decision 5's
     ``claimed_by`` branch) — or one of any ``is_shared_surface`` entry's legs,
-    or a store another registry id also claims. See the module docstring for
-    why the claimed case is the dangerous one."""
-    return make_protected(registry, derived=derived)(rec)
+    or a store another registry id also claims (in ``registry`` or among the
+    durable ``records``). See the module docstring for why the claimed case
+    is the dangerous one."""
+    return make_protected(registry, derived=derived, records=records)(rec)
 
 
 # --------------------------------------------------------------------------- #

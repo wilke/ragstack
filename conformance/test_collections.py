@@ -218,10 +218,15 @@ async def test_create_without_build_spec_python(
     assert deleted.status_code in (200, 401, 403), deleted.text
 
 
-async def test_admin_evict_dry_run_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
+async def test_admin_evict_dry_run_schema(
+    client: httpx.AsyncClient, schemas: dict[str, dict], impl: str
+) -> None:
     """POST /v1/admin/collections/evict?dry_run=true (#359) reports the plan
     without acting; admin-gated, so a keyless / non-admin caller gets 401/403
-    -> skip. The body must match contracts/schemas/eviction_response.json."""
+    -> skip. Python-only (the Go scaffold has no admin evict route). The body
+    must match contracts/schemas/eviction_response.json."""
+    if impl != "python":
+        pytest.skip("admin eviction is Python-only")
     resp = await client.post(
         "/v1/admin/collections/evict", params={"need": 1, "dry_run": "true"}, headers=_headers()
     )
