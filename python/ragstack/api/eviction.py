@@ -1,7 +1,9 @@
 """The API's use of the eviction policy (#359): gather what the pure policy in
 :mod:`ragstack.ops.evict` needs from the live app, run it, and shape the
-answer. Shared by ``POST /v1/collections`` (make room for ONE create) and the
-admin endpoint ``POST /v1/admin/collections/evict`` (evict ``need``, or plan).
+answer. Shared by ``POST /v1/collections`` (make room for ONE create), the
+admin endpoint ``POST /v1/admin/collections/evict`` (evict ``need``, or plan)
+and — through :class:`RestoreCapacity` — the lifecycle gate's restore
+admission (#381: a restore takes a slot exactly as a create does).
 
 What the policy needs and where it comes from:
 
@@ -29,6 +31,7 @@ from ragstack.api.collections import CollectionRegistry
 from ragstack.api.deps import derived_default_stores
 from ragstack.api.lifecycle import get_lifecycle_gate
 from ragstack.collection_store import PHYSICAL, CollectionRecord, CollectionStore
+from ragstack.config import settings
 from ragstack.ops.evict import (
     REASONS,
     EvictionOutcome,
@@ -240,6 +243,67 @@ async def make_room_for_create(
                 f"({'; '.join(o.reason for o in outcomes)}); retry",
         )
     return outcomes
+
+
+def effective_limit(registry: CollectionRegistry, limit: int) -> int | None:
+    """The bound as the durable store counts it: ``max_collections`` minus
+    the slot the shared-surface pointer charges (it is not a registry row,
+    so the store never counts it — #286 item 4). ``None`` = disabled
+    (``MAX_COLLECTIONS=0``); ``0`` = refuse everything (a cap fully consumed
+    by the reserved slot). The int|None sentinel is what the create path
+    passes to ``store.create(limit=…)``; the restore admission passes the
+    same value to ``store.begin_restore(limit=…)`` so both count alike."""
+    reserved = 1 if any(e.is_shared_surface for e in registry.entries()) else 0
+    return None if limit <= 0 else max(0, limit - reserved)
+
+
+class RestoreCapacity:
+    """What the lifecycle gate needs to admit a restore at the active bound
+    (#381): the effective limit and the evict-one act, both over the LIVE app
+    — ``app.state.collections`` / ``job_store`` and ``settings.max_collections``
+    are read per call, never captured, so an operator's setting change and a
+    registry rebuilt after startup are both honoured.
+
+    ``make_room`` is the create path's sequence (:func:`make_room_for_create`)
+    with a reason string instead of a 507: plan ONE victim (the in-flight
+    re-query and the ``protected`` predicate exactly as #379 left them), act,
+    and say why nothing was evicted — the gate turns that into 503 +
+    ``Retry-After`` and leaves the row ``dormant``."""
+
+    def __init__(self, app_state: Any) -> None:
+        self._app_state = app_state
+
+    @property
+    def registry(self) -> CollectionRegistry:
+        return self._app_state.collections
+
+    @property
+    def store(self) -> CollectionStore:
+        return self._app_state.collection_store
+
+    @property
+    def configured(self) -> int:
+        return int(settings.max_collections)
+
+    def limit(self) -> int | None:
+        return effective_limit(self.registry, self.configured)
+
+    async def make_room(self) -> str | None:
+        """Evict exactly one least-recently-accessed archived collection.
+        ``None`` when one was evicted; otherwise why not."""
+        victims, shortfall, in_flight = await plan_eviction(
+            self._app_state, self.registry, self.store, 1
+        )
+        if not victims:
+            return (f"the active collection bound ({self.configured}) is met and no active "
+                    f"collection can be evicted to make room — {shortfall.describe()}")
+        outcomes = await run_eviction(
+            self._app_state, self.registry, self.store, victims, in_flight
+        )
+        if not any(o.evicted for o in outcomes):
+            return ("the collection chosen for eviction changed state concurrently "
+                    f"({'; '.join(o.reason for o in outcomes)}); retry")
+        return None
 
 
 def active_count(records: list[CollectionRecord], registry: CollectionRegistry) -> int:

@@ -824,6 +824,10 @@ async def restore_collection(
     Idempotent — ``restoring`` answers 202 without a second submission (the
     transition is a compare-and-swap, so concurrent callers cannot
     double-submit) and ``active``/``archiving`` answer 202 with nothing to do.
+    The swap is the gate's admission (#381): at the active bound one
+    least-recently-accessed archived collection is evicted first, exactly as
+    for a create, and when nothing can be evicted the answer is **503 +
+    Retry-After** ("tenant at capacity") with the row left as it was.
     Unlike the on-access path, which 409s a ``lost`` collection, THIS endpoint
     may retry from ``lost``: it is the owner's way back after repairing the
     archive. A caller without a BV-BRC user token (API key / keyless / another
@@ -839,6 +843,7 @@ async def restore_collection(
         DORMANT,
         LOST,
         RESTORING,
+        RestoreAdmission,
     )
     from ragstack.restore import RestoreError
 
@@ -878,14 +883,21 @@ async def restore_collection(
             collection_id=collection_id, state=RESTORING,
             message="a restore is already in progress",
         )
-    # dormant, lost, or an orphaned `restoring`: CAS from the observed state.
+    # dormant, lost, or an orphaned `restoring`: CAS from the observed state,
+    # within the active bound (the gate's admission — evict one or refuse).
     assert rec.state in (DORMANT, LOST, RESTORING)
-    won = await store.set_state(
-        collection_id, RESTORING, expect=rec.state,
+    admission = await gate.admit(
+        collection_id, expect=rec.state,
         reason=f"restore requested by {principal.tenant} (explicit)",
     )
-    gate.invalidate(collection_id)
-    if not won:
+    if admission.outcome is RestoreAdmission.AT_CAP:
+        raise HTTPException(
+            503,
+            f"collection {collection_id!r} is {rec.state}: tenant at capacity — "
+            f"{admission.why}",
+            headers={"Retry-After": str(gate.retry_after)},
+        )
+    if not admission.admitted:
         # Somebody else moved it between our read and our CAS — report what
         # it is now; a concurrent restore is exactly the idempotent case.
         now = await store.get(collection_id)

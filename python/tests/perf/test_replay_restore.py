@@ -14,6 +14,11 @@ grep-able ``PERF`` line, an explicit budget).
    registry read, memoized: the store's ``get`` is counted and must be hit
    exactly once across the whole run.
 
+3. **Restore admission (#381) is one count read per dormant access and none
+   per normal access.** The store's ``begin_restore`` (count + swap) is
+   counted: zero over 200 active accesses, exactly one per dormant access;
+   the dormant path (reset + access) stays under 2 ms p95.
+
     pytest tests/perf/test_replay_restore.py -m perf -q -s
 """
 from __future__ import annotations
@@ -93,3 +98,81 @@ async def test_lifecycle_check_on_resolution_is_one_cached_read() -> None:
     )
     assert store.gets == 1, f"expected one registry read, saw {store.gets}"
     assert gate.reads == 1
+
+
+class _AdmissionCountingStore(_CountingStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.begins = 0
+
+    async def begin_restore(self, cid, *, expect, limit, reason=""):
+        self.begins += 1
+        return await super().begin_restore(cid, expect=expect, limit=limit, reason=reason)
+
+
+class _Capacity:
+    """A bound with room in it: the count runs, nothing is ever evicted."""
+
+    def limit(self) -> int | None:
+        return 10
+
+    async def make_room(self) -> str | None:  # pragma: no cover - must not be called
+        raise AssertionError("no eviction below the bound")
+
+
+class _NoRestorer:
+    async def submit(self, rec, token):
+        return "sub"
+
+    def watching(self, cid):
+        return False
+
+    async def drain(self):
+        return None
+
+
+@pytest.mark.perf
+async def test_restore_admission_is_one_count_read_per_dormant_access_and_none_otherwise() -> None:
+    """#381: the admission check is ONE ``begin_restore`` (count + swap in the
+    store) per dormant access and NOTHING on a normal access — the cached
+    registry read of the active path stays the only call it makes."""
+    from fastapi import HTTPException
+
+    from ragstack.collection_store import DORMANT
+
+    store = _AdmissionCountingStore()
+    await store.put(CollectionSpec(id="lib", collection="ragstack_lib_lib",
+                                   embedding_model="m", embedding_model_dim=4))
+    gate = LifecycleGate(store, tracker=AccessTracker(store, flush_seconds=3600),
+                         capacity=_Capacity(), cache_seconds=60.0)
+    gate.restorer = _NoRestorer()  # type: ignore[assignment]
+    # A BV-BRC bearer: the one caller that can trigger a restore (gowe_caller).
+    principal = Principal(tenant="bvbrc:alice@patricbrc.org", role="user", token="t",
+                          issuer="bvbrc", subject="alice@patricbrc.org")
+
+    # Normal accesses: no admission call at all.
+    for _ in range(200):
+        await gate.enforce(principal, "lib")
+    assert store.begins == 0 and gate.admissions == 0 and store.gets == 1
+
+    # Dormant accesses: each one is refused 503 after exactly one admission
+    # call. The row is reset to dormant between accesses (a store write and a
+    # cache invalidation, both inside the timed callable — the budget covers
+    # them); each reset costs the one registry re-read the cache always paid.
+    n = 200
+
+    async def dormant_access() -> None:
+        await store.set_state("lib", DORMANT, reason="evicted")
+        gate.invalidate("lib")
+        try:
+            await gate.enforce(principal, "lib")
+        except HTTPException as e:
+            assert e.status_code == 503 and "is restoring" in str(e.detail)
+        else:  # pragma: no cover
+            raise AssertionError("a dormant access must be refused")
+
+    await assert_budget_async("restore_admission_check", dormant_access, budget_s=0.002, n=n)
+    await gate.drain()
+    assert store.begins == n, f"expected one admission per dormant access, saw {store.begins}"
+    assert gate.admissions == n and gate.evictions == 0
+    assert store.gets == 1 + n, f"expected one re-read per invalidation, saw {store.gets}"

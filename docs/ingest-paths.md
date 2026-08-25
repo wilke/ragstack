@@ -241,6 +241,12 @@ over the `ws://` `versions/<n>/` directories and answers **503 + `Retry-After`**
 until it completes (`restoring`); a refused archive (sha256 / geometry /
 `spec_hash` mismatch — loader exit 3, before any store is created) makes it
 `lost` → 409 until the owner repairs the archive and restores explicitly.
+A restore takes a slot against `max_collections` exactly as a create does (#381): the
+`dormant → restoring` swap is `begin_restore` — count and swap in one atomic store
+section — and at the bound the gate first evicts one least-recently-accessed active
+collection whose archive is current, or answers 503 + `Retry-After` ("tenant at
+capacity") with the row left `dormant`, so the physically-present count never exceeds
+the bound across creates and restores.
 `load_embeddings.py --replay DIR…` is the tool: verify every version, then per
 version delete each document's prior chunks and stream the upserts (tombstones
 delete by doc id). The API-side settings, all at the end of `config.py`:

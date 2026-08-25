@@ -73,12 +73,17 @@ paths:
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so.
+            with a message saying so. A second cause on a dormant collection
+            (#381): the tenant is at capacity — the active bound
+            (`max_collections`) is met and no active collection can be evicted
+            to make room — so the restore is NOT submitted, the row stays
+            `dormant`, and the message names the reason; retry after
+            `Retry-After`.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring) case.
+                (dormant / restoring / at capacity) case.
               required: false
               schema:
                 type: integer
@@ -127,12 +132,17 @@ paths:
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so.
+            with a message saying so. A second cause on a dormant collection
+            (#381): the tenant is at capacity — the active bound
+            (`max_collections`) is met and no active collection can be evicted
+            to make room — so the restore is NOT submitted, the row stays
+            `dormant`, and the message names the reason; retry after
+            `Retry-After`.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring) case.
+                (dormant / restoring / at capacity) case.
               required: false
               schema:
                 type: integer
@@ -222,12 +232,16 @@ paths:
             the caller, with the caller's token) and answers 503 while it runs —
             retry after the delay in `Retry-After` (seconds). A keyless /
             API-key caller carries no user token, cannot trigger the restore,
-            and gets 503 with a message saying so.
+            and gets 503 with a message saying so. A second cause on a dormant
+            collection (#381): the tenant is at capacity — the active bound is
+            met and nothing can be evicted to make room — so the restore is
+            NOT submitted, the row stays `dormant`, and the message names the
+            reason.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the rate-limit
-                and lifecycle (dormant / restoring) cases.
+                and lifecycle (dormant / restoring / at capacity) cases.
               required: false
               schema:
                 type: integer
@@ -361,12 +375,15 @@ paths:
             unavailable (fail closed); OR the target collection is `dormant` /
             `restoring` (#358) — see POST /v1/ingest: a restore is submitted as
             the caller and the request answers 503 with `Retry-After` while it
-            runs; a keyless / API-key caller cannot trigger it.
+            runs; a keyless / API-key caller cannot trigger it; and at
+            capacity (#381 — the active bound is met and nothing can be
+            evicted) the restore is not submitted, the row stays `dormant`
+            and the message says so.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the rate-limit
-                and lifecycle (dormant / restoring) cases.
+                and lifecycle (dormant / restoring / at capacity) cases.
               required: false
               schema:
                 type: integer
@@ -458,12 +475,17 @@ paths:
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so.
+            with a message saying so. A second cause on a dormant collection
+            (#381): the tenant is at capacity — the active bound
+            (`max_collections`) is met and no active collection can be evicted
+            to make room — so the restore is NOT submitted, the row stays
+            `dormant`, and the message names the reason; retry after
+            `Retry-After`.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring) case.
+                (dormant / restoring / at capacity) case.
               required: false
               schema:
                 type: integer
@@ -507,12 +529,17 @@ paths:
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so.
+            with a message saying so. A second cause on a dormant collection
+            (#381): the tenant is at capacity — the active bound
+            (`max_collections`) is met and no active collection can be evicted
+            to make room — so the restore is NOT submitted, the row stays
+            `dormant`, and the message names the reason; retry after
+            `Retry-After`.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring) case.
+                (dormant / restoring / at capacity) case.
               required: false
               schema:
                 type: integer
@@ -1403,7 +1430,20 @@ paths:
             row is left `dormant` (or `lost`) with the reason recorded, so a
             retry is safe.
         "503":
-          description: Authorization store unavailable — refused (fail closed).
+          description: >-
+            Authorization store unavailable — refused (fail closed); OR restore
+            is not configured on this server (no workflow engine); OR the
+            tenant is at capacity (#381): the active bound (`max_collections`)
+            is met and no active collection can be evicted to make room — the
+            same evict-one-then-reserve rule POST /v1/collections applies —
+            so nothing is submitted and the row is left as it was; retry
+            after `Retry-After`.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Present for the at-capacity case.
+              required: false
+              schema:
+                type: integer
 
   /v1/collections/{collection_id}/shares:
     get:
@@ -2006,12 +2046,17 @@ paths:
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so.
+            with a message saying so. A second cause on a dormant collection
+            (#381): the tenant is at capacity — the active bound
+            (`max_collections`) is met and no active collection can be evicted
+            to make room — so the restore is NOT submitted, the row stays
+            `dormant`, and the message names the reason; retry after
+            `Retry-After`.
           headers:
             Retry-After:
               description: >-
                 Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring) case.
+                (dormant / restoring / at capacity) case.
               required: false
               schema:
                 type: integer
