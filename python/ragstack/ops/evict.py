@@ -45,7 +45,7 @@ destroys the other's data), is never a candidate.
 The graph leg: one graph backend holds every collection's triples and the
 ``GraphStore`` protocol has no per-collection delete (only ``delete_by_doc``),
 so an evicted collection's triples stay until the per-collection delete lands
-(tracked as #<pending>, the graph leg of #353).
+(tracked as #380, the graph leg of #353).
 Reads of them are already collection-scoped, so nothing leaks meanwhile.
 
 This module imports nothing from ``ragstack.api``: the registry is duck-typed
