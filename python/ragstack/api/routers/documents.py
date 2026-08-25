@@ -34,6 +34,7 @@ from ragstack.api.deps import (
     get_job_store,
     get_workspace,
     rate_limited,
+    single_inflight_ingest,
 )
 from ragstack.api.security import (
     ROLE_ADMIN,
@@ -50,8 +51,14 @@ from ragstack.ingestion.gowe_backend import (
     GoWeError,
     OutputStagingFailed,
 )
-from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
-from ragstack.ingestion.manifest import WorkItem, build_manifest
+from ragstack.ingestion.loaders import (
+    DEFAULT_INGEST_SUFFIXES,
+    NO_LOADER_LABEL,
+    LoaderError,
+    confine_to_root,
+    no_loader_error,
+)
+from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -93,6 +100,7 @@ async def _run_ingest(
     source: str,
     tenant_id: str,
     target: CollectionEntry | None = None,
+    every_file: bool = False,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -101,12 +109,23 @@ async def _run_ingest(
     job status. Never raises — a run-level failure is captured as a caller-safe
     label. The job is ``failed`` only when the run itself errors or *every* item
     fails; partial failures leave it ``completed`` with non-zero ``items.failed``.
+
+    ``every_file`` (the upload staging dir, #202): enumerate EVERY staged file,
+    not just the suffixes the loaders handle, and fail the rest visibly — one
+    item each, error ``no loader for <suffix>`` — instead of letting the
+    manifest filter drop them into a ``completed`` job with fewer items than
+    files. A directory ingest (``POST /v1/ingest``) keeps the filter: a corpus
+    tree legitimately holds files that are not documents.
     """
     await job_store.update(job_id, status=RUNNING)
     try:
         manifest = build_manifest(
-            source, suffixes=DEFAULT_INGEST_SUFFIXES, ingest_root=ingest_root or None
+            source,
+            suffixes=None if every_file else DEFAULT_INGEST_SUFFIXES,
+            ingest_root=ingest_root or None,
         )
+        if every_file:
+            manifest = await _fail_unsupported_items(job_store, job_id, manifest)
         results = await ingestor.ingest_manifest(
             manifest, job_id=job_id, tenant_id=tenant_id
         )
@@ -141,6 +160,32 @@ async def _run_ingest(
             from ragstack.api.deps import write_ingest_manifest
 
             write_ingest_manifest(source=source, chunk_count=chunks or None)
+
+
+async def _fail_unsupported_items(
+    job_store: JobStore, job_id: str, manifest: Manifest
+) -> Manifest:
+    """Split off the items whose suffix has no loader (not in
+    ``DEFAULT_INGEST_SUFFIXES``), record each as a failed item with the
+    constant ``no_loader_error`` string, and return the manifest of the rest.
+    Logged at INFO with the ``no_loader`` label, like the scanned-PDF count."""
+    supported = {s.lower() for s in DEFAULT_INGEST_SUFFIXES}
+    keep: list[WorkItem] = []
+    dropped: list[WorkItem] = []
+    for item in manifest.items:
+        (keep if Path(item.source).suffix.lower() in supported else dropped).append(item)
+    if dropped:
+        await job_store.add_items(job_id, [(i.item_id, i.source) for i in dropped])
+        for item in dropped:
+            await job_store.mark_item(
+                job_id, item.item_id, status=FAILED,
+                error=no_loader_error(Path(item.source).suffix),
+            )
+        log.info(
+            "ingest job %s: %d of %d file(s) have no loader for their suffix [%s]",
+            job_id, len(dropped), len(manifest.items), NO_LOADER_LABEL,
+        )
+    return Manifest(items=keep)
 
 
 async def _authorize_ingest_target(
@@ -528,30 +573,44 @@ async def _gowe_upload_sources(
     record: CollectionRecord,
     tenant: str,
     files: list[UploadFile],
+    kinds: list[str],
+    budget: _UploadBudget,
 ) -> list[WorkItem]:
-    """Write the uploaded PDFs into ``<collection folder>/sources/`` with the
+    """Write the admitted uploads into ``<collection folder>/sources/`` with the
     caller's token; return one work item per file (``ws://`` source).
 
     ``UploadFile.size`` (when the multipart parser knows it) goes to
     ``upload_source`` so an oversize file is refused before any RPC and the Shock
-    PUT carries a Content-Length; the byte cap is enforced while streaming
-    either way. Refusals: over ``max_document_bytes`` → 413, a rejected token →
-    401, any other Workspace failure → 502. A same-named file already in
-    ``sources/`` is refused (never overwritten, never deleted) → 409 naming the
-    existing object, which can be ingested by reference through
-    ``POST /v1/ingest``; see the #202 hardening spec for the per-request bounds
-    still to come.
+    PUT carries a Content-Length; the per-file byte cap is enforced while
+    streaming either way (``workspace._bounded``), and the per-request
+    ``budget`` is charged per chunk through ``_MeteredUpload`` (#202). Refusals:
+    over ``max_document_bytes`` → 413, over the request budget → 413, a
+    rejected token → 401, any other Workspace failure → 502. A same-named file
+    already in ``sources/`` is refused (never overwritten, never deleted) → 409
+    naming the existing object, which can be ingested by reference through
+    ``POST /v1/ingest``. ``kinds`` are the files' ``_sniff_upload`` results (in
+    order) — the content type and magic were checked before this is called.
+
+    Files are written one after another, so a mid-stream refusal on file N
+    leaves files 1..N-1 in ``sources/`` (never deleted): a plain retry of the
+    same request then 409s on file 1. Not reachable through this endpoint
+    today — the declared sizes are exact (the parser has the whole body), so
+    every size refusal happens in ``_admit_uploads`` before the first write —
+    but it is the consequence if a stream ever trips ``_bounded`` or the
+    request budget here.
     """
     folder = await workspace.ensure_collection_folder(
         token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
     )
     sources = f"{ws_path(folder)}/sources"
     items: list[WorkItem] = []
-    for idx, upload in enumerate(files):
-        safe_name = _safe_pdf_name(upload.filename, fallback=f"upload_{idx}.pdf")
+    for idx, (upload, kind) in enumerate(zip(files, kinds, strict=True)):
+        safe_name = _safe_upload_name(
+            upload.filename, fallback=f"upload_{idx}{_kind_suffixes(kind)[0]}", kind=kind
+        )
         try:
             uri = await workspace.upload_source(
-                token, sources, safe_name, upload,
+                token, sources, safe_name, _MeteredUpload(upload, budget),
                 max_bytes=settings.max_document_bytes, size=upload.size,
             )
         except WorkspaceTooLarge:
@@ -732,15 +791,76 @@ async def ingest(
 _PDF_MAGIC = b"%PDF"
 _UPLOAD_CHUNK = 1 << 20  # 1 MiB read granularity while streaming to disk
 
+# The upload kinds this router accepts, keyed by the normalised content type:
+# kind → the file suffixes staged for it (the first is forced onto a name that
+# carries none of them). ``settings.upload_content_types`` (the operator
+# allowlist) selects from this table; a type absent from BOTH is 415. The
+# pdf/text/markdown suffixes are ones ``DEFAULT_INGEST_SUFFIXES`` enqueues, so
+# the local branch ingests them. XML (JATS) is accepted at the gate per #202's
+# allowlist, but ``.xml`` has no loader in the local registry yet: the staged
+# file becomes a FAILED item with the error ``no loader for .xml``
+# (_fail_unsupported_items — visible and countable, never a silent skip), and
+# the gowe scatter workflow extracts PDFs; wiring the JATS path
+# (cwl/jats-ingest.cwl) into the upload is follow-up work.
+_UPLOAD_KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "application/pdf": ("pdf", (".pdf",)),
+    "text/plain": ("text", (".txt", ".md")),
+    "text/markdown": ("markdown", (".md", ".txt")),
+    "application/xml": ("xml", (".xml",)),
+    "text/xml": ("xml", (".xml",)),
+}
 
-def _safe_pdf_name(raw: str | None, fallback: str) -> str:
+
+def _content_type(upload: UploadFile) -> str:
+    return (upload.content_type or "").split(";", 1)[0].strip().lower()
+
+
+def _allowed_content_types() -> set[str]:
+    return {t.strip().lower() for t in settings.upload_content_types if t.strip()}
+
+
+async def _sniff_upload(upload: UploadFile) -> str:
+    """Content-type allowlist + magic check for ONE upload; returns its kind.
+
+    The single implementation both upload branches gate on (#202): the content
+    type must be in ``settings.upload_content_types`` AND a kind this router
+    knows (415 otherwise); a PDF must additionally start with ``%PDF`` (415 —
+    an empty upload has no header, so it is refused the same way). Only the
+    magic bytes are read, and the stream is rewound, so nothing is staged or
+    written before every file has passed. Text/XML get no byte sniff: a BOM or
+    a leading comment would false-refuse a valid file.
+    """
+    ctype = _content_type(upload)
+    allowed = _allowed_content_types()
+    if ctype not in allowed or ctype not in _UPLOAD_KINDS:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"{upload.filename!r}: {ctype or '(none)'!r} is not an accepted upload "
+                f"content type; accepted: {', '.join(sorted(allowed & _UPLOAD_KINDS.keys()))}"
+            ),
+        )
+    kind = _UPLOAD_KINDS[ctype][0]
+    if kind == "pdf":
+        head = await upload.read(len(_PDF_MAGIC))
+        await upload.seek(0)
+        if not head.startswith(_PDF_MAGIC):
+            what = "empty upload, no %PDF header" if not head else "missing %PDF header"
+            raise HTTPException(
+                status_code=415, detail=f"{upload.filename!r}: not a PDF ({what})"
+            )
+    return kind
+
+
+def _safe_upload_name(raw: str | None, fallback: str, kind: str) -> str:
     """Reduce a client-supplied filename to a safe, traversal-free basename.
 
     Keeps only the final path component (drops any directory parts, absolute
     prefixes, and ``..`` segments), strips other separators, and forces a
-    ``.pdf`` suffix. Falls back to ``fallback`` when nothing usable remains. The
-    result is still re-confined under the staging dir by the caller — this is the
-    first line of defence, not the only one.
+    suffix the ingest manifest picks up for ``kind`` (see ``_UPLOAD_KINDS``)
+    unless the name already carries one. Falls back to ``fallback`` when
+    nothing usable remains. The result is still re-confined under the staging
+    dir by the caller — this is the first line of defence, not the only one.
     """
     # PurePosixPath/ntpath both leave ".." as a name component, so take the last
     # component and reject the dot-names explicitly.
@@ -748,39 +868,126 @@ def _safe_pdf_name(raw: str | None, fallback: str) -> str:
     base = base.replace("\x00", "")
     if base in ("", ".", ".."):
         return fallback
-    if not base.lower().endswith(".pdf"):
-        base = f"{base}.pdf"
+    suffixes = _kind_suffixes(kind)
+    if not base.lower().endswith(suffixes):
+        base = f"{base}{suffixes[0]}"
     return base
 
 
-async def _stage_upload(
-    upload: UploadFile, dest: Path, max_bytes: int
-) -> None:
-    """Sniff, size-check, and stream one uploaded PDF to ``dest``.
+def _kind_suffixes(kind: str) -> tuple[str, ...]:
+    for k, suffixes in _UPLOAD_KINDS.values():
+        if k == kind:
+            return suffixes
+    raise ValueError(f"unknown upload kind {kind!r}")
 
-    Enforces the PDF content-type + ``%PDF`` magic (415) and the per-file byte
-    cap (413) while writing, so an oversize file is rejected without buffering it
-    whole in memory. ``dest`` is assumed already confined to the staging dir.
+
+class _UploadBudget:
+    """The per-request byte total (``max_upload_bytes_per_request``), charged
+    chunk by chunk as the files flow on either branch — the streaming half of
+    the bound ``_admit_uploads`` checks up front against the declared sizes.
+    ``limit <= 0`` disables it."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    def charge(self, n: int, filename: str | None) -> None:
+        self.used += n
+        if self.limit > 0 and self.used > self.limit:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{filename!r}: the request's files exceed "
+                    f"max_upload_bytes_per_request ({self.limit} bytes)"
+                ),
+            )
+
+
+class _MeteredUpload:
+    """``read(n)`` over an ``UploadFile`` that charges ``budget`` per chunk —
+    the stream handed to ``WorkspaceClient.upload_source`` (which accepts any
+    async ``read``-able), so the running per-request total aborts the Shock
+    PUT mid-body exactly like the per-file cap does."""
+
+    def __init__(self, upload: UploadFile, budget: _UploadBudget) -> None:
+        self._upload = upload
+        self._budget = budget
+        self.filename = upload.filename
+
+    async def read(self, n: int = -1) -> bytes:
+        chunk = await self._upload.read(n)
+        self._budget.charge(len(chunk), self._upload.filename)
+        return chunk
+
+
+async def _admit_uploads(files: list[UploadFile]) -> tuple[list[str], _UploadBudget]:
+    """The up-front gate for one upload request, before anything is staged,
+    written, or reserved: file count (413), content type + PDF magic per file
+    (415), each declared size against ``max_document_bytes`` (413) and their
+    sum against ``max_upload_bytes_per_request`` (413). Returns the files'
+    kinds (in order) and the request's streaming byte budget.
+
+    "Before any read" means before any staging or Workspace write: the
+    multipart body has already been parsed (spooled by Starlette) by the time
+    a handler runs — that is also why ``UploadFile.size`` is always known here,
+    which makes the streaming aborts downstream belt-and-braces for a parser
+    that did not report sizes.
     """
-    if (upload.content_type or "").split(";", 1)[0].strip() != "application/pdf":
+    if len(files) > settings.max_upload_files:
         raise HTTPException(
-            status_code=415,
-            detail=f"{upload.filename!r}: only application/pdf uploads are accepted",
+            status_code=413,
+            detail=(
+                f"too many files: {len(files)} > max_upload_files "
+                f"({settings.max_upload_files})"
+            ),
         )
+    kinds = [await _sniff_upload(upload) for upload in files]
+    max_bytes = settings.max_document_bytes
+    for upload in files:
+        if max_bytes and upload.size is not None and upload.size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{upload.filename!r}: exceeds max_document_bytes "
+                    f"({max_bytes} bytes)"
+                ),
+            )
+    limit = settings.max_upload_bytes_per_request
+    declared = sum(upload.size or 0 for upload in files)
+    if limit > 0 and declared > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"the request's files total {declared} bytes > "
+                f"max_upload_bytes_per_request ({limit} bytes)"
+            ),
+        )
+    return kinds, _UploadBudget(limit)
+
+
+async def _stage_upload(
+    upload: UploadFile, dest: Path, max_bytes: int, budget: _UploadBudget
+) -> None:
+    """Stream one admitted upload from the server's spool to ``dest``, enforcing
+    the per-file byte cap (413) and the per-request budget (413) WHILE writing
+    — never holding the file in memory. The reads are capped at
+    ``max_bytes + 1 - written``, so a refusal stops at byte ``max_bytes + 1``
+    of the spool, never a whole trailing chunk, and nothing oversized reaches
+    INGEST_ROOT. (The body itself has already been received and spooled by the
+    multipart parser — see ``api/upload_guard.py`` for the check that runs
+    before that.) ``dest`` is assumed already confined to the staging dir; the
+    content type and magic were checked by ``_sniff_upload`` before anything
+    was staged.
+    """
     written = 0
-    first = True
     with dest.open("wb") as fh:
         while True:
-            chunk = await upload.read(_UPLOAD_CHUNK)
+            want = _UPLOAD_CHUNK
+            if max_bytes:
+                want = min(want, max_bytes + 1 - written)
+            chunk = await upload.read(want)
             if not chunk:
                 break
-            if first:
-                if not chunk.startswith(_PDF_MAGIC):
-                    raise HTTPException(
-                        status_code=415,
-                        detail=f"{upload.filename!r}: not a PDF (missing %PDF header)",
-                    )
-                first = False
             written += len(chunk)
             if max_bytes and written > max_bytes:
                 raise HTTPException(
@@ -790,24 +997,22 @@ async def _stage_upload(
                         f"({max_bytes} bytes)"
                     ),
                 )
+            budget.charge(len(chunk), upload.filename)
             fh.write(chunk)
-    if first:  # never entered the loop → empty upload, so magic was never checked
-        raise HTTPException(
-            status_code=415,
-            detail=f"{upload.filename!r}: not a PDF (empty upload)",
-        )
 
 
 @router.post(
     "/ingest/upload",
     response_model=IngestResponse,
     status_code=202,
-    dependencies=[Depends(rate_limited("ingest"))],
+    dependencies=[Depends(single_inflight_ingest), Depends(rate_limited("ingest"))],
 )
 async def ingest_upload(
     http_request: Request,
     background_tasks: BackgroundTasks,
-    files: list[UploadFile] = File(..., description="One or more PDF files."),
+    files: list[UploadFile] = File(
+        ..., description="One or more files (PDF, plain text, Markdown, or JATS XML)."
+    ),
     collection: str | None = Form(default=None),
     tenant: str = Depends(resolve_tenant),
     principal: Principal = Depends(resolve_principal),
@@ -815,7 +1020,7 @@ async def ingest_upload(
     job_store: JobStore = Depends(get_job_store),
     collections: CollectionRegistry = Depends(get_collections),
 ) -> IngestResponse:
-    """Upload one or more PDF files and ingest them in the background.
+    """Upload one or more files and ingest them in the background.
 
     Multipart counterpart to ``POST /v1/ingest`` (which takes a server-side path):
     each file is staged under ``{INGEST_ROOT}/uploads/{tenant}/{job_id}/`` with a
@@ -823,11 +1028,19 @@ async def ingest_upload(
     over that per-job directory. Returns 202 with a real job_id; poll
     ``GET /v1/ingest/{job_id}`` for progress exactly as for a path ingest.
 
-    Rejections: non-PDF (content-type or magic) → 415, a file over
-    ``max_document_bytes`` → 413, more than ``max_upload_files`` files → 413, and
-    — like ``POST /v1/ingest`` — 503 when no INGEST_ROOT is configured (uploads
-    have nowhere confined to land) and 501 for an ingest backend that is
-    neither ``local`` nor ``gowe``.
+    Bounds (#202 phase 2c), all checked before anything is staged or written
+    (``_admit_uploads``; the multipart body has by then been received and
+    spooled by the server — ``api/upload_guard.py`` is the check that runs
+    before the body, from ``Content-Length``) and — for the byte caps — again
+    while the files stream out of the spool:
+    a content type outside ``upload_content_types`` or a PDF without the
+    ``%PDF`` header → 415; a file over ``max_document_bytes``, more than
+    ``max_upload_files`` files, or files totalling more than
+    ``max_upload_bytes_per_request`` → 413; a job of the caller's still in
+    flight → 429 + ``Retry-After`` (``single_inflight_ingest``). Like
+    ``POST /v1/ingest``: 503 when no INGEST_ROOT is configured (uploads have
+    nowhere confined to land) and 501 for an ingest backend that is neither
+    ``local`` nor ``gowe``.
 
     Under ``ingest_backend=gowe`` (#203/#353) the files are written into the
     caller's BV-BRC Workspace (``.ragstack/collections/<id>/sources/``) with the
@@ -836,34 +1049,14 @@ async def ingest_upload(
     Needs a bearer BV-BRC identity (401 otherwise) and a registered collection.
     """
     _refuse_unknown_backend()
-    if len(files) > settings.max_upload_files:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"too many files: {len(files)} > max_upload_files "
-                f"({settings.max_upload_files})"
-            ),
-        )
     if _ingest_backend_name() == _GOWE:
         # Browser upload → the caller's Workspace → submit as the caller (#203/
         # #353). One code path with the Workspace-reference ingest above; no
         # staging directory on this host, so no INGEST_ROOT gate here.
         token, subject = _gowe_caller(principal)
-        # Gate parity with the local path, BEFORE any Workspace write: the
-        # content-type and the %PDF magic (415).
-        for upload in files:
-            if (upload.content_type or "").split(";", 1)[0].strip() != "application/pdf":
-                raise HTTPException(
-                    status_code=415,
-                    detail=f"{upload.filename!r}: only application/pdf uploads are accepted",
-                )
-            head = await upload.read(len(_PDF_MAGIC))
-            await upload.seek(0)
-            if not head.startswith(_PDF_MAGIC):
-                raise HTTPException(
-                    status_code=415,
-                    detail=f"{upload.filename!r}: not a PDF (missing %PDF header)",
-                )
+        # Every gate BEFORE any Workspace write and before the version is
+        # reserved: an up-front refusal must not burn a version number.
+        kinds, budget = await _admit_uploads(files)
         entry = await _authorize_ingest_target(collection, principal, collections)
         if entry is None:
             entry = collections.resolve(collections.default_id)
@@ -878,7 +1071,7 @@ async def ingest_upload(
         job = await job_store.create(source="upload", tenant_id=principal.tenant)
         try:
             items = await _gowe_upload_sources(
-                workspace, token, subject, entry, record, tenant, files
+                workspace, token, subject, entry, record, tenant, files, kinds, budget
             )
         except HTTPException:
             await job_store.update(job.job_id, status=FAILED, error="rejected")
@@ -899,6 +1092,7 @@ async def ingest_upload(
             version=version,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
+    kinds, budget = await _admit_uploads(files)
     if not settings.ingest_root.strip():
         raise HTTPException(
             status_code=503,
@@ -926,8 +1120,10 @@ async def ingest_upload(
         raise HTTPException(status_code=400, detail="invalid tenant for staging") from None
     staging_dir.mkdir(parents=True, exist_ok=True)
     try:
-        for idx, upload in enumerate(files):
-            safe_name = _safe_pdf_name(upload.filename, fallback=f"upload_{idx}.pdf")
+        for idx, (upload, kind) in enumerate(zip(files, kinds, strict=True)):
+            safe_name = _safe_upload_name(
+                upload.filename, fallback=f"upload_{idx}{_kind_suffixes(kind)[0]}", kind=kind
+            )
             dest = staging_dir / safe_name
             try:
                 dest = confine_to_root(str(dest), staging_dir)
@@ -936,7 +1132,7 @@ async def ingest_upload(
                     status_code=400,
                     detail=f"{upload.filename!r}: resolves outside the staging directory",
                 ) from None
-            await _stage_upload(upload, dest, settings.max_document_bytes)
+            await _stage_upload(upload, dest, settings.max_document_bytes, budget)
     except HTTPException:
         # Reject cleanly: drop the partial staging dir and mark the job failed so a
         # poll reflects reality, then re-raise the original 4xx to the client.
@@ -953,6 +1149,7 @@ async def ingest_upload(
         str(staging_dir),
         tenant,
         target,
+        True,  # every staged file becomes an item; unsupported suffixes fail visibly
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 

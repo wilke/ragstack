@@ -2,8 +2,11 @@
 
 Exercised over ASGITransport (see tests/api/conftest.py): a valid PDF is staged
 under a per-tenant/per-job dir and ingested via the same background path as
-POST /v1/ingest; non-PDF → 415, oversize → 413, too many files → 413, a
-traversal filename is confined to a basename, and an unset INGEST_ROOT → 503.
+POST /v1/ingest; a content type outside the allowlist → 415, oversize → 413,
+too many files → 413, a traversal filename is confined to a basename, and an
+unset INGEST_ROOT → 503. The #202 phase-2c bounds (allowlist, streaming size
+abort, per-request bounds, one in-flight job, scanned PDFs) are in
+test_upload_hardening.py.
 """
 from __future__ import annotations
 
@@ -69,11 +72,13 @@ async def test_upload_valid_pdf_returns_202_and_stages(client, rooted):
 
 @pytest.mark.asyncio
 async def test_upload_non_pdf_content_type_is_415(client, rooted):
+    # text/plain is in the default allowlist since #202 2c; a zip is not.
     r = await client.post(
         "/v1/ingest/upload",
-        files=[("files", ("notes.txt", b"just some text", "text/plain"))],
+        files=[("files", ("notes.zip", b"PK\x03\x04", "application/zip"))],
     )
     assert r.status_code == 415, r.text
+    assert "not an accepted upload content type" in r.json()["detail"]
     # Nothing was left staged.
     assert not list(_uploads_dir(rooted).rglob("*")) if _uploads_dir(rooted).exists() else True
 

@@ -726,6 +726,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `RERANK_ENABLED`, `RERANK_CANDIDATES`, `CROSSENCODER_SIDECAR_URL` | cross-encoder rerank stage |
 | `LLM_ENDPOINT`, `LLM_MODEL` | OpenAI-compatible chat endpoint for generation (empty → retrieval-only) |
 | `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard. `INGEST_ROOT` unset → `POST /v1/ingest` returns **503** (an unset root would make it an arbitrary server-side file read); logged as a warning at startup. `INGEST_ROOT=/`, or a path that is not an existing directory, is **refused at startup**. Additionally required non-empty when `REQUIRE_DURABLE_BACKENDS=true` |
+| `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES_PER_REQUEST`, `UPLOAD_CONTENT_TYPES` | `POST /v1/ingest/upload` bounds (#202): at most **50** files per request, at most **500 MB** across them, and the content-type allowlist (default `application/pdf,text/plain,text/markdown,application/xml,text/xml`; a PDF must also start with `%PDF`) → `413` / `415`. Each file is still capped by `MAX_DOCUMENT_BYTES`. Checked against the declared sizes before anything is staged or written (the multipart body has by then been received and spooled by the server); a request whose `Content-Length` exceeds the per-request cap (plus multipart framing) is refused with `413` before the body is read, and one without a `Content-Length` with `411`. **The deployment gateway must enforce a body cap ≈ `MAX_UPLOAD_BYTES_PER_REQUEST`** — a client that lies about `Content-Length` is only stopped there (see DEPLOYMENT.md). One ingest job per principal at a time (`429` + `Retry-After` while one is accepted/running and written to within the last 6 h; admins exempt) is not a setting. All three reported in `GET /v1/config` |
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
 | `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
@@ -770,9 +771,11 @@ extracted citation list); `--no-index` produces the catalog without embedding.
 | `401` | unknown/invalid API key |
 | `403` | authenticated but not permitted — supplying an admin-only build-spec override, or writing/deleting a collection you don't own (only when you *can* read it; otherwise `404`) |
 | `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed) |
-| `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) on `POST /v1/ingest`, `POST /v1/collections` or `POST /v1/collections/{id}/shares`; or an uploaded file exceeds `max_document_bytes` |
+| `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) on `POST /v1/ingest`, `POST /v1/collections` or `POST /v1/collections/{id}/shares`; or `POST /v1/ingest/upload` breaks a bound — a file over `max_document_bytes`, more than `max_upload_files` files, or files totalling more than `max_upload_bytes_per_request` (#202) |
+| `411` | `POST /v1/ingest/upload` without a `Content-Length` (chunked transfer) — an upload must declare its length so it can be refused before the body is read (#202) |
+| `415` | an uploaded file's content type is not in `upload_content_types`, or a declared PDF has no `%PDF` header (#202) |
 | `422` | request body fails validation, or a request-shape bound is exceeded (`top_k`, `GET /v1/chunks` `ids`, a list `limit`) |
-| `429` | rate limit exceeded (issue #87) — see below |
+| `429` | rate limit exceeded (issue #87) — see below; or, on `POST /v1/ingest/upload`, an ingest job of yours is still in flight (#202: one accepted/running job per principal; `Retry-After` set, admins exempt) |
 | `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open. Since #346 this includes a Qdrant search that exceeds `QDRANT_TIMEOUT` (`detail` starts `qdrant unavailable:`; a `Retry-After` header is set) |
 
 Error responses never leak filesystem paths or upstream exception text.

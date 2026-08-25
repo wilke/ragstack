@@ -227,10 +227,10 @@ paths:
   /v1/ingest/upload:
     post:
       operationId: ingestUpload
-      summary: Upload PDF files for ingestion
+      summary: Upload files for ingestion
       description: >
         Multipart counterpart to POST /v1/ingest: instead of a server-side path,
-        the caller uploads one or more PDF files. Each file is staged under a
+        the caller uploads one or more files. Each file is staged under a
         per-tenant, per-job directory below INGEST_ROOT with a sanitized,
         traversal-confined filename, then the same background ingest path runs
         over it. Returns 202 with a job_id and status "accepted"; poll
@@ -238,11 +238,28 @@ paths:
 
 
         The tenant is derived server-side from the API key (never from the body).
-        Each upload is validated by content-type and a %PDF magic sniff; a non-PDF
-        is rejected with 415, a file larger than max_document_bytes with 413, and
-        more than max_upload_files files with 413. Requires INGEST_ROOT to be
-        configured — without one, uploads have nowhere confined to land and every
-        request returns 503 (matching POST /v1/ingest).
+        Bounds (#202), all checked before anything is staged or written: each
+        file's content type must be in the deployment's upload_content_types
+        allowlist (default application/pdf, text/plain, text/markdown and
+        application/xml or text/xml for JATS) and a PDF must start with %PDF
+        (415 otherwise); a file larger than max_document_bytes, more than
+        max_upload_files files, or files totalling more than
+        max_upload_bytes_per_request are 413 — checked against the declared
+        sizes before anything is staged or written, and re-checked while the
+        files stream out of the server's spool, so nothing oversized reaches
+        the Workspace or INGEST_ROOT. Before the body is read at all, a request
+        whose Content-Length exceeds max_upload_bytes_per_request (plus
+        multipart framing) is refused with 413 and one without a
+        Content-Length (chunked) with 411; the deployment gateway must enforce
+        a body cap of about MAX_UPLOAD_BYTES_PER_REQUEST — a client that lies
+        about Content-Length is only stopped there. One ingest job per
+        principal at a time: while a
+        job of the caller's is still accepted or running, a new upload is 429
+        with Retry-After (an admin principal is exempt). Requires INGEST_ROOT to
+        be configured when ingest_backend=local — without one, uploads have
+        nowhere confined to land and every request returns 503 (matching
+        POST /v1/ingest); under ingest_backend=gowe the files go to the caller's
+        Workspace and INGEST_ROOT is not used.
       tags: [Documents]
       requestBody:
         required: true
@@ -254,7 +271,9 @@ paths:
               properties:
                 files:
                   type: array
-                  description: One or more PDF files to ingest.
+                  description: >-
+                    One or more files to ingest — PDF, plain text, Markdown, or
+                    JATS XML (the upload_content_types allowlist).
                   items:
                     type: string
                     format: binary
@@ -281,20 +300,39 @@ paths:
             Unknown collection, one out of the caller's allowlist, or one the
             caller may not read (unreadable == unknown, so existence is not
             leaked — ADR-0003 §2).
+        "411":
+          description: >-
+            The request has no Content-Length (chunked transfer encoding); an
+            upload must declare its length so it can be bounded before the
+            body is read (#202).
         "413":
-          description: A file exceeds max_document_bytes, or too many files.
+          description: >-
+            A file exceeds max_document_bytes, more than max_upload_files files,
+            or the request's files total more than max_upload_bytes_per_request
+            (#202). Checked against the declared sizes before anything is
+            staged or written (and re-checked while the files stream out of
+            the server's spool); a Content-Length over
+            max_upload_bytes_per_request plus multipart framing is refused
+            before the body is read. The deployment gateway must enforce a
+            body cap of about MAX_UPLOAD_BYTES_PER_REQUEST — a client that lies
+            about Content-Length is only stopped there.
         "415":
-          description: An uploaded file is not a PDF.
+          description: >-
+            An uploaded file's content type is not in the upload_content_types
+            allowlist, or a file declared as application/pdf does not start
+            with %PDF (#202).
         "422":
           description: Validation error
         "429":
           description: >-
-            Rate limit exceeded (issue #87): more than
+            Either the rate limit was exceeded (issue #87: more than
             rate_limit_ingest_per_hour requests from this principal in the last
-            hour — the bucket is shared with POST /v1/ingest. An admin
-            principal is exempt from this bucket (but not from the request
-            bounds). Retry after the delay named in the `Retry-After` header
-            (seconds).
+            hour — the bucket is shared with POST /v1/ingest), or an ingest job
+            of this principal's is still in flight (#202: one accepted/running
+            job per principal at a time — poll GET /v1/ingest/{job_id} and retry
+            once it is completed or failed). An admin principal is exempt from
+            both (but not from the request bounds). Retry after the delay named
+            in the `Retry-After` header (seconds).
           headers:
             Retry-After:
               description: Seconds to wait before retrying.
@@ -2099,6 +2137,9 @@ components:
         - ingest_shard_size
         - tenant_max_concurrency
         - max_document_bytes
+        - max_upload_files
+        - max_upload_bytes_per_request
+        - upload_content_types
         - allow_user_collection_create
         - log_level
       properties:
@@ -2135,6 +2176,11 @@ components:
         ingest_shard_size: { type: integer }
         tenant_max_concurrency: { type: integer }
         max_document_bytes: { type: integer }
+        max_upload_files: { type: integer }
+        max_upload_bytes_per_request: { type: integer }
+        upload_content_types:
+          type: array
+          items: { type: string }
         allow_user_collection_create: { type: boolean }
         log_level: { type: string }
       additionalProperties: false

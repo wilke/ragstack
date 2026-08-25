@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from ragstack.ingestion.backends import IngestBackend, partition
+from ragstack.ingestion.loaders import NO_TEXT_ERROR, NO_TEXT_LABEL
 from ragstack.ingestion.manifest import ItemResult, Manifest, WorkItem
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.jobstore import COMPLETED, FAILED, JobStore
@@ -62,9 +63,19 @@ class ShardedIngestor:
             items = remaining
 
         shards = partition(items, self._shard_size)
-        return await self._backend.run_shards(
+        results = await self._backend.run_shards(
             shards, lambda shard: self._run_shard(shard, job_id, tenant_id)
         )
+        # The scanned-PDF count, per run, at INFO (#202): the per-item error is
+        # the constant NO_TEXT_ERROR string (so the SQL job stores can GROUP BY
+        # it too); this line is the aggregate the OCR decision is made from.
+        no_text = sum(1 for r in results if r.error == NO_TEXT_ERROR)
+        if no_text:
+            log.info(
+                "ingest job %s: %d of %d item(s) failed with %s [%s]",
+                job_id, no_text, len(results), NO_TEXT_ERROR, NO_TEXT_LABEL,
+            )
+        return results
 
     async def _run_shard(
         self, shard: list[WorkItem], job_id: str | None, tenant_id: str
@@ -91,11 +102,13 @@ class ShardedIngestor:
                 chunk_ids = await self._pipeline.ingest(item.source, tenant_id=tenant_id)
         except Exception as e:
             log.warning("ingest item %s failed: %s", item.item_id, e)
+            # Caller-safe label: the exception's class name, unless the error
+            # type carries an actionable constant (NoTextExtracted.job_error).
             return ItemResult(
                 item_id=item.item_id,
                 source=item.source,
                 status=FAILED,
-                error=type(e).__name__,
+                error=getattr(e, "job_error", type(e).__name__),
             )
         return ItemResult(
             item_id=item.item_id,

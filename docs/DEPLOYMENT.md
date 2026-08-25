@@ -54,6 +54,34 @@ Port convention (do not swap — hardcoded in `.env.example` and the conformance
 
 ---
 
+## Gateway body cap for uploads (required)
+
+`POST /v1/ingest/upload` is bounded inside the API (#202) — but FastAPI parses
+a multipart body **before** any handler check runs, spooling every part to the
+process's temp directory. The API refuses a request from its headers alone
+(`Content-Length` over `MAX_UPLOAD_BYTES_PER_REQUEST` plus framing → `413`,
+no `Content-Length` → `411`, before a byte is read), and everything else it
+enforces — the allowlist, the per-file and per-request caps, the one-job-per-
+user and hourly `429`s — decides only after the full body has been received.
+So a client that **lies** about `Content-Length` (declares a small body and
+sends a large one, or declares a huge one and idles) is stopped only by the
+gateway in front of the API.
+
+Every deployment must therefore put the API behind a reverse proxy that:
+
+- caps the request body at about `MAX_UPLOAD_BYTES_PER_REQUEST` (default
+  500 MB) — nginx `client_max_body_size 512m;`, Caddy `request_body { max_size 512MB }`,
+  Traefik `buffering.maxRequestBodyBytes` — on the upload route at least;
+- applies a client body read timeout (nginx `client_body_timeout`) so a
+  socket that sends a few KB and idles does not hold a worker;
+- forwards `Content-Length` unchanged (do not re-chunk the upstream request).
+
+The API's temp directory (where the multipart parser spools) must have room
+for `MAX_UPLOAD_BYTES_PER_REQUEST` × the number of concurrent uploads you
+allow; `TMPDIR` on the API process selects it.
+
+---
+
 ## Docker Compose
 
 Compose is split into **layered files stacked with multiple `-f` flags** (not used standalone):

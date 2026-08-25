@@ -506,20 +506,21 @@ async def test_oversize_upload_is_413_before_any_submission(client, gowe, monkey
     r = await _upload(client, "big.pdf")
     assert r.status_code == 413, r.text
     assert gowe["engine"].submissions == []
-    # The version is reserved BEFORE the upload (so a registry that cannot
-    # reserve never leaves sources behind); a refused upload leaves a gap.
-    assert gowe["store"].calls.get("next_version", 0) == 1
-    job = await app.state.job_store.get(list(app.state.job_store._jobs)[-1])
-    assert job.status == "failed" and job.error == "rejected"
-    assert (await _upload(client, "big2.pdf")).status_code == 413  # a second gap
+    # Since #202 2c the declared size is checked up front — before the version
+    # is reserved, before a job exists and before any Workspace call — so an
+    # oversize refusal leaves no gap in the numbering and nothing to poll.
+    assert gowe["store"].calls.get("next_version", 0) == 0
+    assert gowe["workspace"].uploads == [] and gowe["workspace"].folders == []
+    assert app.state.job_store._jobs == {}
+    assert (await _upload(client, "big2.pdf")).status_code == 413
     monkeypatch.setattr(settings, "max_document_bytes", 50_000_000)
     r2 = await _upload(client, "ok.pdf")
     assert r2.status_code == 202
-    assert gowe["engine"].submissions[-1]["inputs"]["version"] == "3"  # gaps at 1 and 2
+    assert gowe["engine"].submissions[-1]["inputs"]["version"] == "1"  # no gaps
 
 
 @pytest.mark.parametrize("name, body, ctype, why", [
-    ("n.txt", b"text", "text/plain", "application/pdf"),
+    ("n.zip", b"PK\x03\x04", "application/zip", "not an accepted upload content type"),
     ("fake.pdf", b"NOT-A-PDF-AT-ALL", "application/pdf", "%PDF"),
     ("empty.pdf", b"", "application/pdf", "%PDF"),
 ])
