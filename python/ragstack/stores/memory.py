@@ -293,6 +293,15 @@ class InMemoryGraphStore:
         # Insertion-ordered so reads keep first-write order (a plain list did
         # before); keyed so a re-add can update in place instead of appending.
         self._by_key: dict[tuple[str, str, str, str, str, str], Triple] = {}
+        # Entity-name index for ``match_entities`` (#349): per ``(tenant_id,
+        # collection)`` bucket, case-folded name -> number of stored triples it
+        # is an endpoint of. Maintained incrementally on every write and delete
+        # (O(1) per triple), so a lookup is a dict probe per candidate — the
+        # in-memory twin of an indexed ``IN`` lookup on Neo4j. A name only ever
+        # ENTERS through ``add_triples``; a delete path that forgot to decrement
+        # would leave a stale positive (a wasted, empty neighbourhood call),
+        # never a missed entity.
+        self._entity_refs: dict[tuple[str, str], dict[str, int]] = {}
 
     @property
     def _triples(self) -> list[Triple]:
@@ -313,10 +322,62 @@ class InMemoryGraphStore:
                 by_key[key] = by_key[key].model_copy(update=_evidence_fields(triple))
             else:
                 by_key[key] = triple
+                self._index(triple, +1)
 
     @staticmethod
     def _key(t: Triple) -> tuple[str, str, str, str, str, str]:
         return (t.subject, t.predicate, t.object, t.doc_id, t.tenant_id, t.collection)
+
+    def _index(self, t: Triple, delta: int) -> None:
+        """Add (+1) or remove (-1) one triple's two endpoint names from the
+        entity index bucket of its ``(tenant_id, collection)``."""
+        bucket = self._entity_refs.setdefault((t.tenant_id, t.collection), {})
+        for name in (t.subject.lower(), t.object.lower()):
+            count = bucket.get(name, 0) + delta
+            if count > 0:
+                bucket[name] = count
+            else:
+                bucket.pop(name, None)
+        if not bucket:
+            self._entity_refs.pop((t.tenant_id, t.collection), None)
+
+    async def match_entities(
+        self,
+        candidates: list[str],
+        *,
+        tenant_id: str | None,
+        collection: str | Sequence[str] | None,
+    ) -> list[str]:
+        """Exact, case-folded membership of each candidate in the entity index,
+        restricted to the buckets the caller may read — the same scope rule as
+        ``_visible`` (own tenant + ``public``; exact collection, one name or the
+        multi-collection leg's list; ``None`` = unscoped on that axis).
+        Distinct, in candidate order. Cost is one dict probe per candidate per
+        readable bucket, independent of graph size."""
+        if not candidates:
+            return []
+        allowed = None if tenant_id is None else set(readable_tenants(tenant_id))
+        wanted = (
+            None if collection is None
+            else {collection} if isinstance(collection, str) else set(collection)
+        )
+        buckets = [
+            names for (tenant, coll), names in self._entity_refs.items()
+            if (allowed is None or tenant in allowed)
+            and (wanted is None or coll in wanted)
+        ]
+        if not buckets:
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for candidate in candidates:
+            folded = candidate.lower()
+            if folded in seen:
+                continue
+            if any(folded in names for names in buckets):
+                seen.add(folded)
+                out.append(folded)
+        return out
 
     def _visible(
         self, tenant_id: str | None, collection: str | Sequence[str] | None = None
@@ -413,12 +474,14 @@ class InMemoryGraphStore:
         scopes must match: the same doc_id ingested into two collections keeps a
         separate triple set per collection, and a collection-blind delete would
         take both."""
-        self._by_key = {
-            k: t
-            for k, t in self._by_key.items()
-            if not (
+        keep: dict[tuple[str, str, str, str, str, str], Triple] = {}
+        for k, t in self._by_key.items():
+            if (
                 t.doc_id == doc_id
                 and (tenant_id is None or t.tenant_id == tenant_id)
                 and (collection is None or t.collection == collection)
-            )
-        }
+            ):
+                self._index(t, -1)
+            else:
+                keep[k] = t
+        self._by_key = keep

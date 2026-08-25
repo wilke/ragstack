@@ -158,6 +158,25 @@ class GraphStore(Protocol):
         collection: str | Sequence[str] | None = None,
     ) -> list[Triple]: ...
 
+    async def match_entities(
+        self,
+        candidates: list[str],
+        *,
+        tenant_id: str | None,
+        collection: str | Sequence[str] | None,
+    ) -> list[str]:
+        """The subset of ``candidates`` that name an entity in the readable
+        scope — an indexed, **exact**, case-folded lookup (never a substring
+        match), returned case-folded, distinct, in candidate order. ONE round
+        trip for the whole list; an empty list costs none. This is the query-side
+        entity extraction of the graph leg (#349): the retriever hands it the
+        query's n-grams and only expands the ones that name a known entity.
+
+        The scope is keyword-only and required so a caller can't forget it;
+        ``None`` on an axis is the same deliberate unscoped read as everywhere
+        else on this protocol."""
+        ...
+
     async def list_entities(
         self,
         tenant_id: str | None = None,

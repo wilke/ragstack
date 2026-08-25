@@ -90,6 +90,10 @@ class _LeakyGraphStore:
         self._triples = triples
         self.collection = "unset"
 
+    async def match_entities(self, candidates, *, tenant_id, collection):
+        # #349: the retriever only expands entities the store says exist.
+        return [c for c in candidates if c == "alice"]
+
     async def query_neighborhood(self, entity, depth=1, tenant_id=None, collection=None):
         self.collection = collection
         return list(self._triples)

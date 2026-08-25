@@ -13,6 +13,14 @@ deleted across. Reads filter relationships to the caller's *readable* tenants (o
 (``tenant_id=None`` / ``collection=None``) is allowed only for dev/tests and admin
 inspection, and sees everything on that axis.
 
+Query-side entity extraction (#349) is ``match_entities``: the retriever's n-gram
+candidates against ``toLower(e.name) IN $candidates`` plus the scope predicates,
+one round trip. No index was added for it: Neo4j 5 has no expression indexes, so
+a ``toLower()`` predicate can't be index-backed whatever is declared, and the
+graph holds no production data (#350) to make that cost measurable. The upgrade
+path, if graph scale ever matters, is a stored case-folded ``name_lc`` property
+with its own index (+ a one-off backfill in ``ensure_schema``).
+
 Why the collection lives in the data rather than in one store instance per
 collection (#209): unlike Qdrant/ES, where each collection gets its own physical
 collection/index, Neo4j Community serves a single database — N ``Neo4jGraphStore``
@@ -211,7 +219,10 @@ class Neo4jGraphStore:
         """Return triples within ``depth`` hops of ``entity``, scoped to the caller's
         readable tenants and to ``collection`` (one name, or a list of names for
         the multi-collection leg — see :meth:`_scope`). Matching is case-insensitive
-        substring on the entity name to mirror the in-memory store.
+        substring on the entity name to mirror the in-memory store. The retriever
+        no longer passes a raw query here (#349): ``entity`` is one name that
+        ``match_entities`` already confirmed, so the substring match only widens
+        the walk to names that *contain* that entity.
 
         ``tenant_id=None`` / ``collection=None`` are deliberate unscoped reads
         (dev/tests/library use, per the module docstring) and return every
@@ -268,6 +279,42 @@ class Neo4jGraphStore:
             + _EVIDENCE_RETURN
         )
         return await self._run_triples(query, params)
+
+    async def match_entities(
+        self,
+        candidates: list[str],
+        *,
+        tenant_id: str | None,
+        collection: str | Sequence[str] | None,
+    ) -> list[str]:
+        """The candidates that name an entity in scope (#349): one ``IN``
+        lookup, exact and case-folded, never ``CONTAINS``. Candidates are folded
+        and deduplicated here so ``$candidates`` is as short as possible and the
+        returned names are exactly the candidate strings that hit. Scope goes on
+        the *node* (``e.tenant_id`` / ``e.collection``) — entity identity is per
+        tenant and per collection, so the node's stamps are authoritative."""
+        folded: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            name = candidate.lower()
+            if name not in seen:
+                seen.add(name)
+                folded.append(name)
+        if not folded:
+            return []
+        params: dict[str, Any] = {"candidates": folded}
+        preds = self._scope(params, tenant_id, collection)
+        scope_clause = "".join(f"AND {p.format(alias='e')} " for p in preds)
+        query = (
+            "MATCH (e:Entity) "
+            "WHERE toLower(e.name) IN $candidates " + scope_clause +
+            "RETURN DISTINCT toLower(e.name) AS name"
+        )
+        async with self._session() as session:
+            result = await session.run(query, **params)
+            records = [record async for record in result]
+        hits = {str(rec["name"]) for rec in records}
+        return [name for name in folded if name in hits]
 
     async def list_entities(
         self,

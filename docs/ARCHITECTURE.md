@@ -163,6 +163,18 @@ ownership model will sit on.
 ### 4.4 Retrieval, rewriting, scoring
 - **retrieval/retriever.py** — `HybridRetriever` runs dense + BM25 (+ optional graph) legs
   and fuses them with RRF. `retrieval_mode` selects `hybrid` | `vector` | `bm25`.
+  The graph leg extracts entities from the query first (#349): the query is tokenised
+  (word split, lower-cased, punctuation stripped; a 1-gram in `GRAPH_QUERY_STOPWORDS` — articles,
+  prepositions, pronouns, auxiliaries — is skipped, longer n-grams keep them), its
+  1–`graph_query_ngram_max`-grams are
+  matched **exactly** against the entity names in the caller's `(tenant, collection)` scope in
+  one indexed `GraphStore.match_entities` call (Neo4j: `toLower(e.name) IN $candidates` plus
+  the scope predicates — never `CONTAINS` over the sentence), and the longest matches
+  (ties by query position), up to `graph_query_entity_max`, each get one `query_neighborhood`;
+  the neighbourhoods are unioned, then the tenant/collection re-checks and the
+  `graph_min_confidence` floor apply. No matched entity → empty leg, no neighbourhood call, no
+  model call. Settings: `graph_context_depth` (hops), `graph_context_score`,
+  `graph_min_confidence` (#347), `graph_query_entity_max` (5), `graph_query_ngram_max` (3).
 - **rewriting/rewriters.py** — `PassthroughRewriter`, `MultiQueryRewriter`, `HyDERewriter`.
 - **scoring/scorers.py** — `RRFScorer`, `CrossEncoderScorer` (in-process), `SidecarReranker` (HTTP).
 
