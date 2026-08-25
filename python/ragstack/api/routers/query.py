@@ -26,8 +26,9 @@ from ragstack.api.model_registry import ModelRegistry, RegistryError
 from ragstack.api.scope import shared_scope
 from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
-from ragstack.models import ScoredChunk, Source
+from ragstack.models import ContextChunk, ScoredChunk, Source
 from ragstack.protocols import QueryRewriter
+from ragstack.retrieval.retriever import expand_context
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.stores.filters import UnknownFilterKey
 from ragstack.tenancy import allowed_collection_ids, scope_filters
@@ -37,6 +38,11 @@ router = APIRouter()
 
 # Stateless RRF fusion for combining per-rewrite ranked lists.
 _RRF = RRFScorer(k=settings.rrf_k)
+
+# Hard cap on ``context_window`` (issue #322): each hop is one batched store
+# round trip, and three chunks either side is already more than an answer
+# prompt can use. Part of the contract (contracts/schemas/*_request.json).
+MAX_CONTEXT_WINDOW = 3
 
 
 async def _expand_query(
@@ -106,6 +112,11 @@ class QueryRequest(BaseModel):
     # Retrieval legs: hybrid (dense + BM25, RRF-fused), vector (dense only), or
     # bm25 (sparse only). The graph leg is orthogonal (see use_graph).
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
+    # Server-side context expansion (issue #322): after fusion, rerank and the
+    # top_k cut, walk each source's prev/next links up to this many hops each
+    # way and attach the neighbours as ``Source.context`` (ranking unchanged).
+    # 0 (default) leaves the response exactly as before; the cap is a 422.
+    context_window: int = Field(default=0, ge=0, le=MAX_CONTEXT_WINDOW)
     # Per-request model overrides (Phase 2): a registered model id to use for THIS
     # request only, without touching the global assignment. ``llm`` overrides the
     # answer generator (retrieval, incl. rewriting, is unchanged — a clean A/B of
@@ -138,6 +149,8 @@ class RetrieveRequest(BaseModel):
     collection: str | None = None
     # See QueryRequest — hybrid | vector | bm25.
     retrieval_mode: Literal["hybrid", "vector", "bm25"] = "hybrid"
+    # See QueryRequest — same server-side context expansion.
+    context_window: int = Field(default=0, ge=0, le=MAX_CONTEXT_WINDOW)
     # See QueryRequest — per-request cross-encoder override (no generation here).
     reranker: str | None = None
 
@@ -270,7 +283,14 @@ async def _retrieve_fused(
     return scored[:top_k]
 
 
-def _to_sources(scored: list[ScoredChunk]) -> list[Source]:
+def _to_sources(
+    scored: list[ScoredChunk],
+    context: dict[str, list[ContextChunk]] | None = None,
+) -> list[Source]:
+    """Sources in ``scored`` order. ``context`` (from :func:`_expand_sources`)
+    is keyed by chunk id; a source with no entry gets no ``context`` key at all
+    (omitted from the response — see ``Source``), never an empty list."""
+    context = context or {}
     return [
         Source(
             doc_id=r.chunk.doc_id,
@@ -278,9 +298,28 @@ def _to_sources(scored: list[ScoredChunk]) -> list[Source]:
             content=r.chunk.content,
             score=r.score,
             metadata=_source_metadata(r.chunk),
+            context=context.get(r.chunk.id),
         )
         for r in scored
     ]
+
+
+async def _expand_sources(
+    store: Any, scored: list[ScoredChunk], window: int, filters: dict[str, Any]
+) -> dict[str, list[ContextChunk]]:
+    """Server-side context expansion (issue #322) for the final, already
+    reranked and truncated ``scored`` list: the neighbours to attach, per
+    source chunk id. Runs AFTER ``_retrieve_fused`` so it can't touch the
+    ranking; ``filters`` is the same scoped dict retrieval used, so a neighbour
+    outside the caller's scope is never returned (#197). ``window=0`` (the
+    default) is a no-op with no store call. A refused filter key is a 400,
+    exactly as ``GET /v1/chunks`` answers it."""
+    if window <= 0 or not scored or store is None:
+        return {}
+    try:
+        return await expand_context(store, scored, window, filters)
+    except UnknownFilterKey as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 def _source_metadata(chunk: Any) -> dict[str, Any]:
@@ -394,20 +433,26 @@ async def retrieve(
     entry = await _resolve_entry(registry, request.collection, principal)
     retriever = entry.retriever
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
+    filters = scope_filters(
+        request.filters, tenant, await shared_scope(entry, registry, principal)
+    )
     scored = await _retrieve_fused(
         retriever,
         reranker,
         request.query,
         [request.query],
         request.top_k,
-        scope_filters(request.filters, tenant, await shared_scope(entry, registry, principal)),
+        filters,
         request.use_graph,
         rerank=request.rerank,
         rerank_candidates=request.rerank_candidates,
         tenant_id=tenant,
         mode=request.retrieval_mode,
     )
-    return RetrieveResponse(sources=_to_sources(scored))
+    context = await _expand_sources(
+        entry.vector_store, scored, request.context_window, filters
+    )
+    return RetrieveResponse(sources=_to_sources(scored, context))
 
 
 @router.get("/chunks", response_model=ChunksResponse)
@@ -511,7 +556,14 @@ async def query(
         mode=request.retrieval_mode,
     )
 
-    sources = _to_sources(scored)
+    # Context expansion is strictly post-rank: it reads the final ``scored``
+    # list and only decorates the sources. The generator sees the decorated
+    # sources, so with ``context_window > 0`` the answer is grounded in each
+    # passage plus its neighbours (see RagGenerator._format_context).
+    context = await _expand_sources(
+        entry.vector_store, scored, request.context_window, filters
+    )
+    sources = _to_sources(scored, context)
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:

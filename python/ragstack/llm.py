@@ -104,16 +104,104 @@ class RagGenerator:
         """The underlying chat client — used by the models benchmark probe."""
         return self._llm
 
+    _BEFORE = "(context before)\n"
+    _PASSAGE = "(passage)\n"
+    _AFTER = "(context after)\n"
+    _ELLIPSIS = "\u2026"
+
+    def _passage_text(self, s: Source, room: int) -> str | None:
+        """The text a source contributes to the prompt, within ``room`` chars:
+        its content alone, or — when the request asked for ``context_window > 0``
+        and neighbours were attached — its neighbours and itself concatenated in
+        document order (``position`` ascending), each part under a clear
+        delimiter so the model can still tell the matched passage from its
+        surroundings. The citation number stays on the whole block: one source.
+
+        Fitting is **passage-first**: the matched passage is never trimmed to
+        make room for its context. When the block would overflow ``room``, the
+        context gives way — ``(context before)`` is trimmed from its LEFT (the
+        text farthest from the passage goes first), ``(context after)`` from
+        its RIGHT, the spare split evenly between the two sides with either
+        side's unused share passed to the other; a side trimmed to nothing is
+        dropped, delimiter included. A trimmed side is marked with an ellipsis
+        on the cut edge. Returns ``None`` when even the passage alone would not
+        fit — the caller decides between its lone-oversized-passage rule and
+        stopping. A context-free source is returned as-is (its own ``room``
+        handling is the caller's, unchanged from before context existed)."""
+        if not s.context:
+            return s.content
+        passage = self._PASSAGE + s.content
+        spare = room - len(passage)
+        if spare < 0:
+            return None
+        before = "\n".join(c.content for c in s.context if c.position < 0)
+        after = "\n".join(c.content for c in s.context if c.position > 0)
+        # Full cost of each side, delimiters and the "\n" joining it to the
+        # passage included; and the fixed overhead a trimmed side still pays
+        # (delimiter + join + ellipsis) — below that the side is dropped.
+        want_b = len(self._BEFORE) + len(before) + 1 if before else 0
+        want_a = 1 + len(self._AFTER) + len(after) if after else 0
+        if want_b + want_a <= spare:
+            give_b, give_a = want_b, want_a
+        else:
+            give_b = min(want_b, spare // 2)
+            give_a = min(want_a, spare - give_b)
+            give_b = min(want_b, spare - give_a)  # hand `after`'s unused share back
+        parts: list[str] = []
+        head_b = len(self._BEFORE) + 1 + len(self._ELLIPSIS)
+        if give_b == want_b and before:
+            parts.append(self._BEFORE + before)
+        elif give_b > head_b:
+            parts.append(self._BEFORE + self._ELLIPSIS + before[-(give_b - head_b):])
+        parts.append(passage)
+        head_a = 1 + len(self._AFTER) + len(self._ELLIPSIS)
+        if give_a == want_a and after:
+            parts.append(self._AFTER + after)
+        elif give_a > head_a:
+            parts.append(self._AFTER + after[: give_a - head_a] + self._ELLIPSIS)
+        return "\n".join(parts)
+
     def _format_context(self, sources: list[Source]) -> str:
+        """The numbered passage blocks, within the prompt's character budget.
+
+        Without context (``context_window`` 0, the default) this is unchanged:
+        ``max_context_chars`` total, sources added in rank order until one no
+        longer fits, a lone oversized first passage cut to the budget.
+
+        With context the budget scales by the block size a window implies —
+        ``(2 * window + 1)`` chunks per source — so turning context on does not
+        shrink the NUMBER of sources that reach the prompt. And an early hit's
+        context cannot crowd later hits out: each source is fitted (see
+        :meth:`_passage_text`, passage-first) into what is left of the budget
+        minus a per-source share reserved for every source after it; a source
+        whose passage alone would not even fit its share may still use the
+        whole remainder, so a long passage is not starved by the reservation.
+        """
+        n = len(sources)
+        window = max(
+            (abs(c.position) for s in sources for c in (s.context or ())), default=0
+        )
+        budget = self._max_context_chars * (2 * window + 1)
+        share = budget // n if n else budget
         parts: list[str] = []
         used = 0
         for i, s in enumerate(sources, start=1):
-            block = f"[{i}] {s.content}"
+            prefix = f"[{i}] "
             sep = 2 if parts else 0  # the "\n\n" join adds 2 chars between blocks
-            if parts and used + sep + len(block) > self._max_context_chars:
+            left = budget - used - sep - len(prefix)
+            # What this source may take: the remainder minus a share for each
+            # later source — but never less than its own share of the remainder.
+            room = max(left - (n - i) * share, min(left, share))
+            text = self._passage_text(s, room)
+            if text is None:
+                text = self._passage_text(s, left)  # passage-first, whole remainder
+            if text is None:
+                text = s.content  # context dropped: the lone/overflow rules below
+            block = prefix + text
+            if parts and used + sep + len(block) > budget:
                 break  # at the budget; stop adding passages
-            if not parts and len(block) > self._max_context_chars:
-                block = block[: self._max_context_chars]  # cap a lone oversized passage
+            if not parts and len(block) > budget:
+                block = block[:budget]  # cap a lone oversized passage
             parts.append(block)
             used += sep + len(block)
         return "\n\n".join(parts)

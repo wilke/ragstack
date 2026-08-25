@@ -298,6 +298,44 @@ curl -s "$BASE/v1/chunks?collection=open-access&ids=c6304b79-…,1656f49a-…" -
   `next_chunk_id`, so a loop of one call per step pages through the whole
   document. There is no "give me chunks 3–7" call; the ids are the cursor.
 
+### Server-side: `context_window`
+
+If you want the neighbours *with* the hits instead of a second call, ask
+`/v1/query` or `/v1/retrieve` for them:
+
+```bash
+curl -s "$BASE/v1/retrieve" -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"query": "how does BM25 work?", "top_k": 5, "context_window": 1}'
+# {"sources":[{"doc_id":"…","chunk_id":"1656f49a-…","content":"…","score":0.0164,
+#              "metadata":{…},
+#              "context":[{"chunk_id":"c6304b79-…","position":-1,"content":"…"},
+#                         {"chunk_id":"9b2d01e7-…","position":1,"content":"…"}]}, …]}
+```
+
+- `context_window` is how many chunks to walk **each way** from every hit:
+  `1` = the previous and the next chunk, up to `3`; above that is a `422`.
+  The default `0` changes nothing — no `context` key, byte-identical to before.
+- `context` is ordered by `position` (negative = before the hit, positive =
+  after) and carries **no score**: the score belongs to the matched chunk.
+- Ranking is untouched. Neighbours are looked up *after* fusion, rerank and
+  the `top_k` cut, and are attached to the hit — never merged into the
+  ranked list. What you would get with `context_window: 0` is exactly the
+  `sources` you get with `3`, minus the `context` keys.
+- Same visibility as the hit: neighbours are fetched with the request's
+  `filters` and your tenant scope, so a chunk you could not read (or one your
+  filter excludes) is simply not there — and the walk stops at it.
+- Document edges behave as above: a first chunk has nothing before it; a hit
+  with no visible neighbour at all has no `context` key.
+- A neighbour that is itself one of the hits is not repeated in `context`
+  (its content is already in `sources`), but the walk continues through it.
+- On `/v1/query` the answer is generated from each hit *plus* its context
+  (concatenated in document order, delimited as `(context before)` /
+  `(passage)` / `(context after)`), so the model sees the surrounding text —
+  the citations `[n]` still refer to the hit. If the prompt budget is tight,
+  the hit itself is always kept whole; only its context is trimmed.
+- Cost: one batched store lookup per hop for the whole request (so one for
+  `context_window: 1`, at most three), whatever `top_k` is.
+
 ### In the UI
 
 Open a source in *Evidence* (or click a citation chip). The source card shows

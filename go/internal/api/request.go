@@ -21,6 +21,10 @@ type QueryRequest struct {
 	Collection *string `json:"collection,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
+	// ContextWindow (issue #322): prev/next neighbour hops to attach to each
+	// Source as `context` after rerank; 0 (default) = none, max 3. Schema
+	// mirror only — the handler is a stub per ADR-0006.
+	ContextWindow int `json:"context_window,omitempty"`
 	// LLM / Reranker are per-request model overrides (registered model ids); nil = default.
 	LLM      *string `json:"llm,omitempty"`
 	Reranker *string `json:"reranker,omitempty"`
@@ -39,6 +43,8 @@ type RetrieveRequest struct {
 	Collection *string `json:"collection,omitempty"`
 	// RetrievalMode selects the legs: hybrid | vector | bm25; nil = hybrid.
 	RetrievalMode *string `json:"retrieval_mode,omitempty"`
+	// ContextWindow mirrors QueryRequest.ContextWindow (issue #322); 0 = none, max 3.
+	ContextWindow int `json:"context_window,omitempty"`
 	// Reranker is a per-request reranker model override (registered id); nil = default.
 	Reranker *string `json:"reranker,omitempty"`
 }

@@ -152,13 +152,16 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `retrieval_mode` | `hybrid` \| `vector` \| `bm25` | `hybrid` | which retrieval legs run: dense + BM25 fused, dense only, or keyword only. Graph leg is orthogonal (`use_graph`) |
 | `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
 | `rerank_candidates` | int \| null | null | candidate-pool depth fed to the reranker; null = `max(top_k, RERANK_CANDIDATES)` |
+| `context_window` | int (0–3) | 0 | server-side [context expansion](#context-expansion-context_window): walk each returned source's `prev_chunk_id` / `next_chunk_id` this many hops each way and attach the neighbours as the source's `context`. `0` = off (response unchanged); above `3` → `422` |
 | `llm` | string \| null | null | registered model id to generate with, this request only (`GET /v1/models/available`); unknown → 404, wrong task → 400 |
 | `reranker` | string \| null | null | registered model id to rerank with, this request only |
 
 **Response** (`QueryResponse`): `{ answer, sources[], rewritten_queries[] }`. Each
-source is `{ doc_id, chunk_id, content, score, metadata }`; on API-ingested and
+source is `{ doc_id, chunk_id, content, score, metadata, context? }`; on API-ingested and
 current bulk-loaded corpora `metadata` carries `chunk_index`, `prev_chunk_id` and
-`next_chunk_id` for [context expansion](#get-v1chunks).
+`next_chunk_id` for client-side [context expansion](#get-v1chunks). `context` is
+present only when the request set `context_window > 0` and at least one neighbour
+is visible — see [Context expansion](#context-expansion-context_window).
 
 ```bash
 curl -s http://localhost:8000/v1/query \
@@ -172,7 +175,7 @@ Same retrieval (hybrid + optional rerank) but no answer generation.
 
 **Request** (`RetrieveRequest`): `query` (required), `top_k` (5), `filters` (`{}`),
 `use_graph` (true), plus the same `collection`, `retrieval_mode`, `rerank`,
-`rerank_candidates` and `reranker` fields as `/v1/query`. **Response**
+`rerank_candidates`, `context_window` and `reranker` fields as `/v1/query`. **Response**
 (`RetrieveResponse`): `{ sources[] }`.
 
 ```bash
@@ -182,9 +185,50 @@ curl -s http://localhost:8000/v1/retrieve \
        "filters": {"doc_type": "article"}}'
 ```
 
+### Context expansion (`context_window`)
+
+Server-side neighbour expansion on `/v1/query` and `/v1/retrieve` (issue #322).
+With `context_window: n` (`1`–`3`; `0` = off, the default; above `3` → `422`),
+each returned source is decorated with the chunks up to `n` hops before and
+after it in its document, following the `prev_chunk_id` / `next_chunk_id`
+links the ingester stamps:
+
+```json
+{"doc_id": "…", "chunk_id": "…", "content": "…", "score": 0.0164, "metadata": {…},
+ "context": [{"chunk_id": "…", "position": -1, "content": "…"},
+             {"chunk_id": "…", "position":  1, "content": "…"}]}
+```
+
+- `context` is ordered by `position` (negative = before, positive = after);
+  neighbours carry no score.
+- **Ranking unchanged.** Expansion runs after fusion, rerank and the `top_k`
+  cut and only decorates the sources; neighbours are never merged into the
+  scored list. `sources` with `context_window: 0` and with `3` differ only by
+  the `context` keys.
+- **Scoped like the hit.** Neighbours are fetched with the request's `filters`
+  plus the caller's tenant scope (the same predicate retrieval used), so an
+  unreadable or filtered-out neighbour is omitted and the walk stops there.
+  Document edges end the walk the same way; a source with no visible
+  neighbour has no `context` key (never an empty list).
+- A neighbour that is itself a returned source is not repeated in `context`;
+  the walk continues through it.
+- On `/v1/query`, generation sees each source's text with its context
+  concatenated in document order under `(context before)` / `(passage)` /
+  `(context after)` delimiters; citations still number the sources. The
+  prompt's character budget scales with the window, so context never reduces
+  how many sources reach the model; when a block still has to shrink, the
+  passage is kept whole and its context is trimmed (before-context from the
+  left, after-context from the right, marked with `…`).
+- One batched store lookup per hop for the whole request (one for
+  `context_window: 1`, at most three), independent of `top_k`.
+- A `filters` key `GET /v1/chunks` refuses (`doc_id`, `chunk_id`, `content`,
+  `start_char`, `end_char`, `library_id`) is a `400` here too when
+  `context_window > 0`.
+
 ### GET /v1/chunks
 
-Fetch chunks **by id** from a collection — context expansion around a hit.
+Fetch chunks **by id** from a collection — client-side context expansion around
+a hit (the server-side alternative is [`context_window`](#context-expansion-context_window)).
 `ids` is a comma-separated list, **up to 200 ids; 422 above** (issue #87 —
 `max_chunk_ids`); typically the
 `prev_chunk_id` / `next_chunk_id` a source's metadata carries, so a client can

@@ -5,6 +5,15 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// ContextChunk is one neighbouring chunk attached to a Source when the request
+// set context_window > 0 (issue #322). Position is the offset from the source
+// in chunks: -1 is the immediately preceding chunk, 1 the following one.
+type ContextChunk struct {
+	ChunkID  string `json:"chunk_id"`
+	Position int    `json:"position"`
+	Content  string `json:"content"`
+}
+
 // Source represents a retrieved chunk with its relevance score.
 type Source struct {
 	DocID    string         `json:"doc_id"`
@@ -12,6 +21,9 @@ type Source struct {
 	Content  string         `json:"content"`
 	Score    float64        `json:"score"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	// Context holds the source's neighbours (context_window > 0), ordered by
+	// Position; omitted when none were attached.
+	Context []ContextChunk `json:"context,omitempty"`
 }
 
 // QueryResponse is the response for POST /v1/query.
