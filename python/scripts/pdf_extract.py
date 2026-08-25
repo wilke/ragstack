@@ -11,7 +11,11 @@ workflows.
 **No OCR.** A scanned / image-only PDF (or an unreadable / non-PDF file) yields no
 extractable text and is recorded as *skipped* in a sidecar JSON report — it never
 crashes the job, so one bad file can't sink a large batch. This mirrors how
-``JsonlLoader`` skips (rather than errors on) bad lines.
+``JsonlLoader`` skips (rather than errors on) bad lines. Each skipped entry
+carries a human ``reason`` and a constant, countable ``error`` — the loader's
+``job_error`` (``NO_TEXT_ERROR`` for a scanned PDF) — and the report lists every
+attempted ``inputs`` path, so the ingest step (``ingest_shard.py
+--extract-report``) can account for the whole batch per document (#203 2b).
 
 **Deterministic.** Inputs are expanded and sorted, so the same directory always
 produces the same shard in the same order. The reusable core (``extract_pdfs``)
@@ -64,9 +68,13 @@ def extract_pdfs(
     """Extract text from ``paths`` -> (records, skipped).
 
     ``records`` are JSONL-ready ``{"text", "path", "metadata"}`` dicts (the shape
-    ``JsonlLoader`` consumes). ``skipped`` are ``{"path", "reason"}`` dicts for
-    files with no extractable text or that could not be opened (scanned/image-only
-    PDFs, empty files, non-PDFs). Pure/deterministic — no filesystem writes.
+    ``JsonlLoader`` consumes). ``skipped`` are ``{"path", "reason", "error"}``
+    dicts for files with no extractable text or that could not be opened
+    (scanned/image-only PDFs, empty files, non-PDFs): ``reason`` is the human
+    message, ``error`` the loader's constant per-item job error (a
+    ``LoaderError`` subclass's ``job_error`` — ``NO_TEXT_ERROR`` for a scanned
+    PDF — else the reason itself), which the receipt carries verbatim so a job
+    can ``GROUP BY`` it. Pure/deterministic — no filesystem writes.
     """
     loader = loader or PdfLoader()
     records: list[dict] = []
@@ -77,10 +85,12 @@ def extract_pdfs(
             docs = loader.load(source)
         except LoaderError as e:
             # Typed, caller-safe loader failure (no text / unreadable / non-PDF).
-            skipped.append({"path": source, "reason": str(e)})
+            skipped.append({"path": source, "reason": str(e),
+                            "error": getattr(e, "job_error", None) or str(e)})
             continue
         except Exception as e:  # noqa: BLE001 - one bad file must not sink the batch
-            skipped.append({"path": source, "reason": f"{type(e).__name__}: {e}"})
+            skipped.append({"path": source, "reason": f"{type(e).__name__}: {e}",
+                            "error": f"{type(e).__name__}: {e}"})
             continue
         for doc in docs:
             records.append(
@@ -100,14 +110,23 @@ def write_jsonl(records: list[dict], out: str) -> None:
             fh.write("\n")
 
 
-def build_report(records: list[dict], skipped: list[dict], out: str) -> dict:
-    return {
+def build_report(
+    records: list[dict], skipped: list[dict], out: str, inputs: list[Path] | None = None
+) -> dict:
+    """The sidecar report. ``inputs`` (every attempted path, in extraction
+    order) lets the ingest step enumerate the batch even when the shard is
+    empty — a batch of nothing but scanned PDFs is N failed documents, not an
+    unreadable shard."""
+    report = {
         "out": out,
         "n_input": len(records) + len(skipped),
         "n_extracted": len(records),
         "n_skipped": len(skipped),
         "skipped": skipped,
     }
+    if inputs is not None:
+        report["inputs"] = [str(p) for p in inputs]
+    return report
 
 
 def main(argv=None) -> int:
@@ -115,7 +134,7 @@ def main(argv=None) -> int:
     paths = iter_pdf_paths(args.pdfs, recursive=args.recursive)
     records, skipped = extract_pdfs(paths)
     write_jsonl(records, args.out)
-    report = build_report(records, skipped, args.out)
+    report = build_report(records, skipped, args.out, inputs=paths)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, sort_keys=True)

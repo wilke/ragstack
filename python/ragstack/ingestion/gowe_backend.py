@@ -34,12 +34,24 @@ COMPLETED and post-stages it in the same scheduler tick, so ``wait`` treats
 COMPLETED as terminal only once ``output_state`` is ``delivered`` (or
 ``upload_failed`` → :class:`OutputStagingFailed`), bounded by
 ``output_wait_timeout``.
+
+Per-DOCUMENT status under batching (#203 2b). The scatter workflow ingests a
+*batch* of PDFs per task, so ``receipt.json`` holds one ``ShardReceipt`` per
+batch, not per item; the per-document truth is each receipt's ``docs`` rows
+(``error`` empty = upserted, else why not; ``chunk_ids`` = that document's).
+:meth:`GoWeBackend._map_archive_receipts` therefore maps items to rows **by
+source basename** (the engine pre-stages a ``ws://`` input under its basename,
+which is what the extract tool records as the document's path), a failed batch
+attributes its error to every document of that batch, and a row's constant
+error (``NO_TEXT_ERROR`` for a scanned PDF) reaches the job's per-item error
+verbatim. Option-A archives (one receipt per item) still map positionally.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import posixpath
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,7 +61,7 @@ from ragstack.ingestion.gowe_client import (
     GoWeError,
 )
 from ragstack.ingestion.manifest import ItemResult, WorkItem
-from ragstack.ingestion.receipts import COMPLETED, ShardReceipt
+from ragstack.ingestion.receipts import COMPLETED, DocRow, ShardReceipt
 from ragstack.jobstore import COMPLETED as JOB_COMPLETED
 from ragstack.jobstore import FAILED as JOB_FAILED
 from ragstack.workspace import WorkspaceClient, WorkspaceError, ws_path
@@ -61,6 +73,14 @@ log = logging.getLogger(__name__)
 ARCHIVE_RECEIPT_NAME = "receipt.json"
 #: The engine's failure label when post-staging to output_destination fails.
 OUTPUT_STAGING_FAILED = "OUTPUT_STAGING_FAILED"
+#: Per-item error when the delivered receipts account for the run but not for
+#: this document (its batch's receipt names no row for it).
+NO_RECEIPT_ENTRY = "no receipt entry for document"
+#: Per-item error for a receipt entry that is not a readable ShardReceipt.
+NO_READABLE_RECEIPT = "no readable receipt for shard"
+#: Per-item error for a document in a failed batch whose receipt names no
+#: reason (a receipt not written by ``run_shard``).
+BATCH_FAILED = "batch failed"
 
 
 class GoWeContractError(GoWeError):
@@ -117,6 +137,8 @@ class GoWeBackend:
         timeout: float = 7200.0,
         output_wait_timeout: float = 600.0,
         workspace: WorkspaceClient | None = None,
+        interactive_poll_interval: float = 0.5,
+        interactive_max_items: int = 50,
     ) -> None:
         self.client = client
         self.workflow_cwl = workflow_cwl
@@ -132,6 +154,14 @@ class GoWeBackend:
         # group no worker has → every shard fails preflight).
         self.worker_group = (worker_group or "").strip() or None
         self.poll_interval = poll_interval
+        # The poll interval is a per-SUBMISSION concern (#203 2b): the setting
+        # is the right granularity for a bulk run, but a 3-file browser upload
+        # that finishes in 20 s must not wait up to 5 s to learn it. A
+        # submission of at most ``interactive_max_items`` items polls every
+        # ``interactive_poll_interval`` seconds (never slower than the setting
+        # — a 0 configured for tests stays 0).
+        self.interactive_poll_interval = interactive_poll_interval
+        self.interactive_max_items = interactive_max_items
         self.timeout = timeout
         self.output_wait_timeout = output_wait_timeout
         # Reads the archive's receipt.json on the user path (holds no token).
@@ -214,7 +244,8 @@ class GoWeBackend:
         sub_id = str(sub.get("id", ""))
         log.info("gowe: submitted %s (%d item(s)) as workflow %s", sub_id, len(items), wf_id)
         final = await self.client.wait(
-            sub_id, poll_interval=self.poll_interval, timeout=self.timeout, token=token,
+            sub_id, poll_interval=self.poll_interval_for(len(items)), timeout=self.timeout,
+            token=token,
             require_delivery=bool(output_destination),
             delivery_timeout=self.output_wait_timeout,
         )
@@ -242,6 +273,14 @@ class GoWeBackend:
         results = await self._map_outputs(items, final, token=token)
         return GoWeRun(results=results, submission_id=sub_id, state=state)
 
+    def poll_interval_for(self, n_items: int) -> float:
+        """The poll interval for a submission of ``n_items`` work items: the
+        interactive interval for a small (upload-sized) submission, the
+        configured one otherwise — and never slower than the configured one."""
+        if n_items <= self.interactive_max_items:
+            return min(self.poll_interval, self.interactive_poll_interval)
+        return self.poll_interval
+
     @staticmethod
     def _archive_ref(output_destination: str, version: Any) -> str:
         """Where the ``archive`` Directory landed, from the engine's contract: a
@@ -263,12 +302,16 @@ class GoWeBackend:
         workspace: WorkspaceClient | None,
     ) -> list[ItemResult]:
         """Read ``<archive>/receipt.json`` as the caller and map its entries to
-        the items **positionally** (the pack step writes the per-item receipts
-        in scatter order, which is input order). A single receipt object (a
-        one-item run: archive.py copies it verbatim) is one entry. A missing
-        file, a non-JSON body, a non-list/dict shape, or fewer entries than
-        items is a :class:`GoWeContractError`; a malformed individual entry
-        fails only its item."""
+        the items **per document**: the pack step writes one ``ShardReceipt``
+        per scattered task — under batching (#203 2b) a task is a BATCH of
+        PDFs — and each receipt's ``docs`` rows carry the per-document outcome.
+        Rows are matched to items by source basename (the engine pre-stages a
+        ``ws://`` input under its basename; the extract tool records that path
+        on the row). A one-item run's single receipt object (archive.py copies
+        it verbatim) is one entry. A missing file, a non-JSON body, a
+        non-list/dict shape, or receipts that name NONE of the items is a
+        :class:`GoWeContractError`; a malformed entry or an unmatched item
+        fails only the items it concerns. See :func:`map_receipt_entries`."""
         if workspace is None:
             raise GoWeContractError(
                 "no Workspace client to read the archive's receipts with — GoWeBackend "
@@ -286,29 +329,12 @@ class GoWeBackend:
         except ValueError as e:
             raise GoWeContractError(f"{path} is not valid JSON: {e}") from None
         entries: list[Any] = [data] if isinstance(data, dict) else data if isinstance(data, list) else []
-        if not isinstance(data, dict | list) or len(entries) < len(items):
+        if not isinstance(data, dict | list) or not entries:
             raise GoWeContractError(
-                f"{path} holds {len(entries)} receipt(s) for {len(items)} work item(s); "
+                f"{path} holds no receipt for {len(items)} work item(s); "
                 f"the archive does not satisfy the per-item receipts contract"
             )
-        if len(entries) > len(items):
-            log.warning("gowe: %d receipts for %d work items in %s; mapping positionally",
-                        len(entries), len(items), path)
-        results: list[ItemResult] = []
-        for wi, entry in zip(items, entries, strict=False):
-            try:
-                r = ShardReceipt.from_dict(entry)
-            except (ValueError, TypeError, KeyError, AttributeError) as e:
-                log.warning("gowe: unreadable receipt entry for %s in %s: %s",
-                            wi.item_id, path, type(e).__name__)
-                results.append(self._failed(wi, "no readable receipt for shard"))
-                continue
-            results.append(ItemResult(
-                item_id=wi.item_id, source=wi.source,
-                status=_receipt_status_to_job(r.status),
-                chunk_ids=list(r.chunk_ids), error=r.error,
-            ))
-        return results
+        return map_receipt_entries(items, entries, label=path)
 
     async def _map_outputs(
         self, items: list[WorkItem], submission: dict[str, Any], *, token: str | None = None
@@ -371,6 +397,103 @@ class GoWeBackend:
     def _failed(wi: WorkItem, error: str) -> ItemResult:
         return ItemResult(item_id=wi.item_id, source=wi.source, status=JOB_FAILED,
                           error=error)
+
+
+def _item_key(source: str) -> str:
+    """The name a receipt row is matched on: the basename of the item's source
+    (``ws://`` URIs through :func:`ws_path`). The engine pre-stages a Workspace
+    file under its basename, so that is the path the extract tool records."""
+    path = ws_path(source) if source.startswith("ws://") else source
+    return posixpath.basename(path.rstrip("/"))
+
+
+def _row_result(wi: WorkItem, receipt: ShardReceipt, row: DocRow) -> ItemResult:
+    """One document's result from its row (+ its batch's receipt): the row's
+    own error verbatim, else the batch error when the batch failed, else
+    completed. ``chunk_ids`` are the row's; a receipt written before rows
+    carried ids (one document per receipt) falls back to the shard's."""
+    error = row.error
+    if not error and receipt.status != COMPLETED:
+        error = receipt.error or BATCH_FAILED
+    chunk_ids = list(row.chunk_ids)
+    if not chunk_ids and not error and len(receipt.docs) == 1:
+        chunk_ids = list(receipt.chunk_ids)
+    return ItemResult(
+        item_id=wi.item_id, source=wi.source,
+        status=JOB_FAILED if error else JOB_COMPLETED, chunk_ids=chunk_ids, error=error,
+    )
+
+
+def map_receipt_entries(
+    items: list[WorkItem], entries: list[Any], *, label: str = "receipt.json"
+) -> list[ItemResult]:
+    """Map receipt entries (one per scattered task, each a batch) to one
+    ``ItemResult`` per work item — by document, not by receipt position.
+
+    1. Every readable receipt's ``docs`` rows are indexed by source basename.
+    2. Each item is looked up by its own source basename: a hit yields that
+       document's status/chunk ids/error (a failed batch's error reaches every
+       document of the batch through the row — ``run_shard`` writes it there —
+       or, for a receipt that did not, through the receipt's ``error``).
+    3. An item with no row falls back to POSITIONAL mapping only when there is
+       exactly one entry per item (an Option-A archive, one receipt per PDF);
+       otherwise it fails with :data:`NO_RECEIPT_ENTRY`.
+
+    Raises :class:`GoWeContractError` when the receipts name none of the
+    items and cannot be mapped positionally either — that is a workflow that
+    cannot report, not N failed documents (#203 blocker c).
+    """
+    receipts: list[ShardReceipt | None] = []
+    by_name: dict[str, tuple[ShardReceipt, DocRow]] = {}
+    for entry in entries:
+        try:
+            r = ShardReceipt.from_dict(entry)
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            log.warning("gowe: unreadable receipt entry in %s: %s", label, type(e).__name__)
+            receipts.append(None)
+            continue
+        receipts.append(r)
+        for row in r.docs:
+            key = posixpath.basename(row.source.rstrip("/")) if row.source else ""
+            if not key:
+                continue
+            if key in by_name:
+                log.warning("gowe: duplicate document name %r in %s; keeping the first",
+                            key, label)
+                continue
+            by_name[key] = (r, row)
+
+    positional = len(entries) == len(items)
+    results: list[ItemResult] = []
+    matched = 0
+    for i, wi in enumerate(items):
+        hit = by_name.get(_item_key(wi.source))
+        if hit is not None:
+            matched += 1
+            results.append(_row_result(wi, *hit))
+            continue
+        if positional:
+            rec = receipts[i]
+            if rec is None:
+                results.append(GoWeBackend._failed(wi, NO_READABLE_RECEIPT))
+            else:
+                results.append(ItemResult(
+                    item_id=wi.item_id, source=wi.source,
+                    status=_receipt_status_to_job(rec.status),
+                    chunk_ids=list(rec.chunk_ids), error=rec.error,
+                ))
+            continue
+        results.append(GoWeBackend._failed(wi, NO_RECEIPT_ENTRY))
+    if matched == 0 and not positional:
+        raise GoWeContractError(
+            f"{label} holds {len(entries)} receipt(s) naming none of the {len(items)} "
+            f"work item(s); the archive does not satisfy the per-item receipts contract"
+        )
+    if matched < len(items):
+        log.warning("gowe: %d of %d work items have no receipt row in %s%s",
+                    len(items) - matched, len(items), label,
+                    " (mapped positionally)" if positional else "")
+    return results
 
 
 def _staging_failed(submission: dict[str, Any]) -> bool:
