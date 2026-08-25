@@ -266,21 +266,15 @@ steps:
         archive: {type: Directory, outputBinding: {glob: $(inputs.version)}}
 
 outputs:
-  shard:
-    type: File
-    outputSource: extract/shard
-  report:
-    type: File
-    outputSource: extract/report
-  embeddings:
-    type: File[]
-    outputSource: embed/embeddings
-  summary:
-    type: File
-    outputSource: load/summary
+  # THE ONLY workflow-level output (#203). GoWe post-stages every top-level File
+  # output of a submission with an output_destination into that folder — flat,
+  # by basename, overwriting — so exposing shard/report/embeddings/summary here
+  # would spill them into the user's versions/ folder next to versions/<n>/
+  # (the embedding payload twice). They all live inside the archive already;
+  # the load summary is its receipt.json. Same rule as pdf-ingest-scatter.cwl.
   archive:
     type: Directory
     doc: "The version directory (basename == version): manifest.json,
-      chunks.jsonl.gz, vectors.f32, receipt.json. GoWe post-stages it to
-      <output_destination>/<version>/."
+      chunks.jsonl.gz, vectors.f32, receipt.json (the load summary). GoWe
+      post-stages it to <output_destination>/<version>/."
     outputSource: pack/archive

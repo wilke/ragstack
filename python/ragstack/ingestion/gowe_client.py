@@ -32,6 +32,13 @@ import httpx
 
 DEFAULT_BASE_URL = os.environ.get("GOWE_URL", "http://localhost:8091")
 TERMINAL_STATES = {"COMPLETED", "FAILED", "CANCELLED"}
+#: ``output_state`` values that end post-staging (the engine's
+#: ``pkg/model/submission.go``). ``""`` (not started) and ``uploading`` are not
+#: terminal: a submission is marked COMPLETED and post-staged in the SAME
+#: scheduler tick, so a poll can observe COMPLETED before delivery is decided.
+OUTPUT_DELIVERED = "delivered"
+OUTPUT_UPLOAD_FAILED = "upload_failed"
+OUTPUT_TERMINAL_STATES = {OUTPUT_DELIVERED, OUTPUT_UPLOAD_FAILED}
 
 # Token lookup order: explicit env first, then the files GoWe's own CLI reads.
 _TOKEN_ENV = ("GOWE_TOKEN", "BVBRC_TOKEN")
@@ -97,6 +104,12 @@ class GoWeClient:
         if self._owns_http:
             await self._http.aclose()
 
+    @property
+    def http(self) -> httpx.AsyncClient:
+        """The underlying HTTP client (shared with the Workspace client the
+        backend reads receipts through, so one pool serves both)."""
+        return self._http
+
     def _headers(self, token: str | None = None) -> dict[str, str]:
         # GoWe accepts the raw token (it strips an optional "Bearer " prefix). A
         # per-call token replaces the client's own for that request only.
@@ -158,8 +171,10 @@ class GoWeClient:
         ``token`` submits AS THAT USER: it is sent in this request's
         ``Authorization`` header only (the engine authenticates the submission
         with it, pre-stages ``ws://`` inputs and post-stages outputs to
-        ``output_destination`` with it). GoWe requires ``output_destination`` to
-        lie under that token owner's Workspace home and refuses otherwise."""
+        ``output_destination`` with it). The engine stores ``output_destination``
+        verbatim — it does NOT check that it lies under the token owner's home;
+        that property comes from the Workspace's own ACLs at upload time and from
+        the API deriving the destination from the caller's verified subject."""
         body: dict[str, Any] = {"workflow_id": workflow_id, "inputs": inputs}
         if labels:
             body["labels"] = labels
@@ -180,19 +195,46 @@ class GoWeClient:
         poll_interval: float = 3.0,
         timeout: float = 3600.0,
         token: str | None = None,
+        require_delivery: bool = False,
+        delivery_timeout: float = 600.0,
     ) -> dict[str, Any]:
         """Poll a submission until it reaches a terminal state. Returns the final
         record. Raises ``GoWeError`` on timeout (the submission keeps running).
-        ``token`` polls as the submitter (a submission is visible to its owner)."""
+        ``token`` polls as the submitter (a submission is visible to its owner).
+
+        ``require_delivery`` (set when the submission carried an
+        ``output_destination``): a COMPLETED submission counts as terminal only
+        once its ``output_state`` is ``delivered`` or ``upload_failed`` — the
+        engine finalizes and post-stages in one tick, so COMPLETED alone does
+        not mean the outputs exist yet. That second wait is bounded separately
+        by ``delivery_timeout`` from the first COMPLETED observation: an engine
+        without a Workspace stager leaves ``output_state`` empty forever, and
+        that must fail loudly rather than hang."""
         deadline = time.monotonic() + timeout
+        delivery_deadline: float | None = None
         while True:
             sub = await self.get_submission(sub_id, token=token)
-            if sub.get("state") in TERMINAL_STATES:
-                return sub
-            if time.monotonic() >= deadline:
+            state = sub.get("state")
+            if state in TERMINAL_STATES:
+                if state != "COMPLETED" or not require_delivery:
+                    return sub
+                output_state = str(sub.get("output_state") or "")
+                if output_state in OUTPUT_TERMINAL_STATES:
+                    return sub
+                now = time.monotonic()
+                if delivery_deadline is None:
+                    delivery_deadline = now + delivery_timeout
+                if now >= delivery_deadline:
+                    raise GoWeError(
+                        f"submission {sub_id} COMPLETED but its outputs were not "
+                        f"delivered after {delivery_timeout}s "
+                        f"(output_state={output_state!r}); is the engine's "
+                        f"workspace stager running?"
+                    )
+            elif time.monotonic() >= deadline:
                 raise GoWeError(
                     f"submission {sub_id} not terminal after {timeout}s "
-                    f"(state={sub.get('state')})"
+                    f"(state={state})"
                 )
             await asyncio.sleep(poll_interval)
 

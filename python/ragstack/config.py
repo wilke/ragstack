@@ -373,6 +373,12 @@ class Settings(BaseSettings):
     # this — both ingest endpoints refused every non-local backend with 501.
     gowe_shards_input_key: str = "pdfs"
     gowe_receipts_output_key: str = "receipts"
+    # How long to wait, after the engine reports COMPLETED, for it to post-stage
+    # the archive to output_destination (output_state → delivered/upload_failed).
+    # Finalize and post-stage happen in one scheduler tick, so COMPLETED can be
+    # observed before delivery is decided; an engine with no Workspace stager
+    # never delivers, and this bound turns that into a loud failure.
+    gowe_output_wait_timeout: float = 600.0
 
     # BV-BRC Workspace (ragstack/workspace.py, #356): the JSON-RPC endpoint the
     # API writes a user's collection folder / sources to — always with the

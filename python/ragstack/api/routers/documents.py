@@ -38,7 +38,12 @@ from ragstack.api.deps import (
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal, resolve_tenant
 from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
-from ragstack.ingestion.gowe_backend import GoWeBackend, GoWeError
+from ragstack.ingestion.gowe_backend import (
+    OUTPUT_STAGING_FAILED,
+    GoWeBackend,
+    GoWeError,
+    OutputStagingFailed,
+)
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
 from ragstack.ingestion.manifest import WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
@@ -48,6 +53,7 @@ from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceClient,
     WorkspaceError,
+    WorkspaceExists,
     WorkspaceTooLarge,
     collection_folder,
     ws_path,
@@ -250,18 +256,21 @@ def _guard(entry: CollectionEntry) -> None:
 #
 # The API stays thin and never embeds:
 #
-#   validate → resolve collection (registry row → spec_hash) → [upload: write the
-#   PDFs into the caller's Workspace with the caller's token] → reserve the next
-#   archive version on the registry → submit the scatter workflow with ws:// File
-#   inputs, the caller's token in Authorization, output_destination = the
-#   collection's versions/ folder → return job_id; a background task waits for
-#   the receipts and checkpoints them + the archive location on the job.
+#   validate → resolve collection (registry row → spec_hash) → reserve the next
+#   archive version on the registry → mint the job → [upload: write the PDFs
+#   into the caller's Workspace with the caller's token] → submit the scatter
+#   workflow with ws:// File inputs, the caller's token in Authorization,
+#   output_destination = the collection's versions/ folder → return job_id; a
+#   background task waits for COMPLETED *and delivered*, reads the per-item
+#   receipts from receipt.json inside the delivered archive (versions/<n>/) with
+#   the caller's token, and checkpoints them + the archive location on the job.
 #
-# The engine pre-stages ws:// inputs and post-stages the `archive` Directory to
-# output_destination as the submitter — no staging directory on this host, no
-# task ever sees the token. The token lives only in this request and the
-# background task's closure; it is never on the job, in a log line, or in an
-# exception (GoWeClient / WorkspaceClient scrub and `raise … from None`).
+# The engine pre-stages ws:// inputs and post-stages the workflow's one output —
+# the `archive` Directory — to output_destination as the submitter: no staging
+# directory on this host, no task ever sees the token, nothing is downloaded
+# from the engine. The token lives only in this request and the background
+# task's closure; it is never on the job, in a log line, or in an exception
+# (GoWeClient / WorkspaceClient scrub and `raise … from None`).
 
 _GOWE = "gowe"
 _LOCAL = "local"
@@ -416,52 +425,67 @@ async def _run_gowe_ingest(
     output_destination: str,
     target: CollectionEntry,
     source: str,
+    workspace: WorkspaceClient,
 ) -> None:
-    """Background worker for the GoWe path: submit as the user, wait, checkpoint
-    one result per item, record the archive location. Never raises.
+    """Background worker for the GoWe path: submit as the user, wait for
+    completion AND delivery, checkpoint one result per item, record the archive
+    location. Never raises — every failure lands on the job as a caller-safe
+    label (an exception's class name; :data:`OUTPUT_STAGING_FAILED` when the
+    engine could not deliver the archive).
 
     Bypasses ``ShardedIngestor`` on purpose: ``GoWeBackend`` ignores the
     per-shard callable (the engine runs the tools), so nothing in that path
     would ever checkpoint the receipts — every successful run would read
     ``failed`` from its all-pending item counts. A :class:`GoWeContractError`
-    (COMPLETED but no receipts) fails the JOB with its class name as the label —
-    visible, never "every document failed" (#203 blocker c). The token reaches
-    only the engine requests; it is not on the job and not in these log lines.
+    (delivered, but no usable receipts) fails the JOB with its class name as
+    the label — visible, never "every document failed" (#203 blocker c). The
+    token reaches only the engine / Workspace requests; it is not on the job
+    and not in these log lines.
     """
-    await job_store.update(job_id, status=RUNNING)
-    await job_store.add_items(job_id, [(i.item_id, i.source) for i in items])
     try:
-        run = await backend.run_submission(
-            items, inputs=inputs, token=token, output_destination=output_destination
-        )
-    except GoWeError as e:
-        # Message is engine-facing (scrubbed of tokens by GoWeClient); the job
-        # carries only the caller-safe class-name label.
-        log.error("ingest job %s: gowe submission failed: %s", job_id, e)
-        await job_store.update(job_id, status=FAILED, error=type(e).__name__)
-        return
-    except Exception as e:
+        await job_store.update(job_id, status=RUNNING)
+        await job_store.add_items(job_id, [(i.item_id, i.source) for i in items])
+        try:
+            run = await backend.run_submission(
+                items, inputs=inputs, token=token, output_destination=output_destination,
+                workspace=workspace,
+            )
+        except OutputStagingFailed as e:
+            # Loaded into the stores, but no archive exists in the Workspace: the
+            # engine's own label, so #353's archive_pending retry can find it.
+            log.error("ingest job %s: %s", job_id, e)
+            await job_store.update(job_id, status=FAILED, error=OUTPUT_STAGING_FAILED)
+            return
+        except GoWeError as e:
+            # Message is engine-facing (scrubbed of tokens by GoWeClient); the
+            # job carries only the caller-safe class-name label.
+            log.error("ingest job %s: gowe submission failed: %s", job_id, e)
+            await job_store.update(job_id, status=FAILED, error=type(e).__name__)
+            return
+
+        for r in run.results:
+            await job_store.mark_item(
+                job_id, r.item_id, status=r.status, chunk_ids=r.chunk_ids, error=r.error
+            )
+        counts = await job_store.item_counts(job_id)
+        final = _final_status(counts)
+        fields: dict[str, object] = {"status": final}
+        if run.archive_ref:
+            fields["archive_ref"] = run.archive_ref
+        if len(run.results) == 1 and run.results[0].status == COMPLETED:
+            fields["chunk_ids"] = run.results[0].chunk_ids
+        await job_store.update(job_id, **fields)
+        if final == COMPLETED:
+            from ragstack.api.deps import write_ingest_manifest_for
+
+            chunks = sum(len(r.chunk_ids or []) for r in run.results)
+            write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+    except Exception as e:  # noqa: BLE001 — a background task must never raise
         log.warning("ingest job %s failed: %s", job_id, type(e).__name__)
-        await job_store.update(job_id, status=FAILED, error=type(e).__name__)
-        return
-
-    for r in run.results:
-        await job_store.mark_item(
-            job_id, r.item_id, status=r.status, chunk_ids=r.chunk_ids, error=r.error
-        )
-    counts = await job_store.item_counts(job_id)
-    final = _final_status(counts)
-    fields: dict[str, object] = {"status": final}
-    if run.archive_ref:
-        fields["archive_ref"] = run.archive_ref
-    if len(run.results) == 1 and run.results[0].status == COMPLETED:
-        fields["chunk_ids"] = run.results[0].chunk_ids
-    await job_store.update(job_id, **fields)
-    if final == COMPLETED:
-        from ragstack.api.deps import write_ingest_manifest_for
-
-        chunks = sum(len(r.chunk_ids or []) for r in run.results)
-        write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+        try:
+            await job_store.update(job_id, status=FAILED, error=type(e).__name__)
+        except Exception:  # noqa: BLE001
+            log.warning("ingest job %s: could not record the failure", job_id, exc_info=True)
 
 
 async def _gowe_upload_sources(
@@ -481,8 +505,10 @@ async def _gowe_upload_sources(
     PUT carries a Content-Length; the byte cap is enforced while streaming
     either way. Refusals: over ``max_document_bytes`` → 413, a rejected token →
     401, any other Workspace failure → 502. A same-named file already in
-    ``sources/`` is refused by the Workspace (never overwritten) → 409; see the
-    #202 hardening spec for the per-request bounds still to come.
+    ``sources/`` is refused (never overwritten, never deleted) → 409 naming the
+    existing object, which can be ingested by reference through
+    ``POST /v1/ingest``; see the #202 hardening spec for the per-request bounds
+    still to come.
     """
     folder = await workspace.ensure_collection_folder(
         token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
@@ -508,10 +534,30 @@ async def _gowe_upload_sources(
             raise HTTPException(
                 status_code=401, detail="the Workspace rejected the caller's token"
             ) from None
-        except WorkspaceError as e:
-            status = 409 if "already exists" in str(e).lower() else 502
+        except WorkspaceExists as e:
+            existing = ws_uri(e.path)
             raise HTTPException(
-                status_code=status, detail=f"Workspace write of {safe_name!r} failed: {e}"
+                status_code=409,
+                detail=(
+                    f"{safe_name!r} already exists in the collection's sources at "
+                    f"{existing}; it was left untouched — to ingest it, POST /v1/ingest "
+                    f"with source={existing}"
+                ),
+            ) from None
+        except WorkspaceError as e:
+            # The live service's own wording for an existing object.
+            if "overwrit" in str(e).lower():
+                existing = ws_uri(f"{sources}/{safe_name}")
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{safe_name!r} already exists in the collection's sources at "
+                        f"{existing}; it was left untouched — to ingest it, POST "
+                        f"/v1/ingest with source={existing}"
+                    ),
+                ) from None
+            raise HTTPException(
+                status_code=502, detail=f"Workspace write of {safe_name!r} failed: {e}"
             ) from None
         items.append(WorkItem(item_id=ws_path(uri), source=uri))
     return items
@@ -592,6 +638,7 @@ async def ingest(
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
+        workspace = get_workspace(http_request)
         # Every refusal precedes the job: a version-reservation failure (json
         # registry → 503) must not leave an `accepted` job nobody will run.
         version = await _reserve_version(entry, collection_store)
@@ -607,6 +654,7 @@ async def ingest(
             f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
             entry,
             request.source,
+            workspace,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
     # Fail closed when ingest is unconfined. `request.source` is a server-side
@@ -767,11 +815,20 @@ async def ingest_upload(
         # #353). One code path with the Workspace-reference ingest above; no
         # staging directory on this host, so no INGEST_ROOT gate here.
         token, subject = _gowe_caller(principal)
+        # Gate parity with the local path, BEFORE any Workspace write: the
+        # content-type and the %PDF magic (415).
         for upload in files:
             if (upload.content_type or "").split(";", 1)[0].strip() != "application/pdf":
                 raise HTTPException(
                     status_code=415,
                     detail=f"{upload.filename!r}: only application/pdf uploads are accepted",
+                )
+            head = await upload.read(len(_PDF_MAGIC))
+            await upload.seek(0)
+            if not head.startswith(_PDF_MAGIC):
+                raise HTTPException(
+                    status_code=415,
+                    detail=f"{upload.filename!r}: not a PDF (missing %PDF header)",
                 )
         entry = await _authorize_ingest_target(collection, principal, collections)
         if entry is None:
@@ -780,12 +837,15 @@ async def ingest_upload(
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
         workspace = get_workspace(http_request)
+        # Reserve the version BEFORE writing sources: a registry that cannot
+        # (json → 503) must not leave files uploaded with no version to run
+        # under. A rejected upload then leaves a gap in the numbering — fine.
+        version = await _reserve_version(entry, collection_store)
         job = await job_store.create(source="upload", tenant_id=principal.tenant)
         try:
             items = await _gowe_upload_sources(
                 workspace, token, subject, entry, record, tenant, files
             )
-            version = await _reserve_version(entry, collection_store)
         except HTTPException:
             await job_store.update(job.job_id, status=FAILED, error="rejected")
             raise
@@ -800,6 +860,7 @@ async def ingest_upload(
             f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
             entry,
             "upload",
+            workspace,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
     if not settings.ingest_root.strip():

@@ -1,17 +1,27 @@
 """``ingest_backend=gowe``: user ingest submits to GoWe AS THE USER (#203 2a).
 
-Fake GoWe engine (``httpx.MockTransport``) + fake Workspace; nothing live.
+Fake GoWe engine (``httpx.MockTransport``) + fake Workspace; nothing live. The
+fakes model what the engine's post-staging really does: a submission is marked
+COMPLETED and post-staged in the same scheduler tick, so polls observe
+``COMPLETED`` with ``output_state`` ``""`` → ``uploading`` → ``delivered`` (or
+``upload_failed``); the workflow's only output is the ``archive`` Directory,
+delivered to ``<output_destination>/<version>/``; the per-item receipts are
+read from ``receipt.json`` inside it through the Workspace with the caller's
+token — nothing is downloaded from the engine.
+
 Pins the seam: upload → one ``upload_source`` per file with the caller's token
 → ONE submission whose inputs are the ``ws://`` sources, whose ``Authorization``
 header is the caller's token and whose ``output_destination`` is the
 collection's ``versions/`` folder under the caller's home; ``version``
 increments across jobs (one registry read + one registry write per job — the
 whole per-job cost, so no perf budget beyond the call-count assertion); the
-archive location lands on the job. The token appears in NO log line (DEBUG
-caplog), NO job-store field and NO exception text. A keyless / API-key
-principal is refused with 401; a non-Workspace source with 400; the default
-(unregistered) collection with 400; any backend that is neither local nor gowe
-still 501s. ``ingest_backend=local`` is covered unchanged by the existing tests.
+archive location lands on the job, only after delivery. The token appears in NO
+log line (DEBUG caplog), NO job-store field and NO exception text — for a
+transport failure and for an engine that echoes the header back in a 401 body.
+A keyless / API-key principal is refused with 401; a non-Workspace source with
+400; the default (unregistered) collection with 400; any backend that is
+neither local nor gowe still 501s. ``ingest_backend=local`` is covered
+unchanged by the existing tests.
 """
 from __future__ import annotations
 
@@ -36,15 +46,23 @@ from ragstack.identity import (
     reset_identity_provider,
     set_identity_provider,
 )
-from ragstack.ingestion.gowe_backend import GoWeBackend
+from ragstack.ingestion.gowe_backend import OUTPUT_STAGING_FAILED, GoWeBackend
 from ragstack.ingestion.gowe_client import GoWeClient
 from ragstack.ingestion.receipts import COMPLETED, ShardReceipt
-from ragstack.workspace import WorkspaceTooLarge, collection_folder, ws_path, ws_uri
+from ragstack.workspace import (
+    WorkspaceExists,
+    WorkspaceNotFound,
+    WorkspaceTooLarge,
+    collection_folder,
+    ws_path,
+    ws_uri,
+)
 
 TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIGNATURE"
 SUBJECT = "alice@patricbrc.org"
 TENANT = f"bvbrc:{SUBJECT}"
 HOME = f"ws:///{SUBJECT}/home/"
+VERSIONS = HOME + ".ragstack/collections/lib1/versions/"
 _FIXTURE = Path(__file__).resolve().parents[3] / "contracts" / "fixtures" / "documents" / "sample_small.pdf"
 
 
@@ -61,62 +79,82 @@ class _Provider:
 
 
 class FakeEngine:
-    """GoWe REST fake: records every submission (body + Authorization header)."""
+    """GoWe REST fake with two-phase completion: every poll of a submission
+    reports COMPLETED, and ``output_state`` walks "" → uploading → delivered
+    (or → upload_failed). The only output is the archive Directory."""
 
     def __init__(self) -> None:
         self.submissions: list[dict[str, Any]] = []
         self.auth: list[str | None] = []
-        self.fail: str | None = None  # "transport" | "no_receipts"
+        self.polls: list[tuple[str, str, str]] = []  # (sub id, state, output_state)
+        self.events: list[str] = []  # shared timeline with the fake Workspace
+        self.fail: str | None = None  # "transport" | "echo-401" | "upload_failed"
 
     def __call__(self, req: httpx.Request) -> httpx.Response:
         self.auth.append(req.headers.get("Authorization"))
         if self.fail == "transport":
             raise httpx.ConnectError("refused", request=req)
+        if self.fail == "echo-401":
+            return httpx.Response(401, text=f"bad token: {req.headers.get('Authorization')}")
         p = req.url.path
         if req.method == "POST" and p == "/api/v1/workflows":
             return httpx.Response(201, json={"data": {"id": "wf_1"}})
         if req.method == "POST" and p == "/api/v1/submissions":
             body = json.loads(req.content)
             body["_auth"] = req.headers.get("Authorization")
+            body["_polls"] = 0
             self.submissions.append(body)
             sid = f"sub_{len(self.submissions)}"
             return httpx.Response(201, json={"data": {"id": sid, "state": "PENDING"}})
         if req.method == "GET" and p.startswith("/api/v1/submissions/"):
-            n = int(p.rsplit("_", 1)[1])
-            body = self.submissions[n - 1]
-            key = "pdfs"
-            files = body["inputs"][key]
-            outputs: dict[str, Any] = {}
-            if self.fail != "no_receipts":
-                outputs["receipts"] = [
-                    {"class": "File", "location": f"file:///w/{n}/r{i}.json"}
-                    for i in range(len(files))
-                ]
-                outputs["archive"] = {"class": "Directory",
-                                      "location": f"file:///w/{n}/{body['inputs']['version']}"}
-            return httpx.Response(200, json={"data": {"id": p.rsplit('/', 1)[1],
-                                                       "state": "COMPLETED", "outputs": outputs}})
+            sid = p.rsplit("/", 1)[1]
+            body = self.submissions[int(sid.rsplit("_", 1)[1]) - 1]
+            body["_polls"] += 1
+            n = body["_polls"]
+            final = "upload_failed" if self.fail == "upload_failed" else "delivered"
+            output_state = {1: "", 2: "uploading"}.get(n, final)
+            self.polls.append((sid, "COMPLETED", output_state))
+            self.events.append(f"poll:{output_state}")
+            version = body["inputs"]["version"]
+            outputs = {"archive": {"class": "Directory", "location": f"file:///w/{sid}/{version}"}}
+            return httpx.Response(200, json={"data": {"id": sid, "state": "COMPLETED",
+                                                       "output_state": output_state,
+                                                       "outputs": outputs}})
         if req.method == "GET" and p == "/api/v1/files/download":
-            loc = req.url.params["location"]
-            r = ShardReceipt(loc, "public", COMPLETED, n_docs=1, n_chunks=2,
-                             chunk_ids=[f"{loc}#0", f"{loc}#1"])
-            return httpx.Response(200, content=r.to_json().encode())
+            raise AssertionError("the user path must not download from the engine")
         return httpx.Response(404, text="unexpected")
+
+    def receipts_for(self, version: str) -> list[dict[str, Any]]:
+        for body in self.submissions:
+            if body["inputs"]["version"] == version:
+                return [
+                    json.loads(ShardReceipt(f["location"], "public", COMPLETED, n_docs=1,
+                                            n_chunks=2, chunk_ids=[f"{f['location']}#0",
+                                                                    f"{f['location']}#1"]).to_json())
+                    for f in body["inputs"]["pdfs"]
+                ]
+        raise WorkspaceNotFound(f"no submission wrote version {version}")
 
 
 class FakeWorkspace:
-    """Records ensure_collection_folder / upload_source calls; consumes streams."""
+    """Records ensure_collection_folder / upload_source calls; consumes streams;
+    serves ``versions/<n>/receipt.json`` from what the fake engine 'delivered'."""
 
-    def __init__(self) -> None:
+    def __init__(self, engine: FakeEngine) -> None:
+        self.engine = engine
         self.folders: list[tuple[str, str, str, str, str]] = []
         self.uploads: list[dict[str, Any]] = []
-        self.max_bytes_seen: list[int] = []
+        self.reads: list[tuple[str, str]] = []
+        self.existing: set[str] = set()  # filenames already in sources/
+        self.empty_receipts = False
 
     async def ensure_collection_folder(self, token, subject, collection_id, *, spec_hash, tenant):
         self.folders.append((token, subject, collection_id, spec_hash, tenant))
         return ws_uri(collection_folder(subject, collection_id))
 
     async def upload_source(self, token, folder, filename, stream, *, max_bytes, size=None):
+        if filename in self.existing:
+            raise WorkspaceExists(f"{ws_path(folder)}/{filename}")
         if size is not None and size > max_bytes:
             raise WorkspaceTooLarge(filename, max_bytes)
         n = 0
@@ -127,6 +165,17 @@ class FakeWorkspace:
         self.uploads.append({"token": token, "folder": folder, "filename": filename,
                              "size": size, "bytes": n})
         return ws_uri(f"{ws_path(folder)}/{filename}")
+
+    async def read_file(self, token, path):
+        self.reads.append((token, path))
+        self.engine.events.append("read")
+        assert path.startswith(ws_path(VERSIONS)) and path.endswith("/receipt.json"), path
+        version = path[len(ws_path(VERSIONS)) + 1:].split("/")[0]
+        if self.empty_receipts:
+            return b"[]"
+        receipts = self.engine.receipts_for(version)
+        # archive.py copies a single receipt verbatim (an object), else an array.
+        return json.dumps(receipts[0] if len(receipts) == 1 else receipts).encode()
 
 
 class CountingStore:
@@ -158,15 +207,16 @@ async def gowe(client, monkeypatch, _acl_store):
     set_identity_provider(_Provider())
 
     engine = FakeEngine()
+    workspace = FakeWorkspace(engine)
     http = httpx.AsyncClient(transport=httpx.MockTransport(engine))
     backend = GoWeBackend(
         GoWeClient("http://gowe.test", token="", http=http),
         "cwlVersion: v1.2\n", workflow_name="ragstack-pdf-ingest-scatter",
         static_inputs={"embedding_url": ["http://emb.test/v1"], "qdrant_url": "http://q.test"},
         shards_input_key="pdfs", receipts_output_key="receipts", poll_interval=0, timeout=5,
+        output_wait_timeout=5,
     )
     app.state.ingest_backend = backend
-    workspace = FakeWorkspace()
     app.state.workspace = workspace
 
     spec = CollectionSpec(id="lib1", label="lib1", owner=TENANT, collection="lib1_phys",
@@ -199,8 +249,10 @@ async def gowe(client, monkeypatch, _acl_store):
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
-async def _upload(client, *names: str, collection: str | None = "lib1", headers=AUTH):
-    files = [("files", (n, _pdf(), "application/pdf")) for n in names]
+async def _upload(client, *names: str, collection: str | None = "lib1", headers=AUTH,
+                  content: bytes | None = None):
+    files = [("files", (n, content if content is not None else _pdf(), "application/pdf"))
+             for n in names]
     data = {"collection": collection} if collection else {}
     return await client.post("/v1/ingest/upload", files=files, data=data, headers=headers)
 
@@ -237,7 +289,7 @@ async def test_upload_writes_sources_then_submits_once_as_the_user(client, gowe)
         {"class": "File", "location": f"ws://{src_folder}/a.pdf"},
         {"class": "File", "location": f"ws://{src_folder}/b.pdf"},
     ]
-    assert sub["output_destination"] == HOME + ".ragstack/collections/lib1/versions/"
+    assert sub["output_destination"] == VERSIONS
     inputs = sub["inputs"]
     assert inputs["version"] == "1" and inputs["collection_id"] == "lib1"
     assert inputs["spec_hash"] == spec.spec_hash() and inputs["job_id"] == job_id
@@ -249,17 +301,49 @@ async def test_upload_writes_sources_then_submits_once_as_the_user(client, gowe)
         "fixed_token", 256, 32)
     assert "shards" not in inputs
 
-    # Receipts mapped per item; archive location recorded on the job (#358's hook).
+    # Receipts read from the DELIVERED archive as the user, mapped per item;
+    # archive location recorded on the job (#358's hook).
+    assert ws.reads == [(TOKEN, ws_path(VERSIONS + "1") + "/receipt.json")]
     poll = await client.get(f"/v1/ingest/{job_id}", headers=AUTH)
     assert poll.status_code == 200 and poll.json()["status"] == "completed"
     assert poll.json()["items"] == {"total": 2, "completed": 2, "failed": 0, "pending": 0}
     assert "archive_ref" not in poll.json()  # contract unchanged
     job = await app.state.job_store.get(job_id)
-    assert job.archive_ref == HOME + ".ragstack/collections/lib1/versions/1"
+    assert job.archive_ref == VERSIONS + "1"
     assert job.tenant_id == TENANT and job.source == "upload"
 
     # The per-job registry cost: one read (spec_hash) + one write (next_version).
     assert store.calls == {"get": 1, "next_version": 1}
+
+
+@pytest.mark.asyncio
+async def test_completed_is_not_done_until_delivered(client, gowe):
+    """The engine reports COMPLETED with output_state "" (then uploading) before
+    the archive exists; the run keeps polling and only reads the receipts —
+    and only finishes — once it is delivered."""
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202
+    engine = gowe["engine"]
+    assert [s for _, _, s in engine.polls] == ["", "uploading", "delivered"]
+    assert engine.events == ["poll:", "poll:uploading", "poll:delivered", "read"]
+    job = await app.state.job_store.get(r.json()["job_id"])
+    assert job.status == "completed" and job.archive_ref == VERSIONS + "1"
+    assert job.chunk_ids == [f"ws:///{SUBJECT}/home/.ragstack/collections/lib1/sources/a.pdf#0",
+                             f"ws:///{SUBJECT}/home/.ragstack/collections/lib1/sources/a.pdf#1"]
+
+
+@pytest.mark.asyncio
+async def test_upload_failed_is_output_staging_failed(client, gowe):
+    gowe["engine"].fail = "upload_failed"
+    r = await _upload(client, "a.pdf", "b.pdf")
+    assert r.status_code == 202
+    job = await app.state.job_store.get(r.json()["job_id"])
+    assert job.status == "failed" and job.error == OUTPUT_STAGING_FAILED
+    assert job.archive_ref == ""  # nothing was delivered
+    assert gowe["workspace"].reads == []
+    poll = await client.get(f"/v1/ingest/{job.job_id}", headers=AUTH)
+    # The load happened but was never reported: items stay pending, not failed.
+    assert poll.json()["items"] == {"total": 2, "completed": 0, "failed": 0, "pending": 2}
 
 
 @pytest.mark.asyncio
@@ -271,8 +355,7 @@ async def test_version_increments_across_jobs(client, gowe):
     assert versions == ["1", "2"]
     js = app.state.job_store
     refs = [(await js.get(r.json()["job_id"])).archive_ref for r in (r1, r2)]
-    assert refs == [HOME + ".ragstack/collections/lib1/versions/1",
-                    HOME + ".ragstack/collections/lib1/versions/2"]
+    assert refs == [VERSIONS + "1", VERSIONS + "2"]
     assert gowe["store"].calls == {"get": 2, "next_version": 2}
 
 
@@ -289,13 +372,15 @@ async def test_workspace_reference_submits_directly_without_upload(client, gowe,
     assert sub["_auth"] == TOKEN
     assert sub["inputs"]["pdfs"] == [{"class": "File",
                                       "location": f"ws:///{SUBJECT}/home/papers/x.pdf"}]
-    assert sub["output_destination"] == HOME + ".ragstack/collections/lib1/versions/"
+    assert sub["output_destination"] == VERSIONS
     poll = await client.get(f"/v1/ingest/{r.json()['job_id']}", headers=AUTH)
     assert poll.json()["status"] == "completed"
     assert poll.json()["items"]["completed"] == 1
+    assert (await app.state.job_store.get(r.json()["job_id"])).archive_ref == VERSIONS + "1"
 
 
-@pytest.mark.parametrize("source", ["/data/corpus/x.pdf", "relative/x.pdf", "ws:///alice", "/alice/other/x.pdf", "file:///etc/passwd"])
+@pytest.mark.parametrize("source", ["/data/corpus/x.pdf", "relative/x.pdf", "ws:///alice",
+                                    "/alice/other/x.pdf", "file:///etc/passwd"])
 @pytest.mark.asyncio
 async def test_non_workspace_source_is_400_and_never_submitted(client, gowe, source):
     r = await client.post("/v1/ingest", json={"source": source, "collection": "lib1"},
@@ -303,6 +388,19 @@ async def test_non_workspace_source_is_400_and_never_submitted(client, gowe, sou
     assert r.status_code == 400, r.text
     assert "Workspace reference" in r.json()["detail"]
     assert gowe["engine"].submissions == []
+    assert gowe["store"].calls.get("next_version", 0) == 0  # refused before reserving
+
+
+def _assert_token_nowhere(caplog, backend) -> None:
+    assert TOKEN not in caplog.text
+    assert "SECRETSIGNATURE" not in caplog.text
+    assert TOKEN not in _job_store_dump()
+    assert TOKEN not in json.dumps(vars(backend), default=str)
+    assert TOKEN not in json.dumps(vars(backend.client), default=str)
+    for rec in caplog.records:
+        assert TOKEN not in rec.getMessage()
+        if rec.exc_text:
+            assert TOKEN not in rec.exc_text
 
 
 @pytest.mark.asyncio
@@ -316,22 +414,26 @@ async def test_token_in_no_log_line_no_job_field_no_exception(client, gowe, capl
     assert r2.status_code == 202
     job2 = await app.state.job_store.get(r2.json()["job_id"])
     assert job2.status == "failed" and job2.error == "GoWeError"
-
-    assert TOKEN not in caplog.text
-    assert "SECRETSIGNATURE" not in caplog.text
-    assert TOKEN not in _job_store_dump()
-    assert TOKEN not in json.dumps(vars(gowe["backend"]), default=str)
-    assert TOKEN not in json.dumps(vars(gowe["backend"].client), default=str)
     assert any("gowe submission failed" in rec.getMessage() for rec in caplog.records)
-    for rec in caplog.records:
-        assert TOKEN not in rec.getMessage()
-        if rec.exc_text:
-            assert TOKEN not in rec.exc_text
+    _assert_token_nowhere(caplog, gowe["backend"])
 
 
 @pytest.mark.asyncio
-async def test_completed_without_receipts_is_a_visible_job_failure(client, gowe):
-    gowe["engine"].fail = "no_receipts"
+async def test_engine_echoing_the_token_in_an_error_body_is_scrubbed(client, gowe, caplog):
+    caplog.set_level(logging.DEBUG)
+    gowe["engine"].fail = "echo-401"
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202
+    job = await app.state.job_store.get(r.json()["job_id"])
+    assert job.status == "failed" and job.error == "GoWeError"
+    logged = [rec.getMessage() for rec in caplog.records if "gowe submission failed" in rec.getMessage()]
+    assert logged and "[token]" in logged[0] and "401" in logged[0]
+    _assert_token_nowhere(caplog, gowe["backend"])
+
+
+@pytest.mark.asyncio
+async def test_delivered_archive_without_receipts_is_a_visible_job_failure(client, gowe):
+    gowe["workspace"].empty_receipts = True
     r = await _upload(client, "a.pdf", "b.pdf")
     assert r.status_code == 202
     job_id = r.json()["job_id"]
@@ -358,7 +460,7 @@ async def test_api_key_principal_is_401_on_both_endpoints(client, gowe, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_keyless_principal_is_401(client, gowe, monkeypatch):
+async def test_keyless_principal_is_401(client, gowe):
     # No credential at all: identity is on but nothing was presented → keyless
     # default principal (no token) → refused before any Workspace/engine call.
     r = await _upload(client, "a.pdf", headers={})
@@ -393,18 +495,47 @@ async def test_oversize_upload_is_413_before_any_submission(client, gowe, monkey
     r = await _upload(client, "big.pdf")
     assert r.status_code == 413, r.text
     assert gowe["engine"].submissions == []
-    assert gowe["store"].calls.get("next_version", 0) == 0  # no version consumed
-    # The job minted for the request is marked failed/rejected, like the local path.
+    # The version is reserved BEFORE the upload (so a registry that cannot
+    # reserve never leaves sources behind); a refused upload leaves a gap.
+    assert gowe["store"].calls.get("next_version", 0) == 1
     job = await app.state.job_store.get(list(app.state.job_store._jobs)[-1])
     assert job.status == "failed" and job.error == "rejected"
+    assert (await _upload(client, "big2.pdf")).status_code == 413  # a second gap
+    monkeypatch.setattr(settings, "max_document_bytes", 50_000_000)
+    r2 = await _upload(client, "ok.pdf")
+    assert r2.status_code == 202
+    assert gowe["engine"].submissions[-1]["inputs"]["version"] == "3"  # gaps at 1 and 2
+
+
+@pytest.mark.parametrize("name, body, ctype, why", [
+    ("n.txt", b"text", "text/plain", "application/pdf"),
+    ("fake.pdf", b"NOT-A-PDF-AT-ALL", "application/pdf", "%PDF"),
+    ("empty.pdf", b"", "application/pdf", "%PDF"),
+])
+@pytest.mark.asyncio
+async def test_non_pdf_is_415_before_any_workspace_write(client, gowe, name, body, ctype, why):
+    r = await client.post("/v1/ingest/upload", data={"collection": "lib1"},
+                          files=[("files", (name, body, ctype))], headers=AUTH)
+    assert r.status_code == 415, r.text
+    assert why in r.json()["detail"]
+    assert gowe["workspace"].uploads == [] and gowe["workspace"].folders == []
+    assert gowe["store"].calls.get("next_version", 0) == 0
 
 
 @pytest.mark.asyncio
-async def test_non_pdf_is_415_before_any_workspace_write(client, gowe):
-    r = await client.post("/v1/ingest/upload", data={"collection": "lib1"},
-                          files=[("files", ("n.txt", b"text", "text/plain"))], headers=AUTH)
-    assert r.status_code == 415
-    assert gowe["workspace"].uploads == [] and gowe["workspace"].folders == []
+async def test_existing_source_is_409_naming_the_object_and_the_reference_path(client, gowe):
+    gowe["workspace"].existing.add("dup.pdf")
+    r = await _upload(client, "dup.pdf")
+    assert r.status_code == 409, r.text
+    existing = f"ws:///{SUBJECT}/home/.ragstack/collections/lib1/sources/dup.pdf"
+    detail = r.json()["detail"]
+    assert existing in detail and "POST /v1/ingest" in detail and "untouched" in detail
+    assert gowe["engine"].submissions == []
+    # …and that reference path works.
+    r2 = await client.post("/v1/ingest", json={"source": existing, "collection": "lib1"},
+                           headers=AUTH)
+    assert r2.status_code == 200
+    assert (await app.state.job_store.get(r2.json()["job_id"])).status == "completed"
 
 
 @pytest.mark.asyncio

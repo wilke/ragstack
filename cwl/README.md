@@ -23,7 +23,7 @@ tool + receipts).
 | `pdf-extract.cwl` | **PDF plane (#202/#203).** Run the real `PdfLoader` (PyMuPDF) over PDFs → one `{text,path,metadata}` JSONL shard (+ a skipped-files report). |
 | `pdf-ingest.cwl` | **PDF plane (#202/#203).** Workflow chaining `pdf-extract` → `embed_shard` → `load_embeddings` — a directory of PDFs straight into Qdrant/ES. |
 | `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
-| `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-PDF (#203 Option A).** Scatter/gather: one PDF → one extract task → one `ingest_shard` task → **one receipt**, then merge. The only PDF workflow `GoWeBackend` can actually drive (below). |
+| `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-PDF (#203 Option A).** Scatter/gather: one PDF → one extract task → one `ingest_shard` task → **one receipt**, then pack into the versioned archive — the workflow's **only** output, whose `receipt.json` array the API reads back. The PDF workflow the API drives under `INGEST_BACKEND=gowe` (below). |
 | `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
 | `archive-collection.cwl` | **Archive step (#357, phase 2 of #353).** Pack the embed stage's embedding file(s) + the load receipt(s) into one `Directory` named by the version number (`manifest.json`, `chunks.jsonl.gz`, `vectors.f32`, `receipt.json` — the `ragstack-archive/1` format, [`docs/ingest-paths.md`](../docs/ingest-paths.md#archive-format)). Inlined as the last step of both `pdf-ingest*.cwl`, whose `archive: Directory` workflow output GoWe post-stages to `<output_destination>/<version>/`. |
 | `archive-tombstone.cwl` | **Delete version (#357).** Same tool in tombstone mode: a list of removed doc ids → a `Directory` named by the version holding only `manifest.json` + `tombstone.json`. |
@@ -209,20 +209,35 @@ reconstructs the same store state as the coupled `ingest()`).
 ### PDF scatter-per-PDF (#203 Option A) — the driveable PDF workflow
 
 `pdf-ingest.cwl` is **one shard per run**: every PDF lands in a single JSONL
-shard, embedded once and loaded once, and the workflow emits no receipts. That is
-fine for an operator running a batch by hand, but it cannot be driven by
-`GoWeBackend`, which maps a `receipts` `File[]` output back to work items
-**positionally** — a workflow with no `receipts` output makes a fully successful
-run report *every item failed*.
+shard, embedded once and loaded once, and its archive carries a single load
+receipt — not one per PDF. That is fine for an operator running a batch by hand,
+but it cannot be driven by the API, which maps per-item receipts back to work
+items **positionally** (from `receipt.json` inside the delivered archive on the
+user path, from the `receipts` `File[]` output on the bulk plane) — a run with
+fewer receipts than items fails the job with `GoWeContractError` rather than
+report *every item failed*.
 
 `pdf-ingest-scatter.cwl` is the driveable shape: **one PDF = one work item = one
 task chain = one receipt.**
 
 ```
 pdfs: File[]  --scatter-->  extract (1 PDF -> 1 JSONL shard + report)
-              --scatter-->  ingest  (1 shard -> Qdrant/ES + 1 ShardReceipt)
-              --gather--->  merge   (receipts -> run summary)
+              --scatter-->  ingest  (1 shard -> Qdrant/ES + 1 ShardReceipt + emb file)
+              --gather--->  pack    (emb files + receipts -> archive Directory `<version>`)
 ```
+
+**`archive` is the only workflow-level output — by design, not omission.** GoWe
+post-stages *every* top-level File output of a submission that has an
+`output_destination` into that folder, flat, by basename, overwriting, and
+rewrites the File's location to `ws://`. Exposing `receipts` / `shards` /
+`reports` / `embeddings` / `summary` would spill N shards, N reports and N
+embedding files (the payload twice) plus one surviving `receipt.json` into the
+user's `versions/` folder next to `versions/<n>/`, and the engine's download
+endpoint could no longer serve the receipts afterwards. So the per-PDF receipts
+travel *inside* the archive (`receipt.json` = the N receipts as a JSON array, in
+input order) and the API reads them from the Workspace with the caller's token.
+The old `merge` step is gone with its `summary` (derivable from that array).
+The same rule applies to `pdf-ingest.cwl`.
 
 Two deliberate choices:
 
@@ -264,9 +279,13 @@ a hand-driven run, but the API path below assigns them per job.
 > the engine post-stages the `archive` Directory to, and `version` /
 > `collection_id` / `spec_hash` / `job_id` / the collection's stores + chunk
 > spec supplied per job from the registry (the version counter is
-> `CollectionStore.next_version`). A COMPLETED submission with no `receipts`
-> output fails the job with `GoWeContractError` instead of reporting every
-> document failed. Option B (batch per task) is #203 2b.
+> `CollectionStore.next_version`). Completion is two-phase: the engine marks the
+> submission COMPLETED and post-stages it in the same tick, so the API waits for
+> `output_state=delivered` (bounded by `GOWE_OUTPUT_WAIT_TIMEOUT`, default 600 s)
+> before reading `versions/<n>/receipt.json`; `upload_failed` fails the job with
+> `OUTPUT_STAGING_FAILED`, and a delivered archive with no usable receipts fails
+> it with `GoWeContractError` — never "every document failed". Option B (batch
+> per task) is #203 2b.
 
 Failure semantics: `ingest_shard.py` exits non-zero on a failed shard, so a PDF
 with no extractable text (scanned/image-only → empty shard → `EmptyIngestError`)
