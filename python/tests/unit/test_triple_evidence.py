@@ -146,6 +146,25 @@ async def test_memory_store_reingest_is_idempotent_and_takes_latest_evidence():
     assert back.subject_id == "bvbrc:genome:511145.12"
 
 
+async def test_memory_store_same_fact_from_two_docs_is_two_records():
+    """Identity includes doc_id, as on Neo4j (its edge MERGE key carries doc_id).
+    Without it the in-place evidence update would splice d2's evidence onto
+    d1's record and make delete_by_doc(d2) a no-op."""
+    store = InMemoryGraphStore()
+    d1 = _stamped(doc_id="d1", derived_by="llm", confidence=1, chunk_id="d1:c1",
+                  evidence="from d1", subject_id="", object_id="")
+    d2 = _stamped(doc_id="d2", derived_by="tool:x", confidence=3, chunk_id="d2:c9",
+                  evidence="from d2")
+    await store.add_triples([d1, d2])
+    assert len(store._triples) == 2
+    got = {t.doc_id: t for t in await store.query_neighborhood("coli", collection=COL)}
+    assert _six(got["d1"]) == _six(d1) and _six(got["d2"]) == _six(d2)
+
+    await store.delete_by_doc("d2", tenant_id=TENANT, collection=COL)
+    assert [t.doc_id for t in store._triples] == ["d1"]
+    assert store._triples[0].evidence == "from d1"
+
+
 async def test_memory_store_keeps_insertion_order_and_delete_by_doc():
     store = InMemoryGraphStore()
     await store.add_triples([
@@ -235,6 +254,33 @@ async def test_neo4j_legacy_edge_without_evidence_props_reads_as_defaults(neo4j)
     assert _six(back) == _six(Triple(subject="Alice", predicate="knows", object="Bob"))
 
 
+@pytest.mark.parametrize(
+    ("stored", "derived_by", "expected", "warns"),
+    [
+        (3, "llm", 1, True),        # bypassed the no-launder cap → capped, warned
+        (7, "tool:x", 3, True),     # out of range → clamped, warned
+        (-2, "", 0, True),
+        ("abc", "", 0, True),       # not an int → 0, warned
+        (2, "tool:x", 2, False),    # legitimate value: silent
+        (None, "llm", 0, False),    # pre-#347 null: silent
+    ],
+)
+async def test_neo4j_repairs_a_bad_stored_confidence_and_warns(
+    neo4j, caplog, stored, derived_by, expected, warns
+):
+    """A stored value the model would reject means something bypassed the model:
+    the read must not fail, but it must not be silent either."""
+    _drv(neo4j).results.append([{
+        "subject": "Alice", "predicate": "knows", "object": "Bob",
+        "doc_id": "d1", "tenant_id": TENANT, "collection": COL,
+        "confidence": stored, "derived_by": derived_by,
+    }])
+    with caplog.at_level("WARNING", logger="ragstack.stores.neo4j"):
+        [back] = await neo4j.query_neighborhood("alice", tenant_id=TENANT, collection=COL)
+    assert back.confidence == expected
+    assert any("confidence" in r.message for r in caplog.records) is warns
+
+
 # --------------------------------------------------------------------------- #
 # Extractor
 # --------------------------------------------------------------------------- #
@@ -264,6 +310,23 @@ async def test_extractor_stamps_llm_confidence_1_chunk_id_and_verbatim_evidence(
     for t in triples:
         assert (t.derived_by, t.confidence, t.chunk_id, t.doc_id) == ("llm", 1, "c9", "d1")
         assert (t.subject_id, t.object_id) == ("", "")
+
+
+async def test_extractor_evidence_match_tolerates_whitespace_but_not_fabrication():
+    wrapped = "Alice knows\n    Bob. Bob works\tat Acme Corp\nin Boston."
+    llm = _StubLLM(json.dumps({"triples": [
+        {"subject": "Alice", "predicate": "knows", "object": "Bob",
+         "evidence": "Alice knows Bob."},                    # line wrap in the chunk
+        {"subject": "Bob", "predicate": "works at", "object": "Acme Corp",
+         "evidence": "Bob works at Acme Corp in Boston."},   # tab + newline in the chunk
+        {"subject": "Bob", "predicate": "lives in", "object": "Boston",
+         "evidence": "Bob lives in Boston."},                # not in the text at all
+    ]}))
+    triples = await LLMKGExtractor(llm).extract([Chunk(id="c1", doc_id="d1", content=wrapped)])
+    by_pred = {t.predicate: t for t in triples}
+    assert by_pred["knows"].evidence == "Alice knows Bob."
+    assert by_pred["works at"].evidence == "Bob works at Acme Corp in Boston."
+    assert by_pred["lives in"].evidence == ""
 
 
 async def test_extractor_ignores_model_supplied_confidence_and_typed_ids():

@@ -26,9 +26,10 @@ TODO in ``query_neighborhood``).
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
-from ragstack.models import CONFIDENCE_MAX, Triple
+from ragstack.models import CONFIDENCE_MAX, DERIVED_BY_LLM, LLM_MAX_CONFIDENCE, Triple
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
 # Upper bound on neighbourhood hops. ``depth`` is interpolated into the Cypher
@@ -47,8 +48,36 @@ _EVIDENCE_SET = ", ".join(f"r.{p} = row.{p}" for p in _EVIDENCE_PROPS)
 _EVIDENCE_RETURN = ", ".join(f"r.{p} AS {p}" for p in _EVIDENCE_PROPS)
 
 
+log = logging.getLogger(__name__)
+
+
 def _tenant_or_default(tenant_id: str) -> str:
     return tenant_id or DEFAULT_TENANT
+
+
+def _read_confidence(rec: Any) -> int:
+    """``r.confidence`` as the model accepts it. Every write path goes through
+    ``Triple``, so a stored value that is not an int in 0–3 — or an ``"llm"`` edge
+    above the no-launder cap — means something bypassed the model (a hand edit,
+    another writer). Repair it so the read doesn't fail, but WARN: silently
+    clamping would hide the bypass."""
+    raw = rec.get("confidence")
+    if raw is None:
+        return 0  # pre-#347 edge: unknown, not invisible
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning("neo4j: non-integer r.confidence %r; reading as 0", raw)
+        return 0
+    clamped = min(max(value, 0), CONFIDENCE_MAX)
+    if clamped != value:
+        log.warning("neo4j: r.confidence %r outside 0..%d; reading as %d",
+                    raw, CONFIDENCE_MAX, clamped)
+    if rec.get("derived_by") == DERIVED_BY_LLM and clamped > LLM_MAX_CONFIDENCE:
+        log.warning("neo4j: %r edge stored with confidence %d above the cap %d; reading as %d",
+                    DERIVED_BY_LLM, clamped, LLM_MAX_CONFIDENCE, LLM_MAX_CONFIDENCE)
+        clamped = LLM_MAX_CONFIDENCE
+    return clamped
 
 
 class Neo4jGraphStore:
@@ -332,12 +361,12 @@ class Neo4jGraphStore:
                 collection=str(rec.get("collection") or ""),
                 # Edges written before #347 have no evidence properties (null);
                 # they read back as the model defaults — unknown, not invisible.
-                # ``confidence`` is clamped so a hand-edited edge can't turn a
-                # read into a validation error.
+                # ``confidence`` is repaired (with a warning) so a hand-edited
+                # edge can't turn a read into a validation error.
                 evidence=str(rec.get("evidence") or ""),
                 chunk_id=str(rec.get("chunk_id") or ""),
                 derived_by=str(rec.get("derived_by") or ""),
-                confidence=min(max(int(rec.get("confidence") or 0), 0), CONFIDENCE_MAX),
+                confidence=_read_confidence(rec),
                 subject_id=str(rec.get("subject_id") or ""),
                 object_id=str(rec.get("object_id") or ""),
             )

@@ -60,6 +60,12 @@ _LLM_CONFIDENCE = LLM_MAX_CONFIDENCE
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _squash_ws(s: str) -> str:
+    """Collapse every whitespace run to one space, for the evidence containment
+    test — so a chunk's line wraps don't reject an otherwise verbatim quote."""
+    return " ".join(s.split())
+
+
 def _extract_json_object(text: str) -> str | None:
     """Pull the JSON object out of an LLM response, tolerating code fences and
     surrounding prose. Returns ``None`` when no ``{...}`` span is present."""
@@ -132,9 +138,11 @@ class LLMKGExtractor:
         """Parse an LLM response into triples for ``doc_id`` / ``chunk_id``.
         Tolerant of code fences / extra prose; returns ``[]`` on any malformed
         payload. ``text`` is the chunk content the model saw: a quoted
-        ``evidence`` span is kept only if it occurs verbatim in it, otherwise
-        the triple is kept with empty evidence (a misquote is not a reason to
-        drop a fact, but it is not evidence either)."""
+        ``evidence`` span is kept only if it occurs verbatim in it (whitespace
+        runs — line wraps, indentation — normalised on both sides, so a quote
+        of a wrapped sentence still matches), otherwise the triple is kept with
+        empty evidence (a misquote is not a reason to drop a fact, but it is
+        not evidence either)."""
         blob = _extract_json_object(raw or "")
         if blob is None:
             log.debug("kg extraction: no JSON object in response for chunk %r", chunk_id)
@@ -145,6 +153,7 @@ class LLMKGExtractor:
             log.debug("kg extraction: unparseable JSON for chunk %r", chunk_id)
             return []
 
+        normalised_text = _squash_ws(text)
         items = data.get("triples") if isinstance(data, dict) else None
         if not isinstance(items, list):
             log.debug("kg extraction: no 'triples' list for chunk %r", chunk_id)
@@ -161,7 +170,7 @@ class LLMKGExtractor:
                 continue  # skip incomplete triples rather than store empties
             evidence = item.get("evidence")
             evidence = evidence.strip() if isinstance(evidence, str) else ""
-            if evidence and evidence not in text:
+            if evidence and _squash_ws(evidence) not in normalised_text:
                 evidence = ""
             # Any "confidence" / typed id the model emitted is ignored on
             # purpose: stamping is the extractor's job, not the model's.
