@@ -55,6 +55,11 @@ import posixpath
 from dataclasses import dataclass, field
 from typing import Any
 
+from ragstack.ingestion.chunk_cap import (
+    CAP_REFUSED_EXIT_CODE,
+    CHUNK_CAP_EXCEEDED,
+    is_cap_refusal,
+)
 from ragstack.ingestion.gowe_client import (
     OUTPUT_UPLOAD_FAILED,
     GoWeClient,
@@ -262,7 +267,14 @@ class GoWeBackend:
                 f"{OUTPUT_STAGING_FAILED}"
             )
         if state != "COMPLETED":
-            reason = f"gowe submission {state}"
+            # A task that refused its batch at the chunk cap (#291) exits
+            # CAP_REFUSED_EXIT_CODE, which fails the submission before any
+            # receipt is delivered — so classify the engine's failure record
+            # (deterministic exit code first, the stderr line for the numbers)
+            # and fail every item under the cap label, which the API lifts
+            # onto the job. Whole-submission failure is right here: a cap
+            # refusal is a whole-job refusal by spec.
+            reason = cap_refusal_of(final) or f"gowe submission {state}"
             return GoWeRun(
                 results=[self._failed(wi, reason) for wi in items],
                 submission_id=sub_id, state=state,
@@ -515,6 +527,44 @@ def map_receipt_entries(
                     len(items) - matched, len(items), label,
                     " (mapped positionally)" if positional else "")
     return results
+
+
+def _failure_context(submission: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """GoWe's terminal failure record is ``error: {code, message, context:
+    {stderr, exit_code, …}}`` (the scheduler copies the failed task's stderr
+    in, truncated to its first 1000 characters). Returns ``(context,
+    message)``, tolerating a bare-string or missing ``error`` — the same
+    reading ``restore.py`` applies to the restore workflow's record."""
+    err = submission.get("error")
+    if isinstance(err, dict):
+        ctx = err.get("context")
+        return (ctx if isinstance(ctx, dict) else {}), str(err.get("message") or err.get("code") or "")
+    return {}, (str(err) if err else str(submission.get("message") or ""))
+
+
+def cap_refusal_of(submission: dict[str, Any]) -> str | None:
+    """The chunk-cap refusal a FAILED submission carries, or ``None``.
+
+    DETERMINISTIC first: ``error.context.exit_code == CAP_REFUSED_EXIT_CODE``
+    (``ingest_shard`` exits 4 on a cap refusal) decides. The refusal line the
+    tool printed to stderr (``chunk_cap_exceeded: live=.. incoming=.. cap=..
+    would_fit=..``) supplies the numbers when it is inside the engine's
+    stderr window; without it the bare label is returned — the label is what
+    the job records either way. A refusal line in stderr with a DIFFERENT
+    exit code is not a cap refusal (the exit code is authoritative, as in
+    ``restore.classify_failure``)."""
+    ctx, message = _failure_context(submission)
+    try:
+        code = int(ctx["exit_code"]) if ctx.get("exit_code") is not None else None
+    except (TypeError, ValueError):
+        code = None
+    if code != CAP_REFUSED_EXIT_CODE:
+        return None
+    for text in (str(ctx.get("stderr") or ""), message):
+        for line in text.splitlines():
+            if is_cap_refusal(line.strip()):
+                return line.strip()
+    return CHUNK_CAP_EXCEEDED
 
 
 def _staging_failed(submission: dict[str, Any]) -> bool:

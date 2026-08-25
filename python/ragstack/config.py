@@ -148,6 +148,26 @@ class Settings(BaseSettings):
     # ceilings (memory mappings, threads, RAM at 60 %) — the derivation lives
     # in docs/runbooks/active-collection-bound.md.
     max_collections: int = 100
+    # Per-collection chunk cap (#291, phase 3 of #201): the most chunks ONE
+    # user-created collection may hold. Derivation, under the 2026-08-24 sizing
+    # assumptions (~1,000 documents and 2-5 collections per user): 1,000
+    # documents x the measured ~34 chunks per article = 34,000, plus headroom
+    # -> 50,000. The per-user ceiling is therefore 5 x 50k = 250k chunks (about
+    # 4 GB of 4096-d vectors), i.e. a tenant is bounded by `max_collections`
+    # long before by bytes.
+    #
+    # Applies to USER-CREATED collections only — ones with an active owner row
+    # whose owner is not an admin (api/access.py::is_user_created); curated
+    # corpora (no owner row, the backfill owner, or an admin creator) are exempt
+    # unless the registry entry sets an explicit `max_chunks` override
+    # (CollectionSpec.max_chunks: None = derive from this default, 0 = exempt,
+    # N = cap at N). Enforced ONCE per ingest job, before the first write: one
+    # live `VectorStore.count()` round-trip per job (never per chunk); when
+    # `live + incoming > cap` the WHOLE job is refused with the job error label
+    # `chunk_cap_exceeded` and a report of `live`, `incoming`, `cap` and how
+    # many would have fit — never a partial write. A replay (restore) is never
+    # capped: it re-admits what was already admitted. 0 disables the default.
+    max_chunks_per_collection: int = 50_000
     # Capability gate on POST /v1/collections (issue #287): whether a non-admin
     # principal may create a collection at all. ADR-0003 opened creation to any
     # authenticated caller — this switch is for the deployment that must NOT do

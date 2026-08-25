@@ -52,6 +52,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap
 from ragstack.ingestion.embedding_file import write_embedding_file
 from ragstack.ingestion.loaders import deterministic_doc_id
 from ragstack.ingestion.pipeline import IngestionPipeline
@@ -113,9 +114,26 @@ async def run_shard(
     shard_id: str,
     embedding_file: str | Path | None = None,
     report: ExtractReport | None = None,
+    max_chunks: int = 0,
 ) -> ShardReceipt:
     """Ingest one shard (a batch of documents) through ``pipeline`` and return
     its receipt — see the module docstring for the per-document rules.
+
+    ``max_chunks`` (#291): the collection's chunk cap, ``0`` = unlimited. The
+    worker-side enforcement point of the per-collection cap for the GoWe
+    scatter path (``ingest_shard --max-chunks``, the ``max_chunks`` workflow
+    input the API derives per job): after the embed and BEFORE the first
+    write — the embedding file included — one live ``vector_store.count()``
+    decides; a batch that would push the collection over the cap is refused
+    WHOLE: a ``failed`` receipt (a batch-level error, every row inheriting it)
+    whose ``error`` is ``chunk_cap_exceeded: live=.. incoming=.. cap=..
+    would_fit=..`` — the one per-document failure class that IS a task
+    failure by design (a cap refusal is a whole-job refusal by spec): the CLI
+    exits 4 on it and the API classifies that exit onto the job. Each
+    scattered task checks its own batch against the live count, so under a
+    scatter the cap is enforced per task (concurrent tasks may collectively
+    overshoot by the other tasks' batches); the API/local path sizes the
+    whole job.
 
     ``embedding_file`` (#357): also write the embedded chunks to that path in the
     ``ragstack.embedding_file/v1`` format *between* the two halves of the
@@ -191,9 +209,18 @@ async def run_shard(
         return processed_empty()
 
     try:
+        if max_chunks > 0:
+            # The cap gate (#291): one count, before the file and before the stores.
+            await check_chunk_cap(pipeline.vector_store, len(kept), max_chunks)
         if embedding_file is not None:
             write_embedding_file(embedding_file, kept, tenant=tenant)
         chunk_ids = await pipeline.index_chunks(kept, tenant_id=tenant)
+    except ChunkCapExceeded as e:
+        # Nothing written (the check precedes the file): the whole batch is
+        # refused, the labelled refusal with its four numbers on the receipt.
+        for row in rows:
+            row.chunk_ids = []
+        return failed_batch(str(e))
     except Exception as e:  # noqa: BLE001 — isolate the batch; the engine retries
         for row in rows:
             row.chunk_ids = []

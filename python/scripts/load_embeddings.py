@@ -16,6 +16,16 @@ this tool. Until then it loads at full rate (safe on an uncapped Qdrant).
 Idempotent: deterministic ids + upsert-only + per-doc delete-prior, so re-running
 (engine retry / resume) overwrites in place.
 
+**Chunk cap** (#291): a load into a USER-CREATED collection is bounded by the
+collection's chunk cap — the registry entry's ``max_chunks`` override, else
+``MAX_CHUNKS_PER_COLLECTION`` (50,000) when the entry records a creator
+(``owner``) who is not the backfill owner or an ``ADMIN_SUBJECTS`` entry. The
+invocation is the job: the files' header ``count`` values are summed, ONE live
+``count()`` is taken before the first file is read, and a load that would cross
+the cap is refused whole (exit 1, nothing written, the summary and stderr report
+``live``/``incoming``/``cap``/``would_fit`` under ``chunk_cap_exceeded``).
+``--replay`` is never capped: it restores what was already admitted.
+
 **Replay mode** (``--replay``, #358): instead of embedding files, an ORDERED list
 of archive version directories (``ragstack-archive/1``, the ``versions/<n>/``
 folders the ingest workflows archive into the owner's Workspace) — the
@@ -43,6 +53,7 @@ import json
 import os
 import sys
 
+from ragstack.ingestion.chunk_cap import ChunkCapExceeded, check_chunk_cap, effective_chunk_cap
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.ingestion.embedding_file import read_header
 from ragstack.ingestion.load_embeddings import (
@@ -203,10 +214,71 @@ async def _replay(args, target) -> int:
     return 0
 
 
+def _chunk_cap_for(target) -> int | None:
+    """The cap this load is bounded by (``None`` = unlimited): the entry's
+    ``max_chunks`` override, else the deployment default for a user-created
+    entry. "User-created" here is decided from the spec-recorded creator and
+    settings alone (no ACL / user store in a CLI): a non-empty ``owner`` that is
+    neither the backfill owner nor an ``ADMIN_SUBJECTS`` entry. An admin whose
+    role comes only from a stored ``users.role`` grant is therefore capped on
+    this path unless the entry carries an override — the conservative side."""
+    if target is None:
+        return None
+    from ragstack.config import settings
+
+    spec = target.spec
+    owner = getattr(spec, "owner", "") or ""
+    user_created = bool(owner) and owner != settings.acl_backfill_owner and (
+        owner not in set(settings.admin_subjects or ())
+    )
+    return effective_chunk_cap(
+        override=getattr(spec, "max_chunks", None), user_created=user_created,
+        default_cap=settings.max_chunks_per_collection,
+    )
+
+
+def _file_chunk_count(path: str) -> int:
+    """Chunks in one embedding file: the header's ``count`` (what
+    ``write_embedding_file`` records), else one line per record."""
+    header = read_header(path)
+    if header.get("count") is not None:
+        return int(header["count"])
+    with open(path, encoding="utf-8") as fh:
+        return max(0, sum(1 for line in fh if line.strip()) - 1)
+
+
+async def _refuse_over_cap(args, pipeline, cap: int | None) -> int | None:
+    """The bulk path's cap gate (#291): sum the files' header counts, take ONE
+    live count, and refuse the whole invocation before the first file is read
+    when it would cross ``cap``. Returns an exit code on refusal, else None."""
+    if cap is None:
+        return None
+    incoming = sum(_file_chunk_count(f) for f in args.embeddings)
+    try:
+        await check_chunk_cap(pipeline.vector_store, incoming, cap)
+    except ChunkCapExceeded as e:
+        files = list(args.embeddings)
+        summary = {
+            "n_shards": len(files), "n_shards_failed": len(files), "n_docs": 0,
+            "n_chunks": 0, "failed_shards": sorted(files),
+            "errors": dict.fromkeys(files, str(e)), "chunk_cap": e.detail(),
+        }
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2, sort_keys=True)
+        print(str(e), file=sys.stderr, flush=True)
+        print(f"refused: nothing written → {args.out}", flush=True)
+        return 1
+    return None
+
+
 async def amain(args, target=None) -> int:
     if getattr(args, "replay", None):
         return await _replay(args, target)
     pipeline = await _build_pipeline(args, target)
+    # The chunk cap (#291): whole-invocation, one count, before the first read.
+    refused = await _refuse_over_cap(args, pipeline, _chunk_cap_for(target))
+    if refused is not None:
+        return refused
     # Files hold disjoint document sets and chunk ids are deterministic, so
     # concurrent files cannot race on a doc_id or duplicate a point (#323). Receipts
     # are collected positionally, so the summary is identical to the serial run

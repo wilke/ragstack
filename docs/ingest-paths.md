@@ -282,6 +282,41 @@ leg is not touched yet: `GraphStore` has no per-collection delete (phase 6 of #3
 RAM) over ten loaded collections — measured value: see
 `docs/runbooks/active-collection-bound.md`.
 
+## Chunk cap: the per-collection bound (#291)
+
+`max_chunks_per_collection` (default **50,000**: 1,000 documents × the measured ~34 chunks
+per article, plus headroom; per user 5 × 50k = 250k chunks ≈ 4 GB of 4096-d vectors, so a
+tenant is bounded by `max_collections` long before bytes) bounds the chunks ONE
+**user-created** collection may hold. User-created is derived, not stored: an active owner
+row whose owner is not an admin (`api/access.py::is_user_created` — not the backfill owner,
+not in `ADMIN_SUBJECTS`, not an admin API key's tenant, no stored admin role). Curated
+corpora — the legacy shared surface, backfilled or admin-created collections — are exempt
+unless the registry entry sets an explicit override: `CollectionSpec.max_chunks` (`null` =
+derive, `0` = exempt, `N` = cap at N), settable on the registry only (a SQL `UPDATE
+collections SET max_chunks = …` or the key on the JSON entry; there is no PATCH route). The
+JSON registry file is unchanged until an override is actually set.
+
+Enforced **once per ingest job, before the first write**: one live `VectorStore.count()`
+(unfiltered — the collection is the unit), never a per-chunk store call, never a counter (a
+`DELETE /v1/documents` frees budget by construction). `live + incoming > cap` refuses the
+**whole job** — nothing is written, not the part that would have fit — with the job error
+label `chunk_cap_exceeded` and, on every item / receipt, the formatted refusal
+`chunk_cap_exceeded: live=L incoming=I cap=C would_fit=W`. The poll response
+(`GET /v1/ingest/{job_id}`) keeps its shape: `failed`, all items `failed`; the label is on
+the job row (`GET /v1/jobs`). Per path:
+
+| Path | Where | `incoming` |
+|---|---|---|
+| API, local (`POST /v1/ingest`, `/v1/ingest/upload`) | `ShardedIngestor.ingest_manifest` — the manifest is the job: every remaining item is loaded + chunked (text only, no GPU, no store), one count, then the admitted job embeds and indexes the very chunks it was sized from (`IngestionPipeline.ingest_prepared`) — nothing is loaded twice | post-chunk, pre-quarantine (a conservative overcount) |
+| API, gowe | the API derives the cap per job and passes it as the workflow input `max_chunks` → `ingest_shard --max-chunks`; each scattered task counts once and refuses its own shard (`run_shard`); the API lifts the receipt's label onto the job | post-embed, exact — per task, so concurrent tasks may collectively overshoot by the other tasks' shards |
+| bulk (`scripts/load_embeddings.py`) | the invocation is the job: the files' header counts are summed, one count before the first file is read; refused = exit 1 + `chunk_cap` in the summary. User-created here = `spec.owner` set and neither the backfill owner nor an `ADMIN_SUBJECTS` entry (no ACL/user store in a CLI) | the files' header `count`s |
+| replay (`--replay`, restore) | **never capped** — it restores what was already admitted | — |
+
+A byte-identical re-ingest at the cap is refused too (delete-prior would net to zero, but
+`incoming` is what the job would write): the conservative reading of "refuse the whole
+batch". `max_chunks_per_collection=0` disables the default deployment-wide (overrides still
+apply). The value is exposed by `GET /v1/config`.
+
 ## Known gaps
 
 Be clear-eyed about what does **not** work today:

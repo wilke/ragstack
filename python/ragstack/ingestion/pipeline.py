@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 
 from ragstack.ingestion.boilerplate import BoilerplateFilter
 from ragstack.ingestion.chunkers import link_neighbors_by_document
@@ -28,6 +29,28 @@ class EmptyIngestError(RuntimeError):
     content or every chunk was quarantined as unembeddable. Raised before the
     replace step so a failed/empty re-ingest never deletes the document's
     previously-ingested data."""
+
+
+@dataclass
+class PreparedSource:
+    """A source after load -> (DOI enrich) -> chunk -> boilerplate filter, BEFORE
+    the embed: the text-only half of :meth:`IngestionPipeline.embed_source`.
+
+    Exists so a job can be sized — ``len(chunks)`` per source, summed — before
+    the first GPU call and before the first store write (the per-collection
+    chunk cap, #291), without loading or chunking anything twice: the same
+    chunks then go straight into :meth:`IngestionPipeline.embed_prepared`.
+    Holds chunk TEXT only (no vectors), so a whole job's worth is small; a
+    caller that has already decided to refuse may drop ``chunks`` and keep
+    counting. ``doc_ids`` names every loaded document (the skipped-document
+    diagnostic needs them after the survivors are known); ``produced`` is the
+    chunk count before the boilerplate filter (for the empty-ingest message).
+    """
+
+    source: str
+    doc_ids: list[str] = field(default_factory=list)
+    chunks: list[Chunk] = field(default_factory=list)
+    produced: int = 0
 
 
 class IngestionPipeline:
@@ -125,11 +148,65 @@ class IngestionPipeline:
         neighbor chain over the survivors. Raises :class:`EmptyIngestError` when
         nothing embeddable was produced, so a caller never advances to the
         store-mutating half with an empty replacement.
+
+        A literal composition — :meth:`prepare_source` (load + text-only
+        chunking) then :meth:`embed_prepared` (the GPU half plus the guards) —
+        so a caller that must size a job before embedding it (the chunk cap,
+        #291) runs the same two steps with a count in between, and nothing is
+        loaded or chunked twice. :meth:`embed_documents` is the same pair of
+        primitives for a caller that owns the document list.
         """
+        return await self.embed_prepared(await self.prepare_source(source), tenant_id)
+
+    async def prepare_source(self, source: str) -> PreparedSource:
+        """Load ``source`` and run :meth:`prepare_documents` — the text-only,
+        store-free, GPU-free first step of :meth:`embed_source`. Loader errors
+        propagate exactly as they did from ``embed_source``."""
         documents: list[Document] = self.loader.load(source)
-        kept, produced, quarantined = await self.embed_documents(
-            documents, tenant_id=tenant_id, source=source
+        chunks, produced = await self.prepare_documents(documents, source=source)
+        return PreparedSource(
+            source=source, doc_ids=[d.id for d in documents], chunks=chunks, produced=produced,
         )
+
+    async def prepare_documents(
+        self, documents: list[Document], source: str = ""
+    ) -> tuple[list[Chunk], int]:
+        """Enrich, chunk and boilerplate-filter already-loaded ``documents``;
+        return ``(chunks, produced)`` — the text-only chunks and how many were
+        produced before the boilerplate filter. Touches only the chunker (and
+        the optional DOI enricher): no embedder, no store. ``source`` labels
+        log lines."""
+        await self._apply_doi_enrichment(documents)
+        all_chunks: list[Chunk] = []
+        for doc in documents:
+            # Run chunking in a worker thread: chunkers are synchronous, and the
+            # SemanticChunker blocks on a (bridged) embed round-trip, which would
+            # otherwise stall the event loop. to_thread keeps the loop responsive.
+            all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+        produced = len(all_chunks)
+        return self._filter_boilerplate(all_chunks, source), produced
+
+    async def _embed_chunks(
+        self, chunks: list[Chunk], tenant_id: str, source: str
+    ) -> tuple[list[Chunk], int]:
+        """Embed (quarantining) + neighbour-link ``chunks``; log the quarantine
+        count. Returns ``(kept, quarantined)``. The one GPU step both
+        :meth:`embed_prepared` and :meth:`embed_documents` are built on."""
+        kept, quarantined = await self._embed_and_link(chunks, tenant_id)
+        if quarantined:
+            log.warning(
+                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
+            )
+        return kept, quarantined
+
+    async def embed_prepared(
+        self, prepared: PreparedSource, tenant_id: str = DEFAULT_TENANT
+    ) -> list[Chunk]:
+        """Embed a :class:`PreparedSource` — the second step of
+        :meth:`embed_source`, with its empty-ingest guard and skipped-document
+        diagnostic. Returns the surviving embedded chunks."""
+        source, produced = prepared.source, prepared.produced
+        kept, quarantined = await self._embed_chunks(prepared.chunks, tenant_id, source)
 
         # Never delete prior data without a replacement. If the source produced
         # no chunks (empty content) or every chunk was quarantined, the replace
@@ -147,9 +224,9 @@ class IngestionPipeline:
         # Diagnostic: documents that were loaded but produced no surviving chunk
         # (empty or all-quarantined). index_chunks will keep their prior data
         # intact (it only delete-priors docs that have a survivor); surface that
-        # here, where we still have the loaded `documents` to name them.
+        # here, where we still have the loaded document ids to name them.
         docs_with_chunks = {c.doc_id for c in kept}
-        skipped = [d.id for d in documents if d.id not in docs_with_chunks]
+        skipped = [d for d in prepared.doc_ids if d not in docs_with_chunks]
         if skipped:
             log.warning(
                 "ingest %r: kept prior data for %d document(s) with no surviving "
@@ -157,6 +234,17 @@ class IngestionPipeline:
                 source, len(skipped), skipped,
             )
         return kept
+
+    async def ingest_prepared(
+        self, prepared: PreparedSource, tenant_id: str = DEFAULT_TENANT
+    ) -> list[str]:
+        """:meth:`ingest` from a :class:`PreparedSource`: embed, then index. The
+        path a cap-checked job takes for each of its sources once the whole job
+        has been sized and admitted (#291) — identical to ``ingest`` from the
+        embed step on."""
+        return await self.index_chunks(
+            await self.embed_prepared(prepared, tenant_id=tenant_id), tenant_id=tenant_id
+        )
 
     async def embed_documents(
         self,
@@ -178,23 +266,11 @@ class IngestionPipeline:
         bookkeeping (:meth:`embed_source` turns it into ``EmptyIngestError``
         for the single-source path, where it protects prior data). Touches
         only the chunker and embedder — never a store. ``source`` only labels
-        log lines.
+        log lines. The same two primitives as ``embed_source``:
+        :meth:`prepare_documents` then the embed step.
         """
-        await self._apply_doi_enrichment(documents)
-        all_chunks: list[Chunk] = []
-        for doc in documents:
-            # Run chunking in a worker thread: chunkers are synchronous, and the
-            # SemanticChunker blocks on a (bridged) embed round-trip, which would
-            # otherwise stall the event loop. to_thread keeps the loop responsive.
-            all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
-        produced = len(all_chunks)
-        all_chunks = self._filter_boilerplate(all_chunks, source)
-
-        kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
-        if quarantined:
-            log.warning(
-                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
-            )
+        chunks, produced = await self.prepare_documents(documents, source=source)
+        kept, quarantined = await self._embed_chunks(chunks, tenant_id, source)
         return kept, produced, quarantined
 
     def _filter_boilerplate(self, chunks: list[Chunk], source: str) -> list[Chunk]:

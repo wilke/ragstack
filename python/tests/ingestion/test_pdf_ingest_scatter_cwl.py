@@ -155,3 +155,16 @@ def test_network_access_only_where_needed(wf: dict) -> None:
     reqs = {n: s["run"]["requirements"] for n, s in _steps(wf).items()}
     assert "NetworkAccess" not in reqs["extract"]
     assert reqs["ingest"]["NetworkAccess"]["networkAccess"] is True
+
+
+def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> None:
+    """#291: the per-collection chunk cap reaches the worker as ONE optional
+    workflow input (default 0 = unlimited) bound to ``ingest_shard --max-chunks``
+    — the API passes it per job; a hand-driven run may omit it."""
+    inp = wf["inputs"]["max_chunks"]
+    assert inp["type"] == "int" and inp["default"] == 0
+    ingest = _steps(wf)["ingest"]
+    assert ingest["in"]["max_chunks"] == "max_chunks"
+    tool_in = ingest["run"]["inputs"]["max_chunks"]
+    assert tool_in["type"] == "int" and tool_in["default"] == 0
+    assert tool_in["inputBinding"]["prefix"] == "--max-chunks"

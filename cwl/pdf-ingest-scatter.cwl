@@ -185,6 +185,15 @@ inputs:
   job_id:
     type: ["null", string]
     doc: "The RAGStack ingest job id, recorded in the manifest."
+  max_chunks:
+    type: int
+    default: 0
+    doc: "Per-collection chunk cap (#291): each ingest task refuses its shard,
+      whole, when the collection's live chunk count plus the shard's chunks
+      would exceed it (one count per task, before any write; the receipt
+      reports live/incoming/cap/would_fit under the chunk_cap_exceeded label).
+      0 = unlimited. The API derives it per job (the registry override, else
+      MAX_CHUNKS_PER_COLLECTION for a user-created collection)."
 
 steps:
   batch:
@@ -281,6 +290,7 @@ steps:
       embedding_api_key: embedding_api_key
       qdrant_url: qdrant_url
       es_url: es_url
+      max_chunks: max_chunks
     out: [receipt, embeddings]
     run:
       class: CommandLineTool
@@ -291,6 +301,11 @@ steps:
         NetworkAccess:
           networkAccess: true
       baseCommand: [python, /opt/ragstack/scripts/ingest_shard.py]
+      # Exit 4 = the batch was refused at the per-collection chunk cap (#291):
+      # a whole-job refusal by spec, never worth a retry. GoWe parses but does
+      # not yet honour this; cwltool does, and the API classifies the exit code
+      # off the submission's error record either way.
+      permanentFailCodes: [4]
       inputs:
         shard: {type: File, inputBinding: {position: 2}}
         report:
@@ -315,6 +330,7 @@ steps:
           inputBinding: {prefix: --embedding-url, position: 12}
         qdrant_url: {type: string, inputBinding: {prefix: --qdrant-url, position: 13}}
         es_url: {type: string, inputBinding: {prefix: --es-url, position: 14}}
+        max_chunks: {type: int, default: 0, inputBinding: {prefix: --max-chunks, position: 18}}
       arguments:
         # shard_id = the batch id (the shard's stem), so a receipt names its batch;
         # the documents are named by their rows.
