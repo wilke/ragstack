@@ -2585,8 +2585,11 @@ components:
             to when it omits `collection` (the `default` pointer,
             DEFAULT_COLLECTION_ID). `default` is a pointer, never a registry
             entry of its own (ADR-0002 decision 5); this flag says which real
-            entry it names. Same value as `default`; optional so older servers
-            stay conformant.
+            entry it names. This is the canonical long-term field — the older
+            `default` (same value) collides in name with
+            `CollectionsResponse.default`, which is the id string; clients
+            should read `is_default`. Optional so older servers stay
+            conformant.
           type: boolean
         state:
           description: >-

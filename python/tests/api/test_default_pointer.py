@@ -385,3 +385,90 @@ async def test_backfill_publishes_the_renamed_surface_when_it_was_never_unpublis
     rows = await store.shares_for(SHARED_ID)
     assert any(r.grantee_id == PUBLIC_GROUP and r.permission == PERM_READ for r in rows)
     assert await store.owner_of(SHARED_ID) == "legacy:admin"
+
+
+async def test_backfill_publishes_a_surface_republished_under_the_old_id():
+    """Soft revocation keeps every row, so an un-publish followed by a
+    RE-publish under `default` leaves one revoked and one active public-read
+    row. The owner's LAST word was to publish — so the renamed surface is
+    published. ("Any revoked row exists" would read this as un-published.)"""
+    from ragstack.acl_store import InMemoryAclStore, set_acl_store
+    from ragstack.api.access import backfill_collection_owners
+
+    store = InMemoryAclStore()
+    set_acl_store(store)
+    await store.grant("default", GRANTEE_USER, "legacy:admin", PERM_OWNER, granted_by="system:backfill")
+    first = await store.grant("default", GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="system:backfill")
+    await store.revoke(first.id, revoked_by="legacy:admin")
+    # The un-publish happened well before the re-publish (not within the same
+    # microsecond, where the order would be undefined).
+    store._shares[first.id].granted_at = "2020-01-01T00:00:00+00:00"
+    store._shares[first.id].revoked_at = "2020-06-01T00:00:00+00:00"
+    await store.grant("default", GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="legacy:admin")
+    reg = CollectionRegistry([_entry(SHARED_ID, shared=True)], default_id=SHARED_ID)
+    await backfill_collection_owners(reg, store, "legacy:admin")
+    rows = await store.shares_for(SHARED_ID)
+    assert any(r.grantee_id == PUBLIC_GROUP and r.permission == PERM_READ for r in rows)
+
+
+async def test_backfill_skips_the_publish_when_the_lookback_fails(caplog):
+    """A store hiccup on the first post-upgrade boot must not default to
+    publishing (#275 by way of the error path): the grant is skipped that boot,
+    logged, and retried when the lookback works again."""
+    from ragstack.acl_store import InMemoryAclStore, set_acl_store
+    from ragstack.api.access import backfill_collection_owners
+
+    store = InMemoryAclStore()
+    set_acl_store(store)
+    real = store.shares_for
+
+    async def flaky(collection_id, include_revoked=False):
+        if collection_id == "default":
+            raise RuntimeError("acl store hiccup")
+        return await real(collection_id, include_revoked)
+
+    store.shares_for = flaky  # type: ignore[method-assign]
+    reg = CollectionRegistry([_entry(SHARED_ID, shared=True)], default_id=SHARED_ID)
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.access"):
+        await backfill_collection_owners(reg, store, "legacy:admin")
+    rows = await store.shares_for(SHARED_ID)
+    assert not any(r.grantee_id == PUBLIC_GROUP for r in rows), "published blind"
+    assert await store.owner_of(SHARED_ID) == "legacy:admin"  # the owner row still lands
+    assert any("NOT publishing" in r.message and "could not be read" in r.message
+               for r in caplog.records)
+
+    # The lookback works again on the next boot: published as before.
+    store.shares_for = real  # type: ignore[method-assign]
+    await backfill_collection_owners(reg, store, "legacy:admin")
+    rows = await store.shares_for(SHARED_ID)
+    assert any(r.grantee_id == PUBLIC_GROUP and r.permission == PERM_READ for r in rows)
+
+
+# --------------------------------------------------------------------------- #
+# management routes addressed to the pointer name
+# --------------------------------------------------------------------------- #
+
+
+async def test_management_routes_refuse_the_literal_pointer_name(client, _auth_on):
+    """share / revoke / transfer / restore on `/collections/default` are 409:
+    resolving through would act on a collection the caller never named (the
+    same rule as DELETE), and their ACL rows are keyed by the REAL id."""
+    shared, owned = _entry(SHARED_ID, shared=True), _entry("owned", owner="owner")
+    _install([shared, owned], pointer="owned")
+    await _own("owned", "owner")
+
+    calls = [
+        ("post", "/v1/collections/default/shares", {"grantee": "reader", "permission": "read"}),
+        ("delete", "/v1/collections/default/shares/some-share-id", None),
+        ("post", "/v1/collections/default/owner", {"subject": "reader"}),
+        ("post", "/v1/collections/default/restore", None),
+    ]
+    for method, path, body in calls:
+        r = await client.request(method, path, json=body, headers=_h("owner"))
+        assert r.status_code == 409, (method, path, r.status_code, r.text)
+        assert "pointer name" in r.json()["detail"] and "'owned'" in r.json()["detail"]
+    # Nothing happened to the real target.
+    assert await get_acl_store().owner_of("owned") == "owner"
+    assert [r for r in await get_acl_store().shares_for("owned") if r.grantee_id == "reader"] == []

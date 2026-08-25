@@ -245,7 +245,7 @@ The request fields that matter to a user:
 
 | Field | Default | What it does |
 |---|---|---|
-| `collection` | the deployment's default | Which registry collection to search. Unknown *or unreadable* → `404`. `GET /v1/collections` lists what you can see and which one is `default`. |
+| `collection` | the deployment's default | Which registry collection to search. Unknown *or unreadable* → `404`. `GET /v1/collections` lists what you can see; the entry with `is_default: true` is the one an omitted `collection` resolves to. `default` is that pointer's name, not a collection: sending `collection=default` is the same as omitting it, and the deployment's built-in corpus appears under its own (content-addressed) id — which changes, together with its access grants, if the operator changes the embedding model or chunker. |
 | `top_k` | 5 | How many sources to return. |
 | `retrieval_mode` | `hybrid` | `hybrid` (dense + BM25, fused), `vector` (dense only — meaning-similar text without shared words), `bm25` (keyword only — fast, rewards exact terms). |
 | `rerank` | `null` | `true`/`false` force the cross-encoder on/off for this request; `null` keeps the deployment's setting. `rerank_candidates` sets the pool it re-scores. |

@@ -32,7 +32,10 @@ from ragstack.collection_store import (
 )
 from ragstack.collection_store import _legacy_row_warned as _warned
 
-pytestmark = pytest.mark.asyncio
+# The container tests are sync; only the store-migration tests below are async
+# (each marked individually) — a module-level asyncio mark would warn on the
+# sync ones.
+_async = pytest.mark.asyncio
 
 
 def _entry(cid: str, shared: bool = False) -> CollectionEntry:
@@ -130,6 +133,7 @@ def _fresh_warn_state():
     _warned.clear()
 
 
+@_async
 async def test_json_file_ignores_the_legacy_row_and_removes_it_on_the_next_write(tmp_path, caplog):
     path = tmp_path / "collections.json"
     path.write_text(json.dumps([_legacy_row(), _spec("lib").model_dump()]))
@@ -149,6 +153,7 @@ async def test_json_file_ignores_the_legacy_row_and_removes_it_on_the_next_write
     assert [d["id"] for d in json.loads(path.read_text())] == ["lib", "other"]
 
 
+@_async
 async def test_json_file_create_and_delete_also_sweep_the_legacy_row(tmp_path):
     path = tmp_path / "collections.json"
     path.write_text(json.dumps([_legacy_row(), _spec("lib").model_dump()]))
@@ -173,6 +178,7 @@ async def test_json_file_create_and_delete_also_sweep_the_legacy_row(tmp_path):
     assert json.loads(path.read_text()) == []
 
 
+@_async
 async def test_append_helper_sweeps_the_legacy_row(tmp_path):
     path = tmp_path / "collections.json"
     path.write_text(json.dumps([_legacy_row()]))
@@ -180,6 +186,7 @@ async def test_append_helper_sweeps_the_legacy_row(tmp_path):
     assert [d["id"] for d in json.loads(path.read_text())] == ["lib"]
 
 
+@_async
 async def test_inline_json_registry_ignores_the_legacy_row(tmp_path, caplog):
     raw = json.dumps([_legacy_row(), _spec("lib").model_dump()])
     store = JsonFileCollectionStore(_settings(tmp_path, collections_file="", collections_json=raw))
@@ -188,11 +195,13 @@ async def test_inline_json_registry_ignores_the_legacy_row(tmp_path, caplog):
     assert any("legacy 'default'" in r.message for r in caplog.records)
 
 
+@_async
 async def test_memory_store_never_holds_the_reserved_row():
     store = InMemoryCollectionStore([_spec("default"), _spec("lib")])
     assert [s.id for s in await store.list_specs()] == ["lib"]
 
 
+@_async
 async def test_sqlite_ignores_the_legacy_row_and_removes_it_on_the_next_write(tmp_path, caplog):
     db = str(tmp_path / "collections.db")
     store = SqliteCollectionStore(db)
@@ -237,6 +246,7 @@ async def test_sqlite_ignores_the_legacy_row_and_removes_it_on_the_next_write(tm
     assert _ids_on_disk() == ["lib", "new"]
 
 
+@_async
 async def test_postgres_ignores_the_legacy_row_and_removes_it_on_the_next_write(pg_test_dsn, caplog):
     store = PostgresCollectionStore(pg_test_dsn)
     try:

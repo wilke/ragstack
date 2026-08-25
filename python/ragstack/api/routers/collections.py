@@ -202,6 +202,21 @@ async def _records_by_id(store: CollectionStore) -> dict[str, CollectionRecord]:
         return {}
 
 
+def _refuse_pointer_name(collection_id: str, registry: CollectionRegistry) -> None:
+    """409 when a management route is addressed to the literal pointer name
+    ``default``. Resolving it through would act on a collection the caller
+    never named — the same rule ``DELETE /v1/collections/default`` applies —
+    and the ACL rows of share / revoke / transfer / restore are keyed by the
+    REAL id, so the caller must say which one (#276)."""
+    if is_reserved_collection_id(collection_id):
+        raise HTTPException(
+            409,
+            f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection; "
+            f"it currently resolves to {registry.default_id!r} — address that id "
+            "explicitly if that is what you mean",
+        )
+
+
 @router.get("/collections", response_model=CollectionsResponse)
 async def list_collections(
     principal: Principal = Depends(resolve_principal),
@@ -813,6 +828,7 @@ async def restore_collection(
     other identity to use (``security.gowe_caller``, shared with ingest).
     The ``owner`` action is never lifecycle-gated, so managing a dormant
     collection does not require restoring it first."""
+    _refuse_pointer_name(collection_id, registry)
     from ragstack.api.lifecycle import get_lifecycle_gate
     from ragstack.collection_store import (
         ACTIVE,
@@ -1397,6 +1413,7 @@ async def create_share(
     ``grant_option`` is not exposed (defaults false). A duplicate active grant is
     a 409. A 404 hides an unknown/unreadable collection; 403 a readable non-owned
     one; 503 a store outage."""
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1516,6 +1533,7 @@ async def revoke_share(
     a mismatch (or unknown id) is a 404, never a cross-collection revoke. The
     active owner row is not revocable through this endpoint (that would strip
     ownership; use delete/transfer)."""
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1683,6 +1701,7 @@ async def transfer_collection_owner(
     never-seen subject's owned count is always 0 and would otherwise make the
     quota fully evadable; 503 for a store outage (fail closed).
     """
+    _refuse_pointer_name(collection_id, registry)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:

@@ -330,6 +330,19 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 
 ## Known issues / friction
 
+- **`default` is a pointer, not a collection (#276).** `GET /v1/collections` on an
+  upgraded deployment lists the settings-derived corpus under its content-addressed
+  name (or `QDRANT_COLLECTION_EXPLICIT`), not as `default`; `is_default` says which
+  entry the pointer names, and `collection=default` in a request means "omitted".
+  Consequence to know before changing `EMBEDDING_MODEL` / chunker settings on a
+  deployment without an explicit collection name: the derived corpus's **id**
+  re-keys with its store — and so do its ACL rows (owner + public grant are keyed by
+  id; the backfill re-creates them for the new id, honouring an un-publish recorded
+  under the old `default` id). That is correct under "a new store is a new
+  collection", but it is visible. A legacy `default` row in a durable registry is
+  ignored on read and removed on the next write; ACL rows under `default` stay until
+  the merge script (rest of #276).
+
 - **Collection naming changed** (`v0.4.0`): the API now scopes Qdrant collections to `(model, dim)` (e.g. `ragstack_baai_bge_base_en_v1_5_768_<hash>`), so data in the old literal `ragstack` collection is invisible to the API. Re-ingest, or pin `QDRANT_COLLECTION`. The CLI tools (`scripts/`) still use the literal `--collection` name.
 - **Tenant isolation migration** (PR #10): point IDs are now derived as `uuid5("{tenant_id}:{chunk_id}")` (was `uuid5("{chunk_id}")`) and every read adds a mandatory `tenant_id ∈ [own, "public"]` filter. Pre-PR points lack a `tenant_id` payload, so a Qdrant MatchAny never matches them and they go silently invisible to `/v1/retrieve` and `/v1/query` after upgrade; re-ingesting orphans rather than replaces them (the new tenant-scoped IDs don't collide with the old un-tenanted ones, and the tenant-scoped delete can't match them either, so storage grows). Remedy: for an existing collection, re-ingest the corpus under the intended tenant (or drop/recreate the collection); a fresh deployment is unaffected. The CLI now takes a `--tenant` flag for stamping (see finding #4).
 - **Shared conda env (`ragstack`) — runtime extras present, lint tooling not**: `pytest`/`pytest-asyncio`/`pytest-cov` are installed so `make test-python` runs, and the `pdf` (PyMuPDF 1.27) + `postgres` (asyncpg 0.31) runtime extras are present — so PDF ingest and the Postgres job store both work, and the PDF loader tests pass (only the live Postgres integration test still skips, needing a reachable `TEST_PG_DSN`). Deliberately *not* run as `pip install -e ".[all,dev]"` — that would re-resolve pinned runtime deps (qdrant-client/fastapi) in an env that also backs the deployed stack. **`ruff` is now installed in this env** (PR #8 session), so `ruff check .` runs and is clean repo-wide; **`mypy` is still missing**, so the full `make lint-python` (which chains `ruff && mypy`) can't complete. A dedicated dev venv is the clean long-term home for the type-check tooling.
