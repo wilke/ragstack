@@ -284,3 +284,30 @@ async def test_receipt_round_trips_the_label():
     r = ShardReceipt("s0", TENANT, FAILED, n_docs=1, error=format_refusal(10, 5, 12))
     back = ShardReceipt.from_dict(__import__("json").loads(r.to_json()))
     assert is_cap_refusal(back.error) and back.error.endswith("would_fit=2")
+
+
+async def test_gowe_real_engine_failure_exit_4_reaches_the_job(client, gowe):  # noqa: F811
+    """On a real engine a cap-refused task exits 4 and the submission FAILS
+    before any receipt is delivered: the API classifies the engine's error
+    record (``error.context.exit_code == 4``, the stderr line for the numbers)
+    and the job carries the label — no receipt read, no archive."""
+    line = format_refusal(49_990, 34, 50_000)
+    backend = gowe["backend"]
+
+    async def failed_wait(sub_id, **kw):
+        return {"id": sub_id, "state": "FAILED", "output_state": "",
+                "error": {"code": "TASK_FAILED", "message": "task ingest failed",
+                          "context": {"stderr": "INFO: warm cache\n" + line + "\n",
+                                      "exit_code": 4}}}
+
+    backend.client.wait = failed_wait  # type: ignore[method-assign]
+    r = await _upload(client, "a.pdf", "b.pdf")
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    body = await _poll(client, job_id, AUTH)
+    assert body["status"] == "failed"
+    assert body["items"] == {"total": 2, "completed": 0, "failed": 2, "pending": 0}
+    job = await app.state.job_store.get(job_id)
+    assert job.error == CHUNK_CAP_EXCEEDED and job.archive_ref == ""
+    assert {i.error for i in app.state.job_store._items[job_id].values()} == {line}
+    assert gowe["workspace"].reads == []  # nothing delivered, nothing read

@@ -436,3 +436,170 @@ async def test_replay_is_never_capped(tmp_path, cap_settings):
                                 "--out", str(out)])
     rc = await load_cli.amain(args, _target(spec))
     assert rc == 0 and json.loads(out.read_text())["n_chunks"] == 12
+
+
+# --------------------------------------------------------------------------- #
+# review fixes: no vector retention on the admitted path; capped == uncapped data
+# --------------------------------------------------------------------------- #
+
+
+async def test_admitted_job_does_not_retain_embedded_vectors():
+    """The twin of the refused-job test for the ADMITTED path: ``_embed_and_link``
+    sets ``embedding`` in place on the very chunk objects the gate sized, so a
+    reference left in the prepared dict would pin every vector of the job until
+    the run returns. Each item is consumed once — the dict is empty afterwards."""
+    vstore = CountingVectorStore()
+    ing = _ingestor(_pipeline(vstore))
+    seen: list[dict] = []
+    real = ing._admit
+
+    async def spy(items, job_id, cap):
+        prepared = await real(items, job_id, cap)
+        seen.append(prepared)
+        return prepared
+
+    ing._admit = spy  # type: ignore[method-assign]
+    results = await ing.ingest_manifest(_manifest(4, 3, 3, 2), chunk_cap=50)
+    assert [r.status for r in results] == ["completed"] * 4
+    assert seen and seen[0] == {}  # every item popped as it was ingested
+    assert len(vstore._chunks) == 12
+
+
+async def test_capped_and_uncapped_runs_store_identical_data():
+    """What lands in the stores — ids, order, content, metadata (tenant stamp,
+    neighbour links), embeddings — and the item results are byte-identical
+    between the capped (prepare -> count -> embed) and the uncapped
+    (per-item ``ingest``) path."""
+    def _snapshot(store, tindex):
+        return (
+            [c.model_dump() for c in store._chunks],
+            [c.model_dump() for c in tindex._chunks],
+        )
+
+    manifest = Manifest(items=[
+        WorkItem(item_id="doc0", source="doc0:4"), WorkItem(item_id="broken", source="broken:2"),
+        WorkItem(item_id="doc1", source="doc1:3"), WorkItem(item_id="doc2", source="doc2:5"),
+    ])
+    a_v, a_t = CountingVectorStore(), CountingTextIndex()
+    capped = await _ingestor(_pipeline(a_v, a_t)).ingest_manifest(
+        manifest, tenant_id="t1", chunk_cap=100,
+    )
+    b_v, b_t = CountingVectorStore(), CountingTextIndex()
+    uncapped = await _ingestor(_pipeline(b_v, b_t)).ingest_manifest(manifest, tenant_id="t1")
+    assert _snapshot(a_v, a_t) == _snapshot(b_v, b_t)
+    assert [r.model_dump() for r in capped] == [r.model_dump() for r in uncapped]
+    # …and it really is the full picture: vectors, tenant stamps and the
+    # per-document neighbour chain are present in what was compared.
+    stored = {c.id: c for c in a_v._chunks}
+    assert stored["doc0#1"].embedding == [0.1, 0.2, 0.3, 0.4]
+    assert stored["doc0#1"].metadata["tenant_id"] == "t1"
+    assert stored["doc0#1"].metadata.get("prev_chunk_id") == "doc0#0"
+    assert stored["doc0#1"].metadata.get("next_chunk_id") == "doc0#2"
+
+
+async def test_refusal_keeps_an_items_own_load_failure_label():
+    """An item whose load already failed keeps its own (more specific) label
+    when the job is refused; the others carry the refusal."""
+    job_store = InMemoryJobStore()
+    job = await job_store.create(source="dir", tenant_id="t")
+    manifest = Manifest(items=[WorkItem(item_id="broken", source="broken:3"),
+                               WorkItem(item_id="doc0", source="doc0:30")])
+    with pytest.raises(ChunkCapExceeded):
+        await _ingestor(_pipeline(), job_store).ingest_manifest(
+            manifest, job_id=job.job_id, chunk_cap=10,
+        )
+    items = job_store._items[job.job_id]
+    assert items["broken"].error == "ValueError"
+    assert is_cap_refusal(items["doc0"].error)
+
+
+# --------------------------------------------------------------------------- #
+# review fixes: the gowe path on a real engine — exit 4 + classification
+# --------------------------------------------------------------------------- #
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+import ingest_shard  # noqa: E402
+
+
+def test_ingest_shard_cli_exits_4_and_prints_the_refusal(tmp_path, capsys):
+    """A cap refusal is the one per-document failure class that IS a task
+    failure by design: the tool exits ``CAP_REFUSED_EXIT_CODE`` (4) — checked
+    BEFORE the #382 rule (a processed batch exits 0) — and prints the refusal
+    line to stderr, where the engine's error record keeps it."""
+    from ragstack.ingestion.chunk_cap import CAP_REFUSED_EXIT_CODE
+
+    shard = _jsonl_shard(tmp_path, "b0.jsonl", n_docs=3, words=2)  # 3 chunks (fixed chunker)
+    out = tmp_path / "receipt.json"
+    argv = [shard, "--vector-backend", "memory", "--text-backend", "memory",
+            "--chunk-method", "fixed", "--embedding-model", "", "--out", str(out)]
+    # The fake embedder stands in for the fleet (no network in a unit test).
+    ingest_shard._build_embedder = lambda args, http: _FakeEmbedder()
+    rc = ingest_shard.main([*argv, "--max-chunks", "2"])
+    assert rc == CAP_REFUSED_EXIT_CODE == 4
+    from ragstack.ingestion.receipts import ShardReceipt
+
+    receipt = ShardReceipt.load(out)
+    assert receipt.status == FAILED and is_cap_refusal(receipt.error)
+    assert all(is_cap_refusal(r.error) for r in receipt.docs) and receipt.n_docs_failed == 3
+    err = capsys.readouterr().err
+    assert err.strip().splitlines()[-1] == receipt.error
+    # Uncapped (or at the cap): the #382 rule — a processed batch exits 0.
+    assert ingest_shard.main([*argv, "--max-chunks", "3"]) == 0
+    assert ingest_shard.main(argv) == 0
+
+
+class _FailedEngineClient:
+    """A GoWeClient stub whose submission ends FAILED with the engine's real
+    terminal record shape: ``error: {code, message, context: {stderr, exit_code}}``."""
+
+    def __init__(self, exit_code, stderr: str = "", *, state: str = "FAILED",
+                 error: object = None) -> None:
+        self.record = {"id": "sub_x", "state": state}
+        if error is not None:
+            self.record["error"] = error
+        elif exit_code is not None:
+            self.record["error"] = {
+                "code": "TASK_FAILED", "message": "task ingest failed",
+                "context": {"stderr": stderr, "exit_code": exit_code},
+            }
+
+    async def register_workflow(self, *a, **k):
+        return "wf"
+
+    async def submit(self, *a, **k):
+        return {"id": "sub_x", "state": "PENDING"}
+
+    async def wait(self, *a, **k):
+        return dict(self.record)
+
+
+async def _run_failed(client):
+    from ragstack.ingestion.gowe_backend import GoWeBackend
+
+    backend = GoWeBackend(client, "cwlVersion: v1.2", poll_interval=0, timeout=1)
+    return await backend.run_submission(
+        [WorkItem(item_id="a", source="ws:///u/home/a.pdf"),
+         WorkItem(item_id="b", source="ws:///u/home/b.pdf")],
+        inputs={"version": "1"}, token="t", output_destination="ws:///u/home/lib/versions/",
+    )
+
+
+async def test_gowe_backend_classifies_exit_4_as_a_cap_refusal():
+    from ragstack.ingestion.gowe_backend import cap_refusal_of
+
+    line = format_refusal(49_990, 34, 50_000)
+    # exit 4 + the refusal line inside the stderr window: every item carries it
+    run = await _run_failed(_FailedEngineClient(4, "INFO: loading tokenizer\n" + line + "\n"))
+    assert run.state == "FAILED" and [r.status for r in run.results] == [FAILED, FAILED]
+    assert {r.error for r in run.results} == {line}
+    # exit 4 with the line outside the window: the bare label
+    run = await _run_failed(_FailedEngineClient(4, "x" * 1000))
+    assert {r.error for r in run.results} == {CHUNK_CAP_EXCEEDED}
+    # the exit code is authoritative: a refusal-looking line under exit 1 is not one
+    run = await _run_failed(_FailedEngineClient(1, line))
+    assert {r.error for r in run.results} == {"gowe submission FAILED"}
+    # exit code as a string, and a bare-string / missing error record
+    assert cap_refusal_of({"error": {"context": {"exit_code": "4"}}}) == CHUNK_CAP_EXCEEDED
+    assert cap_refusal_of({"error": "boom"}) is None and cap_refusal_of({}) is None
+    run = await _run_failed(_FailedEngineClient(None, error="task failed"))
+    assert {r.error for r in run.results} == {"gowe submission FAILED"}
