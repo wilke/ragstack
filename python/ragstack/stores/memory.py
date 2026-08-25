@@ -254,6 +254,18 @@ class InMemoryTextIndex:
         return docs, next_cursor
 
 
+def _evidence_fields(t: Triple) -> dict[str, Any]:
+    """The six #347 provenance fields — what an ON MATCH write replaces."""
+    return {
+        "evidence": t.evidence,
+        "chunk_id": t.chunk_id,
+        "derived_by": t.derived_by,
+        "confidence": t.confidence,
+        "subject_id": t.subject_id,
+        "object_id": t.object_id,
+    }
+
+
 class InMemoryGraphStore:
     """In-memory knowledge-graph store backed by a list of triples.
 
@@ -263,21 +275,34 @@ class InMemoryGraphStore:
     (Community Edition serves a single database), so isolating here by object
     identity would let the unit suite pass on a guarantee the durable backend
     doesn't provide. Both stores carry the boundary in the data instead.
+
+    Evidence fields (#347) follow Neo4j's ``ON CREATE SET`` / ``ON MATCH SET``
+    semantics: they are never part of the identity key, and re-adding a triple
+    whose key already exists replaces the stored copy's six evidence fields with
+    the incoming values (last writer wins) without growing the store.
     """
 
     def __init__(self) -> None:
-        self._triples: list[Triple] = []
+        # Insertion-ordered so reads keep first-write order (a plain list did
+        # before); keyed so a re-add can update in place instead of appending.
+        self._by_key: dict[tuple[str, str, str, str, str], Triple] = {}
+
+    @property
+    def _triples(self) -> list[Triple]:
+        return list(self._by_key.values())
 
     async def add_triples(self, triples: list[Triple]) -> None:
         # Dedup includes tenant_id and collection so two tenants' — or two
         # collections' — identical (s,p,o) triples all survive, matching Neo4j's
         # MERGE key (keying on (s,p,o) alone would drop the second copy).
-        existing = {self._key(t) for t in self._triples}
+        by_key = self._by_key
         for triple in triples:
             key = self._key(triple)
-            if key not in existing:
-                self._triples.append(triple)
-                existing.add(key)
+            if key in by_key:
+                # ON MATCH SET: identity unchanged, evidence takes the new values.
+                by_key[key] = by_key[key].model_copy(update=_evidence_fields(triple))
+            else:
+                by_key[key] = triple
 
     @staticmethod
     def _key(t: Triple) -> tuple[str, str, str, str, str]:
@@ -373,12 +398,12 @@ class InMemoryGraphStore:
         scopes must match: the same doc_id ingested into two collections keeps a
         separate triple set per collection, and a collection-blind delete would
         take both."""
-        self._triples = [
-            t
-            for t in self._triples
+        self._by_key = {
+            k: t
+            for k, t in self._by_key.items()
             if not (
                 t.doc_id == doc_id
                 and (tenant_id is None or t.tenant_id == tenant_id)
                 and (collection is None or t.collection == collection)
             )
-        ]
+        }

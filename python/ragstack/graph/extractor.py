@@ -6,6 +6,14 @@ each chunk's text and returns deduplicated :class:`~ragstack.models.Triple`
 objects (with ``doc_id`` set; ``tenant_id`` is left empty for the ingestion
 pipeline to stamp).
 
+Every triple is stamped with its epistemic provenance (#347): ``derived_by="llm"``,
+``confidence=1`` (the no-launder cap — an LLM can *propose*, never corroborate
+or verify, so nothing the model says can raise this), ``chunk_id`` of the chunk
+it came from, and ``evidence`` = the supporting span the model quoted, kept
+only when it is literally present in the chunk text. Typed ids
+(``subject_id`` / ``object_id``) are never set here: an invented identifier is
+exactly the laundering those fields exist to prevent.
+
 Design goals, matching repo conventions:
 
 * **Opt-in / cheap when off.** The extractor is only constructed when
@@ -23,7 +31,7 @@ import json
 import logging
 import re
 
-from ragstack.models import Chunk, Triple
+from ragstack.models import DERIVED_BY_LLM, LLM_MAX_CONFIDENCE, Chunk, Triple
 
 log = logging.getLogger(__name__)
 
@@ -33,12 +41,19 @@ _PROMPT = (
     "Extract knowledge-graph triples from the text below. A triple is a "
     "(subject, predicate, object) fact stated in the text. Use short noun "
     "phrases for subject/object and a concise verb phrase for predicate. Do "
-    "not invent facts that are not stated.\n\n"
+    "not invent facts that are not stated. For each triple, optionally quote "
+    "the shortest verbatim span of the text that states it as \"evidence\".\n\n"
     "Respond with STRICT JSON and nothing else, in exactly this shape:\n"
-    '{{"triples": [{{"subject": "...", "predicate": "...", "object": "..."}}]}}\n\n'
+    '{{"triples": [{{"subject": "...", "predicate": "...", "object": "...", '
+    '"evidence": "..."}}]}}\n\n'
     "If there are no clear facts, respond with {{\"triples\": []}}.\n\n"
     "Text:\n{text}"
 )
+
+# What every triple leaving this extractor is stamped with. ``confidence`` is
+# pinned to the no-launder cap and is NOT read from the model's output — the
+# LLM cannot self-assert a higher level (``Triple`` rejects it too).
+_LLM_CONFIDENCE = LLM_MAX_CONFIDENCE
 
 # Match the first {...} JSON object in the response, tolerating code fences and
 # leading/trailing prose. Greedy to the last brace so nested objects survive.
@@ -109,11 +124,17 @@ class LLMKGExtractor:
                 exc_info=True,
             )
             return []
-        return self._parse(raw, chunk.doc_id, chunk.id)
+        return self._parse(raw, chunk.doc_id, chunk.id, chunk.content)
 
-    def _parse(self, raw: str, doc_id: str, chunk_id: str) -> list[Triple]:
-        """Parse an LLM response into triples for ``doc_id``. Tolerant of code
-        fences / extra prose; returns ``[]`` on any malformed payload."""
+    def _parse(
+        self, raw: str, doc_id: str, chunk_id: str, text: str = ""
+    ) -> list[Triple]:
+        """Parse an LLM response into triples for ``doc_id`` / ``chunk_id``.
+        Tolerant of code fences / extra prose; returns ``[]`` on any malformed
+        payload. ``text`` is the chunk content the model saw: a quoted
+        ``evidence`` span is kept only if it occurs verbatim in it, otherwise
+        the triple is kept with empty evidence (a misquote is not a reason to
+        drop a fact, but it is not evidence either)."""
         blob = _extract_json_object(raw or "")
         if blob is None:
             log.debug("kg extraction: no JSON object in response for chunk %r", chunk_id)
@@ -138,8 +159,23 @@ class LLMKGExtractor:
             obj = str(item.get("object", "")).strip()
             if not (subject and predicate and obj):
                 continue  # skip incomplete triples rather than store empties
+            evidence = item.get("evidence")
+            evidence = evidence.strip() if isinstance(evidence, str) else ""
+            if evidence and evidence not in text:
+                evidence = ""
+            # Any "confidence" / typed id the model emitted is ignored on
+            # purpose: stamping is the extractor's job, not the model's.
             out.append(
-                Triple(subject=subject, predicate=predicate, object=obj, doc_id=doc_id)
+                Triple(
+                    subject=subject,
+                    predicate=predicate,
+                    object=obj,
+                    doc_id=doc_id,
+                    chunk_id=chunk_id,
+                    evidence=evidence,
+                    derived_by=DERIVED_BY_LLM,
+                    confidence=_LLM_CONFIDENCE,
+                )
             )
             if 0 < self._max_triples_per_chunk <= len(out):
                 break

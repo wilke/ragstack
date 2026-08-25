@@ -1,7 +1,11 @@
 """Neo4j-backed GraphStore (knowledge graph), tenant- and collection-scoped.
 
 Triples become a property graph: ``(:Entity {name, tenant_id, collection})-[:REL
-{predicate, doc_id, tenant_id, collection}]->(:Entity {...})``. Entities are keyed
+{predicate, doc_id, tenant_id, collection, +evidence props}]->(:Entity {...})``. The
+relationship's *identity* is the four-key MERGE; the evidence properties (#347:
+``evidence``, ``chunk_id``, ``derived_by``, ``confidence``, ``subject_id``,
+``object_id``) are set alongside it with ``ON CREATE SET`` / ``ON MATCH SET`` so
+re-ingest stays idempotent and the latest write wins. Entities are keyed
 by ``(name, tenant_id, collection)`` so the same surface form under two tenants —
 or in two collections — is two distinct nodes; neither boundary can be read or
 deleted across. Reads filter relationships to the caller's *readable* tenants (own
@@ -24,7 +28,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ragstack.models import Triple
+from ragstack.models import CONFIDENCE_MAX, Triple
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
 # Upper bound on neighbourhood hops. ``depth`` is interpolated into the Cypher
@@ -34,6 +38,13 @@ _MAX_DEPTH = 5
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from neo4j import AsyncDriver
+
+
+# Evidence properties on the :REL edge (#347), in one place so the write (SET)
+# and the read (RETURN) can't drift apart. Never part of the MERGE key.
+_EVIDENCE_PROPS = ("evidence", "chunk_id", "derived_by", "confidence", "subject_id", "object_id")
+_EVIDENCE_SET = ", ".join(f"r.{p} = row.{p}" for p in _EVIDENCE_PROPS)
+_EVIDENCE_RETURN = ", ".join(f"r.{p} AS {p}" for p in _EVIDENCE_PROPS)
 
 
 def _tenant_or_default(tenant_id: str) -> str:
@@ -98,13 +109,23 @@ class Neo4jGraphStore:
                 "doc_id": t.doc_id,
                 "tenant_id": _tenant_or_default(t.tenant_id),
                 "collection": t.collection,
+                "evidence": t.evidence,
+                "chunk_id": t.chunk_id,
+                "derived_by": t.derived_by,
+                "confidence": t.confidence,
+                "subject_id": t.subject_id,
+                "object_id": t.object_id,
             }
             for t in triples
         ]
         # MERGE on (name, tenant_id, collection) keeps entities scoped on both
         # axes; the relationship is keyed by (predicate, doc_id, tenant_id,
         # collection) so re-ingesting the same doc is idempotent rather than
-        # piling up duplicate edges.
+        # piling up duplicate edges. The evidence properties (#347) are
+        # deliberately OUTSIDE the MERGE key — putting them in it would turn a
+        # re-extraction with a different quote into a duplicate edge — and are
+        # written with ON CREATE SET / ON MATCH SET, so a matched edge takes the
+        # latest write's values (last writer wins, same as the in-memory store).
         query = (
             "UNWIND $rows AS row "
             "MERGE (s:Entity {name: row.subject, tenant_id: row.tenant_id, "
@@ -112,7 +133,9 @@ class Neo4jGraphStore:
             "MERGE (o:Entity {name: row.object, tenant_id: row.tenant_id, "
             "collection: row.collection}) "
             "MERGE (s)-[r:REL {predicate: row.predicate, doc_id: row.doc_id, "
-            "tenant_id: row.tenant_id, collection: row.collection}]->(o)"
+            "tenant_id: row.tenant_id, collection: row.collection}]->(o) "
+            "ON CREATE SET " + _EVIDENCE_SET + " "
+            "ON MATCH SET " + _EVIDENCE_SET
         )
         async with self._session() as session:
             await session.run(query, rows=rows)
@@ -193,7 +216,8 @@ class Neo4jGraphStore:
             "WHERE true " + edge_clause +
             "MATCH (s:Entity)-[r]->(o:Entity) "
             "RETURN s.name AS subject, r.predicate AS predicate, o.name AS object, "
-            "r.doc_id AS doc_id, r.tenant_id AS tenant_id, r.collection AS collection"
+            "r.doc_id AS doc_id, r.tenant_id AS tenant_id, r.collection AS collection, "
+            + _EVIDENCE_RETURN
         )
         return await self._run_triples(query, params)
 
@@ -306,6 +330,16 @@ class Neo4jGraphStore:
                 doc_id=str(rec.get("doc_id") or ""),
                 tenant_id=str(rec.get("tenant_id") or ""),
                 collection=str(rec.get("collection") or ""),
+                # Edges written before #347 have no evidence properties (null);
+                # they read back as the model defaults — unknown, not invisible.
+                # ``confidence`` is clamped so a hand-edited edge can't turn a
+                # read into a validation error.
+                evidence=str(rec.get("evidence") or ""),
+                chunk_id=str(rec.get("chunk_id") or ""),
+                derived_by=str(rec.get("derived_by") or ""),
+                confidence=min(max(int(rec.get("confidence") or 0), 0), CONFIDENCE_MAX),
+                subject_id=str(rec.get("subject_id") or ""),
+                object_id=str(rec.get("object_id") or ""),
             )
             for rec in records
         ]

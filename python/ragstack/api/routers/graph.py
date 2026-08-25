@@ -54,6 +54,13 @@ class TripleResponse(BaseModel):
     subject: str
     predicate: str
     object: str
+    # Epistemic provenance (#347) — optional in the contract, always emitted.
+    evidence: str = ""
+    chunk_id: str = ""
+    derived_by: str = ""
+    confidence: int = 0
+    subject_id: str = ""
+    object_id: str = ""
 
 
 class GraphStatsResponse(BaseModel):
@@ -130,6 +137,10 @@ async def get_neighbors(
         collection=_scope_collection(request, tenant),
     )
     return [
-        TripleResponse(subject=t.subject, predicate=t.predicate, object=t.object)
+        TripleResponse(
+            subject=t.subject, predicate=t.predicate, object=t.object,
+            evidence=t.evidence, chunk_id=t.chunk_id, derived_by=t.derived_by,
+            confidence=t.confidence, subject_id=t.subject_id, object_id=t.object_id,
+        )
         for t in triples
     ]

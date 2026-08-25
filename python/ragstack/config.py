@@ -735,8 +735,18 @@ class Settings(BaseSettings):
     # top_k*candidate_multiplier chunks per query.
     retrieval_demote_boilerplate: bool = False
     multiquery_n: int = 3                      # paraphrases per multi-query rewrite
-    graph_context_score: float = 0.5           # RRF score for graph-triple pseudo-chunks
+    # Score stamped on graph-triple pseudo-chunks BEFORE fusion. Note it does not
+    # reach the ranking: RRF fuses on rank position only and discards the
+    # incoming score (scorers.RRFScorer.fuse), so today this value is inert —
+    # the graph leg's weight is its position in its own list. Kept for the
+    # pseudo-chunk shape; ranking the neighbourhood is a separate issue (#347).
+    graph_context_score: float = 0.5
     graph_context_depth: int = 1               # graph neighbourhood hop depth
+    # Minimum Triple.confidence (0–3) for a triple to enter the graph leg. 0 =
+    # no filtering, i.e. today's behaviour exactly; an unstamped triple has
+    # confidence 0 and passes at the default floor (fail-OPEN by design — see
+    # retriever._graph_context and #347). 2 keeps only tool-corroborated triples.
+    graph_min_confidence: int = 0
     # Answer generation
     llm_max_context_chars: int = 8000          # context budget packed into the LLM prompt
     reranker_model: str = "BAAI/bge-reranker-v2-m3"

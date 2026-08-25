@@ -3479,6 +3479,34 @@ components:
           type: string
         object:
           type: string
+        evidence:
+          type: string
+          default: ""
+          description: Verbatim span the triple was read from (empty when unknown).
+        chunk_id:
+          type: string
+          default: ""
+          description: Chunk that produced the triple (empty when unknown).
+        derived_by:
+          type: string
+          default: ""
+          description: '"llm", "tool:<source>" or "" (unknown).'
+        confidence:
+          type: integer
+          minimum: 0
+          maximum: 3
+          default: 0
+          description: >-
+            0 unknown, 1 LLM-plausible, 2 corroborated by a tool, 3 verified against
+            a structured source. An LLM-derived triple is never above 1.
+        subject_id:
+          type: string
+          default: ""
+          description: Optional typed id for the subject, e.g. bvbrc:genome:<id>.
+        object_id:
+          type: string
+          default: ""
+          description: Optional typed id for the object, e.g. bvbrc:genome:<id>.
 
     Source:
       type: object

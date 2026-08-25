@@ -43,6 +43,33 @@ async def test_entities_and_neighbors_return_real_data(client):
 
 
 @pytest.mark.asyncio
+async def test_neighbors_expose_evidence_fields_and_typed_ids(client):
+    """#347: the six provenance fields ride along on the wire (contract:
+    triple_response.json), defaulting empty/zero for an unstamped triple."""
+    graph = InMemoryGraphStore()
+    await graph.add_triples([
+        Triple(subject="Alice", predicate="knows", object="Bob", doc_id="d1",
+               tenant_id="default", evidence="Alice knows Bob.", chunk_id="d1:c1",
+               derived_by="tool:hr", confidence=2,
+               subject_id="hr:person:1", object_id="hr:person:2"),
+        Triple(subject="Alice", predicate="likes", object="Coffee", tenant_id="default"),
+    ])
+    app.state.graph_store = graph
+
+    by_object = {t["object"]: t for t in (await client.get("/v1/graph/neighbors/Alice")).json()}
+    assert by_object["Bob"] == {
+        "subject": "Alice", "predicate": "knows", "object": "Bob",
+        "evidence": "Alice knows Bob.", "chunk_id": "d1:c1", "derived_by": "tool:hr",
+        "confidence": 2, "subject_id": "hr:person:1", "object_id": "hr:person:2",
+    }
+    assert by_object["Coffee"] == {
+        "subject": "Alice", "predicate": "likes", "object": "Coffee",
+        "evidence": "", "chunk_id": "", "derived_by": "", "confidence": 0,
+        "subject_id": "", "object_id": "",
+    }
+
+
+@pytest.mark.asyncio
 async def test_endpoints_degrade_to_empty_without_store(client):
     app.state.graph_store = None
     assert (await client.get("/v1/graph/entities")).json() == []
