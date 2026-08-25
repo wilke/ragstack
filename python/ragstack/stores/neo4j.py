@@ -428,7 +428,10 @@ class Neo4jGraphStore:
         TRANSACTIONS … is not allowed in an open transaction" — so this method
         must stay on ``session.run``. The edge match is DIRECTED (``->``): an
         undirected pattern yields each relationship once per direction and
-        would double the count.
+        would double the count. Nit for later: the importing ``CALL { WITH r
+        … }`` form is deprecated in the newest 5.x in favour of the variable-
+        scope clause ``CALL (r) { … }``; both are accepted by every 5.x the
+        stack deploys, so the older spelling stays until the floor moves.
 
         The sweep is the endpoint-scoped one ``delete_by_doc`` uses (PR #35),
         applied to the whole stamp: node identity is ``(name, tenant_id,

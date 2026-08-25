@@ -366,9 +366,10 @@ async def test_admin_evict_acts_and_reports_the_shortfall(client, monkeypatch, w
     assert [v["collection_id"] for v in body["victims"]] == ["lib-0", "lib-1", "lib-2"]
     for v in body["victims"]:
         assert v["state"] == DORMANT and v["ok"] and v["failed"] == []
-        # empty doubles — and the test app's (empty) graph store makes the graph
-        # leg absent too (#380): the same three targets the purge reports
-        assert v["deleted"] == [] and set(v["absent"]) == {"vectors", "text_index", "graph"}
+        # empty doubles; NO graph target — the API's eviction keeps the graph
+        # until the archive has a triples leg (#380), so only the two store
+        # legs are attempted
+        assert v["deleted"] == [] and set(v["absent"]) == {"vectors", "text_index"}
         assert v["reason"].startswith("evicted (LRU")
     assert body["shortfall"]["needed"] == 5 and body["shortfall"]["found"] == 3
     assert body["shortfall"]["reasons"]["archive_pending"] == 1

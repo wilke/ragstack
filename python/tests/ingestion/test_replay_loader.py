@@ -285,7 +285,13 @@ def test_cli_refuses_both_or_neither_mode(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-async def test_tombstone_removes_the_docs_triples_from_the_restored_collection_only(versions):
+async def test_tombstone_removes_the_docs_triples_but_a_chunk_version_keeps_them(versions):
+    """The graph leg of replay is TOMBSTONE-ONLY. A chunk version's
+    delete-prior re-upserts the chunks it deletes, but nothing re-derives
+    triples (no triples archive leg, no extractor in replay), so deleting them
+    there would make every restore a silent graph loss. doc-1 is re-ingested
+    by v3 and doc-2 replayed by v1: both keep their triples. doc-0 and doc-4
+    are tombstoned by v4: theirs go — from THIS collection only (#209)."""
     from ragstack.models import Triple
     from ragstack.stores.memory import InMemoryGraphStore
 
@@ -295,12 +301,11 @@ async def test_tombstone_removes_the_docs_triples_from_the_restored_collection_o
 
     graph = InMemoryGraphStore()
     await graph.add_triples([
-        # the restored collection: the tombstoned docs (two tenants — a restore
-        # is collection-wide, like its chunk deletes) and a doc no version
-        # touches, which survives (a doc a chunk version RE-INGESTS loses its
-        # prior triples to that version's delete-prior, exactly like its chunks)
+        # the restored collection: tombstoned docs (two tenants — a restore is
+        # collection-wide, like its chunk deletes), a re-ingested doc, a
+        # replayed doc and a doc no version touches
         triple("doc-0", "corpus_x"), triple("doc-4", "corpus_x", tenant="public"),
-        triple("doc-99", "corpus_x"),
+        triple("doc-1", "corpus_x"), triple("doc-2", "corpus_x"), triple("doc-99", "corpus_x"),
         # another collection holding the SAME doc ids: must be untouched (#209)
         triple("doc-0", "corpus_y"), triple("doc-4", "corpus_y"),
     ])
@@ -310,9 +315,13 @@ async def test_tombstone_removes_the_docs_triples_from_the_restored_collection_o
 
     assert summary.status == "completed" and summary.n_docs_deleted == 2
     left_x = {(t.doc_id, t.tenant_id) for t in graph._triples if t.collection == "corpus_x"}
-    assert left_x == {("doc-99", "alice")}
+    assert left_x == {("doc-1", "alice"), ("doc-2", "alice"), ("doc-99", "alice")}
     left_y = {t.doc_id for t in graph._triples if t.collection == "corpus_y"}
     assert left_y == {"doc-0", "doc-4"}
+    # and the chunks still replaced exactly as before: the trade-off is graph-only
+    assert _ids(p.vector_store) == _ids(p.text_index)
+    assert {c.doc_id for c in p.vector_store._chunks} >= {"doc-1", "doc-2"}
+    assert not {c.doc_id for c in p.vector_store._chunks} & {"doc-0", "doc-4"}
 
 
 async def test_replay_without_a_graph_store_is_unchanged(versions):

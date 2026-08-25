@@ -46,11 +46,18 @@ The graph leg (#380, the graph leg of #353): one graph backend holds every
 collection's triples, stamped ``(tenant_id, collection)`` (#209), so the
 third drop is ``GraphStore.delete_collection(tenant_id=None, collection)`` —
 collection-wide, like the Qdrant/ES drops, which destroy every tenant's
-chunks in the collection. It is passed in by the caller (``graph_store=``,
-the app's single instance) and is a target only when one is configured: with
-no graph backend there is nothing to drop and nothing to report. Best-effort
-like the other two — a failed graph delete leaves the row ``dormant`` with
-``graph`` named in ``state_reason``.
+chunks in the collection. It is passed in by the caller (``graph_store=``)
+and is a target only when one is given: with none there is nothing to drop
+and nothing to report. Best-effort like the other two — a failed graph delete
+leaves the row ``dormant`` with ``graph`` named in ``state_reason``.
+
+The API does NOT pass it yet (``api/eviction.py::run_eviction``): the rule
+above — nothing is dropped that exists nowhere else — is exactly what the
+graph fails today. The archive has no triples leg (``archive.py`` records
+``"graph": False``; replay has no extractor), so an evicted graph could never
+be restored. The plumbing and its unit tests are here for when #350's triples
+archive lands; until then eviction leaves the triples in place, and every read
+of them stays collection-scoped.
 
 This module imports nothing from ``ragstack.api``: the registry is duck-typed
 (``entries()`` / ``has()`` / ``resolve()`` over entries with ``collection``,
