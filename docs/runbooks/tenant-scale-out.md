@@ -19,9 +19,10 @@ read it from the manifest/`tenant.env` on the host instead.
 Provision tenant N+1 when the **current** tenant's physically-present collection
 count reaches **80 % of `MAX_COLLECTIONS`** (per #379, `MAX_COLLECTIONS` bounds
 `{active, archiving, restoring}` — the states that hold or are rebuilding a
-Qdrant/ES slot; `dormant`/`lost` rows hold no slot and don't count). With the
-runbook's recommended `MAX_COLLECTIONS=150` (see [active-collection-bound.md](active-collection-bound.md)),
-that's 120 physically-present collections.
+Qdrant/ES slot; `dormant`/`lost` rows hold no slot and don't count).
+[active-collection-bound.md](active-collection-bound.md):22 recommends "100
+now; ~150 is defensible without further measurement" — at 100 that's 80
+physically-present collections, at 150 it's 120.
 
 Two ways to read the count, and a RAM check alongside them:
 
@@ -37,9 +38,9 @@ curl -s -H "X-API-Key: <TENANT_ADMIN_KEY>" "<tenant-api>/v1/collections" \
 ```
 
 Add 1 to that number if a `state: null` entry is present (the settings-derived
-default collection — #379's eviction accounting treats an entry with no
-registry row as physically present too, since it holds a store slot the same
-as any registered one).
+default collection) — the create path's physically-present count, which
+`MAX_COLLECTIONS` is checked against per #379, counts it as holding a store
+slot the same as any registered row.
 
 **b. Eviction dry run.** `POST /v1/admin/collections/evict` with `dry_run=true`
 reports the same picture from the other side — how much headroom eviction
@@ -104,7 +105,7 @@ existing Postgres server, the ADR-0004 amendment):
 ```bash
 ./new-tenant.sh <new-tenant>
 # or:
-./new-tenant.sh <new-tenant> --postgres postgresql://ragstack:<pw>@<pg-host>:<pg-port>/postgres
+./new-tenant.sh <new-tenant> --postgres postgresql://<pg-admin-role>:<pw>@<pg-host>:<pg-port>/postgres
 
 # start the tenant's dedicated Qdrant + Elasticsearch
 <RAG_DATA>/tenants/<new-tenant>/bin/up.sh
@@ -152,12 +153,13 @@ overrides) before the API starts:
 | Setting | Why it must be explicit |
 |---|---|
 | `MAX_COLLECTIONS=150` | Script default is **100**. Per [active-collection-bound.md](active-collection-bound.md), ~150 is the defensible number without further per-tenant RAM measurement; leaving the default under-provisions relative to the recommendation this runbook exists to apply. |
+| `IDENTITY_PROVIDER=bvbrc` | **Load-bearing for §4.** The script stamps `IDENTITY_PROVIDER=none`. The archive/restore path (#358) submits to GoWe **as the user**, which needs a BV-BRC bearer identity: `gowe_caller()` returns `None` unless `principal.issuer == "bvbrc"` (`ragstack/api/security.py`), and there is no fallback identity. With the script's default, `POST /v1/collections/{id}/restore` and the on-access restore trigger are both dead on this tenant — §4's primary path cannot work until this is set. |
 | `ALLOW_USER_COLLECTION_CREATE` | Whether a non-admin can create their own collection at all (default `true` in the product, but the tenant's env should state its intent explicitly rather than inherit a default silently). |
 | `MAX_COLLECTIONS_PER_OWNER` | Product default 5 — confirm it matches policy for the new tenant rather than assuming the default is still right at this tenant's expected user count. |
 | `MAX_CHUNKS_PER_COLLECTION` | Product default 50,000 — the per-collection size cap ADR-0005/#289's interim policy relies on (bounded by size, not by refusing creation). |
-| `INGEST_BACKEND=gowe` | The script's template omits an `INGEST_BACKEND` line (defaults to `local`). The personal-collections workflow routes ingest through GoWe (interim-policy comment on #289); set it explicitly. |
-| `WORKSPACE_URL` | Required once `INGEST_BACKEND=gowe` and the archive/restore path (#353/#358) is in use — the user's BV-BRC Workspace is where the archive lives. |
-| GoWe engine URL (`GOWE_URL`) | Required alongside `INGEST_BACKEND=gowe` — the tenant's ingest and restore submissions need a reachable GoWe engine. |
+| `GOWE_URL` | The lifecycle gate that wires the restorer (`_build_lifecycle_gate` in `ragstack/api/deps.py`) reads `GOWE_URL`/`WORKSPACE_URL` directly — it is **not gated on `INGEST_BACKEND`**. Required for §4's restore step regardless of how ingest itself is configured. |
+| `WORKSPACE_URL` | Same as `GOWE_URL` above — required for the restore path, not conditional on `INGEST_BACKEND`. The user's BV-BRC Workspace is where the archive lives. |
+| `INGEST_BACKEND=gowe` | The script's template omits this line (defaults to `local`). Needed so *new* ingest on this tenant also routes through GoWe (interim-policy comment on #289) — set it for that reason, not because the restorer depends on it (it doesn't; see the two rows above). |
 
 Edit `tenant.env` directly (it's the operator-editable file; re-running the
 script without `--force` keeps your edits) or export overrides at API-start
@@ -167,9 +169,13 @@ file the operator edited.
 
 ### Mandatory post-provision checks
 
+Run these from the **repo root** — §2's provisioning commands were run from
+`apptainer/`, and starting the API in a subshell keeps the working directory
+from drifting so `pytest conformance/` still resolves:
+
 ```bash
 set -a; . <RAG_DATA>/tenants/<new-tenant>/config/tenant.env; set +a
-cd python && uvicorn ragstack.api.main:app --host 0.0.0.0 --port $PORT &
+(cd python && uvicorn ragstack.api.main:app --host 0.0.0.0 --port "$PORT" &)
 
 # 1. liveness (no key)
 curl -s "http://localhost:$PORT/health"                                     # {"status":"ok"}
@@ -179,7 +185,7 @@ curl -s "http://localhost:$PORT/health"                                     # {"
 curl -s -H "X-API-Key: <NEW_TENANT_ADMIN_KEY>" "http://localhost:$PORT/v1/config" \
   | jq 'keys | length'
 
-# 3. keyed conformance run against the new tenant
+# 3. keyed conformance run against the new tenant (from repo root)
 RAGSTACK_BASE_URL="http://localhost:$PORT" RAGSTACK_IMPL=python \
   RAGSTACK_API_KEY=<NEW_TENANT_API_KEY> \
   pytest conformance/
@@ -203,7 +209,10 @@ hand at each of the two places a caller picks a tenant:
   matching proxy target.
 - **The BV-BRC chatbot configuration** — a static user→tenant map (which
   tenant's API a given user's queries are routed to), analogous to the
-  frontend's preset list but on the chatbot side.
+  frontend's preset list but on the chatbot side. This repo does not define
+  or control that config — treat this bullet as an assertion about an
+  external system to confirm with whoever operates the chatbot, not as
+  something this runbook can verify or edit.
 - **The MCP client** — `go/cmd/mcp`, pointed at exactly one tenant via the
   `RAGSTACK_BASE_URL` environment variable (defaults to `http://localhost:8000`
   if unset). There is no multi-tenant mode in the MCP server; a user who needs
@@ -233,15 +242,20 @@ ceiling.
 Qdrant point ids are `uuid5(NAMESPACE_URL, f"{tenant}:{chunk_id}")`
 (`python/ragstack/stores/qdrant.py:_point_id`) — **`tenant` is the payload
 string carried in the request's tenant filter, not the physical instance the
-Qdrant process runs on.** Moving a collection's physical data from one tenant's
-store instance to another's does not change any chunk id and does not
-re-embed anything, **provided** the destination tenant's key/identity mapping
-for the moved user resolves to the *same* tenant string the data was
-originally ingested under. If the destination tenant's `API_KEY_TENANTS` (or
-identity→tenant mapping) assigns that user a different tenant string, their
-own points stop matching the server-side tenant filter applied on every
-read/write. Verify this explicitly after the move — it is the one thing a
-naive "just copy the collection" move can get silently wrong.
+Qdrant process runs on.** Moving a collection's physical data from one
+tenant's store instance to another's does not change any chunk id and does
+not re-embed anything, **provided** the destination tenant resolves the
+moved user to the *same* tenant string the data was originally ingested
+under. For a bearer-identity principal — the normal case for personal
+collections — that string **is** the subject, `f"{issuer}:{sub}"`
+(`ragstack/api/security.py:838`), which is globally stable by construction
+(ADR-0005 decision 3): the invariant holds automatically across the move,
+with no per-tenant mapping to keep in sync. The concrete check is that the
+archived `manifest.json`'s `tenant` field equals the moved user's
+`issuer:sub`. (An API-key principal is the exception: its tenant string
+comes from that tenant's own `API_KEY_TENANTS` mapping, which must be set to
+match by hand — that's the one case a naive "just copy the collection" move
+can get silently wrong.)
 
 ### Primary path: archive-based move (via #358)
 
@@ -257,11 +271,13 @@ There is **no targeted eviction** — the admin evict endpoint is LRU-driven
 this specific collection." So the move is registry-first, not eviction-first:
 
 1. **On the old tenant**, confirm the collection's archive is current before
-   touching anything:
+   touching anything. There is no single-item `GET` on `/v1/collections/{id}`
+   (only `DELETE` and `POST …/restore` take the id as a path param) — filter
+   the listing instead:
    ```bash
    curl -s -H "X-API-Key: <OLD_TENANT_ADMIN_KEY>" \
-     "<old-tenant-api>/v1/collections/<collection-id>" \
-     | jq '{state, archive_pending, versions}'
+     "<old-tenant-api>/v1/collections" \
+     | jq '.collections[] | select(.id=="<collection-id>") | {state, archive_pending, versions}'
    ```
    `archive_pending` must be `false` and `versions` non-empty. If not, the
    collection has no restorable archive yet — a delta may still be in flight;
@@ -273,14 +289,22 @@ this specific collection." So the move is registry-first, not eviction-first:
 
    | Table | What to copy |
    |---|---|
-   | `collections` | The row for `<collection-id>` — carries `owner`, `spec_hash`, `versions`, and the rest of the `CollectionRecord`. Insert with `state='dormant'` on the new tenant (its physical stores don't exist there yet — the first read or an explicit restore call creates them from the archive). |
-   | `shares` | Every row with `collection_id = <collection-id>` — grantee (`user`/`group`), permission (`read`/`write`/`owner`), grant option. |
-   | `users` | The moved user's row, if it doesn't already exist on the new tenant (subjects are globally stable, but the row itself is per-tenant per ADR-0005 decision 3 — there is no global user directory). |
-   | `groups` / `group_members` | Any group the user's shares reference that doesn't already exist on the new tenant, and the user's membership rows in it. |
+   | `collections` | Copy the row for `<collection-id>` **verbatim, every column** — `collection`, `text_index`, `embedding_*`, `chunk_*`, `spec_hash`, `owner`, `max_chunks`, `versions`, `created_at`/`updated_at`, `last_accessed_at`, and critically **`archive_version`**: this is the `next_version()` counter, kept out of `CollectionRecord`/`put()` deliberately, and a row copied without it re-mints `versions/1/` into a Workspace folder that already has one — silently corrupting the version sequence. Change only `state='dormant'`, `state_reason`, `state_changed_at` on the copy. **`id`, `owner`, and `spec_hash` must be preserved exactly**: the archive lookup is keyed by `/<subject>/home/.ragstack/collections/<id>/versions`, and the loader refuses on a `spec_hash` mismatch. `POST /v1/collections` with the same id is **not** a substitute for this copy — it mints fresh, empty, active physical stores with a newly-derived `spec_hash`, and a subsequent restore call reports "nothing to do" against that empty collection instead of pulling the archive. |
+   | `shares` | Every row with `collection_id = <collection-id>` **and `revoked_at = ''`** (no FKs enforce referential integrity between these tables, so don't assume order). The `permission='owner'` row is **mandatory** — restore calls `enforce_access(owner)`, and without that row the owner cannot even trigger their own restore. |
+   | `users` | The moved user's row only matters here for `role='admin'` or `kind='service'` — an ordinary human self-provisions on first login (the bearer-identity upsert), so a plain user row is not required for the move to work, though copying it avoids a throwaway provisional row being created first. |
+   | `groups` / `group_members` | `groups` carries `owner_subject`/`built_in` — copy any group referenced by a moved `shares` row that doesn't already exist on the new tenant. `group_members` by `subject` — the moved user's membership rows in that group. |
 
-   Copy `collections` and `shares` together, in the same maintenance window —
-   a collection row with no matching share leaves the owner locked out; a
-   share with no collection row is dead weight.
+   No FKs exist between these tables, so a `shares` row may legally be
+   inserted before the grantor's `users` row — order within the copy doesn't
+   matter, but the **set** does: a collection row with no owner share leaves
+   it inaccessible; a share with no collection row is dead weight.
+
+   **The new tenant's collection registry is built once at API startup**
+   (`app.state.collections`, `_build_collection_registry` in
+   `ragstack/api/deps.py`) — a row inserted into the database after the API
+   is already running is invisible to it (a restore call 404s) until the
+   process restarts. Either insert the copied rows **before** the new
+   tenant's API is first started, or restart it immediately after inserting.
 
 3. **Restore on the new tenant.** Either wait for the owner's first
    authenticated read (which triggers a restore submission automatically per
@@ -291,10 +315,13 @@ this specific collection." So the move is registry-first, not eviction-first:
      "<new-tenant-api>/v1/collections/<collection-id>/restore"
    ```
    The restore runs as **the user** (GoWe submission carrying their token, per
-   #353) — this is exactly why §2's must-set list includes `INGEST_BACKEND=gowe`,
-   `GOWE_URL`, and `WORKSPACE_URL` on the new tenant: without them, the restore
-   has nowhere to submit to and nothing to read the archive from. Expect
-   roughly the cold-build order of magnitude measured in
+   #353) and needs a BV-BRC bearer credential to do it — this is exactly why
+   §2's must-set list includes `IDENTITY_PROVIDER=bvbrc`, `GOWE_URL`, and
+   `WORKSPACE_URL` on the new tenant: without a `bvbrc` identity `gowe_caller()`
+   refuses the submission outright, and without `GOWE_URL`/`WORKSPACE_URL` the
+   restorer has nowhere to submit to and nothing to read the archive from
+   (`INGEST_BACKEND` is not part of this — the restorer is wired independently
+   of it). Expect roughly the cold-build order of magnitude measured in
    [active-collection-bound.md](active-collection-bound.md) (~100 s store-side
    for a 35k-chunk collection) as a floor — a real restore also has to read the
    archive and replay it, so budget more.
@@ -304,7 +331,8 @@ this specific collection." So the move is registry-first, not eviction-first:
    anything on the old tenant:
    ```bash
    curl -s -H "X-API-Key: <NEW_TENANT_ADMIN_KEY>" \
-     "<new-tenant-api>/v1/collections/<collection-id>" | jq '.state'
+     "<new-tenant-api>/v1/collections" \
+     | jq '.collections[] | select(.id=="<collection-id>") | .state'
    # only after this reads "active" and a query round-trips:
    curl -s -X DELETE -H "X-API-Key: <OLD_TENANT_ADMIN_KEY>" \
      "<old-tenant-api>/v1/collections/<collection-id>?purge=true"
@@ -320,34 +348,59 @@ this specific collection." So the move is registry-first, not eviction-first:
 
 For a collection with **no current archive** (pre-#358 data, or a collection
 whose last archive step failed and hasn't retried), fall back to physical
-snapshot/restore:
+snapshot/restore.
+
+**The registry id is not the physical store name.** Physical Qdrant
+collection / Elasticsearch index names are a content-addressed slug+hash
+(`collection` / `text_index` columns on the `collections` row), not the
+registry `id`. Look them up first:
 
 ```bash
-# old tenant: snapshot the collection
-curl -s -X POST "<old-tenant-qdrant>/collections/<collection-id>/snapshots"
-
-# copy the resulting snapshot file into the new tenant's own Qdrant snapshots
-# dir (<RAG_DATA>/tenants/<new-tenant>/qdrant/snapshots/), then recover from
-# that local path on the new tenant:
-curl -s -X PUT "<new-tenant-qdrant>/collections/<collection-id>/snapshots/recover" \
-  -H 'Content-Type: application/json' \
-  -d '{"location": "file:///<path-to-copied-snapshot>"}'
-
-# Elasticsearch: requires a shared snapshot repository reachable from both
-# tenants' ES instances (filesystem or object-store repo registered on each)
-curl -s -X PUT "<old-tenant-es>/_snapshot/<repo>/<snapshot-name>?wait_for_completion=true" \
-  -H 'Content-Type: application/json' -d "{\"indices\": \"<collection-id>\"}"
-curl -s -X POST "<new-tenant-es>/_snapshot/<repo>/<snapshot-name>/_restore" \
-  -H 'Content-Type: application/json' -d "{\"indices\": \"<collection-id>\"}"
+sqlite3 <old-tenant-registry.db> \
+  "SELECT collection, text_index FROM collections WHERE id='<collection-id>'"
+# -> use these as <physical-store> below
 ```
 
-Then copy the registry row + ACL rows exactly as in step 2 of the primary
-path (with `state='active'` this time — the physical stores already exist on
-the new tenant once the snapshot restore completes).
+```bash
+# old tenant: snapshot the collection (Qdrant native API, not the RAGStack API)
+curl -s -X POST "<old-tenant-qdrant>/collections/<physical-store>/snapshots"
 
-This path needs a snapshot repository provisioned and reachable from **both**
-tenants' Elasticsearch instances ahead of time — the reason to prefer the
-archive path whenever it's available.
+# copy the resulting snapshot file into the new tenant's own Qdrant snapshots
+# dir (<RAG_DATA>/tenants/<new-tenant>/qdrant/snapshots/); the recover call's
+# "location" is a CONTAINER-side path — up.sh binds that host dir to
+# /qdrant/snapshots inside the instance, so the file:// URI must use the
+# container path, not the host path you just copied it to:
+curl -s -X PUT "<new-tenant-qdrant>/collections/<physical-store>/snapshots/recover" \
+  -H 'Content-Type: application/json' \
+  -d '{"location": "file:///qdrant/snapshots/<snapshot-file>.snapshot"}'
+```
+
+**Elasticsearch has no working fallback on a script-provisioned tenant
+today.** A filesystem snapshot repository needs `path.repo` set and a bind
+mount for the repo directory; the generated `bin/up.sh` passes neither
+(no `-Epath.repo`, no repo-dir bind), and hand-editing a generated file
+violates this runbook's own "don't hand-edit derived artifacts" rule. So
+there is currently **no ES leg of this fallback** on a tenant provisioned by
+`new-tenant.sh` as-is — it requires a script change (an `--es-repo` flag,
+tracked on #387) before the commands below are usable:
+
+```bash
+# NOT USABLE until #387 lands — requires a registered repo on both ES instances
+curl -s -X PUT "<old-tenant-es>/_snapshot/<repo>/<snapshot-name>?wait_for_completion=true" \
+  -H 'Content-Type: application/json' -d "{\"indices\": \"<physical-store>\"}"
+curl -s -X POST "<new-tenant-es>/_snapshot/<repo>/<snapshot-name>/_restore" \
+  -H 'Content-Type: application/json' -d "{\"indices\": \"<physical-store>\"}"
+```
+
+Until #387 lands, a collection with no current archive and a need to move
+has no complete automated path for its text leg — rebuilding the ES index
+from the moved Qdrant payloads (or re-ingesting) is the only option.
+
+Then copy the registry row + ACL rows exactly as in step 2 of the primary
+path above (with `state='active'` this time — the physical stores already
+exist on the new tenant once the snapshot restore completes), following the
+same verbatim-copy rules (every column including `archive_version`, the
+`owner` share row, the pre-start-or-restart caveat).
 
 ---
 
