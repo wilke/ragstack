@@ -287,7 +287,11 @@ async def test_collection_cap_is_enforced(client, monkeypatch):
     """ADR-0003 calls the collection count the binding physical constraint, so
     POST /v1/collections *enforces* ``max_collections`` (creation is open to any
     authenticated principal — without a cap, looping the endpoint mints physical
-    Qdrant/ES stores until the instance fails). Applies to admins too."""
+    Qdrant/ES stores until the instance fails). Applies to admins too.
+
+    Since #359 the cap bounds ACTIVE collections and is normally met by
+    evicting an archived one; here nothing was ever archived, so the create
+    is 507 naming why (``no_archive``), never a silent eviction."""
     from ragstack.api.main import app
 
     n = len(app.state.collections.entries())
@@ -295,8 +299,9 @@ async def test_collection_cap_is_enforced(client, monkeypatch):
     ok = await client.post("/v1/collections", json={"id": "under-cap"})
     assert ok.status_code == 201, ok.text
     blocked = await client.post("/v1/collections", json={"id": "over-cap"})
-    assert blocked.status_code == 403
-    assert "collection limit reached" in blocked.json()["detail"]
+    assert blocked.status_code == 507
+    assert "active collection bound reached" in blocked.json()["detail"]
+    assert "needed 1, found 0" in blocked.json()["detail"]
     # 0 disables the cap.
     monkeypatch.setattr(settings, "max_collections", 0)
     open_again = await client.post("/v1/collections", json={"id": "over-cap"})
@@ -339,8 +344,11 @@ async def test_cap_counts_the_durable_store_not_the_in_process_registry(
     monkeypatch.setattr(settings, "max_collections", 3)
 
     r = await client.post("/v1/collections", json={"id": "one-too-many"})
-    assert r.status_code == 403, r.text
-    assert "collection limit reached" in r.json()["detail"]
+    assert r.status_code == 507, r.text
+    assert "active collection bound reached" in r.json()["detail"]
+    # The three siblings are the only rows: never archived, and not served by
+    # this process either — both are named, nothing is evicted.
+    assert "no_archive=3" in r.json()["detail"]
 
 
 async def test_concurrent_creates_cannot_exceed_the_cap(client, monkeypatch, tmp_path):
@@ -359,7 +367,9 @@ async def test_concurrent_creates_cannot_exceed_the_cap(client, monkeypatch, tmp
         *(client.post("/v1/collections", json={"id": f"racer-{i}"}) for i in range(10))
     )
     codes = sorted(r.status_code for r in results)
-    assert codes == [201] + [403] * 9, [(r.status_code, r.text) for r in results]
+    # The nine losers each look for an archived collection to evict and find
+    # none (the seeded specs were never archived) -> 507, not a second slot.
+    assert codes == [201] + [507] * 9, [(r.status_code, r.text) for r in results]
 
 
 async def test_a_lost_race_does_not_overwrite_the_winners_spec(
@@ -397,7 +407,7 @@ async def test_shared_surface_reserves_a_slot(client, monkeypatch, tmp_path):
     _seed_durable(monkeypatch, tmp_path, 2)
     monkeypatch.setattr(settings, "max_collections", 3)  # 3 - 1 reserved = 2 = full
     blocked = await client.post("/v1/collections", json={"id": "nope"})
-    assert blocked.status_code == 403, blocked.text
+    assert blocked.status_code == 507, blocked.text
 
     monkeypatch.setattr(settings, "max_collections", 4)  # 4 - 1 = 3 > 2 = room
     ok = await client.post("/v1/collections", json={"id": "yes"})
@@ -409,7 +419,10 @@ async def test_max_collections_1_with_a_shared_surface_refuses_everything(
 ):
     """The sentinel edge case. ``MAX_COLLECTIONS=0`` means DISABLED, but
     ``limit - reserved == 0`` must mean REFUSE EVERYTHING — collapsing the two
-    into one int turns the tightest possible cap into an unlimited one."""
+    into one int turns the tightest possible cap into an unlimited one.
+
+    Still 403, not 507 (#359): an effective cap of zero refuses every create,
+    so evicting a collection for it would be destruction for nothing."""
     _seed_durable(monkeypatch, tmp_path, 0)  # an EMPTY durable registry
     monkeypatch.setattr(settings, "max_collections", 1)
     r = await client.post("/v1/collections", json={"id": "only-one"})
@@ -425,15 +438,18 @@ async def test_cap_falls_back_to_the_registry_without_a_durable_store(
     client, monkeypatch
 ):
     """No ``collections_file`` → the store cannot hold a reservation, so the cap
-    degrades to today's in-process count rather than failing open."""
+    degrades to today's in-process count rather than failing open. With no
+    durable rows there is nothing archived to evict either: 507."""
     from ragstack.api.main import app
 
     monkeypatch.setattr(settings, "collections_file", "")
     monkeypatch.setattr(settings, "collections_json", "")
     n = len(app.state.collections.entries())
-    monkeypatch.setattr(settings, "max_collections", n)
+    monkeypatch.setattr(settings, "max_collections", n + 1)
+    assert (await client.post("/v1/collections", json={"id": "under-cap"})).status_code == 201
     r = await client.post("/v1/collections", json={"id": "over-cap"})
-    assert r.status_code == 403, r.text
+    assert r.status_code == 507, r.text
+    assert "needed 1, found 0" in r.json()["detail"]
 
 
 async def test_create_persists_to_collections_file(client, monkeypatch, tmp_path):

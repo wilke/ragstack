@@ -169,6 +169,12 @@ DORMANT = "dormant"      #: only the Workspace archive exists; first access rest
 RESTORING = "restoring"  #: a restore submission is in flight; 503 + Retry-After
 LOST = "lost"            #: archive missing or failed verification; 409 until repaired
 STATES = frozenset({ACTIVE, ARCHIVING, DORMANT, RESTORING, LOST})
+#: The states in which a collection HOLDS its physical stores (a Qdrant
+#: collection + an ES index — a slot against ``max_collections``, #359):
+#: ``active``, ``archiving`` (stores exist, the archive step is running) and
+#: ``restoring`` (the loader is rebuilding them). ``dormant``/``lost`` hold
+#: nothing. Only ``active`` is evictable; the other two are mid-transition.
+PHYSICAL = frozenset({ACTIVE, ARCHIVING, RESTORING})
 
 
 class CollectionRecord(BaseModel):
@@ -304,7 +310,16 @@ class CollectionStore(Protocol):
 
     async def create(self, spec: CollectionSpec, *, limit: int | None) -> CreateOutcome:
         """Insert ``spec`` **if absent**, refusing once the store already holds
-        ``limit`` specs. The capacity reservation for ``POST /v1/collections``.
+        ``limit`` **physically present** specs. The capacity reservation for
+        ``POST /v1/collections``.
+
+        Since #359 the cap bounds the collections whose stores exist —
+        :data:`PHYSICAL`: ``active``, plus ``archiving`` and ``restoring``,
+        which hold (or are rebuilding) a Qdrant/ES slot but are not evictable.
+        A ``dormant`` (or ``lost``) row costs nothing physical and is not
+        counted. The count runs inside the same atomic section as the insert,
+        so eviction freeing a slot and a create taking it cannot interleave
+        with a second creator.
 
         The count and the insert are ONE atomic operation in every backend — that
         is the entire point of this method existing next to :meth:`put`. Counting
@@ -619,12 +634,27 @@ def create_spec_in_file(path: str, spec: CollectionSpec, *, limit: int | None) -
         existing = read_json_file(path)
         if any(isinstance(d, dict) and d.get("id") == spec.id for d in existing):
             return CreateOutcome.DUPLICATE
-        if limit is not None and len(existing) >= limit:
+        if limit is not None and _count_physical_rows(existing, read_lifecycle_file(path)) >= limit:
             return CreateOutcome.AT_CAP
         existing.append(spec.model_dump())
         write_json_file(path, existing)
         _drop_lifecycle_entry(path, spec.id)  # a new collection starts `active`
     return CreateOutcome.CREATED
+
+
+def _count_physical_rows(rows: list[Any], lifecycle: dict[str, dict[str, Any]]) -> int:
+    """How many registry rows hold their stores (:data:`PHYSICAL`) — a row
+    with no sidecar entry is active (the pre-lifecycle default). The JSON
+    backend's half of the #359 cap; read under the same flock as the insert
+    it authorizes."""
+    n = 0
+    for d in rows:
+        if not isinstance(d, dict):
+            continue
+        entry = lifecycle.get(str(d.get("id", "")))
+        if entry is None or entry.get("state", ACTIVE) in PHYSICAL:
+            n += 1
+    return n
 
 
 def remove_spec_from_file(path: str, cid: str) -> bool:
@@ -915,8 +945,10 @@ class InMemoryCollectionStore:
         async with self._lock:
             if spec.id in self._records:
                 return CreateOutcome.DUPLICATE
-            if limit is not None and len(self._records) >= limit:
-                return CreateOutcome.AT_CAP
+            if limit is not None:
+                present = sum(1 for r in self._records.values() if r.state in PHYSICAL)
+                if present >= limit:
+                    return CreateOutcome.AT_CAP
             self._records[spec.id] = make_record(spec)
         return CreateOutcome.CREATED
 
@@ -1037,6 +1069,11 @@ _INSERT_POSTGRES = (
 # Stable registration order: created_at ascends with insertion, id breaks ties
 # for rows seeded in one batch (identical timestamps are possible).
 _ORDER = " ORDER BY created_at, id"
+
+
+#: The physically-present states as SQL parameters (stable order for tests).
+_PHYSICAL_PARAMS: list[str] = sorted(PHYSICAL)
+_PHYSICAL_MARKS = ", ".join("?" * len(_PHYSICAL_PARAMS))
 
 
 def ensure_columns_sqlite(conn: sqlite3.Connection, table: str, cols: dict[str, str]) -> None:
@@ -1238,7 +1275,10 @@ class SqliteCollectionStore:
                     conn.execute("ROLLBACK")
                     return CreateOutcome.DUPLICATE
                 if limit is not None:
-                    n = conn.execute("SELECT COUNT(*) FROM collections").fetchone()[0]
+                    n = conn.execute(
+                        f"SELECT COUNT(*) FROM collections WHERE state IN ({_PHYSICAL_MARKS})",
+                        _PHYSICAL_PARAMS,
+                    ).fetchone()[0]
                     if n >= limit:
                         conn.execute("ROLLBACK")
                         return CreateOutcome.AT_CAP
@@ -1393,7 +1433,10 @@ class PostgresCollectionStore:
             if await conn.fetchval("SELECT 1 FROM collections WHERE id = $1", spec.id):
                 return CreateOutcome.DUPLICATE
             if limit is not None:
-                n = await conn.fetchval("SELECT COUNT(*) FROM collections")
+                n = await conn.fetchval(
+                    "SELECT COUNT(*) FROM collections WHERE state = ANY($1::text[])",
+                    _PHYSICAL_PARAMS,
+                )
                 if n >= limit:
                     return CreateOutcome.AT_CAP
             await conn.execute(_INSERT_POSTGRES, *_record_to_row(make_record(spec)))

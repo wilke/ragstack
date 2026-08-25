@@ -11,6 +11,7 @@ from ragstack.api.deps import lifespan
 from ragstack.api.root_path import RootPathMiddleware
 from ragstack.api.routers import (
     admin,
+    admin_collections,
     admin_users,
     collections,
     documents,
@@ -139,4 +140,10 @@ app.include_router(
 # outage-proof) admin source, and it is not writable from here.
 app.include_router(
     admin_users.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
+)
+# Eviction (#359): POST /v1/admin/collections/evict — the operator's handle on
+# the active-collection bound; the create path runs the same policy at the
+# bound. Admin-gated at include time like the rest of /v1/admin.
+app.include_router(
+    admin_collections.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
 )

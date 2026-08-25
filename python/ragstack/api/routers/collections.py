@@ -48,6 +48,7 @@ from ragstack.api.deps import (
     probe_tenant_count,
     rate_limited,
 )
+from ragstack.api.eviction import active_count, insufficient_storage, make_room_for_create
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.scope import count_scope
 from ragstack.api.security import (
@@ -62,6 +63,7 @@ from ragstack.collection_store import CollectionRecord, CollectionStore, CreateO
 from ragstack.config import settings
 from ragstack.group_store import get_group_store
 from ragstack.ingestion.chunkers import CHUNK_METHODS
+from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -370,12 +372,16 @@ async def _raise_id_taken(principal: Principal, cid: str) -> NoReturn:
 
 
 def _cap_reached(limit: int) -> HTTPException:
+    """The one remaining 403 for capacity: an EFFECTIVE cap of zero (the
+    shared-surface pointer charges the only slot). That is a deployment that
+    refuses every create, not a full store — evicting a collection for a
+    create that would still be refused would be destruction for nothing."""
     return HTTPException(
         403,
-        f"collection limit reached ({limit}): the server caps registered "
+        f"collection limit reached ({limit}): the server caps active "
         "collections because each one costs physical Qdrant/Elasticsearch "
-        "resources (ADR-0003). Delete unused collections or have the "
-        "operator raise MAX_COLLECTIONS",
+        "resources (ADR-0003), and this deployment's effective cap is zero. "
+        "Have the operator raise MAX_COLLECTIONS",
     )
 
 
@@ -582,21 +588,40 @@ async def create_collection(
     # The int|None sentinel is load-bearing: MAX_COLLECTIONS=0 means the cap is
     # DISABLED, while a cap fully consumed by reserved slots (MAX_COLLECTIONS=1
     # with a shared surface) must mean REFUSE EVERYTHING. Both would be the int 0.
+    #
+    # The cap bounds ACTIVE collections (#359): a `dormant` row — evicted to
+    # its Workspace archive — holds no slot. At the bound, make room by
+    # evicting EXACTLY ONE least-recently-accessed archived collection and
+    # reserve again; nothing evictable is 507 (`insufficient_storage` names
+    # the per-reason counts). One eviction, one retry, never a loop: a second
+    # AT_CAP means a concurrent creator took the freed slot, and evicting
+    # again for them would be destruction on someone else's behalf.
     reserved = 1 if any(e.is_shared_surface for e in registry.entries()) else 0
     effective = None if limit <= 0 else max(0, limit - reserved)
-    outcome = await store.create(spec, limit=effective)
-    if outcome is CreateOutcome.AT_CAP:
-        raise _cap_reached(limit)
+    if effective == 0:
+        raise _cap_reached(limit)  # refuses everything; eviction would gain nothing
+    made_room = False
+    while True:
+        outcome = await store.create(spec, limit=effective)
+        if outcome is CreateOutcome.UNSUPPORTED:
+            # No durable store to reserve in (inline/unset collections_json).
+            # Fall back to the in-process count — wrong across processes, but
+            # so is the registry it is guarding, and refusing to create at all
+            # would be worse.
+            if limit > 0 and active_count(await store.list_records(), registry) >= limit:
+                outcome = CreateOutcome.AT_CAP
+        if outcome is not CreateOutcome.AT_CAP:
+            break
+        if made_room:
+            raise insufficient_storage(
+                limit, None, why="a concurrent create took the slot the eviction freed; retry",
+            )
+        await make_room_for_create(request.app.state, registry, store, limit=limit)
+        made_room = True
     if outcome is CreateOutcome.DUPLICATE:
         # A sibling process (or the CLI, or a hand-edited file) already holds this
         # id; registry.has(cid) above could not see it. Same leak-safe wording.
         await _raise_id_taken(principal, cid)
-    if outcome is CreateOutcome.UNSUPPORTED:
-        # No durable store to reserve in (inline/unset collections_json). Fall
-        # back to the in-process count — wrong across processes, but so is the
-        # registry it is guarding, and refusing to create at all would be worse.
-        if limit > 0 and len(registry.entries()) >= limit:
-            raise _cap_reached(limit)
 
     # ...then build the live entry (stores + retriever), register it, and
     # materialize its config manifest.
@@ -904,23 +929,12 @@ async def _purge_physical(entry: CollectionEntry, report: PurgeReport) -> None:
     on ``report``. Never raises and never rolls back: a Qdrant drop that succeeded
     cannot be undone by an ES failure, so pretending otherwise would be a lie.
     Each target is independent, so one failure must not skip the rest."""
-    drops: list[tuple[str, Any]] = [
-        (_TARGET_VECTORS, getattr(entry.vector_store, "drop_collection", None)),
-        (_TARGET_TEXT, getattr(entry.text_index, "drop_index", None)),
-    ]
-    for target, fn in drops:
-        if fn is None:
-            report.failed.append(
-                PurgeFailure(target=target, error="backend does not support dropping")
-            )
-            continue
-        try:
-            existed = await fn()
-        except Exception as e:  # noqa: BLE001 — reported, not raised: fail soft + honest
-            log.warning("purge %r: %s drop failed: %s", entry.id, target, e)
-            report.failed.append(PurgeFailure(target=target, error=f"{type(e).__name__}: {e}"))
-        else:
-            (report.deleted if existed else report.absent).append(target)
+    # The two store legs share the eviction path's drop (ops/evict.drop_stores)
+    # so "dropped" cannot mean two things; the target names are the same.
+    deleted, absent, failed = await drop_stores(entry)
+    report.deleted.extend(deleted)
+    report.absent.extend(absent)
+    report.failed.extend(PurgeFailure(target=t, error=e) for t, e in failed)
     try:
         removed = delete_manifest(settings.collection_manifest_dir, entry.collection)
     except Exception as e:  # noqa: BLE001 — e.g. a read-only manifest dir

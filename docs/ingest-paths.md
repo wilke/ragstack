@@ -200,6 +200,32 @@ delete by doc id). The API-side settings, all at the end of `config.py`:
 | `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
 | `collection_restore_inputs_json` | `{}` | Extra/overriding static inputs — typically `qdrant_url` / `es_url` as seen from the worker. Worker group comes from `gowe_worker_group`. |
 
+## Eviction: the active bound (#359)
+
+`max_collections` bounds **active** collections (`state == active` — the ones whose
+Qdrant collection and ES index exist), not registered ones; a `dormant` collection
+costs nothing physical. When a create meets the bound, `ops/evict.py` chooses the
+least-recently-accessed active collection whose archive is current
+(`archive_pending=false`, `versions` non-empty) and makes it dormant: the registry row
+is compare-and-swapped `active → dormant` **first** (readers get 503 + `Retry-After`
+from that instant), then the two stores are dropped, best-effort per target — a
+failed drop keeps the row `dormant` with the leftover named in its `state_reason`
+for the store inventory (#299) to find, and nothing is dropped when the swap lost.
+Never a victim: a collection with an in-flight ingest job (the job store stamps
+`collection_id` on every job for this), one whose stores are the legacy shared
+surface's (the settings-derived default, or a spec that **claims** its stores — evicting
+it would destroy every tenant's legacy data), or one whose store another registry id
+also serves. With no candidate the create is **507**, naming the per-reason counts.
+`POST /v1/admin/collections/evict?need=k[&dry_run=true]` runs the same policy by hand.
+`last_accessed_at` is the LRU key (batched writes — the tracker is flushed before
+selection); a never-accessed collection falls back to its creation time. The graph
+leg is not touched yet: `GraphStore` has no per-collection delete (phase 6 of #353).
+
+`MAX_COLLECTIONS` is set per tenant from the tightest of three measured ceilings at
+60 % (memory mappings vs `vm.max_map_count`, threads vs the process limit, resident
+RAM) over ten loaded collections — measured value: see
+`docs/runbooks/active-collection-bound.md`.
+
 ## Known gaps
 
 Be clear-eyed about what does **not** work today:

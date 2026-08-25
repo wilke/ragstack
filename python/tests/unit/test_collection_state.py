@@ -28,6 +28,7 @@ from ragstack.collection_store import (
     ARCHIVING,
     DORMANT,
     LOST,
+    PHYSICAL,
     RESTORING,
     STATES,
     AccessTracker,
@@ -85,6 +86,30 @@ async def store(_backend):
 # --------------------------------------------------------------------------- #
 # defaults + transitions
 # --------------------------------------------------------------------------- #
+
+
+async def test_the_cap_counts_physically_present_rows(store):
+    """#359: ``create(limit=n)`` refuses at ``n`` rows that hold their stores
+    (``PHYSICAL``: active, archiving, restoring); a dormant or lost row
+    (nothing on the stores) holds no slot and frees one — inside the same
+    atomic section as the insert, on every backend."""
+    assert PHYSICAL == {ACTIVE, ARCHIVING, RESTORING}
+    assert await store.create(_spec("two"), limit=2) is CreateOutcome.CREATED
+    assert await store.create(_spec("three"), limit=2) is CreateOutcome.AT_CAP
+    assert await store.set_state("acme", DORMANT, expect=ACTIVE, reason="evicted") is True
+    assert await store.create(_spec("three"), limit=2) is CreateOutcome.CREATED
+    assert await store.create(_spec("four"), limit=2) is CreateOutcome.AT_CAP
+    # archiving/restoring rows still hold (or are rebuilding) their stores:
+    # they keep counting, even though neither is evictable.
+    for st in (ARCHIVING, RESTORING):
+        assert await store.set_state("two", st) is True
+        assert await store.create(_spec("four"), limit=2) is CreateOutcome.AT_CAP
+    # lost holds nothing.
+    assert await store.set_state("two", LOST) is True
+    assert await store.create(_spec("four"), limit=2) is CreateOutcome.CREATED
+    assert {r.spec.id: r.state for r in await store.list_records()} == {
+        "acme": DORMANT, "two": LOST, "three": ACTIVE, "four": ACTIVE,
+    }
 
 
 async def test_a_new_collection_is_active_with_no_versions(store):

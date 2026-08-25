@@ -775,6 +775,18 @@ async def _build_collection_registry(
     return CollectionRegistry(entries, default_id=default_id)
 
 
+def derived_default_stores() -> tuple[str, str]:
+    """The settings-derived default's two physical legs: ``(Qdrant collection,
+    ES index)``. This is the legacy shared surface — every tenant's data,
+    isolated only by the per-chunk ``tenant_id`` — and it is what eviction
+    (#359, ``ops/evict.protected``) must never drop. Exposed as names, not as
+    a registry entry, because when a configured spec CLAIMS these stores
+    (ADR-0002 decision 5, the ``claimed_by`` branch above) no ``default``
+    entry is synthesised and nothing else in the registry says which spec is
+    sitting on the shared data."""
+    return _derived_collection_name(), _es_index_name()
+
+
 def _resolve_default_id(entries: list[CollectionEntry], *, fallback: str) -> str:
     """Which id a request that omits ``collection`` resolves to.
 

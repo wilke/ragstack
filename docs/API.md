@@ -210,14 +210,28 @@ Create a collection. `id` and `label` are optional; omitting `embedding` and `ch
 builds from the **server-default build spec** (resolved to concrete values at create
 time, so later default changes never re-identify an existing collection). Supplying
 `embedding` or `chunk` is an **admin-only** override → `403` otherwise. `409` when the
-spec collides with an existing collection; `403` when the `max_collections` cap is
-reached. Full schema: `contracts/schemas/collection_create_request.json`.
+spec collides with an existing collection; `507` when the `max_collections` bound on
+**active** collections is met and nothing can be evicted to make room (see below).
+Full schema: `contracts/schemas/collection_create_request.json`.
 
-The cap counts the **durable registry** (`collections_file` / the `collections` table),
-not the serving process's in-memory registry, and the count is taken *atomically with
-the id reservation* — so it sees collections registered by a sibling API process, by
-the bulk CLI, or by a hand edit, and ten concurrent creates with one slot left yield
-one `201` and nine `403`. A shared-surface `default` pointer is charged a slot, since
+The bound counts **active** rows (`state == active`) of the **durable registry**
+(`collections_file` / the `collections` table), not the serving process's in-memory
+registry, and the count is taken *atomically with the id reservation* — so it sees
+collections registered by a sibling API process, by the bulk CLI, or by a hand edit,
+and concurrent creates cannot overshoot it. At the bound the create first **evicts
+exactly one** least-recently-accessed active collection whose Workspace archive is
+current (#359): its row is swapped `active → dormant` *before* its Qdrant collection
+and ES index are dropped, so readers get `503 + Retry-After` from that instant and
+the first access restores it. Never evicted: a collection with an `accepted`/`running`
+ingest job, one whose last archive step failed (`archive_pending`), one never archived,
+one whose stores are the legacy shared surface's (the settings-derived default, or a
+spec that claims its stores) or are shared with another registry id. When no candidate
+exists the create is `507` and the detail counts the ineligible collections per reason
+(`not_active`, `archive_pending`, `no_archive`, `in_flight`, `protected`,
+`unregistered`); ten concurrent creates with one slot left and nothing evictable yield
+one `201` and nine `507`. `POST /v1/admin/collections/evict?need=k[&dry_run=true]`
+(admin) runs the same policy by hand and returns the plan / outcome
+(`contracts/schemas/eviction_response.json`). A shared-surface `default` pointer is charged a slot, since
 it is a pointer rather than a durable row. The reservation happens **before** any
 physical Qdrant collection or ES index is created, so a crash mid-create leaves a spec
 with no store (which the next startup simply builds) rather than a store with no spec.
@@ -729,7 +743,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES_PER_REQUEST`, `UPLOAD_CONTENT_TYPES` | `POST /v1/ingest/upload` bounds (#202): at most **50** files per request, at most **500 MB** across them, and the content-type allowlist (default `application/pdf,text/plain,text/markdown,application/xml,text/xml`; a PDF must also start with `%PDF`) → `413` / `415`. Each file is still capped by `MAX_DOCUMENT_BYTES`. Checked against the declared sizes before anything is staged or written (the multipart body has by then been received and spooled by the server); a request whose `Content-Length` exceeds the per-request cap (plus multipart framing) is refused with `413` before the body is read, and one without a `Content-Length` with `411`. **The deployment gateway must enforce a body cap ≈ `MAX_UPLOAD_BYTES_PER_REQUEST`** — a client that lies about `Content-Length` is only stopped there (see DEPLOYMENT.md). One ingest job per principal at a time (`429` + `Retry-After` while one is accepted/running and written to within the last 6 h; admins exempt) is not a setting. All three reported in `GET /v1/config` |
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
-| `MAX_COLLECTIONS` | cap on collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables). Physical protection, not an authorization tier — **applies to admins too**; `POST /v1/collections` returns 403 at the cap |
+| `MAX_COLLECTIONS` | bound on **active** collections in this tenant's stores (default **100**, per ADR-0003's budget; `0` disables) — `state == active` rows of the durable registry; a `dormant` (evicted, archived) collection holds no slot (#359). Physical protection, not an authorization tier — **applies to admins too**. At the bound `POST /v1/collections` evicts one LRU archived collection and proceeds; `507` when nothing is evictable. Set it from the tenant's measured ceilings: `docs/runbooks/active-collection-bound.md` |
 | `ALLOW_USER_COLLECTION_CREATE` | capability gate (default **true**, ADR-0003 behaviour) on whether a non-admin may call `POST /v1/collections` at all (#287). `false` makes creation admin-only — for a deployment that must close that plane entirely, e.g. a read-only service account where every other write already 403s a non-owner. Admins are never subject to it; reported in `GET /v1/config` |
 | `DEFAULT_ROLE` | role for keyless/unmapped callers (default **`user`**). `researcher` is a deprecated alias for `user`; `engineer`/`manager` are rejected at startup (ADR-0003). **Never applies to a bearer identity** — see `ADMIN_SUBJECTS` |
 | `ADMIN_SUBJECTS` | **bearer** subjects that are admin by operator fiat, as `issuer:subject` strings (a colon-free entry is refused at startup: it would name an API-key tenant — use `API_KEY_ROLES`). The break-glass admin source: checked first, no store read, works on an empty users table, survives a store outage, and no database write can revoke it. Only the count is logged |

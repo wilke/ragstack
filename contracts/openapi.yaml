@@ -914,6 +914,54 @@ paths:
         "503":
           description: User/authorization store unavailable — refused (fail closed).
 
+  /v1/admin/collections/evict:
+    post:
+      operationId: evictCollections
+      summary: Evict the k least-recently-accessed archived collections (admin only)
+      description: >-
+        The operator's handle on the active-collection bound (#359, phase 4 of
+        #353). Chooses up to `need` victims — least-recently-accessed first
+        among ACTIVE collections whose Workspace archive is current
+        (`archive_pending=false`, `versions` non-empty), never one with an
+        `accepted`/`running` ingest job, never one whose physical stores are
+        the legacy shared surface's (the settings-derived default, or a spec
+        that claims its stores — evicting it would destroy every tenant's
+        legacy data) or are shared with another registry id — and makes each
+        `dormant`: the registry row is compare-and-swapped `active → dormant`
+        FIRST (readers immediately get 503 + `Retry-After`), then the Qdrant
+        collection and the ES index are dropped, best-effort per target. A
+        failed drop leaves the row `dormant` with the leftover named in its
+        reason for the store inventory to find; nothing is dropped when the
+        swap lost. Only the Workspace archive remains; the first access (or
+        `POST /v1/collections/{id}/restore`) restores it.
+
+
+        `dry_run=true` returns the same plan without acting. Always 200, even
+        when fewer than `need` victims exist — `shortfall` counts, per reason,
+        why the rest were ineligible. Admin only.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
+      parameters:
+        - name: need
+          in: query
+          required: false
+          description: How many collections to evict (default 1).
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 1 }
+        - name: dry_run
+          in: query
+          required: false
+          description: Report the plan without acting (default false).
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: The victims (acted on, or planned under `dry_run`) and the shortfall
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvictionResponse" }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
+        "403": { description: Admin role required }
+        "422": { description: "`need` out of range" }
+
   /v1/admin/config/assignments:
     patch:
       operationId: patchModelAssignments
@@ -1119,13 +1167,10 @@ paths:
             capability gate, e.g. for a read-only service account); or the
             caller supplied the admin-only `embedding`/`chunk` build-spec
             overrides without the admin role (omit both to create from the
-            server-default build spec); or the server's collection cap
-            (`MAX_COLLECTIONS`) is reached — each collection costs physical
-            store resources, so the count is enforced, not just monitored.
-            The count is taken over the **durable registry**, atomically with
-            the id reservation: it therefore includes collections registered by
-            a sibling API process, by the bulk CLI, or by hand, and concurrent
-            creates cannot overshoot it
+            server-default build spec); or the deployment's effective cap is
+            zero (`MAX_COLLECTIONS=1` with a shared-surface `default` pointer
+            charging the only slot) — a configuration that refuses every
+            create rather than a full store, so no eviction is attempted
         "404":
           description: Referenced embedding model is not registered
         "409":
@@ -1140,7 +1185,7 @@ paths:
             Rate limit exceeded (issue #87): more than
             rate_limit_collections_create_per_hour requests from this principal
             in the last hour. An admin principal is exempt from this bucket
-            (but not from the request bounds, nor from MAX_COLLECTIONS above).
+            (but not from the request bounds, nor from MAX_COLLECTIONS).
             Retry after the delay named in the `Retry-After` header (seconds).
           headers:
             Retry-After:
@@ -1152,6 +1197,26 @@ paths:
           description: >-
             Authorization store unavailable — ownership could not be recorded,
             so the create is rolled back (fail closed).
+        "507":
+          description: >-
+            The server's ACTIVE-collection bound (`MAX_COLLECTIONS`, #359) is
+            met and nothing can be evicted to make room. Each active
+            collection holds physical store resources, so the bound is
+            enforced; normally it is met by evicting exactly ONE
+            least-recently-accessed active collection whose Workspace archive
+            is current (it becomes `dormant` and is restored on its next
+            access) and the create proceeds. This response means no candidate
+            exists: the `detail` names, per reason, how many collections were
+            ineligible — `not_active`, `archive_pending` (last archive step
+            failed; the owner's next call retries it), `no_archive` (never
+            archived), `in_flight` (an ingest job is running), `protected`
+            (the legacy shared surface or a store shared by two registry ids),
+            `unregistered` (not served by this process). The bound is taken
+            over the **durable registry**, atomically with the id
+            reservation, so it includes collections registered by a sibling
+            API process, by the bulk CLI, or by hand, and concurrent creates
+            cannot overshoot it; a create whose freed slot was taken by a
+            concurrent creator is also 507 (retry).
 
   /v1/collections/{collection_id}:
     delete:
@@ -2570,6 +2635,88 @@ components:
             restore; null when one was already in flight or none was needed.
           type: [string, "null"]
         message: { type: string }
+      additionalProperties: false
+
+    EvictionResponse:
+      type: object
+      description: >-
+        Outcome of POST /v1/admin/collections/evict (#359): the victims chosen
+        least-recently-accessed first, what happened to each (or would, under
+        `dry_run`), and the shortfall — per reason, how many collections were
+        ineligible. Always 200; fewer than `need` victims is a shortfall, not
+        an error.
+      required: [need, dry_run, evicted, victims, shortfall]
+      properties:
+        need:
+          description: How many evictions were asked for.
+          type: integer
+        dry_run:
+          description: True — the plan was reported and nothing was changed.
+          type: boolean
+        evicted:
+          description: How many victims THIS call actually made dormant (0 under `dry_run`).
+          type: integer
+        victims:
+          type: array
+          items:
+            type: object
+            required: [collection_id, last_accessed_at, idle_seconds, state, reason, deleted, absent, failed, ok]
+            properties:
+              collection_id: { type: string }
+              last_accessed_at:
+                description: The registry's last-access stamp ("" when never recorded).
+                type: string
+              idle_seconds:
+                description: Seconds since that stamp (or since creation) at selection; null when neither is known.
+                type: [number, "null"]
+              state:
+                description: The row's state after this call — `dormant` when evicted, `active` under `dry_run` or when the swap lost.
+                type: string
+                enum: [active, archiving, dormant, restoring, lost]
+              reason:
+                description: The recorded state reason (names any leftover physical store), or why the row was skipped.
+                type: string
+              deleted:
+                description: Physical targets removed (`vectors`, `text_index`).
+                type: array
+                items: { type: string }
+              absent:
+                description: Targets already gone (idempotent no-op).
+                type: array
+                items: { type: string }
+              failed:
+                description: Targets whose drop errored; the row stays `dormant` with the leftover named in `reason`.
+                type: array
+                items:
+                  type: object
+                  required: [target, error]
+                  properties:
+                    target: { type: string }
+                    error: { type: string }
+                  additionalProperties: false
+              ok:
+                description: Evicted with nothing left behind (true under `dry_run` for a planned victim).
+                type: boolean
+            additionalProperties: false
+        shortfall:
+          type: object
+          required: [needed, found, reasons]
+          properties:
+            needed: { type: integer }
+            found: { type: integer }
+            reasons:
+              description: Per-reason counts over every registry row examined.
+              type: object
+              required: [not_active, archive_pending, no_archive, in_flight, protected, unregistered]
+              properties:
+                not_active: { type: integer }
+                archive_pending: { type: integer }
+                no_archive: { type: integer }
+                in_flight: { type: integer }
+                protected: { type: integer }
+                unregistered: { type: integer }
+              additionalProperties: false
+          additionalProperties: false
       additionalProperties: false
 
     ShareGrantRequest:

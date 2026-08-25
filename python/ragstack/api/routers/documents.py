@@ -733,7 +733,9 @@ async def ingest(
         # Every refusal precedes the job: a version-reservation failure (json
         # registry → 503) must not leave an `accepted` job nobody will run.
         version = await _reserve_version(entry, collection_store)
-        job = await job_store.create(source=request.source, tenant_id=principal.tenant)
+        job = await job_store.create(
+            source=request.source, tenant_id=principal.tenant, collection_id=entry.id
+        )
         background_tasks.add_task(
             _run_gowe_ingest,
             job_store,
@@ -774,7 +776,10 @@ async def ingest(
         request.collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(source=request.source, tenant_id=principal.tenant)
+    job = await job_store.create(
+        source=request.source, tenant_id=principal.tenant,
+        collection_id=target.id if target is not None else collections.default_id,
+    )
     background_tasks.add_task(
         _run_ingest,
         job_store,
@@ -1068,7 +1073,9 @@ async def ingest_upload(
         # (json → 503) must not leave files uploaded with no version to run
         # under. A rejected upload then leaves a gap in the numbering — fine.
         version = await _reserve_version(entry, collection_store)
-        job = await job_store.create(source="upload", tenant_id=principal.tenant)
+        job = await job_store.create(
+            source="upload", tenant_id=principal.tenant, collection_id=entry.id
+        )
         try:
             items = await _gowe_upload_sources(
                 workspace, token, subject, entry, record, tenant, files, kinds, budget
@@ -1106,7 +1113,10 @@ async def ingest_upload(
         collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(source="upload", tenant_id=principal.tenant)
+    job = await job_store.create(
+        source="upload", tenant_id=principal.tenant,
+        collection_id=target.id if target is not None else collections.default_id,
+    )
     # Staging dir is server-side root + tenant + the freshly minted job_id — none
     # client-controlled today — and each file dest is re-confined under it. But
     # confine the dir itself too: tenant is not validated (config.py accepts any
