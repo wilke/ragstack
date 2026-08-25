@@ -367,3 +367,63 @@ async def test_sqlite_migration_adds_lifecycle_columns_to_an_older_table(tmp_pat
     assert rec is not None and rec.state == ACTIVE and rec.versions == []
     assert await s.set_state("old", DORMANT, expect=ACTIVE) is True
     assert (await s.get("old")).state == DORMANT
+
+
+# --------------------------------------------------------------------------- #
+# restore admission at the bound (#381)
+# --------------------------------------------------------------------------- #
+
+
+async def test_begin_restore_counts_other_physical_rows_inside_the_atomic_section(store):
+    """#381: ``begin_restore(expect, limit)`` is the restore side of the cap —
+    CAS ``expect → restoring`` only while fewer than ``limit`` OTHER rows are
+    physically present, on every backend. The row itself never counts (a
+    stale ``restoring`` row re-admitted by the explicit endpoint must not be
+    refused by its own slot)."""
+    from ragstack.collection_store import RestoreAdmission as RA
+
+    assert await store.create(_spec("two"), limit=None) is CreateOutcome.CREATED
+    assert await store.set_state("two", DORMANT, expect=ACTIVE, reason="evicted") is True
+    # acme active (1 present): at limit 1 the restore is refused, the row untouched.
+    assert await store.begin_restore("two", expect=DORMANT, limit=1) is RA.AT_CAP
+    assert (await store.get("two")).state == DORMANT
+    # Not in the expected state, or unknown: MOVED, nothing changes.
+    assert await store.begin_restore("two", expect=ACTIVE, limit=None) is RA.MOVED
+    assert await store.begin_restore("ghost", expect=DORMANT, limit=None) is RA.MOVED
+    assert (await store.get("two")).state == DORMANT
+    # Room for one more: admitted, reason recorded, stamp set.
+    assert await store.begin_restore("two", expect=DORMANT, limit=2, reason="by alice") is RA.ADMITTED
+    rec = await store.get("two")
+    assert rec.state == RESTORING and rec.state_reason == "by alice" and rec.state_changed_at
+    # A second admission from `dormant` loses (the row is restoring).
+    assert await store.begin_restore("two", expect=DORMANT, limit=2) is RA.MOVED
+    # Re-admitting a (stale) restoring row excludes its own slot: with acme
+    # dormant nothing else is present, so limit 1 admits it.
+    assert await store.set_state("acme", DORMANT) is True
+    assert await store.begin_restore("two", expect=RESTORING, limit=1) is RA.ADMITTED
+    # ...and with acme back, limit 1 refuses (the OTHER row fills the bound).
+    assert await store.set_state("acme", ACTIVE) is True
+    assert await store.begin_restore("two", expect=RESTORING, limit=1) is RA.AT_CAP
+    assert await store.begin_restore("two", expect=RESTORING, limit=2) is RA.ADMITTED
+    # limit=None: a plain CAS.
+    assert await store.begin_restore("two", expect=RESTORING, limit=None) is RA.ADMITTED
+
+
+async def test_a_restore_in_flight_holds_a_slot_against_create_and_vice_versa(store):
+    """The invariant across both paths: a ``restoring`` row counts for the
+    create's cap and a created row counts for the restore's."""
+    from ragstack.collection_store import RestoreAdmission as RA
+
+    assert await store.create(_spec("two"), limit=None) is CreateOutcome.CREATED
+    assert await store.set_state("two", DORMANT) is True
+    assert await store.begin_restore("two", expect=DORMANT, limit=2) is RA.ADMITTED
+    # acme active + two restoring = 2: a create at limit 2 is refused.
+    assert await store.create(_spec("three"), limit=2) is CreateOutcome.AT_CAP
+    assert await store.create(_spec("three"), limit=3) is CreateOutcome.CREATED
+    # Now three present: a dormant row's restore is refused at 3, admitted at 4.
+    assert await store.set_state("acme", DORMANT) is True
+    assert await store.begin_restore("acme", expect=DORMANT, limit=2) is RA.AT_CAP
+    assert await store.begin_restore("acme", expect=DORMANT, limit=3) is RA.ADMITTED
+    assert {r.spec.id: r.state for r in await store.list_records()} == {
+        "acme": RESTORING, "two": RESTORING, "three": ACTIVE,
+    }

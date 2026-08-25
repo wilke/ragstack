@@ -13,6 +13,25 @@ registry what STATE the collection is in and answers accordingly:
     ``restoring``. The restore runs AS THE CALLER (their bearer token), so a
     caller without one — keyless / API key — gets the 503 with a message
     saying a user token is required, and the row stays ``dormant``.
+
+    **Admission at the active bound (#381).** A restore rebuilds the physical
+    stores, so it takes a slot against ``max_collections`` exactly as a create
+    does. The CAS is therefore ``CollectionStore.begin_restore`` — count
+    and swap in ONE atomic store section, the create path's
+    ``create(limit=…)`` mirrored — and when it answers ``AT_CAP`` the gate
+    runs the create path's evict-one (:class:`RestoreCapacity.make_room`,
+    LRU active collection with a current archive) and tries the swap once
+    more. Nothing evictable, or the freed slot taken concurrently: **503 +
+    Retry-After** with a "tenant at capacity" reason and the row LEFT
+    ``dormant`` — never flipped to ``restoring``. The evict-then-retry section
+    is serialized per process (:attr:`LifecycleGate._admission`) and the
+    waiter re-tries the swap under the lock before evicting, so N concurrent
+    accesses at the bound cost at most ONE eviction and ONE submission: the
+    winner evicts and admits, every waiter's re-try sees ``MOVED`` (the row is
+    ``restoring``) and takes the ordinary losers' 503. Across processes the
+    store's atomic count keeps the bound; two processes may each evict a
+    victim for one restore in a narrow window (the same shape as two
+    concurrent creators), which under-fills, never over-fills.
 ``restoring``
     **503** + ``Retry-After``. A row that has been ``restoring`` longer than
     ``collection_restore_timeout`` is presumed orphaned (its API process died
@@ -39,8 +58,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import HTTPException
 
@@ -54,10 +74,38 @@ from ragstack.collection_store import (
     AccessTracker,
     CollectionRecord,
     CollectionStore,
+    RestoreAdmission,
 )
 from ragstack.restore import CollectionRestorer, RestoreError
 
 log = logging.getLogger(__name__)
+
+
+class Capacity(Protocol):
+    """What the gate needs from the eviction side (#381), duck-typed so this
+    module does not import ``api.eviction`` (which imports this one):
+    ``ragstack.api.eviction.RestoreCapacity`` is the implementation."""
+
+    def limit(self) -> int | None:
+        """The effective active bound (``None`` = unbounded, ``0`` = refuse)."""
+        ...
+
+    async def make_room(self) -> str | None:
+        """Evict exactly one archived collection; ``None`` on success, else why not."""
+        ...
+
+
+@dataclass(frozen=True)
+class Admission:
+    """:meth:`LifecycleGate.admit`'s answer: the store's verdict plus, for
+    ``AT_CAP``, the reason the gate could not make room."""
+
+    outcome: RestoreAdmission
+    why: str = ""
+
+    @property
+    def admitted(self) -> bool:
+        return self.outcome is RestoreAdmission.ADMITTED
 
 
 def _parse_stamp(value: str) -> float | None:
@@ -81,6 +129,7 @@ class LifecycleGate:
         *,
         restorer: CollectionRestorer | None = None,
         tracker: AccessTracker | None = None,
+        capacity: Capacity | None = None,
         cache_seconds: float = 5.0,
         retry_after: int = 30,
         restore_timeout: float = 3600.0,
@@ -88,13 +137,22 @@ class LifecycleGate:
         self.store = store
         self.restorer = restorer
         self.tracker = tracker
+        #: The active bound + evict-one (#381). ``None`` = no admission
+        #: check (a gate assembled without the eviction side — tests).
+        self.capacity = capacity
         self.cache_seconds = max(0.0, float(cache_seconds))
         self.retry_after = max(1, int(retry_after))
         self.restore_timeout = max(1.0, float(restore_timeout))
         self._cache: dict[str, tuple[float, CollectionRecord | None]] = {}
         self._pending: set[asyncio.Task] = set()
+        # Serializes the evict-one-then-retry section (module docstring).
+        self._admission = asyncio.Lock()
         #: Registry reads performed (the perf test asserts the cache holds).
         self.reads = 0
+        #: Admission attempts (``begin_restore`` calls — each one count read).
+        self.admissions = 0
+        #: Evictions this gate ran for a restore.
+        self.evictions = 0
 
     # -- cached registry read ---------------------------------------------- #
 
@@ -186,17 +244,73 @@ class LifecycleGate:
                 cid, DORMANT,
                 "its stores were evicted and this server has no restore workflow configured",
             )
-        won = await self.store.set_state(
-            cid, RESTORING, expect=DORMANT,
-            reason=f"restore requested by {principal.tenant} ({action})",
+        admission = await self.admit(
+            cid, expect=DORMANT, reason=f"restore requested by {principal.tenant} ({action})",
         )
-        self.invalidate(cid)
-        if won:
+        if admission.outcome is RestoreAdmission.AT_CAP:
+            raise self._retry(cid, DORMANT, f"tenant at capacity — {admission.why}")
+        if admission.admitted:
             self._spawn(self._submit(rec, token))
         raise self._retry(
             cid, RESTORING,
             "a restore from its Workspace archive was submitted; retry shortly",
         )
+
+    async def _begin(self, cid: str, expect: str, limit: int | None, reason: str) -> RestoreAdmission:
+        self.admissions += 1
+        return await self.store.begin_restore(cid, expect=expect, limit=limit, reason=reason)
+
+    async def admit(self, cid: str, *, expect: str, reason: str) -> Admission:
+        """CAS ``expect → restoring`` within the active bound (#381, module
+        docstring): the create path's evict-one-then-reserve, mirrored. Shared
+        by the on-access path and ``POST /v1/collections/{id}/restore``. The
+        row is left in ``expect`` on ``AT_CAP``; the caller submits only on
+        ``ADMITTED``. Invalidates the cached row whenever it may have moved."""
+        limit = self.capacity.limit() if self.capacity is not None else None
+        if limit == 0:
+            # A cap fully consumed by the reserved slot refuses every
+            # reservation; evicting a collection would gain nothing.
+            return Admission(
+                RestoreAdmission.AT_CAP,
+                "this deployment's effective active collection bound is zero (the shared "
+                "surface holds the only slot); have the operator raise MAX_COLLECTIONS",
+            )
+        outcome = await self._begin(cid, expect, limit, reason)
+        if outcome is RestoreAdmission.AT_CAP:
+            assert self.capacity is not None  # AT_CAP needs a limit, a limit needs a capacity
+            async with self._admission:
+                # UNCONDITIONALLY re-try under the lock: a sibling that held
+                # it may have admitted THIS row (→ MOVED: no eviction for it)
+                # or freed a slot we can take without evicting. Skipping this
+                # when the lock looked free is unsound — a sibling can have
+                # admitted and released between our first try and here.
+                outcome = await self._begin(cid, expect, limit, reason)
+                if outcome is RestoreAdmission.AT_CAP:
+                    why = await self.capacity.make_room()
+                    if why is not None:
+                        return Admission(RestoreAdmission.AT_CAP, why)
+                    self.evictions += 1
+                    outcome = await self._begin(cid, expect, limit, reason)
+                    if outcome is RestoreAdmission.AT_CAP:
+                        # One eviction, one retry, never a loop (the create
+                        # path's rule): a concurrent reservation took the
+                        # freed slot; evicting again would be destruction on
+                        # someone else's behalf.
+                        return Admission(
+                            RestoreAdmission.AT_CAP,
+                            "a concurrent create or restore took the slot the eviction "
+                            "freed; retry",
+                        )
+        self.invalidate(cid)
+        if outcome is RestoreAdmission.ADMITTED:
+            # Admission IS the demand signal: without a fresh stamp a just-
+            # restored collection keeps its pre-eviction `last_accessed_at`
+            # and is the LRU victim of the very next create/restore at the
+            # bound — evicted again before the requester's Retry-After
+            # elapses. One direct write (not the batched tracker) so the
+            # stamp is visible to the next eviction plan at once.
+            await self.store.touch_accessed([cid])
+        return Admission(outcome)
 
     def _spawn(self, coro: Any) -> None:
         task = asyncio.get_running_loop().create_task(coro)

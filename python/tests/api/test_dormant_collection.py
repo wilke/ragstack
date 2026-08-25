@@ -234,6 +234,10 @@ async def world(client, _acl_store, tmp_path, monkeypatch):
         is_shared_surface=False, retriever=HybridRetriever(vstore, tindex, _FakeEmbedder()),
         vector_store=vstore, text_index=tindex, embedder=_FakeEmbedder(), owner=OWNER,
     ))
+    # Save/restore the prior attribute: `get_collection_store` falls back to
+    # the JSON store only when the attribute is ABSENT, so a leaked in-memory
+    # store poisons every later create test (DUPLICATE -> 409).
+    prior_store = getattr(app.state, "collection_store", None)
     app.state.collection_store = store
     await _acl_store.grant(CID, GRANTEE_USER, OWNER, PERM_OWNER, granted_by=OWNER)
 
@@ -265,6 +269,10 @@ async def world(client, _acl_store, tmp_path, monkeypatch):
         await gate.drain()
         reset_lifecycle_gate()
         app.state.collections.remove(CID)
+        if prior_store is None:
+            del app.state.collection_store
+        else:
+            app.state.collection_store = prior_store
 
 
 def _auth(token: str | None) -> dict[str, str]:

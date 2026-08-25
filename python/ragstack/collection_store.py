@@ -286,6 +286,19 @@ class CreateOutcome(StrEnum):
     UNSUPPORTED = "unsupported"  #: this store cannot persist; the caller must fall back
 
 
+class RestoreAdmission(StrEnum):
+    """What :meth:`CollectionStore.begin_restore` did — the three answers a
+    capacity-checked compare-and-swap into ``restoring`` can give (#381). Kept
+    distinct because the lifecycle gate maps each differently: ``ADMITTED`` →
+    submit; ``AT_CAP`` → evict one and try once more, else 503 "at capacity"
+    with the row left where it was; ``MOVED`` → someone else moved the row
+    (a sibling's restore, a purge) — report its new state, never evict."""
+
+    ADMITTED = "admitted"  #: the swap landed; the row is now ``restoring``
+    AT_CAP = "at_cap"  #: ``limit`` other rows are physically present; nothing changed
+    MOVED = "moved"  #: the row is not in the expected state (or unknown); nothing changed
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -366,6 +379,21 @@ class CollectionStore(Protocol):
         collection submit exactly one restore": each CASes ``dormant →
         restoring`` and only the winner submits. ``False`` also for an unknown
         id."""
+        ...
+
+    async def begin_restore(
+        self, cid: str, *, expect: str, limit: int | None, reason: str = ""
+    ) -> RestoreAdmission:
+        """The restore-side capacity reservation (#381): CAS ``expect →
+        restoring`` **only if fewer than** ``limit`` OTHER rows are physically
+        present (:data:`PHYSICAL`, ``cid`` itself excluded so a stale
+        ``restoring`` row re-admitted by the explicit endpoint does not count
+        its own slot). Count and swap are ONE atomic section, on the SAME
+        primitive :meth:`create` uses (the asyncio lock / the file lock /
+        ``BEGIN IMMEDIATE`` / the advisory lock), so a create and a restore
+        racing for the last slot cannot both land — the invariant is that the
+        physically-present count never exceeds the bound across both paths.
+        ``limit=None`` disables the count (a plain CAS)."""
         ...
 
     async def append_version(self, cid: str, version: int) -> list[int]:
@@ -701,11 +729,21 @@ def _count_physical_rows(rows: list[Any], lifecycle: dict[str, dict[str, Any]]) 
     with no sidecar entry is active (the pre-lifecycle default). The JSON
     backend's half of the #359 cap; read under the same flock as the insert
     it authorizes."""
+    ids = [str(d.get("id", "")) for d in rows if isinstance(d, dict)]
+    return _count_physical_ids(ids, lifecycle)
+
+
+def _count_physical_ids(
+    ids: Iterable[str], lifecycle: dict[str, dict[str, Any]], *, exclude: str | None = None
+) -> int:
+    """:func:`_count_physical_rows` over bare ids; ``exclude`` leaves one id
+    out (the restore admission's own row, #381). A legacy pointer-name row
+    holds no slot (#276)."""
     n = 0
-    for d in rows:
-        if not isinstance(d, dict) or d.get("id") == RESERVED_COLLECTION_ID:
-            continue  # a legacy pointer-name row holds no slot (#276)
-        entry = lifecycle.get(str(d.get("id", "")))
+    for cid in ids:
+        if cid == RESERVED_COLLECTION_ID or cid == exclude:
+            continue
+        entry = lifecycle.get(cid)
         if entry is None or entry.get("state", ACTIVE) in PHYSICAL:
             n += 1
     return n
@@ -851,6 +889,25 @@ class JsonFileCollectionStore:
 
         return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
 
+    async def begin_restore(
+        self, cid: str, *, expect: str, limit: int | None, reason: str = ""
+    ) -> RestoreAdmission:
+        _check_state(expect)
+
+        def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[RestoreAdmission, bool]:
+            # Under the same file lock `create_spec_in_file` counts under.
+            if cid not in ids:
+                return RestoreAdmission.MOVED, False
+            entry = data.setdefault(cid, _lifecycle_default())
+            if entry.get("state", ACTIVE) != expect:
+                return RestoreAdmission.MOVED, False
+            if limit is not None and _count_physical_ids(ids, data, exclude=cid) >= limit:
+                return RestoreAdmission.AT_CAP, False
+            _apply_state(entry, RESTORING, reason)
+            return RestoreAdmission.ADMITTED, True
+
+        return await asyncio.to_thread(self._mutate_lifecycle_sync, fn)
+
     async def append_version(self, cid: str, version: int) -> list[int]:
         def fn(ids: set[str], data: dict[str, dict[str, Any]]) -> tuple[list[int], bool]:
             if cid not in ids:
@@ -968,6 +1025,29 @@ class InMemoryCollectionStore:
             })
             return True
 
+    def _count_physical(self, *, exclude: str | None = None) -> int:
+        """Rows holding their stores (:data:`PHYSICAL`); call under the lock."""
+        return sum(
+            1 for r in self._records.values() if r.state in PHYSICAL and r.spec.id != exclude
+        )
+
+    async def begin_restore(
+        self, cid: str, *, expect: str, limit: int | None, reason: str = ""
+    ) -> RestoreAdmission:
+        _check_state(expect)
+        # The same lock `create` counts under: no other coroutine runs between
+        # the count and the swap.
+        async with self._lock:
+            rec = self._records.get(cid)
+            if rec is None or rec.state != expect:
+                return RestoreAdmission.MOVED
+            if limit is not None and self._count_physical(exclude=cid) >= limit:
+                return RestoreAdmission.AT_CAP
+            self._records[cid] = rec.model_copy(update={
+                "state": RESTORING, "state_reason": reason or "", "state_changed_at": _now(),
+            })
+            return RestoreAdmission.ADMITTED
+
     async def append_version(self, cid: str, version: int) -> list[int]:
         async with self._lock:
             rec = self._records.get(cid)
@@ -1005,10 +1085,8 @@ class InMemoryCollectionStore:
         async with self._lock:
             if spec.id in self._records:
                 return CreateOutcome.DUPLICATE
-            if limit is not None:
-                present = sum(1 for r in self._records.values() if r.state in PHYSICAL)
-                if present >= limit:
-                    return CreateOutcome.AT_CAP
+            if limit is not None and self._count_physical() >= limit:
+                return CreateOutcome.AT_CAP
             self._records[spec.id] = make_record(spec)
         return CreateOutcome.CREATED
 
@@ -1137,6 +1215,13 @@ _ORDER = " ORDER BY created_at, id"
 #: The physically-present states as SQL parameters (stable order for tests).
 _PHYSICAL_PARAMS: list[str] = sorted(PHYSICAL)
 _PHYSICAL_MARKS = ", ".join("?" * len(_PHYSICAL_PARAMS))
+#: The #359 cap count (every physically-present row) and the #381 restore
+#: admission's count (every OTHER physically-present row) — one statement
+#: each per dialect, so the two paths cannot drift on what "present" means.
+_COUNT_PHYSICAL_SQLITE = f"SELECT COUNT(*) FROM collections WHERE state IN ({_PHYSICAL_MARKS})"
+_COUNT_OTHERS_SQLITE = _COUNT_PHYSICAL_SQLITE + " AND id != ?"
+_COUNT_PHYSICAL_POSTGRES = "SELECT COUNT(*) FROM collections WHERE state = ANY($1::text[])"
+_COUNT_OTHERS_POSTGRES = _COUNT_PHYSICAL_POSTGRES + " AND id <> $2"
 
 
 def ensure_columns_sqlite(conn: sqlite3.Connection, table: str, cols: dict[str, str]) -> None:
@@ -1325,6 +1410,43 @@ class SqliteCollectionStore:
         _check_state(state)
         return await asyncio.to_thread(self._set_state_sync, cid, state, expect, reason)
 
+    def _begin_restore_sync(
+        self, cid: str, expect: str, limit: int | None, reason: str
+    ) -> RestoreAdmission:
+        # `BEGIN IMMEDIATE` for the same reason `_create_sync` gives: the write
+        # lock is taken BEFORE the count, so a creator or a sibling restorer
+        # cannot land a row between our count and our swap.
+        with closing(self._connect()) as conn:
+            conn.isolation_level = None
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(_DROP_LEGACY_DEFAULT_SQLITE, (RESERVED_COLLECTION_ID,))
+                row = conn.execute("SELECT state FROM collections WHERE id = ?", (cid,)).fetchone()
+                if row is None or row[0] != expect:
+                    conn.execute("ROLLBACK")
+                    return RestoreAdmission.MOVED
+                if limit is not None:
+                    n = conn.execute(_COUNT_OTHERS_SQLITE, [*_PHYSICAL_PARAMS, cid]).fetchone()[0]
+                    if n >= limit:
+                        conn.execute("ROLLBACK")
+                        return RestoreAdmission.AT_CAP
+                conn.execute(
+                    "UPDATE collections SET state = ?, state_reason = ?, state_changed_at = ? "
+                    "WHERE id = ? AND state = ?",
+                    (RESTORING, reason or "", _now(), cid, expect),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        return RestoreAdmission.ADMITTED
+
+    async def begin_restore(
+        self, cid: str, *, expect: str, limit: int | None, reason: str = ""
+    ) -> RestoreAdmission:
+        _check_state(expect)
+        return await asyncio.to_thread(self._begin_restore_sync, cid, expect, limit, reason)
+
     async def append_version(self, cid: str, version: int) -> list[int]:
         return await asyncio.to_thread(self._append_version_sync, cid, version)
 
@@ -1358,10 +1480,7 @@ class SqliteCollectionStore:
                     conn.execute("ROLLBACK")
                     return CreateOutcome.DUPLICATE
                 if limit is not None:
-                    n = conn.execute(
-                        f"SELECT COUNT(*) FROM collections WHERE state IN ({_PHYSICAL_MARKS})",
-                        _PHYSICAL_PARAMS,
-                    ).fetchone()[0]
+                    n = conn.execute(_COUNT_PHYSICAL_SQLITE, _PHYSICAL_PARAMS).fetchone()[0]
                     if n >= limit:
                         conn.execute("ROLLBACK")
                         return CreateOutcome.AT_CAP
@@ -1525,10 +1644,7 @@ class PostgresCollectionStore:
             if await conn.fetchval("SELECT 1 FROM collections WHERE id = $1", spec.id):
                 return CreateOutcome.DUPLICATE
             if limit is not None:
-                n = await conn.fetchval(
-                    "SELECT COUNT(*) FROM collections WHERE state = ANY($1::text[])",
-                    _PHYSICAL_PARAMS,
-                )
+                n = await conn.fetchval(_COUNT_PHYSICAL_POSTGRES, _PHYSICAL_PARAMS)
                 if n >= limit:
                     return CreateOutcome.AT_CAP
             await conn.execute(_INSERT_POSTGRES, *_record_to_row(make_record(spec)))
@@ -1575,6 +1691,34 @@ class PostgresCollectionStore:
                     state, reason or "", _now(), cid, expect,
                 )
         return self._rows(status) > 0
+
+    async def begin_restore(
+        self, cid: str, *, expect: str, limit: int | None, reason: str = ""
+    ) -> RestoreAdmission:
+        """Count and swap under the SAME transaction-scoped advisory lock
+        :meth:`create` takes, for the same reason: at READ COMMITTED a
+        concurrent creator's uncommitted row is invisible to our count, and
+        the lock is what serializes the two reservations."""
+        _check_state(expect)
+        pool = await self._pool_()
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", _COLLECTIONS_CREATE_LOCK_KEY
+            )
+            await conn.execute(_DROP_LEGACY_DEFAULT_POSTGRES, RESERVED_COLLECTION_ID)
+            state = await conn.fetchval("SELECT state FROM collections WHERE id = $1", cid)
+            if state != expect:
+                return RestoreAdmission.MOVED
+            if limit is not None:
+                n = await conn.fetchval(_COUNT_OTHERS_POSTGRES, _PHYSICAL_PARAMS, cid)
+                if n >= limit:
+                    return RestoreAdmission.AT_CAP
+            status = await conn.execute(
+                "UPDATE collections SET state = $1, state_reason = $2, "
+                "state_changed_at = $3 WHERE id = $4 AND state = $5",
+                RESTORING, reason or "", _now(), cid, expect,
+            )
+        return RestoreAdmission.ADMITTED if self._rows(status) > 0 else RestoreAdmission.MOVED
 
     async def append_version(self, cid: str, version: int) -> list[int]:
         pool = await self._pool_()

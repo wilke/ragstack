@@ -98,9 +98,16 @@ async def _install(cid: str, owner: str, **spec_over) -> None:
 
 @pytest.fixture
 def _cleanup():
+    """Restore ``app.state.collection_store`` to what it was BEFORE ``_install``
+    set it (absent -> absent): the attribute's presence switches
+    ``get_collection_store`` off the JSON fallback, so it must never leak."""
+    prior = getattr(app.state, "collection_store", None)
     yield
-    if hasattr(app.state, "collection_store"):
-        delattr(app.state, "collection_store")
+    if prior is None:
+        if hasattr(app.state, "collection_store"):
+            delattr(app.state, "collection_store")
+    else:
+        app.state.collection_store = prior
 
 
 async def _poll(client, job_id: str, headers: dict) -> dict:

@@ -1651,6 +1651,14 @@ async def lifespan(app: FastAPI):
     # shared http client. Installed as a module singleton the way the ACL store
     # is, because `enforce_access` has no request handle.
     lifecycle_gate = _build_lifecycle_gate(collection_store, http_client)
+    # Restore admission at the active bound (#381): the gate evicts one LRU
+    # archived collection, or 503s "at capacity", before it flips a row
+    # `dormant → restoring`. Reads app.state per call (registry + job store),
+    # so it is wired here, where app.state is the authority; imported lazily
+    # because api.eviction imports this module.
+    from ragstack.api.eviction import RestoreCapacity
+
+    lifecycle_gate.capacity = RestoreCapacity(app.state)
     set_lifecycle_gate(lifecycle_gate)
     if lifecycle_gate.tracker is not None:
         lifecycle_gate.tracker.start()
