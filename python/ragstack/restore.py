@@ -127,6 +127,13 @@ def classify_failure(record: dict[str, Any]) -> tuple[str, str]:
         marker = _marker_line(stderr) or _marker_line(message)
         return LOST, (f"archive refused by the loader (exit {REFUSED_EXIT_CODE})"
                       + (f": {marker}" if marker else f"; submission {sub}"))
+    if code is not None:
+        # The exit code is authoritative: anything other than the refusal code
+        # (mid-stream ArchiveError = 1, registry disagreement = 2, OOM = 137) is
+        # retryable, even if a refusal-looking line made it into the window.
+        detail = f": {message}" if message else ""
+        return DORMANT, (f"restore submission {sub} ended {record.get('state', '')} "
+                         f"(exit {code}){detail}")
     marker = _marker_line(stderr) or _marker_line(message) or _marker_line(
         json.dumps(record, default=str))
     if marker:
