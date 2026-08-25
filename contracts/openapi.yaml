@@ -244,9 +244,16 @@ paths:
         application/xml or text/xml for JATS) and a PDF must start with %PDF
         (415 otherwise); a file larger than max_document_bytes, more than
         max_upload_files files, or files totalling more than
-        max_upload_bytes_per_request are 413 — the byte caps are also enforced
-        while the files stream, so an oversized upload is cut off at the byte,
-        never buffered whole. One ingest job per principal at a time: while a
+        max_upload_bytes_per_request are 413 — checked against the declared
+        sizes before anything is staged or written, and re-checked while the
+        files stream out of the server's spool, so nothing oversized reaches
+        the Workspace or INGEST_ROOT. Before the body is read at all, a request
+        whose Content-Length exceeds max_upload_bytes_per_request (plus
+        multipart framing) is refused with 413 and one without a
+        Content-Length (chunked) with 411; the deployment gateway must enforce
+        a body cap of about MAX_UPLOAD_BYTES_PER_REQUEST — a client that lies
+        about Content-Length is only stopped there. One ingest job per
+        principal at a time: while a
         job of the caller's is still accepted or running, a new upload is 429
         with Retry-After (an admin principal is exempt). Requires INGEST_ROOT to
         be configured when ingest_backend=local — without one, uploads have
@@ -293,12 +300,22 @@ paths:
             Unknown collection, one out of the caller's allowlist, or one the
             caller may not read (unreadable == unknown, so existence is not
             leaked — ADR-0003 §2).
+        "411":
+          description: >-
+            The request has no Content-Length (chunked transfer encoding); an
+            upload must declare its length so it can be bounded before the
+            body is read (#202).
         "413":
           description: >-
             A file exceeds max_document_bytes, more than max_upload_files files,
             or the request's files total more than max_upload_bytes_per_request
             (#202). Checked against the declared sizes before anything is
-            written, and again at the byte while streaming.
+            staged or written (and re-checked while the files stream out of
+            the server's spool); a Content-Length over
+            max_upload_bytes_per_request plus multipart framing is refused
+            before the body is read. The deployment gateway must enforce a
+            body cap of about MAX_UPLOAD_BYTES_PER_REQUEST — a client that lies
+            about Content-Length is only stopped there.
         "415":
           description: >-
             An uploaded file's content type is not in the upload_content_types

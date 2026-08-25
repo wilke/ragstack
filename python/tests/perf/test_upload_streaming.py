@@ -2,14 +2,18 @@
 
 1. A 50 MB ``POST /v1/ingest/upload`` through the endpoint, on the gowe branch,
    into a fake Workspace + Shock that CONSUME the stream chunk by chunk: peak
-   Python-heap growth (``tracemalloc``, like #372's test) < 10 MB. The upload
-   is fed to httpx as a file object so the client streams it in 64 KB pieces;
-   Starlette spools the part to disk past 1 MB; the endpoint hands the spooled
-   ``UploadFile`` to the REAL ``WorkspaceClient.upload_source`` (wrapped in the
-   per-request byte meter) which forwards it in ``STREAM_CHUNK`` pieces. A whole
-   -file ``bytes`` anywhere on that path would show as a 50 MB peak. The
-   ``ru_maxrss`` delta is printed for reference only (process-lifetime
-   high-water mark, so an earlier test can mask it).
+   Python-heap growth (``tracemalloc``, like #372's test) < 10 MB. What this
+   measures is the PYTHON HEAP on the handler → Workspace hop — not disk and
+   not ingress: the multipart parser has already received the whole body and
+   spooled the part to a temp file (past 1 MiB) before the handler runs, and
+   the Content-Length guard (``api/upload_guard.py``) is the only pre-body
+   check. The upload is fed to httpx as a file object so the client streams it
+   in 64 KB pieces; the endpoint hands the spooled ``UploadFile`` to the REAL
+   ``WorkspaceClient.upload_source`` (wrapped in the per-request byte meter)
+   which forwards it in ``STREAM_CHUNK`` pieces. A whole-file ``bytes`` anywhere
+   on that hop would show as a 50 MB peak. The ``ru_maxrss`` delta is printed
+   for reference only (process-lifetime high-water mark, so an earlier test can
+   mask it).
 
 2. ``InMemoryJobStore.count_active`` — the per-upload admission query
    (``single_inflight_ingest``) — p95 < 1 ms over a store holding 2 000 jobs.

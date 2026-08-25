@@ -1958,9 +1958,18 @@ async def single_inflight_ingest(
 
     A rejected upload (415/413) is marked ``failed`` before the error is
     re-raised on both upload branches, so a refusal never blocks the retry.
-    Caveat: the Postgres store's ``fail_interrupted`` is a no-op (#7), so a job
-    left ``running`` by a crashed worker keeps that principal blocked until an
-    operator resolves it.
+
+    Known edges, accepted for an abuse guard: (1) count-then-create with no
+    lock — two uploads from one principal arriving simultaneously can both
+    pass the check (TOCTOU) and both run. (2) The count is per tenant over
+    every job source, so a running ``POST /v1/ingest`` job blocks this
+    principal's uploads, while an upload never blocks ``POST /v1/ingest``
+    (that endpoint does not carry this dependency). (3) Staleness: an
+    in-flight job that has not been written to for ``jobstore.STALE_AFTER``
+    (6 h; ``updated_at`` moves on every job/item write) stops counting — the
+    Postgres store's ``fail_interrupted`` is a no-op (#7), so without this a
+    worker that died mid-run would pin its principal at 429 until an operator
+    intervened.
     """
     if principal.role == ROLE_ADMIN:
         log.info(

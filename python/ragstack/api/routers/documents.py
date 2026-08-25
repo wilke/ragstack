@@ -51,8 +51,14 @@ from ragstack.ingestion.gowe_backend import (
     GoWeError,
     OutputStagingFailed,
 )
-from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
-from ragstack.ingestion.manifest import WorkItem, build_manifest
+from ragstack.ingestion.loaders import (
+    DEFAULT_INGEST_SUFFIXES,
+    NO_LOADER_LABEL,
+    LoaderError,
+    confine_to_root,
+    no_loader_error,
+)
+from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -94,6 +100,7 @@ async def _run_ingest(
     source: str,
     tenant_id: str,
     target: CollectionEntry | None = None,
+    every_file: bool = False,
 ) -> None:
     """Background worker: expand the source into a manifest and run it.
 
@@ -102,12 +109,23 @@ async def _run_ingest(
     job status. Never raises — a run-level failure is captured as a caller-safe
     label. The job is ``failed`` only when the run itself errors or *every* item
     fails; partial failures leave it ``completed`` with non-zero ``items.failed``.
+
+    ``every_file`` (the upload staging dir, #202): enumerate EVERY staged file,
+    not just the suffixes the loaders handle, and fail the rest visibly — one
+    item each, error ``no loader for <suffix>`` — instead of letting the
+    manifest filter drop them into a ``completed`` job with fewer items than
+    files. A directory ingest (``POST /v1/ingest``) keeps the filter: a corpus
+    tree legitimately holds files that are not documents.
     """
     await job_store.update(job_id, status=RUNNING)
     try:
         manifest = build_manifest(
-            source, suffixes=DEFAULT_INGEST_SUFFIXES, ingest_root=ingest_root or None
+            source,
+            suffixes=None if every_file else DEFAULT_INGEST_SUFFIXES,
+            ingest_root=ingest_root or None,
         )
+        if every_file:
+            manifest = await _fail_unsupported_items(job_store, job_id, manifest)
         results = await ingestor.ingest_manifest(
             manifest, job_id=job_id, tenant_id=tenant_id
         )
@@ -142,6 +160,32 @@ async def _run_ingest(
             from ragstack.api.deps import write_ingest_manifest
 
             write_ingest_manifest(source=source, chunk_count=chunks or None)
+
+
+async def _fail_unsupported_items(
+    job_store: JobStore, job_id: str, manifest: Manifest
+) -> Manifest:
+    """Split off the items whose suffix has no loader (not in
+    ``DEFAULT_INGEST_SUFFIXES``), record each as a failed item with the
+    constant ``no_loader_error`` string, and return the manifest of the rest.
+    Logged at INFO with the ``no_loader`` label, like the scanned-PDF count."""
+    supported = {s.lower() for s in DEFAULT_INGEST_SUFFIXES}
+    keep: list[WorkItem] = []
+    dropped: list[WorkItem] = []
+    for item in manifest.items:
+        (keep if Path(item.source).suffix.lower() in supported else dropped).append(item)
+    if dropped:
+        await job_store.add_items(job_id, [(i.item_id, i.source) for i in dropped])
+        for item in dropped:
+            await job_store.mark_item(
+                job_id, item.item_id, status=FAILED,
+                error=no_loader_error(Path(item.source).suffix),
+            )
+        log.info(
+            "ingest job %s: %d of %d file(s) have no loader for their suffix [%s]",
+            job_id, len(dropped), len(manifest.items), NO_LOADER_LABEL,
+        )
+    return Manifest(items=keep)
 
 
 async def _authorize_ingest_target(
@@ -546,6 +590,14 @@ async def _gowe_upload_sources(
     naming the existing object, which can be ingested by reference through
     ``POST /v1/ingest``. ``kinds`` are the files' ``_sniff_upload`` results (in
     order) — the content type and magic were checked before this is called.
+
+    Files are written one after another, so a mid-stream refusal on file N
+    leaves files 1..N-1 in ``sources/`` (never deleted): a plain retry of the
+    same request then 409s on file 1. Not reachable through this endpoint
+    today — the declared sizes are exact (the parser has the whole body), so
+    every size refusal happens in ``_admit_uploads`` before the first write —
+    but it is the consequence if a stream ever trips ``_bounded`` or the
+    request budget here.
     """
     folder = await workspace.ensure_collection_folder(
         token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
@@ -745,9 +797,11 @@ _UPLOAD_CHUNK = 1 << 20  # 1 MiB read granularity while streaming to disk
 # allowlist) selects from this table; a type absent from BOTH is 415. The
 # pdf/text/markdown suffixes are ones ``DEFAULT_INGEST_SUFFIXES`` enqueues, so
 # the local branch ingests them. XML (JATS) is accepted at the gate per #202's
-# allowlist, but ``.xml`` has no loader in the local registry yet (the manifest
-# skips it → a job with no items) and the gowe scatter workflow extracts PDFs;
-# wiring the JATS path (cwl/jats-ingest.cwl) into the upload is follow-up work.
+# allowlist, but ``.xml`` has no loader in the local registry yet: the staged
+# file becomes a FAILED item with the error ``no loader for .xml``
+# (_fail_unsupported_items — visible and countable, never a silent skip), and
+# the gowe scatter workflow extracts PDFs; wiring the JATS path
+# (cwl/jats-ingest.cwl) into the upload is follow-up work.
 _UPLOAD_KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
     "application/pdf": ("pdf", (".pdf",)),
     "text/plain": ("text", (".txt", ".md")),
@@ -914,13 +968,16 @@ async def _admit_uploads(files: list[UploadFile]) -> tuple[list[str], _UploadBud
 async def _stage_upload(
     upload: UploadFile, dest: Path, max_bytes: int, budget: _UploadBudget
 ) -> None:
-    """Stream one admitted upload to ``dest``, enforcing the per-file byte cap
-    (413) and the per-request budget (413) WHILE writing — never buffering the
-    file. The reads are capped at ``max_bytes + 1 - written``, so a refusal
-    happens at the byte: exactly ``max_bytes + 1`` bytes are read from an
-    oversized stream, never a whole trailing chunk. ``dest`` is assumed already
-    confined to the staging dir; the content type and magic were checked by
-    ``_sniff_upload`` before anything was staged.
+    """Stream one admitted upload from the server's spool to ``dest``, enforcing
+    the per-file byte cap (413) and the per-request budget (413) WHILE writing
+    — never holding the file in memory. The reads are capped at
+    ``max_bytes + 1 - written``, so a refusal stops at byte ``max_bytes + 1``
+    of the spool, never a whole trailing chunk, and nothing oversized reaches
+    INGEST_ROOT. (The body itself has already been received and spooled by the
+    multipart parser — see ``api/upload_guard.py`` for the check that runs
+    before that.) ``dest`` is assumed already confined to the staging dir; the
+    content type and magic were checked by ``_sniff_upload`` before anything
+    was staged.
     """
     written = 0
     with dest.open("wb") as fh:
@@ -972,7 +1029,10 @@ async def ingest_upload(
     ``GET /v1/ingest/{job_id}`` for progress exactly as for a path ingest.
 
     Bounds (#202 phase 2c), all checked before anything is staged or written
-    (``_admit_uploads``) and — for the byte caps — again while streaming:
+    (``_admit_uploads``; the multipart body has by then been received and
+    spooled by the server — ``api/upload_guard.py`` is the check that runs
+    before the body, from ``Content-Length``) and — for the byte caps — again
+    while the files stream out of the spool:
     a content type outside ``upload_content_types`` or a PDF without the
     ``%PDF`` header → 415; a file over ``max_document_bytes``, more than
     ``max_upload_files`` files, or files totalling more than
@@ -1089,6 +1149,7 @@ async def ingest_upload(
         str(staging_dir),
         tenant,
         target,
+        True,  # every staged file becomes an item; unsupported suffixes fail visibly
     )
     return IngestResponse(job_id=job.job_id, status=job.status)
 

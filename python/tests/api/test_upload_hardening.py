@@ -7,9 +7,12 @@ pinned on both:
 
 * content-type allowlist (``upload_content_types``) → 415; PDF magic → 415;
 * ``max_document_bytes`` — refused from the declared size before anything is
-  staged or written, and, for a parser that reports no size, cut off AT THE
-  BYTE while streaming (exactly ``max_bytes + 1`` bytes read on the local
-  branch; at most one ``STREAM_CHUNK`` past the cap on the Workspace path);
+  staged or written, and, for a parser that reports no size, stopped at byte
+  ``max_bytes + 1`` of the spool while streaming out of it (exactly
+  ``max_bytes + 1`` bytes read on the local branch; at most one
+  ``STREAM_CHUNK`` past the cap on the Workspace path). The body itself has
+  been received and spooled by then — ``test_upload_guard.py`` covers the
+  Content-Length check that runs before it;
 * per request: ≤ ``max_upload_files`` (50) files and ≤
   ``max_upload_bytes_per_request`` (500 MB) — the declared sum up front (no
   staging, no Workspace call, no version reserved, no job), and a running total
@@ -207,20 +210,43 @@ async def test_text_and_markdown_are_accepted_and_ingested_local(client, rooted)
 
 
 @pytest.mark.asyncio
-async def test_xml_is_accepted_at_the_gate_but_not_yet_ingested_local(client, rooted):
+async def test_xml_is_accepted_at_the_gate_but_fails_visibly_without_a_loader(
+    client, rooted, caplog
+):
     """Pinned limitation (#202): JATS XML passes the allowlist and is staged as
-    ``.xml``, but the local loader registry has no ``.xml`` loader, so the
-    manifest enqueues nothing and the job completes with no items. When a JATS
-    loader lands this test must change to assert the item completed."""
-    r = await client.post(
-        "/v1/ingest/upload",
-        files=_files(("PMC1.xml", b"<article><body><p>x</p></body></article>", "application/xml")),
-    )
+    ``.xml``, but the local loader registry has no ``.xml`` loader. The file
+    must not vanish: it becomes a FAILED item with the constant, countable
+    error ``no loader for .xml`` (and the run logs the ``no_loader`` count).
+    When a JATS loader lands this test must change to assert the item
+    completed."""
+    xml = b"<article><body><p>x</p></body></article>"
+    with caplog.at_level(logging.INFO, logger="ragstack.api.routers.documents"):
+        r = await client.post(
+            "/v1/ingest/upload", files=_files(("PMC1.xml", xml, "application/xml"))
+        )
     assert r.status_code == 202, r.text
     assert [p.name for p in _staged(rooted)] == ["PMC1.xml"]
+    job_id = r.json()["job_id"]
+    poll = await client.get(f"/v1/ingest/{job_id}")
+    assert poll.json()["status"] == "failed"  # every item failed
+    assert poll.json()["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
+    (item,) = app.state.job_store._items[job_id].values()
+    assert item.status == FAILED and item.error == "no loader for .xml"
+    assert any(
+        "1 of 1 file(s) have no loader for their suffix [no_loader]" in rec.getMessage()
+        for rec in caplog.records
+    )
+
+    # Mixed: the supported file ingests, the unsupported one fails — the job is
+    # completed (partial failure), the counts say exactly what happened.
+    r = await client.post(
+        "/v1/ingest/upload",
+        files=_files(("PMC2.xml", xml, "text/xml"), ("ok.txt", b"real text\n", "text/plain")),
+    )
+    assert r.status_code == 202, r.text
     poll = await client.get(f"/v1/ingest/{r.json()['job_id']}")
     assert poll.json()["status"] == "completed"
-    assert poll.json()["items"] is None  # zero items: nothing was ingested
+    assert poll.json()["items"] == {"total": 2, "completed": 1, "failed": 1, "pending": 0}
 
 
 def test_sniff_is_one_helper_used_by_both_branches():
@@ -335,8 +361,8 @@ async def test_request_budget_is_also_enforced_while_streaming(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# max_document_bytes: refused up front from the declared size; at the byte
-# while streaming
+# max_document_bytes: refused up front from the declared size; stopped at
+# byte max_bytes + 1 while streaming out of the spool
 # --------------------------------------------------------------------------- #
 
 

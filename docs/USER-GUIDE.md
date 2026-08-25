@@ -121,6 +121,7 @@ the header's user menu.
 | `403` | Authenticated, but not allowed: an admin-only field, or writing a collection you can read but do not own. |
 | `404` | Unknown collection **or one you may not read** — deliberately indistinguishable, so private collections cannot be probed. |
 | `413` | Your JSON body is over the deployment's size cap (creating/ingesting/sharing), or an upload breaks a bound: a file over `max_document_bytes`, more than `max_upload_files` files, or files totalling more than `max_upload_bytes_per_request`. |
+| `411` | Your upload has no `Content-Length` (chunked transfer). Send it with a known length. |
 | `415` | An uploaded file's content type is not accepted (PDF, plain text, Markdown, JATS XML by default), or a file sent as a PDF does not start with `%PDF`. |
 | `422` | Request validation failed, or you're over a bound like `top_k`, `GET /v1/chunks` `ids`, or a list `limit`. |
 | `429` | You've hit the per-hour rate limit on this write endpoint (issue #87) — see below — or, on upload, an ingest job of yours is still running: poll it and retry after `Retry-After`. |
@@ -185,12 +186,18 @@ plain text, Markdown and JATS XML (the deployment's `UPLOAD_CONTENT_TYPES`);
 anything else — or a "PDF" without a `%PDF` header — is `415`. Per request:
 at most `MAX_UPLOAD_FILES` (50) files and `MAX_UPLOAD_BYTES_PER_REQUEST`
 (500 MB) across them, each file at most `MAX_DOCUMENT_BYTES` (50 MB) — over any
-of these is `413`, decided from the declared sizes before anything is written
-and cut off at the byte while the files stream. You get **one ingest job at a
-time**: while a job of yours is still `accepted`/`running`, a new upload is
-`429` with a `Retry-After` — poll the job and resubmit once it is `completed`
-or `failed`. A scanned (image-only) PDF is accepted but its item fails with
-`no extractable text (scanned PDF?)`; there is no OCR yet. Large pre-extracted
+of these is `413`, decided from the declared sizes before anything is stored
+(a request whose `Content-Length` is over the per-request cap is refused before
+its body is read; a request with no `Content-Length` is `411`, so send uploads
+with a known length, not chunked). The deployment's gateway enforces a body cap
+of about the same size — that, not the API, is what stops a client that lies
+about its length. You get **one ingest job at a time**: while a job of yours
+is still `accepted`/`running`, a new upload is `429` with a `Retry-After` —
+poll the job and resubmit once it is `completed` or `failed` (a job that has
+not moved for 6 hours stops counting). A scanned (image-only) PDF is accepted
+but its item fails with `no extractable text (scanned PDF?)`; there is no OCR
+yet. A JATS XML file is accepted but there is no loader for it yet — its item
+fails with `no loader for .xml` rather than vanishing. Large pre-extracted
 corpora do not go through the API at all — see the
 [new-org cookbook](cookbook-new-org-ingest.md).
 

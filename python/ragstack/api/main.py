@@ -31,6 +31,7 @@ from ragstack.api.security import (
     resolve_principal,
     resolve_tenant,
 )
+from ragstack.api.upload_guard import UploadContentLengthMiddleware
 from ragstack.config import settings
 from ragstack.stores.errors import StoreUnavailable
 
@@ -59,6 +60,15 @@ async def _store_unavailable(_: Request, exc: StoreUnavailable) -> JSONResponse:
         headers={"Retry-After": "5"},
     )
 
+
+# Upload ingress guard (#202): refuse POST /v1/ingest/upload from its headers
+# alone — Content-Length over max_upload_bytes_per_request (+ framing) → 413,
+# no Content-Length → 411 — before FastAPI's multipart parser can drain the
+# body into the spool. Added FIRST so it sits INSIDE CORSMiddleware (its
+# refusals still carry the CORS headers a browser upload needs) and inside
+# RootPathMiddleware (the prefix is in the scope when it matches the route).
+# See api/upload_guard.py for what it can and cannot stop.
+app.add_middleware(UploadContentLengthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

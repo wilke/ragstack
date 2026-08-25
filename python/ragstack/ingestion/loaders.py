@@ -50,6 +50,16 @@ NO_TEXT_ERROR = "no extractable text (scanned PDF?)"
 NO_TEXT_LABEL = "no_text"
 
 
+NO_LOADER_LABEL = "no_loader"
+
+
+def no_loader_error(suffix: str) -> str:
+    """The per-item job error for a staged file whose suffix has no loader
+    (#202): constant per suffix, so it is countable like :data:`NO_TEXT_ERROR`
+    — ``"no loader for .xml"``."""
+    return f"no loader for {suffix.lower() or '(no suffix)'}"
+
+
 class NoTextExtracted(LoaderError):
     """A PDF opened and parsed fine but produced no text at all — an image-only
     (scanned) PDF, or one whose text is outlined. Distinguished from the other
