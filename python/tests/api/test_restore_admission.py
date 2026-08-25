@@ -389,6 +389,29 @@ async def test_a_concurrent_reservation_taking_the_freed_slot_is_503_not_a_secon
     await world.store.delete("thief")
 
 
+async def test_a_just_restored_collection_is_not_the_next_victim(client, monkeypatch, world):
+    """LRU thrash: admission stamps `last_accessed_at`, so a collection
+    restored a moment ago — whose pre-eviction stamp may be the oldest of
+    all — is not the LRU victim of the next restore at the bound."""
+    await world.add("dorm-b", accessed=_ago(days=2), state=DORMANT)
+    await world.store.touch_accessed([DORM], _ago(days=100))  # the oldest stamp by far
+    _at_bound(monkeypatch)
+    assert (await _retrieve(client)).status_code == 503
+    await _settle(world)
+    assert (await world.states())["lib-0"] == DORMANT and (await world.states())[DORM] == RESTORING
+    # The restore completes; A is active with the stamp its admission gave it.
+    assert await world.store.set_state(DORM, ACTIVE, expect=RESTORING)
+    world.gate.invalidate(DORM)
+    assert (await world.store.get(DORM)).last_accessed_at > _ago(minutes=1)
+    # B's restore at the bound evicts the LRU ACTIVE collection: lib-1, not A.
+    assert (await _retrieve(client, "dorm-b")).status_code == 503
+    await _settle(world)
+    assert await world.states() == {
+        "lib-0": DORMANT, "lib-1": DORMANT, "lib-2": ACTIVE, DORM: ACTIVE, "dorm-b": RESTORING,
+    }
+    assert [(c, t) for c, t in world.restorer.submissions] == [(DORM, ALICE_TOKEN), ("dorm-b", ALICE_TOKEN)]
+
+
 # --------------------------------------------------------------------------- #
 # POST /v1/collections/{id}/restore
 # --------------------------------------------------------------------------- #

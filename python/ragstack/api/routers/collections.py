@@ -53,7 +53,12 @@ from ragstack.api.deps import (
     probe_tenant_count,
     rate_limited,
 )
-from ragstack.api.eviction import active_count, insufficient_storage, make_room_for_create
+from ragstack.api.eviction import (
+    active_count,
+    effective_limit,
+    insufficient_storage,
+    make_room_for_create,
+)
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.scope import count_scope_many
 from ragstack.api.security import (
@@ -633,8 +638,9 @@ async def create_collection(
     # the per-reason counts). One eviction, one retry, never a loop: a second
     # AT_CAP means a concurrent creator took the freed slot, and evicting
     # again for them would be destruction on someone else's behalf.
-    reserved = 1 if any(e.is_shared_surface for e in registry.entries()) else 0
-    effective = None if limit <= 0 else max(0, limit - reserved)
+    # ONE formula for create and restore admission (#381): `effective_limit`
+    # is what `RestoreCapacity.limit()` hands the gate too.
+    effective = effective_limit(registry, limit)
     if effective == 0:
         raise _cap_reached(limit)  # refuses everything; eviction would gain nothing
     made_room = False

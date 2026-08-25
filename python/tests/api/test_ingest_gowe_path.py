@@ -224,6 +224,7 @@ async def gowe(client, monkeypatch, _acl_store):
                           embedding_endpoints=["http://emb.lib1/v1"],
                           chunk_method="fixed_token", chunk_size=256, chunk_overlap=32)
     store = CountingStore(InMemoryCollectionStore([spec]))
+    prior_store = getattr(app.state, "collection_store", None)
     app.state.collection_store = store
     entry = CollectionEntry(
         id="lib1", label="lib1", collection="lib1_phys", model="test-model", dim=4,
@@ -243,6 +244,8 @@ async def gowe(client, monkeypatch, _acl_store):
         for attr in ("ingest_backend", "workspace", "collection_store"):
             if hasattr(app.state, attr):
                 delattr(app.state, attr)
+        if prior_store is not None:
+            app.state.collection_store = prior_store
         await http.aclose()
 
 

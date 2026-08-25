@@ -302,6 +302,14 @@ class LifecycleGate:
                             "freed; retry",
                         )
         self.invalidate(cid)
+        if outcome is RestoreAdmission.ADMITTED:
+            # Admission IS the demand signal: without a fresh stamp a just-
+            # restored collection keeps its pre-eviction `last_accessed_at`
+            # and is the LRU victim of the very next create/restore at the
+            # bound — evicted again before the requester's Retry-After
+            # elapses. One direct write (not the batched tracker) so the
+            # stamp is visible to the next eviction plan at once.
+            await self.store.touch_accessed([cid])
         return Admission(outcome)
 
     def _spawn(self, coro: Any) -> None:
