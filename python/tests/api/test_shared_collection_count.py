@@ -128,10 +128,17 @@ async def test_legacy_shared_surface_count_is_unchanged(client):
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry([_entry(SHARED_ID, True)], default_id=SHARED_ID)
     await _ingest(3, tenant="bob")            # bob's own chunks: readable
-    await _ingest(2, tenant="someone-else")   # a third tenant: not shared with bob
     # The autouse ACL fixture already seeds SHARED_ID with an owner row
     # (legacy:admin) + a public grant — exactly the backfill artifact this
-    # guards against widening on.
+    # guards against widening on. Stamp the FILLER chunks under that same
+    # backfill owner's tenant, not an arbitrary third tenant: widening (if the
+    # is_shared_surface guard were ever removed) would then count them, making
+    # this test non-vacuous — a stranger tenant these chunks would never
+    # widen the count anyway, so the assertion would pass even with the guard
+    # gone.
+    backfill_owner = await get_acl_store().owner_of(SHARED_ID)
+    assert backfill_owner
+    await _ingest(2, tenant=backfill_owner)   # widening would count these too
 
     listing = (await client.get("/v1/collections", headers=_h("bob"))).json()
     shared = next(c for c in listing["collections"] if c["id"] == SHARED_ID)

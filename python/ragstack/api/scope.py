@@ -87,33 +87,23 @@ async def shared_scope_many(
     ``/v1/stats/tenants`` — each paid N ACL calls resolving count scope for N
     entries). The result always has one key per entry in ``entries``.
 
-    Falls back to the per-entry loop (still correct, just not batched) when the
-    configured store hasn't got ``owners_of`` — a test double or a future
-    backend that only implements the ``AclStore`` protocol's older surface."""
+    ``owners_of`` is part of the ``AclStore`` protocol and every backend
+    implements it (in-memory, sqlite, Postgres) — no per-entry fallback here:
+    one would silently reinstate the N+1 this function exists to remove, for a
+    store shape nothing in the tree actually produces."""
     if not auth_configured():
         return {e.id: [] for e in entries}
     eligible = [e for e in entries if _widening_eligible(e, registry)]
-    store = get_acl_store()
-    owners_of = getattr(store, "owners_of", None)
     owners: dict[str, str | None] = {}
-    if eligible and owners_of is not None:
+    if eligible:
         try:
-            owners = await owners_of([e.id for e in eligible])
+            owners = await get_acl_store().owners_of([e.id for e in eligible])
         except Exception:  # noqa: BLE001 — never widen scope on a store hiccup
             log.warning(
                 "scope: owners_of(...) failed for %d entries; not widening read scope",
                 len(eligible), exc_info=True,
             )
             owners = {}
-    elif eligible:
-        for e in eligible:
-            try:
-                owners[e.id] = await store.owner_of(e.id)
-            except Exception:  # noqa: BLE001 — never widen scope on a store hiccup
-                log.warning(
-                    "scope: owner_of(%r) failed; not widening read scope", e.id, exc_info=True
-                )
-                owners[e.id] = None
     out: dict[str, list[str]] = {}
     for e in entries:
         owner = owners.get(e.id)
