@@ -381,6 +381,13 @@ def _staging_failed(submission: dict[str, Any]) -> bool:
         return True
     if str(submission.get("state", "")) != "FAILED":
         return False
+    # The engine's shape (pkg/model/submission.go): ``error`` is a
+    # ``SubmissionError`` object ``{code, message, context}`` and post-staging
+    # failure sets ``code == "OUTPUT_STAGING_FAILED"`` (scheduler/workspace.go).
+    err = submission.get("error")
+    if isinstance(err, dict) and str(err.get("code") or "") == OUTPUT_STAGING_FAILED:
+        return True
+    # Defensive fallback for a flat-string error field.
     text = " ".join(
         str(submission.get(k) or "")
         for k in ("error", "error_message", "failure_reason", "message", "reason")
