@@ -55,7 +55,7 @@ from ragstack.api.deps import (
 )
 from ragstack.api.eviction import active_count, insufficient_storage, make_room_for_create
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
-from ragstack.api.scope import count_scope
+from ragstack.api.scope import count_scope_many
 from ragstack.api.security import (
     ROLE_ADMIN,
     ROLE_USER,
@@ -249,8 +249,11 @@ async def list_collections(
     # Scope is resolved PER ENTRY, not once for the request: a collection reached
     # through a share must count the owner's chunks (exactly what a query over it
     # returns), while an unshared one stays own+public. Counting less reported 0
-    # for a corpus the same key could search, which reads as "empty".
-    scopes = await asyncio.gather(*(count_scope(e, registry, principal) for e in entries))
+    # for a corpus the same key could search, which reads as "empty". Resolved in
+    # ONE ACL round trip for the whole listing (count_scope_many, issue #314),
+    # not one owner lookup per entry.
+    scope_map = await count_scope_many(entries, registry, principal)
+    scopes = [scope_map[e.id] for e in entries]
     vec_counts, txt_counts = await asyncio.gather(
         asyncio.gather(
             *(probe_tenant_count(e.vector_store, sc) for e, sc in zip(entries, scopes, strict=True))

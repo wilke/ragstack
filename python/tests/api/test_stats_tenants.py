@@ -149,8 +149,9 @@ async def test_counts_false_answers_identity_with_null_cells(client, monkeypatch
 async def test_counts_false_probes_no_store_and_looks_up_no_owner(client, monkeypatch):
     # The flag asserted where it is SPENT, not at the nulls: a null cell could
     # equally be a failed probe. Touching either seam at all is the failure.
-    # shared_scope is in here because its owner_of-per-collection exists only to
-    # decide count scope — it is part of what counts=false must not pay for.
+    # shared_scope_many is in here because its batched owner lookup (#314)
+    # exists only to decide count scope — it is part of what counts=false must
+    # not pay for.
     _configure_keys(monkeypatch)
     await _seed()
 
@@ -158,7 +159,7 @@ async def test_counts_false_probes_no_store_and_looks_up_no_owner(client, monkey
         raise AssertionError("counts=false must not touch a store or the ACL owner")
 
     monkeypatch.setattr(stats, "probe_tenant_count", forbidden)
-    monkeypatch.setattr(stats, "shared_scope", forbidden)
+    monkeypatch.setattr(stats, "shared_scope_many", forbidden)
     r = await client.get("/v1/stats/tenants?counts=false", headers={"X-API-Key": "k-acme"})
     assert r.status_code == 200
     assert r.json()["tenant"] == "acme"

@@ -24,7 +24,7 @@ from ragstack.api.deps import (
     get_graph_store,
     probe_tenant_count,
 )
-from ragstack.api.scope import count_scope, shared_scope
+from ragstack.api.scope import count_scope_many, shared_scope_many
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal
 from ragstack.config import settings
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -160,7 +160,10 @@ async def stats_stores(
     # after its Qdrant collection. See _count_across on why the keying exists.
     # Each entry carries its OWN scope: a shared collection counts the owner's
     # chunks (what a query over it returns), an unshared one stays own+public.
-    scopes = await asyncio.gather(*(count_scope(e, registry, principal) for e in entries))
+    # Resolved in ONE ACL round trip for the whole listing (count_scope_many,
+    # issue #314), not one owner lookup per entry.
+    scope_map = await count_scope_many(entries, registry, principal)
+    scopes = [scope_map[e.id] for e in entries]
     vector_targets: dict[str, tuple[Any, list[str]]] = {}
     text_targets: dict[str, tuple[Any, list[str]]] = {}
     for e, sc in zip(entries, scopes, strict=True):
@@ -258,18 +261,18 @@ async def stats_tenants(
     # shared corpus gets a row instead of reading as zero everywhere.
     #
     # Skipped with counts=false, and NOT merely as an optimisation: shared_scope
-    # is an owner_of lookup per collection that exists only to decide count
-    # SCOPE, and a share-derived row is admitted only when it carries a non-zero
-    # count (see below) — with no counts there is nothing it could admit. So the
-    # cheap path is the caller's own scopes, resolved with no ACL work beyond the
-    # one batched read filter authorization already required.
+    # is an owner lookup (batched via shared_scope_many, issue #314 — ONE ACL
+    # round trip for the whole listing, not one per collection) that exists
+    # only to decide count SCOPE, and a share-derived row is admitted only when
+    # it carries a non-zero count (see below) — with no counts there is nothing
+    # it could admit. So the cheap path is the caller's own scopes, resolved
+    # with no ACL work beyond the one batched read filter authorization already
+    # required.
     shared_by_tenant: dict[str, set[str]] = {}
     if counts:
-        extra = await asyncio.gather(
-            *(shared_scope(e, registry, principal) for e in entries)
-        )
-        for e, owners in zip(entries, extra, strict=True):
-            for owner in owners:
+        extra_map = await shared_scope_many(entries, registry, principal)
+        for e in entries:
+            for owner in extra_map[e.id]:
                 shared_by_tenant.setdefault(owner, set()).add(e.id)
     rows_tenants = [*tenants, *(t for t in sorted(shared_by_tenant) if t not in tenants)]
 
