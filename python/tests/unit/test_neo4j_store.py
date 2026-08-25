@@ -120,7 +120,10 @@ async def test_add_triples_merges_with_tenant_and_collection(store):
     ) in query
     assert params["rows"] == [
         {"subject": "Alice", "predicate": "knows", "object": "Bob",
-         "doc_id": "d1", "tenant_id": "alice", "collection": "x"}
+         "doc_id": "d1", "tenant_id": "alice", "collection": "x",
+         # Evidence props (#347) ride along as row fields, defaulting empty.
+         "evidence": "", "chunk_id": "", "derived_by": "", "confidence": 0,
+         "subject_id": "", "object_id": ""}
     ]
 
 

@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 
@@ -28,6 +34,13 @@ class Chunk(BaseModel):
     end_char: int = 0
 
 
+# Trust ladder bounds for ``Triple.confidence`` (#347). ``LLM_MAX_CONFIDENCE`` is
+# the no-launder cap: an LLM can propose (1) but never corroborate (2) or verify (3).
+CONFIDENCE_MAX = 3
+LLM_MAX_CONFIDENCE = 1
+DERIVED_BY_LLM = "llm"
+
+
 class Triple(BaseModel):
     """A knowledge-graph (subject, predicate, object) triple.
 
@@ -38,6 +51,26 @@ class Triple(BaseModel):
     serve several orgs (see ``tenancy.allowed_collection_ids``). Both are honoured
     on read and delete; a triple with an empty ``collection`` (legacy data written
     before #209) is invisible to any collection-scoped caller — fail closed.
+
+    A third, independent axis is **epistemic provenance** (#347): *why should you
+    believe this*. ``evidence`` is the verbatim span the triple was read from,
+    ``chunk_id`` points back at the chunk that produced it, ``derived_by`` names
+    the producer (``"llm"``, ``"tool:<source>"``, or ``""`` when unknown) and
+    ``confidence`` is a 0–3 trust ladder: 0 unknown/proposed, 1 LLM-plausible,
+    2 corroborated by a real tool call, 3 verified against a structured source.
+    ``subject_id`` / ``object_id`` are optional typed identifiers (e.g.
+    ``bvbrc:genome:<id>``) that make a tool-verified triple checkable; the
+    free-text ``subject`` / ``object`` stay the display form.
+
+    All six default empty/zero and, unlike the two scope stamps, **fail open**: an
+    unstamped triple is *unfiltered*, not invisible (see
+    ``HybridRetriever._graph_context`` for why). The one hard rule is
+    no-laundering — belief must never self-assert as evidence — so an
+    ``"llm"``-derived triple can never carry ``confidence > 1``; that is enforced
+    here at the model so no write path can bypass it.
+
+    The field set is also the record shape of the archive's reserved ``triples``
+    role (#353): ``model_dump()`` must stay JSON-serialisable.
     """
 
     subject: str
@@ -46,6 +79,24 @@ class Triple(BaseModel):
     doc_id: str = ""
     tenant_id: str = ""
     collection: str = ""
+    # --- epistemic provenance (#347); all optional, all default-empty ---
+    evidence: str = ""
+    chunk_id: str = ""
+    derived_by: str = ""
+    confidence: int = Field(default=0, ge=0, le=CONFIDENCE_MAX)
+    subject_id: str = ""
+    object_id: str = ""
+
+    @model_validator(mode="after")
+    def _no_laundering(self) -> Triple:
+        """An LLM-derived triple is at most ``LLM_MAX_CONFIDENCE``: levels 2 and 3
+        have to be *earned* by a tool/structured source, never self-asserted."""
+        if self.derived_by == DERIVED_BY_LLM and self.confidence > LLM_MAX_CONFIDENCE:
+            raise ValueError(
+                f"derived_by={DERIVED_BY_LLM!r} caps confidence at {LLM_MAX_CONFIDENCE}; "
+                f"got {self.confidence}"
+            )
+        return self
 
 
 class ScoredChunk(BaseModel):

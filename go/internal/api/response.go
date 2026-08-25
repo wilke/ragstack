@@ -58,11 +58,19 @@ type EntityInfo struct {
 	TripleCount int    `json:"triple_count"`
 }
 
-// TripleResponse represents a subject-predicate-object triple.
+// TripleResponse represents a subject-predicate-object triple, with optional
+// epistemic provenance (#347). The six provenance fields are optional in the
+// contract; like the Python implementation they are always emitted.
 type TripleResponse struct {
-	Subject   string `json:"subject"`
-	Predicate string `json:"predicate"`
-	Object    string `json:"object"`
+	Subject    string `json:"subject"`
+	Predicate  string `json:"predicate"`
+	Object     string `json:"object"`
+	Evidence   string `json:"evidence"`
+	ChunkID    string `json:"chunk_id"`
+	DerivedBy  string `json:"derived_by"`
+	Confidence int    `json:"confidence"`
+	SubjectID  string `json:"subject_id"`
+	ObjectID   string `json:"object_id"`
 }
 
 // CollectionInfo describes one registry collection the query API can serve.

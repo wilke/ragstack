@@ -10,6 +10,16 @@ from ragstack.tenancy import DEFAULT_TENANT, readable_tenants
 
 if TYPE_CHECKING:
     from ragstack.ingestion.boilerplate import BoilerplateConfig
+    from ragstack.models import Triple
+
+
+def filter_by_confidence(triples: list[Triple], floor: int) -> list[Triple]:
+    """Drop triples whose ``confidence`` is below ``floor``. A floor of 0 (the
+    default) is a no-op that returns the input list itself — the common path
+    costs nothing and cannot change results."""
+    if floor <= 0:
+        return triples
+    return [t for t in triples if t.confidence >= floor]
 
 
 class HybridRetriever:
@@ -28,6 +38,7 @@ class HybridRetriever:
         candidate_multiplier: int = 2,
         graph_context_score: float = 0.5,
         graph_context_depth: int = 1,
+        graph_min_confidence: int | None = None,
         collection: str | None = None,
         max_per_doc: int = 0,
         demote_boilerplate: bool = False,
@@ -43,6 +54,12 @@ class HybridRetriever:
         self.candidate_multiplier = candidate_multiplier
         self.graph_context_score = graph_context_score
         self.graph_context_depth = graph_context_depth
+        # Confidence floor for the graph leg (#347). ``None`` = read
+        # ``settings.graph_min_confidence`` at query time, so the setting is live
+        # for API-built retrievers without a deps.py change (that file is being
+        # reworked under #276; wiring the explicit kwarg there is a one-liner
+        # follow-up). Tests and direct callers pass an int.
+        self.graph_min_confidence = graph_min_confidence
         # The collection this retriever serves. The vector/text legs get their
         # collection for free — their stores ARE per-collection — but one graph
         # store holds every collection's triples, so the graph leg has to name it
@@ -160,6 +177,13 @@ class HybridRetriever:
             (keep if seen[doc_id] <= self.max_per_doc else overflow).append(scored)
         return keep + overflow
 
+    def _min_confidence(self) -> int:
+        if self.graph_min_confidence is None:
+            from ragstack.config import settings
+
+            return settings.graph_min_confidence
+        return self.graph_min_confidence
+
     async def _graph_context(
         self, query: str, top_k: int, tenant_id: str | None = None
     ) -> list[ScoredChunk]:
@@ -207,6 +231,16 @@ class HybridRetriever:
             triples = [t for t in triples if t.tenant_id in allowed]
         if self.collection is not None:
             triples = [t for t in triples if t.collection == self.collection]
+        # Evidence floor (#347). NOTE this deliberately fails OPEN, the opposite
+        # of the two scope re-checks above and of the #209 convention (an
+        # unstamped ``collection`` is invisible). Tenant/collection are safety
+        # boundaries, where "unknown" must mean "not yours". Confidence is a
+        # quality axis on a field that did not exist before #347: failing closed
+        # would make every pre-existing triple vanish the moment the field was
+        # added — a silent corpus-wide regression, not a safety property. So an
+        # unstamped triple has confidence 0, the default floor is 0, and it
+        # passes; an operator opts into filtering by raising the floor.
+        triples = filter_by_confidence(triples, self._min_confidence())
         chunks = []
         for triple in triples[:top_k]:
             content = f"{triple.subject} {triple.predicate} {triple.object}"

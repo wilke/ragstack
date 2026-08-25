@@ -254,6 +254,18 @@ class InMemoryTextIndex:
         return docs, next_cursor
 
 
+def _evidence_fields(t: Triple) -> dict[str, Any]:
+    """The six #347 provenance fields — what an ON MATCH write replaces."""
+    return {
+        "evidence": t.evidence,
+        "chunk_id": t.chunk_id,
+        "derived_by": t.derived_by,
+        "confidence": t.confidence,
+        "subject_id": t.subject_id,
+        "object_id": t.object_id,
+    }
+
+
 class InMemoryGraphStore:
     """In-memory knowledge-graph store backed by a list of triples.
 
@@ -263,25 +275,47 @@ class InMemoryGraphStore:
     (Community Edition serves a single database), so isolating here by object
     identity would let the unit suite pass on a guarantee the durable backend
     doesn't provide. Both stores carry the boundary in the data instead.
+
+    Triple identity is ``(subject, predicate, object, doc_id, tenant_id,
+    collection)`` — the same effective key as Neo4j's four-key ``:REL`` MERGE
+    between its two ``(name, tenant_id, collection)`` endpoint nodes. ``doc_id``
+    is part of it: the same fact extracted from two documents is two records,
+    each with its own evidence and each deletable by ``delete_by_doc`` on its own.
+
+    Evidence fields (#347) follow Neo4j's ``ON CREATE SET`` / ``ON MATCH SET``
+    semantics: they are never part of the identity key, and re-adding a triple
+    whose key already exists replaces the stored copy's six evidence fields with
+    the incoming values (last writer wins) without growing the store.
     """
 
     def __init__(self) -> None:
-        self._triples: list[Triple] = []
+        # Insertion-ordered so reads keep first-write order (a plain list did
+        # before); keyed so a re-add can update in place instead of appending.
+        self._by_key: dict[tuple[str, str, str, str, str, str], Triple] = {}
+
+    @property
+    def _triples(self) -> list[Triple]:
+        return list(self._by_key.values())
 
     async def add_triples(self, triples: list[Triple]) -> None:
-        # Dedup includes tenant_id and collection so two tenants' — or two
-        # collections' — identical (s,p,o) triples all survive, matching Neo4j's
-        # MERGE key (keying on (s,p,o) alone would drop the second copy).
-        existing = {self._key(t) for t in self._triples}
+        # Dedup includes doc_id, tenant_id and collection so two documents' —
+        # or two tenants' or two collections' — identical (s,p,o) triples all
+        # survive, matching Neo4j's edge identity. Keying without doc_id would
+        # not just drop the second copy: with the in-place evidence update below
+        # it would splice d2's evidence onto d1's record and make
+        # delete_by_doc(d2) a no-op.
+        by_key = self._by_key
         for triple in triples:
             key = self._key(triple)
-            if key not in existing:
-                self._triples.append(triple)
-                existing.add(key)
+            if key in by_key:
+                # ON MATCH SET: identity unchanged, evidence takes the new values.
+                by_key[key] = by_key[key].model_copy(update=_evidence_fields(triple))
+            else:
+                by_key[key] = triple
 
     @staticmethod
-    def _key(t: Triple) -> tuple[str, str, str, str, str]:
-        return (t.subject, t.predicate, t.object, t.tenant_id, t.collection)
+    def _key(t: Triple) -> tuple[str, str, str, str, str, str]:
+        return (t.subject, t.predicate, t.object, t.doc_id, t.tenant_id, t.collection)
 
     def _visible(self, tenant_id: str | None, collection: str | None = None) -> list[Triple]:
         """Triples the caller may read: all when unscoped (dev/tests), else the
@@ -373,12 +407,12 @@ class InMemoryGraphStore:
         scopes must match: the same doc_id ingested into two collections keeps a
         separate triple set per collection, and a collection-blind delete would
         take both."""
-        self._triples = [
-            t
-            for t in self._triples
+        self._by_key = {
+            k: t
+            for k, t in self._by_key.items()
             if not (
                 t.doc_id == doc_id
                 and (tenant_id is None or t.tenant_id == tenant_id)
                 and (collection is None or t.collection == collection)
             )
-        ]
+        }
