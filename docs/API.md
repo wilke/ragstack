@@ -214,7 +214,11 @@ links the ingester stamps:
   the walk continues through it.
 - On `/v1/query`, generation sees each source's text with its context
   concatenated in document order under `(context before)` / `(passage)` /
-  `(context after)` delimiters; citations still number the sources.
+  `(context after)` delimiters; citations still number the sources. The
+  prompt's character budget scales with the window, so context never reduces
+  how many sources reach the model; when a block still has to shrink, the
+  passage is kept whole and its context is trimmed (before-context from the
+  left, after-context from the right, marked with `…`).
 - One batched store lookup per hop for the whole request (one for
   `context_window: 1`, at most three), independent of `top_k`.
 - A `filters` key `GET /v1/chunks` refuses (`doc_id`, `chunk_id`, `content`,

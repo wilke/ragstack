@@ -331,7 +331,8 @@ curl -s "$BASE/v1/retrieve" -H "X-API-Key: $KEY" -H 'Content-Type: application/j
 - On `/v1/query` the answer is generated from each hit *plus* its context
   (concatenated in document order, delimited as `(context before)` /
   `(passage)` / `(context after)`), so the model sees the surrounding text —
-  the citations `[n]` still refer to the hit.
+  the citations `[n]` still refer to the hit. If the prompt budget is tight,
+  the hit itself is always kept whole; only its context is trimmed.
 - Cost: one batched store lookup per hop for the whole request (so one for
   `context_window: 1`, at most three), whatever `top_k` is.
 

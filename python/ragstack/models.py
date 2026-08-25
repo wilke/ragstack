@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
+from pydantic.json_schema import SkipJsonSchema
 
 
 class Document(BaseModel):
@@ -86,7 +87,9 @@ class Source(BaseModel):
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
-    context: list[ContextChunk] | None = None
+    # ``SkipJsonSchema[None]``: the served OpenAPI shows ``context`` as an
+    # optional array — not nullable — matching contracts/schemas/source.json.
+    context: list[ContextChunk] | SkipJsonSchema[None] = None
 
     # Deliberately no return annotation: with one, pydantic replaces the model's
     # serialization JSON schema (what /openapi.json shows for Source) by the
