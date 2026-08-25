@@ -209,8 +209,9 @@ the main one, or "everything I can see". Semantics:
   legs are fused with RRF (ties resolve in request order), the union is cut
   to `rerank_candidates` and **reranked once**, then cut to `top_k`. A many-valued store filter (`collection IN […]`) is never used on
   the vector/BM25 stores (#199, #354); the knowledge-graph leg, where one is
-  wired, is one neighbourhood query across the members (exact on Neo4j) with
-  one pseudo-chunk budget shared across them, not one per member.
+  wired, is one entity match across the members (exact on Neo4j) followed by
+  one neighbourhood query per matched entity (at most `graph_query_entity_max`,
+  #349), with one pseudo-chunk budget shared across them, not one per member.
 - **Provenance.** Every source carries `collection` — the registry id it came
   from. A document present in two collections appears once per collection,
   each copy stamped with its own id (they share a `chunk_id`, not a

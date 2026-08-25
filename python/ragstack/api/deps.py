@@ -297,6 +297,8 @@ def _hybrid_retriever(
         candidate_multiplier=settings.retrieval_candidate_multiplier,
         graph_context_score=settings.graph_context_score,
         graph_context_depth=settings.graph_context_depth,
+        graph_query_entity_max=settings.graph_query_entity_max,
+        graph_query_ngram_max=settings.graph_query_ngram_max,
         collection=collection,
         max_per_doc=settings.retrieval_max_per_doc,
         demote_boilerplate=settings.retrieval_demote_boilerplate,

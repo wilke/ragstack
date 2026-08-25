@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -13,6 +14,40 @@ from ragstack.tenancy import DEFAULT_TENANT, readable_tenants, scope_filters
 if TYPE_CHECKING:
     from ragstack.ingestion.boilerplate import BoilerplateConfig
     from ragstack.models import Triple
+
+
+#: A query token: a run of word characters, optionally joined by a hyphen or
+#: apostrophe ("covid-19", "parkinson's"). Everything else is punctuation and is
+#: dropped, so "aspirin," and "aspirin" are the same token.
+_TOKEN_RE = re.compile(r"\w+(?:[-']\w+)*")
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One n-gram of the query, already case-folded. ``position`` is the index
+    of its first token in the query — the tie-breaker after length when the
+    graph leg picks which matched entities to expand (#349)."""
+
+    text: str
+    n_tokens: int
+    position: int
+
+
+def query_candidates(query: str, ngram_max: int) -> list[Candidate]:
+    """The distinct 1..``ngram_max``-grams of ``query`` as entity-name
+    candidates: a simple regex word split, lower-cased, punctuation stripped,
+    tokens re-joined with single spaces. Ordered by n then position, and a text
+    that occurs twice keeps its first position. Pure string work — no model."""
+    tokens = _TOKEN_RE.findall(query.lower())
+    seen: set[str] = set()
+    out: list[Candidate] = []
+    for n in range(1, max(1, ngram_max) + 1):
+        for i in range(len(tokens) - n + 1):
+            text = " ".join(tokens[i:i + n])
+            if text not in seen:
+                seen.add(text)
+                out.append(Candidate(text, n, i))
+    return out
 
 
 def filter_by_confidence(triples: list[Triple], floor: int) -> list[Triple]:
@@ -41,6 +76,8 @@ class HybridRetriever:
         graph_context_score: float = 0.5,
         graph_context_depth: int = 1,
         graph_min_confidence: int | None = None,
+        graph_query_entity_max: int | None = None,
+        graph_query_ngram_max: int | None = None,
         collection: str | None = None,
         max_per_doc: int = 0,
         demote_boilerplate: bool = False,
@@ -62,6 +99,12 @@ class HybridRetriever:
         # reworked under #276; wiring the explicit kwarg there is a one-liner
         # follow-up). Tests and direct callers pass an int.
         self.graph_min_confidence = graph_min_confidence
+        # Query-side entity extraction for the graph leg (#349): how many
+        # matched entities get a neighbourhood query, and the longest n-gram
+        # tried against the entity index. Same ``None`` = live-settings
+        # convention as the confidence floor.
+        self.graph_query_entity_max = graph_query_entity_max
+        self.graph_query_ngram_max = graph_query_ngram_max
         # The collection this retriever serves. The vector/text legs get their
         # collection for free — their stores ARE per-collection — but one graph
         # store holds every collection's triples, so the graph leg has to name it
@@ -186,10 +229,39 @@ class HybridRetriever:
             return settings.graph_min_confidence
         return self.graph_min_confidence
 
+    def _entity_max(self) -> int:
+        if self.graph_query_entity_max is None:
+            from ragstack.config import settings
+
+            return settings.graph_query_entity_max
+        return self.graph_query_entity_max
+
+    def _ngram_max(self) -> int:
+        if self.graph_query_ngram_max is None:
+            from ragstack.config import settings
+
+            return settings.graph_query_ngram_max
+        return self.graph_query_ngram_max
+
+    async def query_entities(self, query: str, tenant_id: str | None = None) -> list[str]:
+        """The entities of ``query`` this retriever's graph leg will expand, in
+        expansion order — :func:`query_entities` over this retriever's scope
+        (#349). Public so the matching step can be measured on its own."""
+        assert self.graph_store is not None
+        return await query_entities(
+            self.graph_store, query, tenant_id,
+            [self.collection] if self.collection is not None else None,
+            entity_max=self._entity_max(), ngram_max=self._ngram_max(),
+        )
+
     async def _graph_context(
         self, query: str, top_k: int, tenant_id: str | None = None
     ) -> list[ScoredChunk]:
-        """Retrieve graph-neighbourhood context for entities in the query.
+        """Retrieve graph-neighbourhood context for the entities in the query —
+        :func:`graph_context` over this retriever's scope. The entities are
+        extracted first (#349, see :func:`query_entities`): one
+        ``query_neighborhood`` per matched entity, at most
+        ``graph_query_entity_max`` of them, never the raw query string.
 
         ``tenant_id`` is the caller's own tenant; it scopes the neighbourhood
         query so the graph leg reads only the caller's triples plus the shared
@@ -230,7 +302,59 @@ class HybridRetriever:
             depth=self.graph_context_depth,
             score=self.graph_context_score,
             min_confidence=self._min_confidence(),
+            entity_max=self._entity_max(),
+            ngram_max=self._ngram_max(),
         )
+
+
+def _collection_scope(collections: list[str] | None) -> str | list[str] | None:
+    """The ``collection`` argument the graph store gets: ``None`` unscoped, the
+    bare name for one collection (so the store's single-value predicate is
+    byte-identical to before #253), the list for several (``IN [...]``)."""
+    if collections is None:
+        return None
+    return collections[0] if len(collections) == 1 else list(collections)
+
+
+async def query_entities(
+    graph_store: GraphStore,
+    query: str,
+    tenant_id: str | None,
+    collections: list[str] | None,
+    *,
+    entity_max: int,
+    ngram_max: int,
+) -> list[str]:
+    """The entities of ``query`` the graph leg will expand, in expansion order
+    (#349). A free function, like :func:`graph_context`, so the single- and
+    multi-collection retrievers share it; public so the perf test and the
+    ablation harness (#122) can measure the matching step on its own.
+
+    The rule: the query's 1..``ngram_max``-gram candidates
+    (:func:`query_candidates`) are handed to ``GraphStore.match_entities`` in
+    ONE call — an indexed, exact, case-folded lookup against the entity names
+    in the caller's readable ``(tenant, collection)`` scope, never a
+    ``CONTAINS`` over the sentence. Of the candidates that name an entity, the
+    longest (most tokens) wins, ties broken by position in the query, and the
+    first ``entity_max`` are kept. A query with no tokens costs no store call
+    at all; a query whose candidates match nothing costs the one lookup and no
+    neighbourhood query. Nothing here calls a model: the LLM variant of the
+    issue is deliberately not built (#350)."""
+    candidates = query_candidates(query, ngram_max)
+    if not candidates:
+        return []
+    by_text = {c.text: c for c in candidates}
+    matched = await graph_store.match_entities(
+        [c.text for c in candidates],
+        tenant_id=tenant_id,
+        collection=_collection_scope(collections),
+    )
+    # Fold and re-validate what came back: a store may return the stored
+    # surface form rather than the candidate, and must not be able to add an
+    # entity the query never named.
+    names = {m.lower() for m in matched if m.lower() in by_text}
+    ranked = sorted(names, key=lambda t: (-by_text[t].n_tokens, by_text[t].position))
+    return ranked[: max(0, entity_max)]
 
 
 async def graph_context(
@@ -243,32 +367,53 @@ async def graph_context(
     depth: int = 1,
     score: float = 0.5,
     min_confidence: int = 0,
+    entity_max: int,
+    ngram_max: int,
 ) -> list[ScoredChunk]:
-    """The graph leg as a free function: ONE ``query_neighborhood`` call scoped
-    to ``tenant_id`` and to ``collections`` — one physical collection name (the
-    single-collection retriever, passed as the bare name so the store's
-    single-value predicate is byte-identical to before) or several (the
-    multi-collection fan-out of issue #253, passed as a list: ``collection IN
-    [...]``, exact on Neo4j and on the in-memory store — a graph property
-    predicate, not an HNSW payload filter, so #199 does not apply). ``None``
-    is the deliberately unscoped dev/library read. Both scopes are re-checked
-    on the way back, per :meth:`HybridRetriever._graph_context`; the
-    ``min_confidence`` evidence floor (#347) is applied after them and fails
-    OPEN (see the comment below). ``top_k`` is the pseudo-chunk budget of the
-    whole call — with several collections it is shared across them, not
-    ``top_k`` each. Every pseudo-chunk carries ``metadata["collection"]`` =
-    its triple's physical collection, which is how the fan-out maps it back
-    to a registry id."""
-    triples = await graph_store.query_neighborhood(
-        query,
-        depth=depth,
-        tenant_id=tenant_id,
-        collection=(
-            None if collections is None
-            else collections[0] if len(collections) == 1
-            else list(collections)
-        ),
+    """The graph leg as a free function, scoped to ``tenant_id`` and to
+    ``collections`` — one physical collection name (the single-collection
+    retriever, passed to the store as the bare name so its single-value
+    predicate is byte-identical to before) or several (the multi-collection
+    fan-out of issue #253, passed as a list: ``collection IN [...]``, exact on
+    Neo4j and on the in-memory store — a graph property predicate, not an HNSW
+    payload filter, so #199 does not apply). ``None`` is the deliberately
+    unscoped dev/library read.
+
+    The entities are *extracted first* (#349): :func:`query_entities` matches
+    the query's n-gram candidates exactly against the scoped entity index (one
+    ``match_entities`` call), then this runs ONE ``query_neighborhood`` per
+    matched entity — at most ``entity_max`` of them — and unions the triples
+    (deduplicated on the triple's identity, first-seen order, so an entity pair
+    that shares an edge contributes it once). No matched entity means an empty
+    leg and no neighbourhood call; the raw query string is never handed to the
+    store. Before #349 it was, and the store's ``CONTAINS`` match meant a
+    multi-word query almost never fired the leg.
+
+    Both scopes are re-checked on the way back, per
+    :meth:`HybridRetriever._graph_context`; the ``min_confidence`` evidence
+    floor (#347) is applied after them and fails OPEN (see the comment below).
+    ``top_k`` is the pseudo-chunk budget of the whole call — with several
+    collections it is shared across them, not ``top_k`` each. Every
+    pseudo-chunk carries ``metadata["collection"]`` = its triple's physical
+    collection, which is how the fan-out maps it back to a registry id."""
+    entities = await query_entities(
+        graph_store, query, tenant_id, collections,
+        entity_max=entity_max, ngram_max=ngram_max,
     )
+    if not entities:
+        return []
+    scope = _collection_scope(collections)
+    triples: list[Triple] = []
+    seen: set[tuple[str, str, str, str, str, str]] = set()
+    for entity in entities:
+        neighbourhood = await graph_store.query_neighborhood(
+            entity, depth=depth, tenant_id=tenant_id, collection=scope,
+        )
+        for t in neighbourhood:
+            key = (t.subject, t.predicate, t.object, t.doc_id, t.tenant_id, t.collection)
+            if key not in seen:
+                seen.add(key)
+                triples.append(t)
     if tenant_id is not None:
         allowed = set(readable_tenants(tenant_id))
         triples = [t for t in triples if t.tenant_id in allowed]
@@ -391,6 +536,8 @@ class MultiCollectionRetriever:
         graph_context_score: float = 0.5,
         graph_context_depth: int = 1,
         graph_min_confidence: int | None = None,
+        graph_query_entity_max: int | None = None,
+        graph_query_ngram_max: int | None = None,
     ) -> None:
         if not legs:
             raise ValueError("MultiCollectionRetriever needs at least one leg")
@@ -402,6 +549,9 @@ class MultiCollectionRetriever:
         # Evidence floor for the one graph query (#347); ``None`` = the setting
         # at query time, exactly as HybridRetriever reads it.
         self.graph_min_confidence = graph_min_confidence
+        # Query-side entity extraction knobs (#349), same rule.
+        self.graph_query_entity_max = graph_query_entity_max
+        self.graph_query_ngram_max = graph_query_ngram_max
         first = legs[0].retriever
         self.max_per_doc = int(getattr(first, "max_per_doc", 0) or 0)
         self.demote_boilerplate = bool(getattr(first, "demote_boilerplate", False))
@@ -422,6 +572,20 @@ class MultiCollectionRetriever:
 
             return settings.graph_min_confidence
         return self.graph_min_confidence
+
+    def _entity_max(self) -> int:
+        if self.graph_query_entity_max is None:
+            from ragstack.config import settings
+
+            return settings.graph_query_entity_max
+        return self.graph_query_entity_max
+
+    def _ngram_max(self) -> int:
+        if self.graph_query_ngram_max is None:
+            from ragstack.config import settings
+
+            return settings.graph_query_ngram_max
+        return self.graph_query_ngram_max
 
     @staticmethod
     def _stamp(scored: list[ScoredChunk], cid: str) -> list[ScoredChunk]:
@@ -462,8 +626,9 @@ class MultiCollectionRetriever:
     async def _graph(
         self, query: str, top_k: int, tenant_id: str | None
     ) -> list[ScoredChunk]:
-        """One neighbourhood query over every leg's physical collection, its
-        pseudo-chunks stamped with the owning leg's registry id."""
+        """The graph leg over every leg's physical collection at once (one
+        entity match with ``collection IN [...]``, one neighbourhood per matched
+        entity), its pseudo-chunks stamped with the owning leg's registry id."""
         if self.graph_store is None:
             return []
         by_physical: dict[str, str] = {}
@@ -481,6 +646,8 @@ class MultiCollectionRetriever:
             depth=self.graph_context_depth,
             score=self.graph_context_score,
             min_confidence=self._min_confidence(),
+            entity_max=self._entity_max(),
+            ngram_max=self._ngram_max(),
         )
         out: list[ScoredChunk] = []
         for c in chunks:

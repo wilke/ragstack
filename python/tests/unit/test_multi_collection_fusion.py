@@ -89,6 +89,10 @@ class SpyGraphStore:
         self.triples = triples
         self.calls: list[Any] = []
 
+    async def match_entities(self, candidates, *, tenant_id, collection):
+        # #349: the retriever only expands entities the store says exist.
+        return [c for c in candidates if c == "alice"]
+
     async def query_neighborhood(self, entity, depth=1, tenant_id=None, collection=None):
         self.calls.append(collection)
         wanted = {collection} if isinstance(collection, str) else set(collection or [])

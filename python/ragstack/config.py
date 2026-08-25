@@ -747,6 +747,13 @@ class Settings(BaseSettings):
     # confidence 0 and passes at the default floor (fail-OPEN by design — see
     # retriever._graph_context and #347). 2 keeps only tool-corroborated triples.
     graph_min_confidence: int = 0
+    # Query-side entity extraction for the graph leg (#349). The query's
+    # 1..graph_query_ngram_max-grams are matched exactly (case-folded) against
+    # the entity names in the caller's (tenant, collection) scope; up to
+    # graph_query_entity_max matched entities — longest first, then query
+    # order — each get one neighbourhood query. No model call.
+    graph_query_entity_max: int = 5
+    graph_query_ngram_max: int = 3
     # Answer generation
     llm_max_context_chars: int = 8000          # context budget packed into the LLM prompt
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
