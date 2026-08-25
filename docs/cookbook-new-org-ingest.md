@@ -71,6 +71,12 @@ Per [ADR-0005](adr/0005-tenant-anatomy.md) decision 4, a tenant is created by
 this section used to build (env file, dedicated stores, ports), deterministically and
 idempotently. Hand-built tenants are how the shared-ES isolation gap happened.
 
+> Provisioning a tenant to take on *new users* because an existing tenant is
+> approaching its collection bound — rather than for a new org's own isolated
+> deployment — is a distinct procedure with its own trigger, settings and
+> routing-map update: see
+> [tenant-scale-out.md](runbooks/tenant-scale-out.md).
+
 ```bash
 cd /rag/repos/ragstack
 
