@@ -9,9 +9,12 @@ over the shards; ``merge_receipts.py`` gathers the receipts into a run summary.
 embeddable chunk, or that the extract stage skipped (a scanned PDF — pass its
 ``--extract-report`` so the receipt lists it with the constant ``NO_TEXT_ERROR``),
 is recorded on its own ``docs[i].error`` row and the batch continues; the
-embedding file holds only the successful documents' chunks. The task exits
-non-zero only when EVERY document of the batch failed (or the batch itself
-could not be loaded/embedded/indexed — then every row carries that error).
+embedding file holds only the successful documents' chunks (header-only when
+none succeeded). The task exits non-zero ONLY for a batch-level error (the batch
+could not be loaded/embedded/indexed — then every row carries that error): a
+batch in which every document failed still exits 0, because the engine would
+otherwise retry and then fail the whole run after the sibling batches had
+already upserted (see ``ragstack.ingestion.shard``).
 
 **Stateless + idempotent by design.** It reuses ``IngestionPipeline.ingest``
 (which owns chunk → embed → quarantine → delete-prior → upsert → neighbor-link)

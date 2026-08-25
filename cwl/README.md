@@ -154,7 +154,9 @@ it predates the image — but don't submit it to GoWe as-is.
   no embeddable chunk, or one the extract stage skipped (pass its report with
   `--extract-report` — a scanned PDF's row then carries the constant
   `NO_TEXT_ERROR`), is recorded on its row and the batch continues; the exit code is
-  non-zero only when *every* document of the batch failed. This is what retires
+  non-zero only for a batch-level error — a batch in which every document failed
+  still exits 0 with every row errored, because a failed task would fail the whole
+  run after the sibling batches had already upserted. This is what retires
   `ingest_jsonl.py`'s bespoke machinery (#71) without forking the pipeline (#25).
   Needs live infra — not a CI step. The reusable core is
   `ragstack.ingestion.shard.run_shard` (offline-tested with in-memory stores).
@@ -264,14 +266,28 @@ gowe path exactly as on the local one (the #377 gap).
   --extract-report` folds that into the receipt as a failed row **and the batch
   continues**. A loaded document with no embeddable chunk (empty, or every chunk
   quarantined) gets `NO_CHUNKS_ERROR` the same way. The embedding file — and so
-  the archive — holds only the successful documents' chunks.
-- `ingest_shard.py` exits non-zero (failing the task, hence the submission) **only
-  when every document of the batch failed**, or when the batch itself could not
-  be loaded/embedded/indexed (an infra failure: then every row without a more
-  specific error carries the batch error, and the engine retries the task).
-- A task-level failure still fails the run before any archive exists (the pack
-  step consumes every receipt); when that happens the API reports the submission
-  state on every item.
+  the archive — holds only the successful documents' chunks (a header-only file
+  when a batch had none).
+- **A batch in which every document failed is still a processed batch**: the
+  receipt is `completed` with every row errored (`n_docs_failed == n_docs`), the
+  embedding file is header-only, and `ingest_shard.py` exits **0**. GoWe honours
+  no `successCodes`: any non-zero exit is a task failure, retried up to
+  `MaxRetries` and then fatal to the step, its dependants and the submission —
+  while the sibling batches have already upserted (ingest is coupled
+  embed+load), so `pack` would never run, no `versions/N/` would exist, stores
+  and archive would diverge and a later restore would silently omit those
+  documents. An exit 1 for a batch of scanned PDFs is therefore the very
+  failure class Option B removes, moved from "one PDF sinks 19" to "one batch
+  sinks the run".
+- `ingest_shard.py` exits non-zero (failing the task, hence the submission)
+  **only for a batch-level error** — the batch itself could not be
+  loaded/embedded/indexed (an infra failure): then every row without a more
+  specific error carries the batch error, and the engine retries the task. Such
+  a failure fails the run before any archive exists (the pack step consumes
+  every receipt); the API then reports the submission state on every item.
+- Known residual (a #357 format decision): if **every** batch of a run is
+  all-failed there are zero rows to pack, `archive_version.py` refuses a
+  zero-row version and the run fails with the per-item detail lost.
 
 **`archive` is the only workflow-level output — by design, not omission.** GoWe
 post-stages *every* top-level File output of a submission that has an

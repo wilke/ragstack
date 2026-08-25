@@ -36,11 +36,19 @@
 # a scanned/image-only PDF (the extract step skips it and its report names it with
 # the constant `NO_TEXT_ERROR`), a document with no embeddable chunk — is recorded
 # on ITS row and the batch CONTINUES; the embedding file holds only the successful
-# documents' chunks. `ingest_shard.py` exits non-zero — failing the task and hence
-# the submission — ONLY when EVERY document of the batch failed, or the batch
-# itself could not be loaded/embedded/indexed (an infra failure: then every row of
-# that batch carries the batch error, and the engine retries the task). One bad
-# file can no longer sink its 19 neighbours.
+# documents' chunks (header-only when none succeeded). A batch in which EVERY
+# document failed is still a PROCESSED batch: `ingest_shard.py` exits 0 with every
+# row errored. That is deliberate: GoWe treats any non-zero exit as a task
+# failure, retries it, then fails the step, its dependants and the submission —
+# while the sibling batches have already upserted (ingest is coupled embed+load),
+# so `pack` never runs, no `versions/N/` exists, stores and archive diverge and a
+# later restore silently omits those documents. So the task exits non-zero ONLY
+# for a batch-level error (the batch could not be loaded/embedded/indexed — an
+# infra failure: every row of that batch carries the batch error and the engine
+# retries the task). One bad file can no longer sink its 19 neighbours, and a
+# batch of bad files cannot sink the run. Known residual (#357 format): if EVERY
+# batch of a run is all-failed there are zero rows to pack, `archive_version.py`
+# refuses a zero-row version and the run fails without per-item detail.
 #
 # WHY `archive` IS THE ONLY OUTPUT. GoWe post-stages EVERY top-level File output
 # of a submission with an `output_destination` into that folder — flat, by
@@ -254,8 +262,9 @@ steps:
 
   ingest:
     doc: "One shard (a batch) -> Qdrant/ES upsert + ONE ShardReceipt with a row
-      per document + the batch's embedding file (stateless, idempotent). Fails
-      only when every document of the batch failed."
+      per document + the batch's embedding file (stateless, idempotent). Exits
+      non-zero only for a batch-level error; an all-failed batch completes with
+      every row errored (see the header)."
     scatter: [shard, report]
     scatterMethod: dotproduct
     in:

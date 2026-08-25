@@ -7,10 +7,13 @@ CLI (its exit code is what fails a GoWe task):
   (``NO_TEXT_ERROR`` from its report), a document with no embeddable chunk —
   is recorded on ITS row and the batch continues (exit 0);
 * the embedding file holds only the successful documents' chunks;
-* the task fails (non-zero) only when EVERY document of the batch failed, and
-  then every row names its own error — the constant one survives verbatim;
-* a batch-level failure (infra) is attributed to every document that has no
-  more specific error.
+* a batch in which EVERY document failed is still a PROCESSED batch: exit 0,
+  every row names its own error (the constant one survives verbatim), and a
+  header-only embedding file is left for the archive step — a non-zero exit
+  would make the engine retry and then fail the whole run after the sibling
+  batches had already upserted;
+* the task fails (non-zero) only for a batch-level failure (infra), which is
+  attributed to every document that has no more specific error.
 """
 from __future__ import annotations
 
@@ -116,17 +119,20 @@ async def test_mixed_batch_two_scanned_of_twenty_is_exact_per_document(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_all_failed_batch_reports_every_document(tmp_path: Path) -> None:
+async def test_all_failed_batch_is_processed_not_failed(tmp_path: Path) -> None:
+    """Nothing but scanned PDFs → an empty shard: every row errored, the task
+    COMPLETED (no retry, no sunk run), a header-only embedding file for pack."""
     pipe, vstore = _pipeline()
-    shard, report = _batch(tmp_path, 0, 3)  # nothing but scanned PDFs → empty shard
+    shard, report = _batch(tmp_path, 0, 3)
     emb = tmp_path / "batch.emb.jsonl"
     r = await run_shard(pipe, shard, "public", "batch-1", embedding_file=emb,
                         report=ExtractReport.load(report))
-    assert r.status == FAILED
-    assert r.n_docs == 3 and r.n_docs_failed == 3 and r.n_chunks == 0
+    assert r.status == COMPLETED and r.error == ""
+    assert r.n_docs == 3 and r.n_docs_failed == 3 and r.n_chunks == 0 and r.chunk_ids == []
     assert [d.error for d in r.docs] == [NO_TEXT_ERROR] * 3
-    assert r.error == NO_TEXT_ERROR  # the one common per-document error
-    assert not emb.exists() and r.embedding_file == ""
+    assert r.embedding_file == str(emb)
+    chunks, header = read_embedding_file(emb)
+    assert chunks == [] and header["count"] == 0 and header["dim"] == 0
     assert await vstore.count_tenants(["public"]) == 0
 
 
@@ -144,16 +150,17 @@ async def test_document_with_no_embeddable_chunk_fails_alone(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_every_document_unembeddable_is_a_failed_batch(tmp_path: Path) -> None:
+async def test_every_document_unembeddable_is_still_a_processed_batch(tmp_path: Path) -> None:
     pipe, _ = _pipeline(embedder=_FakeEmbedder(poison="Document"))
     shard, report = _batch(tmp_path, 2, 1)
     emb = tmp_path / "e.jsonl"
     r = await run_shard(pipe, shard, "public", "b", embedding_file=emb,
                         report=ExtractReport.load(report))
-    assert r.status == FAILED and r.error.startswith("empty:")
+    assert r.status == COMPLETED and r.error == "" and r.n_docs_failed == 3
     assert {Path(d.source).name: d.error for d in r.docs} == {
         "p00.pdf": NO_CHUNKS_ERROR, "p01.pdf": NO_CHUNKS_ERROR, "p02.pdf": NO_TEXT_ERROR}
-    assert not emb.exists()
+    chunks, header = read_embedding_file(emb)
+    assert chunks == [] and header["count"] == 0
 
 
 @pytest.mark.asyncio
@@ -258,15 +265,28 @@ def test_cli_mixed_batch_exits_zero_with_per_document_receipt(tmp_path: Path, fa
     assert {c.doc_id for c in chunks} == {d.doc_id for d in r.docs if d.ok}
 
 
-def test_cli_all_failed_batch_exits_nonzero(tmp_path: Path, fake_embedder, capsys) -> None:
+def test_cli_all_failed_batch_exits_zero_with_every_row_errored(
+    tmp_path: Path, fake_embedder, capsys
+) -> None:
     shard, report = _batch(tmp_path, 0, 2)
     out, emb = tmp_path / "receipt.json", tmp_path / "batch.emb.jsonl"
-    assert ingest_shard.main(_cli(shard, report, out, emb)) == 1
+    assert ingest_shard.main(_cli(shard, report, out, emb)) == 0
     r = ShardReceipt.load(out)
-    assert r.status == FAILED and [d.error for d in r.docs] == [NO_TEXT_ERROR] * 2
-    assert not emb.exists()
+    assert r.status == COMPLETED and [d.error for d in r.docs] == [NO_TEXT_ERROR] * 2
+    assert r.n_docs_failed == 2 and emb.exists()
     stdout = capsys.readouterr().out
     assert "failed=2" in stdout and NO_TEXT_ERROR in stdout
+
+
+def test_cli_batch_level_failure_exits_nonzero(tmp_path: Path, fake_embedder) -> None:
+    """The one case a task may fail: the batch itself (here: the shard is not
+    readable at all and no report accounts for it)."""
+    out, emb = tmp_path / "receipt.json", tmp_path / "e.jsonl"
+    argv = _cli(str(tmp_path / "missing.jsonl"), "", out, emb)
+    argv = [a for i, a in enumerate(argv) if a != "--extract-report" and argv[i - 1] != "--extract-report"]
+    assert ingest_shard.main(argv) == 1
+    r = ShardReceipt.load(out)
+    assert r.status == FAILED and r.error.startswith("load:") and not emb.exists()
 
 
 def test_cli_without_report_ingests_the_plain_shard(tmp_path: Path, fake_embedder) -> None:

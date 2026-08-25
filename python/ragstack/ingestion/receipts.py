@@ -63,14 +63,17 @@ class ShardReceipt:
     """What one ``ingest_shard`` invocation produced.
 
     ``chunk_ids`` is shard-level (every id upserted by this invocation); per
-    document they are on ``docs[i].chunk_ids``. ``status`` is ``completed``
-    when AT LEAST ONE document was upserted and ``failed`` only when every
-    document failed (or the shard could not be loaded/indexed at all) — the
-    batch rule of #203 2b, so one scanned PDF cannot sink a batch. A partial
-    per-chunk quarantine still completes (the pipeline drops poison chunks and
-    upserts the rest), matching the ingest pipeline's own degrade behaviour.
-    ``n_docs`` counts every document attempted (loaded + reported-skipped);
-    ``n_docs_failed`` those with a per-document ``error``.
+    document they are on ``docs[i].chunk_ids``. ``status`` is the TASK outcome
+    (#203 2b): ``completed`` whenever the batch was processed to the end —
+    including a batch in which EVERY document failed (``n_docs_failed ==
+    n_docs``, each row errored) — and ``failed`` only when the batch itself
+    could not be loaded/embedded/indexed (``error`` set). Per-document failure
+    is data in the rows, never a task failure, because a failed task would
+    fail the whole run after its sibling batches had already upserted. A
+    partial per-chunk quarantine still completes (the pipeline drops poison
+    chunks and upserts the rest), matching the ingest pipeline's own degrade
+    behaviour. ``n_docs`` counts every document attempted (loaded +
+    reported-skipped); ``n_docs_failed`` those with a per-document ``error``.
     """
 
     shard_id: str

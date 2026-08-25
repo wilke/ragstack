@@ -50,12 +50,15 @@ def test_map_1000_documents_across_50_receipts_p95_budget() -> None:
     out = map_receipt_entries(items, entries)
     assert sum(r.status == "failed" for r in out) == 40
     assert all(r.error == NO_TEXT_ERROR for r in out if r.status == "failed")
-    # Measure the mapping, not the collector: a gen-2 collection of garbage left
-    # by a neighbouring perf test (the 3 GB archive_pack input) landed inside one
-    # sample and alone lifted p95 to 84 ms in a whole-session run.
+    # GC stays ON — the mapping's own allocation→collection cost is part of
+    # what production pays. What is excluded is the NEIGHBOUR's heap: a whole-
+    # session perf run leaves the 3 GB archive_pack input's survivors behind,
+    # and a gen-2 pass over them inside one sample lifted p95 to 84 ms
+    # (14.7 ms with a bare gc.collect()). collect + freeze moves those
+    # survivors out of the collector's reach for the timed loop.
     gc.collect()
-    gc.disable()
+    gc.freeze()
     try:
         assert_budget("gowe_map_1000_docs_50_receipts", _map, budget_s=0.010, n=50)
     finally:
-        gc.enable()
+        gc.unfreeze()

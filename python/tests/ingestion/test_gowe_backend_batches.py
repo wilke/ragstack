@@ -246,6 +246,23 @@ async def test_receipts_naming_no_item_are_a_contract_error(body) -> None:
         await _run(ws, [_wi("a.pdf"), _wi("b.pdf")])
 
 
+@pytest.mark.asyncio
+async def test_duplicate_source_basenames_are_refused_before_submission() -> None:
+    """Two items whose sources share a basename could not be mapped back
+    unambiguously (and would collide at the engine's pre-staging): refused
+    with the names, and nothing is registered or submitted. Only the user path
+    (an output_destination) is guarded — the bulk plane maps its `receipts`
+    output positionally and may legitimately repeat a shard basename."""
+    client = _Client()
+    other = WorkItem(item_id="/bob@patricbrc.org/home/paper.pdf",
+                     source="ws:///bob@patricbrc.org/home/paper.pdf")
+    with pytest.raises(GoWeContractError, match="'paper.pdf'"):
+        await _backend(_Workspace({}), client).run_submission(
+            [_wi("paper.pdf"), _wi("other.pdf"), other], inputs={"version": "7"},
+            token=TOKEN, output_destination=DEST)
+    assert client.submitted is None
+
+
 def test_duplicate_row_names_keep_the_first() -> None:
     entries = _entries(_batch("b0", [_row("a.pdf", "1")]), _batch("b1", [_row("a.pdf", "2")]))
     out = map_receipt_entries([_wi("a.pdf")], entries)

@@ -204,15 +204,28 @@ still maps positionally.
 |---|---|---|
 | a scanned / image-only PDF (no text) | the extract report skips it; `ingest_shard --extract-report` writes its row with the constant `NO_TEXT_ERROR` (`ragstack.ingestion.loaders`) — the same string the local path records, so `GROUP BY error` counts it on both paths | 0 (batch continues) |
 | a loaded document with no embeddable chunk (empty, or every chunk quarantined) | its row: `NO_CHUNKS_ERROR` (`ragstack.ingestion.receipts`) | 0 |
-| **every** document of the batch failed | every row with its own error; the receipt is `failed` with their common error | **non-zero** |
+| **every** document of the batch failed | every row with its own error; the receipt is still `completed` (`n_docs_failed == n_docs`), the embedding file header-only | **0** — a processed batch, not a failed task |
 | the batch itself failed (shard unreadable, embedder/store down) | the receipt is `failed`; every row without a more specific error carries the batch error | non-zero (the engine retries the task) |
+
+Why an all-failed batch exits 0: GoWe treats any non-zero exit as a task
+failure (it honours no `successCodes`), retries it, then fails the step, its
+dependants and the submission — but the sibling batches have already upserted
+(ingest is coupled embed+load), so `pack` would never run, no `versions/<n>/`
+would exist, the stores and the archive would diverge, and a later restore
+would silently omit those documents. Per-document failure is therefore data
+in the receipt, never a task failure. Known residual (a #357 format decision):
+if **every** batch of a run is all-failed there are zero rows to pack, the
+archive tool refuses a zero-row version and the run fails with the per-item
+detail lost.
 
 The embedding file — hence the archive version — holds only the successful
 documents' chunks. A non-zero task fails the submission before any archive
 exists; the API then reports the submission state on every item (no receipts to
 read). Only receipts that name **none** of the documents are a
 `GoWeContractError` (a workflow that cannot report), never "every document
-failed".
+failed". Two work items sharing a source basename are refused at submission
+(`GoWeContractError`): rows are matched by basename, and the engine would stage
+them onto one file anyway.
 
 **Poll interval** is per submission: ≤ 50 items poll every 0.5 s, larger runs at
 `GOWE_POLL_INTERVAL` (never slower than the setting). **Tokenizer cache:** the

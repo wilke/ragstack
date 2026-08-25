@@ -229,6 +229,10 @@ class GoWeBackend:
         """
         if not items:
             return GoWeRun()
+        if output_destination:
+            # The user path maps results per document by basename; the bulk
+            # plane maps its `receipts` output positionally and may repeat one.
+            self._refuse_duplicate_names(items)
         job: dict[str, Any] = {
             **self.static_inputs,
             **(inputs or {}),
@@ -272,6 +276,23 @@ class GoWeBackend:
                            archive_ref=archive_ref)
         results = await self._map_outputs(items, final, token=token)
         return GoWeRun(results=results, submission_id=sub_id, state=state)
+
+    @staticmethod
+    def _refuse_duplicate_names(items: list[WorkItem]) -> None:
+        """Per-document results are matched on source basename (the engine
+        pre-stages every input under its basename, so two items sharing one
+        would collide at staging anyway); refuse a submission that could not be
+        mapped back unambiguously, BEFORE anything is submitted."""
+        seen: dict[str, str] = {}
+        for wi in items:
+            key = _item_key(wi.source)
+            if key in seen:
+                raise GoWeContractError(
+                    f"two work items share the source basename {key!r} "
+                    f"({seen[key]} and {wi.item_id}); per-document receipts are "
+                    f"matched by basename, so the submission is refused"
+                )
+            seen[key] = wi.item_id
 
     def poll_interval_for(self, n_items: int) -> float:
         """The poll interval for a submission of ``n_items`` work items: the

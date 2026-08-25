@@ -20,9 +20,22 @@ document whose chunks were upserted, otherwise names why it was not, and
   raised (an infra 5xx), or the upsert failed: the receipt is ``failed`` and
   EVERY document without a more specific error inherits the batch error.
 
-The receipt is ``completed`` when at least one document was upserted and
-``failed`` only when every document failed — so one bad file cannot sink a
-batch, and the CLI's exit code follows the same rule.
+``status`` is the TASK outcome, not a document count: ``completed`` whenever
+the batch was processed to the end — even when EVERY document failed (all
+scanned PDFs: ``n_docs_failed == n_docs``, every row errored, a header-only
+embedding file) — and ``failed`` only for a batch-level error. The CLI's exit
+code follows ``status``, and that is deliberate: GoWe treats any non-zero exit
+as a task failure, retries it (``MaxRetries``), then fails the step, its
+dependants and the submission — while the OTHER batches of the run have already
+upserted into the stores (this tool is coupled embed+load). An exit 1 for a
+batch of scanned PDFs would therefore leave the stores and the archive
+diverged (no ``versions/N/``, and a later restore silently omits those
+documents) — the very failure class Option B exists to remove. So per-document
+failure is DATA in the receipt, never a task failure.
+
+Known residual (#357 format): when every batch of a run is all-failed there are
+zero rows to pack, ``archive.write_version`` refuses a zero-row version and the
+run fails with no per-item detail — a format decision, not a batch-rule one.
 
 Retry safety: a re-run against a working endpoint overwrites in place
 (deterministic ids + upsert of the same content), so an engine retry is safe. The
@@ -131,6 +144,15 @@ async def run_shard(
         _discard(embedding_file)
         return _receipt(shard_id, tenant, rows, [], batch_error=error)
 
+    def processed_empty() -> ShardReceipt:
+        # Processed to the end with nothing to upsert: every row carries its
+        # own error, the task succeeds, and the archive step still gets a
+        # (header-only) embedding file for this batch.
+        if embedding_file is not None:
+            write_embedding_file(embedding_file, [], tenant=tenant)
+        return _receipt(shard_id, tenant, rows, [],
+                        embedding_file=str(embedding_file) if embedding_file else "")
+
     try:
         docs = pipeline.loader.load(shard_path)
     except Exception as e:  # noqa: BLE001 — a bad/missing shard fails just itself
@@ -144,9 +166,8 @@ async def run_shard(
     rows = _merge_rows(loaded, rows)
     if not docs:
         # Every document failed at the extract stage, each for its own reason
-        # (the rows carry them); the shard error is their common one.
-        _discard(embedding_file)
-        return _receipt(shard_id, tenant, rows, [])
+        # (the rows carry them): a processed batch, not a failed task.
+        return processed_empty()
 
     try:
         kept, produced, quarantined = await pipeline.embed_documents(
@@ -164,10 +185,10 @@ async def run_shard(
         if not row.chunk_ids:
             row.error = NO_CHUNKS_ERROR
     if not kept:
-        return failed_batch(
-            f"empty: no embeddable chunks for batch (produced {produced}, "
-            f"quarantined {quarantined})"
-        )
+        log.warning("shard %s: no embeddable chunks in the batch (produced %d, "
+                    "quarantined %d); every row reports its own error",
+                    shard_id, produced, quarantined)
+        return processed_empty()
 
     try:
         if embedding_file is not None:
@@ -226,25 +247,15 @@ def _receipt(
             if not row.error:
                 row.error = batch_error
     failed = sum(1 for r in rows if r.error)
-    status = COMPLETED if rows and failed < len(rows) else FAILED
-    if status == FAILED and not batch_error:
-        batch_error = _all_failed_error(rows)
+    # The task outcome: failed only for a batch-level error (see the module
+    # docstring) — an all-failed batch that was processed to the end completes.
+    status = FAILED if batch_error else COMPLETED
     return ShardReceipt(
         shard_id, tenant, status, n_docs=len(rows), n_chunks=len(chunk_ids),
         chunk_ids=list(chunk_ids), docs=rows, n_docs_failed=failed,
         embedding_file=embedding_file if status == COMPLETED else "",
-        error=batch_error if status == FAILED else "",
+        error=batch_error,
     )
-
-
-def _all_failed_error(rows: list[DocRow]) -> str:
-    """The shard-level error when every document failed for its own reason: the
-    common error when there is one (so a batch of scanned PDFs still reads
-    ``NO_TEXT_ERROR``), else a count."""
-    errors = {r.error for r in rows}
-    if len(errors) == 1:
-        return next(iter(errors))
-    return f"all {len(rows)} document(s) failed"
 
 
 def _doc_id(source: str) -> str:
