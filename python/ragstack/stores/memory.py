@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_right
+from collections.abc import Sequence
 from typing import Any
 
 from ragstack.documents import (
@@ -317,21 +318,26 @@ class InMemoryGraphStore:
     def _key(t: Triple) -> tuple[str, str, str, str, str, str]:
         return (t.subject, t.predicate, t.object, t.doc_id, t.tenant_id, t.collection)
 
-    def _visible(self, tenant_id: str | None, collection: str | None = None) -> list[Triple]:
+    def _visible(
+        self, tenant_id: str | None, collection: str | Sequence[str] | None = None
+    ) -> list[Triple]:
         """Triples the caller may read: all when unscoped (dev/tests), else the
         caller's own tenant plus the shared ``public`` corpus, further narrowed to
-        ``collection`` when one is given.
+        ``collection`` when one is given — one name, or a list of names for the
+        multi-collection graph leg (issue #253: one neighbourhood query with
+        ``collection IN [...]``, exact on every store).
 
-        The collection test is exact equality, so an unstamped legacy triple
-        (``collection == ""``) matches no real collection — the same fail-closed
-        behaviour Neo4j gives, where a null ``r.collection`` never satisfies
-        ``r.collection = $collection``."""
+        The collection test is exact equality / membership, so an unstamped
+        legacy triple (``collection == ""``) matches no real collection — the
+        same fail-closed behaviour Neo4j gives, where a null ``r.collection``
+        never satisfies ``r.collection = $collection`` (or ``IN``)."""
         triples = self._triples
         if tenant_id is not None:
             allowed = set(readable_tenants(tenant_id))
             triples = [t for t in triples if t.tenant_id in allowed]
         if collection is not None:
-            triples = [t for t in triples if t.collection == collection]
+            wanted = {collection} if isinstance(collection, str) else set(collection)
+            triples = [t for t in triples if t.collection in wanted]
         return triples
 
     async def query_neighborhood(
@@ -339,7 +345,7 @@ class InMemoryGraphStore:
         entity: str,
         depth: int = 1,
         tenant_id: str | None = None,
-        collection: str | None = None,
+        collection: str | Sequence[str] | None = None,
     ) -> list[Triple]:
         entity_lower = entity.lower()
         visible = self._visible(tenant_id, collection)

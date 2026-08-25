@@ -22,6 +22,10 @@
       "type": "object",
       "default": {}
     },
+    "collection": {
+      "description": "The registry collection id this source came from. Present only on a multi-collection request (`collections`, issue #253) — a single-collection request's response is unchanged.",
+      "type": "string"
+    },
     "context": {
       "description": "Neighbouring chunks of the same document, attached only when the request set context_window > 0 and at least one neighbour is visible; absent otherwise. Ordered by position (negative = before the source, positive = after). A neighbour that is itself a returned source is omitted here rather than duplicated.",
       "type": "array",

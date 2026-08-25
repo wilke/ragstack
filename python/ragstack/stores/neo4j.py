@@ -27,6 +27,7 @@ TODO in ``query_neighborhood``).
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from ragstack.models import CONFIDENCE_MAX, DERIVED_BY_LLM, LLM_MAX_CONFIDENCE, Triple
@@ -170,22 +171,34 @@ class Neo4jGraphStore:
             await session.run(query, rows=rows)
 
     def _scope(
-        self, params: dict[str, Any], tenant_id: str | None, collection: str | None
+        self,
+        params: dict[str, Any],
+        tenant_id: str | None,
+        collection: str | Sequence[str] | None,
     ) -> list[str]:
         """Register the scope parameters and return the per-relationship predicate
         templates (``{alias}`` is the relationship variable) shared by every read.
 
         Keeping the two axes in one place means a new read path can't accidentally
-        apply the tenant filter and forget the collection filter."""
+        apply the tenant filter and forget the collection filter.
+
+        ``collection`` is one physical name (``= $collection``, unchanged) or,
+        for the multi-collection graph leg (issue #253), a list of names
+        (``IN $collections``). Both are exact property predicates in Cypher —
+        this is a graph store, not an HNSW index: the many-valued-filter
+        truncation of #199 does not apply here."""
         preds: list[str] = []
         if tenant_id is not None:
             params["tenants"] = readable_tenants(tenant_id)
             preds.append("{alias}.tenant_id IN $tenants")
-        if collection is not None:
+        if isinstance(collection, str):
             params["collection"] = collection
             # Exact equality, so a legacy triple written before #209 (null/empty
             # ``collection``) matches no real collection — fail closed.
             preds.append("{alias}.collection = $collection")
+        elif collection is not None:
+            params["collections"] = list(collection)
+            preds.append("{alias}.collection IN $collections")
         return preds
 
     async def query_neighborhood(
@@ -193,10 +206,11 @@ class Neo4jGraphStore:
         entity: str,
         depth: int = 1,
         tenant_id: str | None = None,
-        collection: str | None = None,
+        collection: str | Sequence[str] | None = None,
     ) -> list[Triple]:
         """Return triples within ``depth`` hops of ``entity``, scoped to the caller's
-        readable tenants and to ``collection``. Matching is case-insensitive
+        readable tenants and to ``collection`` (one name, or a list of names for
+        the multi-collection leg — see :meth:`_scope`). Matching is case-insensitive
         substring on the entity name to mirror the in-memory store.
 
         ``tenant_id=None`` / ``collection=None`` are deliberate unscoped reads
@@ -218,7 +232,12 @@ class Neo4jGraphStore:
         # node in collection y could seed a walk that the path filter then prunes
         # to nothing — correct but wasteful — and, more importantly, entity
         # identity is per-collection so the in-scope node is a different node.
-        start_clause = "AND start.collection = $collection " if collection is not None else ""
+        if isinstance(collection, str):
+            start_clause = "AND start.collection = $collection "
+        elif collection is not None:
+            start_clause = "AND start.collection IN $collections "
+        else:
+            start_clause = ""
         path_clause = ""
         edge_clause = ""
         if preds:

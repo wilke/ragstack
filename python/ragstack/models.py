@@ -100,11 +100,32 @@ class Triple(BaseModel):
 
 
 class ScoredChunk(BaseModel):
-    """A Chunk annotated with a relevance score."""
+    """A Chunk annotated with a relevance score.
+
+    ``collection`` is the registry collection id the chunk was retrieved from,
+    stamped only by multi-collection fan-out (``collections``, issue #253);
+    ``None`` everywhere else. It is part of the chunk's identity in RRF fusion
+    (:meth:`~ragstack.scoring.scorers.RRFScorer.fuse` keys on
+    ``(collection, chunk.id)``), which is what lets a document present in two
+    collections appear once per collection instead of being merged — the two
+    copies share a chunk id but not a collection. Never persisted: stores take
+    ``Chunk``, not ``ScoredChunk``.
+    """
 
     chunk: Chunk
     score: float
     retrieval_method: str = "hybrid"  # vector | bm25 | graph | hybrid
+    collection: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_collection(self, handler: SerializerFunctionWrapHandler):
+        """An absent stamp is omitted from ``model_dump()`` so every dump made
+        before the field existed (eval goldens, the #347 graph-leg golden) is
+        byte-identical; only a stamped chunk shows the key."""
+        data = handler(self)
+        if data.get("collection") is None:
+            data.pop("collection", None)
+        return data
 
 
 class ContextChunk(BaseModel):
@@ -131,6 +152,11 @@ class Source(BaseModel):
     are ``None`` (``prev_chunk_id`` on a document's first chunk) still serialize
     as ``null``, exactly as before — which is why this is a targeted serializer
     and not ``exclude_none``.
+
+    ``collection`` (issue #253) is the registry collection id the source came
+    from, stamped only by a multi-collection request (``collections``) and
+    omitted from the serialized form when ``None`` under the same rule — so a
+    single-collection request's response is byte-identical to before.
     """
 
     doc_id: str
@@ -138,9 +164,11 @@ class Source(BaseModel):
     content: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
-    # ``SkipJsonSchema[None]``: the served OpenAPI shows ``context`` as an
-    # optional array — not nullable — matching contracts/schemas/source.json.
+    # ``SkipJsonSchema[None]``: the served OpenAPI shows ``context`` (and
+    # ``collection``) as optional — not nullable — matching
+    # contracts/schemas/source.json.
     context: list[ContextChunk] | SkipJsonSchema[None] = None
+    collection: str | SkipJsonSchema[None] = None
 
     # Deliberately no return annotation: with one, pydantic replaces the model's
     # serialization JSON schema (what /openapi.json shows for Source) by the
@@ -149,6 +177,7 @@ class Source(BaseModel):
     @model_serializer(mode="wrap")
     def _omit_absent_context(self, handler: SerializerFunctionWrapHandler):
         data = handler(self)
-        if data.get("context") is None:
-            data.pop("context", None)
+        for key in ("context", "collection"):
+            if data.get(key) is None:
+                data.pop(key, None)
         return data
