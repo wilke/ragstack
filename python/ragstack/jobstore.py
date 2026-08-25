@@ -65,6 +65,14 @@ class IngestJob(BaseModel):
     # this a worker that died mid-run would pin its principal at 429 forever.
     # "" on rows written before the column existed (never counted as active).
     updated_at: str = ""
+    # The registry id of the collection the run writes into (#359), stamped at
+    # every ingest entry point. Eviction (`ops/evict.py`) refuses a collection
+    # with an in-flight (`ACTIVE`, non-stale) job: dropping its stores mid-load
+    # would lose the chunks the job has already written and leave the archive
+    # step with nothing to pack. "" for rows written before this column existed
+    # (never matches a real id, so a legacy row protects nothing). Not on
+    # IngestResponse.
+    collection_id: str = ""
 
 
 class JobItem(BaseModel):
@@ -113,7 +121,8 @@ _JOBS_DDL = (
     "  error TEXT NOT NULL DEFAULT '',"
     "  tenant_id TEXT NOT NULL DEFAULT '',"
     "  archive_ref TEXT NOT NULL DEFAULT '',"
-    "  updated_at TEXT NOT NULL DEFAULT ''"
+    "  updated_at TEXT NOT NULL DEFAULT '',"
+    "  collection_id TEXT NOT NULL DEFAULT ''"
     ")"
 )
 # Column -> DDL fragment, applied via ensure_columns_* (collection_store.py) so
@@ -124,6 +133,7 @@ _JOBS_COLUMNS: dict[str, str] = {
     "tenant_id": "TEXT NOT NULL DEFAULT ''",
     "archive_ref": "TEXT NOT NULL DEFAULT ''",  # #203: the gowe run's archive location
     "updated_at": "TEXT NOT NULL DEFAULT ''",  # #202: last write (staleness for count_active)
+    "collection_id": "TEXT NOT NULL DEFAULT ''",  # #359: eviction's in-flight check
 }
 # count_active's lookup (#202) is (tenant_id, status) — indexed so the per-upload
 # admission check stays a point lookup as the jobs table grows. Both dialects
@@ -147,7 +157,9 @@ _JOB_ITEMS_DDL = (
 
 # The job columns an update() may set. Shared by both SQL stores so the
 # updatable set and the chunk_ids serialization convention live in one place.
-_JOB_UPDATE_COLUMNS = ("status", "source", "chunk_ids", "error", "archive_ref", "updated_at")
+_JOB_UPDATE_COLUMNS = (
+    "status", "source", "chunk_ids", "error", "archive_ref", "updated_at", "collection_id",
+)
 
 
 def _zero_item_counts() -> dict[str, int]:
@@ -220,7 +232,13 @@ def _apply_tenant_scope(
 class JobStore(Protocol):
     """Persist and update ingestion job state."""
 
-    async def create(self, source: str, tenant_id: str = "") -> IngestJob: ...
+    async def create(
+        self, source: str, tenant_id: str = "", collection_id: str = ""
+    ) -> IngestJob:
+        """Mint an ``accepted`` job. ``collection_id`` is the registry id the
+        run targets (#359) — stamp it at every entry point, or the eviction
+        policy cannot see the job."""
+        ...
 
     async def get(
         self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
@@ -276,6 +294,23 @@ class JobStore(Protocol):
         active either."""
         ...
 
+    async def active_collection_ids(self, *, stale_after: timedelta = STALE_AFTER) -> set[str]:
+        """Registry ids with an in-flight job (status in :data:`ACTIVE`,
+        written to within ``stale_after`` — the same staleness rule as
+        :meth:`count_active`, so a job orphaned by a dead process (#7) stops
+        shielding its collection from eviction once it goes stale). ONE
+        query, however many collections; what eviction (#359) consults
+        before choosing victims. Unstamped legacy rows (``""``) are never
+        included."""
+        ...
+
+    async def active_for_collection(
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+    ) -> int:
+        """How many in-flight, non-stale jobs target ``collection_id`` (0 =
+        safe to evict on this axis)."""
+        ...
+
     async def close(self) -> None:
         """Release any held resources (e.g. a connection pool). No-op for the
         in-memory / connection-per-op stores."""
@@ -290,10 +325,12 @@ class InMemoryJobStore:
         self._items: dict[str, dict[str, JobItem]] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
+    async def create(
+        self, source: str, tenant_id: str = "", collection_id: str = ""
+    ) -> IngestJob:
         job = IngestJob(
             job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id,
-            updated_at=_now(),
+            updated_at=_now(), collection_id=collection_id,
         )
         async with self._lock:
             self._jobs[job.job_id] = job
@@ -385,6 +422,27 @@ class InMemoryJobStore:
                 if j.tenant_id == tenant_id and j.status in ACTIVE and j.updated_at > cutoff
             )
 
+    async def active_collection_ids(self, *, stale_after: timedelta = STALE_AFTER) -> set[str]:
+        cutoff = _cutoff(stale_after)
+        async with self._lock:
+            return {
+                j.collection_id for j in self._jobs.values()
+                if j.collection_id and j.status in ACTIVE and j.updated_at > cutoff
+            }
+
+    async def active_for_collection(
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+    ) -> int:
+        if not collection_id:
+            return 0
+        cutoff = _cutoff(stale_after)
+        async with self._lock:
+            return sum(
+                1 for j in self._jobs.values()
+                if j.collection_id == collection_id and j.status in ACTIVE
+                and j.updated_at > cutoff
+            )
+
     async def close(self) -> None:
         """No resources to release."""
 
@@ -418,7 +476,8 @@ class SqliteJobStore:
 
     @staticmethod
     def _row_to_job(row: tuple) -> IngestJob:
-        job_id, status, source, chunk_ids, error, tenant_id, archive_ref, updated_at = row
+        (job_id, status, source, chunk_ids, error, tenant_id, archive_ref, updated_at,
+         collection_id) = row
         return IngestJob(
             job_id=job_id,
             status=status,
@@ -428,20 +487,21 @@ class SqliteJobStore:
             tenant_id=tenant_id,
             archive_ref=archive_ref,
             updated_at=updated_at,
+            collection_id=collection_id,
         )
 
-    def _create_sync(self, source: str, tenant_id: str) -> IngestJob:
+    def _create_sync(self, source: str, tenant_id: str, collection_id: str) -> IngestJob:
         job = IngestJob(
             job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id,
-            updated_at=_now(),
+            updated_at=_now(), collection_id=collection_id,
         )
         with closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO jobs (job_id, status, source, chunk_ids, error, tenant_id,"
-                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " updated_at, collection_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job.job_id, job.status, job.source, json.dumps(job.chunk_ids),
-                    job.error, job.tenant_id, job.updated_at,
+                    job.error, job.tenant_id, job.updated_at, job.collection_id,
                 ),
             )
         return job
@@ -450,7 +510,7 @@ class SqliteJobStore:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at"
+                " updated_at, collection_id"
                 " FROM jobs WHERE job_id = ?",
                 (job_id,),
             )
@@ -468,8 +528,10 @@ class SqliteJobStore:
                 (*sets.values(), job_id),
             )
 
-    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
-        return await asyncio.to_thread(self._create_sync, source, tenant_id)
+    async def create(
+        self, source: str, tenant_id: str = "", collection_id: str = ""
+    ) -> IngestJob:
+        return await asyncio.to_thread(self._create_sync, source, tenant_id, collection_id)
 
     async def get(
         self, job_id: str, tenant_id: str | None = None, *, is_admin: bool = False
@@ -482,7 +544,7 @@ class SqliteJobStore:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at"
+                " updated_at, collection_id"
                 " FROM jobs ORDER BY rowid DESC LIMIT ?",
                 (limit,),
             )
@@ -552,6 +614,36 @@ class SqliteJobStore:
                 (tenant_id, *ACTIVE, cutoff),
             )
             return int(cur.fetchone()[0])
+
+    def _active_collection_ids_sync(self, cutoff: str) -> set[str]:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT DISTINCT collection_id FROM jobs"
+                " WHERE collection_id != '' AND status IN (?, ?) AND updated_at > ?",
+                (*ACTIVE, cutoff),
+            )
+            return {row[0] for row in cur.fetchall()}
+
+    def _active_for_collection_sync(self, collection_id: str, cutoff: str) -> int:
+        with closing(self._connect()) as conn, conn:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM jobs WHERE collection_id = ? AND status IN (?, ?)"
+                " AND updated_at > ?",
+                (collection_id, *ACTIVE, cutoff),
+            )
+            return int(cur.fetchone()[0])
+
+    async def active_collection_ids(self, *, stale_after: timedelta = STALE_AFTER) -> set[str]:
+        return await asyncio.to_thread(self._active_collection_ids_sync, _cutoff(stale_after))
+
+    async def active_for_collection(
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+    ) -> int:
+        if not collection_id:
+            return 0
+        return await asyncio.to_thread(
+            self._active_for_collection_sync, collection_id, _cutoff(stale_after)
+        )
 
     async def add_items(self, job_id: str, items: list[tuple[str, str]]) -> None:
         await asyncio.to_thread(self._add_items_sync, job_id, items)
@@ -631,18 +723,20 @@ class PostgresJobStore:
                     self._pool = pool
         return self._pool
 
-    async def create(self, source: str, tenant_id: str = "") -> IngestJob:
+    async def create(
+        self, source: str, tenant_id: str = "", collection_id: str = ""
+    ) -> IngestJob:
         job = IngestJob(
             job_id=str(uuid.uuid4()), status=ACCEPTED, source=source, tenant_id=tenant_id,
-            updated_at=_now(),
+            updated_at=_now(), collection_id=collection_id,
         )
         pool = await self._pool_()
         async with pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO jobs (job_id, status, source, chunk_ids, error, tenant_id,"
-                " updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                " updated_at, collection_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 job.job_id, job.status, job.source, json.dumps(job.chunk_ids), job.error,
-                job.tenant_id, job.updated_at,
+                job.tenant_id, job.updated_at, job.collection_id,
             )
         return job
 
@@ -653,7 +747,7 @@ class PostgresJobStore:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at"
+                " updated_at, collection_id"
                 " FROM jobs WHERE job_id = $1",
                 job_id,
             )
@@ -669,6 +763,7 @@ class PostgresJobStore:
                 tenant_id=row["tenant_id"],
                 archive_ref=row["archive_ref"],
                 updated_at=row["updated_at"],
+                collection_id=row["collection_id"],
             )
         )
         return _apply_tenant_scope(job, tenant_id, is_admin)
@@ -683,7 +778,7 @@ class PostgresJobStore:
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref,"
-                " updated_at"
+                " updated_at, collection_id"
                 " FROM jobs ORDER BY ctid DESC LIMIT $1",
                 limit,
             )
@@ -697,6 +792,7 @@ class PostgresJobStore:
                 tenant_id=r["tenant_id"],
                 archive_ref=r["archive_ref"],
                 updated_at=r["updated_at"],
+                collection_id=r["collection_id"],
             )
             for r in rows
         ]
@@ -781,6 +877,30 @@ class PostgresJobStore:
                 "SELECT COUNT(*) FROM jobs WHERE tenant_id = $1 AND status IN ($2, $3)"
                 " AND updated_at > $4",
                 tenant_id, *ACTIVE, _cutoff(stale_after),
+            )
+        return int(n or 0)
+
+    async def active_collection_ids(self, *, stale_after: timedelta = STALE_AFTER) -> set[str]:
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT collection_id FROM jobs"
+                " WHERE collection_id <> '' AND status IN ($1, $2) AND updated_at > $3",
+                *ACTIVE, _cutoff(stale_after),
+            )
+        return {r["collection_id"] for r in rows}
+
+    async def active_for_collection(
+        self, collection_id: str, *, stale_after: timedelta = STALE_AFTER
+    ) -> int:
+        if not collection_id:
+            return 0
+        pool = await self._pool_()
+        async with pool.acquire() as conn:
+            n = await conn.fetchval(
+                "SELECT COUNT(*) FROM jobs WHERE collection_id = $1 AND status IN ($2, $3)"
+                " AND updated_at > $4",
+                collection_id, *ACTIVE, _cutoff(stale_after),
             )
         return int(n or 0)
 

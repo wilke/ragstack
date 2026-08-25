@@ -87,6 +87,23 @@ async def store(_backend):
 # --------------------------------------------------------------------------- #
 
 
+async def test_the_cap_counts_active_rows_only(store):
+    """#359: ``create(limit=n)`` refuses at ``n`` ACTIVE rows; a dormant row
+    (evicted to its archive) holds no physical slot and frees one — inside
+    the same atomic section as the insert, on every backend."""
+    assert await store.create(_spec("two"), limit=2) is CreateOutcome.CREATED
+    assert await store.create(_spec("three"), limit=2) is CreateOutcome.AT_CAP
+    assert await store.set_state("acme", DORMANT, expect=ACTIVE, reason="evicted") is True
+    assert await store.create(_spec("three"), limit=2) is CreateOutcome.CREATED
+    assert await store.create(_spec("four"), limit=2) is CreateOutcome.AT_CAP
+    # Only `active` counts: restoring/archiving/lost rows do not (as specified).
+    assert await store.set_state("two", RESTORING, expect=ACTIVE) is True
+    assert await store.create(_spec("four"), limit=2) is CreateOutcome.CREATED
+    assert {r.spec.id: r.state for r in await store.list_records()} == {
+        "acme": DORMANT, "two": RESTORING, "three": ACTIVE, "four": ACTIVE,
+    }
+
+
 async def test_a_new_collection_is_active_with_no_versions(store):
     rec = await store.get("acme")
     assert rec is not None

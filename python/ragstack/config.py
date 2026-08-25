@@ -134,6 +134,17 @@ class Settings(BaseSettings):
     # single caller looping the endpoint is an instance-wide denial of service.
     # Applies to admins too (the limit is physical, not an authorization tier).
     # 0 disables the cap; the default matches the ADR's "alert at 100" line.
+    #
+    # Since #359 this bounds ACTIVE collections (`state == active`: physical
+    # stores exist), not registered ones. A `dormant` collection — evicted to
+    # its Workspace archive, restored on first access (#353/#358) — holds no
+    # Qdrant/ES slot and is not counted. At the bound, POST /v1/collections
+    # evicts exactly one least-recently-accessed collection whose archive is
+    # current (never one with an in-flight ingest job, never one over the
+    # legacy shared surface's stores — ops/evict.py) and proceeds; when nothing
+    # is evictable it answers 507 naming why. Set it from the tenant's measured
+    # ceilings (memory mappings, threads, RAM at 60 %) — the derivation lives
+    # in docs/runbooks/active-collection-bound.md.
     max_collections: int = 100
     # Capability gate on POST /v1/collections (issue #287): whether a non-admin
     # principal may create a collection at all. ADR-0003 opened creation to any

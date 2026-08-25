@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "eviction_response.json",
+  "title": "EvictionResponse",
+  "description": "Outcome of POST /v1/admin/collections/evict (#359): the victims chosen least-recently-accessed first, what happened to each (or would, under dry_run), and the shortfall — per reason, how many collections were ineligible. Always 200; fewer than `need` victims is a shortfall, not an error.",
+  "type": "object",
+  "required": [
+    "need",
+    "dry_run",
+    "evicted",
+    "victims",
+    "shortfall"
+  ],
+  "properties": {
+    "need": {
+      "description": "How many evictions were asked for.",
+      "type": "integer"
+    },
+    "dry_run": {
+      "description": "True — the plan was reported and nothing was changed.",
+      "type": "boolean"
+    },
+    "evicted": {
+      "description": "How many victims THIS call actually made dormant (0 under dry_run).",
+      "type": "integer"
+    },
+    "victims": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EvictionVictim"
+      }
+    },
+    "shortfall": {
+      "$ref": "#/$defs/Shortfall"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "EvictionVictim": {
+      "type": "object",
+      "required": [
+        "collection_id",
+        "last_accessed_at",
+        "idle_seconds",
+        "state",
+        "reason",
+        "deleted",
+        "absent",
+        "failed",
+        "ok"
+      ],
+      "properties": {
+        "collection_id": {
+          "type": "string"
+        },
+        "last_accessed_at": {
+          "description": "The registry's last-access stamp (\"\" when never recorded).",
+          "type": "string"
+        },
+        "idle_seconds": {
+          "description": "Seconds since that stamp (or since creation) at selection; null when neither is known.",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "The row's state after this call — `dormant` when evicted, `active` under dry_run or when the swap lost.",
+          "type": "string",
+          "enum": [
+            "active",
+            "archiving",
+            "dormant",
+            "restoring",
+            "lost"
+          ]
+        },
+        "reason": {
+          "description": "The recorded state reason (names any leftover physical store), or why the row was skipped.",
+          "type": "string"
+        },
+        "deleted": {
+          "description": "Physical targets removed (`vectors`, `text_index`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "absent": {
+          "description": "Targets already gone (idempotent no-op).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed": {
+          "description": "Targets whose drop errored; the row stays `dormant` with the leftover named in `reason`.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "target",
+              "error"
+            ],
+            "properties": {
+              "target": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ok": {
+          "description": "Evicted with nothing left behind (true under dry_run for a planned victim).",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Shortfall": {
+      "type": "object",
+      "required": [
+        "needed",
+        "found",
+        "reasons"
+      ],
+      "properties": {
+        "needed": {
+          "type": "integer"
+        },
+        "found": {
+          "type": "integer"
+        },
+        "reasons": {
+          "description": "Per-reason counts over every registry row examined.",
+          "type": "object",
+          "required": [
+            "not_active",
+            "archive_pending",
+            "no_archive",
+            "in_flight",
+            "protected",
+            "unregistered"
+          ],
+          "properties": {
+            "not_active": {
+              "type": "integer"
+            },
+            "archive_pending": {
+              "type": "integer"
+            },
+            "no_archive": {
+              "type": "integer"
+            },
+            "in_flight": {
+              "type": "integer"
+            },
+            "protected": {
+              "type": "integer"
+            },
+            "unregistered": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

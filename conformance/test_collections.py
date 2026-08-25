@@ -216,3 +216,20 @@ async def test_create_without_build_spec_python(
     # keeps re-runs honest in that case).
     deleted = await client.delete(f"/v1/collections/{cid}?purge=true", headers=_headers())
     assert deleted.status_code in (200, 401, 403), deleted.text
+
+
+async def test_admin_evict_dry_run_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
+    """POST /v1/admin/collections/evict?dry_run=true (#359) reports the plan
+    without acting; admin-gated, so a keyless / non-admin caller gets 401/403
+    -> skip. The body must match contracts/schemas/eviction_response.json."""
+    resp = await client.post(
+        "/v1/admin/collections/evict", params={"need": 1, "dry_run": "true"}, headers=_headers()
+    )
+    if resp.status_code in (401, 403):
+        pytest.skip("caller lacks admin access to eviction")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    jsonschema.validate(instance=body, schema=schemas["eviction_response"])
+    assert body["dry_run"] is True and body["evicted"] == 0
+    assert body["shortfall"]["needed"] == 1
+    assert body["shortfall"]["found"] == len(body["victims"])
