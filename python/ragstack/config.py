@@ -533,6 +533,34 @@ class Settings(BaseSettings):
     kg_extraction_max_chunks: int = 0
     kg_extraction_max_triples_per_chunk: int = 0
 
+    # Graph extraction as a collection-lifecycle step (#350, phase 6 of #201).
+    # OFF the ingest critical path and off by default: nothing runs until the
+    # owner (or an admin) calls POST /v1/collections/{id}/graph, which submits
+    # cwl/graph-extract.cwl AS THE USER over one archived chunk version
+    # (`versions/<n>/` in the owner's Workspace): extract (one LLM call per
+    # chunk, `graph_extract_concurrency` in flight) → the graph leg
+    # `triples.jsonl.gz` beside the version → load into the graph store scoped
+    # by (tenant, collection). Budgets (#291's sibling):
+    #   * graph_max_triples_per_collection — one collection's graph may hold at
+    #     most this many triples (default 200,000: the 50k chunk cap x ~4
+    #     triples per prose chunk, with headroom). Checked ONCE per job by the
+    #     load tool with one live count; a load that would cross it is refused
+    #     whole (job error `graph_cap_exceeded`, nothing loaded). 0 disables.
+    #   * graph_extraction_jobs_per_owner — in-flight extraction jobs one owner
+    #     may have at once (429 + Retry-After beyond it; admins exempt).
+    # The workflow's LLM endpoint/model default to llm_endpoint/llm_model as
+    # the WORKER sees them and the graph store URI to neo4j_uri; override any
+    # of those (and add worker-side settings) through graph_extract_inputs_json,
+    # a JSON object merged over the static workflow inputs. The Neo4j
+    # credentials are never workflow inputs: the worker reads NEO4J_USER /
+    # NEO4J_PASSWORD from its own environment.
+    graph_max_triples_per_collection: int = 200_000
+    graph_extraction_jobs_per_owner: int = 1
+    graph_extract_concurrency: int = 8
+    graph_extract_cwl: str = ""              # ABSOLUTE path; empty = the repo copy
+    graph_extract_workflow_name: str = "ragstack-graph-extract"
+    graph_extract_inputs_json: str = "{}"
+
     # PostgreSQL (metadata / job queue)
     postgres_dsn: str = "postgresql+asyncpg://ragstack:ragstack@localhost/ragstack"
 

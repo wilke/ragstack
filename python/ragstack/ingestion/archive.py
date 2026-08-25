@@ -18,17 +18,34 @@ Layout of one version directory::
                          row-aligned with chunks.jsonl.gz
       receipt.json       the load stage's receipt(s), copied verbatim
       tombstone.json     DELETE versions only: the removed doc ids
+      triples.jsonl.gz   the graph leg (#350), present only after the
+                         extract-graph step ran over this version: one
+                         ``Triple`` record per line (the #347 evidence fields
+                         included), gzip, mtime=0
 
 A tombstone version holds only ``manifest.json`` + ``tombstone.json``.
 
 **The manifest's ``files`` map is what a reader follows.** It maps a *role* to
 the filename that plays it — ``{"manifest": "manifest.json", "chunks":
 "chunks.jsonl.gz", "vectors": "vectors.f32", "receipt": "receipt.json"}`` (or
-``manifest`` + ``tombstone``). Every non-manifest value must have a ``sha256``
-entry and every ``sha256`` key must be a value of the map; the reader never
-assumes a filename. The role ``triples`` (the graph leg, #350) is reserved and
-carries no file today. ``sha256``/``bytes`` are over the bytes **as stored**
-(the gzip stream), so verification needs no decompression.
+``manifest`` + ``tombstone``), plus ``"triples": "triples.jsonl.gz"`` once the
+graph leg exists. Every non-manifest value must have a ``sha256`` entry and
+every ``sha256`` key must be a value of the map; the reader never assumes a
+filename. ``sha256``/``bytes`` are over the bytes **as stored** (the gzip
+stream), so verification needs no decompression.
+
+**The graph leg is added after the fact** (:func:`write_triples`). A chunk
+version is archived by the ingest workflow with ``graph: false``; the
+optional ``extract-graph`` workflow (#350) later reads its ``chunks`` file,
+runs the LLM extractor, and writes ``triples.jsonl.gz`` + an UPDATED
+``manifest.json`` (the ``triples`` role, its sha256/bytes, ``counts.triples``,
+``graph: true``). Because the engine post-stages a Directory output's files
+under ``versions/<n>/`` by basename with overwrite, the workflow emits a
+*delta* directory holding only those two files — the manifest overwrite is
+the one intended overwrite of an archived file — and the chunk/vector/receipt
+files already there are untouched. ``verify_version`` therefore requires the
+``triples`` role exactly when ``graph`` is true, and :func:`verify_triples`
+checks the graph leg alone (what the loader sees before the delta is merged).
 
 **vectors.f32 header** (64 bytes, all integers little-endian)::
 
@@ -83,6 +100,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from ragstack.ingestion.embedding_file import SCHEMA as EMBEDDING_FILE_SCHEMA
+from ragstack.models import Triple
 
 FORMAT = "ragstack-archive/1"
 
@@ -91,9 +109,10 @@ CHUNKS_NAME = "chunks.jsonl.gz"
 VECTORS_NAME = "vectors.f32"
 RECEIPT_NAME = "receipt.json"
 TOMBSTONE_NAME = "tombstone.json"
+TRIPLES_NAME = "triples.jsonl.gz"
 
-# Roles in manifest["files"]. "triples" (the graph leg) is reserved: no writer
-# emits it and this reader ignores it if present.
+# Roles in manifest["files"]. "triples" (the graph leg, #350) is written by
+# write_triples after the chunk version exists — never by write_version.
 ROLE_MANIFEST = "manifest"
 ROLE_CHUNKS = "chunks"
 ROLE_VECTORS = "vectors"
@@ -526,6 +545,7 @@ def verify_version(version_dir: str | Path) -> dict[str, Any]:
         raise ArchiveCorrupt(
             f"{vdir}: files map {sorted(listed)} != sha256 entries {sorted(hashed)} — "
             "every listed file must be hashed and nothing else")
+    _check_graph_role(vdir, manifest)
     sizes = manifest.get("bytes") or {}
     for name, want in manifest["sha256"].items():
         path = vdir / name
@@ -622,6 +642,193 @@ def iter_doc_ids(version_dir: str | Path, manifest: dict[str, Any]) -> Iterator[
         for line in chunks:
             if line.strip():
                 yield str(json.loads(line).get("doc_id", ""))
+
+
+def read_chunks(
+    version_dir: str | Path, *, manifest: dict[str, Any] | None = None
+) -> Iterator[dict[str, Any]]:
+    """Stream a chunk version's records WITHOUT its vectors — what the
+    extract-graph step reads (#350): it needs the text, never the 4096-d rows.
+
+    With ``manifest`` omitted, the manifest is shape-checked and the chunks file
+    alone is verified (sha256 + size) before the first record; pass the dict a
+    full :func:`verify_version` returned to skip that. A tombstone version
+    yields nothing."""
+    vdir = Path(version_dir)
+    if manifest is None:
+        manifest = read_manifest(vdir)
+        if not manifest.get("has_tombstone"):
+            if ROLE_CHUNKS not in manifest["files"]:
+                raise ArchiveCorrupt(f"{vdir}: manifest names no {ROLE_CHUNKS!r} file")
+            if manifest.get("chunks_compression") not in SUPPORTED_CHUNKS_COMPRESSION:
+                raise ArchiveCorrupt(
+                    f"{vdir}: unsupported chunks_compression "
+                    f"{manifest.get('chunks_compression')!r}")
+            _verify_file(vdir, manifest, manifest["files"][ROLE_CHUNKS])
+    if manifest.get("has_tombstone"):
+        return
+    with gzip.open(vdir / manifest["files"][ROLE_CHUNKS], "rt", encoding="utf-8") as chunks:
+        for line in chunks:
+            if line.strip():
+                rec = json.loads(line)
+                if not isinstance(rec, dict):
+                    raise ArchiveCorrupt(f"{vdir}: chunk record is not a JSON object")
+                yield rec
+
+
+# --------------------------------------------------------------------------- #
+# the graph leg (#350): triples.jsonl.gz, added to a chunk version after the fact
+# --------------------------------------------------------------------------- #
+
+def _check_graph_role(vdir: Path, manifest: dict[str, Any]) -> None:
+    """``graph: true`` and the ``triples`` role must agree: a manifest that
+    claims a graph leg it does not name (or names one it does not claim) is a
+    half-applied extraction, refused rather than guessed at."""
+    files = manifest["files"]
+    has_role = ROLE_TRIPLES in files
+    claims = bool(manifest.get("graph"))
+    if claims and not has_role:
+        raise ArchiveCorrupt(f"{vdir}: manifest says graph: true but names no {ROLE_TRIPLES!r} file")
+    if has_role and not claims:
+        raise ArchiveCorrupt(f"{vdir}: manifest names a {ROLE_TRIPLES!r} file but says graph: false")
+
+
+def _verify_file(vdir: Path, manifest: dict[str, Any], name: str) -> None:
+    """sha256 (+ byte size when recorded) of ONE listed file against the manifest."""
+    want = (manifest.get("sha256") or {}).get(name)
+    if not want:
+        raise ArchiveCorrupt(f"{vdir}: {name} has no sha256 entry in the manifest")
+    path = vdir / name
+    if not path.is_file():
+        raise ArchiveCorrupt(f"{vdir}: {name} listed in manifest but missing")
+    got, size = _sha256_file(path)
+    if got != want:
+        raise ArchiveCorrupt(f"{path}: sha256 {got} != manifest {want}")
+    sizes = manifest.get("bytes") or {}
+    if name in sizes and int(sizes[name]) != size:
+        raise ArchiveCorrupt(f"{path}: {size} bytes != manifest {sizes[name]}")
+
+
+def _triple_record(item: Any) -> dict[str, Any]:
+    """One triple (a :class:`Triple` or a dict of its fields) -> the archived
+    record, validated through the model so the no-laundering rule and the field
+    set hold for everything that lands in the leg."""
+    triple = item if isinstance(item, Triple) else Triple(**dict(item))
+    return triple.model_dump()
+
+
+def write_triples(
+    version_dir: str | Path,
+    triples: Iterable[Triple | dict[str, Any]],
+    *,
+    out_dir: str | Path | None = None,
+    extraction: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Add the graph leg to an existing chunk version: write ``triples.jsonl.gz``
+    and an UPDATED ``manifest.json`` (``files.triples``, its ``sha256``/``bytes``,
+    ``counts.triples``, ``graph: true``, and ``graph_extraction`` = ``extraction``
+    when given — the extractor's provenance: model, chunk counts).
+
+    ``out_dir`` is where the two files go. Omitted, they are written into
+    ``version_dir`` itself (the in-place form). Given, they are written there
+    and NOTHING else — the *delta* directory the extract-graph workflow emits
+    as its ``Directory`` output, whose basename must be the version number so
+    the engine post-stages it onto ``versions/<n>/`` (see the module
+    docstring). Either way the manifest is complete: it still lists and hashes
+    the chunk/vector/receipt files, so the merged directory verifies.
+
+    Streams ``triples`` (any iterable) into a deterministic gzip (sorted keys,
+    mtime=0): the same triples produce byte-identical output and sha256s, the
+    archive convention. An empty iterable is allowed — a version whose chunks
+    yielded no facts still has an (empty) graph leg, so the collection's graph
+    is fully archived. Returns the manifest written. A tombstone version, or
+    one with no ``chunks`` role, is refused (:class:`ArchiveError`); the
+    triples file is renamed into place before the manifest, so a crash between
+    the two leaves the old manifest (``graph: false``) and a stray file that
+    the next run overwrites.
+    """
+    vdir = Path(version_dir)
+    manifest = read_manifest(vdir)
+    if manifest.get("has_tombstone"):
+        raise ArchiveError(f"{vdir}: a tombstone version has no chunks to extract a graph from")
+    if ROLE_CHUNKS not in manifest["files"]:
+        raise ArchiveError(f"{vdir}: manifest names no {ROLE_CHUNKS!r} file")
+    dest = Path(out_dir) if out_dir is not None else vdir
+    dest.mkdir(parents=True, exist_ok=True)
+    tmp = dest / f".{TRIPLES_NAME}.tmp"
+    n = 0
+    try:
+        with tmp.open("wb") as raw:
+            hw = _HashingWriter(raw)
+            with gzip.GzipFile(filename="", mode="wb", fileobj=hw, mtime=0, compresslevel=6) as gz:
+                for item in triples:
+                    gz.write((json.dumps(_triple_record(item), sort_keys=True) + "\n").encode("utf-8"))
+                    n += 1
+        sha, size = hw.sha.hexdigest(), hw.size
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    files = dict(manifest["files"])
+    files[ROLE_TRIPLES] = TRIPLES_NAME
+    sha_map = dict(manifest.get("sha256") or {})
+    sha_map[TRIPLES_NAME] = sha
+    byte_map = dict(manifest.get("bytes") or {})
+    byte_map[TRIPLES_NAME] = size
+    counts = dict(manifest.get("counts") or {})
+    counts["triples"] = n
+    manifest.update({"files": files, "sha256": sha_map, "bytes": byte_map,
+                     "counts": counts, "graph": True})
+    if extraction is not None:
+        manifest["graph_extraction"] = dict(extraction)
+    else:
+        manifest.pop("graph_extraction", None)
+    os.replace(tmp, dest / TRIPLES_NAME)
+    mtmp = dest / f".{MANIFEST_NAME}.tmp"
+    _write_json(mtmp, manifest)
+    os.replace(mtmp, dest / MANIFEST_NAME)
+    return manifest
+
+
+def verify_triples(version_dir: str | Path) -> dict[str, Any]:
+    """Verify the graph leg ALONE: manifest shape, ``graph: true`` with a
+    ``triples`` role, and that file's sha256/size. Nothing else in the
+    directory is required to exist — this is what the load-graph tool runs
+    over the extract step's delta directory (manifest + triples only), before
+    the engine merges it onto ``versions/<n>/``. Returns the manifest."""
+    vdir = Path(version_dir)
+    manifest = read_manifest(vdir)
+    _check_graph_role(vdir, manifest)
+    if ROLE_TRIPLES not in manifest["files"]:
+        raise ArchiveCorrupt(f"{vdir}: no graph leg (manifest names no {ROLE_TRIPLES!r} file)")
+    _verify_file(vdir, manifest, manifest["files"][ROLE_TRIPLES])
+    return manifest
+
+
+def read_triples(
+    version_dir: str | Path, *, manifest: dict[str, Any] | None = None
+) -> Iterator[Triple]:
+    """Stream the graph leg's :class:`Triple` records. ``manifest``: pass the
+    dict :func:`verify_version` (or :func:`verify_triples`) returned to skip
+    re-hashing; omitted, the leg is verified first (:func:`verify_triples`).
+    Yields nothing for a version without a graph leg when a verified manifest
+    is supplied (a replay simply has no triples to load for it)."""
+    vdir = Path(version_dir)
+    if manifest is None:
+        manifest = verify_triples(vdir)
+    name = manifest["files"].get(ROLE_TRIPLES)
+    if not name:
+        return
+    with gzip.open(vdir / name, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                raise ArchiveCorrupt(f"{vdir}: triple record is not a JSON object")
+            try:
+                yield Triple(**rec)
+            except (TypeError, ValueError) as e:
+                raise ArchiveCorrupt(f"{vdir}: invalid triple record: {e}") from e
 
 
 def read_tombstone(

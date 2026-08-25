@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "graph_extract_response.json",
+  "title": "GraphExtractResponse",
+  "description": "Outcome of POST /v1/collections/{id}/graph (#350): which archived version the graph is extracted from and the job to poll. 202 in every accepted case — an extraction was submitted, or the version's graph leg already existed (job_id null).",
+  "type": "object",
+  "required": [
+    "collection_id",
+    "version",
+    "message"
+  ],
+  "properties": {
+    "collection_id": {
+      "type": "string"
+    },
+    "version": {
+      "description": "The archived version the extraction reads (or already covers).",
+      "type": "integer",
+      "minimum": 0
+    },
+    "job_id": {
+      "description": "The job to poll at GET /v1/ingest/{job_id} (kind `graph`); null when the version already had its graph leg and nothing was submitted.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "submission_id": {
+      "description": "The workflow-engine submission id when THIS call submitted the extraction; null otherwise.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "message": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

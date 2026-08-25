@@ -107,13 +107,20 @@ class LLMKGExtractor:
         # pipeline, so it can't differ within a single extract() call.
         seen: set[tuple[str, str, str, str]] = set()
         for chunk in selected:
-            for triple in await self._extract_chunk(chunk):
+            for triple in await self.extract_chunk(chunk):
                 key = (triple.subject, triple.predicate, triple.object, triple.doc_id)
                 if key in seen:
                     continue
                 seen.add(key)
                 triples.append(triple)
         return triples
+
+    async def extract_chunk(self, chunk: Chunk) -> list[Triple]:
+        """Extract triples from ONE chunk — the unit a concurrent driver
+        (``graph.extract_version``, #350) fans out over. Any LLM/parse error →
+        ``[]``, never raised. Not deduplicated across chunks: the caller does
+        that in whatever order it collects results."""
+        return await self._extract_chunk(chunk)
 
     async def _extract_chunk(self, chunk: Chunk) -> list[Triple]:
         """Extract triples from one chunk. Any LLM/parse error → ``[]``."""

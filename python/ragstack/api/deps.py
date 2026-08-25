@@ -47,7 +47,7 @@ from ragstack.ingestion.loaders import default_loader_registry
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
-from ragstack.jobstore import make_job_store
+from ragstack.jobstore import KIND_INGEST, make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
 from ragstack.protocols import QueryRewriter
 from ragstack.quota import TenantQuota
@@ -1414,6 +1414,53 @@ def _build_lifecycle_gate(store: CollectionStore, http: httpx.AsyncClient) -> Li
     return gate
 
 
+def _build_graph_extract_runner(
+    job_store: Any, store: CollectionStore, http: httpx.AsyncClient,
+    on_change: Any = None,
+) -> Any:
+    """The graph-extraction runner (#350): submits ``graph-extract`` AS THE
+    USER over the app's shared http client (a tokenless GoWe client, the
+    caller's token per call — the restorer's shape) and watches it to
+    delivery. Static workflow inputs: the LLM endpoint/model and the graph
+    store URI as the WORKER sees them (``llm_endpoint`` / ``llm_model`` /
+    ``neo4j_uri``, overridable through ``graph_extract_inputs_json``)."""
+    from ragstack.graph_extract import GraphExtractRunner
+    from ragstack.ingestion.gowe_client import GoWeClient
+    from ragstack.workspace import WorkspaceClient
+
+    try:
+        extra = json.loads(settings.graph_extract_inputs_json or "{}")
+        if not isinstance(extra, dict):
+            raise ValueError("not a JSON object")
+    except ValueError as e:
+        log.warning("graph_extract_inputs_json is invalid (%s); ignoring", e)
+        extra = {}
+    static_inputs = {
+        "llm_endpoint": settings.llm_endpoint,
+        "llm_model": settings.llm_model,
+        "neo4j_uri": settings.neo4j_uri,
+        "graph_backend": settings.graph_backend if settings.graph_backend in ("neo4j", "memory")
+        else "neo4j",
+        "max_triples_per_chunk": settings.kg_extraction_max_triples_per_chunk,
+        **extra,
+    }
+    return GraphExtractRunner(
+        job_store, store,
+        workspace=WorkspaceClient(settings.workspace_url, http, timeout=settings.workspace_timeout),
+        gowe=GoWeClient(settings.gowe_url, token="", http=http),
+        cwl_path=settings.graph_extract_cwl,
+        workflow_name=settings.graph_extract_workflow_name,
+        static_inputs=static_inputs,
+        worker_group=settings.gowe_worker_group,
+        poll_interval=settings.gowe_poll_interval,
+        timeout=settings.gowe_timeout,
+        output_wait_timeout=settings.gowe_output_wait_timeout,
+        concurrency=settings.graph_extract_concurrency,
+        max_triples=settings.graph_max_triples_per_collection,
+        on_change=on_change,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
@@ -1663,6 +1710,12 @@ async def lifespan(app: FastAPI):
     if lifecycle_gate.tracker is not None:
         lifecycle_gate.tracker.start()
     app.state.lifecycle_gate = lifecycle_gate
+    # Graph extraction (#350): the runner behind POST /v1/collections/{id}/graph
+    # — same engine + Workspace clients, the caller's token per call.
+    graph_extract = _build_graph_extract_runner(
+        job_store, collection_store, http_client, lifecycle_gate.invalidate
+    )
+    app.state.graph_extract = graph_extract
 
     # The user-profile + ACL store (ADR-0004 decisions 1/4-6). ONE object, ONE
     # database: every ACL store also satisfies the UserStore protocol (shares live
@@ -1784,6 +1837,10 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 — shutdown must not raise
             log.warning("lifecycle gate shutdown failed", exc_info=True)
         reset_lifecycle_gate()
+        try:
+            await graph_extract.drain()
+        except Exception:  # noqa: BLE001 — shutdown must not raise
+            log.warning("graph-extract runner shutdown failed", exc_info=True)
         await http_client.aclose()
         # Release the job store's resources (PostgresJobStore's asyncpg pool;
         # a no-op for the in-memory / sqlite stores).
@@ -1922,6 +1979,13 @@ def get_job_store(request: Request):
     return request.app.state.job_store
 
 
+def get_graph_extract_runner(request: Request):
+    """The graph-extraction runner (#350), or ``None`` when the app was
+    assembled without a lifespan and nothing installed one — the endpoint
+    then answers 503 rather than guessing an engine."""
+    return getattr(request.app.state, "graph_extract", None)
+
+
 def get_ingestor(request: Request):
     return request.app.state.ingestor
 
@@ -2043,7 +2107,12 @@ async def single_inflight_ingest(
             principal.tenant,
         )
         return
-    active = await request.app.state.job_store.count_active(principal.tenant)
+    # Ingest jobs only (#350): a graph-extraction job of the same principal —
+    # hours long over a big collection — is counted by its own guard and must
+    # not freeze the owner's uploads. KIND_INGEST is "" — every legacy row.
+    active = await request.app.state.job_store.count_active(
+        principal.tenant, kind=KIND_INGEST
+    )
     if active:
         raise HTTPException(
             status_code=429,
