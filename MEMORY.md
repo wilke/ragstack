@@ -11,6 +11,7 @@ Persistent rules, conventions, and lessons-learned. Read before working in the r
 - **Worktrees and subagent isolation dirs**: place under `~/Development/worktrees/`. Not next to this repo, not in `/tmp`.
 - **Container persistence model**: for every container we wrap (apptainer, docker, k8s), enumerate each writable directory the service needs and bind-mount it explicitly to `apptainer/data/<service>/<purpose>/` (or analogous host path). **Do not** use `--writable-tmpfs` or opaque overlays as a catch-all — state must survive restarts and be observable on the host.
 - **Contracts are authoritative**: when Python and Go disagree on a field name or shape, the JSON schema / OpenAPI in `contracts/` wins; the diverging implementation is the bug.
+- **sqlite floor is 3.35** (`UPDATE … RETURNING`): `CollectionStore.next_version` (#203) relies on it in the sqlite backend. Python 3.12's bundled sqlite on the dev env is 3.53; an older system sqlite would fail that statement at runtime, not at import.
 
 ## Hardware
 

@@ -21,7 +21,9 @@ typespec (``Workspace.spec`` / ``WorkspaceImpl.pm``) and GoWe's clients:
   ``createUploadNodes: 1`` returns a Shock node URL instead of storing data.
 * ``Workspace.get`` ``{objects: [path], metadata_only: 1}`` → ``[[meta], …]``;
   ``Workspace.ls`` ``{paths: [dir]}`` → ``{dir: [meta, …]}``;
-  ``Workspace.update_metadata`` ``{objects: [[path, user_metadata]], append: 1}``.
+  ``Workspace.update_metadata`` ``{objects: [[path, user_metadata]], append: 1}``;
+  ``Workspace.get_download_url`` ``{objects: [path]}`` → ``[[url, …]]``, then a
+  plain ``GET`` of the URL with the token (:meth:`WorkspaceClient.read_file`).
 * an object's ``meta`` is the tuple ``[name, type, parent_path, creation_time,
   id, owner, size, user_metadata, auto_metadata, user_perm, global_perm,
   shock_url]`` (``parent_path`` is the containing folder as the service reports it;
@@ -80,6 +82,15 @@ class WorkspaceAuthError(WorkspaceError):
 
 class WorkspaceNotFound(WorkspaceError):
     """The Workspace reported the path does not exist."""
+
+
+class WorkspaceExists(WorkspaceError):
+    """``upload_source`` found an object already at the destination path. Nothing
+    was written and — critically — nothing is deleted: the object is the user's."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__(f"{path} already exists (never overwritten)")
+        self.path = path
 
 
 class WorkspaceTooLarge(WorkspaceError):
@@ -307,9 +318,16 @@ class WorkspaceClient:
             token, "Workspace.create",
             {"objects": [[dest, _object_type(filename), {}, None]], "createUploadNodes": 1},
         )
+        created = _objects(result)
+        if not created:
+            # The service silently skips (and omits from the result) an object
+            # that already exists. That object is the user's and was NOT created
+            # by this call, so it must not be discarded below — refuse instead.
+            raise WorkspaceExists(dest)
+        # From here on the placeholder listed in the reply is ours to remove on
+        # any failure.
         try:
-            created = _objects(result)
-            if not created or not created[0].shock_url:
+            if not created[0].shock_url:
                 raise WorkspaceError(f"Workspace returned no upload node for {dest}")
             shock_url = created[0].shock_url
             if not shock_url.startswith(("http://", "https://")):
@@ -372,6 +390,30 @@ class WorkspaceClient:
                 log.debug("workspace: skipping non-version entry %r in %s", obj.name, versions)
         found.sort(key=lambda t: t[0])
         return found
+
+    async def read_file(self, token: str, path: str) -> bytes:
+        """Fetch the bytes of ``path`` as the caller: ``Workspace.get_download_url``
+        for the object, then a ``GET`` of that URL with the token — the same two
+        steps GoWe's stager takes. Sized for small control files (an archive's
+        ``receipt.json`` / ``manifest.json``); the whole body is returned.
+        """
+        p = ws_path(path)
+        result = await self._rpc(token, "Workspace.get_download_url", {"objects": [p]})
+        urls = result[0] if isinstance(result, list) and result and isinstance(result[0], list) else result
+        url = urls[0] if isinstance(urls, list) and urls else None
+        if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+            raise WorkspaceError(f"Workspace returned no download URL for {p}")
+        try:
+            resp = await self.http.get(url, headers={"Authorization": token}, timeout=self.timeout)
+        except httpx.HTTPError as exc:
+            raise WorkspaceError(f"download of {p} failed: {_scrub(str(exc), token)}") from None
+        if resp.status_code in (401, 403):
+            raise WorkspaceAuthError(f"Workspace rejected the token for {p} (HTTP {resp.status_code})")
+        if resp.status_code == 404:
+            raise WorkspaceNotFound(f"{p} does not exist")
+        if resp.status_code >= 400:
+            raise WorkspaceError(f"download of {p} failed: HTTP {resp.status_code}")
+        return resp.content
 
     async def stat(self, token: str, path: str) -> WorkspaceStat:
         """Existence, type, size and user metadata of ``path`` (``Workspace.get``,

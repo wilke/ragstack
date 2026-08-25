@@ -29,7 +29,7 @@ class _FakeClient:
         self.submitted_inputs = None
         self.submitted_labels = None
 
-    async def register_workflow(self, name, cwl, labels=None) -> str:
+    async def register_workflow(self, name, cwl, labels=None, **kw) -> str:
         return "wf_fake"
 
     async def submit(self, wf_id, inputs, *, labels=None, **kw):
@@ -44,7 +44,7 @@ class _FakeClient:
                                 for loc in self._receipts]}
         return {"id": sub_id, "state": self._state, "outputs": outputs}
 
-    async def download(self, location) -> bytes:
+    async def download(self, location, **kw) -> bytes:
         return self._receipts[location].to_json().encode()
 
 
@@ -163,7 +163,7 @@ class _BadReceiptClient(_FakeClient):
         return {"id": sub_id, "state": "COMPLETED",
                 "outputs": {"receipts": [{"class": "File", "location": "file:///d/x.r"}]}}
 
-    async def download(self, location) -> bytes:
+    async def download(self, location, **kw) -> bytes:
         raise GoWeError("download 404")
 
 
@@ -179,7 +179,7 @@ class _MalformedReceiptClient(_FakeClient):
         return {"id": sub_id, "state": "COMPLETED",
                 "outputs": {"receipts": [{"class": "File", "location": "file:///d/x.r"}]}}
 
-    async def download(self, location) -> bytes:
+    async def download(self, location, **kw) -> bytes:
         return b"{not valid json"
 
 

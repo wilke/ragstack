@@ -23,6 +23,7 @@ from ragstack.workspace import (
     WorkspaceAuthError,
     WorkspaceClient,
     WorkspaceError,
+    WorkspaceExists,
     WorkspaceNotFound,
     WorkspaceTooLarge,
     _multipart_frame,
@@ -47,13 +48,37 @@ class FakeWorkspace:
         self.shock_uploads: list[tuple[str, int]] = []  # (node id, byte count)
         self.next_node = 0
         self.rpc_status: int | None = None  # force an HTTP status on every RPC
+        self.contents: dict[str, bytes] = {}  # path -> bytes served by the download URL
+        self.download_status: int | None = None  # force a status on every download
 
     # -- transport entry point ------------------------------------------------
     def __call__(self, req: httpx.Request) -> httpx.Response:
         self.requests.append(req)
         if req.url.host == "shock.test":
             return self._shock(req)
+        if req.url.host == "download.test":
+            return self._download(req)
         return self._rpc(req)
+
+    # -- Workspace download endpoint (what get_download_url points at) -------
+    def _download(self, req: httpx.Request) -> httpx.Response:
+        assert req.method == "GET"
+        if self.download_status is not None:
+            return httpx.Response(self.download_status, text="nope")
+        if req.headers.get("Authorization") != self.token:
+            return httpx.Response(401, text="Authentication failed")
+        path = req.url.path.removeprefix("/dl")
+        if path not in self.contents:
+            return httpx.Response(404, text="not found")
+        return httpx.Response(200, content=self.contents[path])
+
+    def rpc_get_download_url(self, params: dict[str, Any]) -> list[Any]:
+        urls = []
+        for path in params["objects"]:
+            if path not in self.objects and path not in self.contents:
+                raise LookupError(f"Object not found! {path}")
+            urls.append(f"http://download.test/dl{path}")
+        return [urls]
 
     # -- Workspace JSON-RPC ---------------------------------------------------
     def _rpc(self, req: httpx.Request) -> httpx.Response:
@@ -512,3 +537,55 @@ async def test_token_never_appears_in_logs_or_exception_text(client, fake, caplo
     assert caplog.text  # something was logged at DEBUG
     assert TOKEN not in caplog.text and OTHER_TOKEN not in caplog.text
     assert "SECRETSIG" not in caplog.text and "OTHERSIG" not in caplog.text
+
+
+# --- read_file (#203: the archive's receipt.json is read back as the caller) --
+
+
+async def test_read_file_uses_get_download_url_then_get_with_token(client, fake):
+    path = BASE + "/versions/3/receipt.json"
+    fake.contents[path] = b'[{"shard_id": "a"}]'
+    data = await client.read_file(TOKEN, "ws://" + path)
+    assert data == b'[{"shard_id": "a"}]'
+    assert [m for m, _ in fake.rpc_calls] == ["Workspace.get_download_url"]
+    assert fake.rpc_calls[0][1] == {"objects": [path]}
+    dl = [r for r in fake.requests if r.url.host == "download.test"]
+    assert len(dl) == 1 and dl[0].headers["Authorization"] == TOKEN
+
+
+async def test_read_file_missing_is_not_found(client, fake):
+    with pytest.raises(WorkspaceNotFound):
+        await client.read_file(TOKEN, BASE + "/versions/9/receipt.json")
+
+
+async def test_read_file_download_errors_are_typed(client, fake):
+    path = BASE + "/versions/3/receipt.json"
+    fake.contents[path] = b"{}"
+    fake.download_status = 403
+    with pytest.raises(WorkspaceAuthError):
+        await client.read_file(TOKEN, path)
+    fake.download_status = 500
+    with pytest.raises(WorkspaceError, match="HTTP 500"):
+        await client.read_file(TOKEN, path)
+
+
+async def test_read_file_refuses_a_non_http_download_url(client, fake):
+    path = BASE + "/versions/3/receipt.json"
+    fake.contents[path] = b"{}"
+    fake.rpc_get_download_url = lambda params: [["ftp://nope/x"]]  # type: ignore[method-assign]
+    with pytest.raises(WorkspaceError, match="no download URL"):
+        await client.read_file(TOKEN, path)
+
+
+async def test_upload_source_existing_object_is_refused_and_never_deleted(client, fake):
+    """The service silently skips (and omits from the reply) an object that
+    already exists. That object is the user's: refuse with WorkspaceExists and
+    make NO delete RPC — the pre-existing object must survive."""
+    dest = BASE + "/sources/keep.txt"
+    fake.objects[dest] = {"type": "txt", "metadata": {}, "size": 7, "shock": ""}
+    fake.rpc_create = lambda params: [[]]  # type: ignore[method-assign]  # skipped → omitted
+    with pytest.raises(WorkspaceExists) as ei:
+        await client.upload_source(TOKEN, BASE + "/sources", "keep.txt", _chunks(b"1"), max_bytes=10)
+    assert ei.value.path == dest
+    assert [m for m, _ in fake.rpc_calls] == ["Workspace.create"]  # no Workspace.delete
+    assert fake.objects[dest]["size"] == 7 and fake.shock_uploads == []

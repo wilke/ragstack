@@ -154,3 +154,74 @@ async def test_live_roundtrip() -> None:
         assert content.decode().strip() == "live:pytest"
     finally:
         await c.close()
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase completion (#203): finalize (state=COMPLETED) and post-staging are
+# phases of the SAME scheduler tick, so a poll can see COMPLETED before the
+# outputs are delivered. With ``require_delivery`` a COMPLETED submission is
+# terminal only once ``output_state`` is delivered / upload_failed.
+# --------------------------------------------------------------------------- #
+
+def _staged_engine(states: list[tuple[str, str]]):
+    """Handler serving ``(state, output_state)`` per successive poll (the last
+    repeats forever) and counting polls."""
+    seen = {"n": 0}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        i = min(seen["n"], len(states) - 1)
+        seen["n"] += 1
+        state, output_state = states[i]
+        return httpx.Response(200, json={"data": {"id": "s", "state": state,
+                                                   "output_state": output_state}})
+    return handler, seen
+
+
+@pytest.mark.asyncio
+async def test_wait_with_require_delivery_waits_for_delivered() -> None:
+    handler, seen = _staged_engine([("RUNNING", ""), ("COMPLETED", ""),
+                                    ("COMPLETED", "uploading"), ("COMPLETED", "delivered")])
+    c = _client(handler)
+    final = await c.wait("s", poll_interval=0, timeout=5, require_delivery=True)
+    assert final["state"] == "COMPLETED" and final["output_state"] == "delivered"
+    assert seen["n"] == 4  # kept polling through "" and "uploading"
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_without_require_delivery_returns_on_first_completed() -> None:
+    handler, seen = _staged_engine([("COMPLETED", ""), ("COMPLETED", "delivered")])
+    c = _client(handler)
+    final = await c.wait("s", poll_interval=0, timeout=5)
+    assert final["output_state"] == "" and seen["n"] == 1
+    await c.close()
+
+
+@pytest.mark.parametrize("output_state", ["upload_failed", "delivered"])
+@pytest.mark.asyncio
+async def test_wait_returns_on_either_terminal_output_state(output_state) -> None:
+    handler, seen = _staged_engine([("COMPLETED", output_state)])
+    c = _client(handler)
+    final = await c.wait("s", poll_interval=0, timeout=5, require_delivery=True)
+    assert final["output_state"] == output_state and seen["n"] == 1
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_failed_state_is_terminal_regardless_of_delivery() -> None:
+    handler, seen = _staged_engine([("FAILED", "")])
+    c = _client(handler)
+    final = await c.wait("s", poll_interval=0, timeout=5, require_delivery=True)
+    assert final["state"] == "FAILED" and seen["n"] == 1
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_undelivered_outputs_time_out_loudly() -> None:
+    # An engine with no Workspace stager leaves output_state "" forever.
+    handler, _ = _staged_engine([("COMPLETED", "")])
+    c = _client(handler)
+    with pytest.raises(GoWeError, match="not.*delivered"):
+        await c.wait("s", poll_interval=0, timeout=5, require_delivery=True,
+                     delivery_timeout=0)
+    await c.close()

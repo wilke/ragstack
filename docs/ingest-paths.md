@@ -34,8 +34,13 @@ to the deeper docs rather than repeating them.
   → GoWe backend (`INGEST_BACKEND=gowe`, needs `gowe_workflow_cwl` + `gowe_url`).
   See [`docs/gowe-integration.md`](gowe-integration.md) and
   [`docs/m1-scalable-pdf-ingest-plan.md`](m1-scalable-pdf-ingest-plan.md).
-- **You have raw PDFs and want them ingested through GoWe** → not available yet;
-  see Known gaps.
+- **You have raw PDFs and want them ingested through GoWe** → `INGEST_BACKEND=gowe`
+  with `GOWE_WORKFLOW_CWL=cwl/pdf-ingest-scatter.cwl` (#203 2a, Option A — one
+  task per PDF): the API submits **as the caller** from the caller's Workspace
+  (browser upload → `.ragstack/collections/<id>/sources/` → `ws://` inputs), the
+  engine stages in/out with the caller's token, and the run's archive lands at
+  `versions/<n>/` (recorded as the job's `archive_ref`). Needs a bearer BV-BRC
+  identity and a registered collection. See `cwl/README.md` § PDF scatter-per-PDF.
 
 ---
 

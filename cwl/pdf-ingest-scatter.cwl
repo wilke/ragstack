@@ -11,23 +11,38 @@
 #   pdfs: File[]  --scatter-->  extract (one PDF -> one JSONL shard)
 #                 --scatter-->  ingest  (one shard -> Qdrant/ES + one receipt
 #                                        + its embedding file)
-#                 --gather--->  merge   (receipts -> run summary)
 #                 --gather--->  pack    (embedding files + receipts -> versions/N)
 #
-# WHY THIS SHAPE (receipts are the point). `GoWeBackend._map_outputs` reads the
-# workflow's `receipts` output and maps it **positionally**, one receipt per
-# submitted work item, failing any item without one. A workflow that emits no
-# `receipts` (pdf-ingest.cwl) makes a fully successful run report every item
-# failed. So the contract this file exists to satisfy is:
+# WHY THIS SHAPE (receipts are the point). The API maps per-item receipts back
+# to its work items **positionally**, one receipt per submitted PDF, and a
+# workflow that yields no receipts (pdf-ingest.cwl, one shard per run) would
+# make a fully successful run report every item failed. So the contract this
+# file exists to satisfy is:
 #
 #   * an input named `pdfs` holding the scattered File[] (GoWeBackend's
-#     `shards_input_key` must be set to "pdfs" — its default is "shards"), and
-#   * an output named `receipts` of type File[], one per input PDF, in the
-#     `ragstack.ingestion.receipts.ShardReceipt` shape.
+#     `shards_input_key`, settings `gowe_shards_input_key`, default "pdfs"), and
+#   * ONE workflow-level output, `archive: Directory` (basename == version),
+#     whose `receipt.json` is the JSON ARRAY of the N per-PDF receipts in input
+#     order (`ragstack.ingestion.receipts.ShardReceipt` shape).
+#
+# WHY `archive` IS THE ONLY OUTPUT. GoWe post-stages EVERY top-level File output
+# of a submission with an `output_destination` into that folder — flat, by
+# basename, overwriting — and rewrites the File's location to `ws://`. Exposing
+# `receipts`/`shards`/`reports`/`embeddings`/`summary` here would therefore dump
+# N shards + N reports + N embedding files + ONE surviving `receipt.json` into
+# the user's `versions/` folder next to `versions/N/` (the embedding payload
+# uploaded twice), and the engine's download endpoint could no longer serve the
+# receipts to the API. So the per-item receipts travel INSIDE the archive and
+# the API (`GoWeBackend`) reads `versions/N/receipt.json` from the Workspace
+# with the caller's token. Driven without an `output_destination` (a hand run,
+# cwltool) the archive Directory is simply the run's output directory.
 #
 # The receipt is produced by `ingest_shard.py` itself (via `run_shard`), so the
 # schema is not re-implemented here — it is the same producer `ingest-bulk.cwl`
-# uses, and `chunk_ids` are the ids actually upserted.
+# uses, and `chunk_ids` are the ids actually upserted. The run summary that
+# `merge_receipts.py` used to gather is derivable from that array, so there is
+# no merge step (it would be a container start per run for an output nobody
+# may expose).
 #
 # WHY EMBED+LOAD ARE ONE TASK. The decoupled halves (`embed_shard` ->
 # `load_embeddings`, #141) exist so a capped/stalling Qdrant cannot back-pressure
@@ -53,10 +68,11 @@
 # receipts as a JSON array) and the workflow emits it as `archive: Directory`.
 # GoWe uploads a Directory output under its basename, so it lands at
 # `<output_destination>/<version>/`; no token inside any task. `version` and
-# `collection_id` are REQUIRED workflow inputs — a GoWeBackend driver must carry
-# them in `gowe_workflow_inputs_json` until the API side of #353 passes them per
-# job. Archiving runs after every ingest task succeeded (it consumes their
-# receipts), so a failed PDF fails the run before any archive exists.
+# `collection_id` are REQUIRED workflow inputs — the API passes them per job
+# (the registry's `next_version()` and the collection id); a hand-driven run
+# sets them in the inputs file. Archiving runs after every ingest task succeeded
+# (it consumes their receipts), so a failed PDF fails the run before any archive
+# exists.
 #
 # FAILURE SEMANTICS. `ingest_shard.py` exits non-zero on a failed shard, so a PDF
 # with no extractable text (scanned/image-only -> empty shard -> EmptyIngestError)
@@ -240,27 +256,6 @@ steps:
           doc: "ragstack.embedding_file/v1 JSONL of this PDF's embedded chunks."
           outputBinding: {glob: $(inputs.shard.nameroot).emb.jsonl}
 
-  merge:
-    doc: "Gather the per-PDF receipts -> run summary (totals + failed shards)."
-    in:
-      receipts: ingest/receipt
-    out: [summary]
-    run:
-      class: CommandLineTool
-      requirements:
-        DockerRequirement:
-          dockerPull: ragstack-worker.sif
-          dockerImageId: ragstack-worker.sif
-      baseCommand: [python, /opt/ragstack/scripts/merge_receipts.py]
-      inputs:
-        receipts:
-          type: File[]
-          inputBinding: {position: 2}
-      arguments:
-        - {position: 3, prefix: --out, valueFrom: summary.json}
-      outputs:
-        summary: {type: File, outputBinding: {glob: summary.json}}
-
   pack:
     doc: "Gather the per-PDF embedding files + receipts -> one version directory
       (ragstack-archive/1), basename == version."
@@ -299,27 +294,13 @@ steps:
         archive: {type: Directory, outputBinding: {glob: $(inputs.version)}}
 
 outputs:
-  # THE contract output: one receipt per input PDF, in input order (CWL scatter
-  # preserves order), which is what GoWeBackend._map_outputs maps positionally.
-  receipts:
-    type: File[]
-    outputSource: ingest/receipt
-  summary:
-    type: File
-    outputSource: merge/summary
-  shards:
-    type: File[]
-    outputSource: extract/shard
-  reports:
-    type: File[]
-    outputSource: extract/report
-  embeddings:
-    type: File[]
-    doc: "One embedding file per PDF (the archive step's input), in input order."
-    outputSource: ingest/embeddings
+  # THE ONLY workflow-level output — see the header for why nothing else may be
+  # exposed. receipt.json inside it is the N per-PDF receipts, in input order
+  # (CWL scatter preserves order), which the API maps positionally.
   archive:
     type: Directory
     doc: "The version directory (basename == version): manifest.json,
       chunks.jsonl.gz, vectors.f32, receipt.json (the N per-PDF receipts as a
-      JSON array). GoWe post-stages it to <output_destination>/<version>/."
+      JSON array, input order). GoWe post-stages it to
+      <output_destination>/<version>/."
     outputSource: pack/archive

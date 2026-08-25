@@ -1,11 +1,14 @@
 """Contract tests for ``cwl/pdf-ingest-scatter.cwl`` (#203 Option A).
 
-The workflow exists to be driven by ``GoWeBackend`` **unchanged**: the backend
-scatters a ``File[]`` into one named input and maps a ``receipts`` ``File[]``
-output back to per-item results, positionally. Those two names — plus "every tool
-is inlined" and "both docker keys are declared" — are the invariants that break
-silently (a COMPLETED run reporting every item failed), so they are asserted here
-rather than left to a live submission.
+The workflow exists to be driven by ``GoWeBackend``: the backend scatters a
+``File[]`` into one named input, and the per-item receipts come back INSIDE the
+``archive`` Directory (its ``receipt.json`` array, in input order), which must be
+the workflow's ONLY output — GoWe post-stages every top-level File output flat
+into ``output_destination`` (by basename, overwriting) and rewrites its location
+to ``ws://``. Those invariants — plus "every tool is inlined" and "both docker
+keys are declared" — are the ones that break silently (a COMPLETED run reporting
+every item failed, or a user's ``versions/`` folder filling with shards), so they
+are asserted here rather than left to a live submission.
 
 Offline: parses the YAML, runs nothing.
 """
@@ -18,6 +21,7 @@ import pytest
 yaml = pytest.importorskip("yaml")
 
 CWL_PATH = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
+PDF_INGEST_PATH = CWL_PATH.with_name("pdf-ingest.cwl")
 
 
 @pytest.fixture(scope="module")
@@ -39,15 +43,34 @@ def test_scattered_pdfs_input(wf: dict) -> None:
     assert _steps(wf)["extract"]["in"]["pdf"] == "pdfs"
 
 
-def test_emits_receipts_file_array(wf: dict) -> None:
-    """One receipt per PDF under the key GoWeBackend reads by default."""
-    receipts = wf["outputs"]["receipts"]
-    assert receipts["type"] == "File[]"
-    # Sourced from the scattered ingest step (not the extract step), so the
-    # receipt reflects the actual Qdrant/ES upsert.
-    assert receipts["outputSource"] == "ingest/receipt"
+def test_archive_is_the_only_workflow_output(wf: dict) -> None:
+    """Post-staging uploads EVERY top-level File output flat into the user's
+    ``versions/`` folder (basename, overwrite) — so nothing but the archive
+    Directory may be exposed, and the receipts must ride inside it."""
+    assert list(wf["outputs"]) == ["archive"]
+    archive = wf["outputs"]["archive"]
+    assert archive["type"] == "Directory"
+    assert archive["outputSource"] == "pack/archive"
+    # The per-PDF receipts feed the pack step (→ receipt.json array, input order),
+    # sourced from the scattered ingest step (not extract), so each receipt
+    # reflects the actual Qdrant/ES upsert.
+    pack_in = _steps(wf)["pack"]["in"]
+    assert pack_in["receipt"] == "ingest/receipt"
+    assert pack_in["chunks"] == "ingest/embeddings"
+    assert pack_in["version"] == "version"
     assert _steps(wf)["ingest"]["scatter"] == "shard"
     assert _steps(wf)["ingest"]["in"]["shard"] == "extract/shard"
+    assert "merge" not in _steps(wf)  # a summary nobody may expose = a dead task
+
+
+def test_pdf_ingest_workflow_exposes_only_the_archive_too() -> None:
+    """Same rule for the one-shard-per-run PDF workflow."""
+    if not PDF_INGEST_PATH.is_file():
+        pytest.skip(f"{PDF_INGEST_PATH} not present")
+    wf = yaml.safe_load(PDF_INGEST_PATH.read_text(encoding="utf-8"))
+    assert list(wf["outputs"]) == ["archive"]
+    assert wf["outputs"]["archive"]["type"] == "Directory"
+    assert wf["outputs"]["archive"]["outputSource"] == "pack/archive"
 
 
 def test_receipts_come_from_ingest_shard(wf: dict) -> None:

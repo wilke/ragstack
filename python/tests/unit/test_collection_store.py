@@ -160,7 +160,11 @@ async def test_postgres_store_shares_the_sqlite_schema():
 
     ddl = cs._COLLECTIONS_DDL
     assert "JSONB" not in ddl.upper() and "TIMESTAMP" not in ddl.upper()
-    assert set(cs._COLLECTIONS_COLUMNS) | {"id"} == set(cs._COLUMNS)
+    # Every record column is migratable; the store's own bookkeeping columns
+    # (the archive_version counter, #203) are migrated but not on the row.
+    assert (set(cs._COLLECTIONS_COLUMNS) - cs._BOOKKEEPING_COLUMNS) | {"id"} == set(cs._COLUMNS)
+    assert cs._BOOKKEEPING_COLUMNS <= set(cs._COLLECTIONS_COLUMNS)
+    assert not cs._BOOKKEEPING_COLUMNS & set(cs._COLUMNS)
     # Every additively-added column is nullable or defaulted (sqlite's ALTER TABLE
     # ADD COLUMN forbids NOT NULL without a default).
     for name, frag in cs._COLLECTIONS_COLUMNS.items():

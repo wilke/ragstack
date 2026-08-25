@@ -50,6 +50,12 @@ class IngestJob(BaseModel):
     # being readable by whichever tenant happens to be named "" — see
     # _apply_tenant_scope.
     tenant_id: str = ""
+    # Where the run's archive landed (#203/#353): the ``ws://`` URI of the
+    # ``versions/<n>/`` folder GoWe post-staged the workflow's ``archive``
+    # Directory output to, in the owner's Workspace. "" for local runs and for
+    # rows written before this column existed. Not on IngestResponse (the
+    # contract is unchanged); #358 reads it off the job to find the archive.
+    archive_ref: str = ""
 
 
 class JobItem(BaseModel):
@@ -80,14 +86,18 @@ _JOBS_DDL = (
     "  source TEXT NOT NULL DEFAULT '',"
     "  chunk_ids TEXT NOT NULL DEFAULT '[]',"
     "  error TEXT NOT NULL DEFAULT '',"
-    "  tenant_id TEXT NOT NULL DEFAULT ''"
+    "  tenant_id TEXT NOT NULL DEFAULT '',"
+    "  archive_ref TEXT NOT NULL DEFAULT ''"
     ")"
 )
 # Column -> DDL fragment, applied via ensure_columns_* (collection_store.py) so
 # a `jobs` table created by a pre-#130 build gets the column added in place —
 # CREATE TABLE IF NOT EXISTS only helps a brand-new file. Additive-only: never
 # a rename, retype, or drop (same convention as _COLLECTIONS_COLUMNS et al).
-_JOBS_COLUMNS: dict[str, str] = {"tenant_id": "TEXT NOT NULL DEFAULT ''"}
+_JOBS_COLUMNS: dict[str, str] = {
+    "tenant_id": "TEXT NOT NULL DEFAULT ''",
+    "archive_ref": "TEXT NOT NULL DEFAULT ''",  # #203: the gowe run's archive location
+}
 _JOB_ITEMS_DDL = (
     "CREATE TABLE IF NOT EXISTS job_items ("
     "  job_id TEXT NOT NULL,"
@@ -103,7 +113,7 @@ _JOB_ITEMS_DDL = (
 
 # The job columns an update() may set. Shared by both SQL stores so the
 # updatable set and the chunk_ids serialization convention live in one place.
-_JOB_UPDATE_COLUMNS = ("status", "source", "chunk_ids", "error")
+_JOB_UPDATE_COLUMNS = ("status", "source", "chunk_ids", "error", "archive_ref")
 
 
 def _zero_item_counts() -> dict[str, int]:
@@ -340,7 +350,7 @@ class SqliteJobStore:
 
     @staticmethod
     def _row_to_job(row: tuple) -> IngestJob:
-        job_id, status, source, chunk_ids, error, tenant_id = row
+        job_id, status, source, chunk_ids, error, tenant_id, archive_ref = row
         return IngestJob(
             job_id=job_id,
             status=status,
@@ -348,6 +358,7 @@ class SqliteJobStore:
             chunk_ids=json.loads(chunk_ids),
             error=error,
             tenant_id=tenant_id,
+            archive_ref=archive_ref,
         )
 
     def _create_sync(self, source: str, tenant_id: str) -> IngestJob:
@@ -368,7 +379,7 @@ class SqliteJobStore:
     def _get_sync(self, job_id: str) -> IngestJob | None:
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "SELECT job_id, status, source, chunk_ids, error, tenant_id"
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref"
                 " FROM jobs WHERE job_id = ?",
                 (job_id,),
             )
@@ -399,8 +410,8 @@ class SqliteJobStore:
         # Implicit rowid ascends with insertion; DESC gives newest-first.
         with closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "SELECT job_id, status, source, chunk_ids, error, tenant_id FROM jobs"
-                " ORDER BY rowid DESC LIMIT ?",
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref"
+                " FROM jobs ORDER BY rowid DESC LIMIT ?",
                 (limit,),
             )
             rows = cur.fetchall()
@@ -551,7 +562,7 @@ class PostgresJobStore:
         pool = await self._pool_()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT job_id, status, source, chunk_ids, error, tenant_id"
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref"
                 " FROM jobs WHERE job_id = $1",
                 job_id,
             )
@@ -565,6 +576,7 @@ class PostgresJobStore:
                 chunk_ids=json.loads(row["chunk_ids"]),
                 error=row["error"],
                 tenant_id=row["tenant_id"],
+                archive_ref=row["archive_ref"],
             )
         )
         return _apply_tenant_scope(job, tenant_id, is_admin)
@@ -578,8 +590,8 @@ class PostgresJobStore:
         pool = await self._pool_()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT job_id, status, source, chunk_ids, error, tenant_id FROM jobs"
-                " ORDER BY ctid DESC LIMIT $1",
+                "SELECT job_id, status, source, chunk_ids, error, tenant_id, archive_ref"
+                " FROM jobs ORDER BY ctid DESC LIMIT $1",
                 limit,
             )
         return [
@@ -590,6 +602,7 @@ class PostgresJobStore:
                 chunk_ids=json.loads(r["chunk_ids"]),
                 error=r["error"],
                 tenant_id=r["tenant_id"],
+                archive_ref=r["archive_ref"],
             )
             for r in rows
         ]

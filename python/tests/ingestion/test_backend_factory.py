@@ -104,7 +104,7 @@ class _FakeClient:
     def __init__(self, receipts):
         self._receipts = receipts  # dict: File location -> ShardReceipt (in item order)
 
-    async def register_workflow(self, name, cwl, labels=None):
+    async def register_workflow(self, name, cwl, labels=None, **kw):
         return "wf_fake"
 
     async def submit(self, wf_id, inputs, *, labels=None, **kw):
@@ -116,7 +116,7 @@ class _FakeClient:
                 "outputs": {"receipts": [{"class": "File", "location": loc}
                                          for loc in self._receipts]}}
 
-    async def download(self, location):
+    async def download(self, location, **kw):
         return self._receipts[location].to_json().encode()
 
 
@@ -187,20 +187,42 @@ def test_gowe_unset_worker_group_is_none(tmp_path):
 
 # --- /v1/ingest guard in a non-local backend --------------------------------- #
 
+def _call_ingest(docs, principal):
+    return docs.ingest(
+        request=SimpleNamespace(source="/data/doc.pdf", collection=None),
+        http_request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
+        background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
+        tenant="public", principal=principal, ingestor=object(), job_store=object(),
+        collections=object(),
+    )
+
+
 @pytest.mark.asyncio
-async def test_ingest_endpoint_rejects_gowe_backend(monkeypatch):
+async def test_ingest_endpoint_rejects_unknown_backend(monkeypatch):
+    """The 501 guard survives for any backend this router cannot drive."""
     from fastapi import HTTPException
 
     from ragstack.api.routers import documents as docs
+    from ragstack.api.security import Principal
+
+    monkeypatch.setattr(docs.settings, "ingest_backend", "parsl")
+    with pytest.raises(HTTPException) as ei:
+        await _call_ingest(docs, Principal(tenant="default", role="admin"))
+    assert ei.value.status_code == 501
+    assert "not supported" in ei.value.detail
+
+
+@pytest.mark.asyncio
+async def test_ingest_endpoint_gowe_needs_a_user_token(monkeypatch):
+    """#203: gowe is no longer 501 — but it submits AS the caller, so a keyless
+    / API-key principal (no BV-BRC token) is refused with 401."""
+    from fastapi import HTTPException
+
+    from ragstack.api.routers import documents as docs
+    from ragstack.api.security import Principal
 
     monkeypatch.setattr(docs.settings, "ingest_backend", "gowe")
     with pytest.raises(HTTPException) as ei:
-        await docs.ingest(
-            request=SimpleNamespace(source="/data/doc.pdf", collection=None),
-            http_request=SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace())),
-            background_tasks=SimpleNamespace(add_task=lambda *a, **k: None),
-            tenant="public", ingestor=object(), job_store=object(),
-            collections=object(),
-        )
-    assert ei.value.status_code == 501
-    assert "not supported" in ei.value.detail
+        await _call_ingest(docs, Principal(tenant="default", role="admin"))
+    assert ei.value.status_code == 401
+    assert "BV-BRC user token" in ei.value.detail

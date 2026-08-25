@@ -27,18 +27,38 @@ from ragstack.api.deps import (
     bound_json_body,
     build_ingestor_for,
     check_ingest_build_spec,
+    get_collection_store,
     get_collections,
+    get_ingest_backend,
     get_ingestor,
     get_job_store,
+    get_workspace,
     rate_limited,
 )
 from ragstack.api.security import ROLE_ADMIN, Principal, resolve_principal, resolve_tenant
+from ragstack.collection_store import CollectionRecord, CollectionStore
 from ragstack.config import settings
+from ragstack.ingestion.gowe_backend import (
+    OUTPUT_STAGING_FAILED,
+    GoWeBackend,
+    GoWeError,
+    OutputStagingFailed,
+)
 from ragstack.ingestion.loaders import DEFAULT_INGEST_SUFFIXES, LoaderError, confine_to_root
-from ragstack.ingestion.manifest import build_manifest
+from ragstack.ingestion.manifest import WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
+from ragstack.workspace import (
+    WorkspaceAuthError,
+    WorkspaceClient,
+    WorkspaceError,
+    WorkspaceExists,
+    WorkspaceTooLarge,
+    collection_folder,
+    ws_path,
+    ws_uri,
+)
 
 log = logging.getLogger(__name__)
 
@@ -117,25 +137,24 @@ async def _run_ingest(
             write_ingest_manifest(source=source, chunk_count=chunks or None)
 
 
-async def _resolve_ingest_target(
+async def _authorize_ingest_target(
     collection_id: str | None,
     principal: Principal,
     collections: CollectionRegistry,
-    app_state: Any,
-    prebuilt: ShardedIngestor,
-) -> tuple[CollectionEntry | None, ShardedIngestor]:
-    """Resolve an optional target collection to ``(entry, ingestor)``.
+) -> CollectionEntry | None:
+    """Resolve + authorize an optional target collection; ``None`` means the
+    legacy shared-surface default (the prebuilt app ingestor's stores).
 
-    Shared by ``POST /v1/ingest`` and ``POST /v1/ingest/upload`` so the routing
-    into a collection's bound embedder/chunker/stores — its tenant allowlist
-    check, the OWNERSHIP check, and the build-spec guard — cannot drift between
-    the two entry points. Omitting the collection (or naming the default id)
-    keeps the prebuilt app ingestor. An id the tenant may not access, or an
-    unknown id, is a 404 (never a silent write elsewhere). A non-default
-    collection the caller can read but does not OWN is a 403
-    (:func:`enforce_access`, write action): ingest there is owner-or-admin
-    (ADR-0003; write shares deferred); one it cannot even read is the same 404
-    as an unknown id (no existence oracle).
+    The authorization half of :func:`_resolve_ingest_target` — the tenant
+    allowlist check, the OWNERSHIP check, and the build-spec guard — split out so
+    the GoWe path (which builds no in-process ingestor: the workflow does the
+    loading) runs exactly the same gates as the local one. Omitting the
+    collection (or naming the default id) resolves the default pointer. An id
+    the tenant may not access, or an unknown id, is a 404 (never a silent write
+    elsewhere). A non-default collection the caller can read but does not OWN
+    is a 403 (:func:`enforce_access`, write action): ingest there is
+    owner-or-admin (ADR-0003; write shares deferred); one it cannot even read is
+    the same 404 as an unknown id (no existence oracle).
 
     The DEFAULT collection is the exception, deliberately: it is the shared
     pre-ownership multi-tenant surface (backfilled ``public read``, synthetic
@@ -159,6 +178,8 @@ async def _resolve_ingest_target(
     if not collection_id or collection_id == collections.default_id:
         default = collections.resolve(collections.default_id)
         _guard(default)
+        # (The prebuilt-ingestor / build_ingestor_for split happens in
+        # _resolve_ingest_target; this function only decides WHICH entry.)
         # READ-not-write is an exemption for the LEGACY SHARED SURFACE, not for
         # "whatever default points at". On that surface per-chunk ``tenant_id``
         # is the isolation and every caller writes into their own stripe, so a
@@ -172,11 +193,11 @@ async def _resolve_ingest_target(
         )
         if default.is_shared_surface:
             # The derived entry IS app.state's ingestor — same stores, no build.
-            return None, prebuilt
+            return None
         # The pointer names some OTHER collection. `prebuilt` writes to the
-        # settings-derived stores, so returning it here would authorize against
+        # settings-derived stores, so handing it out here would authorize against
         # one collection and land the bytes in another — the #275 shape inverted.
-        return default, build_ingestor_for(app_state, default)
+        return default
     allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
     if allowed is not None and collection_id not in allowed:
         raise HTTPException(
@@ -192,6 +213,24 @@ async def _resolve_ingest_target(
         ) from None
     _guard(target)
     await enforce_access(principal, target.id, "write")
+    return target
+
+
+async def _resolve_ingest_target(
+    collection_id: str | None,
+    principal: Principal,
+    collections: CollectionRegistry,
+    app_state: Any,
+    prebuilt: ShardedIngestor,
+) -> tuple[CollectionEntry | None, ShardedIngestor]:
+    """Resolve an optional target collection to ``(entry, ingestor)`` for the
+    LOCAL path: :func:`_authorize_ingest_target`, then the prebuilt app ingestor
+    for the shared-surface default or a per-collection ingestor bound to the
+    entry's embedder/chunker/stores (so vectors match its model and land in its
+    index). Shared by both local entry points so the routing cannot drift."""
+    target = await _authorize_ingest_target(collection_id, principal, collections)
+    if target is None:
+        return None, prebuilt
     try:
         run_ingestor = build_ingestor_for(app_state, target)
     except ValueError as e:
@@ -209,6 +248,319 @@ def _guard(entry: CollectionEntry) -> None:
         check_ingest_build_spec(entry)
     except BuildSpecMismatch as e:
         raise HTTPException(status_code=409, detail=str(e)) from None
+
+
+# --------------------------------------------------------------------------- #
+# ingest_backend=gowe: submit as the user, Workspace-only source (#203/#353)
+# --------------------------------------------------------------------------- #
+#
+# The API stays thin and never embeds:
+#
+#   validate → resolve collection (registry row → spec_hash) → reserve the next
+#   archive version on the registry → mint the job → [upload: write the PDFs
+#   into the caller's Workspace with the caller's token] → submit the scatter
+#   workflow with ws:// File inputs, the caller's token in Authorization,
+#   output_destination = the collection's versions/ folder → return job_id; a
+#   background task waits for COMPLETED *and delivered*, reads the per-item
+#   receipts from receipt.json inside the delivered archive (versions/<n>/) with
+#   the caller's token, and checkpoints them + the archive location on the job.
+#
+# The engine pre-stages ws:// inputs and post-stages the workflow's one output —
+# the `archive` Directory — to output_destination as the submitter: no staging
+# directory on this host, no task ever sees the token, nothing is downloaded
+# from the engine. The token lives only in this request and the background
+# task's closure; it is never on the job, in a log line, or in an exception
+# (GoWeClient / WorkspaceClient scrub and `raise … from None`).
+
+_GOWE = "gowe"
+_LOCAL = "local"
+
+
+def _ingest_backend_name() -> str:
+    return (settings.ingest_backend or _LOCAL).strip().lower()
+
+
+def _refuse_unknown_backend() -> None:
+    """501 for any ingest backend that is neither ``local`` nor ``gowe`` — the
+    guard from before #203, narrowed to backends this router cannot drive."""
+    backend = _ingest_backend_name()
+    if backend not in (_LOCAL, _GOWE):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"ingest is not supported with ingest_backend="
+                f"{settings.ingest_backend!r}; use ingest_backend=local or gowe"
+            ),
+        )
+
+
+def _gowe_caller(principal: Principal) -> tuple[str, str]:
+    """``(token, workspace subject)`` for a submission made AS the caller, or 401.
+
+    The engine authenticates the submission with a BV-BRC user token and
+    requires ``output_destination`` under that user's Workspace home; there is
+    no fallback identity (and none may be added). So an API-key / keyless
+    principal, or a bearer identity from another issuer, cannot use this path.
+    """
+    if not principal.token or principal.issuer != "bvbrc" or not principal.subject:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "ingest_backend=gowe submits the job as the caller and needs a "
+                "BV-BRC user token in the Authorization header; an API key or a "
+                "non-BV-BRC identity cannot submit"
+            ),
+        )
+    return principal.token, principal.subject
+
+
+def _workspace_reference(source: str) -> str:
+    """Normalise a Workspace reference (``ws:///u/home/…`` or ``/u/home/…``) to
+    the ``ws://`` URI the engine stages from; anything else is a 400.
+
+    A bare server path must never reach the submission: ``GoWeBackend`` would
+    absolutise it to ``file://`` and hand a server-visible path to the engine's
+    staging — the Workspace is the only ingest source on this backend (#353).
+    """
+    s = source.strip()
+    if s.startswith("ws://") or s.startswith("/"):
+        try:
+            path = ws_path(s)
+        except WorkspaceError:
+            path = ""
+        parts = path.strip("/").split("/")
+        if len(parts) >= 3 and parts[0] and parts[1] == "home":
+            return ws_uri(path)
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "with ingest_backend=gowe, source must be a Workspace reference "
+            "(ws:///<user>/home/... or /<user>/home/...); server-side paths are "
+            "not accepted"
+        ),
+    )
+
+
+async def _registry_row(
+    entry: CollectionEntry, collection_store: CollectionStore
+) -> CollectionRecord:
+    """The durable registry row behind ``entry`` (its ``spec_hash`` goes on the
+    Workspace folder and into the archive manifest; its version counter names
+    ``versions/<n>/``). The settings-derived ``default`` entry has no row —
+    a deliberate divergence from the local path: a GoWe ingest needs a
+    registered collection."""
+    record = await collection_store.get(entry.id)
+    if record is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"collection {entry.id!r} is not a registered collection; "
+                f"ingest_backend=gowe archives into a registered collection's "
+                f"Workspace folder — pass collection=<id> (see POST /v1/collections)"
+            ),
+        )
+    return record
+
+
+async def _reserve_version(entry: CollectionEntry, collection_store: CollectionStore) -> int:
+    """Next archive version for the collection (registry-tracked; starts at 1)."""
+    try:
+        return await collection_store.next_version(entry.id)
+    except KeyError:
+        raise HTTPException(
+            status_code=400, detail=f"collection {entry.id!r} is not a registered collection"
+        ) from None
+    except NotImplementedError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from None
+
+
+def _gowe_inputs(
+    entry: CollectionEntry, record: CollectionRecord, version: int, job_id: str, tenant: str
+) -> dict[str, Any]:
+    """Per-job workflow inputs (cwl/pdf-ingest-scatter.cwl): the archive's
+    identity (``version``/``collection_id``/``spec_hash``/``job_id``) and the
+    target collection's physical stores + build spec, so the run writes where
+    the API serves and chunks the way the collection was built (ADR-0002).
+    Everything else (embedding endpoints, store URLs, …) comes from
+    ``gowe_workflow_inputs_json``; these override it."""
+    inputs: dict[str, Any] = {
+        "version": str(version),
+        "collection_id": entry.id,
+        "spec_hash": record.spec_hash,
+        "job_id": job_id,
+        "tenant": tenant,
+        "collection": entry.collection,
+        "es_index": entry.es_index(),
+    }
+    if entry.model:
+        inputs["embedding_model"] = entry.model
+    if entry.embedding_endpoints:
+        inputs["embedding_url"] = list(entry.embedding_endpoints)
+    if entry.chunk_method:
+        inputs["chunk_method"] = entry.chunk_method
+    if entry.chunk_size is not None:
+        inputs["chunk_size"] = entry.chunk_size
+    if entry.chunk_overlap is not None:
+        inputs["chunk_overlap"] = entry.chunk_overlap
+    return inputs
+
+
+def _gowe_backend(http_request: Request) -> GoWeBackend:
+    backend = get_ingest_backend(http_request)
+    if not isinstance(backend, GoWeBackend):
+        raise HTTPException(
+            status_code=503,
+            detail="ingest_backend=gowe but no GoWe backend is configured on this server",
+        )
+    return backend
+
+
+async def _run_gowe_ingest(
+    job_store: JobStore,
+    backend: GoWeBackend,
+    job_id: str,
+    items: list[WorkItem],
+    inputs: dict[str, Any],
+    token: str,
+    output_destination: str,
+    target: CollectionEntry,
+    source: str,
+    workspace: WorkspaceClient,
+) -> None:
+    """Background worker for the GoWe path: submit as the user, wait for
+    completion AND delivery, checkpoint one result per item, record the archive
+    location. Never raises — every failure lands on the job as a caller-safe
+    label (an exception's class name; :data:`OUTPUT_STAGING_FAILED` when the
+    engine could not deliver the archive).
+
+    Bypasses ``ShardedIngestor`` on purpose: ``GoWeBackend`` ignores the
+    per-shard callable (the engine runs the tools), so nothing in that path
+    would ever checkpoint the receipts — every successful run would read
+    ``failed`` from its all-pending item counts. A :class:`GoWeContractError`
+    (delivered, but no usable receipts) fails the JOB with its class name as
+    the label — visible, never "every document failed" (#203 blocker c). The
+    token reaches only the engine / Workspace requests; it is not on the job
+    and not in these log lines.
+    """
+    try:
+        await job_store.update(job_id, status=RUNNING)
+        await job_store.add_items(job_id, [(i.item_id, i.source) for i in items])
+        try:
+            run = await backend.run_submission(
+                items, inputs=inputs, token=token, output_destination=output_destination,
+                workspace=workspace,
+            )
+        except OutputStagingFailed as e:
+            # Loaded into the stores, but no archive exists in the Workspace: the
+            # engine's own label, so #353's archive_pending retry can find it.
+            log.error("ingest job %s: %s", job_id, e)
+            await job_store.update(job_id, status=FAILED, error=OUTPUT_STAGING_FAILED)
+            return
+        except GoWeError as e:
+            # Message is engine-facing (scrubbed of tokens by GoWeClient); the
+            # job carries only the caller-safe class-name label.
+            log.error("ingest job %s: gowe submission failed: %s", job_id, e)
+            await job_store.update(job_id, status=FAILED, error=type(e).__name__)
+            return
+
+        for r in run.results:
+            await job_store.mark_item(
+                job_id, r.item_id, status=r.status, chunk_ids=r.chunk_ids, error=r.error
+            )
+        counts = await job_store.item_counts(job_id)
+        final = _final_status(counts)
+        fields: dict[str, object] = {"status": final}
+        if run.archive_ref:
+            fields["archive_ref"] = run.archive_ref
+        if len(run.results) == 1 and run.results[0].status == COMPLETED:
+            fields["chunk_ids"] = run.results[0].chunk_ids
+        await job_store.update(job_id, **fields)
+        if final == COMPLETED:
+            from ragstack.api.deps import write_ingest_manifest_for
+
+            chunks = sum(len(r.chunk_ids or []) for r in run.results)
+            write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
+    except Exception as e:  # noqa: BLE001 — a background task must never raise
+        log.warning("ingest job %s failed: %s", job_id, type(e).__name__)
+        try:
+            await job_store.update(job_id, status=FAILED, error=type(e).__name__)
+        except Exception:  # noqa: BLE001
+            log.warning("ingest job %s: could not record the failure", job_id, exc_info=True)
+
+
+async def _gowe_upload_sources(
+    workspace: WorkspaceClient,
+    token: str,
+    subject: str,
+    entry: CollectionEntry,
+    record: CollectionRecord,
+    tenant: str,
+    files: list[UploadFile],
+) -> list[WorkItem]:
+    """Write the uploaded PDFs into ``<collection folder>/sources/`` with the
+    caller's token; return one work item per file (``ws://`` source).
+
+    ``UploadFile.size`` (when the multipart parser knows it) goes to
+    ``upload_source`` so an oversize file is refused before any RPC and the Shock
+    PUT carries a Content-Length; the byte cap is enforced while streaming
+    either way. Refusals: over ``max_document_bytes`` → 413, a rejected token →
+    401, any other Workspace failure → 502. A same-named file already in
+    ``sources/`` is refused (never overwritten, never deleted) → 409 naming the
+    existing object, which can be ingested by reference through
+    ``POST /v1/ingest``; see the #202 hardening spec for the per-request bounds
+    still to come.
+    """
+    folder = await workspace.ensure_collection_folder(
+        token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
+    )
+    sources = f"{ws_path(folder)}/sources"
+    items: list[WorkItem] = []
+    for idx, upload in enumerate(files):
+        safe_name = _safe_pdf_name(upload.filename, fallback=f"upload_{idx}.pdf")
+        try:
+            uri = await workspace.upload_source(
+                token, sources, safe_name, upload,
+                max_bytes=settings.max_document_bytes, size=upload.size,
+            )
+        except WorkspaceTooLarge:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{upload.filename!r}: exceeds max_document_bytes "
+                    f"({settings.max_document_bytes} bytes)"
+                ),
+            ) from None
+        except WorkspaceAuthError:
+            raise HTTPException(
+                status_code=401, detail="the Workspace rejected the caller's token"
+            ) from None
+        except WorkspaceExists as e:
+            existing = ws_uri(e.path)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{safe_name!r} already exists in the collection's sources at "
+                    f"{existing}; it was left untouched — to ingest it, POST /v1/ingest "
+                    f"with source={existing}"
+                ),
+            ) from None
+        except WorkspaceError as e:
+            # The live service's own wording for an existing object.
+            if "overwrit" in str(e).lower():
+                existing = ws_uri(f"{sources}/{safe_name}")
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{safe_name!r} already exists in the collection's sources at "
+                        f"{existing}; it was left untouched — to ingest it, POST "
+                        f"/v1/ingest with source={existing}"
+                    ),
+                ) from None
+            raise HTTPException(
+                status_code=502, detail=f"Workspace write of {safe_name!r} failed: {e}"
+            ) from None
+        items.append(WorkItem(item_id=ws_path(uri), source=uri))
+    return items
 
 
 class IngestRequest(BaseModel):
@@ -267,24 +619,44 @@ async def ingest(
     (idempotent, but not cheap — it re-embeds). The per-item checkpoint makes a
     run resumable at the ingestor level, but the public API does not yet accept a
     job_id to resume a specific prior run; that wiring is tracked for M2.
+
+    Under ``ingest_backend=gowe`` (#203/#353) ``source`` is a Workspace reference
+    (``ws:///<user>/home/…`` or ``/<user>/home/…``; anything else is 400) and the
+    job is submitted to the GoWe engine AS THE CALLER — a bearer BV-BRC identity
+    is required (401 otherwise) and the target must be a registered collection.
     """
-    # /v1/ingest ingests DOCUMENTS: each manifest item's source is a document the
-    # in-process pipeline loads. The GoWe backend instead treats each source as a
-    # pre-built shard FILE its workers load — so a document manifest would be
-    # submitted as shard files and fail wholesale. Reject clearly rather than
-    # returning an all-failed job. (A pre-sharded ingest entry point for the gowe
-    # backend is a separate follow-up; the offline plane uses the embed/load CWL
-    # workflows directly.)
-    if settings.ingest_backend != "local":
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                f"document ingestion via /v1/ingest is not supported with "
-                f"ingest_backend={settings.ingest_backend!r} (it expects pre-sharded "
-                f"inputs); use ingest_backend=local, or the offline embed/load "
-                f"workflows for bulk ingest"
-            ),
+    _refuse_unknown_backend()
+    if _ingest_backend_name() == _GOWE:
+        # Submit as the caller with a Workspace reference (#203/#353). No
+        # INGEST_ROOT gate: nothing on this host is read — the engine pre-stages
+        # the ws:// source with the caller's token.
+        token, subject = _gowe_caller(principal)
+        uri = _workspace_reference(request.source)
+        entry = await _authorize_ingest_target(request.collection, principal, collections)
+        if entry is None:
+            entry = collections.resolve(collections.default_id)
+        collection_store = get_collection_store(http_request)
+        record = await _registry_row(entry, collection_store)
+        backend = _gowe_backend(http_request)
+        workspace = get_workspace(http_request)
+        # Every refusal precedes the job: a version-reservation failure (json
+        # registry → 503) must not leave an `accepted` job nobody will run.
+        version = await _reserve_version(entry, collection_store)
+        job = await job_store.create(source=request.source, tenant_id=principal.tenant)
+        background_tasks.add_task(
+            _run_gowe_ingest,
+            job_store,
+            backend,
+            job.job_id,
+            [WorkItem(item_id=ws_path(uri), source=uri)],
+            _gowe_inputs(entry, record, version, job.job_id, tenant),
+            token,
+            f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
+            entry,
+            request.source,
+            workspace,
         )
+        return IngestResponse(job_id=job.job_id, status=job.status)
     # Fail closed when ingest is unconfined. `request.source` is a server-side
     # path; with ingest_root empty, build_manifest skips confine_to_root entirely,
     # so any readable file or tree is ingested and then readable back through
@@ -420,30 +792,83 @@ async def ingest_upload(
     Rejections: non-PDF (content-type or magic) → 415, a file over
     ``max_document_bytes`` → 413, more than ``max_upload_files`` files → 413, and
     — like ``POST /v1/ingest`` — 503 when no INGEST_ROOT is configured (uploads
-    have nowhere confined to land) and 501 for a non-local ingest backend.
+    have nowhere confined to land) and 501 for an ingest backend that is
+    neither ``local`` nor ``gowe``.
+
+    Under ``ingest_backend=gowe`` (#203/#353) the files are written into the
+    caller's BV-BRC Workspace (``.ragstack/collections/<id>/sources/``) with the
+    caller's own token and the scatter workflow is submitted as the caller with
+    ``ws://`` inputs — the same submission path as a Workspace-reference ingest.
+    Needs a bearer BV-BRC identity (401 otherwise) and a registered collection.
     """
-    if settings.ingest_backend != "local":
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                f"file upload is not supported with ingest_backend="
-                f"{settings.ingest_backend!r}; use ingest_backend=local"
-            ),
-        )
-    if not settings.ingest_root.strip():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "ingest is disabled: INGEST_ROOT is not configured; set it to the "
-                "directory uploads should be staged under"
-            ),
-        )
+    _refuse_unknown_backend()
     if len(files) > settings.max_upload_files:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"too many files: {len(files)} > max_upload_files "
                 f"({settings.max_upload_files})"
+            ),
+        )
+    if _ingest_backend_name() == _GOWE:
+        # Browser upload → the caller's Workspace → submit as the caller (#203/
+        # #353). One code path with the Workspace-reference ingest above; no
+        # staging directory on this host, so no INGEST_ROOT gate here.
+        token, subject = _gowe_caller(principal)
+        # Gate parity with the local path, BEFORE any Workspace write: the
+        # content-type and the %PDF magic (415).
+        for upload in files:
+            if (upload.content_type or "").split(";", 1)[0].strip() != "application/pdf":
+                raise HTTPException(
+                    status_code=415,
+                    detail=f"{upload.filename!r}: only application/pdf uploads are accepted",
+                )
+            head = await upload.read(len(_PDF_MAGIC))
+            await upload.seek(0)
+            if not head.startswith(_PDF_MAGIC):
+                raise HTTPException(
+                    status_code=415,
+                    detail=f"{upload.filename!r}: not a PDF (missing %PDF header)",
+                )
+        entry = await _authorize_ingest_target(collection, principal, collections)
+        if entry is None:
+            entry = collections.resolve(collections.default_id)
+        collection_store = get_collection_store(http_request)
+        record = await _registry_row(entry, collection_store)
+        backend = _gowe_backend(http_request)
+        workspace = get_workspace(http_request)
+        # Reserve the version BEFORE writing sources: a registry that cannot
+        # (json → 503) must not leave files uploaded with no version to run
+        # under. A rejected upload then leaves a gap in the numbering — fine.
+        version = await _reserve_version(entry, collection_store)
+        job = await job_store.create(source="upload", tenant_id=principal.tenant)
+        try:
+            items = await _gowe_upload_sources(
+                workspace, token, subject, entry, record, tenant, files
+            )
+        except HTTPException:
+            await job_store.update(job.job_id, status=FAILED, error="rejected")
+            raise
+        background_tasks.add_task(
+            _run_gowe_ingest,
+            job_store,
+            backend,
+            job.job_id,
+            items,
+            _gowe_inputs(entry, record, version, job.job_id, tenant),
+            token,
+            f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
+            entry,
+            "upload",
+            workspace,
+        )
+        return IngestResponse(job_id=job.job_id, status=job.status)
+    if not settings.ingest_root.strip():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ingest is disabled: INGEST_ROOT is not configured; set it to the "
+                "directory uploads should be staged under"
             ),
         )
 

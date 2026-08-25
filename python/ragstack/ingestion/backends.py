@@ -113,6 +113,7 @@ def _make_gowe_backend(
     # Lazy: keep the httpx/workflow client out of the default local path.
     from ragstack.ingestion.gowe_backend import GoWeBackend
     from ragstack.ingestion.gowe_client import GoWeClient
+    from ragstack.workspace import WorkspaceClient
 
     if not settings.gowe_workflow_cwl:
         raise ValueError(
@@ -136,12 +137,29 @@ def _make_gowe_backend(
     client = GoWeClient(
         base_url=settings.gowe_url, token=settings.gowe_token or None, http=http
     )
+    # The user path reads each run's receipts from the archive in the caller's
+    # Workspace; share the engine client's HTTP pool. Holds no token.
+    workspace = WorkspaceClient(
+        getattr(settings, "workspace_url", "") or "https://p3.theseed.org/services/Workspace",
+        client.http,
+        timeout=float(getattr(settings, "workspace_timeout", 60.0) or 60.0),
+    )
+    # The scattered input / receipts output names come from settings (#203
+    # blocker b): the PDF workflow scatters over ``pdfs``, the JSONL bulk one over
+    # ``shards``. Blank → the GoWeBackend defaults, so an older settings object
+    # (tests build a SimpleNamespace) keeps the bulk-workflow behaviour.
+    shards_key = (getattr(settings, "gowe_shards_input_key", "") or "").strip()
+    receipts_key = (getattr(settings, "gowe_receipts_output_key", "") or "").strip()
     return GoWeBackend(
         client,
         cwl,
         workflow_name=settings.gowe_workflow_name,
         static_inputs=static_inputs,
+        shards_input_key=shards_key or "shards",
+        receipts_output_key=receipts_key or "receipts",
         worker_group=settings.gowe_worker_group or None,
         poll_interval=settings.gowe_poll_interval,
         timeout=settings.gowe_timeout,
+        output_wait_timeout=float(getattr(settings, "gowe_output_wait_timeout", 600.0) or 600.0),
+        workspace=workspace,
     )
