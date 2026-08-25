@@ -26,6 +26,7 @@ from ragstack.api.main import app
 from ragstack.api.security import ROLE_USER
 from ragstack.models import Chunk
 from ragstack.stores import InMemoryVectorStore
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,8 +71,8 @@ async def test_unresolvable_collection_is_404_not_leaked(client):
         [Chunk(id="c1", doc_id="D", content="x", metadata={"tenant_id": "owner"})]
     )
     app.state.collections = CollectionRegistry(
-        [_entry("default", app.state.vector_store, default=True), _entry("priv", store_a)],
-        default_id="default",
+        [_entry(SHARED_ID, app.state.vector_store, default=True), _entry("priv", store_a)],
+        default_id=SHARED_ID,
     )
     await _own("priv", "owner")
     resp = await client.get(
@@ -96,11 +97,11 @@ async def test_id_from_another_collection_does_not_resolve(client):
     )
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", app.state.vector_store, default=True),
+            _entry(SHARED_ID, app.state.vector_store, default=True),
             _entry("libA", store_a),
             _entry("libB", store_b),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
     await _own("libA", "owner")
     await _own("libB", "owner")

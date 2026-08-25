@@ -46,6 +46,7 @@ from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -96,7 +97,7 @@ def _register(*entries: CollectionEntry) -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), *entries], default_id="default"
+        [_entry(SHARED_ID, True), *entries], default_id=SHARED_ID
     )
 
 

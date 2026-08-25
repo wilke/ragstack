@@ -6,7 +6,9 @@ and ``/retrieve``. Each :class:`CollectionEntry` binds a Qdrant collection + ES
 index + an embedder (matched to that collection's model/dim) into its own
 ``HybridRetriever``; the graph store, reranker, generator, and rewriters are
 shared. An empty registry means single-collection mode: the pinned/derived
-collection is the sole ``default`` entry and behaviour is unchanged.
+collection is the sole entry (under its physical name) and behaviour is
+unchanged. ``default`` is never an entry — it is the pointer (see
+:data:`RESERVED_COLLECTION_ID`).
 
 The shared graph store is the reason ``CollectionEntry.collection`` (the physical
 collection name) is also handed to the retriever and the ingest pipeline: since
@@ -28,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ragstack.collection_store import (
+    RESERVED_COLLECTION_ID,
     CollectionSpec,
     JsonFileCollectionStore,
     append_spec_to_file,
@@ -40,11 +43,13 @@ log = logging.getLogger(__name__)
 # Re-exported: `CollectionSpec` moved to ragstack.collection_store (which owns
 # every backend that persists it) but is imported from here all over the API.
 __all__ = [
+    "RESERVED_COLLECTION_ID",
     "CollectionEntry",
     "CollectionRegistry",
     "CollectionSpec",
     "confined_collection_name",
     "forget_collection_spec",
+    "is_reserved_collection_id",
     "load_collection_specs",
     "persist_collection_spec",
 ]
@@ -84,7 +89,11 @@ class CollectionEntry:
     #:   omitting ``collection``.
     #:
     #: "Is the pointer target" is ``entry.id == registry.default_id`` and is what
-    #: the API's ``CollectionInfo.default`` reports.
+    #: the API's ``CollectionInfo.default`` / ``is_default`` report.
+    #:
+    #: (The task spec for #276 calls this flag ``is_legacy_shared``; the name
+    #: here predates it and means exactly that. Kept, since renaming would be
+    #: churn without a semantic change.)
     is_shared_surface: bool
     retriever: Any
     vector_store: Any
@@ -118,18 +127,35 @@ class CollectionEntry:
 
 
 #: The id that names the POINTER — the collection a request resolves to when it
-#: omits ``collection``. Never a creatable collection id, and deliberately NOT the
-#: same namespace as ``tenancy.DEFAULT_TENANT`` (also the string "default"), which
-#: is the writer stamped on chunks. Conflating the two would be a security bug.
-RESERVED_COLLECTION_ID = "default"
+#: omits ``collection`` (``DEFAULT_COLLECTION_ID``). It is never a registry
+#: entry: not creatable, not storable, not synthesised (#276, ADR-0002 decision
+#: 5). A request may still SAY ``collection="default"`` — that is the same as
+#: omitting it, and resolves to the pointer target's real id. Deliberately NOT
+#: the same namespace as ``tenancy.DEFAULT_TENANT`` (also the string "default"),
+#: which is the writer stamped on chunks. Conflating the two would be a security
+#: bug. (Defined in :mod:`ragstack.collection_store`, which must drop a legacy
+#: row under that id without importing the API layer; re-exported here.)
+
+
+def is_reserved_collection_id(cid: str | None) -> bool:
+    """Is ``cid`` the pointer name rather than a collection id?"""
+    return cid == RESERVED_COLLECTION_ID
 
 
 class CollectionRegistry:
-    """Lookup over built collections with a designated default."""
+    """Lookup over built collections with a designated default.
+
+    ``default`` is a POINTER, not an entry: the registry refuses to hold an
+    entry under the reserved id, and :meth:`resolve` / :meth:`canonical` map
+    that name (like ``None``) to the entry ``default_id`` names. Resolution is
+    one dict lookup — no store is consulted — so an omitted ``collection`` costs
+    nothing on the request path."""
 
     def __init__(self, entries: list[CollectionEntry], default_id: str) -> None:
         if not entries:
             raise ValueError("CollectionRegistry requires at least one entry")
+        for e in entries:
+            self._refuse_reserved(e.id)
         self._entries: dict[str, CollectionEntry] = {e.id: e for e in entries}
         if default_id not in self._entries:
             # Fail here, not at the first no-collection request. `resolve(None)`
@@ -142,6 +168,15 @@ class CollectionRegistry:
             )
         self._default_id = default_id
 
+    @staticmethod
+    def _refuse_reserved(cid: str) -> None:
+        if is_reserved_collection_id(cid):
+            raise ValueError(
+                f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection "
+                "id: it names the collection a request resolves to when it omits "
+                "'collection' and is never a registry entry of its own (#276)"
+            )
+
     @property
     def default_id(self) -> str:
         return self._default_id
@@ -150,11 +185,15 @@ class CollectionRegistry:
         return list(self._entries.values())
 
     def has(self, cid: str) -> bool:
+        """Is ``cid`` a registered ENTRY? The pointer name is not one — use
+        :meth:`canonical` first when a caller-supplied id may say ``default``."""
         return cid in self._entries
 
     def add(self, entry: CollectionEntry) -> None:
         """Register a runtime-created collection (``POST /v1/collections``).
-        Raises ``KeyError`` on a duplicate id so the router can 409."""
+        Raises ``KeyError`` on a duplicate id so the router can 409, and
+        ``ValueError`` for the reserved pointer name."""
+        self._refuse_reserved(entry.id)
         if entry.id in self._entries:
             raise KeyError(entry.id)
         self._entries[entry.id] = entry
@@ -163,13 +202,32 @@ class CollectionRegistry:
         """Drop a collection binding. Returns ``False`` if the id is unknown."""
         return self._entries.pop(cid, None) is not None
 
+    def canonical(self, cid: str | None) -> str:
+        """The REAL id a caller-supplied ``collection`` means: ``None`` and the
+        reserved pointer name both mean the pointer target; anything else is
+        returned unchanged (it may or may not be registered — that is the
+        caller's 404 to raise). Authorization must run on this id, never on the
+        literal ``"default"``: ACL rows left behind under that id by a
+        pre-#276 registry must not grant anything."""
+        if cid is None or is_reserved_collection_id(cid):
+            return self._default_id
+        return cid
+
+    def permitted(self, allowed: set[str] | None) -> set[str] | None:
+        """A ``TENANT_COLLECTIONS`` allowlist with the pointer name expanded to
+        the id it currently points at, so an operator may confine a tenant to
+        "the default" without knowing (or tracking) which real id that is.
+        ``None`` (unrestricted) passes through."""
+        if allowed is None or RESERVED_COLLECTION_ID not in allowed:
+            return allowed
+        return (allowed - {RESERVED_COLLECTION_ID}) | {self._default_id}
+
     def resolve(self, cid: str | None) -> CollectionEntry:
-        """Entry for ``cid``, or the default when ``cid`` is None. Raises
-        ``KeyError`` for an unknown non-None id so the router can 400 (explicit
-        selection should fail loudly, not silently serve the wrong corpus)."""
-        if cid is None:
-            return self._entries[self._default_id]
-        return self._entries[cid]  # KeyError → 404/400 at the router
+        """Entry for ``cid``, or the pointer target when ``cid`` is None or the
+        reserved pointer name. Raises ``KeyError`` for an unknown other id so the
+        router can 404 (explicit selection should fail loudly, not silently
+        serve the wrong corpus)."""
+        return self._entries[self.canonical(cid)]  # KeyError → 404 at the router
 
 
 def confined_collection_name(
@@ -192,9 +250,10 @@ def confined_collection_name(
     with no readable collection at all, which the routers already handle by way of
     the tenant filter.
     """
-    allowed = allowed_collection_ids(tenant, mapping)
-    if allowed is None or registry is None:
+    confined = allowed_collection_ids(tenant, mapping)
+    if confined is None or registry is None:
         return None
+    allowed: set[str] = registry.permitted(confined) or set()
     if registry.default_id in allowed:
         return registry.resolve(registry.default_id).collection
     present = sorted(e.id for e in registry.entries() if e.id in allowed)

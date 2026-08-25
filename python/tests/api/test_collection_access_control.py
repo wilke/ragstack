@@ -17,57 +17,60 @@ from ragstack.api.main import app
 from ragstack.api.routers.query import _effective_collection
 from ragstack.api.security import ROLE_ADMIN
 from ragstack.config import settings
+from tests.api.conftest import SHARED_ID
 
 # --- pure resolution logic (no HTTP / no backend) --------------------------- #
 
 
 def _reg(ids, default):
     return SimpleNamespace(
-        default_id=default, entries=lambda: [SimpleNamespace(id=i) for i in ids]
+        default_id=default,
+        entries=lambda: [SimpleNamespace(id=i) for i in ids],
+        permitted=lambda allowed: allowed,
     )
 
 
 def test_effective_collection_unrestricted_passthrough(monkeypatch):
     monkeypatch.setattr(settings, "tenant_collections", {})
-    reg = _reg(["default", "a"], "default")
+    reg = _reg([SHARED_ID, "a"], SHARED_ID)
     assert _effective_collection(reg, "a", "t") == "a"
     assert _effective_collection(reg, None, "t") is None  # → registry default later
 
 
 def test_effective_collection_allowed(monkeypatch):
     monkeypatch.setattr(settings, "tenant_collections", {"t": ["a", "b"]})
-    assert _effective_collection(_reg(["default", "a", "b"], "default"), "a", "t") == "a"
+    assert _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), "a", "t") == "a"
 
 
 def test_effective_collection_disallowed_is_404(monkeypatch):
     monkeypatch.setattr(settings, "tenant_collections", {"t": ["a"]})
     with pytest.raises(HTTPException) as ei:
-        _effective_collection(_reg(["default", "a", "b"], "default"), "b", "t")
+        _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), "b", "t")
     assert ei.value.status_code == 404
 
 
 def test_effective_collection_default_when_permitted(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {"t": ["default", "a"]})
-    assert _effective_collection(_reg(["default", "a"], "default"), None, "t") == "default"
+    monkeypatch.setattr(settings, "tenant_collections", {"t": [SHARED_ID, "a"]})
+    assert _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), None, "t") == SHARED_ID
 
 
 def test_effective_collection_falls_back_to_first_allowed(monkeypatch):
     # registry default not permitted → the tenant's own default is its first allowed
     monkeypatch.setattr(settings, "tenant_collections", {"t": ["b", "a"]})
-    assert _effective_collection(_reg(["default", "a", "b"], "default"), None, "t") == "a"
+    assert _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), None, "t") == "a"
 
 
 def test_effective_collection_none_accessible_is_404(monkeypatch):
     monkeypatch.setattr(settings, "tenant_collections", {"t": ["z"]})
     with pytest.raises(HTTPException) as ei:
-        _effective_collection(_reg(["default", "a"], "default"), None, "t")
+        _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), None, "t")
     assert ei.value.status_code == 404
 
 
 def test_unlisted_tenant_is_unrestricted(monkeypatch):
     # feature on for other orgs, but this tenant isn't listed → passthrough
     monkeypatch.setattr(settings, "tenant_collections", {"other": ["x"]})
-    assert _effective_collection(_reg(["default", "a"], "default"), "a", "t") == "a"
+    assert _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), "a", "t") == "a"
 
 
 # --- endpoints (in-memory registry; no real stores) ------------------------- #
@@ -83,7 +86,7 @@ def _entry(cid: str, default: bool = False) -> CollectionEntry:
 
 def _install_registry():
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), _entry("col_a"), _entry("col_b")], default_id="default"
+        [_entry(SHARED_ID, True), _entry("col_a"), _entry("col_b")], default_id=SHARED_ID
     )
 
 
@@ -101,7 +104,7 @@ async def test_list_filtered_to_allowed(client, monkeypatch):
     monkeypatch.setattr(settings, "tenant_collections", {"default": ["col_a"]})
     body = (await client.get("/v1/collections")).json()
     ids = {c["id"] for c in body["collections"]}
-    assert ids == {"col_a"}  # not "default", not "col_b"
+    assert ids == {"col_a"}  # not the shared collection, not "col_b"
     assert body["default"] == "col_a"  # effective default is the accessible one
 
 
@@ -109,8 +112,8 @@ async def test_list_filtered_to_allowed(client, monkeypatch):
 async def test_list_unrestricted_sees_all(client):
     _install_registry()  # feature off (empty map)
     body = (await client.get("/v1/collections")).json()
-    assert {c["id"] for c in body["collections"]} == {"default", "col_a", "col_b"}
-    assert body["default"] == "default"
+    assert {c["id"] for c in body["collections"]} == {SHARED_ID, "col_a", "col_b"}
+    assert body["default"] == SHARED_ID
 
 
 @pytest.mark.asyncio

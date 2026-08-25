@@ -10,6 +10,7 @@ import pytest
 from ragstack.api.main import app
 from ragstack.models import Triple
 from ragstack.stores import InMemoryGraphStore
+from tests.api.conftest import SHARED_ID
 
 
 @pytest.mark.asyncio
@@ -92,7 +93,7 @@ async def test_confined_tenant_sees_only_its_collections_triples(client, monkeyp
     from ragstack.config import settings
 
     await _seed_two_collections()
-    monkeypatch.setattr(settings, "tenant_collections", {"default": ["default"]})
+    monkeypatch.setattr(settings, "tenant_collections", {"default": [SHARED_ID]})
 
     neighbors = (await client.get("/v1/graph/neighbors/Alice")).json()
     assert {t["object"] for t in neighbors} == {"Bob"}

@@ -19,6 +19,7 @@ from ragstack.config import settings
 from ragstack.models import Chunk
 from ragstack.provenance import CollectionManifest, read_manifest, write_manifest
 from ragstack.stores import InMemoryTextIndex, InMemoryVectorStore
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -177,7 +178,7 @@ async def test_a_non_owner_gets_the_ownership_error_not_the_orphan_error(client,
 
 
 async def test_purging_the_default_is_409(client, manifests):
-    r = await client.delete("/v1/collections/default?purge=true")
+    r = await client.delete(f"/v1/collections/{SHARED_ID}?purge=true")
     assert r.status_code == 409
     # The SHARED SURFACE guard, not the pointer guard. These used to be the same
     # check: the pointer always named the settings-derived entry, so `==

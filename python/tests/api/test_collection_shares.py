@@ -28,6 +28,7 @@ from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -68,7 +69,7 @@ def _register(*entries: CollectionEntry) -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), *entries], default_id="default"
+        [_entry(SHARED_ID, True), *entries], default_id=SHARED_ID
     )
 
 
@@ -179,11 +180,11 @@ async def test_share_widening_is_suppressed_on_the_default_collection(client, mo
     # backfill owner's tenant into EVERY caller's scope. It must not. is_default
     # short-circuits _shared_scope before owner_of, so only readability is needed.
     store = get_acl_store()
-    if await store.owner_of("default") is None:
-        await _own("default", "legacy:admin")
+    if await store.owner_of(SHARED_ID) is None:
+        await _own(SHARED_ID, "legacy:admin")
     try:
         await store.grant(
-            "default", GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="system:backfill"
+            SHARED_ID, GRANTEE_GROUP, PUBLIC_GROUP, PERM_READ, granted_by="system:backfill"
         )
     except Exception:  # noqa: BLE001 — already public in this fixture is fine
         pass

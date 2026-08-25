@@ -7,6 +7,7 @@ from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN
+from tests.api.conftest import SHARED_ID
 
 
 class _CountStore:
@@ -30,13 +31,13 @@ async def test_collection_reports_vector_and_text_counts(client):
     app.state.collections = CollectionRegistry(
         [
             CollectionEntry(
-                id="default", label="d", collection="c", model="m", dim=8,
+                id=SHARED_ID, label="d", collection="c", model="m", dim=8,
                 chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
                 is_shared_surface=True, retriever=None,
                 vector_store=_CountStore(1000), text_index=_CountStore(998), embedder=None,
             )
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
     body = (await client.get("/v1/collections")).json()
     c = body["collections"][0]
@@ -50,13 +51,13 @@ async def test_text_count_null_when_index_unavailable(client):
     app.state.collections = CollectionRegistry(
         [
             CollectionEntry(
-                id="default", label="d", collection="c", model="m", dim=8,
+                id=SHARED_ID, label="d", collection="c", model="m", dim=8,
                 chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
                 is_shared_surface=True, retriever=None,
                 vector_store=_CountStore(5), text_index=None, embedder=None,
             )
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
     c = (await client.get("/v1/collections")).json()["collections"][0]
     assert c["count"] == 5 and c["text_count"] is None

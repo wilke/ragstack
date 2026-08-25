@@ -26,6 +26,7 @@ from ragstack.api.deps import (
 )
 from ragstack.ingestion.chunkers import RecursiveCharacterChunker
 from ragstack.provenance import make_ingest_manifest, read_manifest, write_manifest
+from tests.api.conftest import SHARED_ID
 
 
 def _entry(**over) -> CollectionEntry:
@@ -199,7 +200,7 @@ def _install(entry: CollectionEntry) -> None:
     from ragstack.api.main import app
 
     existing = app.state.collections.entries()
-    app.state.collections = CollectionRegistry([*existing, entry], default_id="default")
+    app.state.collections = CollectionRegistry([*existing, entry], default_id=SHARED_ID)
     app.state.kg_extractor = None
     app.state.doi_enricher = None
 
@@ -232,7 +233,7 @@ async def test_the_default_collection_is_guarded_too(client, manifest_dir):
     quietly append incoherent data to a huge existing index."""
     from ragstack.api.main import app
 
-    default = app.state.collections.resolve("default")
+    default = app.state.collections.resolve(SHARED_ID)
     _record(manifest_dir, default, chunk_method="semantic")
     r = await client.post("/v1/ingest", json={"source": "x.txt"})
     assert r.status_code == 409, r.text

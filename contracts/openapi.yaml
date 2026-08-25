@@ -1175,9 +1175,12 @@ paths:
           description: Referenced embedding model is not registered
         "409":
           description: >-
-            A collection with the resolved id already exists, or the id carries
-            residual access-control state owned by another subject (the create
-            is rolled back rather than inheriting it); or the caller already
+            A collection with the resolved id already exists; or the id is the
+            reserved pointer name `default` (it names the collection a request
+            resolves to when it omits `collection` — DEFAULT_COLLECTION_ID —
+            and is never a collection of its own); or the id carries residual
+            access-control state owned by another subject (the create is
+            rolled back rather than inheriting it); or the caller already
             owns `max_collections_per_owner` collections (default 5, issue
             #290) — a structured `{owned, limit}` detail, checked atomically
             with the owner-row write. Admin is exempt from this quota (logged),
@@ -2576,6 +2579,15 @@ components:
         chunk_method: { type: [string, "null"] }
         chunk_size: { type: [integer, "null"] }
         default: { type: boolean }
+        is_default:
+          description: >-
+            True on exactly one listed entry: the collection a request resolves
+            to when it omits `collection` (the `default` pointer,
+            DEFAULT_COLLECTION_ID). `default` is a pointer, never a registry
+            entry of its own (ADR-0002 decision 5); this flag says which real
+            entry it names. Same value as `default`; optional so older servers
+            stay conformant.
+          type: boolean
         state:
           description: >-
             Lifecycle state (#353/#358): active | archiving | dormant (only the

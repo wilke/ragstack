@@ -14,6 +14,7 @@ from ragstack.api.main import app
 from ragstack.api.routers import stats
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
 from ragstack.models import Chunk
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,14 +81,14 @@ async def test_other_tenants_corpus_never_listed(client, monkeypatch):
 
 async def test_policy_map_is_admin_only(client, monkeypatch):
     _configure_keys(monkeypatch)
-    monkeypatch.setattr(stats.settings, "tenant_collections", {"acme": ["default"]})
+    monkeypatch.setattr(stats.settings, "tenant_collections", {"acme": [SHARED_ID]})
     user = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-acme"})
     admin = await client.get("/v1/stats/tenants", headers={"X-API-Key": "k-admin"})
     # The map names OTHER tenants, so a plain user gets null while still learning
     # its own confinement via restricted_to.
     assert user.json()["policy"] is None
-    assert user.json()["restricted_to"] == ["default"]
-    assert admin.json()["policy"] == {"acme": ["default"]}
+    assert user.json()["restricted_to"] == [SHARED_ID]
+    assert admin.json()["policy"] == {"acme": [SHARED_ID]}
 
 
 async def test_columns_limited_to_allowed_collections(client, monkeypatch):
@@ -108,7 +109,7 @@ async def test_unrestricted_tenant_reports_null_allowlist(client, monkeypatch):
     body = r.json()
     assert body["restricted_to"] is None  # null = unrestricted, not "no access"
     assert body["auth_enabled"] is True
-    assert [c["collection"] for c in body["tenants"][0]["collections"]] == ["default"]
+    assert [c["collection"] for c in body["tenants"][0]["collections"]] == [SHARED_ID]
 
 
 async def test_keyless_path_reports_auth_disabled(client, monkeypatch):
@@ -141,7 +142,7 @@ async def test_counts_false_answers_identity_with_null_cells(client, monkeypatch
     assert (body["tenant"], body["role"], body["auth_enabled"]) == ("acme", ROLE_USER, True)
     assert body["readable"] == ["acme", "public"]
     cells = [c for row in body["tenants"] for c in row["collections"]]
-    assert [c["collection"] for c in cells] == ["default", "default"]  # acme + public
+    assert [c["collection"] for c in cells] == [SHARED_ID, SHARED_ID]  # acme + public
     assert all(c["vector_count"] is None and c["text_count"] is None for c in cells)
 
 

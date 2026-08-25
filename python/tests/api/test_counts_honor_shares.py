@@ -17,6 +17,7 @@ from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_USER
 from ragstack.models import Chunk
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,7 +71,7 @@ async def _setup_shared() -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), _entry("priv")], default_id="default"
+        [_entry(SHARED_ID, True), _entry("priv")], default_id=SHARED_ID
     )
     await _seed_owned_corpus()
     store = get_acl_store()
@@ -133,7 +134,7 @@ async def test_a_shared_row_never_carries_a_tenant_size_from_another_collection(
     # refuse to widen either of them.
     b.__dict__["collection"] = "B-store"
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), a, b], default_id="default"
+        [_entry(SHARED_ID, True), a, b], default_id=SHARED_ID
     )
 
     # A holds 3 chunks stamped `owner`; B holds 5 stamped `o2` AND 7 stamped
@@ -163,7 +164,7 @@ async def test_an_all_zero_share_row_is_omitted(client):
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), _entry("empty")], default_id="default"
+        [_entry(SHARED_ID, True), _entry("empty")], default_id=SHARED_ID
     )
     store = get_acl_store()
     await store.grant("empty", GRANTEE_USER, "google:alice@corp.example", PERM_OWNER,
@@ -224,7 +225,7 @@ async def test_an_unshared_collection_still_counts_zero_for_a_stranger(client):
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), _entry("priv")], default_id="default"
+        [_entry(SHARED_ID, True), _entry("priv")], default_id=SHARED_ID
     )
     await _seed_owned_corpus()
     await get_acl_store().grant("priv", GRANTEE_USER, "owner", PERM_OWNER, granted_by="owner")

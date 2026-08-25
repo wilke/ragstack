@@ -10,6 +10,7 @@ from ragstack.api import security
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_USER
 from ragstack.models import Chunk, Triple
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -104,7 +105,7 @@ async def test_graph_count_is_collection_scoped_for_a_confined_tenant(client, mo
         Triple(subject="X", predicate="rel", object="Y", doc_id="d2",
                tenant_id="acme", collection="other_corpus"),
     ])
-    monkeypatch.setattr(settings, "tenant_collections", {"acme": ["default"]})
+    monkeypatch.setattr(settings, "tenant_collections", {"acme": [SHARED_ID]})
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
     assert body["graph"]["count"] == 1  # not 2 — the other collection's edge is out
@@ -165,10 +166,10 @@ async def test_counts_span_every_readable_collection(client, monkeypatch, _acl_s
     _publish(_acl_store, "named")
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index),
             _entry("named", "ragstack_named", other_vec, other_txt),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
@@ -191,10 +192,10 @@ async def test_shared_physical_store_is_counted_once(client, monkeypatch, _acl_s
 
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index),
             _entry("b", "ragstack", app.state.vector_store, app.state.text_index),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
@@ -219,10 +220,10 @@ async def test_unreadable_collection_is_not_counted(client, monkeypatch, _acl_st
     await other_txt.index(hidden)
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index),
             _entry("secret", "ragstack_secret", other_vec, other_txt),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
@@ -250,10 +251,10 @@ async def test_one_failed_probe_degrades_the_whole_leg(client, monkeypatch, _acl
     _publish(_acl_store, "half-built")
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index),
             _entry("half-built", "ragstack_half", broken_vec, broken_txt),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
@@ -280,12 +281,12 @@ async def test_allowlist_drops_a_collection_from_the_sum(client, monkeypatch, _a
     _publish(_acl_store, "named")
     app.state.collections = CollectionRegistry(
         [
-            _entry("default", "ragstack", app.state.vector_store, app.state.text_index),
+            _entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index),
             _entry("named", "ragstack_named", other_vec, other_txt),
         ],
-        default_id="default",
+        default_id=SHARED_ID,
     )
-    monkeypatch.setattr(settings, "tenant_collections", {"acme": ["default"]})
+    monkeypatch.setattr(settings, "tenant_collections", {"acme": [SHARED_ID]})
 
     body = (await client.get("/v1/stats/stores", headers={"X-API-Key": "k-acme"})).json()
     assert body["vector"]["count"] == 3  # 'named' is outside the allowlist
@@ -299,8 +300,8 @@ async def test_no_readable_collections_is_a_true_zero(client, monkeypatch, _acl_
     _configure_keys(monkeypatch)
     await _seed()
     app.state.collections = CollectionRegistry(
-        [_entry("default", "ragstack", app.state.vector_store, app.state.text_index)],
-        default_id="default",
+        [_entry(SHARED_ID, "ragstack", app.state.vector_store, app.state.text_index)],
+        default_id=SHARED_ID,
     )
     monkeypatch.setattr(settings, "tenant_collections", {"acme": ["nothing-here"]})
 

@@ -28,6 +28,7 @@ from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+from tests.api.conftest import SHARED_ID
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,7 +79,7 @@ def _group_store():
     def _seed(grantee_type: str, grantee_id: str, permission: str) -> None:
         rec = ShareRecord(
             id=uuid.uuid4().hex,
-            collection_id="default",
+            collection_id=SHARED_ID,
             grantee_type=grantee_type,
             grantee_id=grantee_id,
             permission=permission,
@@ -118,7 +119,7 @@ def _register(*entries: CollectionEntry) -> None:
     app.state.kg_extractor = None
     app.state.doi_enricher = None
     app.state.collections = CollectionRegistry(
-        [_entry("default", True), *entries], default_id="default"
+        [_entry(SHARED_ID, True), *entries], default_id=SHARED_ID
     )
 
 

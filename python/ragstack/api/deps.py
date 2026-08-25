@@ -644,17 +644,26 @@ async def _build_collection_registry(
     store: CollectionStore | None = None,
 ) -> CollectionRegistry:
     """Build the collection registry. The top-level pinned/derived collection is
-    the ``default`` entry (reusing the already-built objects); each spec from the
-    durable collection store adds a self-contained entry with its own Qdrant
-    collection + ES index + embedder (shared by signature). No specs → a one-entry
-    registry equal to the default, so single-collection mode is unchanged.
+    the settings-derived entry (reusing the already-built objects), registered
+    under its OWN real id — its physical collection name, the same rule
+    ``POST /v1/collections`` applies to a corpus created without an explicit
+    id; each spec from the durable collection store adds a self-contained entry
+    with its own Qdrant collection + ES index + embedder (shared by signature).
+    No specs → a one-entry registry, so single-collection mode is unchanged.
+
+    ``default`` is a POINTER, never an entry (#276, ADR-0002 decision 5): no
+    synthetic row is created for it. It resolves — at request time, one dict
+    lookup — to ``DEFAULT_COLLECTION_ID`` when set, else to the settings-derived
+    entry (or the spec that claims its stores). Repointing it moves nothing:
+    the data, the ACL rows and the ``is_shared_surface`` exemptions all stay
+    with the real entries.
 
     ``store`` is the authoritative registry (``collection_store_backend``); it
     defaults to the JSON-file backend, which reads exactly the
     ``collections_file``/``collections_json`` this used to read directly."""
     derived = CollectionEntry(
-        id="default",
-        label=f"default · {default_collection}",
+        id=default_collection,
+        label=default_collection,
         collection=default_collection,
         model=settings.embedding_model,
         dim=settings.embedding_model_dim,
@@ -683,11 +692,28 @@ async def _build_collection_registry(
     seen_physical: dict[str, str] = {}
     for spec in specs:
         if spec.id == RESERVED_COLLECTION_ID:
+            # A durable store already drops this row on read and removes it on
+            # its next write (collection_store.py, #276). Belt and braces for a
+            # store that does not — the pointer name never becomes an entry.
+            log.warning(
+                "collection registry: ignoring the legacy %r row — that id names "
+                "the POINTER (which collection a request resolves to when it omits "
+                "'collection'), not a collection; a durable registry removes the "
+                "row on its next write (#276)",
+                RESERVED_COLLECTION_ID,
+            )
+            continue
+        if spec.id == derived.id and (
+            spec.collection != derived.collection or spec.es_index() != derived.es_index()
+        ):
+            # The settings-derived entry's id IS its physical name; a spec that
+            # takes that id over other stores would be two ids' worth of data
+            # under one name (the dict would keep one and drop the other).
             raise RuntimeError(
-                f"collection registry: a configured spec uses the reserved id "
-                f"{RESERVED_COLLECTION_ID!r}. That id names the POINTER — which "
-                "collection a request resolves to when it omits 'collection' — "
-                "and a spec claiming it silently shadows the server default."
+                f"collection registry: spec {spec.id!r} takes the id of the "
+                f"settings-derived collection (its physical name) but serves "
+                f"other stores (vectors={spec.collection!r}, text index="
+                f"{spec.es_index()!r}). Give the spec another id."
             )
         # ADR-0002, stated positively: a physical index has exactly one registry
         # entry. Two ids over one store are two independent ACLs over one dataset
@@ -760,30 +786,36 @@ async def _build_collection_registry(
         )
     else:
         log.info(
-            "collection registry: not synthesising a 'default' entry for %r — "
-            "it is already served as %r. Two ids over one store would be two "
-            "ACLs over one dataset (#275); requests that omit 'collection' "
-            "resolve to %r.",
+            "collection registry: no separate entry for the settings-derived "
+            "stores (%r) — they are already served as %r. Two ids over one store "
+            "would be two ACLs over one dataset (#275).",
             derived.collection,
-            claimed_by.id,
             claimed_by.id,
         )
 
     default_id = _resolve_default_id(entries, fallback=(claimed_by or derived).id)
-    log.info("collection registry: %d collections (%s), default=%r", len(entries),
-             ", ".join(e.id for e in entries), default_id)
+    log.info(
+        "collection registry: %d collections (%s); 'default' is a pointer → %r "
+        "(%s)",
+        len(entries),
+        ", ".join(e.id for e in entries),
+        default_id,
+        "DEFAULT_COLLECTION_ID" if (settings.default_collection_id or "").strip()
+        else "settings-derived; set DEFAULT_COLLECTION_ID to repoint",
+    )
     return CollectionRegistry(entries, default_id=default_id)
 
 
 def derived_default_stores() -> tuple[str, str]:
-    """The settings-derived default's two physical legs: ``(Qdrant collection,
-    ES index)``. This is the legacy shared surface — every tenant's data,
-    isolated only by the per-chunk ``tenant_id`` — and it is what eviction
-    (#359, ``ops/evict.protected``) must never drop. Exposed as names, not as
-    a registry entry, because when a configured spec CLAIMS these stores
-    (ADR-0002 decision 5, the ``claimed_by`` branch above) no ``default``
-    entry is synthesised and nothing else in the registry says which spec is
-    sitting on the shared data."""
+    """The settings-derived collection's two physical legs: ``(Qdrant
+    collection, ES index)``. This is the legacy shared surface — every tenant's
+    data, isolated only by the per-chunk ``tenant_id`` — and it is what eviction
+    (#359, ``ops/evict.protected``) must never drop. Exposed as NAMES, never
+    via the ``default`` pointer: the pointer can be repointed at any owned
+    collection and protection must not move with it; and when a configured
+    spec CLAIMS these stores (ADR-0002 decision 5, the ``claimed_by`` branch
+    above) no shared-surface entry exists and nothing else in the registry
+    says which spec is sitting on the shared data."""
     return _derived_collection_name(), _es_index_name()
 
 
@@ -797,6 +829,17 @@ def _resolve_default_id(entries: list[CollectionEntry], *, fallback: str) -> str
     configured = (settings.default_collection_id or "").strip()
     if not configured:
         return fallback
+    if configured == RESERVED_COLLECTION_ID:
+        # The pointer naming itself. Not a typo, but not a collection either —
+        # and a deployment that set it in the days when `default` WAS an entry
+        # should hear why it no longer starts rather than be silently rerouted.
+        raise RuntimeError(
+            f"DEFAULT_COLLECTION_ID={configured!r} is the pointer name, not a "
+            "collection: 'default' is what a request that omits 'collection' "
+            "resolves THROUGH, never TO. Leave it unset to resolve to the "
+            f"settings-derived collection ({fallback!r}), or name a real "
+            f"collection id (have: {sorted(e.id for e in entries)})."
+        )
     if not any(e.id == configured for e in entries):
         raise RuntimeError(
             f"DEFAULT_COLLECTION_ID={configured!r} names no registered collection "
@@ -1650,9 +1693,10 @@ async def lifespan(app: FastAPI):
     app.state.user_store = acl_store
     app.state.acl_store = acl_store
 
-    # Multi-collection registry: the pinned/derived collection is the "default"
-    # entry; the store's specs add cross-model / per-chunker entries. With no
-    # config this is a one-entry registry equal to the default (unchanged).
+    # Multi-collection registry: the pinned/derived collection is an entry under
+    # its physical name; the store's specs add cross-model / per-chunker entries.
+    # `default` is a pointer into it (DEFAULT_COLLECTION_ID), not an entry. With
+    # no config this is a one-entry registry (unchanged).
     app.state.collections = await _build_collection_registry(
         http_client,
         graph_store=graph_store,

@@ -49,6 +49,7 @@ from ragstack.acl_store import (
 from ragstack.api.lifecycle import enforce_lifecycle
 from ragstack.api.security import Principal
 from ragstack.authz import Action, AuthzUnavailable, resolve_access, resolve_read_many
+from ragstack.collection_store import RESERVED_COLLECTION_ID
 from ragstack.config import settings
 from ragstack.identity import get_identity_provider
 
@@ -332,6 +333,18 @@ async def _warn_if_over_owner_quota(store: AclStore, subject: str, collection_id
         )
 
 
+async def _legacy_pointer_history(store: AclStore) -> list[Any]:
+    """The ACL rows (revoked included) a pre-#276 registry left under the
+    pointer name ``default``, when it was still a synthetic entry. Read-only;
+    a store hiccup yields nothing (the caller then behaves as before)."""
+    try:
+        return list(await store.shares_for(RESERVED_COLLECTION_ID, include_revoked=True))
+    except Exception:  # noqa: BLE001 — never abort startup on a lookback
+        log.warning("backfill: legacy %r history unavailable", RESERVED_COLLECTION_ID,
+                    exc_info=True)
+        return []
+
+
 async def backfill_collection_owners(
     registry: Any, store: AclStore, owner_subject: str
 ) -> int:
@@ -378,12 +391,37 @@ async def backfill_collection_owners(
             )
             continue
         ever_owner = any(r.permission == PERM_OWNER for r in history)
+        publish_history = history
+        if getattr(entry, "is_shared_surface", False):
+            # #276 moved the settings-derived surface from the synthetic id
+            # `default` to its real (physical) id, so its ACL history starts
+            # over under the new id — and "never granted public read" would
+            # then re-publish a corpus whose owner deliberately UN-published it
+            # under the old id (#276's hazard 4, mirrored: consult the revoked
+            # history before granting). Only the publish decision looks back,
+            # and only at REVOKED rows — an old grant that is still active means
+            # the surface was public, so it is published under its real id as
+            # before. The owner row is written under the new id as usual, and
+            # moving the old rows themselves is the merge script's job.
+            publish_history = list(history) + [
+                r for r in await _legacy_pointer_history(store) if r.revoked_at
+            ]
         ever_public_read = any(
             r.grantee_type == GRANTEE_GROUP
             and r.grantee_id == PUBLIC_GROUP
             and r.permission == PERM_READ
-            for r in history
+            for r in publish_history
         )
+        if ever_public_read and not any(
+            r.grantee_type == GRANTEE_GROUP and r.grantee_id == PUBLIC_GROUP
+            and r.permission == PERM_READ for r in history
+        ):
+            log.info(
+                "acl backfill: NOT publishing %r — its public-read grant was "
+                "revoked under the legacy %r id; un-publishing survives the "
+                "rename (#276)",
+                entry.id, RESERVED_COLLECTION_ID,
+            )
         touched = False
         creator = getattr(entry, "owner", "") or ""
         if creator:

@@ -17,6 +17,8 @@ than updated.
 """
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -130,12 +132,17 @@ async def test_two_specs_may_not_alias_each_other(monkeypatch):
         )
 
 
-async def test_a_spec_may_not_claim_the_reserved_pointer_id(monkeypatch):
+async def test_a_spec_under_the_reserved_pointer_id_is_ignored(monkeypatch, caplog):
     """`default` names the pointer. A spec taking that id used to silently shadow
     the server default (last-wins in the id dict) — with its own stores and
-    without the shared-surface flag."""
-    with pytest.raises(RuntimeError, match="reserved id"):
-        await _build(monkeypatch, [_spec("default", "somewhere-else")], derived="phys")
+    without the shared-surface flag. Since #276 such a row is a relic of the
+    registry that synthesised one: ignored on read (with a log line), never an
+    entry, and removed by the durable stores on their next write."""
+    with caplog.at_level(logging.WARNING, logger="ragstack.api.deps"):
+        reg = await _build(monkeypatch, [_spec("default", "somewhere-else")], derived="phys")
+    assert [e.id for e in reg.entries()] == ["phys"]
+    assert not reg.has("default")
+    assert any("ignoring the legacy 'default' row" in r.message for r in caplog.records)
 
 
 async def test_one_registry_entry_per_physical_store(monkeypatch):
@@ -148,23 +155,42 @@ async def test_one_registry_entry_per_physical_store(monkeypatch):
     assert len(physical) == len(set(physical)), physical
 
 
-async def test_the_derived_entry_survives_when_nothing_claims_it(monkeypatch):
-    """Backward compatibility: a deployment whose specs name DIFFERENT stores
-    keeps its `default` entry. Renaming it would orphan its ACL rows — the owner
-    row and public grant are keyed by registry id — and lock people out of their
-    own collection. That rename belongs to the migration, not to this fix."""
+async def test_the_derived_entry_survives_under_its_own_id_when_nothing_claims_it(monkeypatch):
+    """A deployment whose specs name DIFFERENT stores keeps its settings-derived
+    entry — registered under its REAL id, the physical collection name (#276).
+    `default` is the pointer at it, not an entry: a request that omits
+    `collection` (or says `default`) resolves to the same entry."""
     reg = await _build(monkeypatch, [_spec("open-access", "other")], derived="phys")
 
-    assert sorted(e.id for e in reg.entries()) == ["default", "open-access"]
-    assert reg.default_id == "default"
+    assert sorted(e.id for e in reg.entries()) == ["open-access", "phys"]
+    assert reg.default_id == "phys"
+    assert not reg.has("default")
     assert reg.resolve(None).collection == "phys"
+    assert reg.resolve("default") is reg.resolve("phys")
 
 
-async def test_a_single_collection_deployment_is_unchanged(monkeypatch):
-    """No specs at all — the commonest shape. Still exactly one entry."""
+async def test_a_single_collection_deployment_is_one_entry_under_its_physical_name(monkeypatch):
+    """No specs at all — the commonest shape. Still exactly one entry, and no
+    synthetic `default` row."""
     reg = await _build(monkeypatch, [], derived="phys")
-    assert [e.id for e in reg.entries()] == ["default"]
-    assert reg.default_id == "default"
+    assert [e.id for e in reg.entries()] == ["phys"]
+    assert reg.default_id == "phys"
+    assert reg.resolve(None).is_shared_surface is True
+
+
+async def test_a_spec_may_not_take_the_derived_entrys_id_over_other_stores(monkeypatch):
+    """The derived entry's id IS its physical name. A spec that borrows that id
+    for different stores would be two collections' worth of data under one
+    key — the dict would silently keep one."""
+    with pytest.raises(RuntimeError, match="takes the id of the settings-derived"):
+        await _build(monkeypatch, [_spec("phys", "elsewhere")], derived="phys")
+
+
+async def test_pointing_default_collection_id_at_default_is_fatal(monkeypatch):
+    """The pointer naming itself is refused on every deployment shape — a
+    deployment that set it when `default` WAS an entry hears why."""
+    with pytest.raises(RuntimeError, match="pointer name"):
+        await _build(monkeypatch, [], derived="phys", default_id_setting="default")
 
 
 async def test_default_collection_id_repoints_the_pointer(monkeypatch):
@@ -198,7 +224,8 @@ async def test_the_surviving_entry_keeps_the_shared_surface_exemptions(monkeypat
     assert lucid.is_shared_surface is False  # ...and still gets no exemption
 
     reg2 = await _build(monkeypatch, [], derived="phys")
-    assert reg2.resolve("default").is_shared_surface is True
+    assert reg2.resolve("default").is_shared_surface is True  # via the pointer...
+    assert reg2.resolve("default").id == "phys"  # ...to the real entry
 
 
 # --- the surfaces that resolve the pointer ---------------------------------- #

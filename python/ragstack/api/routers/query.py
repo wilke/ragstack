@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from ragstack.api.access import enforce_access
-from ragstack.api.collections import CollectionRegistry
+from ragstack.api.collections import CollectionRegistry, is_reserved_collection_id
 from ragstack.api.deps import (
     build_generator_for,
     build_reranker_for,
@@ -357,8 +357,13 @@ def _effective_collection(
     Unrestricted tenants pass through unchanged. A restricted tenant may only name
     a collection in its set (else 404 — same as an unknown id, so membership isn't
     leaked); when it names none, it gets its own default (the registry default if
-    permitted, else its first allowed collection present in the registry)."""
-    allowed = allowed_collection_ids(tenant, settings.tenant_collections)
+    permitted, else its first allowed collection present in the registry).
+
+    Naming the pointer (``collection="default"``) is the same as omitting it:
+    ``default`` is not a collection, it is the name of the resolution (#276)."""
+    if is_reserved_collection_id(collection):
+        collection = None
+    allowed = registry.permitted(allowed_collection_ids(tenant, settings.tenant_collections))
     if allowed is None:
         return collection
     if collection is not None:

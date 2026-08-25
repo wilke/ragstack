@@ -21,7 +21,11 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from ragstack.api.access import enforce_access, is_user_created
-from ragstack.api.collections import CollectionEntry, CollectionRegistry
+from ragstack.api.collections import (
+    CollectionEntry,
+    CollectionRegistry,
+    is_reserved_collection_id,
+)
 from ragstack.api.deps import (
     BuildSpecMismatch,
     bound_json_body,
@@ -282,7 +286,11 @@ async def _authorize_ingest_target(
     default collection is precisely where a swapped embedder or chunker would
     quietly append incoherent data to a 25M-point index.
     """
-    if not collection_id or collection_id == collections.default_id:
+    if (
+        not collection_id
+        or is_reserved_collection_id(collection_id)  # naming the pointer == omitting
+        or collection_id == collections.default_id
+    ):
         default = collections.resolve(collections.default_id)
         _guard(default)
         # (The prebuilt-ingestor / build_ingestor_for split happens in
@@ -305,7 +313,9 @@ async def _authorize_ingest_target(
         # settings-derived stores, so handing it out here would authorize against
         # one collection and land the bytes in another — the #275 shape inverted.
         return default
-    allowed = allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    allowed = collections.permitted(
+        allowed_collection_ids(principal.tenant, settings.tenant_collections)
+    )
     if allowed is not None and collection_id not in allowed:
         raise HTTPException(
             status_code=404,
