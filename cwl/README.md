@@ -23,7 +23,7 @@ tool + receipts).
 | `pdf-extract.cwl` | **PDF plane (#202/#203).** Run the real `PdfLoader` (PyMuPDF) over PDFs → one `{text,path,metadata}` JSONL shard (+ a skipped-files report). |
 | `pdf-ingest.cwl` | **PDF plane (#202/#203).** Workflow chaining `pdf-extract` → `embed_shard` → `load_embeddings` — a directory of PDFs straight into Qdrant/ES. |
 | `pdf-ingest.inputs.yml` | Example inputs (PDFs + collection + embedding endpoints). |
-| `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-PDF (#203 Option A).** Scatter/gather: one PDF → one extract task → one `ingest_shard` task → **one receipt**, then pack into the versioned archive — the workflow's **only** output, whose `receipt.json` array the API reads back. The PDF workflow the API drives under `INGEST_BACKEND=gowe` (below). |
+| `pdf-ingest-scatter.cwl` | **PDF plane, scatter-per-BATCH (#203 Option B; `batch_size: 1` is Option A).** The workflow groups `pdfs` into batches of `batch_size` (default 20, an ExpressionTool step) and scatters: one batch → one extract task → one `ingest_shard` task → **one receipt with a row per document**, then packs into the versioned archive — the workflow's **only** output, whose `receipt.json` array the API maps back per document. A scanned PDF fails alone; a task fails only when every document of its batch failed. The PDF workflow the API drives under `INGEST_BACKEND=gowe` (below). |
 | `pdf-ingest-scatter.inputs.yml` | Example inputs (3 PDFs + a `demo_*` throwaway collection). |
 | `archive-collection.cwl` | **Archive step (#357, phase 2 of #353).** Pack the embed stage's embedding file(s) + the load receipt(s) into one `Directory` named by the version number (`manifest.json`, `chunks.jsonl.gz`, `vectors.f32`, `receipt.json` — the `ragstack-archive/1` format, [`docs/ingest-paths.md`](../docs/ingest-paths.md#archive-format)). Inlined as the last step of both `pdf-ingest*.cwl`, whose `archive: Directory` workflow output GoWe post-stages to `<output_destination>/<version>/`. |
 | `restore-collection.cwl` | **Restore workflow (#358, phase 2 of #353).** Single task: `load_embeddings.py --replay` over the collection's archive `versions/<n>/` directories, submitted by the API **as the user** with `ws://` `Directory[]` inputs the engine pre-stages with the submitter's token (no task sees it). Every version is verified — sha256s, vectors geometry, and `manifest.spec_hash == spec_hash` (the registry row's) — **before any write**; a failure exits 3 with an `ArchiveCorrupt:`/`SpecMismatch:` line and the API marks the collection `lost`. Then, in order: chunk versions replace their documents and upsert both legs (deterministic ids — a re-run converges), tombstone versions delete by doc id. The physical stores come from the registry entry named by `collection_id` (#263). |
@@ -145,13 +145,21 @@ it predates the image — but don't submit it to GoWe as-is.
 ### Step 2 tools (bulk ingest)
 
 - **`python/scripts/ingest_shard.py`** — scatter step. Ingests **one** JSONL shard
-  → `receipt.json` (chunk ids + per-doc catalog), reusing `IngestionPipeline`
+  (a *batch* of documents) → `receipt.json` (chunk ids + a per-document catalog
+  with each document's own `error` and `chunk_ids`), reusing `IngestionPipeline`
   (chunk→embed→quarantine→delete-prior→upsert→neighbor-link). **Stateless +
   idempotent**: no checkpoint/resume — the engine owns scatter/retry/resume, and a
   re-run overwrites in place (deterministic uuid5 ids + upsert), so a GoWe retry is
-  safe. This is what retires `ingest_jsonl.py`'s bespoke machinery (#71) without
-  forking the pipeline (#25). Needs live infra — not a CI step. The reusable core
-  is `ragstack.ingestion.shard.run_shard` (offline-tested with in-memory stores).
+  safe. **Per-document failure does not fail the task** (#203 2b): a document with
+  no embeddable chunk, or one the extract stage skipped (pass its report with
+  `--extract-report` — a scanned PDF's row then carries the constant
+  `NO_TEXT_ERROR`), is recorded on its row and the batch continues; the exit code is
+  non-zero only for a batch-level error — a batch in which every document failed
+  still exits 0 with every row errored, because a failed task would fail the whole
+  run after the sibling batches had already upserted. This is what retires
+  `ingest_jsonl.py`'s bespoke machinery (#71) without forking the pipeline (#25).
+  Needs live infra — not a CI step. The reusable core is
+  `ragstack.ingestion.shard.run_shard` (offline-tested with in-memory stores).
 - **`python/scripts/merge_receipts.py`** — gather step. Folds the per-shard
   receipts into a run summary (totals + **failed-shard ids**, so partial failure is
   surfaced, not silently under-ingested). Pure computation. `--fail-on-shard-error`
@@ -207,50 +215,119 @@ uncapped Qdrant). Like the other step tools, a real run needs live infra — the
 embedder + in-memory stores (an end-to-end embed→file→load round-trip that
 reconstructs the same store state as the coupled `ingest()`).
 
-### PDF scatter-per-PDF (#203 Option A) — the driveable PDF workflow
+### PDF scatter-per-batch (#203 Option B) — the driveable PDF workflow
 
 `pdf-ingest.cwl` is **one shard per run**: every PDF lands in a single JSONL
 shard, embedded once and loaded once, and its archive carries a single load
 receipt — not one per PDF. That is fine for an operator running a batch by hand,
-but it cannot be driven by the API, which maps per-item receipts back to work
-items **positionally** (from `receipt.json` inside the delivered archive on the
-user path, from the `receipts` `File[]` output on the bulk plane) — a run with
-fewer receipts than items fails the job with `GoWeContractError` rather than
-report *every item failed*.
+but it cannot be driven by the API, which needs a per-document result for every
+work item — a run with no usable receipts fails the job with `GoWeContractError`
+rather than report *every item failed*.
 
-`pdf-ingest-scatter.cwl` is the driveable shape: **one PDF = one work item = one
-task chain = one receipt.**
+`pdf-ingest-scatter.cwl` is the driveable shape: **a batch of PDFs = one task
+chain = one receipt with a row per document.**
 
 ```
-pdfs: File[]  --scatter-->  extract (1 PDF -> 1 JSONL shard + report)
-              --scatter-->  ingest  (1 shard -> Qdrant/ES + 1 ShardReceipt + emb file)
+pdfs: File[]  --batch---->  File[][] by batch_size (an ExpressionTool: no task, no container)
+              --scatter-->  extract (1 batch -> 1 JSONL shard + 1 report)
+              --scatter-->  ingest  (1 shard -> Qdrant/ES + 1 ShardReceipt: a row per document + emb file)
               --gather--->  pack    (emb files + receipts -> archive Directory `<version>`)
 ```
+
+**Why a batch.** Per-task fixed overhead — dispatch, container start, interpreter
++ ragstack import, tokenizer load — is ~2–4 s, the same order as the work for one
+typical PDF (~0.1 s to extract, ~28 chunks embedded in one call), and effective
+parallelism is a handful of workers; a per-PDF scatter is overhead-dominated past
+~50 PDFs. `batch_size` (default **20**) amortizes all of it: a 1000-PDF library is
+50 tasks, and the tokenizer is loaded once per 20 PDFs. The grouping happens
+*inside* the workflow (the `batch` ExpressionTool, evaluated by the engine —
+GoWe's scheduler executes ExpressionTools inline and scatters over the resulting
+`File[][]`, its `ws://` pre-stager walks nested arrays, and its distributed
+conformance run passes the scatter/ExpressionTool suite), so the driver still
+submits a flat `pdfs: File[]` and `batch_size: 1` reproduces the per-PDF scatter
+(Option A) for a small interactive upload. Verified end to end with `cwltool
+--no-container` and with GoWe's own `cwl-runner` (same parser, expression engine
+and scatter code as the engine): 5 PDFs at `batch_size: 2` → 3 task chains, one
+archive, 5 rows.
+
+**Per-document status is derived from the receipt rows, not from receipt count.**
+Each batch's `ShardReceipt` has a `docs` row per document — `error: ""` means
+upserted, otherwise it names why not, and `chunk_ids` are *that* document's ids.
+`GoWeBackend` matches work items to rows by **source basename** (the engine
+pre-stages a `ws://` input under its basename, which is the path the extract tool
+records on the row); an Option-A archive (exactly one receipt per item, no rows
+matching) still maps positionally. The row's error reaches the job's per-item
+error **verbatim**, so `NO_TEXT_ERROR` is countable with `GROUP BY error` on the
+gowe path exactly as on the local one (the #377 gap).
+
+**Failure semantics — the all-failed rule (#203 2b, from the #377 review).**
+- A scanned/image-only PDF yields no text: the extract step *skips* it and its
+  report names it with the constant `NO_TEXT_ERROR`; `ingest_shard
+  --extract-report` folds that into the receipt as a failed row **and the batch
+  continues**. A loaded document with no embeddable chunk (empty, or every chunk
+  quarantined) gets `NO_CHUNKS_ERROR` the same way. The embedding file — and so
+  the archive — holds only the successful documents' chunks (a header-only file
+  when a batch had none).
+- **A batch in which every document failed is still a processed batch**: the
+  receipt is `completed` with every row errored (`n_docs_failed == n_docs`), the
+  embedding file is header-only, and `ingest_shard.py` exits **0**. GoWe honours
+  no `successCodes`: any non-zero exit is a task failure, retried up to
+  `MaxRetries` and then fatal to the step, its dependants and the submission —
+  while the sibling batches have already upserted (ingest is coupled
+  embed+load), so `pack` would never run, no `versions/N/` would exist, stores
+  and archive would diverge and a later restore would silently omit those
+  documents. An exit 1 for a batch of scanned PDFs is therefore the very
+  failure class Option B removes, moved from "one PDF sinks 19" to "one batch
+  sinks the run".
+- `ingest_shard.py` exits non-zero (failing the task, hence the submission)
+  **only for a batch-level error** — the batch itself could not be
+  loaded/embedded/indexed (an infra failure): then every row without a more
+  specific error carries the batch error, and the engine retries the task. Such
+  a failure fails the run before any archive exists (the pack step consumes
+  every receipt); the API then reports the submission state on every item.
+- Known residual (a #357 format decision): if **every** batch of a run is
+  all-failed there are zero rows to pack, `archive_version.py` refuses a
+  zero-row version and the run fails with the per-item detail lost.
 
 **`archive` is the only workflow-level output — by design, not omission.** GoWe
 post-stages *every* top-level File output of a submission that has an
 `output_destination` into that folder, flat, by basename, overwriting, and
 rewrites the File's location to `ws://`. Exposing `receipts` / `shards` /
-`reports` / `embeddings` / `summary` would spill N shards, N reports and N
-embedding files (the payload twice) plus one surviving `receipt.json` into the
-user's `versions/` folder next to `versions/<n>/`, and the engine's download
-endpoint could no longer serve the receipts afterwards. So the per-PDF receipts
-travel *inside* the archive (`receipt.json` = the N receipts as a JSON array, in
-input order) and the API reads them from the Workspace with the caller's token.
-The old `merge` step is gone with its `summary` (derivable from that array).
-The same rule applies to `pdf-ingest.cwl`.
+`reports` / `embeddings` would spill them (the payload twice) plus one surviving
+`receipt.json` into the user's `versions/` folder next to `versions/<n>/`, and the
+engine's download endpoint could no longer serve the receipts afterwards. So the
+per-batch receipts travel *inside* the archive (`receipt.json` = the receipts as a
+JSON array, batch order) and the API reads them from the Workspace with the
+caller's token. The same rule applies to `pdf-ingest.cwl`.
 
 Two deliberate choices:
 
 - **The receipt comes from `ingest_shard.py`, not from `embed_shard.py`.** The
   decoupled halves exist so a stalling Qdrant can't back-pressure the GPU fleet,
   and `load_embeddings` is intentionally a *single* un-scattered task (that's
-  where backpressure will live) — scattering it per PDF would contradict #141,
+  where backpressure will live) — scattering it per batch would contradict #141,
   and an embed-stage receipt would report `completed` for chunks that were never
   upserted. The coupled tool keeps `status`/`chunk_ids` honest and halves the
-  per-PDF container starts.
-- **`--shard-id` is the PDF's stem**, so each receipt names the document it came
-  from rather than a staged temp basename.
+  container starts.
+- **`--shard-id` is the batch id** (`batch-00000`, …), so a receipt names its
+  batch; the documents are named by their rows.
+
+**Tokenizer cache (the cheap win).** The `ingest` step's `fixed_token` chunking
+loads the embedding model's HF tokenizer. Measured on the dev host from a warm
+cache in a fresh process: `import transformers` ≈ 1.0 s + `from_pretrained` ≈
+0.4 s (≈ 0.14 s with `HF_HUB_OFFLINE=1`, which skips the hub freshness check);
+a cold cache downloads it. That is paid **once per task**, so batching turns
+~1.5 s per PDF into ~0.07 s per PDF at `batch_size: 20`. The worker image sets
+`HF_HOME=/rag/cache` and does **not** bake the tokenizer in
+(`apptainer/ragstack-worker.def`), so the GoWe worker must bind that cache root
+into the container — `gowe-worker … --extra-bind <cache root>` — or every task
+re-downloads (or fails offline). `gowe:Execution` has no bind field, so this is a
+worker-side requirement: route ingest to a worker group started with the bind.
+
+**Poll interval is per submission.** `GoWeBackend` polls a submission of at most
+50 items every 0.5 s (`interactive_poll_interval` / `interactive_max_items`) and
+larger ones at `GOWE_POLL_INTERVAL` — never slower than the setting — so a
+3-file upload that finishes in 20 s is not reported 5 s late.
 
 Driving it from `GoWeBackend` needs **one non-default argument** — the scattered
 input key, because this workflow's input is `pdfs`, not `shards`:
@@ -260,6 +337,7 @@ GoWeBackend(client, cwl, workflow_name="ragstack-pdf-ingest-scatter",
             shards_input_key="pdfs",   # default is "shards" (ingest-bulk.cwl)
             worker_group=None,         # must stay unset — see "Worker group matters"
             static_inputs={"collection": ..., "embedding_url": [...],
+                           "batch_size": 20,   # optional; the workflow default
                            "version": "1", "collection_id": ..., ...})
 ```
 
@@ -284,20 +362,17 @@ a hand-driven run, but the API path below assigns them per job.
 > submission COMPLETED and post-stages it in the same tick, so the API waits for
 > `output_state=delivered` (bounded by `GOWE_OUTPUT_WAIT_TIMEOUT`, default 600 s)
 > before reading `versions/<n>/receipt.json`; `upload_failed` fails the job with
-> `OUTPUT_STAGING_FAILED`, and a delivered archive with no usable receipts fails
-> it with `GoWeContractError` — never "every document failed". Option B (batch
-> per task) is #203 2b.
+> `OUTPUT_STAGING_FAILED`, and a delivered archive whose receipts name none of
+> the documents fails it with `GoWeContractError` — never "every document
+> failed". Batch size is a workflow concern: the API does not pass `batch_size`
+> (the workflow default applies) unless `gowe_workflow_inputs_json` sets it.
 
-Failure semantics: `ingest_shard.py` exits non-zero on a failed shard, so a PDF
-with no extractable text (scanned/image-only → empty shard → `EmptyIngestError`)
-fails its task and therefore the submission. The extract step's `report` output
-lists unextractable files — pre-filter on it rather than letting one bad file sink
-a batch.
-
-Validated end to end: `cwltool --singularity` over 3 corpus PDFs (3 receipts, 187
-chunks in Qdrant **and** ES), and a live GoWe submission of the same three PDFs
-staged under `/scout/wf/data`, submitted through `GoWeBackend` with no worker
-group → `COMPLETED`, three `completed` `ItemResult`s with 31/82/74 chunk ids.
+Validated end to end (Option A shape): `cwltool --singularity` over 3 corpus PDFs
+(3 receipts, 187 chunks in Qdrant **and** ES), and a live GoWe submission of the
+same three PDFs staged under the engine's data dir, submitted through
+`GoWeBackend` with no worker group → `COMPLETED`, three `completed`
+`ItemResult`s with 31/82/74 chunk ids. The batch shape is validated offline
+(`cwltool --no-container` + GoWe's `cwl-runner`, `tests/integration/test_pdf_ingest_batch_cwl.py`).
 
 ### Step 2b — submitting to a live GoWe engine
 

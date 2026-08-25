@@ -1,6 +1,7 @@
 # Example inputs for cwl/pdf-ingest-scatter.cwl (one task chain + one receipt per
-# PDF). Run against the live embedding fleet (:9001-9004) + Qdrant (:6333) + ES
-# (:9200). Use a demo_*-prefixed throwaway collection for smoke tests.
+# BATCH of batch_size PDFs; a row per document inside). Run against the live
+# embedding fleet (:9001-9004) + Qdrant (:6333) + ES (:9200). Use a
+# demo_*-prefixed throwaway collection for smoke tests.
 #
 #   CWL_SINGULARITY_CACHE=apptainer/images \
 #   APPTAINER_BIND=/rag/cache HF_HOME=/rag/cache \
@@ -9,6 +10,8 @@ pdfs:
   - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10100743.pdf}
   - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10100882.pdf}
   - {class: File, path: /rag/data/g1-corpus/pdfs/PMC10105658.pdf}
+# PDFs per task (default 20); 1 = one task per PDF (Option A).
+batch_size: 2
 collection: demo_gowe_pdf_scatter
 tenant: public
 chunk_method: fixed_token

@@ -22,6 +22,13 @@ COMPLETED = "completed"
 FAILED = "failed"
 
 
+#: The per-document error for a loaded document that produced no embeddable
+#: chunk (empty after chunking/boilerplate, or every chunk quarantined). A
+#: constant, caller-safe string — countable with ``GROUP BY error`` like
+#: :data:`ragstack.ingestion.loaders.NO_TEXT_ERROR`.
+NO_CHUNKS_ERROR = "no embeddable chunks (empty or all quarantined)"
+
+
 @dataclass
 class DocRow:
     """One catalog row: a document ingested (or attempted) in the shard.
@@ -29,22 +36,44 @@ class DocRow:
     ``metadata`` is the document-level catalog subset already curated by the
     loader's enrichment (title/doc_type/doi/authors/year/…); chunk-level fields
     never reach here.
+
+    Per-document status (#203 2b — a shard is a *batch* of documents, so the
+    shard-level ``status`` no longer describes each one): ``error`` is empty for
+    a document whose chunks were upserted and otherwise names why it was not —
+    the extract stage's constant (``NO_TEXT_ERROR`` for a scanned PDF, carried
+    verbatim from its report), :data:`NO_CHUNKS_ERROR`, or the batch-level
+    failure every document of a failed shard inherits. ``chunk_ids`` are the
+    ids upserted for THIS document (a subset of the shard's ``chunk_ids``), so
+    a driver can attribute chunks per document rather than per batch.
     """
 
     doc_id: str
     source: str
     metadata: dict = field(default_factory=dict)
+    chunk_ids: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.error
 
 
 @dataclass
 class ShardReceipt:
     """What one ``ingest_shard`` invocation produced.
 
-    ``chunk_ids`` is shard-level (the pipeline returns a flat list; per-doc
-    attribution isn't exposed). ``status`` is ``completed`` unless the whole shard
-    failed to load/ingest — a partial per-chunk quarantine still completes (the
-    pipeline drops poison chunks and upserts the rest), matching the ingest
-    pipeline's own degrade behaviour.
+    ``chunk_ids`` is shard-level (every id upserted by this invocation); per
+    document they are on ``docs[i].chunk_ids``. ``status`` is the TASK outcome
+    (#203 2b): ``completed`` whenever the batch was processed to the end —
+    including a batch in which EVERY document failed (``n_docs_failed ==
+    n_docs``, each row errored) — and ``failed`` only when the batch itself
+    could not be loaded/embedded/indexed (``error`` set). Per-document failure
+    is data in the rows, never a task failure, because a failed task would
+    fail the whole run after its sibling batches had already upserted. A
+    partial per-chunk quarantine still completes (the pipeline drops poison
+    chunks and upserts the rest), matching the ingest pipeline's own degrade
+    behaviour. ``n_docs`` counts every document attempted (loaded +
+    reported-skipped); ``n_docs_failed`` those with a per-document ``error``.
     """
 
     shard_id: str
@@ -54,6 +83,7 @@ class ShardReceipt:
     n_chunks: int = 0
     chunk_ids: list[str] = field(default_factory=list)
     docs: list[DocRow] = field(default_factory=list)
+    n_docs_failed: int = 0
     # Set by the embed stage (ADR-0001 offline plane, #141): the JSONL embedding
     # file this shard produced, for the downstream load stage. Empty for the
     # coupled ingest_shard path (which upserts directly).
@@ -77,7 +107,9 @@ class ShardReceipt:
         # TypeError/KeyError on a hand-edited catalog row.
         docs = [
             DocRow(doc_id=r.get("doc_id", ""), source=r.get("source", ""),
-                   metadata=r.get("metadata", {}) or {})
+                   metadata=r.get("metadata", {}) or {},
+                   chunk_ids=list(r.get("chunk_ids", []) or []),
+                   error=str(r.get("error", "") or ""))
             for r in d.get("docs", [])
         ]
         return cls(
@@ -88,6 +120,7 @@ class ShardReceipt:
             n_chunks=int(d.get("n_chunks", 0)),
             chunk_ids=list(d.get("chunk_ids", [])),
             docs=docs,
+            n_docs_failed=int(d.get("n_docs_failed", 0)),
             embedding_file=d.get("embedding_file", ""),
             error=d.get("error", ""),
         )
@@ -114,6 +147,7 @@ def merge_summary(receipts: list[ShardReceipt]) -> dict:
         "n_shards": len(receipts),
         "n_shards_failed": len(failed),
         "n_docs": sum(r.n_docs for r in receipts),
+        "n_docs_failed": sum(r.n_docs_failed for r in receipts),
         "n_chunks": sum(r.n_chunks for r in receipts),
         "failed_shards": sorted(failed),
         "errors": {r.shard_id: r.error for r in receipts if r.error},

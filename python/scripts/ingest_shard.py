@@ -1,8 +1,20 @@
 #!/usr/bin/env python
 """Atomic per-shard ingest tool for the CWL/GoWe bulk-ingest workflow (ADR-0001
-step 2). Ingests ONE shard (a JSONL file of document records) → emits a
-``receipt.json`` (chunk ids + per-doc catalog). The workflow scatters this over
-the shards; ``merge_receipts.py`` gathers the receipts into a run summary.
+step 2). Ingests ONE shard (a JSONL file of document records — under #203 2b a
+*batch* of N PDFs' extracted text) → emits a ``receipt.json`` (chunk ids + a
+per-document catalog with each document's status). The workflow scatters this
+over the shards; ``merge_receipts.py`` gathers the receipts into a run summary.
+
+**Per-document failure does not fail the task.** A document that produced no
+embeddable chunk, or that the extract stage skipped (a scanned PDF — pass its
+``--extract-report`` so the receipt lists it with the constant ``NO_TEXT_ERROR``),
+is recorded on its own ``docs[i].error`` row and the batch continues; the
+embedding file holds only the successful documents' chunks (header-only when
+none succeeded). The task exits non-zero ONLY for a batch-level error (the batch
+could not be loaded/embedded/indexed — then every row carries that error): a
+batch in which every document failed still exits 0, because the engine would
+otherwise retry and then fail the whole run after the sibling batches had
+already upserted (see ``ragstack.ingestion.shard``).
 
 **Stateless + idempotent by design.** It reuses ``IngestionPipeline.ingest``
 (which owns chunk → embed → quarantine → delete-prior → upsert → neighbor-link)
@@ -39,7 +51,7 @@ from ragstack.ingestion.chunker_config import build_chunker
 from ragstack.ingestion.loaders import JsonlLoader
 from ragstack.ingestion.pipeline import IngestionPipeline
 from ragstack.ingestion.receipts import COMPLETED
-from ragstack.ingestion.shard import run_shard
+from ragstack.ingestion.shard import ExtractReport, run_shard
 from ragstack.ops import ingest_target
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex
 from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
@@ -119,15 +131,21 @@ async def _build_pipeline(args, http: httpx.AsyncClient, target=None) -> Ingesti
 async def amain(args, target=None) -> int:
     timeout = httpx.Timeout(300.0, connect=30.0)
     limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
+    report = ExtractReport.load(args.extract_report) if args.extract_report else None
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as http:
         pipeline = await _build_pipeline(args, http, target)
         shard_id = args.shard_id or os.path.basename(args.shard)
         receipt = await run_shard(pipeline, args.shard, args.tenant, shard_id,
-                                  embedding_file=args.embedding_file or None)
+                                  embedding_file=args.embedding_file or None,
+                                  report=report)
     receipt.write(args.out)
     print(f"[{shard_id}] status={receipt.status} docs={receipt.n_docs} "
-          f"chunks={receipt.n_chunks} → {args.out}"
+          f"failed={receipt.n_docs_failed} chunks={receipt.n_chunks} → {args.out}"
           + (f"  ERROR: {receipt.error}" if receipt.error else ""), flush=True)
+    for row in receipt.docs:
+        if row.error:
+            print(f"[{shard_id}]   failed {os.path.basename(row.source)}: {row.error}",
+                  flush=True)
     # Arm ADR-0002's build-spec guard for the store this shard wrote into. The
     # chunk count is deliberately omitted: many shards write one store, so a
     # per-shard count would describe the corpus wrongly. It is the SPEC that arms
@@ -153,6 +171,11 @@ def parse_args(argv=None):
                    help="also write the embedded chunks here (ragstack.embedding_file/v1) "
                         "on the way to the stores — the archive step's input (#357). "
                         "Removed again if the shard fails")
+    p.add_argument("--extract-report", default="",
+                   help="the extract stage's sidecar report (pdf_extract.py --report): "
+                        "its skipped files become failed rows of the receipt, carrying "
+                        "their constant error (e.g. a scanned PDF's), and its inputs "
+                        "list lets an all-skipped batch be reported per document (#203)")
     p.add_argument("--tenant", default="public")
     # Same three modes as ingest_jsonl.py; "flag" only stamps metadata, so the
     # offline plane matches the online API's default instead of silently

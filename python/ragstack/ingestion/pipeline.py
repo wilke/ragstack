@@ -127,21 +127,9 @@ class IngestionPipeline:
         store-mutating half with an empty replacement.
         """
         documents: list[Document] = self.loader.load(source)
-        await self._apply_doi_enrichment(documents)
-        all_chunks: list[Chunk] = []
-        for doc in documents:
-            # Run chunking in a worker thread: chunkers are synchronous, and the
-            # SemanticChunker blocks on a (bridged) embed round-trip, which would
-            # otherwise stall the event loop. to_thread keeps the loop responsive.
-            all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
-        produced = len(all_chunks)
-        all_chunks = self._filter_boilerplate(all_chunks, source)
-
-        kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
-        if quarantined:
-            log.warning(
-                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
-            )
+        kept, produced, quarantined = await self.embed_documents(
+            documents, tenant_id=tenant_id, source=source
+        )
 
         # Never delete prior data without a replacement. If the source produced
         # no chunks (empty content) or every chunk was quarantined, the replace
@@ -169,6 +157,45 @@ class IngestionPipeline:
                 source, len(skipped), skipped,
             )
         return kept
+
+    async def embed_documents(
+        self,
+        documents: list[Document],
+        tenant_id: str = DEFAULT_TENANT,
+        source: str = "",
+    ) -> tuple[list[Chunk], int, int]:
+        """Enrich, chunk, and embed already-loaded ``documents``; return
+        ``(kept, produced, quarantined)`` — the surviving embedded chunks, how
+        many chunks were produced before boilerplate filtering, and how many
+        were quarantined as unembeddable.
+
+        The loader-free core of :meth:`embed_source`, so a caller that owns the
+        document list — the per-batch ``ingest_shard`` tool (#203 2b), which has
+        to attribute the outcome to EACH document of a batch — can run the same
+        chunk → filter → embed → link path and then group ``kept`` by
+        ``doc_id``. Unlike :meth:`embed_source` it does NOT raise when nothing
+        survives: an empty result is data for the caller's own per-document
+        bookkeeping (:meth:`embed_source` turns it into ``EmptyIngestError``
+        for the single-source path, where it protects prior data). Touches
+        only the chunker and embedder — never a store. ``source`` only labels
+        log lines.
+        """
+        await self._apply_doi_enrichment(documents)
+        all_chunks: list[Chunk] = []
+        for doc in documents:
+            # Run chunking in a worker thread: chunkers are synchronous, and the
+            # SemanticChunker blocks on a (bridged) embed round-trip, which would
+            # otherwise stall the event loop. to_thread keeps the loop responsive.
+            all_chunks.extend(await asyncio.to_thread(self.chunker.chunk, doc))
+        produced = len(all_chunks)
+        all_chunks = self._filter_boilerplate(all_chunks, source)
+
+        kept, quarantined = await self._embed_and_link(all_chunks, tenant_id)
+        if quarantined:
+            log.warning(
+                "ingest %r: quarantined %d unembeddable chunk(s)", source, quarantined
+            )
+        return kept, produced, quarantined
 
     def _filter_boilerplate(self, chunks: list[Chunk], source: str) -> list[Chunk]:
         """Stamp (and, if configured, drop) boilerplate chunks — visibly.
