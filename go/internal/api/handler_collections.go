@@ -17,12 +17,16 @@ import (
 // The invariant to implement when this IS wired to a registry (#419): the
 // response-level CollectionsResponse.Default is the id an omitted `collection`
 // targets **for this caller** — the registry pointer when that caller can read
-// it, else their first readable collection, else "" (and every read endpoint
-// then answers 404 "no collection is accessible to this caller"). The per-item
-// IsDefault/Default flags are the **global** registry pointer and do not vary by
-// caller: at most one listed entry carries them, and zero do when the caller
-// cannot read the collection the pointer names. Those are two different
-// questions; answering the caller-aware one with the global pointer is #419.
+// it, else the first collection in `collections` (the listing's own order, NOT
+// sorted — picking sorted()[0] here reproduces the exact drift #419 is about),
+// else "" (and /v1/query, /v1/retrieve and /v1/chunks then answer 404 "no
+// collection is accessible to this caller").
+//
+// The per-item IsDefault/Default flags are the **global** registry pointer and
+// do NOT vary by caller: at most one listed entry carries them, and zero do when
+// the caller cannot read the collection the pointer names. Those are two
+// different questions; answering the caller-aware one with the global pointer is
+// #419.
 func HandleListCollections(w http.ResponseWriter, _ *http.Request) {
 	resp := CollectionsResponse{
 		Collections: []CollectionInfo{{

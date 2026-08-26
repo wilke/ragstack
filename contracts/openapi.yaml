@@ -2837,7 +2837,8 @@ components:
             conformant. Zero listed entries carry it when the caller cannot read
             the collection the pointer names — in that case
             `CollectionsResponse.default` names a different, readable
-            collection.
+            collection, or is the empty string when the caller can read none at
+            all.
           type: boolean
         state:
           description: >-
@@ -3603,9 +3604,10 @@ components:
             (allowlist AND read), else the first collection in `collections`.
             Always one of the listed ids — **or the empty string when
             `collections` is empty**, i.e. the caller can read no collection at
-            all and every read endpoint answers 404 `no collection is accessible
-            to this caller`. Clients that want a deterministic target should send
-            this id explicitly on `/v1/query`, `/v1/retrieve` and `/v1/chunks`.
+            all and `/v1/query`, `/v1/retrieve` and `/v1/chunks` answer 404 `no
+            collection is accessible to this caller`. Clients that want a
+            deterministic target should send this id explicitly on `/v1/query`,
+            `/v1/retrieve` and `/v1/chunks`.
             It is **not** the same thing as the per-item `is_default` flag, which
             is the global registry pointer.
           type: string
