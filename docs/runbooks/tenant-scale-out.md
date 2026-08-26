@@ -161,6 +161,15 @@ overrides) before the API starts:
 | `WORKSPACE_URL` | Same as `GOWE_URL` above — required for the restore path, not conditional on `INGEST_BACKEND`. The user's BV-BRC Workspace is where the archive lives. |
 | `INGEST_BACKEND=gowe` | The script's template omits this line (defaults to `local`). Needed so *new* ingest on this tenant also routes through GoWe (interim-policy comment on #289) — set it for that reason, not because the restorer depends on it (it doesn't; see the two rows above). |
 
+**If this tenant will set `GRAPH_BACKEND=neo4j`** (not part of the script's
+template; opt in per tenant): confirm the `neo4j` driver — the `graph` extra —
+is installed in whichever Python environment serves this tenant's API
+*before* flipping the setting, and in the worker image if this tenant's
+collections also run graph extraction/load. It is not installed by default.
+Constructing the store happens at API startup, so a missing driver is a
+**fatal boot-time error** for that tenant's API, not a lazy failure on first
+use (#404).
+
 Edit `tenant.env` directly (it's the operator-editable file; re-running the
 script without `--force` keeps your edits) or export overrides at API-start
 time. Whichever you do, capture the diff somewhere durable — the next re-run of

@@ -12,11 +12,15 @@ From: python:3.12-slim-bookworm
 # CPU-ONLY BY DESIGN. Every step calls the embedding fleet over HTTP (OpenAI
 # `/v1/embeddings`); none of them run a model locally, so torch/CUDA are
 # deliberately NOT installed. Deps are the ragstack package + its
-# [vector,pdf,text,tokenization] extras:
+# [vector,pdf,text,tokenization,graph] extras:
 #   - qdrant-client  (vector store upserts)
 #   - pymupdf        (PDF text extraction — the `pdf` extra / PdfLoader)
 #   - elasticsearch  (BM25 text index)
 #   - transformers   (HF tokenizer for fixed_token chunk sizing — NO torch)
+#   - neo4j          (bolt driver — load_graph.py, and load_embeddings.py's
+#                      graph replay path, write triples via it (#404);
+#                      extract_graph.py does not need it. The `<6` cap
+#                      lives in python/pyproject.toml only, not repeated here)
 #   - httpx/pydantic/cryptography come in via the base ragstack dependency set.
 # `transformers` does not pull torch (torch is an optional backend); sentencepiece
 # + protobuf are added so slow-path tokenizers still load without torch present.
@@ -34,6 +38,10 @@ From: python:3.12-slim-bookworm
 # Smoke test:
 #   apptainer exec apptainer/images/ragstack-worker.sif \
 #       python -c "import ragstack, fitz, qdrant_client; print('ok')"
+# For load_graph.py specifically (and load_embeddings.py's graph replay),
+# `--help` alone is not a runnable check (it never constructs
+# Neo4jGraphStore, so a missing driver won't show up) — see the mandatory
+# `import neo4j` check in cwl/README.md.
 
 %files
     python /opt/ragstack/python
@@ -47,8 +55,9 @@ From: python:3.12-slim-bookworm
 
     # Install the ragstack package + the CPU-only extras the CWL steps need.
     # Version constraints come from python/pyproject.toml (the source of truth) —
-    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, transformers>=4.40 and
-    # elasticsearch[async]>=8.13,<9. torch is intentionally absent.
+    # the extras pin qdrant-client>=1.9, pymupdf>=1.24, transformers>=4.40,
+    # elasticsearch[async]>=8.13,<9 and neo4j>=5.20,<6. torch is intentionally
+    # absent.
     #
     # That `<9` on the Elasticsearch client is what makes the CWL load step work:
     # a 9.x client sends a `compatible-with=9` header that an ES 8 server (the
@@ -56,7 +65,15 @@ From: python:3.12-slim-bookworm
     # media_type_header_exception. The bound is declared in pyproject.toml and is
     # deliberately NOT repeated here — a second copy would silently disagree with
     # the API env the day the clusters move to ES 9.
-    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization]"
+    #
+    # The `graph` extra (neo4j driver) is required for load_graph.py (and
+    # load_embeddings.py's graph replay) to construct Neo4jGraphStore (#404)
+    # — without it they pass `--help` and then fail with ModuleNotFoundError
+    # the moment they actually run; extract_graph.py doesn't need the driver
+    # itself but gets the extra installed too since it's cheap and shares an
+    # image with the scripts that do. Its `<6` cap also lives in pyproject.toml
+    # only, same reasoning as ES.
+    python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph]"
 
     # Tokenizer robustness without torch: some HF slow tokenizers need these.
     python -m pip install sentencepiece protobuf
@@ -66,8 +83,11 @@ From: python:3.12-slim-bookworm
     cp -r /opt/ragstack/python/scripts /opt/ragstack/scripts
     chmod -R a+rX /opt/ragstack/scripts
 
-    # Fail the build loudly if the core imports don't resolve.
-    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers; print('build import ok')"
+    # Fail the build loudly if the core imports don't resolve. `import neo4j`
+    # alone is not a substitute for the post-build check documented in
+    # cwl/README.md (constructing Neo4jGraphStore also needs a reachable bolt
+    # URL), but it does catch the driver being missing from the image (#404).
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers, neo4j; print('build import ok')"
 
 %environment
     # Models (the HF tokenizer) are read from a bind-mounted HF_HOME at runtime,

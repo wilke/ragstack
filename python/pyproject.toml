@@ -66,7 +66,12 @@ text = [
     "elasticsearch[async]>=8.13,<9",
 ]
 graph = [
-    "neo4j>=5.20",
+    # Upper bound: our Cypher/driver code (stores/neo4j.py) is written against
+    # the Neo4j 5.x driver API, and the deployed server line is Neo4j 5.26.x.
+    # `neo4j>=5.20` with no cap resolves to 6.2.0 today — an untested major,
+    # same class of bug as the qdrant-client `search()` removal (see MEMORY.md).
+    # Raise the bound only together with a verified 6.x driver/server upgrade.
+    "neo4j>=5.20,<6",
     "networkx>=3.3",
     "spacy>=3.7",
 ]
