@@ -12,6 +12,9 @@ class _UnavailableRetriever:
             "qdrant",
             "qdrant search on 'sfr_tok256' at http://localhost:6333 failed — "
             "ReadTimeout: timed out; per-request timeout is 30s (QDRANT_TIMEOUT)",
+            # Required since #427 W2a — every raise site states what happened
+            # rather than inheriting a default that is itself a factual claim.
+            kind="timeout",
         )
 
 

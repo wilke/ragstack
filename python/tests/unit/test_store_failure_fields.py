@@ -115,10 +115,25 @@ async def test_elapsed_is_measured_not_inferred_from_the_timeout():
     assert err.elapsed_s < 1.0
 
 
-def test_kind_defaults_keep_existing_raise_sites_working():
-    # Both new fields are keyword-only with defaults; a two-argument raise (of
-    # which there are several in scripts and tests) must still construct.
-    err = StoreUnavailable("neo4j", "boom")
+def test_kind_is_required_so_no_raise_site_can_default_into_a_claim():
+    """``kind`` has no default, on purpose.
+
+    Any default would have to be one of the three values, and each is a specific
+    factual claim — ``error`` asserts the store *answered*. A raise site that
+    never thought about it would put that claim in the 503 body and, once W6
+    lands, into the advice the user reads.
+
+    It also keeps every ``kind ==`` assertion in this tree honest. With a
+    default of ``error``, a test asserting ``kind == "error"`` passed even with
+    the whole derivation deleted — vacuous, and exactly the shape this repo has
+    shipped before.
+    """
+    with pytest.raises(TypeError):
+        StoreUnavailable("neo4j", "boom")  # type: ignore[call-arg]
+
+    # `elapsed_s` DOES default: "I did not time this call" is a real and honest
+    # state, unlike "I did not think about what happened".
+    err = StoreUnavailable("neo4j", "boom", kind=KIND_UNREACHABLE)
     assert err.kind in STORE_FAILURE_KINDS
     assert err.elapsed_s is None
     assert str(err) == "boom"

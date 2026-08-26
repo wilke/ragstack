@@ -8,9 +8,11 @@ this backend is actually selected.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from time import perf_counter
 from typing import Any
 
@@ -32,11 +34,38 @@ from ragstack.tenancy import DEFAULT_TENANT
 log = logging.getLogger(__name__)
 
 #: The client's own per-request timeout when ``ELASTICSEARCH_TIMEOUT`` is unset,
-#: in seconds. Read off ``elastic_transport``'s node config rather than guessed
-#: (elasticsearch 8.19.3 / elastic_transport 8.19.0). Named here so the failure
-#: message can state the *applied* bound instead of interpolating a setting the
-#: client ignores — the truthfulness standard #427 set for the Qdrant message.
-_CLIENT_DEFAULT_TIMEOUT_S = 10
+#: in seconds, as observed on elasticsearch 8.19.3 / elastic_transport 8.19.0.
+#:
+#: This is the **fallback**, not the source of truth:
+#: :func:`_client_default_timeout_s` reads the live value out of
+#: ``NodeConfig``'s dataclass field default, so a library bump changes the
+#: message instead of quietly making it false. Hardcoding it would break the
+#: exact standard this work is built on — "name the applied bound, never a
+#: setting the client ignores" — while every test stayed green. A test pins this
+#: constant against the library so a bump is also *noticed*, not just absorbed.
+_CLIENT_DEFAULT_TIMEOUT_FALLBACK_S = 10.0
+
+
+@lru_cache(maxsize=1)
+def _client_default_timeout_s() -> float:
+    """The per-request timeout the elasticsearch client applies when we pass
+    none. Read from ``elastic_transport.NodeConfig``'s field default.
+
+    Imported lazily (and cached) to preserve this module's rule that the
+    optional ``text`` extra is only required when this backend is selected. The
+    fallback covers a future layout change in the library rather than letting an
+    ``AttributeError`` escape from an error path — the one place an exception is
+    least welcome.
+    """
+    try:
+        from elastic_transport import NodeConfig
+
+        for f in dataclasses.fields(NodeConfig):
+            if f.name == "request_timeout" and isinstance(f.default, (int, float)):
+                return float(f.default)
+    except Exception:  # noqa: BLE001 — never raise from inside a failure message
+        pass
+    return _CLIENT_DEFAULT_TIMEOUT_FALLBACK_S
 
 # Filters target chunk *metadata* keys (matching the vector store, which filters
 # on chunk.metadata), so metadata is stored as a nested object and string values
@@ -146,20 +175,59 @@ def _failure_kind(e: BaseException) -> str | None:
     (the optional ``text`` extra is only required when this backend is selected);
     by the time this is called, the client has already been imported and used.
 
-    Verified rather than assumed: ``ConnectionTimeout`` is **not** a subclass of
-    ``ConnectionError`` in ``elastic_transport`` 8.19 — the two branches below
-    are genuinely disjoint, unlike httpx's, where ``ConnectTimeout`` derives from
-    ``TimeoutException`` and the check order is load-bearing.
+    .. rubric:: The ES ``timeout`` branch is coarser than the Qdrant one, and
+       W6's retry copy must not over-promise because of it
+
+    ``ConnectionTimeout`` is **not** a subclass of ``ConnectionError`` in
+    ``elastic_transport`` 8.19, so the first two branches below are disjoint **as
+    classes** — there is no ordering trap of the kind httpx has, where
+    ``ConnectTimeout`` derives from ``TimeoutException``.
+
+    They are **not** disjoint semantically, and that is the honest limitation of
+    this mapping. ``elastic_transport``'s aiohttp node builds
+    ``aiohttp.ClientTimeout(total=request_timeout)`` — a *total* bound with no
+    separate connect bound — and maps both ``asyncio.TimeoutError`` and
+    ``aiohttp``'s ``ServerTimeoutError`` onto ``ConnectionTimeout`` (read out of
+    ``elastic_transport._node._http_aiohttp``, not assumed). So a
+    **connect-phase** timeout — a blackholed address, a host that never
+    completes the handshake — arrives here as ``ConnectionTimeout`` and is
+    classified ``timeout``, where the Qdrant equivalent
+    (``httpx.ConnectTimeout``) is correctly ``unreachable``.
+
+    This is not fixable at this layer: the distinction is destroyed by the
+    client before we ever see the exception, and imposing a separate connect
+    bound would change request semantics for every caller. What *does* still
+    work is the common case — connection refused, DNS failure and TLS errors are
+    ``ConnectionError`` and do yield ``unreachable``.
+
+    **Consequence for #427 W6:** the ``timeout`` copy shown for the ES leg must
+    be "retrying often succeeds within seconds" and must **never** promise "the
+    second read will be warm". That promise is only sound for Qdrant, whose
+    client can tell a connect timeout from a read timeout. Written down here
+    rather than left for W6 to rediscover.
     """
     from elasticsearch import ApiError, ConnectionError, ConnectionTimeout, TransportError
 
     if isinstance(e, ConnectionTimeout):
-        # The request was accepted and then took too long. Retry is honest here.
+        # Too slow. Usually "accepted, then the search ran long" — but see the
+        # rubric above: this also swallows connect-phase timeouts, which is why
+        # the ES retry copy may not promise a warm read.
         return KIND_TIMEOUT
     if isinstance(e, ConnectionError):
         # Refused / DNS / TLS (TlsError subclasses this) — we never got there.
         return KIND_UNREACHABLE
     if isinstance(e, ApiError):
+        # 429 is deliberately NOT converted, and that is a decision rather than
+        # an oversight. `es_rejected_execution_exception` (bulk queue full,
+        # circuit breaker tripped) is the classic transient-under-load signal
+        # and it does belong in this family — but none of the three kinds
+        # describes it. `error` ("the store answered, unhappily") reads as a
+        # server fault and would give *worse* advice than the status quo;
+        # `timeout` would simply be false. Converting it properly wants a fourth
+        # kind (`overloaded`, with back-off advice), and the kind enum is
+        # user-visible once W6's UI branches on it — so that is W6's call, not
+        # this slice's. Until then a 429 keeps reaching the 500 path exactly as
+        # it does today: status quo preserved, no regression, gap written down.
         status = getattr(e, "status_code", None)
         return KIND_ERROR if isinstance(status, int) and status >= 500 else None
     if isinstance(e, TransportError):
@@ -189,13 +257,14 @@ class ElasticsearchTextIndex:
                  timeout: float | None = None) -> None:
         from elasticsearch import AsyncElasticsearch
 
-        # `timeout` is appended at the END of the signature: several scripts call
-        # this positionally (url, index, api_key), and reordering would silently
-        # rebind their arguments.
+        # `timeout` is appended at the END of the signature rather than slotted
+        # next to the other connection arguments. All 12 call sites in the tree
+        # in fact use keywords, so nothing would actually have broken — this is
+        # convention, not a rescue.
         #
         # When unset we pass nothing and the client keeps its own default, which
-        # is 10s per request (elastic_transport node config, verified against
-        # elasticsearch 8.19.3 / elastic_transport 8.19.0). That default is a
+        # is 10s per request (see _client_default_timeout_s, which reads it from
+        # the library rather than trusting this sentence). That default is a
         # THIRD of the Qdrant bound this deployment runs, and until #427 there
         # was no knob at all on this leg — the interim mitigation that bought the
         # vector leg headroom (QDRANT_TIMEOUT=60) had no counterpart here.
@@ -236,10 +305,17 @@ class ElasticsearchTextIndex:
         # traceback it replaces.
         detail = getattr(e, "message", None) or str(e)
         reason = f"{type(e).__name__}: {detail}".rstrip(": ")
+        # `:g` so a float setting renders like Qdrant's int one — 30, not 30.0.
+        # Matching the message SHAPE was the point of this whole method: an
+        # operator greps one pattern and gets both legs, and `30.0s` vs `30s`
+        # quietly breaks that.
         bound = (
-            f"{self._timeout}s (ELASTICSEARCH_TIMEOUT)"
+            f"{self._timeout:g}s (ELASTICSEARCH_TIMEOUT)"
             if self._timeout is not None
-            else f"client default {_CLIENT_DEFAULT_TIMEOUT_S}s (ELASTICSEARCH_TIMEOUT unset)"
+            else (
+                f"client default {_client_default_timeout_s():g}s "
+                "(ELASTICSEARCH_TIMEOUT unset)"
+            )
         )
         return (
             f"elasticsearch {op} on {self._index!r} at {self._url} failed — {reason}; "

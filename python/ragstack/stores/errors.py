@@ -39,17 +39,29 @@ class StoreUnavailable(RuntimeError):
     Carries two structured fields alongside the message (#427 item C):
 
     ``kind``
-        One of :data:`STORE_FAILURE_KINDS`.
+        One of :data:`STORE_FAILURE_KINDS`. **Required**, and deliberately has
+        no default. A default would have to be one of the three, and each is a
+        specific factual claim about what happened — ``error`` asserts the store
+        *answered*. A raise site that had not thought about it would emit that
+        claim into the 503 body and, once W6 lands, into the advice a user is
+        given. Better to make every new backend decide.
+
+        The cost is a keystroke at two raise sites; the benefit is that
+        ``kind ==`` assertions in tests are non-vacuous, which a default
+        silently destroyed: with one, a test asserting ``kind == "error"``
+        passed even with the whole derivation deleted. That exact shape was
+        caught on the Qdrant side and lived on in the ES tests until review.
     ``elapsed_s``
         Wall time the *failing call itself* spent, or ``None`` when the caller
-        did not measure it. This is **not** the timeout value: a ``ConnectError``
-        fails in milliseconds against a 30 s bound, and telling those two apart
-        after the fact is the whole reason to record it.
+        did not measure it. Genuinely optional — "I did not time this" is a real
+        and honest state, unlike "I did not think about the kind". This is
+        **not** the timeout value: a ``ConnectError`` fails in milliseconds
+        against a 30 s bound, and telling those two apart after the fact is the
+        whole reason to record it.
 
     The message stays a full human sentence — it is what made the #427 incident
     diagnosable in one ``grep`` — and the fields go *alongside* it, never
-    instead of it. Both are keyword-only with defaults, so every existing raise
-    site keeps working unchanged.
+    instead of it.
     """
 
     def __init__(
@@ -57,7 +69,7 @@ class StoreUnavailable(RuntimeError):
         store: str,
         message: str,
         *,
-        kind: str = KIND_ERROR,
+        kind: str,
         elapsed_s: float | None = None,
     ) -> None:
         super().__init__(message)

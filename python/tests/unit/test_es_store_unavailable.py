@@ -198,3 +198,37 @@ def test_timeout_reaches_the_client_and_deps_passes_it_through():
     # A constructor without it silently reverts to the client default — the
     # failure mode the Qdrant side already guards against this way.
     assert "timeout=settings.elasticsearch_timeout" in inspect.getsource(deps)
+
+
+def test_a_float_setting_renders_like_qdrants_int_one():
+    """``ELASTICSEARCH_TIMEOUT`` is typed ``float | None``, so 30 arrives as
+    ``30.0``. Matching the Qdrant message shape was the point of the whole
+    method — one grep pattern reading both legs — and ``30.0s`` next to ``30s``
+    quietly breaks it."""
+    ix = _index(ConnectionTimeout("slow"), timeout=30.0)
+    assert "30s (ELASTICSEARCH_TIMEOUT)" in ix._describe_failure("search", ConnectionTimeout("x"))
+    assert "30.0s" not in ix._describe_failure("search", ConnectionTimeout("x"))
+
+
+def test_the_named_client_default_is_read_from_the_library_not_hardcoded():
+    """The message must name the **applied** bound, never a number we believe.
+
+    ``_client_default_timeout_s`` reads ``NodeConfig``'s field default, so a
+    library bump changes the message rather than making it false. This test is
+    the other half: it also makes a bump *noticed*, instead of silently
+    absorbed while every assertion stays green.
+    """
+    import dataclasses
+
+    from elastic_transport import NodeConfig
+
+    from ragstack.stores.elasticsearch import (
+        _CLIENT_DEFAULT_TIMEOUT_FALLBACK_S,
+        _client_default_timeout_s,
+    )
+
+    field = next(f for f in dataclasses.fields(NodeConfig) if f.name == "request_timeout")
+    assert _client_default_timeout_s() == float(field.default)
+    # If this fails, elastic_transport changed its default: update the fallback
+    # constant and the `.env.example` note. The message itself is already right.
+    assert _client_default_timeout_s() == _CLIENT_DEFAULT_TIMEOUT_FALLBACK_S
