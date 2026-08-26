@@ -41,6 +41,11 @@ LOG_DIR="${LOG_DIR:-/scout/wf/gowe/logs/ragstack}"
 IMAGE_DIR="${IMAGE_DIR:-/scout/containers}"
 STAGE_OUT="${STAGE_OUT:-file:///scout/wf/data}"
 RAG_DATA="${RAG_DATA:-/rag}"            # corpus, shards, registry db live here
+# Container env + secrets for the ragstack group. Without these every engine-side
+# ragstack task exits 2 (no collection registry in the container). Both files
+# are passed only when present.
+WORKER_ENV_FILE="${WORKER_ENV_FILE:-/scout/wf/gowe/ragstack-worker-env.env}"
+WORKER_SECRET_FILE="${WORKER_SECRET_FILE:-/scout/wf/gowe/ragstack-worker-secrets.env}"
 WORKER_GROUP="ragstack"
 DEFAULT_WORKERS=24
 
@@ -103,6 +108,8 @@ wait_healthy() { # $1=url $2=timeout_s
 # ------------------------------------------------------------------- commands
 start_workers() {
   local n="${1:-$DEFAULT_WORKERS}"
+  [ -f "$WORKER_ENV_FILE" ] || { echo "  note: $WORKER_ENV_FILE missing; starting without --env-file"; WORKER_ENV_FILE=""; }
+  [ -f "$WORKER_SECRET_FILE" ] || { echo "  note: $WORKER_SECRET_FILE missing; starting without --secret-file"; WORKER_SECRET_FILE=""; }
   echo "Starting $n GoWe workers (group=$WORKER_GROUP) -> $GOWE_SERVER"
   for i in $(seq 1 "$n"); do
     local name="ragstack-oa-$i"
@@ -114,6 +121,8 @@ start_workers() {
       --runtime apptainer \
       --image-dir "$IMAGE_DIR" \
       --extra-bind "$RAG_DATA" \
+      ${WORKER_ENV_FILE:+--env-file "$WORKER_ENV_FILE"} \
+      ${WORKER_SECRET_FILE:+--secret-file "$WORKER_SECRET_FILE"} \
       --stage-out "$STAGE_OUT" \
       --workdir "$WORKDIR_ROOT/$name" \
       --poll 500ms --log-level info \
