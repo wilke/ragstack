@@ -19,6 +19,15 @@ typespec (``Workspace.spec`` / ``WorkspaceImpl.pm``) and GoWe's clients:
   existing folder is silently skipped (and omitted from the result), which is
   what makes :meth:`WorkspaceClient.ensure_collection_folder` idempotent.
   ``createUploadNodes: 1`` returns a Shock node URL instead of storing data.
+* **usermeta field names may not contain a dot** — the service stores them in
+  Mongo, which forbids it. ``Workspace.create`` accepts a dotted key in the
+  object tuple and stores *nothing* for it, with no error (#408);
+  ``Workspace.update_metadata`` refuses the whole call (``The dotted field
+  'a.b' in 'metadata.a.b' is not valid for storage``, #414). Hence the flat
+  ``ragstack_*`` names, and the read-back in
+  :meth:`WorkspaceClient._stamp` — a metadata write here is verified, not
+  assumed. Values are plain strings: GoWe's reader types usermeta as
+  ``map[string]string`` and drops anything else.
 * ``Workspace.get`` ``{objects: [path], metadata_only: 1}`` → ``[[meta], …]``;
   ``Workspace.ls`` ``{paths: [dir]}`` → ``{dir: [meta, …]}``;
   ``Workspace.update_metadata`` ``{objects: [[path, user_metadata]], append: 1}``;
@@ -50,14 +59,30 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-#: Value of ``ragstack.format`` on every collection folder this client creates.
+#: Value of ``ragstack_format`` on every collection folder this client creates.
 ARCHIVE_FORMAT = "ragstack-archive/1"
 #: Where collections live under a user's home (issue #353 layout).
 COLLECTIONS_ROOT = ".ragstack/collections"
 #: Read granularity for streamed uploads (bytes in flight at once).
 STREAM_CHUNK = 1 << 20
 
-_META_KEYS = ("ragstack.format", "ragstack.collection_id", "ragstack.tenant", "ragstack.spec_hash")
+#: The usermeta stamped on a collection folder. Underscore-separated, NOT dotted
+#: (#414): the Workspace stores usermeta in Mongo, which cannot hold a dot in a
+#: field name — ``create`` accepts a dotted key and stores nothing for it, and
+#: ``update_metadata`` refuses the call outright. Flat string values, because
+#: that is all a reader of this metadata is guaranteed to see (GoWe's client
+#: types usermeta as ``map[string]string`` and drops non-string values).
+_META_KEYS = ("ragstack_format", "ragstack_collection_id", "ragstack_tenant", "ragstack_spec_hash")
+#: Pre-#414 dotted spelling → its canonical name. No folder in any live
+#: Workspace carries these (they never persisted), but reading them keeps a
+#: folder stamped by an older client — or by a store without the constraint —
+#: legible instead of looking like a foreign collection build.
+_LEGACY_META_KEYS = {
+    "ragstack.format": "ragstack_format",
+    "ragstack.collection_id": "ragstack_collection_id",
+    "ragstack.tenant": "ragstack_tenant",
+    "ragstack.spec_hash": "ragstack_spec_hash",
+}
 _AUTH_RE = re.compile(r"authentication required|token validation failed|insufficient permissions"
                       r"|permission denied|not authorized", re.I)
 _NOT_FOUND_RE = re.compile(r"not found|does not exist", re.I)
@@ -195,6 +220,15 @@ def collection_folder(subject: str, collection_id: str) -> str:
     return f"/{_segment(subject, 'subject')}/home/{COLLECTIONS_ROOT}/{_segment(collection_id, 'collection_id')}"
 
 
+def ragstack_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """The ragstack keys carried by a folder's usermeta, under their canonical
+    (underscore) names — the pre-#414 dotted spelling reads as its equivalent."""
+    found = {canonical: metadata[legacy]
+             for legacy, canonical in _LEGACY_META_KEYS.items() if legacy in metadata}
+    found.update({k: metadata[k] for k in _META_KEYS if k in metadata})
+    return found
+
+
 def _segment(value: str, what: str) -> str:
     """A single path component: non-empty, no separators, not ``.``/``..``."""
     if not value or "/" in value or "\\" in value or value in (".", "..") or "\x00" in value:
@@ -236,23 +270,30 @@ class WorkspaceClient:
         tenant: str,
     ) -> str:
         """Create ``/<subject>/home/.ragstack/collections/<id>/`` + ``sources/`` +
-        ``versions/`` and stamp the four ``ragstack.*`` keys on the collection folder.
+        ``versions/`` and stamp the four ``ragstack_*`` keys on the collection folder.
 
-        Idempotent: the metadata is written exactly once (at creation, or as a
-        one-time backfill on a folder that exists with none of the keys). A
-        folder that already carries *different* ``ragstack.*`` values belongs to
-        another collection build and is refused rather than overwritten. Two
-        concurrent first calls with different ``spec_hash`` values can race on the
-        create (last write wins server-side); that is accepted because collection
-        creation is a single-writer path.
+        Idempotent, and — since #414 — safe to call on every ingest into the same
+        collection, which is what the upload route does. The metadata is written
+        at most once per folder: carried on the create and, if the service did
+        not keep it (#408) or the folder predates the stamp, backfilled with
+        ``Workspace.update_metadata``; a folder that already carries the wanted
+        values costs one ``stat``. A folder carrying *different* ``ragstack_*``
+        values belongs to another collection build and is refused rather than
+        overwritten. Two concurrent first calls with different ``spec_hash``
+        values can race on the create (last write wins server-side); that is
+        accepted because collection creation is a single-writer path.
+
+        Metadata that will not persist is a WARNING, never a failure: the keys
+        exist for discoverability (#353), and failing an ingest over them is
+        precisely what made #414 a hard 500 on every upload after the first.
         Returns the ``ws://`` URI of the collection folder.
         """
         base = collection_folder(subject, collection_id)
         wanted = {
-            "ragstack.format": ARCHIVE_FORMAT,
-            "ragstack.collection_id": collection_id,
-            "ragstack.tenant": tenant,
-            "ragstack.spec_hash": spec_hash,
+            "ragstack_format": ARCHIVE_FORMAT,
+            "ragstack_collection_id": collection_id,
+            "ragstack_tenant": tenant,
+            "ragstack_spec_hash": spec_hash,
         }
         subfolders: list[list[Any]] = [
             [f"{base}/sources", "folder", {}, None],
@@ -264,20 +305,52 @@ class WorkspaceClient:
             await self._rpc(token, "Workspace.create",
                             {"objects": [[base, "folder", wanted, None], *subfolders]})
             log.debug("workspace: created collection folder %s", base)
+            await self._stamp(token, base, wanted)
             return ws_uri(base)
 
         if not st.is_folder:
             raise WorkspaceError(f"{base} exists but is not a folder")
-        present = {k: st.metadata[k] for k in _META_KEYS if k in st.metadata}
+        present = ragstack_metadata(st.metadata)
         if not present:
-            await self._rpc(token, "Workspace.update_metadata",
-                            {"objects": [[base, wanted]], "append": 1})
-            log.debug("workspace: backfilled metadata on %s", base)
+            await self._stamp(token, base, wanted, known_missing=True)
         elif present != wanted:
             raise WorkspaceError(f"{base} carries ragstack metadata for a different collection build")
         # Existing folders are skipped server-side, so this is a no-op when both exist.
         await self._rpc(token, "Workspace.create", {"objects": subfolders})
         return ws_uri(base)
+
+    async def _stamp(
+        self, token: str, base: str, wanted: dict[str, str], *, known_missing: bool = False
+    ) -> None:
+        """Make the ``ragstack_*`` keys actually land on ``base``, or say why not.
+
+        ``Workspace.create`` takes a user_metadata dict in the object tuple and
+        was seen to store nothing of it (#408) with no error of any kind — so the
+        create is treated as best-effort and read back here, with
+        ``Workspace.update_metadata`` as the authoritative write. If the keys are
+        still not there afterwards the folder is left as it is and a warning
+        names the folder and the keys: this is discoverability metadata, and a
+        collection that cannot be stamped must still accept documents.
+        """
+        if not known_missing:
+            st = await self.stat(token, base)
+            if ragstack_metadata(st.metadata) == wanted:
+                return
+            log.debug("workspace: create did not store the metadata on %s; backfilling", base)
+        try:
+            await self._rpc(token, "Workspace.update_metadata",
+                            {"objects": [[base, wanted]], "append": 1})
+        except WorkspaceError as exc:
+            log.warning("workspace: could not stamp %s on %s: %s — the folder is usable, "
+                        "but it is not self-describing", ", ".join(sorted(wanted)), base, exc)
+            return
+        log.debug("workspace: stamped metadata on %s", base)
+        st = await self.stat(token, base)
+        stored = ragstack_metadata(st.metadata)
+        if stored != wanted:
+            log.warning("workspace: the metadata write on %s was accepted but did not persist "
+                        "(stored %s, wanted %s) — the folder is usable, but it is not "
+                        "self-describing", base, sorted(stored), ", ".join(sorted(wanted)))
 
     async def upload_source(
         self,

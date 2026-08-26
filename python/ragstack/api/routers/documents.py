@@ -681,10 +681,31 @@ async def _gowe_upload_sources(
     every size refusal happens in ``_admit_uploads`` before the first write —
     but it is the consequence if a stream ever trips ``_bounded`` or the
     request budget here.
+
+    Preparing the collection folder is the first Workspace call and gets the
+    same mapping as the writes that follow — 401 for a rejected token, 502 for
+    anything else — because an uncaught store failure here surfaced as a bare
+    500 on the route (#414: with the folder already present from an earlier
+    job, every later upload into the same collection hit it).
     """
-    folder = await workspace.ensure_collection_folder(
-        token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
-    )
+    try:
+        folder = await workspace.ensure_collection_folder(
+            token, subject, entry.id, spec_hash=record.spec_hash, tenant=tenant
+        )
+    except WorkspaceAuthError:
+        raise HTTPException(
+            status_code=401, detail="the Workspace rejected the caller's token"
+        ) from None
+    except WorkspaceError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"the collection folder for {entry.id!r} could not be prepared in the "
+                f"Workspace: {e}. No files were uploaded — retry, and if it persists "
+                f"check that {ws_uri(collection_folder(subject, entry.id))} is a folder "
+                f"you own and is not in use by another collection"
+            ),
+        ) from None
     sources = f"{ws_path(folder)}/sources"
     items: list[WorkItem] = []
     for idx, (upload, kind) in enumerate(zip(files, kinds, strict=True)):
@@ -1137,6 +1158,9 @@ async def ingest_upload(
     caller's own token and the scatter workflow is submitted as the caller with
     ``ws://`` inputs — the same submission path as a Workspace-reference ingest.
     Needs a bearer BV-BRC identity (401 otherwise) and a registered collection.
+    A Workspace that refuses the token is 401 and any other Workspace failure —
+    preparing the collection folder included — is 502 with the job marked
+    ``failed``; neither is ever a bare 500 (#414).
     """
     _refuse_unknown_backend()
     if _ingest_backend_name() == _GOWE:
