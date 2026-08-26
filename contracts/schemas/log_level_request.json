@@ -6,7 +6,7 @@
   "type": "object",
   "properties": {
     "level": {
-      "description": "New ROOT log level. Case-insensitive; `warn` is accepted as an alias for `WARNING` because .env.example has documented it since before LOG_LEVEL was honoured at all. `NOTSET` is rejected here: on the root logger it means 'no threshold' rather than 'inherit', and turning every library in the process to full DEBUG is not what an operator typing it would expect. Deliberately NOT an `enum`: the server validates the vocabulary and answers 422, and an enum here would make that documented response unreachable from a conformant client (the same reasoning as `UserRoleRequest.role`). The response DOES pin the enum, because there the server is the writer. Omit to leave the root level as it is.",
+      "description": "New ROOT log level. Case-insensitive; `warn` is accepted as an alias for `WARNING` because .env.example has documented it since before LOG_LEVEL was honoured at all. `NOTSET` is rejected here: on the root logger it means 'no threshold' rather than 'inherit', and turning every library in the process to full DEBUG is not what an operator typing it would expect. Deliberately NOT an `enum`: the server validates the vocabulary and answers a 4xx, and an enum here would make that documented response unreachable from a conformant client. That is `UserRoleRequest.role`'s reasoning — note it answers 400 there and this answers 422, because `admin_users.py` reserves 400 for a malformed request to keep it distinct from the 409 its state change can raise, and this endpoint has no such neighbour. The response DOES pin the enum, because there the server is the writer. Omit to leave the root level as it is.",
       "type": "string",
       "minLength": 1,
       "maxLength": 16

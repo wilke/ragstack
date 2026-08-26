@@ -30,12 +30,30 @@
     "configured_level_resolved": {
       "description": "What `configured_level` resolves to after upper-casing and validation; INFO when it was unrecognised. This is what a restart would return the process to.",
       "type": "string",
-      "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+      "enum": [
+        "CRITICAL",
+        "FATAL",
+        "ERROR",
+        "WARNING",
+        "WARN",
+        "INFO",
+        "DEBUG",
+        "NOTSET"
+      ]
     },
     "effective_level": {
-      "description": "The root logger's level RIGHT NOW. Equals `configured_level_resolved` unless `runtime_override` is true.",
+      "description": "The root logger's level RIGHT NOW. Equals `configured_level_resolved` unless `runtime_override` is true. It governs every logger that inherits from root — which is not all of them: `uvicorn.*` sets `propagate=False` and carries its own handlers, so it consults its own level and is unaffected by this field. Name a uvicorn logger in `loggers` to reach it.",
       "type": "string",
-      "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+      "enum": [
+        "CRITICAL",
+        "FATAL",
+        "ERROR",
+        "WARNING",
+        "WARN",
+        "INFO",
+        "DEBUG",
+        "NOTSET"
+      ]
     },
     "runtime_override": {
       "description": "True when a PUT has changed the root level in this process since it started (or since the last DELETE). False means `effective_level` came from configuration.",
@@ -56,12 +74,16 @@
     "dampen_loggers": {
       "description": "The configured dampen set (`LOG_DAMPEN_LOGGERS`). A name here can still be overridden explicitly; the override wins and the entry in `loggers` then reads `source: override`.",
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "loggers": {
       "description": "Every logger this endpoint currently touches: the runtime overrides and the dampen set, unioned. `level` is that logger's OWN level (NOTSET = it inherits from root). The per-logger overrides are exactly the entries with `source: override`.",
       "type": "array",
-      "items": { "$ref": "#/$defs/LoggerLevel" }
+      "items": {
+        "$ref": "#/$defs/LoggerLevel"
+      }
     },
     "logger_override_count": {
       "description": "How many runtime per-logger overrides are in force.",
@@ -76,7 +98,11 @@
   "$defs": {
     "LoggerLevel": {
       "type": "object",
-      "required": ["name", "level", "source"],
+      "required": [
+        "name",
+        "level",
+        "source"
+      ],
       "properties": {
         "name": {
           "description": "The logger's dotted name.",
@@ -85,12 +111,24 @@
         "level": {
           "description": "The level set on this logger itself. NOTSET means it inherits from root rather than meaning 'silent'.",
           "type": "string",
-          "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+          "enum": [
+            "CRITICAL",
+            "FATAL",
+            "ERROR",
+            "WARNING",
+            "WARN",
+            "INFO",
+            "DEBUG",
+            "NOTSET"
+          ]
         },
         "source": {
           "description": "`override` — a runtime per-logger override set through this endpoint. `dampen` — a member of the configured dampen set, at whatever the current root level implies.",
           "type": "string",
-          "enum": ["override", "dampen"]
+          "enum": [
+            "override",
+            "dampen"
+          ]
         }
       },
       "additionalProperties": false

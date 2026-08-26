@@ -62,6 +62,20 @@ always runs in this order, on **every** change:
 2. ``apply_log_level`` → root level + the dampen set;
 3. the current overrides on top.
 
+.. rubric:: The root level does not reach ``uvicorn.*``
+
+Uvicorn's loggers set ``propagate=False`` and carry their own handlers, so they
+consult their own level and never root's. Verified both directions: setting the
+root level to CRITICAL leaves uvicorn's access line printing, and setting it to
+DEBUG does not enable uvicorn debug. Naming ``uvicorn``/``uvicorn.error``/
+``uvicorn.access`` in ``loggers`` *does* reach them, and is the only thing that
+does — worth knowing, because an operator reading ``effective_level: DEBUG``
+would reasonably expect otherwise.
+
+The side benefit is worth stating: a complete "denial of observability" is
+therefore **not** reachable through this endpoint. Whatever level is set here,
+uvicorn's access log survives it — as does the audit line below.
+
 .. rubric:: The audit line must survive the change it is auditing
 
 An operator who finds DEBUG on in production needs to know who turned it on.
@@ -114,6 +128,26 @@ MAX_LOGGER_OVERRIDES = 32
 #: typing it means that. Per-logger it is redundant: `loggers` has replace
 #: semantics, so "stop overriding this one" is expressed by omitting it.
 _NOTSET = "NOTSET"
+
+#: Names refused as per-logger override targets because they do not name a
+#: per-logger thing.
+#:
+#: ``logging.getLogger("root")`` returns **the actual root logger** — CPython
+#: short-circuits on ``name == root.name`` before consulting the manager — so an
+#: override of ``"root"`` would move the root level while :data:`_state.level`
+#: stayed ``None`` and the response kept reporting ``runtime_override: false``.
+#: It is also invisible to the existence rule the moment any dependency creates
+#: a ``root.<something>`` logger, since that registers a ``PlaceHolder`` under
+#: the key ``"root"``.
+#:
+#: Not reachable today (nothing in the tree creates a ``root.*`` logger, and the
+#: live server refuses the name for want of that placeholder) and never an audit
+#: hole — the change is still audited, and ``level_before``/``level_after`` read
+#: ``root.level`` directly, so they would have told the truth either way. Refused
+#: explicitly anyway: it costs one comparison, and "reports the wrong thing about
+#: itself" is not a property to leave resting on a dependency's logger names. Use
+#: the ``level`` field, which is what actually owns the root level.
+_RESERVED_NAMES = frozenset({"root"})
 
 
 class LogControlError(ValueError):
@@ -221,6 +255,12 @@ def _validate_overrides(loggers: Mapping[str, str]) -> dict[str, str]:
             raise LogControlError(
                 f"loggers: {AUDIT_LOGGER!r} cannot be overridden — it carries the "
                 "audit trail for this endpoint."
+            )
+        if name in _RESERVED_NAMES:
+            raise LogControlError(
+                f"loggers: {name!r} does not name a per-logger target — "
+                "logging.getLogger('root') IS the root logger. Use the `level` "
+                "field, which owns the root level and reports it."
             )
         if not _logger_exists(name):
             raise LogControlError(

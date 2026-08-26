@@ -74,13 +74,25 @@ class LogLevelRequest(BaseModel):
 
     Both fields are optional at the schema layer and the "one of them" rule is
     enforced in :mod:`~ragstack.observability.log_control`, alongside every other
-    refusal, so that a caller gets **one** consistent 422 shape however they got
-    it wrong — rather than pydantic's for some mistakes and ours for the rest.
+    *semantic* refusal — so the rules about levels and logger names live in one
+    place rather than being split between pydantic and the control module.
+
+    **The 422 body is not one shape**, and an earlier version of this docstring
+    claimed it was. A semantic refusal answers ``{"detail": "<sentence>"}``; a
+    shape error pydantic catches first — a non-string ``level``, an unknown
+    field — answers pydantic's list of error objects. Both are 422, and neither
+    breaks the contract (the OpenAPI document defines no error body for this
+    path), but do not write client code assuming ``detail`` is a string.
 
     ``level`` is deliberately not an ``Enum``: the server owns the vocabulary and
-    answers 422, and pinning an enum here would make that documented response
-    unreachable from a conformant client. This mirrors ``UserRoleRequest.role``,
-    which settled the same question for the role vocabulary.
+    answers a 4xx, and pinning an enum here would make that documented response
+    unreachable from a conformant client. That reasoning is
+    ``UserRoleRequest.role``'s — but note it answers **400** there and this
+    answers 422. The status differs because the classification does:
+    ``admin_users.py`` reserves 400 for a malformed request precisely to keep it
+    distinct from the 409 its state change can raise. This endpoint has no such
+    neighbour, so every refusal is a 422, as in ``groups.py``,
+    ``collections.py`` and ``query.py``.
     """
 
     model_config = {"extra": "forbid"}

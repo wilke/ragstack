@@ -1116,6 +1116,16 @@ paths:
         applied, so a 422 leaves the effective level exactly as it was.
 
 
+        **`level` does not govern `uvicorn.*`.** Uvicorn's loggers set
+        `propagate=False` and carry their own handlers, so they consult their own
+        level and never the root one: `{"level":"CRITICAL"}` leaves uvicorn's
+        access line printing, and `{"level":"DEBUG"}` does not turn uvicorn debug
+        on. Name `uvicorn`, `uvicorn.error` or `uvicorn.access` in `loggers` to
+        reach them — that works, and it is the only way to. The side benefit is
+        that a full "denial of observability" is not reachable through this
+        endpoint at all: the access log survives any level set here.
+
+
         Every accepted change is logged at **WARNING** with the calling principal
         and the before/after, on a logger pinned to WARNING so the record
         survives the very change that raises the threshold. Whoever finds DEBUG
@@ -3710,11 +3720,14 @@ components:
             root logger it means "no threshold" rather than "inherit", and
             turning every library in the process to full DEBUG is not what an
             operator typing it would expect. Deliberately NOT an `enum` — the
-            server validates the vocabulary and answers 422, and an enum here
+            server validates the vocabulary and answers a 4xx, and an enum here
             would make that documented response unreachable from a conformant
-            client (the same reasoning as `UserRoleRequest.role`).
-            `LogLevelResponse` DOES pin the enum, because there the server is
-            the writer. Omit to leave the root level as it is.
+            client. That is `UserRoleRequest.role`'s reasoning; note it answers
+            **400** there and this answers **422**, because `admin_users.py`
+            reserves 400 for a malformed request to keep it distinct from the
+            409 its state change can raise, and this endpoint has no such
+            neighbour. `LogLevelResponse` DOES pin the enum, because there the
+            server is the writer. Omit to leave the root level as it is.
           type: string
           minLength: 1
           maxLength: 16
@@ -3787,7 +3800,11 @@ components:
         effective_level:
           description: >-
             The root logger's level RIGHT NOW. Equals
-            `configured_level_resolved` unless `runtime_override` is true.
+            `configured_level_resolved` unless `runtime_override` is true. It
+            governs every logger that inherits from root — which is not all of
+            them: `uvicorn.*` sets `propagate=False` and carries its own
+            handlers, so it consults its own level and is unaffected by this
+            field. Name a uvicorn logger in `loggers` to reach it.
           type: string
           enum: [CRITICAL, FATAL, ERROR, WARNING, WARN, INFO, DEBUG, NOTSET]
         runtime_override:

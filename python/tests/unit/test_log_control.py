@@ -292,6 +292,65 @@ def test_the_audit_logger_cannot_be_overridden():
         log_control.set_level(loggers={log_control.AUDIT_LOGGER: "CRITICAL"})
 
 
+def test_the_name_root_is_refused_even_once_a_placeholder_exists():
+    """``logging.getLogger("root")`` returns THE ROOT LOGGER — CPython
+    short-circuits on ``name == root.name`` before consulting the manager. So an
+    override of ``"root"`` would move the root level while ``_state.level``
+    stayed ``None`` and the response kept reporting ``runtime_override: false``:
+    the endpoint lying about itself.
+
+    The existence rule does not catch it on its own. It only has to be true that
+    *some* dependency creates a ``root.<something>`` logger — which registers a
+    ``PlaceHolder`` under the key ``"root"`` — and the name becomes reachable.
+    Nothing in this tree does that today, so the placeholder is created here to
+    prove the refusal is the explicit check and not an accident of what happens
+    to be imported.
+    """
+    root_before = logging.getLogger().level
+    created = "root" not in logging.Logger.manager.loggerDict
+    logging.getLogger("root.someplugin")  # registers a PlaceHolder under "root"
+    try:
+        assert "root" in logging.Logger.manager.loggerDict
+        with pytest.raises(log_control.LogControlError, match="per-logger target"):
+            log_control.set_level(loggers={"root": "CRITICAL"})
+        assert logging.getLogger().level == root_before
+        assert log_control.describe()["runtime_override"] is False
+    finally:
+        logging.Logger.manager.loggerDict.pop("root.someplugin", None)
+        if created:
+            logging.Logger.manager.loggerDict.pop("root", None)
+
+
+def test_uvicorn_loggers_are_not_governed_by_the_root_level():
+    """``uvicorn.*`` sets ``propagate=False`` and carries its own handlers, so it
+    consults its own level and never root's. An operator reading
+    ``effective_level: DEBUG`` may reasonably expect otherwise, so the behaviour
+    is pinned here and documented in the contract.
+
+    The side benefit: a complete denial of observability is not reachable through
+    this endpoint — uvicorn's access log survives any level set here.
+    """
+    access = logging.getLogger("uvicorn.access")
+    before, before_propagate = access.level, access.propagate
+    try:
+        access.propagate = False
+        access.setLevel(logging.INFO)
+
+        log_control.set_level(level="CRITICAL")
+        assert access.isEnabledFor(logging.INFO), "root CRITICAL silenced the access log"
+
+        log_control.set_level(level="DEBUG")
+        assert not access.isEnabledFor(logging.DEBUG), "root DEBUG enabled uvicorn debug"
+
+        # …and naming it explicitly IS the way through.
+        log_control.set_level(loggers={"uvicorn.access": "CRITICAL"})
+        assert not access.isEnabledFor(logging.INFO)
+    finally:
+        log_control.reset()
+        access.setLevel(before)
+        access.propagate = before_propagate
+
+
 # --------------------------------------------------------------------------- #
 # The audit trail
 # --------------------------------------------------------------------------- #
