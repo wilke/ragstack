@@ -104,6 +104,35 @@ time is already in place and stays **mandatory for every API change**: `contract
 remains a first-class module for `cmd/mcp` and any future static-binary tool; those are
 built, tested and released, not frozen.
 
+**6. Two entry points for user-triggered work, and only one of them submits to GoWe.**
+*(Amendment, 2026-08-25.)* A user action can reach the offline plane two ways, and they are not
+interchangeable:
+
+- **The UI submits the workflow to GoWe directly** — the path decision 1 describes, built in
+  #203. The engine owns scatter, retry and delivery; the API holds nothing while it runs.
+- **The UI calls the BV-BRC API to run an app** — the BV-BRC App Service allocates a compute
+  node for that app. **The app must NOT submit to GoWe.** Doing so would hold two resources for
+  one job: the app's own allocated process, idle, polling a workflow that a GoWe worker is
+  executing somewhere else. Instead the app runs the CWL **in place on the node it was already
+  given**, using the `cwl-runner` binary from the GoWe repository.
+
+So `cwl-runner` is a **deliverable** of the GoWe repo consumed by the app, not merely a
+development tool. The consequences to design against:
+
+- The app supplies its own execution environment — the worker image and the CWL are resolved on
+  the compute node, and **every store target must be passed explicitly**, because there is no
+  engine to seed inputs and the workflow's own defaults point at production (#407, the same
+  class as #363/#369/#392).
+- There is no engine post-staging on this path, so the app delivers the archive to the
+  Workspace itself, through the Shock upload path our own client already uses — which is
+  byte-exact, and therefore sidesteps GoWe#172 entirely.
+- Status and outputs follow the BV-BRC app convention (`output_path/output_file` plus the
+  hidden `.output_file/` results folder), so the UI polls BV-BRC for this path and RAGStack's
+  job store for the direct-submission path. Two status surfaces, one per entry point.
+
+Both paths share the same CWL and the same per-shard Python tools; only the executor differs —
+which is the property decision 1 was chosen for.
+
 **5. The ML core stays Python behind HTTP** — unchanged from ADR-0001 and not restated.
 
 ## Consequences
