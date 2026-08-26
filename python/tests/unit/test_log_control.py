@@ -824,3 +824,38 @@ def test_a_pending_revert_does_not_outlive_or_upset_a_closing_loop():
     assert loop.is_closed()
     noisy = [r for r in seen if r.levelno >= logging.WARNING]
     assert not noisy, [r.getMessage() for r in noisy]
+
+
+def test_a_refused_put_leaves_a_pending_revert_ARMED(clock):
+    """Atomicity in the direction the other refusal tests cannot see.
+
+    Every other "a 422 changes nothing" test here starts with no timer armed, so
+    its assertion is only ever *no timer exists* — which a bug that disarms on
+    refusal would satisfy perfectly. This one starts with one armed and asserts
+    it survived, deadline and all.
+
+    The property rests on ordering: validation raises before the lock, so the
+    ``_cancel_revert_locked()`` at the top of the applied path never runs on a
+    refusal. That is one line away from being wrong — "supersede cancels first"
+    reads like something to hoist — and hoisting it would turn every typo'd PUT
+    into a silent disarm, i.e. the forgotten-DEBUG failure this feature exists
+    to prevent, reached by way of a request the server said no to.
+    """
+    log_control.set_level(level="DEBUG", ttl_seconds=600)
+    armed = clock.armed[0]
+
+    clock.advance(30)
+    for bad in ({"level": "verbose"}, {"loggers": {"no.such.logger.here": "DEBUG"}},
+                {"level": "DEBUG", "ttl_seconds": 0}):
+        with pytest.raises(log_control.LogControlError):
+            log_control.set_level(**bad)
+
+    state = log_control.describe()
+    assert state["auto_revert_pending"] is True, "a refused request disarmed the expiry"
+    assert state["ttl_seconds"] == 600
+    assert state["expires_in_seconds"] == 570, "the deadline moved"
+    assert clock.armed == [armed], "the timer was replaced rather than left alone"
+
+    # And it still actually fires.
+    assert clock.advance(570) == 1
+    assert log_control.describe()["runtime_override"] is False
