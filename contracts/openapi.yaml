@@ -1051,6 +1051,120 @@ paths:
         "404": { description: Unknown model }
         "422": { description: A non-hot-swappable task was named }
 
+  /v1/admin/log-level:
+    get:
+      operationId: getLogLevel
+      summary: The log level in effect in this process (admin only)
+      description: >-
+        What the root logger is set to **right now**, what configuration would
+        return it to, and which loggers this process is currently overriding or
+        damping.
+
+
+        The configured/effective split matters: `GET /v1/config` echoes the
+        **raw** `LOG_LEVEL` string, so a value the server rejected at start-up is
+        reported there while INFO is what is actually in force. Here
+        `configured_level` is that raw string, `configured_level_resolved` is
+        what it resolves to, and `effective_level` is the live root level.
+
+
+        Runtime state is **process-local and resets on restart** — see the PUT
+        below.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
+      responses:
+        "200":
+          description: The effective log state of the process that answered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogLevelResponse" }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
+        "403": { description: Admin role required }
+    put:
+      operationId: setLogLevel
+      summary: Change the log level without restarting (admin only)
+      description: >-
+        Raise or lower the running process's log level and its per-logger
+        overrides, applied live — no restart, in the same spirit as
+        `PATCH /v1/admin/config/assignments`. The change takes effect on the very
+        next log call.
+
+
+        **Process-local, and it resets on restart.** That is a feature, not an
+        oversight: a debugging session left at DEBUG cannot silently become the
+        permanent configuration of a tenant. To make a level stick, change
+        `LOG_LEVEL` and restart. `pid` in the response says which process
+        answered. Every production launch today is a single uvicorn process with
+        no `--workers`, so one call reaches the one process that serves every
+        request; were `--workers` ever added, each worker would keep its own
+        runtime level and a single call would change exactly one of them at
+        random — the log line remains the ground truth in that world.
+
+
+        **Both fields are optional, but a body needs one of them.** `level` sets
+        the root level (case-insensitive; `warn` accepted; `NOTSET` rejected).
+        `loggers` is a name→level map with **replace** semantics — what you send
+        becomes the complete set of runtime overrides, `{}` clears them all, and
+        omitting the field leaves them untouched. Logger names are validated for
+        charset and length and **must already exist** in the process:
+        `logging.getLogger(name)` creates a logger permanently, so accepting
+        arbitrary names would be an unbounded-growth path even behind this gate.
+        The number of overrides is capped (`max_logger_overrides`).
+
+
+        Validation is **atomic**. The whole body is checked before anything is
+        applied, so a 422 leaves the effective level exactly as it was.
+
+
+        Every accepted change is logged at **WARNING** with the calling principal
+        and the before/after, on a logger pinned to WARNING so the record
+        survives the very change that raises the threshold. Whoever finds DEBUG
+        on in production can find out who turned it on and when.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LogLevelRequest" }
+      responses:
+        "200":
+          description: Applied; returns the new effective state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogLevelResponse" }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
+        "403": { description: Admin role required }
+        "422":
+          description: >-
+            An unknown or `NOTSET` level, a body with neither `level` nor
+            `loggers`, a logger name that fails the charset/length rule or does
+            not exist in this process, an attempt to override `ragstack.audit`,
+            or more overrides than `max_logger_overrides`. Nothing was applied.
+    delete:
+      operationId: resetLogLevel
+      summary: Drop the runtime override and return to the configured level (admin only)
+      description: >-
+        Clear the runtime root-level override and every per-logger override, and
+        re-apply what `LOG_LEVEL` and `LOG_DAMPEN_LOGGERS` configure — the state
+        the process would come back to after a restart. The caller does not need
+        to know what those values were.
+
+
+        Idempotent, always 200 (there is nothing to 404 on: no override is a
+        valid state to reset from), and audited at WARNING like a PUT, because a
+        reset is a change.
+      tags: [Admin]
+      security: [{ ApiKeyAuth: [] }, { BearerIdentity: [] }]
+      responses:
+        "200":
+          description: Reset; returns the configured state now back in effect
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogLevelResponse" }
+        "401": { description: Missing or invalid credential (API key or bearer identity) }
+        "403": { description: Admin role required }
+
   /v1/stats/stores:
     get:
       operationId: statsStores
@@ -3576,6 +3690,178 @@ components:
             stored role does NOT take the admin away — that is an environment
             edit plus a restart.
           type: boolean
+      additionalProperties: false
+
+    LogLevelRequest:
+      type: object
+      description: >-
+        Change the running process's log level without restarting it (PUT
+        /v1/admin/log-level body). At least one of `level` or `loggers` must be
+        present; a body carrying neither is a 422, because a request that asks
+        for nothing is far more likely a typo than an intent. Validation is
+        atomic — the whole body is checked before anything is applied, so a
+        rejected request leaves the effective level exactly as it was.
+      properties:
+        level:
+          description: >-
+            New ROOT log level. Case-insensitive; `warn` is accepted as an alias
+            for `WARNING`, because `.env.example` has documented it since before
+            `LOG_LEVEL` was honoured at all. `NOTSET` is rejected here: on the
+            root logger it means "no threshold" rather than "inherit", and
+            turning every library in the process to full DEBUG is not what an
+            operator typing it would expect. Deliberately NOT an `enum` — the
+            server validates the vocabulary and answers 422, and an enum here
+            would make that documented response unreachable from a conformant
+            client (the same reasoning as `UserRoleRequest.role`).
+            `LogLevelResponse` DOES pin the enum, because there the server is
+            the writer. Omit to leave the root level as it is.
+          type: string
+          minLength: 1
+          maxLength: 16
+        loggers:
+          description: >-
+            Per-logger overrides, as a name→level map. REPLACE semantics:
+            whatever is sent becomes the complete set of runtime per-logger
+            overrides, so `{}` clears them all and there is no separate "unset
+            one logger" verb. Any logger previously overridden and absent here is
+            returned to inheriting (NOTSET) before the root level and the dampen
+            set are re-applied on top. Omit the whole field to leave the current
+            overrides untouched. Names are validated against
+            `^[A-Za-z0-9_.-]{1,128}$` and must ALREADY EXIST in the process's
+            logger registry — `logging.getLogger(name)` creates a logger
+            permanently, so accepting arbitrary names would make this endpoint an
+            unbounded-growth path even behind the admin gate. The count is capped
+            (`max_logger_overrides` in the response). `ragstack.audit` cannot be
+            overridden: it carries this endpoint's own audit trail.
+          type: object
+          maxProperties: 32
+          propertyNames:
+            pattern: "^[A-Za-z0-9_.-]{1,128}$"
+          additionalProperties:
+            type: string
+            minLength: 1
+            maxLength: 16
+      additionalProperties: false
+
+    LogLevelResponse:
+      type: object
+      description: >-
+        The log level actually in effect in THIS process, and how it got there.
+        Returned by GET, PUT and DELETE /v1/admin/log-level.
+
+
+        The configured/effective split is the point of this shape. `GET
+        /v1/config` echoes the RAW `LOG_LEVEL` string, so a value the server
+        rejected at start-up is reported there while INFO is what is actually in
+        force. Here `configured_level` is that same raw string,
+        `configured_level_resolved` is what it resolves to, and `effective_level`
+        is what the root logger is set to right now.
+
+
+        Runtime state is PROCESS-LOCAL and resets on restart — see the PUT
+        operation for why that is deliberate and what would change if
+        `--workers` were ever added.
+      required:
+        [pid, configured_level, configured_level_resolved, effective_level,
+         runtime_override, changed_at, changed_by, dampening_active,
+         dampen_loggers, loggers, logger_override_count, max_logger_overrides]
+      properties:
+        pid:
+          description: >-
+            OS process id that answered. Runtime log state lives in this process
+            only.
+          type: integer
+        configured_level:
+          description: >-
+            The RAW `LOG_LEVEL` setting, exactly as `GET /v1/config` echoes it —
+            including a value the server rejected. Compare with
+            `configured_level_resolved` to see whether it was understood.
+          type: string
+        configured_level_resolved:
+          description: >-
+            What `configured_level` resolves to after upper-casing and
+            validation; INFO when it was unrecognised. This is what a restart
+            would return the process to.
+          type: string
+          enum: [CRITICAL, FATAL, ERROR, WARNING, WARN, INFO, DEBUG, NOTSET]
+        effective_level:
+          description: >-
+            The root logger's level RIGHT NOW. Equals
+            `configured_level_resolved` unless `runtime_override` is true.
+          type: string
+          enum: [CRITICAL, FATAL, ERROR, WARNING, WARN, INFO, DEBUG, NOTSET]
+        runtime_override:
+          description: >-
+            True when a PUT has changed the root level in this process since it
+            started (or since the last DELETE). False means `effective_level`
+            came from configuration.
+          type: boolean
+        changed_at:
+          description: >-
+            ISO-8601 UTC timestamp of the last runtime change (PUT or DELETE);
+            empty string if this process has never had one. Empty rather than
+            null, matching `UserRoleRecord.role_set_at`.
+          type: string
+        changed_by:
+          description: >-
+            Tenant of the admin principal who made that last change; empty string
+            if there has never been one. The same identity appears on the WARNING
+            audit line in the log, which is the durable record — this field is a
+            convenience and dies with the process.
+          type: string
+        dampening_active:
+          description: >-
+            True when the loggers in `dampen_loggers` are pinned to WARNING. They
+            are pinned whenever the effective level is above DEBUG and released
+            at DEBUG, so that turning the root level down actually turns the HTTP
+            transports on — which is the whole reason to turn it down. A single
+            `/v1/query` makes 5 outbound HTTP calls minimum and up to ~14 on the
+            multi-collection path, one `httpx` INFO line each, so leaving them
+            un-damped at INFO would bury our own lines at 1:5.
+          type: boolean
+        dampen_loggers:
+          description: >-
+            The configured dampen set (`LOG_DAMPEN_LOGGERS`). A name here can
+            still be overridden explicitly; the override wins and the entry in
+            `loggers` then reads `source: override`.
+          type: array
+          items: { type: string }
+        loggers:
+          description: >-
+            Every logger this endpoint currently touches: the runtime overrides
+            and the dampen set, unioned. `level` is that logger's OWN level
+            (NOTSET = it inherits from root). The per-logger overrides are
+            exactly the entries with `source: override`.
+          type: array
+          items:
+            type: object
+            required: [name, level, source]
+            properties:
+              name:
+                description: The logger's dotted name.
+                type: string
+              level:
+                description: >-
+                  The level set on this logger itself. NOTSET means it inherits
+                  from root rather than meaning "silent".
+                type: string
+                enum: [CRITICAL, FATAL, ERROR, WARNING, WARN, INFO, DEBUG, NOTSET]
+              source:
+                description: >-
+                  `override` — a runtime per-logger override set through this
+                  endpoint. `dampen` — a member of the configured dampen set, at
+                  whatever the current root level implies.
+                type: string
+                enum: [override, dampen]
+            additionalProperties: false
+        logger_override_count:
+          description: How many runtime per-logger overrides are in force.
+          type: integer
+        max_logger_overrides:
+          description: >-
+            The cap on that count. A PUT that would exceed it is a 422 and
+            changes nothing.
+          type: integer
       additionalProperties: false
 
     CollectionCreateRequest:

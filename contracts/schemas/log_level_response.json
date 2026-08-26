@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "log_level_response.json",
+  "title": "LogLevelResponse",
+  "description": "The log level actually in effect in THIS process, and how it got there. Returned by GET, PUT and DELETE /v1/admin/log-level.\n\nThe configured/effective split is the point of this shape. GET /v1/config echoes the RAW `LOG_LEVEL` string, so a value the server rejected at startup (`LOG_LEVEL=verbose`, say) is reported there while INFO is what is actually in force. Here `configured_level` is that same raw string, `configured_level_resolved` is what it resolves to, and `effective_level` is what the root logger is set to right now — which differs from both whenever a runtime override is in place.\n\nRuntime state is PROCESS-LOCAL and resets on restart. That is deliberate: a debugging session cannot silently become the permanent configuration, and the way to make a level stick is to change `LOG_LEVEL` and restart. `pid` is reported so an operator can tell which process answered. Every production launch today is a single uvicorn process with no `--workers`, so one call reaches the one process that serves every request; if `--workers` were ever added, each worker would keep its own runtime level and a single call would change exactly one of them at random. Nothing here is shared between processes.",
+  "type": "object",
+  "required": [
+    "pid",
+    "configured_level",
+    "configured_level_resolved",
+    "effective_level",
+    "runtime_override",
+    "changed_at",
+    "changed_by",
+    "dampening_active",
+    "dampen_loggers",
+    "loggers",
+    "logger_override_count",
+    "max_logger_overrides"
+  ],
+  "properties": {
+    "pid": {
+      "description": "OS process id that answered. Runtime log state lives in this process only.",
+      "type": "integer"
+    },
+    "configured_level": {
+      "description": "The RAW `LOG_LEVEL` setting, exactly as GET /v1/config echoes it — including a value the server rejected. Compare with `configured_level_resolved` to see whether it was understood.",
+      "type": "string"
+    },
+    "configured_level_resolved": {
+      "description": "What `configured_level` resolves to after upper-casing and validation; INFO when it was unrecognised. This is what a restart would return the process to.",
+      "type": "string",
+      "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+    },
+    "effective_level": {
+      "description": "The root logger's level RIGHT NOW. Equals `configured_level_resolved` unless `runtime_override` is true.",
+      "type": "string",
+      "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+    },
+    "runtime_override": {
+      "description": "True when a PUT has changed the root level in this process since it started (or since the last DELETE). False means `effective_level` came from configuration.",
+      "type": "boolean"
+    },
+    "changed_at": {
+      "description": "ISO-8601 UTC timestamp of the last runtime change (PUT or DELETE); empty string if this process has never had one. Empty rather than null, matching `UserRoleRecord.role_set_at`.",
+      "type": "string"
+    },
+    "changed_by": {
+      "description": "Tenant of the admin principal who made that last change; empty string if there has never been one. The same identity appears on the WARNING audit line in the log, which is the durable record — this field is a convenience and dies with the process.",
+      "type": "string"
+    },
+    "dampening_active": {
+      "description": "True when the loggers in `dampen_loggers` are pinned to WARNING. They are pinned whenever the effective level is above DEBUG and released at DEBUG, so that turning the root level down actually turns the HTTP transports on — which is the whole reason to turn it down. A single /v1/query makes 5 outbound HTTP calls minimum and up to ~14 on the multi-collection path, one httpx INFO line each, so leaving them un-damped at INFO would bury our own lines at 1:5.",
+      "type": "boolean"
+    },
+    "dampen_loggers": {
+      "description": "The configured dampen set (`LOG_DAMPEN_LOGGERS`). A name here can still be overridden explicitly; the override wins and the entry in `loggers` then reads `source: override`.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "loggers": {
+      "description": "Every logger this endpoint currently touches: the runtime overrides and the dampen set, unioned. `level` is that logger's OWN level (NOTSET = it inherits from root). The per-logger overrides are exactly the entries with `source: override`.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/LoggerLevel" }
+    },
+    "logger_override_count": {
+      "description": "How many runtime per-logger overrides are in force.",
+      "type": "integer"
+    },
+    "max_logger_overrides": {
+      "description": "The cap on that count. A PUT that would exceed it is a 422 and changes nothing.",
+      "type": "integer"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "LoggerLevel": {
+      "type": "object",
+      "required": ["name", "level", "source"],
+      "properties": {
+        "name": {
+          "description": "The logger's dotted name.",
+          "type": "string"
+        },
+        "level": {
+          "description": "The level set on this logger itself. NOTSET means it inherits from root rather than meaning 'silent'.",
+          "type": "string",
+          "enum": ["CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"]
+        },
+        "source": {
+          "description": "`override` — a runtime per-logger override set through this endpoint. `dampen` — a member of the configured dampen set, at whatever the current root level implies.",
+          "type": "string",
+          "enum": ["override", "dampen"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

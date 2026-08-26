@@ -250,6 +250,24 @@ def apply_dampening(level: int, loggers: Sequence[str]) -> None:
         )
 
 
+def configured_dampen_loggers() -> Sequence[str]:
+    """The configured dampen set — ``LOG_DAMPEN_LOGGERS``, or the built-in default.
+
+    Extracted so :func:`apply_log_level` and the runtime-level admin endpoint
+    read the setting through one function rather than two copies of the same
+    subtle fallback.
+
+    ``is None``, not a truthiness test: an EMPTY list is a valid, meaningful
+    value — "damp nothing" — and falling back to the default there would make
+    ``LOG_DAMPEN_LOGGERS=`` silently do the opposite of what it says. Only a
+    genuinely absent setting falls back.
+    """
+    from ragstack.config import settings
+
+    configured = getattr(settings, "log_dampen_loggers", None)
+    return DEFAULT_DAMPEN_LOGGERS if configured is None else configured
+
+
 def apply_log_level(
     level: str | None = None,
     *,
@@ -266,8 +284,10 @@ def apply_log_level(
     is well defined (see :func:`apply_dampening` on why the release branch uses
     ``NOTSET``).
 
-    That endpoint is **not** part of #427 W1 — it is a new route and a contract
-    change, and it comes after. This function only makes it cheap.
+    That endpoint arrived in ``observability/log_control.py``, and it calls
+    exactly this. Note the ordering obligation it carries: :func:`apply_dampening`
+    overwrites the level of every name in the dampen set, so anything that also
+    keeps per-logger overrides must re-apply them **after** this returns.
 
     Returns ``(numeric level, warning to emit or None)``; the caller decides
     where the warning goes, because during start-up there may be no handler yet.
@@ -277,12 +297,7 @@ def apply_log_level(
     if level is None:
         level = settings.log_level
     if dampen is None:
-        # `is None`, not a truthiness test: an EMPTY list is a valid, meaningful
-        # value — "damp nothing" — and falling back to the default there would
-        # make LOG_DAMPEN_LOGGERS= silently do the opposite of what it says.
-        # Only a genuinely absent setting falls back.
-        configured = getattr(settings, "log_dampen_loggers", None)
-        dampen = DEFAULT_DAMPEN_LOGGERS if configured is None else configured
+        dampen = configured_dampen_loggers()
 
     numeric, warning = resolve_log_level(level)
     logging.getLogger().setLevel(numeric)

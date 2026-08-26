@@ -12,6 +12,7 @@ from ragstack.api.root_path import RootPathMiddleware
 from ragstack.api.routers import (
     admin,
     admin_collections,
+    admin_log_level,
     admin_users,
     collections,
     documents,
@@ -209,4 +210,12 @@ app.include_router(
 # bound. Admin-gated at include time like the rest of /v1/admin.
 app.include_router(
     admin_collections.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
+)
+# Runtime log level (#427): GET/PUT/DELETE /v1/admin/log-level. Raise or lower
+# this process's log level without restarting it — "set-able on demand via api
+# call so we don't have to reload the service". Process-local and reset on
+# restart by design; every change is audited at WARNING with the principal.
+# Admin-gated at include time like the rest of /v1/admin.
+app.include_router(
+    admin_log_level.router, prefix="/v1/admin", tags=["Admin"], dependencies=_admin
 )

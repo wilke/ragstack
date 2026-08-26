@@ -43,6 +43,7 @@ from ragstack.observability.logging_config import (
     apply_dampening,
     apply_log_level,
     configure_logging,
+    configured_dampen_loggers,
     resolve_log_level,
 )
 from ragstack.observability.middleware import RequestContextMiddleware, new_request_id
@@ -57,6 +58,7 @@ __all__ = [
     "apply_log_level",
     "clear_context",
     "configure_logging",
+    "configured_dampen_loggers",
     "current_context",
     "new_request_id",
     "resolve_log_level",
