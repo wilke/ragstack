@@ -22,6 +22,7 @@ a doubled-output bug that is miserable to trace back here.
 """
 import json
 import logging
+import time
 
 import pytest
 
@@ -212,6 +213,23 @@ def test_a_newline_in_a_message_cannot_forge_a_second_line(capsys, fmt):
     logging.getLogger("ragstack.test").info("first\nlevel=CRITICAL msg=forged")
     err = capsys.readouterr().err
     assert err.count("\n") == 1, f"message forged an extra line: {err!r}"
+
+
+@pytest.mark.parametrize("formatter", [LogfmtFormatter(), JsonFormatter()])
+def test_timestamps_are_utc_not_local_time_with_a_z_on_them(formatter):
+    """``logging.Formatter.converter`` defaults to ``time.localtime``, so a ``Z``
+    suffix on the default output is a silent lie — measured at five hours off on
+    this host, against the gateway's own ``Date:`` header.
+
+    That is not cosmetic for #427. The timestamp is the field an operator uses to
+    line the app log up with nginx's and with a user's "it failed around 2pm",
+    which is the whole activity this work exists to make possible.
+    """
+    record = logging.LogRecord("t", logging.INFO, "f.py", 1, "x", (), None)
+    rendered = formatter.formatTime(record)
+
+    assert rendered.endswith("Z")
+    assert rendered.startswith(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)))
 
 
 def test_importing_the_app_installs_the_root_handler():

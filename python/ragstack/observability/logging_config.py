@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from typing import Any
 
 from ragstack.observability.context import CONTEXT_FIELDS, MISSING, RequestContextFilter
@@ -80,6 +81,18 @@ def resolve_log_level(raw: str | None) -> tuple[int, str | None]:
     return level, None
 
 
+def _utc(secs: float | None = None) -> time.struct_time:
+    """UTC time tuple, for ``logging.Formatter.converter``.
+
+    Wrapped rather than assigning ``time.gmtime`` straight onto the class: the
+    stdlib gets away with ``converter = time.localtime`` because that is a C
+    builtin and so does not bind as a method, and mypy reads ``gmtime``'s
+    zero-argument overload and rejects the assignment. ``staticmethod`` of a
+    plain function is the honest form of the same thing.
+    """
+    return time.gmtime(secs)
+
+
 def _quote(value: str) -> str:
     """logfmt value quoting: bare when it is a simple token, quoted otherwise.
 
@@ -102,6 +115,11 @@ class LogfmtFormatter(logging.Formatter):
     as written and simply gain the context columns.
     """
 
+    # UTC, and the `converter` is not optional. logging.Formatter defaults to
+    # time.localtime, so a `Z` suffix on a local-time stamp is a silent lie —
+    # here it was five hours off the gateway's own `Date:` header, on the one
+    # field an operator uses to line two logs up. See test_timestamps_are_utc.
+    converter = staticmethod(_utc)
     default_time_format = "%Y-%m-%dT%H:%M:%S"
     default_msec_format = "%s.%03dZ"
 
@@ -133,9 +151,11 @@ class JsonFormatter(logging.Formatter):
 
     Built and tested now rather than later so that flipping the setting is a
     config change and not a project. Same fields as the logfmt branch, same
-    ``%``-style message rendering.
+    ``%``-style message rendering — and the same UTC ``converter``, for the same
+    reason.
     """
 
+    converter = staticmethod(_utc)
     default_time_format = "%Y-%m-%dT%H:%M:%S"
     default_msec_format = "%s.%03dZ"
 
