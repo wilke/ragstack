@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "log_level_response.json",
   "title": "LogLevelResponse",
-  "description": "The log level actually in effect in THIS process, and how it got there. Returned by GET, PUT and DELETE /v1/admin/log-level.\n\nThe configured/effective split is the point of this shape. GET /v1/config echoes the RAW `LOG_LEVEL` string, so a value the server rejected at startup (`LOG_LEVEL=verbose`, say) is reported there while INFO is what is actually in force. Here `configured_level` is that same raw string, `configured_level_resolved` is what it resolves to, and `effective_level` is what the root logger is set to right now — which differs from both whenever a runtime override is in place.\n\nRuntime state is PROCESS-LOCAL and resets on restart. That is deliberate: a debugging session cannot silently become the permanent configuration, and the way to make a level stick is to change `LOG_LEVEL` and restart. `pid` is reported so an operator can tell which process answered. Every production launch today is a single uvicorn process with no `--workers`, so one call reaches the one process that serves every request; if `--workers` were ever added, each worker would keep its own runtime level and a single call would change exactly one of them at random. Nothing here is shared between processes.",
+  "description": "The log level actually in effect in THIS process, and how it got there. Returned by GET, PUT and DELETE /v1/admin/log-level.\n\nThe configured/effective split is the point of this shape. GET /v1/config echoes the RAW `LOG_LEVEL` string, so a value the server rejected at startup (`LOG_LEVEL=verbose`, say) is reported there while INFO is what is actually in force. Here `configured_level` is that same raw string, `configured_level_resolved` is what it resolves to, and `effective_level` is what the root logger is set to right now — which differs from both whenever a runtime override is in place.\n\nRuntime state is PROCESS-LOCAL and resets on restart. That is deliberate: a debugging session cannot silently become the permanent configuration, and the way to make a level stick is to change `LOG_LEVEL` and restart. `pid` is reported so an operator can tell which process answered. Every production launch today is a single uvicorn process with no `--workers`, so one call reaches the one process that serves every request; if `--workers` were ever added, each worker would keep its own runtime level and a single call would change exactly one of them at random. Nothing here is shared between processes.\n\nA `ttl_seconds` expiry is reported by `auto_revert_pending`, `expires_at` and `expires_in_seconds`. It is process-local too, and it is dropped at shutdown without firing — a restart reverts the level anyway, so an expiry that outlived its process would have nothing left to revert.",
   "type": "object",
   "required": [
     "pid",
@@ -16,7 +16,12 @@
     "dampen_loggers",
     "loggers",
     "logger_override_count",
-    "max_logger_overrides"
+    "max_logger_overrides",
+    "auto_revert_pending",
+    "ttl_seconds",
+    "expires_at",
+    "expires_in_seconds",
+    "max_ttl_seconds"
   ],
   "properties": {
     "pid": {
@@ -60,11 +65,11 @@
       "type": "boolean"
     },
     "changed_at": {
-      "description": "ISO-8601 UTC timestamp of the last runtime change (PUT or DELETE); empty string if this process has never had one. Empty rather than null, matching `UserRoleRecord.role_set_at`.",
+      "description": "ISO-8601 UTC timestamp of the last runtime change (PUT, DELETE, or a `ttl_seconds` auto-revert); empty string if this process has never had one. Empty rather than null, matching `UserRoleRecord.role_set_at`.",
       "type": "string"
     },
     "changed_by": {
-      "description": "Tenant of the admin principal who made that last change; empty string if there has never been one. The same identity appears on the WARNING audit line in the log, which is the durable record — this field is a convenience and dies with the process.",
+      "description": "Tenant of the admin principal who made that last change; empty string if there has never been one. A NON-empty `changed_at` with an EMPTY `changed_by` is the signature of an auto-revert: the process changed its own level and no principal typed it. The `audit=expired` WARNING line names the principal that armed the TTL, and is the durable record — this field is a convenience and dies with the process.",
       "type": "string"
     },
     "dampening_active": {
@@ -91,6 +96,26 @@
     },
     "max_logger_overrides": {
       "description": "The cap on that count. A PUT that would exceed it is a 422 and changes nothing.",
+      "type": "integer"
+    },
+    "auto_revert_pending": {
+      "description": "True when a `ttl_seconds` expiry is armed and this process will change its own log level when it fires. An operator MUST be able to see this: the level is going to move under them, and nothing else in this response would say so. False whenever `expires_in_seconds` is null, and vice versa.",
+      "type": "boolean"
+    },
+    "ttl_seconds": {
+      "description": "The TTL that was requested on the change now in force, or null when none is armed. This is the value as sent, not a countdown — `expires_in_seconds` is the countdown.",
+      "type": ["integer", "null"]
+    },
+    "expires_at": {
+      "description": "ISO-8601 UTC wall-clock deadline of the pending auto-revert; empty string when none is armed. Empty rather than null, matching `changed_at`. The countdown in `expires_in_seconds` is measured on a MONOTONIC clock and is the authority — this field is for a human reading a log or a dashboard, and a wall-clock step (NTP, a suspended VM) moves it without moving the deadline.",
+      "type": "string"
+    },
+    "expires_in_seconds": {
+      "description": "Seconds remaining until the auto-revert fires, rounded UP so a freshly armed 600s TTL reads 600; null when none is armed. Clamped at 0 rather than going negative: 0 with `auto_revert_pending: true` means the deadline has passed and the callback has not run yet, which on a busy loop is a moment, not a state.",
+      "type": ["integer", "null"]
+    },
+    "max_ttl_seconds": {
+      "description": "The upper bound on `ttl_seconds` (the lower bound is 1). A PUT outside the range is a 422 and changes nothing. Reported the way `max_logger_overrides` is, so the bound is discoverable at runtime rather than only in this document.",
       "type": "integer"
     }
   },

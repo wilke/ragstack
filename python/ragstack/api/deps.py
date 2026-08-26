@@ -1836,6 +1836,15 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Disarm any pending log-level auto-revert (#427). A `call_later` timer
+        # handle cannot keep the loop alive and is dropped when the loop closes,
+        # so this is not load-bearing for a clean shutdown — but whatever starts
+        # background work stops it here (see the tracker below), and the process
+        # restarting reverts the level anyway, so a timer firing mid-teardown
+        # would only write a confusing audit line. Sync, and never raises.
+        from ragstack.observability import log_control
+
+        log_control.cancel_pending_revert()
         # Lifecycle first, while the http client and the registry are still
         # open: in-flight restore submissions/watchers finish (or are logged),
         # and the last-accessed dirty set is flushed in ONE write.

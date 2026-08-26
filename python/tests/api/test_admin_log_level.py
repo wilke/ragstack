@@ -17,17 +17,22 @@ Process-global logging state is restored by the autouse fixture; see the note in
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 import jsonschema
 import pytest
+from fastapi import FastAPI
 
 from ragstack.api import security
 from ragstack.api.security import ROLE_ADMIN, ROLE_USER
+from ragstack.config import settings
 from ragstack.observability import log_control
 from ragstack.observability.logging_config import configured_dampen_loggers
+from tests.log_time_support import FakeTimebase
 
 pytestmark = pytest.mark.asyncio
 
@@ -341,3 +346,295 @@ async def test_the_audit_line_carries_no_credential(client, monkeypatch, caplog)
         assert secret not in str(record.__dict__), record.name
         assert secret not in record.getMessage()
     assert secret not in resp.text
+
+
+# --------------------------------------------------------------------------- #
+# TTL / auto-revert over HTTP (#427 follow-on)
+#
+# The controlled clock (tests/log_time_support.py) drives the semantics: what
+# the response says, that supersede cancels, that a stale timer fired anyway
+# changes nothing. ONE test below uses the real asyncio scheduler with a
+# one-second TTL, because everything else would pass just as happily against a
+# fake that never touched an event loop.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    fake = FakeTimebase()
+    monkeypatch.setattr(log_control, "_timebase", fake)
+    return fake
+
+
+async def test_a_ttl_change_reverts_itself_and_the_response_says_so(
+    client, monkeypatch, clock
+):
+    headers = _admin(monkeypatch)
+    resp = await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 600}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    jsonschema.validate(instance=body, schema=SCHEMA)
+    assert body["auto_revert_pending"] is True
+    assert body["ttl_seconds"] == 600
+    assert body["expires_in_seconds"] == 600
+    assert body["expires_at"] == "2026-08-26T12:10:00Z"
+    assert body["max_ttl_seconds"] == log_control.MAX_TTL_SECONDS
+    assert logging.getLogger().level == logging.DEBUG
+
+    clock.advance(600)
+
+    after = (await client.get(URL, headers=headers)).json()
+    jsonschema.validate(instance=after, schema=SCHEMA)
+    assert after["effective_level"] == after["configured_level_resolved"]
+    assert after["runtime_override"] is False
+    assert after["auto_revert_pending"] is False
+    assert after["expires_in_seconds"] is None
+    assert after["changed_by"] == "", "an auto-revert is not attributable to a principal"
+
+
+async def test_get_reports_the_countdown_decreasing(client, monkeypatch, clock):
+    """An operator must be able to see that the level will change under them."""
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 600}, headers=headers)
+
+    clock.advance(30)
+    first = (await client.get(URL, headers=headers)).json()
+    clock.advance(30)
+    second = (await client.get(URL, headers=headers)).json()
+
+    assert (first["expires_in_seconds"], second["expires_in_seconds"]) == (570, 540)
+    assert first["expires_at"] == second["expires_at"], "the deadline must not drift"
+    assert second["auto_revert_pending"] is True
+
+
+async def test_no_ttl_leaves_the_level_alone_forever(client, monkeypatch, clock):
+    """The behaviour the endpoint shipped with, unchanged."""
+    headers = _admin(monkeypatch)
+    body = (await client.put(URL, json={"level": "DEBUG"}, headers=headers)).json()
+    jsonschema.validate(instance=body, schema=SCHEMA)
+    assert body["auto_revert_pending"] is False
+    assert body["ttl_seconds"] is None
+    assert body["expires_at"] == ""
+
+    assert clock.advance(log_control.MAX_TTL_SECONDS * 2) == 0
+    assert (await client.get(URL, headers=headers)).json()["effective_level"] == "DEBUG"
+
+
+async def test_a_second_put_supersedes_the_first_over_http(client, monkeypatch, clock):
+    """The sharpest case: the first timer must not fire later and clobber the
+    second change. Cancellation is asserted, and then the stale timer is fired
+    DELIBERATELY — if the staleness guard were missing, DEBUG would come back."""
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 60}, headers=headers)
+    stale = clock.armed[0]
+
+    second = (
+        await client.put(URL, json={"level": "ERROR", "ttl_seconds": 600}, headers=headers)
+    ).json()
+    assert stale.cancelled is True
+    assert len(clock.armed) == 1, "two overlapping TTLs are armed"
+    assert second["expires_in_seconds"] == 600
+
+    clock.fire_regardless(stale)
+
+    state = (await client.get(URL, headers=headers)).json()
+    assert state["effective_level"] == "ERROR"
+    assert state["auto_revert_pending"] is True
+    assert state["ttl_seconds"] == 600
+
+
+async def test_a_put_without_a_ttl_disarms_the_pending_revert(client, monkeypatch, clock):
+    """Documented and deliberate: the expiry belongs to the change that armed it.
+    Visible immediately in the response, which is what makes it safe to state."""
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 60}, headers=headers)
+    body = (await client.put(URL, json={"level": "ERROR"}, headers=headers)).json()
+
+    assert body["auto_revert_pending"] is False
+    assert body["ttl_seconds"] is None
+    assert clock.armed == []
+
+
+async def test_delete_cancels_a_pending_revert(client, monkeypatch, clock):
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 60}, headers=headers)
+    armed = clock.armed[0]
+
+    body = (await client.delete(URL, headers=headers)).json()
+    assert armed.cancelled is True
+    assert body["auto_revert_pending"] is False
+    assert clock.advance(600) == 0
+
+
+@pytest.mark.parametrize(
+    "ttl",
+    [0, -1, 86_401, 1.5, "60", True, [60]],
+    ids=["zero", "negative", "over-cap", "fractional", "string", "bool", "list"],
+)
+async def test_a_bad_ttl_is_422_and_applies_nothing(client, monkeypatch, clock, ttl):
+    """Out-of-range is `log_control`'s single-sentence 422; a wrong TYPE is
+    pydantic's list-of-errors 422. Both are 422 and both must apply nothing —
+    that atomicity is the property under test, not the body shape."""
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "ERROR"}, headers=headers)
+
+    resp = await client.put(
+        URL, json={"level": "DEBUG", "ttl_seconds": ttl}, headers=headers
+    )
+    assert resp.status_code == 422, resp.text
+
+    state = (await client.get(URL, headers=headers)).json()
+    assert state["effective_level"] == "ERROR"
+    assert state["auto_revert_pending"] is False
+    assert clock.armed == []
+
+
+async def test_a_body_with_only_a_ttl_is_422(client, monkeypatch, clock):
+    """A TTL modifies a change; it is not one."""
+    headers = _admin(monkeypatch)
+    resp = await client.put(URL, json={"ttl_seconds": 60}, headers=headers)
+    assert resp.status_code == 422
+    assert "ttl_seconds modifies a change" in resp.json()["detail"]
+    assert clock.armed == []
+
+
+async def test_the_auto_revert_is_audited_as_expired_at_warning(
+    client, monkeypatch, clock, caplog
+):
+    """A level change nobody typed has to be explainable afterwards: WARNING, on
+    the pinned logger, naming the principal who armed it, and tagged `expired`
+    so it is not mistaken for an operator's reset."""
+    caplog.set_level(logging.DEBUG, logger="")
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 60}, headers=headers)
+    caplog.clear()
+
+    clock.advance(60)
+
+    audit = [r for r in caplog.records if r.name == log_control.AUDIT_LOGGER]
+    assert len(audit) == 1
+    assert audit[0].levelno == logging.WARNING
+    assert audit[0].audit == "expired"
+    assert audit[0].principal == ADMIN_TENANT
+    assert audit[0].level_before == "DEBUG"
+    assert audit[0].ttl_seconds == 60
+
+    # And an operator's reset is a different line, over the same end state.
+    caplog.clear()
+    await client.delete(URL, headers=headers)
+    reset = [r for r in caplog.records if r.name == log_control.AUDIT_LOGGER]
+    assert [r.audit for r in reset] == ["reset"]
+
+
+async def test_the_ttl_audit_line_carries_no_credential(client, monkeypatch, clock, caplog):
+    """The credential must not reach the log by way of the new columns either."""
+    caplog.set_level(logging.DEBUG, logger="")
+    secret = "sup3rs3cr3t-key-427-ttl"
+    _configure(monkeypatch, {secret: ROLE_ADMIN}, {secret: ADMIN_TENANT})
+    caplog.clear()
+
+    resp = await client.put(
+        URL, json={"level": "DEBUG", "ttl_seconds": 60}, headers={"X-API-Key": secret}
+    )
+    assert resp.status_code == 200
+    clock.advance(60)
+
+    assert caplog.records, "nothing was captured, so this would pass vacuously"
+    for record in caplog.records:
+        assert secret not in str(record.__dict__), record.name
+    assert secret not in resp.text
+
+
+# --------------------------------------------------------------------------- #
+# The REAL asyncio scheduler — everything above would pass against a fake that
+# never touched an event loop.
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_real_scheduler_reverts_on_a_one_second_ttl(client, monkeypatch):
+    """End to end on the loop the server actually runs on: a genuine
+    ``loop.call_later`` fires and the EFFECTIVE level goes back.
+
+    One second, polled, rather than a fixed sleep — the assertion is that the
+    revert happens, not how promptly.
+    """
+    headers = _admin(monkeypatch)
+    resp = await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 1}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["auto_revert_pending"] is True
+    assert logging.getLogger().level == logging.DEBUG
+
+    deadline = time.monotonic() + 10.0
+    while logging.getLogger().level == logging.DEBUG and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+
+    state = (await client.get(URL, headers=headers)).json()
+    assert state["runtime_override"] is False, "the real timer never fired"
+    assert state["effective_level"] == state["configured_level_resolved"]
+    assert state["auto_revert_pending"] is False
+
+
+async def test_the_real_scheduler_arms_a_cancellable_handle(client, monkeypatch):
+    """A ``TimerHandle``, not a ``Task`` — so it cannot keep the loop alive, it
+    is dropped silently when the loop closes, and it cancels synchronously from
+    the threading-locked sync code in ``log_control``."""
+    headers = _admin(monkeypatch)
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 600}, headers=headers)
+
+    handle = log_control._state.handle
+    assert isinstance(handle, asyncio.TimerHandle)
+    assert not isinstance(handle, asyncio.Task)
+
+    await client.delete(URL, headers=headers)
+    assert handle.cancelled()
+
+
+#: Every backend forced in-process, and the two store URLs pinned at a port
+#: nothing listens on. Belt AND braces on purpose: the in-memory backends mean
+#: the lifespan touches no network at all, and the pinned URLs mean that if one
+#: of them ever did, it would fail loudly here instead of quietly reaching a live
+#: store — the defaults on a deployment host resolve to production (#363/#369).
+_OFFLINE_LIFESPAN = {
+    "vector_backend": "memory",
+    "text_backend": "memory",
+    "graph_backend": "memory",
+    "collection_store_backend": "memory",
+    "user_store_backend": "memory",
+    "job_store_backend": "memory",
+    "rerank_enabled": False,
+    "llm_endpoint": "",
+    "require_durable_backends": False,
+    "collections_file": "",
+    "models_registry_file": "",
+    "qdrant_url": "http://127.0.0.1:1",
+    "elasticsearch_url": "http://127.0.0.1:1",
+}
+
+
+async def test_the_lifespan_disarms_a_pending_revert_at_shutdown(monkeypatch, caplog):
+    """The shutdown hook, exercised where it lives.
+
+    Runs the real ``deps.lifespan`` — with every backend in-process, so it opens
+    no socket — arms a TTL inside it, and asserts the handle is cancelled on the
+    way out. Deliberately NOT reverted: the process is going away and a restart
+    reverts the level anyway, so firing it here would only write a confusing
+    audit line.
+    """
+    caplog.set_level(logging.DEBUG, logger="asyncio")
+    from ragstack.api.deps import lifespan
+
+    for name, value in _OFFLINE_LIFESPAN.items():
+        monkeypatch.setattr(settings, name, value)
+
+    app = FastAPI()
+    async with lifespan(app):
+        log_control.set_level(level="DEBUG", ttl_seconds=600)
+        handle = log_control._state.handle
+        assert isinstance(handle, asyncio.TimerHandle)
+
+    assert handle.cancelled(), "the lifespan left a timer armed"
+    assert log_control.describe()["auto_revert_pending"] is False
+    assert logging.getLogger().level == logging.DEBUG, "shutdown must not revert"
+
+    noisy = [r for r in caplog.records if r.levelno >= logging.WARNING and r.name == "asyncio"]
+    assert not noisy, [r.getMessage() for r in noisy]

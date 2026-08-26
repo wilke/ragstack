@@ -15,13 +15,24 @@ Restore means putting back what ``GET`` reported — not calling ``DELETE``.
 override an operator had deliberately set before the run. The
 :func:`restored` fixture does this once so no individual test has to remember.
 
+One thing it deliberately does **not** put back: a pending ``ttl_seconds``
+auto-revert that happened to be armed when the run started. There is no way to
+re-arm one at its original deadline (a TTL is a duration from now, not a
+timestamp), and re-arming an approximation would be worse than leaving it off —
+the operator would be told a level reverts at a time it does not. The rule for
+tests here is the other half of that: **never leave a TTL armed**. Every test
+below that arms one either lets it expire or cancels it before it returns, so
+the server this ran against is not left with a timer nobody knows about.
+
 Python-only: the Go scaffold has no route here (404, not 501). When Go grows one,
 delete the skip — the deletion belongs to that diff so it cannot be forgotten.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from typing import Any, AsyncGenerator
 
 import httpx
@@ -157,3 +168,107 @@ async def test_non_admin_is_forbidden(client: httpx.AsyncClient) -> None:
 async def test_unauthenticated_is_rejected(client: httpx.AsyncClient) -> None:
     resp = await client.get(URL)
     assert resp.status_code in (401, 403), resp.status_code
+
+
+# --------------------------------------------------------------------------- #
+# TTL / auto-revert (#427 follow-on)
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_ttl_is_reported_and_then_reverts_the_server(
+    client: httpx.AsyncClient,
+    schemas: dict[str, dict],
+    admin_headers: dict[str, str],
+    restored: dict[str, Any],
+) -> None:
+    """The feature against a real server: the level goes back on its own.
+
+    A one-second TTL and a bounded poll, not a fixed sleep — the assertion is
+    that the revert happens and that a subsequent GET sees it, not how promptly.
+    The test cannot finish while a timer is still armed, which is also what keeps
+    it from leaving one behind.
+    """
+    resp = await client.put(
+        URL, json={"level": "DEBUG", "ttl_seconds": 1}, headers=admin_headers
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    jsonschema.validate(instance=body, schema=schemas["log_level_response"])
+    assert body["effective_level"] == "DEBUG"
+    assert body["auto_revert_pending"] is True
+    assert body["ttl_seconds"] == 1
+    assert body["expires_in_seconds"] == 1
+    assert body["expires_at"] != ""
+    assert body["max_ttl_seconds"] >= 1
+
+    deadline = time.monotonic() + 15.0
+    state = body
+    while state["auto_revert_pending"] and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+        state = (await client.get(URL, headers=admin_headers)).json()
+
+    jsonschema.validate(instance=state, schema=schemas["log_level_response"])
+    assert state["auto_revert_pending"] is False, "the TTL never fired"
+    assert state["runtime_override"] is False
+    assert state["effective_level"] == state["configured_level_resolved"]
+    assert state["expires_in_seconds"] is None
+    assert state["changed_by"] == "", "an auto-revert is attributable to no principal"
+
+
+async def test_a_second_put_supersedes_the_first_ttl(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    restored: dict[str, Any],
+) -> None:
+    """Two overlapping TTLs must never fight. The first is given a deadline well
+    inside this test's runtime; if it were still armed it would fire and take
+    ERROR away, and the final GET would catch it."""
+    await client.put(URL, json={"level": "DEBUG", "ttl_seconds": 1}, headers=admin_headers)
+    second = await client.put(
+        URL, json={"level": "ERROR", "ttl_seconds": 3600}, headers=admin_headers
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["expires_in_seconds"] == 3600
+
+    # Well past the FIRST deadline. The second change must be untouched.
+    await asyncio.sleep(2.0)
+    state = (await client.get(URL, headers=admin_headers)).json()
+    assert state["effective_level"] == "ERROR", "the superseded timer fired anyway"
+    assert state["ttl_seconds"] == 3600
+    assert state["auto_revert_pending"] is True
+
+    # Never leave a TTL armed — this is also the DELETE-cancels assertion.
+    after = (await client.delete(URL, headers=admin_headers)).json()
+    assert after["auto_revert_pending"] is False
+
+
+async def test_no_ttl_arms_no_expiry(
+    client: httpx.AsyncClient,
+    schemas: dict[str, dict],
+    admin_headers: dict[str, str],
+    restored: dict[str, Any],
+) -> None:
+    """The behaviour this endpoint shipped with, unchanged."""
+    body = (await client.put(URL, json={"level": "DEBUG"}, headers=admin_headers)).json()
+    jsonschema.validate(instance=body, schema=schemas["log_level_response"])
+    assert body["auto_revert_pending"] is False
+    assert body["ttl_seconds"] is None
+    assert body["expires_at"] == ""
+    assert body["expires_in_seconds"] is None
+
+
+async def test_an_out_of_range_ttl_is_4xx_and_changes_nothing(
+    client: httpx.AsyncClient,
+    admin_headers: dict[str, str],
+    restored: dict[str, Any],
+) -> None:
+    before = (await client.get(URL, headers=admin_headers)).json()
+    for ttl in (0, 86_401):
+        resp = await client.put(
+            URL, json={"level": "DEBUG", "ttl_seconds": ttl}, headers=admin_headers
+        )
+        assert 400 <= resp.status_code < 500, (ttl, resp.status_code)
+
+    after = (await client.get(URL, headers=admin_headers)).json()
+    assert after["effective_level"] == before["effective_level"]
+    assert after["auto_revert_pending"] is False

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "log_level_request.json",
   "title": "LogLevelRequest",
-  "description": "Change the running process's log level without restarting it (PUT /v1/admin/log-level body). At least one of `level` or `loggers` must be present; a body carrying neither is a 422, because a request that asks for nothing is far more likely a typo than an intent. Validation is atomic: the whole body is checked before anything is applied, so a rejected request leaves the effective level exactly as it was — there is no half-applied state.",
+  "description": "Change the running process's log level without restarting it (PUT /v1/admin/log-level body). At least one of `level` or `loggers` must be present; a body carrying neither is a 422, because a request that asks for nothing is far more likely a typo than an intent. Validation is atomic: the whole body is checked before anything is applied, so a rejected request leaves the effective level exactly as it was — there is no half-applied state.\n\n`ttl_seconds` adds an expiry to the change. Every PUT SUPERSEDES the previous one, expiry included: any pending auto-revert is cancelled first, and a new one is armed only if this body carries `ttl_seconds`. Two overlapping TTLs therefore cannot exist and cannot fight. The corollary is worth reading twice — a follow-up PUT that omits `ttl_seconds` DISARMS the expiry the earlier one armed. That is visible immediately in the response (`auto_revert_pending: false`) and on the WARNING audit line, which carries the `ttl_seconds`/`expires_at` columns for every change including the ones that clear them.",
   "type": "object",
   "properties": {
     "level": {
@@ -23,6 +23,12 @@
         "minLength": 1,
         "maxLength": 16
       }
+    },
+    "ttl_seconds": {
+      "description": "Auto-revert this change after N seconds. Absent or null means NO expiry — exactly the behaviour this endpoint has always had, unchanged. When set, the process reverts to the CONFIGURED defaults at the deadline: the same end state DELETE produces, not a restoration of whatever was in force before this PUT. So an override an operator had deliberately set beforehand is dropped at expiry too; re-send it if you want it back. The revert is audited at WARNING as `audit=expired` (distinct from an operator's `audit=reset`), carrying the principal that armed it — a level change nobody typed has to be explainable afterwards. Bounds are 1..86400 (24h): a TTL is for a debugging session an operator is present for, and a day bounds the blast radius of a forgotten DEBUG, which is the failure this field exists to prevent (measured: httpcore emits ~15 lines per outbound HTTP call at DEBUG and DEBUG releases the dampen set, so one /v1/query goes from ~3 lines to 75-210). Anything longer is a `LOG_LEVEL` change plus a restart, which is reviewable and survives the process. The server validates the range and answers 422 with `{\"detail\": \"<sentence>\"}`, atomically with the rest of the body; the bounds are declared here as documentation, the way `loggers.maxProperties` mirrors `max_logger_overrides`. A body carrying ONLY `ttl_seconds` is refused: a TTL modifies a change, it is not one. The pending expiry is PROCESS-LOCAL like the rest of this state — a restart reverts everything anyway, which is the same feature stated a different way.",
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 86400
     }
   },
   "additionalProperties": false
