@@ -147,9 +147,22 @@ class CollectionRegistry:
 
     ``default`` is a POINTER, not an entry: the registry refuses to hold an
     entry under the reserved id, and :meth:`resolve` / :meth:`canonical` map
-    that name (like ``None``) to the entry ``default_id`` names. Resolution is
-    one dict lookup — no store is consulted — so an omitted ``collection`` costs
-    nothing on the request path."""
+    that name (like ``None``) to the entry ``default_id`` names. Registry
+    RESOLUTION is still one dict lookup — no store is consulted here.
+
+    What ``default_id`` names is the GLOBAL pointer, though, and since #419 that
+    is no longer by itself what an omitted ``collection`` targets: a caller who
+    cannot read the pointer target gets their own first readable collection
+    instead (:mod:`ragstack.api.default_collection`). So *deciding which id to
+    resolve* now costs one batched ACL round trip — on the implicit path only,
+    and in the routers, never in this class.
+
+    (The previous wording promised "an omitted ``collection`` costs nothing on
+    the request path". That is now false, and
+    ``test_default_pointer.py::test_resolving_an_omitted_collection_makes_no_registry_store_call``
+    would not have caught it: it counts calls on the COLLECTION store, not the
+    ACL store, so it stays green either way. Amended rather than left standing
+    next to a test that only appears to guard it.)"""
 
     def __init__(self, entries: list[CollectionEntry], default_id: str) -> None:
         if not entries:

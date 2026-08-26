@@ -6,72 +6,28 @@ One multi-collection API can serve several orgs: a tenant listed in
 NOT listed (or an empty map) is unrestricted. Out-of-scope ids 404 like unknown
 ones, so collection existence isn't leaked.
 """
-from types import SimpleNamespace
-
 import pytest
-from fastapi import HTTPException
 
 from ragstack.api import security
 from ragstack.api.collections import CollectionEntry, CollectionRegistry
 from ragstack.api.main import app
-from ragstack.api.routers.query import _effective_collection
 from ragstack.api.security import ROLE_ADMIN
 from ragstack.config import settings
 from tests.api.conftest import SHARED_ID
 
-# --- pure resolution logic (no HTTP / no backend) --------------------------- #
-
-
-def _reg(ids, default):
-    return SimpleNamespace(
-        default_id=default,
-        entries=lambda: [SimpleNamespace(id=i) for i in ids],
-        permitted=lambda allowed: allowed,
-    )
-
-
-def test_effective_collection_unrestricted_passthrough(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {})
-    reg = _reg([SHARED_ID, "a"], SHARED_ID)
-    assert _effective_collection(reg, "a", "t") == "a"
-    assert _effective_collection(reg, None, "t") is None  # → registry default later
-
-
-def test_effective_collection_allowed(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {"t": ["a", "b"]})
-    assert _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), "a", "t") == "a"
-
-
-def test_effective_collection_disallowed_is_404(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {"t": ["a"]})
-    with pytest.raises(HTTPException) as ei:
-        _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), "b", "t")
-    assert ei.value.status_code == 404
-
-
-def test_effective_collection_default_when_permitted(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {"t": [SHARED_ID, "a"]})
-    assert _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), None, "t") == SHARED_ID
-
-
-def test_effective_collection_falls_back_to_first_allowed(monkeypatch):
-    # registry default not permitted → the tenant's own default is its first allowed
-    monkeypatch.setattr(settings, "tenant_collections", {"t": ["b", "a"]})
-    assert _effective_collection(_reg([SHARED_ID, "a", "b"], SHARED_ID), None, "t") == "a"
-
-
-def test_effective_collection_none_accessible_is_404(monkeypatch):
-    monkeypatch.setattr(settings, "tenant_collections", {"t": ["z"]})
-    with pytest.raises(HTTPException) as ei:
-        _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), None, "t")
-    assert ei.value.status_code == 404
-
-
-def test_unlisted_tenant_is_unrestricted(monkeypatch):
-    # feature on for other orgs, but this tenant isn't listed → passthrough
-    monkeypatch.setattr(settings, "tenant_collections", {"other": ["x"]})
-    assert _effective_collection(_reg([SHARED_ID, "a"], SHARED_ID), "a", "t") == "a"
-
+# --- pure resolution logic ---------------------------------------------------#
+#
+# MOVED to tests/api/test_default_collection.py (#419). `_effective_collection`
+# is gone: it held a SECOND copy of "the default for this caller" that drifted
+# from the listing's on two axes — it never consulted the readable set, and it
+# broke ties with `sorted()` where the listing used insertion order. The
+# explicit-allowlist half it also owned is now `query.py::_check_allowlist` and
+# is tested there; the implicit half is `default_collection.pick_default`.
+#
+# One assertion changed MEANING in the move and did not just relocate:
+# `test_effective_collection_falls_back_to_first_allowed` pinned `sorted()` and
+# now pins insertion order (decision D2 on #419). That is deliberate. An
+# implementer who "fixes" it back to `sorted()` has reintroduced the drift.
 
 # --- endpoints (in-memory registry; no real stores) ------------------------- #
 

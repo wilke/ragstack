@@ -209,3 +209,172 @@ async def client():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
     await state_http.aclose()
+
+
+# --------------------------------------------------------------------------- #
+# The `caller_without_default_access` persona (#419)
+# --------------------------------------------------------------------------- #
+#
+# The reason #419 shipped is not a missing assertion: it is that EVERY test
+# caller could read the tenant's registry default, so the "cannot read the
+# pointer" branch was unreachable in every suite. This is that caller, as a
+# named, reusable fixture rather than inline setup — authenticated, non-admin,
+# read on exactly one collection which is NOT the registry pointer target, and
+# no ``TENANT_COLLECTIONS`` allowlist (so the allowlist branch is not what
+# saves it).
+#
+# Insertion order is deliberate: ``C_readable`` is registered FIRST and the
+# pointer names ``C_default``, so "the pointer when visible, else the first
+# visible entry" is discriminating for both arms — the sharee's answer is the
+# pointer (NOT entries[0]) and the persona's is entries[0] (NOT the pointer).
+
+#: ``C_readable`` — the persona's only readable collection. Registered first.
+PERSONA_READABLE_ID = "personal-mine"
+#: ``C_default`` — the registry pointer target. Private; the persona holds
+#: nothing on it. Registered second, so it is never ``entries[0]``.
+PERSONA_DEFAULT_ID = "curated-corpus"
+
+#: Distinct seeded content per collection. The singular query path stamps no
+#: ``collection`` on its sources (#253 — ``conformance/test_multi_collection.py``
+#: pins the absence), so "which collection served this?" is only observable
+#: through the content that comes back.
+PERSONA_READABLE_TEXT = "marmalade recipes from the personal corpus"
+PERSONA_DEFAULT_TEXT = "curated tokenizer benchmarks from the tenant corpus"
+
+#: API keys → subjects. ``persona`` is the affected user; ``sharee`` is the
+#: control arm (a NON-ADMIN who can read the pointer target — an admin would
+#: pass vacuously through the authz bypass); ``curator`` owns the pointer
+#: target; ``outsider`` can read NOTHING (a #201 user in the seconds before
+#: their personal collection is provisioned).
+PERSONA_KEYS = {
+    "persona": "k-persona",
+    "sharee": "k-sharee",
+    "curator": "k-curator",
+    "outsider": "k-outsider",
+}
+
+
+@pytest_asyncio.fixture
+async def caller_without_default_access(client, monkeypatch):
+    """A caller whose readable set EXCLUDES the registry pointer target.
+
+    Depends on ``client`` so it runs after the app state (and its one-entry
+    registry) is built, then replaces ``app.state.collections`` with the
+    persona's two-collection registry.
+
+    Asserts its own preconditions — see :attr:`Persona`. A persona fixture that
+    cannot prove it is the persona is worse than none: with auth unconfigured
+    both ``filter_readable`` and ``enforce_access`` no-op, and every test built
+    on this would pass while asserting nothing (R6)."""
+    from types import SimpleNamespace
+
+    from ragstack.acl_store import GRANTEE_USER, PERM_OWNER, PERM_READ, get_acl_store
+    from ragstack.api import deps, security
+    from ragstack.api.access import auth_configured
+    from ragstack.api.security import (
+        ROLE_ADMIN,
+        ROLE_USER,
+        admin_subject_allowlist,
+        normalize_role,
+    )
+    from ragstack.config import settings as cfg
+    from ragstack.models import Chunk
+    from ragstack.retrieval.retriever import HybridRetriever
+
+    monkeypatch.setattr(security.settings, "api_keys", list(PERSONA_KEYS.values()))
+    monkeypatch.setattr(
+        security.settings,
+        "api_key_tenants",
+        {v: k for k, v in PERSONA_KEYS.items()},
+    )
+    monkeypatch.setattr(security.settings, "api_key_roles", {})
+    monkeypatch.setattr(security.settings, "default_role", ROLE_USER)
+    # No allowlist: the `allowed is not None` branch must not be what saves it.
+    monkeypatch.setattr(cfg, "tenant_collections", {})
+    monkeypatch.setattr(deps.settings, "default_collection_id", "")
+
+    def _entry(cid: str) -> CollectionEntry:
+        """Its OWN vector store + text index + retriever, so which entry a
+        request landed on is observable from what comes back."""
+        vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
+        return CollectionEntry(
+            id=cid, label=cid, collection=cid, model="test-model", dim=4,
+            chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
+            is_shared_surface=False, owner="",
+            retriever=HybridRetriever(vs, ti, app.state.embedder),
+            vector_store=vs, text_index=ti, embedder=app.state.embedder,
+        )
+
+    async def _seed(entry: CollectionEntry, chunk_id: str, text: str, tenant: str) -> None:
+        chunk = Chunk(
+            id=chunk_id, doc_id=f"doc-{chunk_id}", content=text,
+            embedding=[0.1, 0.2, 0.3, 0.4], metadata={"tenant_id": tenant},
+        )
+        await entry.vector_store.upsert([chunk])
+        await entry.text_index.index([chunk])
+
+    readable, default = _entry(PERSONA_READABLE_ID), _entry(PERSONA_DEFAULT_ID)
+    app.state.kg_extractor = None
+    app.state.doi_enricher = None
+    app.state.collections = CollectionRegistry(
+        [readable, default], default_id=PERSONA_DEFAULT_ID
+    )
+    await _seed(readable, "mine-c1", PERSONA_READABLE_TEXT, "persona")
+    await _seed(default, "curated-c1", PERSONA_DEFAULT_TEXT, "curator")
+
+    acl = get_acl_store()
+    await acl.grant(
+        PERSONA_READABLE_ID, GRANTEE_USER, "persona", PERM_OWNER, granted_by="persona"
+    )
+    await acl.grant(
+        PERSONA_DEFAULT_ID, GRANTEE_USER, "curator", PERM_OWNER, granted_by="curator"
+    )
+    # The control arm: a non-admin who CAN read the pointer target (and the
+    # persona's collection too, so "pointer wins over entries[0]" is a real
+    # choice for this caller rather than the only option).
+    for cid in (PERSONA_DEFAULT_ID, PERSONA_READABLE_ID):
+        await acl.grant(cid, GRANTEE_USER, "sharee", PERM_READ, granted_by="curator")
+
+    async def _make_entry(cid: str, text: str, tenant: str) -> CollectionEntry:
+        """Build + seed one more collection for a test that needs a third axis
+        (e.g. allowlist ∩ readable). Not registered and not granted — the test
+        decides both."""
+        e = _entry(cid)
+        await _seed(e, f"{cid}-c1", text, tenant)
+        return e
+
+    persona = SimpleNamespace(
+        client=client,
+        make_entry=_make_entry,
+        acl=acl,
+        headers={"X-API-Key": PERSONA_KEYS["persona"]},
+        sharee_headers={"X-API-Key": PERSONA_KEYS["sharee"]},
+        curator_headers={"X-API-Key": PERSONA_KEYS["curator"]},
+        outsider_headers={"X-API-Key": PERSONA_KEYS["outsider"]},
+        readable_id=PERSONA_READABLE_ID,
+        default_id=PERSONA_DEFAULT_ID,
+        readable_text=PERSONA_READABLE_TEXT,
+        default_text=PERSONA_DEFAULT_TEXT,
+        readable_chunk_id="mine-c1",
+        default_chunk_id="curated-c1",
+        entry_ids=[PERSONA_READABLE_ID, PERSONA_DEFAULT_ID],  # insertion order
+    )
+
+    # --- the fixture's own vacuity guard (R6) ------------------------------- #
+    assert persona.default_id != persona.readable_id, "C_default must differ from C_readable"
+    assert app.state.collections.default_id == persona.default_id
+    assert auth_configured() is True, (
+        "auth must be CONFIGURED: filter_readable and enforce_access are both "
+        "no-ops otherwise, and every test built on this persona would pass "
+        "while asserting nothing"
+    )
+    assert normalize_role(security.settings.default_role) != ROLE_ADMIN
+    assert not security.settings.api_key_roles, "no persona key may carry a role override"
+    assert "persona" not in admin_subject_allowlist(), (
+        "the persona must not be admin — resolve_access's admin bypass would "
+        "hide the whole defect"
+    )
+    assert "sharee" not in admin_subject_allowlist()
+    # ...and no TENANT_COLLECTIONS allowlist is in play.
+    assert cfg.tenant_collections == {}
+    yield persona
