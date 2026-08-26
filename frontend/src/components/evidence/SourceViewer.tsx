@@ -284,7 +284,10 @@ export function SourceViewer({
 }: {
   source: Source;
   answer: string; // the run's answer text, for the lexical marks
-  collection: string; // registry id the run was sent with; "" = default
+  // The registry id the run was sent with; null (or "") = the request omitted
+  // the field and the server chose. Chunk ids are only unique within a
+  // collection, so this keys the caches below as well as scoping the fetch.
+  collection: string | null;
   apiKey: string;
 }) {
   const m = source.metadata;
@@ -314,7 +317,7 @@ export function SourceViewer({
   // \u0000 as the separator: it cannot occur in a collection id or chunk
   // id, so the key is unambiguous. Written as an ESCAPE, never a raw byte —
   // a literal NUL makes this file binary to `file` and invisible to grep.
-  const resetKey = `${collection}\u0000${source.chunk_id}`;
+  const resetKey = `${collection ?? ""}\u0000${source.chunk_id}`;
   const [prevKey, setPrevKey] = useState(resetKey);
   const [viewId, setViewId] = useState<string | null>(null);
   const [visited, setVisited] = useState<Map<string, ChunkOut>>(() => new Map());

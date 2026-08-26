@@ -9,7 +9,13 @@ import type { QueryOptions } from "../components/QueryOptionsMenu";
 export interface RunRecord {
   id: string; // short client-side id (e.g. "20f31a") — display + deep-link handle, never sent to the API
   query: string;
-  collection: string; // registry collection id; "" → the default collection
+  // The registry id the request ACTUALLY carried, or null when it omitted the
+  // field (the listing hadn't answered). Deliberately NOT "" — that sentinel is
+  // what let the UI show one collection and query another (#420), and this is
+  // the seam where it would grow back: onSendToCompare feeds this value straight
+  // into a Compare lane, whose `collection` is `string | null` for the same
+  // reason.
+  collection: string | null;
   options: QueryOptions; // pipeline levers the request was sent with
   response: QueryResponse;
   startedAt?: number; // Date.now() at submit
