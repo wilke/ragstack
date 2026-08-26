@@ -61,6 +61,7 @@ from ragstack.api.eviction import (
     insufficient_storage,
     make_room_for_create,
 )
+from ragstack.api.job_lifecycle import job_lifecycle
 from ragstack.api.model_registry import HOT_SWAPPABLE, ModelRegistry
 from ragstack.api.scope import count_scope_many
 from ragstack.api.security import (
@@ -1075,22 +1076,32 @@ async def extract_collection_graph(
                 "GET /v1/ingest/{job_id} and retry once it is completed or failed",
                 headers={"Retry-After": str(GRAPH_EXTRACT_RETRY_AFTER)},
             )
-    job = await job_store.create(
-        source=f"graph-extract:{entry.id}@{chosen.number}", tenant_id=principal.tenant,
-        collection_id=entry.id, kind=KIND_GRAPH,
-    )
-    try:
-        sub_id = await runner.submit(rec, token, job_id=job.job_id, chosen=chosen)
-    except GraphExtractError as e:
-        raise HTTPException(
-            e.status, f"graph extraction of {collection_id!r} could not be submitted: {e}",
-        ) from None
-    return GraphExtractResponse(
-        collection_id=collection_id, version=chosen.number, job_id=job.job_id,
-        submission_id=sub_id,
-        message=f"graph extraction of version {chosen.number} submitted; poll "
-                f"GET /v1/ingest/{job.job_id}",
-    )
+    # The residual window (#415). `submit` already fails the job itself on its
+    # own two failure paths (a refusing engine, an empty submission id) with
+    # better labels, and those STAY — the scope re-reads the row and leaves an
+    # already-terminal one alone. What it adds is everything else: the input
+    # assembly before submit's own try, the watcher start after it, and a
+    # failing `update(status=RUNNING)`. A stranded kind=graph row is worse than
+    # a stranded ingest one: it 429s the owner's next extraction of this
+    # collection for 6 h AND keeps the collection in `active_collection_ids`,
+    # so eviction refuses to touch it.
+    async with job_lifecycle(
+        job_store, source=f"graph-extract:{entry.id}@{chosen.number}",
+        tenant_id=principal.tenant, collection_id=entry.id, kind=KIND_GRAPH,
+    ) as job:
+        try:
+            sub_id = await runner.submit(rec, token, job_id=job.job_id, chosen=chosen)
+        except GraphExtractError as e:
+            raise HTTPException(
+                e.status, f"graph extraction of {collection_id!r} could not be submitted: {e}",
+            ) from None
+        job.dispatched()  # the watcher `submit` started terminalizes the row
+        return GraphExtractResponse(
+            collection_id=collection_id, version=chosen.number, job_id=job.job_id,
+            submission_id=sub_id,
+            message=f"graph extraction of version {chosen.number} submitted; poll "
+                    f"GET /v1/ingest/{job.job_id}",
+        )
 
 
 class PurgeFailure(BaseModel):

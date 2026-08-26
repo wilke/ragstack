@@ -551,3 +551,47 @@ async def test_missing_archive_and_no_owner_subject_are_400(client, world):
 
 async def test_manifest_read_path_is_under_the_owners_versions_folder():
     assert ws_path(VERSIONS + "2") == f"{FOLDER}/versions/2"
+
+
+# --------------------------------------------------------------------------- #
+# #415: the residual window around submit()
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_non_graph_error_in_submit_does_not_strand_the_job(client, world, monkeypatch):
+    """``submit`` fails the job itself on its own two paths (a refusing engine,
+    an empty submission id) — see
+    ``test_engine_refusing_the_submission_is_502_with_the_job_failed``, which
+    also pins that those specific labels survive. What was uncovered is
+    everything AROUND them: the input assembly before submit's ``try``, the
+    watcher start after it, and the ``update(status=RUNNING)`` itself. Anything
+    that is not a ``GraphExtractError`` escaped the route's handler and left an
+    ``accepted`` ``kind=graph`` row, which for six hours 429s the owner's next
+    extraction of this collection (a per-collection guard with NO admin
+    exemption) AND keeps the collection listed as in-flight, so eviction
+    refuses to touch it.
+    """
+    def _boom(*_a, **_kw):
+        raise RuntimeError("inputs_for exploded")
+
+    real_inputs_for = world.runner.inputs_for
+    monkeypatch.setattr(world.runner, "inputs_for", _boom)
+    with pytest.raises(RuntimeError):
+        await _post(client)
+
+    jobs = list(app.state.job_store._jobs.values())
+    assert len(jobs) == 1 and jobs[0].kind == KIND_GRAPH
+    assert jobs[0].status == "failed" and jobs[0].error == "RuntimeError"
+    # The per-collection graph guard is free …
+    assert await app.state.job_store.active_for_collection("lib1", kind=KIND_GRAPH) == 0
+    # … and eviction is not falsely shielded: `active_collection_ids` is what
+    # ops/eviction consults before choosing victims (api/eviction.py:129), not
+    # `active_for_collection` (only the 429 guard reads that one).
+    assert await app.state.job_store.active_collection_ids() == set()
+
+    # And the owner's next extraction is admitted rather than 429'd.
+    monkeypatch.setattr(world.runner, "inputs_for", real_inputs_for)
+    r = await _post(client)
+    assert r.status_code == 202, r.text
+    assert r.json()["submission_id"] == "sub_1"
+    await world.runner.drain()

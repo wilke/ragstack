@@ -40,6 +40,7 @@ from ragstack.api.deps import (
     rate_limited,
     single_inflight_ingest,
 )
+from ragstack.api.job_lifecycle import job_lifecycle
 from ragstack.api.security import (
     ROLE_ADMIN,
     Principal,
@@ -838,25 +839,31 @@ async def ingest(
         # registry → 503) must not leave an `accepted` job nobody will run.
         cap = await _chunk_cap_for(entry, collection_store, record)
         version = await _reserve_version(entry, collection_store)
-        job = await job_store.create(
-            source=request.source, tenant_id=principal.tenant, collection_id=entry.id
-        )
-        background_tasks.add_task(
-            _run_gowe_ingest,
-            job_store,
-            backend,
-            job.job_id,
-            [WorkItem(item_id=ws_path(uri), source=uri)],
-            _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
-            token,
-            f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
-            entry,
-            request.source,
-            workspace,
-            collection_store=collection_store,
-            version=version,
-        )
-        return IngestResponse(job_id=job.job_id, status=job.status)
+        # The scope owns the row from here (#415), and it deliberately extends
+        # PAST add_task's argument expressions: `_gowe_inputs(...)` and
+        # `ws_uri(collection_folder(...))` are evaluated inside the stranding
+        # window, so anything they raise strands the row without it.
+        async with job_lifecycle(
+            job_store, source=request.source, tenant_id=principal.tenant,
+            collection_id=entry.id,
+        ) as job:
+            background_tasks.add_task(
+                _run_gowe_ingest,
+                job_store,
+                backend,
+                job.job_id,
+                [WorkItem(item_id=ws_path(uri), source=uri)],
+                _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
+                token,
+                f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
+                entry,
+                request.source,
+                workspace,
+                collection_store=collection_store,
+                version=version,
+            )
+            job.dispatched()  # _run_gowe_ingest terminalizes the row from here
+            return IngestResponse(job_id=job.job_id, status=job.status)
     # Fail closed when ingest is unconfined. `request.source` is a server-side
     # path; with ingest_root empty, build_manifest skips confine_to_root entirely,
     # so any readable file or tree is ingested and then readable back through
@@ -881,22 +888,25 @@ async def ingest(
         request.collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(
-        source=request.source, tenant_id=principal.tenant,
+    # As above (#415): `get_collection_store(http_request)` is an add_task
+    # argument, evaluated inside the window the scope has to cover.
+    async with job_lifecycle(
+        job_store, source=request.source, tenant_id=principal.tenant,
         collection_id=target.id if target is not None else collections.default_id,
-    )
-    background_tasks.add_task(
-        _run_ingest,
-        job_store,
-        run_ingestor,
-        settings.ingest_root,
-        job.job_id,
-        request.source,
-        tenant,
-        target,
-        collection_store=get_collection_store(http_request),
-    )
-    return IngestResponse(job_id=job.job_id, status=job.status)
+    ) as job:
+        background_tasks.add_task(
+            _run_ingest,
+            job_store,
+            run_ingestor,
+            settings.ingest_root,
+            job.job_id,
+            request.source,
+            tenant,
+            target,
+            collection_store=get_collection_store(http_request),
+        )
+        job.dispatched()  # _run_ingest terminalizes the row from here
+        return IngestResponse(job_id=job.job_id, status=job.status)
 
 
 _PDF_MAGIC = b"%PDF"
@@ -1183,32 +1193,37 @@ async def ingest_upload(
         # under. A rejected upload then leaves a gap in the numbering — fine.
         cap = await _chunk_cap_for(entry, collection_store, record)
         version = await _reserve_version(entry, collection_store)
-        job = await job_store.create(
-            source="upload", tenant_id=principal.tenant, collection_id=entry.id
-        )
-        try:
-            items = await _gowe_upload_sources(
-                workspace, token, subject, entry, record, tenant, files, kinds, budget
+        # The scope covers the whole window (#415), Workspace streaming and
+        # add_task's argument expressions included. The `except HTTPException`
+        # below STAYS: it sets the more specific "rejected" label, and the
+        # scope re-reads the row before terminalizing, so it never clobbers it.
+        async with job_lifecycle(
+            job_store, source="upload", tenant_id=principal.tenant, collection_id=entry.id,
+        ) as job:
+            try:
+                items = await _gowe_upload_sources(
+                    workspace, token, subject, entry, record, tenant, files, kinds, budget
+                )
+            except HTTPException:
+                await job_store.update(job.job_id, status=FAILED, error="rejected")
+                raise
+            background_tasks.add_task(
+                _run_gowe_ingest,
+                job_store,
+                backend,
+                job.job_id,
+                items,
+                _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
+                token,
+                f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
+                entry,
+                "upload",
+                workspace,
+                collection_store=collection_store,
+                version=version,
             )
-        except HTTPException:
-            await job_store.update(job.job_id, status=FAILED, error="rejected")
-            raise
-        background_tasks.add_task(
-            _run_gowe_ingest,
-            job_store,
-            backend,
-            job.job_id,
-            items,
-            _gowe_inputs(entry, record, version, job.job_id, tenant, max_chunks=cap),
-            token,
-            f"{ws_uri(collection_folder(subject, entry.id))}/versions/",
-            entry,
-            "upload",
-            workspace,
-            collection_store=collection_store,
-            version=version,
-        )
-        return IngestResponse(job_id=job.job_id, status=job.status)
+            job.dispatched()  # _run_gowe_ingest terminalizes the row from here
+            return IngestResponse(job_id=job.job_id, status=job.status)
     kinds, budget = await _admit_uploads(files)
     if not settings.ingest_root.strip():
         raise HTTPException(
@@ -1223,56 +1238,63 @@ async def ingest_upload(
         collection, principal, collections, http_request.app.state, ingestor
     )
 
-    job = await job_store.create(
-        source="upload", tenant_id=principal.tenant,
+    # #415, and this is the site that proved a hand-rolled handler is not
+    # enough: the `confine_to_root` 400 and the `mkdir` OSError below both sit
+    # ABOVE the staging `try` that was believed to cover them, so both stranded
+    # the row. The scope starts at the create and ends past add_task.
+    async with job_lifecycle(
+        job_store, source="upload", tenant_id=principal.tenant,
         collection_id=target.id if target is not None else collections.default_id,
-    )
-    # Staging dir is server-side root + tenant + the freshly minted job_id — none
-    # client-controlled today — and each file dest is re-confined under it. But
-    # confine the dir itself too: tenant is not validated (config.py accepts any
-    # string), and under token auth it will derive from the credential, so a value
-    # with path separators must not relocate the tree outside {ingest_root}/uploads.
-    uploads_root = Path(settings.ingest_root) / "uploads"
-    staging_dir = uploads_root / tenant / job.job_id
-    try:
-        confine_to_root(str(staging_dir), uploads_root)
-    except LoaderError:
-        raise HTTPException(status_code=400, detail="invalid tenant for staging") from None
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        for idx, (upload, kind) in enumerate(zip(files, kinds, strict=True)):
-            safe_name = _safe_upload_name(
-                upload.filename, fallback=f"upload_{idx}{_kind_suffixes(kind)[0]}", kind=kind
-            )
-            dest = staging_dir / safe_name
-            try:
-                dest = confine_to_root(str(dest), staging_dir)
-            except LoaderError:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{upload.filename!r}: resolves outside the staging directory",
-                ) from None
-            await _stage_upload(upload, dest, settings.max_document_bytes, budget)
-    except HTTPException:
-        # Reject cleanly: drop the partial staging dir and mark the job failed so a
-        # poll reflects reality, then re-raise the original 4xx to the client.
-        shutil.rmtree(staging_dir, ignore_errors=True)
-        await job_store.update(job.job_id, status=FAILED, error="rejected")
-        raise
+    ) as job:
+        # Staging dir is server-side root + tenant + the freshly minted job_id — none
+        # client-controlled today — and each file dest is re-confined under it. But
+        # confine the dir itself too: tenant is not validated (config.py accepts any
+        # string), and under token auth it will derive from the credential, so a value
+        # with path separators must not relocate the tree outside {ingest_root}/uploads.
+        uploads_root = Path(settings.ingest_root) / "uploads"
+        staging_dir = uploads_root / tenant / job.job_id
+        try:
+            confine_to_root(str(staging_dir), uploads_root)
+        except LoaderError:
+            raise HTTPException(status_code=400, detail="invalid tenant for staging") from None
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for idx, (upload, kind) in enumerate(zip(files, kinds, strict=True)):
+                safe_name = _safe_upload_name(
+                    upload.filename, fallback=f"upload_{idx}{_kind_suffixes(kind)[0]}", kind=kind
+                )
+                dest = staging_dir / safe_name
+                try:
+                    dest = confine_to_root(str(dest), staging_dir)
+                except LoaderError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{upload.filename!r}: resolves outside the staging directory",
+                    ) from None
+                await _stage_upload(upload, dest, settings.max_document_bytes, budget)
+        except HTTPException:
+            # Reject cleanly: drop the partial staging dir and mark the job failed so a
+            # poll reflects reality, then re-raise the original 4xx to the client.
+            # Kept under the scope: "rejected" is the more specific label and the
+            # scope's re-read leaves an already-terminal row alone.
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            await job_store.update(job.job_id, status=FAILED, error="rejected")
+            raise
 
-    background_tasks.add_task(
-        _run_ingest,
-        job_store,
-        run_ingestor,
-        settings.ingest_root,
-        job.job_id,
-        str(staging_dir),
-        tenant,
-        target,
-        True,  # every staged file becomes an item; unsupported suffixes fail visibly
-        collection_store=get_collection_store(http_request),
-    )
-    return IngestResponse(job_id=job.job_id, status=job.status)
+        background_tasks.add_task(
+            _run_ingest,
+            job_store,
+            run_ingestor,
+            settings.ingest_root,
+            job.job_id,
+            str(staging_dir),
+            tenant,
+            target,
+            True,  # every staged file becomes an item; unsupported suffixes fail visibly
+            collection_store=get_collection_store(http_request),
+        )
+        job.dispatched()  # _run_ingest terminalizes the row from here
+        return IngestResponse(job_id=job.job_id, status=job.status)
 
 
 @router.get("/ingest/{job_id}", response_model=IngestResponse)
