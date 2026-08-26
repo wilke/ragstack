@@ -54,7 +54,7 @@ export function UserMenu({
   const wrap = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useDismissable(wrap);
 
-  const view = identityView(credential.mode, identity, checking, failure);
+  const view = identityView(credential, identity, checking, failure);
 
   // NOT A BUTTON, deliberately — a <span>. There is nothing to act on until the
   // check answers, and the only action this corner could offer is the one that
