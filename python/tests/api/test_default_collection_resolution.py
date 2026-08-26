@@ -315,6 +315,75 @@ async def test_multi_collection_members_are_still_enforced_individually(
 
 
 # --------------------------------------------------------------------------- #
+# invariant 2.3(d) — a DORMANT collection can be the implicit default
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_dormant_collection_can_be_the_implicit_default(
+    caller_without_default_access,
+):
+    """Invariant (d), asserted rather than only argued.
+
+    ``pick_default`` deliberately applies NO lifecycle filter. The listing lists
+    dormant collections, so if the picker skipped them the listing's ``default``
+    and the query target would disagree again — the exact drift #419 removes,
+    reintroduced through a different door.
+
+    So when the persona's ONLY readable collection is dormant, an omitted
+    ``collection`` must reach the lifecycle gate and get **503 + Retry-After**,
+    exactly as if they had named it. The failure this guards against is a
+    **404** ``no collection is accessible to this caller`` — what a
+    lifecycle-aware picker would produce, by filtering the collection out and
+    leaving the caller with an empty visible set.
+    """
+    from ragstack.api.lifecycle import (
+        LifecycleGate,
+        reset_lifecycle_gate,
+        set_lifecycle_gate,
+    )
+    from ragstack.collection_store import (
+        DORMANT,
+        CollectionSpec,
+        InMemoryCollectionStore,
+    )
+
+    p = caller_without_default_access
+    store = InMemoryCollectionStore()
+    await store.put(
+        CollectionSpec(
+            id=p.readable_id, label=p.readable_id, owner="persona",
+            collection=p.readable_id, embedding_api="openai",
+            embedding_model="test-model", embedding_model_dim=4, chunk_method="fixed",
+        )
+    )
+    await store.set_state(p.readable_id, DORMANT, reason="evicted")
+    # `get_collection_store` falls back to the JSON store only when the
+    # attribute is ABSENT, so put back exactly what was there.
+    prior = getattr(app.state, "collection_store", None)
+    app.state.collection_store = store
+    # restorer=None: this asserts the GATE is REACHED, not that a restore runs.
+    set_lifecycle_gate(LifecycleGate(store, cache_seconds=0.0, retry_after=30))
+    try:
+        # The listing still names it — dormant collections are listed...
+        listing = (await p.client.get("/v1/collections", headers=p.headers)).json()
+        assert [c["id"] for c in listing["collections"]] == [p.readable_id]
+        assert listing["default"] == p.readable_id
+        # ...so the picker must be able to choose it, and the caller must get
+        # the lifecycle answer rather than "you have no collections".
+        r = await p.client.post("/v1/query", json={"query": "x"}, headers=p.headers)
+        assert r.status_code == 503, r.text
+        assert r.headers.get("Retry-After") == "30"
+        assert p.readable_id in r.json()["detail"]
+        assert DORMANT in r.json()["detail"]
+    finally:
+        reset_lifecycle_gate()
+        if prior is None:
+            del app.state.collection_store
+        else:
+            app.state.collection_store = prior
+
+
+# --------------------------------------------------------------------------- #
 # invariant 2.3(b) — the callers who work today are untouched
 # --------------------------------------------------------------------------- #
 

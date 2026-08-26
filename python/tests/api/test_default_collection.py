@@ -73,10 +73,18 @@ def test_pick_default_uses_insertion_order_not_lexicographic():
     forces ONE order, and it is the listing's — the order the user already sees
     in the picker, so "the first one in your list" is literally true on screen.
 
-    The registry here is built insertion-first ``"z"``, lexicographic-first
-    ``"a"``, so the two rules give different answers and this cannot pass under
-    ``sorted()``. An implementer who "fixes" this back to ``sorted()`` has
-    reintroduced the drift #419 is about."""
+    **No test in the tree pinned either rule before this one.** The old
+    ``test_effective_collection_falls_back_to_first_allowed`` looks like it
+    pinned ``sorted()`` and does not: its registry was ``[ragstack, "a", "b"]``
+    with allowlist ``{a, b}``, so insertion-first and lexicographic-first were
+    BOTH ``"a"`` and the assertion held under either rule. That the two
+    implementations could disagree for years without a single test noticing is
+    the "nothing compared them" thesis of #419, in miniature.
+
+    So this test is CONSTRUCTED to discriminate where the old one could not:
+    insertion-first is ``"z"``, lexicographic-first is ``"a"``. It cannot pass
+    under ``sorted()``. An implementer who "fixes" it back has reintroduced the
+    drift."""
     reg = _reg(["z", "a", "ptr"], "ptr")
     assert pick_default(_entries("z", "a"), reg) == "z"
 
@@ -158,9 +166,14 @@ async def test_resolve_default_entry_returns_the_pointer_when_permitted(
 @pytest.mark.asyncio
 async def test_resolve_default_entry_falls_back_in_insertion_order(_keyless, monkeypatch):
     """MOVED from ``test_collection_access_control.py::
-    test_effective_collection_falls_back_to_first_allowed``, which asserted
-    ``"a"`` because it pinned ``sorted()``. It now asserts ``"b"`` — the
-    registry's insertion-first permitted entry. **Deliberate (D2).**"""
+    test_effective_collection_falls_back_to_first_allowed``.
+
+    Both the registry ORDER and the expectation changed: the old case used
+    ``[ragstack, "a", "b"]`` and asserted ``"a"``, which — as
+    :func:`test_pick_default_uses_insertion_order_not_lexicographic` explains —
+    was the answer under *both* candidate rules, so it discriminated nothing.
+    Reordered to ``[ptr, "b", "a"]`` it does: insertion-first is ``"b"``,
+    lexicographic-first is still ``"a"``. **Deliberate (D2).**"""
     monkeypatch.setattr(settings, "tenant_collections", {"t": ["b", "a"]})
     entry = await resolve_default_entry(_reg(["ptr", "b", "a"], "ptr"), _principal())
     assert entry.id == "b"

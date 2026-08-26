@@ -24,10 +24,16 @@ from tests.api.conftest import SHARED_ID
 # explicit-allowlist half it also owned is now `query.py::_check_allowlist` and
 # is tested there; the implicit half is `default_collection.pick_default`.
 #
-# One assertion changed MEANING in the move and did not just relocate:
-# `test_effective_collection_falls_back_to_first_allowed` pinned `sorted()` and
-# now pins insertion order (decision D2 on #419). That is deliberate. An
-# implementer who "fixes" it back to `sorted()` has reintroduced the drift.
+# One case changed MEANING in the move and did not just relocate:
+# `test_effective_collection_falls_back_to_first_allowed`. It LOOKED like it
+# pinned `sorted()` and did not — its registry was [ragstack, "a", "b"] with
+# allowlist {a, b}, so insertion-first and lexicographic-first were BOTH "a"
+# and the assertion held under either rule. Nothing in this tree pinned either
+# ordering, which is why the two implementations could disagree for years
+# unnoticed: that IS #419's thesis, in miniature. The replacement reorders the
+# registry so the two rules give different answers, and asserts insertion order
+# (decision D2 on #419). Deliberate. An implementer who "fixes" it back to
+# `sorted()` has reintroduced the drift.
 
 # --- endpoints (in-memory registry; no real stores) ------------------------- #
 

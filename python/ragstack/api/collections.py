@@ -252,9 +252,35 @@ def confined_collection_name(
     The knowledge-graph endpoints take no ``collection`` argument — one graph
     store spans every collection — so a tenant confined by ``TENANT_COLLECTIONS``
     would otherwise inspect triples derived from collections it may not query
-    (#209). This picks the same collection an unqualified ``/v1/query`` serves it:
-    the registry default when permitted, else its first allowed collection present
-    in the registry.
+    (#209). It picks the registry default when permitted, else its first allowed
+    collection present in the registry, by LEXICOGRAPHIC order.
+
+    .. warning::
+
+       This used to say it "picks the same collection an unqualified
+       ``/v1/query`` serves". **Since #419 that is false**, and this PR is what
+       falsified it — deliberately, with the divergence tracked rather than
+       papered over. ``/v1/query`` now resolves an omitted ``collection``
+       through :mod:`ragstack.api.default_collection`, which differs here on
+       BOTH axes:
+
+       * **visibility** — the shared resolver intersects the allowlist with the
+         caller's READABLE set; this function still applies the allowlist alone,
+         so it can name a collection the caller cannot read;
+       * **order** — the shared resolver breaks ties in registry INSERTION
+         order (what the listing shows); this one still uses ``sorted()``.
+
+       Concretely, for the ``caller_without_default_access`` persona with an
+       allowlist covering both collections, this returns ``C_default`` while
+       ``/v1/query`` serves ``C_readable``.
+
+       It was NOT unified in #419's PR: it is sync, takes no principal, and is
+       called from the graph path where no ACL round trip is budgeted — and it
+       answers a slightly different question (which *physical* store to scope
+       triples to). Tracked in the #419 follow-up issue, which must decide
+       whether to converge it or keep the divergence on purpose. Live blast
+       radius today is nil: it returns ``None`` without an allowlist, and no
+       deployed tenant sets ``TENANT_COLLECTIONS``.
 
     ``None`` means "don't scope": the caller is unrestricted (operators/admins
     keep the cross-collection inspection view, which is also the only way to see
