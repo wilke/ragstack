@@ -29,6 +29,7 @@ import pytest
 from ragstack.observability.context import RequestContextFilter
 from ragstack.observability.logging_config import (
     LOG_LEVEL_NAMES,
+    NOISY_LIBRARIES,
     JsonFormatter,
     LogfmtFormatter,
     configure_logging,
@@ -215,8 +216,8 @@ def test_a_newline_in_a_message_cannot_forge_a_second_line(capsys, fmt):
     assert err.count("\n") == 1, f"message forged an extra line: {err!r}"
 
 
-@pytest.mark.parametrize("formatter", [LogfmtFormatter(), JsonFormatter()])
-def test_timestamps_are_utc_not_local_time_with_a_z_on_them(formatter):
+@pytest.mark.parametrize("formatter_cls", [LogfmtFormatter, JsonFormatter])
+def test_timestamps_are_utc_not_local_time_with_a_z_on_them(formatter_cls, monkeypatch):
     """``logging.Formatter.converter`` defaults to ``time.localtime``, so a ``Z``
     suffix on the default output is a silent lie — measured at five hours off on
     this host, against the gateway's own ``Date:`` header.
@@ -224,12 +225,35 @@ def test_timestamps_are_utc_not_local_time_with_a_z_on_them(formatter):
     That is not cosmetic for #427. The timestamp is the field an operator uses to
     line the app log up with nginx's and with a user's "it failed around 2pm",
     which is the whole activity this work exists to make possible.
-    """
-    record = logging.LogRecord("t", logging.INFO, "f.py", 1, "x", (), None)
-    rendered = formatter.formatTime(record)
 
-    assert rendered.endswith("Z")
-    assert rendered.startswith(time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)))
+    **TZ is pinned, and that is the load-bearing part of this test.** With the
+    converter reverted to ``time.localtime`` this passes 2/2 under ``TZ=UTC`` and
+    fails 2/2 under this host's ``-0500`` — so without the pin the guard is a
+    property of where it happens to run. CI containers run UTC, and #427 W7 adds
+    a CI job, which means the guard would switch itself off at exactly the moment
+    it started being the only thing watching. A non-UTC zone with no DST
+    ambiguity, applied through ``time.tzset`` so the C library actually re-reads
+    it.
+    """
+    monkeypatch.setenv("TZ", "Asia/Kolkata")  # +05:30 — and never equal to UTC
+    time.tzset()
+    try:
+        record = logging.LogRecord("t", logging.INFO, "f.py", 1, "x", (), None)
+        rendered = formatter_cls().formatTime(record)
+
+        local = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(record.created))
+        utc = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
+        assert local != utc, "TZ pin did not take effect; this test would prove nothing"
+
+        assert rendered.endswith("Z")
+        assert rendered.startswith(utc), (
+            f"timestamp {rendered!r} is local time with a Z on it (UTC is {utc})"
+        )
+    finally:
+        # tzset() mutates process-global C state; monkeypatch restores the env
+        # var but not the library's parsed copy of it.
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_importing_the_app_installs_the_root_handler():
@@ -254,6 +278,46 @@ def test_importing_the_app_installs_the_root_handler():
     assert root.level <= logging.INFO, (
         f"root logger at {logging.getLevelName(root.level)} — INFO lines are discarded again"
     )
+
+
+def test_noisy_libraries_are_damped_at_info_but_not_at_debug(capsys):
+    """Raising the ROOT logger to INFO un-mutes every third-party library at
+    once — they were quiet before only because root sat at WARNING with no
+    handler. httpx alone logs a line per HTTP call, and this API makes several
+    per request, so on the two tenants running LOG_LEVEL=info the new rid lines
+    would be buried in library chatter.
+
+    #427 exists because the logs were unusable; trading one kind of unusable for
+    another is not a fix. So this is a decision, and it is tested as one rather
+    than left as a side effect of the level.
+
+    DEBUG is the deliberate exception: an operator who asks for DEBUG is asking
+    for the library's own view, which is the whole reason to ask.
+    """
+    configure_logging(level="INFO", log_format="logfmt")
+    for name in NOISY_LIBRARIES:
+        logging.getLogger(name).info("chatter from %s", name)
+    logging.getLogger("ragstack.test").info("ours")
+
+    err = capsys.readouterr().err
+    assert "ours" in err, "damping the libraries must not damp us"
+    assert "chatter" not in err, "a third-party INFO line reached the log at LOG_LEVEL=info"
+
+    # ...and a library WARNING is never suppressed: damping must not hide a real
+    # problem, only routine per-call chatter.
+    logging.getLogger(NOISY_LIBRARIES[0]).warning("a real problem")
+    assert "a real problem" in capsys.readouterr().err
+
+
+def test_debug_restores_library_chatter_even_after_an_info_configure(capsys):
+    """Idempotency across a level CHANGE: configure at INFO (which damps), then
+    at DEBUG. The second call must undo the first, or a process that raises its
+    level to debug something gets everything except the part it wanted."""
+    configure_logging(level="INFO", log_format="logfmt")
+    configure_logging(level="DEBUG", log_format="logfmt")
+
+    logging.getLogger(NOISY_LIBRARIES[0]).info("chatter")
+    assert "chatter" in capsys.readouterr().err
 
 
 def test_access_log_is_left_alone_by_default():

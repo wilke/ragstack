@@ -11,6 +11,7 @@ correlated the two. These pin the correlation id's four properties:
 * an inbound value that could forge a log line (a newline) or flood the log
   (200 characters) is **rejected outright** and never reaches a ``LogRecord``.
 """
+import asyncio
 import logging
 import re
 
@@ -19,7 +20,7 @@ from httpx import ASGITransport, AsyncClient
 
 from ragstack.api.main import app
 from ragstack.observability.context import RequestContextFilter
-from ragstack.observability.middleware import _UPSTREAM_RE
+from ragstack.observability.middleware import _UPSTREAM_RE, RequestContextMiddleware
 
 pytestmark = pytest.mark.asyncio
 
@@ -83,12 +84,19 @@ async def test_two_requests_get_different_ids(client):
 
 async def test_inbound_request_id_is_not_echoed(client, caplog):
     """We always generate our own. A caller-supplied id is recorded as
-    ``upstream_rid`` for gateway correlation and never becomes the response's."""
-    caplog.set_level(logging.INFO)
+    ``upstream_rid`` for gateway correlation and never becomes the response's.
+
+    Captured at DEBUG because that is where OUR own per-request record is
+    emitted. An earlier version used INFO and passed only by accident: the
+    record it actually captured was httpx's own client line, which
+    ``configure_logging`` now damps to WARNING. A test that depends on a third
+    party's log level is a test that breaks for reasons unrelated to its subject.
+    """
+    caplog.set_level(logging.DEBUG)
     caplog.handler.addFilter(RequestContextFilter())
 
     inbound = "gateway-abc.123_XY"
-    assert _UPSTREAM_RE.match(inbound)
+    assert _UPSTREAM_RE.fullmatch(inbound)
     r = await client.get("/health", headers={"X-Request-ID": inbound})
 
     ours = _rid(r)
@@ -101,7 +109,10 @@ async def test_inbound_request_id_is_not_echoed(client, caplog):
     "hostile",
     [
         "abc\ndef",  # log injection: a newline forges a whole second log line
+        "abc\n",  # the TRAILING newline `$` matches before — hence fullmatch
+        "a" * 64 + "\n",  # same hole, at the length boundary: 64 chars + LF
         "a" * 200,  # log flooding: an unbounded header on every line
+        "a" * 65,  # one over the documented cap
         "id with spaces",  # breaks logfmt tokenisation
         "sub=1 rid=deadbeef",  # forges an adjacent logfmt field
         "",  # empty is not an id
@@ -123,9 +134,16 @@ async def test_hostile_inbound_id_is_rejected_and_never_logged(client, caplog, h
 
 
 async def test_tenant_and_role_reach_the_log_record(client, caplog):
-    """``resolve_principal`` mutates the shared context object IN PLACE rather
-    than re-``set()``ing the contextvar. If someone converts that to a ``set()``
-    the value silently stops reaching the record and this fails."""
+    """``resolve_principal`` puts the caller on the request context, and the
+    filter carries it to every record. Removing that two-line write fails this.
+
+    It does **not** pin mutate-versus-``set()``, and an earlier version of this
+    docstring wrongly claimed it did: ``resolve_principal`` is an async
+    dependency running in the request's own context chain, so a ``set()`` there
+    is perfectly visible and converting it passes all 12 tests here. The
+    distinction only bites inside an ``asyncio.gather`` child —
+    ``tests/unit/test_request_context.py`` is where it is actually pinned.
+    """
     caplog.set_level(logging.DEBUG)
     caplog.handler.addFilter(RequestContextFilter())
 
@@ -157,3 +175,78 @@ async def test_request_id_is_readable_by_a_cross_origin_browser_client(client):
         "browser client cannot read it"
     )
     assert "retry-after" in exposed
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected_outcome"),
+    [
+        (asyncio.CancelledError, "client_disconnected"),
+        (RuntimeError, "unhandled"),
+    ],
+)
+async def test_a_client_disconnect_is_not_recorded_as_a_server_error(
+    caplog, raised, expected_outcome
+):
+    """``except BaseException`` also catches ``asyncio.CancelledError``, which on
+    an ASGI server means the CLIENT went away — not a server fault.
+
+    Harmless today because this line is DEBUG, but #427 W3 promotes it to
+    INFO/WARNING with a status, at which point every user who closes a tab
+    mid-query would manufacture a 500 in the log and, via W4's rollup, in the
+    error rate. Pre-empted here so W3 inherits the right behaviour rather than
+    having to notice it.
+
+    Driven at the ASGI layer directly: httpx cannot produce a mid-request client
+    disconnect against ``ASGITransport``, and the point is what the middleware
+    records, not how the cancellation arrives.
+    """
+    caplog.set_level(logging.DEBUG)
+
+    async def _app(scope, receive, send):
+        raise raised()
+
+    mw = RequestContextMiddleware(_app)
+    scope = {"type": "http", "method": "GET", "path": "/v1/query", "headers": []}
+
+    async def _send(message):  # pragma: no cover - never reached
+        raise AssertionError("no response should be sent")
+
+    with pytest.raises(raised):
+        await mw(scope, None, _send)
+
+    outcomes = [
+        rec.outcome for rec in caplog.records if rec.name.endswith("observability.middleware")
+    ]
+    assert outcomes == [expected_outcome], f"recorded {outcomes}, expected {expected_outcome}"
+
+
+async def test_a_lifespan_scope_gets_no_request_context(caplog):
+    """A non-http scope must pass through without a context being installed.
+
+    Not merely a short-circuit for speed: startup and shutdown run under the
+    lifespan scope and log a great deal (the registry build, the ACL backfill,
+    every "reranker enabled" line). Installing a request context there would
+    stamp all of it with a request id that corresponds to no request — worse
+    than no id, because ``grep rid=<that>`` would then return startup noise
+    alongside a real request's lines.
+
+    The assertion is on what a log record emitted during lifespan carries,
+    because that is the thing an operator actually sees.
+    """
+    caplog.set_level(logging.DEBUG)
+    caplog.handler.addFilter(RequestContextFilter())
+    seen: list[str] = []
+
+    async def _app(scope, receive, send):
+        seen.append(scope["type"])
+        logging.getLogger("ragstack.startup").info("registry built")
+
+    mw = RequestContextMiddleware(_app)
+    await mw({"type": "lifespan"}, None, None)
+
+    assert seen == ["lifespan"], "the lifespan scope did not reach the app"
+    startup = [r for r in caplog.records if r.name == "ragstack.startup"]
+    assert startup, "the fake app's startup line was not captured"
+    assert startup[0].rid == "-", (
+        f"a startup log line carries rid={startup[0].rid!r} — a request id for no request"
+    )

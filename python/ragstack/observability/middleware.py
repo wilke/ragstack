@@ -47,6 +47,7 @@ installing a *fresh* context object at entry.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -70,7 +71,15 @@ _HEADER_NAME = "X-Request-Id"
 #: charset cap is the log-injection guard: a newline in the header would
 #: otherwise let a caller forge whole log lines, and a 4 KB header would let
 #: them flood the file. Length is bounded at 64 to match the documented schema.
-_UPSTREAM_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+#:
+#: Matched with ``fullmatch`` and with no ``$``, deliberately. ``$`` matches
+#: BEFORE a trailing newline, so ``re.match(r"^…$", "abc\n")`` succeeds — which
+#: would have let exactly the character this guard exists to exclude through,
+#: and made the 64-character cap a 65-character one. Not exploitable today
+#: (``_quote`` escapes it on the way out and h11 rejects a bare LF in a header),
+#: but a guard that admits the thing its own docstring forbids is worse than no
+#: guard, because it is trusted.
+_UPSTREAM_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def new_request_id() -> str:
@@ -99,7 +108,7 @@ def _upstream_id(scope: Scope) -> str:
                 candidate = value.decode("latin-1")
             except UnicodeDecodeError:  # pragma: no cover - latin-1 decodes any byte
                 return ""
-            return candidate if _UPSTREAM_RE.match(candidate) else ""
+            return candidate if _UPSTREAM_RE.fullmatch(candidate) else ""
     return ""
 
 
@@ -149,6 +158,20 @@ class RequestContextMiddleware:
 
         try:
             await self.app(scope, receive, _send)
+        except asyncio.CancelledError:
+            # A cancellation is almost always the CLIENT going away mid-request,
+            # not a server fault. Recorded separately BEFORE the generic branch
+            # below, which would otherwise stamp it status=500/outcome=unhandled
+            # and invent a server error out of a user closing a tab. Invisible
+            # today (this line is DEBUG), but W3 promotes it to INFO/WARNING —
+            # at which point a disconnect would start paging someone.
+            #
+            # `status` is left as observed: if the response had already started
+            # the client did get that status, and if it had not, None is the
+            # honest answer rather than a number we made up.
+            if outcome == "ok":
+                outcome = "client_disconnected"
+            raise
         except BaseException:
             # ServerErrorMiddleware is above us and will render the 500 with the
             # ORIGINAL send, so `status` would otherwise stay None here — no

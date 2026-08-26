@@ -104,6 +104,23 @@ def set_context(ctx: RequestContext) -> Token[RequestContext | None]:
     return _ctx.set(ctx)
 
 
+def clear_context() -> None:
+    """Drop the current request context.
+
+    The middleware deliberately does **not** call this (see :func:`set_context`
+    for why), so nothing on the request path needs it: each request installs a
+    fresh object, which is what provides isolation.
+
+    It exists for code that runs *outside* a request but may inherit a context
+    by accident — a background worker started from a request, and tests, where
+    one test's context otherwise survives into the next in the same thread and
+    makes a later assertion about "no context" pass or fail depending on
+    ordering. That is Risk 1 from the plan in miniature, and it is better to
+    have a named way to say "not in a request" than to leave the leak implicit.
+    """
+    _ctx.set(None)
+
+
 class RequestContextFilter(logging.Filter):
     """Copy the current request context onto every ``LogRecord``.
 

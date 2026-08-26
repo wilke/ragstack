@@ -21,8 +21,24 @@ import pytest
 
 from ragstack.api import security
 from ragstack.api.security import Principal
-from ragstack.observability.context import RequestContext, set_context
+from ragstack.observability.context import RequestContext, clear_context, set_context
 from ragstack.observability.logging_config import configure_logging
+
+
+@pytest.fixture(autouse=True)
+def _clean_context():
+    """No request context before or after each test.
+
+    The middleware never resets the contextvar (an exception handler runs after
+    its ``finally`` and needs the id), so a context installed by one test
+    survives into the next in the same thread. Without this, whether a test
+    asserting "no context" passes depends on collection order — which is how it
+    first showed up: green alone, red in the full suite.
+    """
+    clear_context()
+    yield
+    clear_context()
+
 
 SECRET = "tok_LIVE_5f3a9c2b1e7d4a6f8c0b2d4e6f8a0c2e"
 
@@ -78,7 +94,21 @@ async def test_end_to_end_bearer_request_never_logs_the_token(capsys, monkeypatc
     """The real path: a bearer credential authenticated through
     ``resolve_principal``, whose whole job in W1 is to copy the caller onto the
     request context. Everything the request emits at DEBUG is captured and the
-    credential must not be anywhere in it."""
+    credential must not be anywhere in it.
+
+    **The app is imported BEFORE ``configure_logging``, and that ordering is
+    what makes this test work at all.** ``ragstack.api.main`` calls
+    ``configure_logging()`` at import time with the deployment's settings; if
+    that import happens *after* the test's own call, it replaces the DEBUG
+    handler with an INFO one and the per-request line this test inspects is
+    never emitted. The test then passes by capturing nothing — which it did,
+    silently, until a planted-leak probe showed root sitting at INFO and the
+    captured stream empty. Whether it caught anything depended on whether some
+    earlier test in the session had already imported the app.
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from ragstack.api.main import app
     from ragstack.identity import Identity, reset_identity_provider, set_identity_provider
 
     seen: list[str] = []
@@ -96,11 +126,11 @@ async def test_end_to_end_bearer_request_never_logs_the_token(capsys, monkeypatc
     monkeypatch.setattr(security.settings, "identity_provider", "bvbrc", raising=False)
     set_identity_provider(_Provider())
     configure_logging(level="DEBUG", log_format="logfmt")
+    assert logging.getLogger().level == logging.DEBUG, (
+        "root is not at DEBUG — the per-request line will not be emitted and "
+        "this test would capture nothing"
+    )
     try:
-        from httpx import ASGITransport, AsyncClient
-
-        from ragstack.api.main import app
-
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             await c.get("/v1/config", headers={"Authorization": f"Bearer {SECRET}"})
@@ -114,5 +144,10 @@ async def test_end_to_end_bearer_request_never_logs_the_token(capsys, monkeypatc
     assert seen == [SECRET], "the bearer path never ran; this test would prove nothing"
 
     captured = capsys.readouterr()
+    # Second anti-vacuity guard: we must actually have captured the request's
+    # own log output, or "the secret is not in it" is trivially true.
+    assert "request complete" in captured.err, (
+        "the per-request log line was not captured; this test proves nothing"
+    )
     assert SECRET not in captured.err, "a bearer token reached a log line"
     assert SECRET not in captured.out

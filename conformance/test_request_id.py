@@ -6,11 +6,28 @@ two implementations that #419's post-mortem asked for.
 .. rubric:: Expected-red window — read this before deleting anything
 
 This test lands with #427 **W1**, which is the Python side. Go does not satisfy
-it until **W7** (wire ``observability.LoggingMiddleware``, stop discarding the
-logger in ``router.go``, echo the header from chi's ``middleware.GetReqID``). So
-it is skipped for ``RAGSTACK_IMPL=go`` in the meantime, deliberately, rather than
-left red: a permanently-red target trains people to ignore the target, which is
-exactly how the #419 drift happened.
+it until **W7**. So it is skipped for ``RAGSTACK_IMPL=go`` in the meantime,
+deliberately, rather than left red: a permanently-red target trains people to
+ignore the target, which is exactly how the #419 drift happened.
+
+.. rubric:: What W7 must NOT do — chi's ``RequestID`` cannot satisfy this file
+
+An earlier draft of this note told W7 to echo chi's ``middleware.GetReqID``.
+That is wrong twice over, and following it would have sent W7 straight to red:
+
+* chi's ``middleware.RequestID`` generates ``"<hostname>/<rand>-<counter>"``,
+  which can never match :data:`RID_RE` below, nor the ``^[0-9a-f]{16}$`` pattern
+  the contract pins at ``components/headers/XRequestId``;
+* chi honours an inbound ``X-Request-Id`` **verbatim**. That is option (i) — the
+  trust-the-caller option the plan explicitly rejected and the contract text
+  forbids — so ``test_inbound_request_id_is_never_echoed`` would fail by
+  construction.
+
+W7 should generate its own 16-hex-character id (Go: 8 random bytes,
+``hex.EncodeToString``), validate any inbound value against the same
+``^[A-Za-z0-9._-]{1,64}$`` charset for recording only, and never echo it. chi's
+``RequestID`` middleware may stay for its own purposes, but it is not the source
+of this header.
 
 **W7 deletes ``requires_request_id`` and this paragraph.** The deletion is part
 of W7's own diff and therefore cannot be forgotten.

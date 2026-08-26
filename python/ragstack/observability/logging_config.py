@@ -48,6 +48,19 @@ LOG_LEVEL_NAMES = frozenset(
     {"CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"}
 )
 
+#: Third-party libraries damped to WARNING unless the operator explicitly asked
+#: for DEBUG. This is a deliberate decision, not an oversight — see
+#: :func:`configure_logging`. Every one of these is INFO-chatty on a path the
+#: API takes once or more PER REQUEST.
+NOISY_LIBRARIES = (
+    "httpx",
+    "httpcore",
+    "elastic_transport",
+    "urllib3",
+    "neo4j",
+    "qdrant_client",
+)
+
 #: Marks the handler this module installs so a second call replaces it rather
 #: than stacking a duplicate (which would double every line).
 _HANDLER_NAME = "ragstack.observability"
@@ -236,6 +249,26 @@ def configure_logging(
         for h in logging.getLogger(name).handlers:
             if not any(isinstance(f, RequestContextFilter) for f in h.filters):
                 h.addFilter(RequestContextFilter())
+
+    # Raising the ROOT logger to INFO un-mutes every third-party library at once
+    # — they were silent before only because root sat at WARNING with no handler.
+    # httpx alone logs a line per HTTP call, and this API makes several per
+    # request (embedding sidecar, cross-encoder, Qdrant, Elasticsearch), so on
+    # the dev and demo tenants (LOG_LEVEL=info) the new rid lines would be
+    # buried in library chatter.
+    #
+    # #427 exists because the logs were unusable. Trading one kind of
+    # unusable for another is not a fix, so these are damped to WARNING —
+    # unless the operator explicitly asked for DEBUG, where wanting the
+    # library's own view is the entire point of asking.
+    if numeric > logging.DEBUG:
+        for name in NOISY_LIBRARIES:
+            logging.getLogger(name).setLevel(logging.WARNING)
+    else:
+        # Restore, so a process that reconfigures from INFO to DEBUG actually
+        # gets the chatter back rather than staying damped from the first call.
+        for name in NOISY_LIBRARIES:
+            logging.getLogger(name).setLevel(logging.NOTSET)
 
     if quiet_uvicorn_access:
         # W3's summary line is a strict superset of uvicorn's access line

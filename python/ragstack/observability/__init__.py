@@ -33,11 +33,13 @@ Two rules for anyone extending this package:
 from ragstack.observability.context import (
     RequestContext,
     RequestContextFilter,
+    clear_context,
     current_context,
     set_context,
 )
 from ragstack.observability.logging_config import (
     LOG_LEVEL_NAMES,
+    NOISY_LIBRARIES,
     configure_logging,
     resolve_log_level,
 )
@@ -45,9 +47,11 @@ from ragstack.observability.middleware import RequestContextMiddleware, new_requ
 
 __all__ = [
     "LOG_LEVEL_NAMES",
+    "NOISY_LIBRARIES",
     "RequestContext",
     "RequestContextFilter",
     "RequestContextMiddleware",
+    "clear_context",
     "configure_logging",
     "current_context",
     "new_request_id",
