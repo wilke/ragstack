@@ -69,6 +69,32 @@ Note the build uses the **sandbox route** (two `apptainer build` calls above)
 because `--fakeroot` is not available to unprivileged users on the dev/deploy
 hosts — building the SIF directly from the `.def` fails without it.
 
+#### Post-build checks
+
+After every rebuild, run these against the new SIF before trusting it:
+
+```bash
+apptainer exec apptainer/images/ragstack-worker.sif \
+    python -c "import ragstack, fitz, qdrant_client, elasticsearch, transformers; print('ok')"
+apptainer exec apptainer/images/ragstack-worker.sif \
+    python /opt/ragstack/scripts/load_graph.py --help
+apptainer exec apptainer/images/ragstack-worker.sif \
+    python /opt/ragstack/scripts/extract_graph.py --help
+# Mandatory, in addition to --help: --help never constructs Neo4jGraphStore,
+# so it does not exercise the `neo4j` driver import at all. `load_graph.py`
+# (the "load" leg) and load_embeddings.py's graph replay path both construct
+# Neo4jGraphStore and, without the graph extra installed, die with a bare
+# ModuleNotFoundError the moment they actually run (#404) -- extract_graph.py
+# (the "extract" leg) does NOT need the driver, it only writes the extraction
+# delta, but the check below is cheap enough to run unconditionally anyway.
+apptainer exec apptainer/images/ragstack-worker.sif python -c "import neo4j"
+```
+
+`--help` alone is not a runnable check for `load_graph.py` -- it never
+constructs `Neo4jGraphStore`, so treat the `import neo4j` line above as
+required, not optional, for any worker image `load_graph.py` (or
+`load_embeddings.py` with graph replay enabled) is expected to run in.
+
 #### Declare **both** `dockerPull` and `dockerImageId`
 
 Every `DockerRequirement` here carries the same bare filename under **two** keys:

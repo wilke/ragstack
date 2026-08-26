@@ -905,17 +905,24 @@ def _build_graph_store():
     """Return the configured GraphStore (knowledge graph), or ``None`` when graph
     support is disabled.
 
-    ``graph_backend=neo4j`` selects the durable Neo4j property-graph backend; the
-    ``neo4j`` driver is the optional ``graph`` extra and is imported lazily, so an
-    unconfigured/uninstalled graph degrades to the in-memory store in dev (and to
-    ``None`` only when explicitly disabled). Under ``require_durable_backends`` a
-    selected-but-unavailable Neo4j is fatal — the same readiness contract as the
-    vector/text backends — rather than silently dropping the graph.
+    ``graph_backend=neo4j`` selects the durable Neo4j property-graph backend.
+    The ``except ImportError`` below can never fire: ``ragstack.stores.neo4j``
+    only imports the real ``neo4j`` package lazily, inside
+    ``Neo4jGraphStore.__init__`` (``from neo4j import AsyncDriver`` at module
+    scope is ``TYPE_CHECKING``-only), so the module import always succeeds
+    whether or not the driver is installed. A missing driver instead surfaces
+    from the ``Neo4jGraphStore(...)`` call just below, as a ``RuntimeError``
+    naming the ``graph`` extra (see ``stores/neo4j.py``) — unconditionally, not
+    only under ``require_durable_backends``. That failure happens here, at
+    startup (``lifespan`` calls this), never lazily on the first graph call
+    (#404). The dead branch is left in place (harmless, ``# pragma: no cover``)
+    rather than restructured, since fixing dev-mode graceful-degrade behaviour
+    — if that's still wanted — is a separate decision from #404's scope.
     """
     if settings.graph_backend == "neo4j":
         try:
             from ragstack.stores.neo4j import Neo4jGraphStore
-        except ImportError as e:  # pragma: no cover - module has no hard import
+        except ImportError as e:  # pragma: no cover - unreachable, see docstring
             if settings.require_durable_backends:
                 raise RuntimeError(
                     "graph_backend='neo4j' but the neo4j driver is not installed "
