@@ -47,11 +47,20 @@ SECRET = "tok_LIVE_5f3a9c2b1e7d4a6f8c0b2d4e6f8a0c2e"
 def _restore_root_logging():
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
+    # Named loggers too: configure_logging damps the HTTP transports by level,
+    # which would otherwise silence httpx for the rest of the session.
+    levels = {
+        name: lg.level
+        for name, lg in logging.root.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
     try:
         yield
     finally:
         root.handlers[:] = handlers
         root.setLevel(level)
+        for name, lvl in levels.items():
+            logging.getLogger(name).setLevel(lvl)
 
 
 def test_request_context_has_no_field_that_can_hold_a_credential():

@@ -37,6 +37,7 @@ import json
 import logging
 import sys
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from ragstack.observability.context import CONTEXT_FIELDS, MISSING, RequestContextFilter
@@ -48,18 +49,10 @@ LOG_LEVEL_NAMES = frozenset(
     {"CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"}
 )
 
-#: Third-party libraries damped to WARNING unless the operator explicitly asked
-#: for DEBUG. This is a deliberate decision, not an oversight — see
-#: :func:`configure_logging`. Every one of these is INFO-chatty on a path the
-#: API takes once or more PER REQUEST.
-NOISY_LIBRARIES = (
-    "httpx",
-    "httpcore",
-    "elastic_transport",
-    "urllib3",
-    "neo4j",
-    "qdrant_client",
-)
+#: Fallback dampen set, used only when ``settings.log_dampen_loggers`` is
+#: unavailable. The real default lives in ``config.py`` so an operator can change
+#: it with ``LOG_DAMPEN_LOGGERS`` and no code change.
+DEFAULT_DAMPEN_LOGGERS = ("httpx", "httpcore", "elastic_transport", "urllib3")
 
 #: Marks the handler this module installs so a second call replaces it rather
 #: than stacking a duplicate (which would double every line).
@@ -197,11 +190,112 @@ def make_formatter(log_format: str | None) -> logging.Formatter:
     return JsonFormatter() if (log_format or "").strip().lower() == "json" else LogfmtFormatter()
 
 
+def apply_dampening(level: int, loggers: Sequence[str]) -> None:
+    """Pin ``loggers`` to WARNING while ``level`` is INFO or higher; release them
+    at DEBUG. Safe to call repeatedly, and safe to call with a *different* set
+    than last time — the release branch uses ``NOTSET``, which restores
+    inheritance rather than guessing a previous value.
+
+    .. rubric:: Why damp at all
+
+    Every logger in the default set is ``NOTSET``, so it inherits the root
+    level. Before #427 root sat at WARNING with **no handler**, which made these
+    libraries silent *by accident*. Raising root to INFO — the whole point of
+    this module — un-mutes all of them at once, and they sit on a path this API
+    takes several times per request.
+
+    A single ``/v1/query`` makes **5 outbound HTTP calls minimum** (query
+    embedding, Qdrant, Elasticsearch, cross-encoder rerank, the LLM), 6 with
+    query rewriting, and up to **~14** on the multi-collection path. That is one
+    ``httpx`` INFO line each. So the single summary line #427 exists to produce
+    would arrive at a signal-to-noise ratio of **1:5, worst case 1:14** — and
+    #427 exists precisely because the logs were unusable. Trading one kind of
+    unusable for another is not a fix.
+
+    This also **falsifies the plan's "net line count is unchanged" claim**, which
+    accounted only for uvicorn's access log and not for the libraries that root's
+    new level un-mutes.
+
+    .. rubric:: What damping costs, and the one thing W3 must preserve
+
+    The honest argument against: because :class:`RequestContextFilter` is on the
+    root *handler*, third-party lines **do** carry the ``rid``. They are
+    correlatable, not pure noise. But at INFO ``httpx`` contributes only method,
+    URL and status, and a failure already produces a better line from our own
+    store-failure path.
+
+    Its one genuinely unique contribution is **which endpoint served the call**.
+    The embedding fleet is six vLLM endpoints, and "was it always the same slow
+    one?" is a real question that damping would otherwise make unanswerable.
+    **W3 must put the resolved endpoint on the relevant stage tag** so that
+    information survives this.
+
+    .. rubric:: DEBUG is not a credential-exposure vector — verified, not assumed
+
+    Measured against a real socket with ``httpx`` 0.28.1 / ``httpcore`` 1.0.9,
+    sending both an ``Authorization: Bearer …`` and an ``X-API-Key``: a full
+    round trip at DEBUG logs ``send_request_headers.started request=<Request
+    [b'GET']>`` — the **repr**, which omits headers entirely. Neither credential
+    appeared, and neither did the header *names*.
+
+    One caveat, stated because it is real: **response** headers ARE logged at
+    DEBUG (``receive_response_headers.complete return_value=(…, [(b'Server',
+    …)])``). And this is a dependency-version-sensitive observation, not a
+    guarantee — it is a property of these libraries' current logging, so re-check
+    it rather than trusting this paragraph after a major upgrade.
+    """
+    for name in loggers:
+        logging.getLogger(name).setLevel(
+            logging.WARNING if level > logging.DEBUG else logging.NOTSET
+        )
+
+
+def apply_log_level(
+    level: str | None = None,
+    *,
+    dampen: Sequence[str] | None = None,
+) -> tuple[int, str | None]:
+    """Apply a log level (and the dampen set that goes with it). Re-appliable.
+
+    Split out of :func:`configure_logging` deliberately: everything here is
+    "state that can change while the process runs", while installing a handler
+    and choosing a formatter is start-up shape. A future admin endpoint that
+    changes the level without a restart calls **this**, not
+    ``configure_logging`` — it does not touch handlers, so it cannot double a
+    line or lose the context filter, and calling it twice with different values
+    is well defined (see :func:`apply_dampening` on why the release branch uses
+    ``NOTSET``).
+
+    That endpoint is **not** part of #427 W1 — it is a new route and a contract
+    change, and it comes after. This function only makes it cheap.
+
+    Returns ``(numeric level, warning to emit or None)``; the caller decides
+    where the warning goes, because during start-up there may be no handler yet.
+    """
+    from ragstack.config import settings
+
+    if level is None:
+        level = settings.log_level
+    if dampen is None:
+        # `is None`, not a truthiness test: an EMPTY list is a valid, meaningful
+        # value — "damp nothing" — and falling back to the default there would
+        # make LOG_DAMPEN_LOGGERS= silently do the opposite of what it says.
+        # Only a genuinely absent setting falls back.
+        configured = getattr(settings, "log_dampen_loggers", None)
+        dampen = DEFAULT_DAMPEN_LOGGERS if configured is None else configured
+
+    numeric, warning = resolve_log_level(level)
+    logging.getLogger().setLevel(numeric)
+    apply_dampening(numeric, dampen)
+    return numeric, warning
+
+
 def configure_logging(
     *,
     level: str | None = None,
     log_format: str | None = None,
     quiet_uvicorn_access: bool | None = None,
+    dampen: Sequence[str] | None = None,
 ) -> logging.Handler:
     """Install the root stderr handler and honour ``LOG_LEVEL``. Idempotent.
 
@@ -213,18 +307,18 @@ def configure_logging(
     this is called at import time of ``api.main`` and again by anything that
     reconfigures — a stacked handler doubles every line.
 
+    The level and dampen set are applied through :func:`apply_log_level`, which
+    is separately callable so that changing the level later does not mean
+    rebuilding the handler.
+
     Returns the installed handler.
     """
     from ragstack.config import settings
 
-    if level is None:
-        level = settings.log_level
     if log_format is None:
         log_format = getattr(settings, "log_format", "logfmt")
     if quiet_uvicorn_access is None:
         quiet_uvicorn_access = bool(getattr(settings, "access_log_replaced", False))
-
-    numeric, warning = resolve_log_level(level)
 
     root = logging.getLogger()
     for existing in list(root.handlers):
@@ -239,7 +333,10 @@ def configure_logging(
     # silently miss the context.
     handler.addFilter(RequestContextFilter())
     root.addHandler(handler)
-    root.setLevel(numeric)
+
+    # AFTER the handler is installed, so the bad-LOG_LEVEL warning below has
+    # somewhere to go — the absence of a handler is the very bug this fixes.
+    _, warning = apply_log_level(level, dampen=dampen)
 
     # uvicorn configures its own loggers with propagate=False and its own
     # handlers, so root's handler never sees their records. Attach the filter to
@@ -249,26 +346,6 @@ def configure_logging(
         for h in logging.getLogger(name).handlers:
             if not any(isinstance(f, RequestContextFilter) for f in h.filters):
                 h.addFilter(RequestContextFilter())
-
-    # Raising the ROOT logger to INFO un-mutes every third-party library at once
-    # — they were silent before only because root sat at WARNING with no handler.
-    # httpx alone logs a line per HTTP call, and this API makes several per
-    # request (embedding sidecar, cross-encoder, Qdrant, Elasticsearch), so on
-    # the dev and demo tenants (LOG_LEVEL=info) the new rid lines would be
-    # buried in library chatter.
-    #
-    # #427 exists because the logs were unusable. Trading one kind of
-    # unusable for another is not a fix, so these are damped to WARNING —
-    # unless the operator explicitly asked for DEBUG, where wanting the
-    # library's own view is the entire point of asking.
-    if numeric > logging.DEBUG:
-        for name in NOISY_LIBRARIES:
-            logging.getLogger(name).setLevel(logging.WARNING)
-    else:
-        # Restore, so a process that reconfigures from INFO to DEBUG actually
-        # gets the chatter back rather than staying damped from the first call.
-        for name in NOISY_LIBRARIES:
-            logging.getLogger(name).setLevel(logging.NOTSET)
 
     if quiet_uvicorn_access:
         # W3's summary line is a strict superset of uvicorn's access line

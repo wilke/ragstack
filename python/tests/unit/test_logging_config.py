@@ -28,10 +28,11 @@ import pytest
 
 from ragstack.observability.context import RequestContextFilter
 from ragstack.observability.logging_config import (
+    DEFAULT_DAMPEN_LOGGERS,
     LOG_LEVEL_NAMES,
-    NOISY_LIBRARIES,
     JsonFormatter,
     LogfmtFormatter,
+    apply_log_level,
     configure_logging,
     resolve_log_level,
 )
@@ -39,18 +40,32 @@ from ragstack.observability.logging_config import (
 
 @pytest.fixture(autouse=True)
 def _restore_root_logging():
-    """Save and restore global logging state. Without this the first test that
-    sets DEBUG leaves every later test in the session at DEBUG."""
+    """Save and restore global logging state.
+
+    Without this the first test that sets DEBUG leaves every later test in the
+    session at DEBUG. Every *named* logger's level is snapshotted too, not just
+    root's: ``configure_logging`` damps the HTTP transports by setting their
+    levels, so a test here would otherwise silence ``httpx`` for the rest of the
+    session — the same cross-test leak that made an assertion elsewhere in this
+    branch pass alone and fail in the full suite.
+    """
     root = logging.getLogger()
     handlers = list(root.handlers)
     level = root.level
     access_disabled = logging.getLogger("uvicorn.access").disabled
+    levels = {
+        name: lg.level
+        for name, lg in logging.root.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
     try:
         yield
     finally:
         root.handlers[:] = handlers
         root.setLevel(level)
         logging.getLogger("uvicorn.access").disabled = access_disabled
+        for name, lvl in levels.items():
+            logging.getLogger(name).setLevel(lvl)
 
 
 # --------------------------------------------------------------------------- #
@@ -280,44 +295,130 @@ def test_importing_the_app_installs_the_root_handler():
     )
 
 
-def test_noisy_libraries_are_damped_at_info_but_not_at_debug(capsys):
+def test_http_transports_are_damped_at_info(capsys):
     """Raising the ROOT logger to INFO un-mutes every third-party library at
     once — they were quiet before only because root sat at WARNING with no
-    handler. httpx alone logs a line per HTTP call, and this API makes several
-    per request, so on the two tenants running LOG_LEVEL=info the new rid lines
-    would be buried in library chatter.
+    handler, i.e. silent by accident.
 
-    #427 exists because the logs were unusable; trading one kind of unusable for
-    another is not a fix. So this is a decision, and it is tested as one rather
-    than left as a side effect of the level.
-
-    DEBUG is the deliberate exception: an operator who asks for DEBUG is asking
-    for the library's own view, which is the whole reason to ask.
+    That matters at a measured scale: one ``/v1/query`` makes 5 outbound HTTP
+    calls minimum (embed, Qdrant, ES, rerank, LLM), 6 with query rewriting, and
+    up to ~14 multi-collection — one ``httpx`` INFO line each. The single
+    summary line #427 exists to produce would land at a signal-to-noise of 1:5,
+    worst case 1:14. #427 exists because the logs were unusable; trading one
+    kind of unusable for another is not a fix.
     """
     configure_logging(level="INFO", log_format="logfmt")
-    for name in NOISY_LIBRARIES:
+    for name in DEFAULT_DAMPEN_LOGGERS:
         logging.getLogger(name).info("chatter from %s", name)
     logging.getLogger("ragstack.test").info("ours")
 
     err = capsys.readouterr().err
-    assert "ours" in err, "damping the libraries must not damp us"
-    assert "chatter" not in err, "a third-party INFO line reached the log at LOG_LEVEL=info"
+    assert "ours" in err, "damping the transports must not damp us"
+    assert "chatter" not in err, "a transport INFO line reached the log at LOG_LEVEL=info"
 
-    # ...and a library WARNING is never suppressed: damping must not hide a real
-    # problem, only routine per-call chatter.
-    logging.getLogger(NOISY_LIBRARIES[0]).warning("a real problem")
+
+def test_a_damped_logger_still_reports_warnings(capsys):
+    """Damping hides routine per-call chatter, never a real problem."""
+    configure_logging(level="INFO", log_format="logfmt")
+    logging.getLogger(DEFAULT_DAMPEN_LOGGERS[0]).warning("a real problem")
     assert "a real problem" in capsys.readouterr().err
 
 
-def test_debug_restores_library_chatter_even_after_an_info_configure(capsys):
-    """Idempotency across a level CHANGE: configure at INFO (which damps), then
+@pytest.mark.parametrize("name", ["neo4j", "qdrant_client"])
+def test_data_path_clients_are_deliberately_NOT_damped(capsys, name):
+    """A deliberate exclusion, not an oversight.
+
+    ``neo4j`` and ``qdrant_client`` sit closer to our own data path and are far
+    less chatty than the HTTP transports — and Qdrant is the store the #427
+    incident was actually about. The noise problem is the transports; damping
+    these would trade signal for very little quiet.
+    """
+    configure_logging(level="INFO", log_format="logfmt")
+    logging.getLogger(name).info("something from %s", name)
+    assert f"something from {name}" in capsys.readouterr().err
+
+
+def test_debug_leaves_the_transports_alone(capsys):
+    """Progressive disclosure: INFO is the production default where the summary
+    line has to be findable; DEBUG is what you set when you are actually
+    looking, and then you should get the full HTTP detail you asked for."""
+    configure_logging(level="DEBUG", log_format="logfmt")
+    logging.getLogger(DEFAULT_DAMPEN_LOGGERS[0]).debug("wire detail")
+    assert "wire detail" in capsys.readouterr().err
+
+
+def test_debug_restores_chatter_even_after_an_info_configure(capsys):
+    """Re-appliable across a level CHANGE: configure at INFO (which damps), then
     at DEBUG. The second call must undo the first, or a process that raises its
-    level to debug something gets everything except the part it wanted."""
+    level to debug something gets everything except the part it wanted. This is
+    the property the future runtime level-change endpoint depends on."""
     configure_logging(level="INFO", log_format="logfmt")
     configure_logging(level="DEBUG", log_format="logfmt")
 
-    logging.getLogger(NOISY_LIBRARIES[0]).info("chatter")
+    logging.getLogger(DEFAULT_DAMPEN_LOGGERS[0]).info("chatter")
     assert "chatter" in capsys.readouterr().err
+
+
+def test_the_dampen_set_is_configurable_not_hardcoded(capsys):
+    """``LOG_DAMPEN_LOGGERS`` is a setting so an operator can change it without
+    a code change — including damping something we never anticipated.
+
+    Both loggers are invented names rather than one real and one invented. An
+    earlier version used ``httpx`` as the not-in-the-set control and failed in
+    the full suite for a reason that had nothing to do with the behaviour under
+    test: importing the app damps ``httpx`` at session start, and damping is
+    only *released* at DEBUG, so ``httpx`` was still at WARNING from ambient
+    state. The code was right; the test's assumption was not.
+    """
+    configure_logging(level="INFO", log_format="logfmt", dampen=["some.vendor.lib"])
+
+    logging.getLogger("some.vendor.lib").info("vendor chatter")
+    logging.getLogger("other.vendor.lib").info("other chatter")
+
+    err = capsys.readouterr().err
+    assert "vendor chatter" not in err, "the configured logger was not damped"
+    assert "other chatter" in err, "a logger outside the configured set was damped anyway"
+
+
+def test_an_empty_dampen_set_damps_nothing(capsys):
+    """``LOG_DAMPEN_LOGGERS=`` must mean "damp nothing", not "use the default".
+
+    A truthiness test on the configured list would make the empty value do the
+    exact opposite of what an operator typing it intends — a setting that
+    silently ignores you is worse than no setting.
+    """
+    logging.getLogger("some.vendor.lib").setLevel(logging.NOTSET)
+    configure_logging(level="INFO", log_format="logfmt", dampen=[])
+
+    logging.getLogger("some.vendor.lib").info("nothing is damped")
+    assert "nothing is damped" in capsys.readouterr().err
+
+
+def test_apply_log_level_changes_the_level_without_touching_handlers():
+    """The seam the future runtime level-change endpoint needs (that endpoint is
+    NOT part of this work item). Changing the level must not rebuild the
+    handler: doing so would risk doubling every line or dropping the context
+    filter, which is exactly the class of bug #427 is cleaning up."""
+    handler = configure_logging(level="INFO", log_format="logfmt")
+    before = list(logging.getLogger().handlers)
+
+    apply_log_level("DEBUG")
+    assert logging.getLogger().level == logging.DEBUG
+    assert logging.getLogger().handlers == before, "handlers changed on a level change"
+    assert handler in logging.getLogger().handlers
+
+    apply_log_level("WARNING")
+    assert logging.getLogger().level == logging.WARNING
+    assert logging.getLogger().handlers == before
+
+
+def test_apply_log_level_never_raises_on_a_bad_value():
+    """Same never-fatal rule as start-up — and it matters more here, because a
+    runtime caller would be passing operator input straight in."""
+    configure_logging(level="INFO", log_format="logfmt")
+    numeric, warning = apply_log_level("not-a-level")
+    assert numeric == logging.INFO
+    assert warning is not None
 
 
 def test_access_log_is_left_alone_by_default():

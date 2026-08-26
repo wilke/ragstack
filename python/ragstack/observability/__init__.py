@@ -38,19 +38,23 @@ from ragstack.observability.context import (
     set_context,
 )
 from ragstack.observability.logging_config import (
+    DEFAULT_DAMPEN_LOGGERS,
     LOG_LEVEL_NAMES,
-    NOISY_LIBRARIES,
+    apply_dampening,
+    apply_log_level,
     configure_logging,
     resolve_log_level,
 )
 from ragstack.observability.middleware import RequestContextMiddleware, new_request_id
 
 __all__ = [
+    "DEFAULT_DAMPEN_LOGGERS",
     "LOG_LEVEL_NAMES",
-    "NOISY_LIBRARIES",
     "RequestContext",
     "RequestContextFilter",
     "RequestContextMiddleware",
+    "apply_dampening",
+    "apply_log_level",
     "clear_context",
     "configure_logging",
     "current_context",
