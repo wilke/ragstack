@@ -8,7 +8,12 @@ this backend is actually selected.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from functools import lru_cache
+from time import perf_counter
 from typing import Any
 
 from ragstack.documents import (
@@ -18,9 +23,49 @@ from ragstack.documents import (
     encode_cursor,
 )
 from ragstack.models import Chunk, ScoredChunk
+from ragstack.stores.errors import (
+    KIND_ERROR,
+    KIND_TIMEOUT,
+    KIND_UNREACHABLE,
+    StoreUnavailable,
+)
 from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
+
+#: The client's own per-request timeout when ``ELASTICSEARCH_TIMEOUT`` is unset,
+#: in seconds, as observed on elasticsearch 8.19.3 / elastic_transport 8.19.0.
+#:
+#: This is the **fallback**, not the source of truth:
+#: :func:`_client_default_timeout_s` reads the live value out of
+#: ``NodeConfig``'s dataclass field default, so a library bump changes the
+#: message instead of quietly making it false. Hardcoding it would break the
+#: exact standard this work is built on — "name the applied bound, never a
+#: setting the client ignores" — while every test stayed green. A test pins this
+#: constant against the library so a bump is also *noticed*, not just absorbed.
+_CLIENT_DEFAULT_TIMEOUT_FALLBACK_S = 10.0
+
+
+@lru_cache(maxsize=1)
+def _client_default_timeout_s() -> float:
+    """The per-request timeout the elasticsearch client applies when we pass
+    none. Read from ``elastic_transport.NodeConfig``'s field default.
+
+    Imported lazily (and cached) to preserve this module's rule that the
+    optional ``text`` extra is only required when this backend is selected. The
+    fallback covers a future layout change in the library rather than letting an
+    ``AttributeError`` escape from an error path — the one place an exception is
+    least welcome.
+    """
+    try:
+        from elastic_transport import NodeConfig
+
+        for f in dataclasses.fields(NodeConfig):
+            if f.name == "request_timeout" and isinstance(f.default, (int, float)):
+                return float(f.default)
+    except Exception:  # noqa: BLE001 — never raise from inside a failure message
+        pass
+    return _CLIENT_DEFAULT_TIMEOUT_FALLBACK_S
 
 # Filters target chunk *metadata* keys (matching the vector store, which filters
 # on chunk.metadata), so metadata is stored as a nested object and string values
@@ -114,15 +159,122 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
     return {"bool": {"must": [{"match": {"content": query}}], "filter": filter_clauses}}
 
 
+def _failure_kind(e: BaseException) -> str | None:
+    """Classify an Elasticsearch failure, or ``None`` for "not a store outage".
+
+    ``None`` is the important return value. Qdrant's adapter converts *every*
+    ``ApiException`` to a 503, which is defensible there because the wrapped
+    client raises it only for transport failures and non-2xx responses. The ES
+    client is different: ``ApiError`` also covers ``index_not_found_exception``
+    (404) and a malformed query (400), which are the **caller's** problem.
+    Reporting those as "elasticsearch unavailable, retry in 5s" would be a
+    downgrade from today's behaviour, not parity — so a 4xx returns ``None`` and
+    propagates exactly as it does now.
+
+    The import is inside the function to preserve this module's lazy-import rule
+    (the optional ``text`` extra is only required when this backend is selected);
+    by the time this is called, the client has already been imported and used.
+
+    .. rubric:: The ES ``timeout`` branch is coarser than the Qdrant one, and
+       W6's retry copy must not over-promise because of it
+
+    ``ConnectionTimeout`` is **not** a subclass of ``ConnectionError`` in
+    ``elastic_transport`` 8.19, so the first two branches below are disjoint **as
+    classes** — there is no ordering trap of the kind httpx has, where
+    ``ConnectTimeout`` derives from ``TimeoutException``.
+
+    They are **not** disjoint semantically, and that is the honest limitation of
+    this mapping. ``elastic_transport``'s aiohttp node builds
+    ``aiohttp.ClientTimeout(total=request_timeout)`` — a *total* bound with no
+    separate connect bound — and maps both ``asyncio.TimeoutError`` and
+    ``aiohttp``'s ``ServerTimeoutError`` onto ``ConnectionTimeout`` (read out of
+    ``elastic_transport._node._http_aiohttp``, not assumed). So a
+    **connect-phase** timeout — a blackholed address, a host that never
+    completes the handshake — arrives here as ``ConnectionTimeout`` and is
+    classified ``timeout``, where the Qdrant equivalent
+    (``httpx.ConnectTimeout``) is correctly ``unreachable``.
+
+    This is not fixable at this layer: the distinction is destroyed by the
+    client before we ever see the exception, and imposing a separate connect
+    bound would change request semantics for every caller. What *does* still
+    work is the common case — connection refused, DNS failure and TLS errors are
+    ``ConnectionError`` and do yield ``unreachable``.
+
+    **Consequence for #427 W6:** the ``timeout`` copy shown for the ES leg must
+    be "retrying often succeeds within seconds" and must **never** promise "the
+    second read will be warm". That promise is only sound for Qdrant, whose
+    client can tell a connect timeout from a read timeout. Written down here
+    rather than left for W6 to rediscover.
+    """
+    from elasticsearch import ApiError, ConnectionError, ConnectionTimeout, TransportError
+
+    if isinstance(e, ConnectionTimeout):
+        # Too slow. Usually "accepted, then the search ran long" — but see the
+        # rubric above: this also swallows connect-phase timeouts, which is why
+        # the ES retry copy may not promise a warm read.
+        return KIND_TIMEOUT
+    if isinstance(e, ConnectionError):
+        # Refused / DNS / TLS (TlsError subclasses this) — we never got there.
+        return KIND_UNREACHABLE
+    if isinstance(e, ApiError):
+        # 429 is deliberately NOT converted, and that is a decision rather than
+        # an oversight. `es_rejected_execution_exception` (bulk queue full,
+        # circuit breaker tripped) is the classic transient-under-load signal
+        # and it does belong in this family — but none of the three kinds
+        # describes it. `error` ("the store answered, unhappily") reads as a
+        # server fault and would give *worse* advice than the status quo;
+        # `timeout` would simply be false. Converting it properly wants a fourth
+        # kind (`overloaded`, with back-off advice), and the kind enum is
+        # user-visible once W6's UI branches on it — so that is W6's call, not
+        # this slice's. Until then a 429 keeps reaching the 500 path exactly as
+        # it does today: status quo preserved, no regression, gap written down.
+        status = getattr(e, "status_code", None)
+        return KIND_ERROR if isinstance(status, int) and status >= 500 else None
+    if isinstance(e, TransportError):
+        # SerializationError and friends: the store answered unusably.
+        return KIND_ERROR
+    return None
+
+
 class ElasticsearchTextIndex:
-    """TextIndex protocol backed by Elasticsearch BM25."""
+    """TextIndex protocol backed by Elasticsearch BM25.
+
+    .. rubric:: Why the reads are guarded (#427 W2b)
+
+    Until #427 this class had **no error handling on any read**. An ES timeout on
+    the BM25 leg of a hybrid query therefore escaped as a bare HTTP 500 with a
+    raw traceback, while the *identical* failure on the vector leg of the same
+    query produced a 503 naming the collection, the URL, the error type and the
+    timeout knob. The incident that produced #427 happened to hit the
+    instrumented leg; had it hit this one there would have been no
+    ``qdrant unavailable:`` line to grep and no issue to file. See
+    :meth:`_guard`.
+    """
 
     def __init__(self, url: str, index: str, api_key: str | None = None,
                  refresh_on_write: bool = True,
-                 bulk_batch_size: int = _BULK_BATCH_SIZE) -> None:
+                 bulk_batch_size: int = _BULK_BATCH_SIZE,
+                 timeout: float | None = None) -> None:
         from elasticsearch import AsyncElasticsearch
 
-        self._es = AsyncElasticsearch(hosts=url, api_key=api_key or None)
+        # `timeout` is appended at the END of the signature rather than slotted
+        # next to the other connection arguments. All 12 call sites in the tree
+        # in fact use keywords, so nothing would actually have broken — this is
+        # convention, not a rescue.
+        #
+        # When unset we pass nothing and the client keeps its own default, which
+        # is 10s per request (see _client_default_timeout_s, which reads it from
+        # the library rather than trusting this sentence). That default is a
+        # THIRD of the Qdrant bound this deployment runs, and until #427 there
+        # was no knob at all on this leg — the interim mitigation that bought the
+        # vector leg headroom (QDRANT_TIMEOUT=60) had no counterpart here.
+        self._es = (
+            AsyncElasticsearch(hosts=url, api_key=api_key or None)
+            if timeout is None
+            else AsyncElasticsearch(hosts=url, api_key=api_key or None, request_timeout=timeout)
+        )
+        self._url = url
+        self._timeout = timeout
         self._index = index
         self._bulk_batch_size = max(1, bulk_batch_size)
         # Every write forces a synchronous refresh so a subsequent read sees it —
@@ -139,6 +291,66 @@ class ElasticsearchTextIndex:
         # interval governs only the periodic background refresh. Two different
         # mechanisms; only this one was actually costing us the time.
         self._refresh_on_write = refresh_on_write
+
+    def _describe_failure(self, op: str, e: BaseException) -> str:
+        """One readable line: what failed, where, and the knob that bounds it.
+
+        Deliberately the same *shape* as ``QdrantVectorStore._describe_failure``
+        — operation, index, URL, error type, applied timeout and its setting name
+        — so an operator greps one pattern and gets both legs.
+        """
+        # str(ConnectionTimeout(...)) is the class's own terse "Connection timed
+        # out"; the causal detail ("caused by: TimeoutError()") lives on
+        # `.message`. Prefer it, or the message is strictly less useful than the
+        # traceback it replaces.
+        detail = getattr(e, "message", None) or str(e)
+        reason = f"{type(e).__name__}: {detail}".rstrip(": ")
+        # `:g` so a float setting renders like Qdrant's int one — 30, not 30.0.
+        # Matching the message SHAPE was the point of this whole method: an
+        # operator greps one pattern and gets both legs, and `30.0s` vs `30s`
+        # quietly breaks that.
+        bound = (
+            f"{self._timeout:g}s (ELASTICSEARCH_TIMEOUT)"
+            if self._timeout is not None
+            else (
+                f"client default {_client_default_timeout_s():g}s "
+                "(ELASTICSEARCH_TIMEOUT unset)"
+            )
+        )
+        return (
+            f"elasticsearch {op} on {self._index!r} at {self._url} failed — {reason}; "
+            f"per-request timeout is {bound}"
+        )
+
+    @contextmanager
+    def _guard(self, op: str) -> Iterator[None]:
+        """Convert a store outage inside the block into :class:`StoreUnavailable`.
+
+        A **sync** context manager wrapping an ``await``, which is not a mistake:
+        ``__exit__`` runs when the awaited call completes or raises, so
+        ``with self._guard("search"): resp = await self._es.search(...)`` catches
+        exactly what it looks like it catches — and costs no task-group or
+        async-generator machinery.
+
+        Keep the block tight around the client call. Anything else inside it
+        (response parsing, ``KeyError`` on a shape change) is a bug in this
+        module and must keep surfacing as a 500, which is why
+        :func:`_failure_kind` returns ``None`` for everything it does not
+        positively recognise as an outage.
+        """
+        started = perf_counter()
+        try:
+            yield
+        except BaseException as e:
+            kind = _failure_kind(e)
+            if kind is None:
+                raise
+            raise StoreUnavailable(
+                "elasticsearch",
+                self._describe_failure(op, e),
+                kind=kind,
+                elapsed_s=perf_counter() - started,
+            ) from e
 
     async def ensure_index(self) -> None:
         # Create idempotently rather than gating on exists(): two workers can both
@@ -238,7 +450,14 @@ class ElasticsearchTextIndex:
             )
         # refresh so the just-indexed docs are immediately searchable — unless the
         # caller is bulk-loading, where it dominates the wall clock (see __init__).
-        resp = await self._es.bulk(operations=operations, refresh=self._refresh_on_write)
+        #
+        # Guarded for the same reason the reads are: POST /v1/ingest is a
+        # user-facing request path, and an ES outage mid-ingest was a bare 500
+        # here too. The guard is scoped to the round trip ONLY — the errors=true
+        # handling below stays a RuntimeError, because a rejected document is a
+        # data problem the caller must see, not a transient outage to retry.
+        with self._guard("bulk index"):
+            resp = await self._es.bulk(operations=operations, refresh=self._refresh_on_write)
         # ES returns HTTP 200 with errors=true on partial failure rather than
         # raising, so a malformed/conflicting doc would silently never be indexed
         # (and a later BM25 search would miss it). Surface the first failure.
@@ -257,9 +476,12 @@ class ElasticsearchTextIndex:
         top_k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[ScoredChunk]:
-        resp = await self._es.search(
-            index=self._index, query=_build_query(query, filters), size=top_k
-        )
+        # Built OUTSIDE the guard: `_build_query` raises ValueError on a missing
+        # tenant filter, which is a fail-closed tenancy guard and must never be
+        # reported as "the store is unavailable, retry in 5s".
+        body = _build_query(query, filters)
+        with self._guard("search"):
+            resp = await self._es.search(index=self._index, query=body, size=top_k)
         results: list[ScoredChunk] = []
         for hit in resp["hits"]["hits"]:
             src = hit["_source"]
@@ -285,10 +507,11 @@ class ElasticsearchTextIndex:
         non-empty-tenant guard in ``_build_query``."""
         if not tenants:
             return 0
-        resp = await self._es.count(
-            index=self._index,
-            query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
-        )
+        with self._guard("count"):
+            resp = await self._es.count(
+                index=self._index,
+                query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
+            )
         return int(resp["count"])
 
     async def list_documents(
@@ -307,25 +530,26 @@ class ElasticsearchTextIndex:
         }
         if cursor:
             composite["after"] = {"doc_id": decode_cursor(cursor)}
-        resp = await self._es.search(
-            index=self._index,
-            size=0,
-            track_total_hits=False,
-            query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
-            aggs={
-                "docs": {
-                    "composite": composite,
-                    "aggs": {
-                        "exemplar": {
-                            "top_hits": {
-                                "size": 1,
-                                "_source": {"includes": ["doc_id", "metadata"]},
+        with self._guard("list_documents"):
+            resp = await self._es.search(
+                index=self._index,
+                size=0,
+                track_total_hits=False,
+                query={"bool": {"filter": [{"terms": {"metadata.tenant_id": list(tenants)}}]}},
+                aggs={
+                    "docs": {
+                        "composite": composite,
+                        "aggs": {
+                            "exemplar": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "_source": {"includes": ["doc_id", "metadata"]},
+                                }
                             }
-                        }
-                    },
-                }
-            },
-        )
+                        },
+                    }
+                },
+            )
         agg = resp.get("aggregations", {}).get("docs", {})
         buckets = agg.get("buckets", [])
         docs = []

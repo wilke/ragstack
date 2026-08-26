@@ -510,6 +510,13 @@ class Settings(BaseSettings):
     elasticsearch_url: str = "http://localhost:9200"
     elasticsearch_index: str = "ragstack"
     elasticsearch_api_key: str = ""
+    # Per-request timeout (seconds) for the BM25 leg, the counterpart to
+    # qdrant_timeout. None = leave the elasticsearch client on its own default,
+    # which is 10s — a THIRD of the Qdrant default, on the other half of the same
+    # hybrid query. Before #427 this knob did not exist: when the vector leg's
+    # bound was raised to 60s as the incident's interim mitigation, there was no
+    # way to give the text leg the same headroom.
+    elasticsearch_timeout: float | None = None
 
     # Neo4j (knowledge graph). "memory" is the in-process dev graph (lost on
     # restart); "neo4j" is the durable property-graph backend (M4). Neo4j 5
