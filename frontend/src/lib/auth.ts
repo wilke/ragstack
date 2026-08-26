@@ -458,14 +458,48 @@ export const AUTH_PROVIDERS: AuthProviderOption[] = [
  * fact about the credential being sent now. Pass null when the check did not
  * fail. Both flags are positional-required rather than optional so that a new
  * call site cannot quietly reintroduce a collapse by omitting one.
+ *
+ * The first argument is the whole {@link Credential}, not just its `mode`,
+ * because A REFUSAL AND AN ABSENCE ARE DIFFERENT FACTS and only the value can
+ * tell them apart. The whoami call goes out unconditionally, credential or not —
+ * so with nothing stored it 401s (a keyed backend refuses an anonymous caller),
+ * and reading that as `unconfirmed` told a signed-OUT user that "that credential
+ * was rejected — the token may be expired", offered them Sign out, and then made
+ * the Sign out they pressed look inert: it cleared the token, whoami 401'd
+ * again, and the identical screen came back. Nothing was ever sent. A 401 with
+ * no credential is not a rejected credential; it is the definitive answer "you
+ * are not signed in".
+ *
+ * Taking the credential rather than a `sent` boolean leaves mode and value
+ * unable to disagree; `.trim()` matches api/client.ts, which trims before
+ * deciding whether to attach a header at all.
+ *
+ * An empty value is ALSO the bound-elsewhere state — a saved token confirmed for
+ * a DIFFERENT backend resolves to "" rather than being cross-sent. Signed-out is
+ * the honest verdict there too: nothing is going out, and "the credential is
+ * still going out on every request" is the entire reason `unconfirmed` insists
+ * its callers offer Sign out. LoginView reads the saved token directly, explains
+ * that state and offers to re-confirm it for this backend; and a keyless backend
+ * already renders exactly this — its anonymous 200 as a non-federated tenant is
+ * signed-out today — so this makes the keyed case consistent with it.
  */
 export function identityView(
-  mode: AuthMode,
+  credential: Credential,
   info: IdentitySummary | null,
   pending: boolean,
   failure: IdentityFailure | null,
 ): IdentityView {
-  if (failure)
+  const mode = credential.mode;
+  const sent = credential.value.trim() !== "";
+  if (failure) {
+    // Nothing was sent and the server said 401: that is an ANSWER, not a
+    // rejection. Only 401 — a 503, an unreachable API (status null) or any other
+    // status means the check could not answer at all, which is no evidence about
+    // whether anyone is signed in. A cached `info` is ignored here for the same
+    // reason it does not survive elsewhere in this branch: an anonymous 401 is
+    // the current fact, and it says nobody.
+    if (failure.status === 401 && !sent)
+      return { state: "signed-out", label: "Not signed in", warning: null };
     return {
       state: "unconfirmed",
       label: info
@@ -474,6 +508,7 @@ export function identityView(
       warning: signInMessage(failure.status, failure.body),
       identity: info,
     };
+  }
   if (!info)
     return pending
       ? { state: "checking", label: "Checking sign-in…" }

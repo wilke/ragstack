@@ -63,7 +63,7 @@ export function AccountView({
   /** Report a same-tab base change to App (no storage event fires locally). */
   onBaseChange: (base: string) => void;
 }) {
-  const view = identityView(credential.mode, identity, checking, failure);
+  const view = identityView(credential, identity, checking, failure);
   // Mirrors the persisted vision mode so the checkbox re-renders on toggle;
   // lib/vision.ts owns storage + the <html> attribute.
   const [accessibleVision, setAccessibleVisionState] = useState(getAccessibleVision);

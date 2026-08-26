@@ -293,10 +293,20 @@ describe("token expiry", () => {
 // Authorization header is not an authentication input — the request still
 // succeeds, as the default tenant, which runs as admin in production. Only a
 // federated `issuer:subject` tenant proves the bearer path authenticated.
+//
+// The credential is an INPUT to the verdict, not just its mode: the whoami call
+// goes out whether or not there is one to send, so a 401 means two different
+// things depending on whether anything was in the request.
+const BEARER: Credential = { mode: "bearer", value: "tok" };
+const KEY: Credential = { mode: "apikey", value: "k1" };
+/** Bearer mode with nothing sendable — signed out, or a token bound elsewhere. */
+const NO_BEARER: Credential = { mode: "bearer", value: "" };
+const NO_KEY: Credential = { mode: "apikey", value: "" };
+
 describe("identityView", () => {
   it("confirms a bearer login only on a federated issuer:subject tenant", () => {
     const v = identityView(
-      "bearer",
+      BEARER,
       {
         tenant: "bvbrc:alice@patricbrc.org",
         role: "user",
@@ -312,7 +322,7 @@ describe("identityView", () => {
 
   it("refuses to call a 200 a login when the backend ignored the token", () => {
     const v = identityView(
-      "bearer",
+      BEARER,
       { tenant: "default", role: "admin", auth_enabled: true },
       false,
       null,
@@ -325,7 +335,7 @@ describe("identityView", () => {
 
   it("names the tenant an API key maps to", () => {
     const v = identityView(
-      "apikey",
+      KEY,
       { tenant: "asm", role: "admin", auth_enabled: true },
       false,
       null,
@@ -337,7 +347,7 @@ describe("identityView", () => {
 
   it("warns that a keyless backend ignores the key", () => {
     const v = identityView(
-      "apikey",
+      KEY,
       { tenant: "default", role: "admin", auth_enabled: false },
       false,
       null,
@@ -352,7 +362,7 @@ describe("identityView", () => {
   // explaining why an unauthenticated caller is getting admin.
   it("keeps the keyless caveat on a signed-in verdict, not only a signed-out one", () => {
     const v = identityView(
-      "apikey",
+      KEY,
       { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: false },
       false,
       null,
@@ -366,7 +376,7 @@ describe("identityView", () => {
   // with slow store counts — so a freshly signed-in user was shown the
   // signed-out screen and sent back to the login form.
   it("reports an unanswered check as checking, never as signed out", () => {
-    const v = identityView("bearer", null, true, null);
+    const v = identityView(BEARER, null, true, null);
     expect(v.state).toBe("checking");
     expect(v.label).not.toMatch(/not signed in/i);
     // No `warning` to render, by type: the checking variant does not carry one,
@@ -375,7 +385,7 @@ describe("identityView", () => {
   });
 
   it("says 'not signed in' only once the check has resolved to nobody", () => {
-    const v = identityView("bearer", null, false, null);
+    const v = identityView(BEARER, null, false, null);
     expect(v.state).toBe("signed-out");
     expect(v.label).toMatch(/not signed in/i);
   });
@@ -384,7 +394,7 @@ describe("identityView", () => {
   // an identity the server already confirmed.
   it("keeps a known identity on screen while it is being refreshed", () => {
     const v = identityView(
-      "bearer",
+      BEARER,
       { tenant: "bvbrc:alice@patricbrc.org", role: "user", auth_enabled: false },
       true,
       null,
@@ -399,7 +409,7 @@ describe("identityView", () => {
   // a fact about the credential being sent now.
   it("stops asserting a cached identity once the check fails", () => {
     const info = { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: true };
-    const v = identityView("bearer", info, false, { status: 401, body: "" });
+    const v = identityView(BEARER, info, false, { status: 401, body: "" });
     expect(v.state).toBe("unconfirmed");
     expect(v.label).not.toMatch(/^Signed in as/);
     expect(v.label).toMatch(/not confirmed/i);
@@ -412,7 +422,7 @@ describe("identityView", () => {
   // "The backend is down" reported as "you are signed out" sends the user to
   // paste a token that will fail identically.
   it("reports a failed check with no cached answer as unconfirmed, not signed out", () => {
-    const v = identityView("bearer", null, false, { status: 503, body: "" });
+    const v = identityView(NO_BEARER, null, false, { status: 503, body: "" });
     expect(v.state).toBe("unconfirmed");
     expect(v.label).not.toMatch(/not signed in/i);
     expect(v.state === "unconfirmed" && v.warning).toBe(signInMessage(503, ""));
@@ -420,7 +430,7 @@ describe("identityView", () => {
   });
 
   it("words an unreachable API as such rather than as a refusal", () => {
-    const v = identityView("apikey", null, false, { status: null, body: "" });
+    const v = identityView(NO_KEY, null, false, { status: null, body: "" });
     expect(v.state).toBe("unconfirmed");
     expect(v.state === "unconfirmed" && v.warning).toMatch(/could not reach the API/i);
   });
@@ -428,8 +438,88 @@ describe("identityView", () => {
   it("prefers the failure over a still-in-flight retry", () => {
     // A refetch after an error has isLoading false, but be explicit: a failure
     // outranks `pending` so a retry loop cannot flicker back to "checking".
-    const v = identityView("bearer", null, true, { status: 401, body: "" });
+    const v = identityView(BEARER, null, true, { status: 401, body: "" });
     expect(v.state).toBe("unconfirmed");
+  });
+
+  // --- REJECTED vs NEVER SENT ------------------------------------------------
+  // Reported by a user: signed out, the header said "Not confirmed", the menu
+  // offered Sign out, and the page said "That credential was rejected — the
+  // token may be expired". Nothing had been sent. Pressing Sign out cleared the
+  // token, the anonymous whoami 401'd again and the identical screen came back,
+  // so sign-out looked broken as well.
+  it("calls a 401 with nothing sent signed-OUT, not a rejected credential", () => {
+    const v = identityView(NO_KEY, null, false, { status: 401, body: "" });
+    expect(v.state).toBe("signed-out");
+    expect(v.label).toMatch(/not signed in/i);
+    // No accusation about a credential that does not exist...
+    expect(v.state === "signed-out" && v.warning).toBeNull();
+    expect(JSON.stringify(v)).not.toMatch(/rejected/i);
+  });
+
+  // The other half of the distinction, and the reason the rule is not simply
+  // "401 ⇒ signed out": this credential IS going out on every request, so the
+  // user needs both the sentence and the Sign out that `unconfirmed` obliges
+  // its callers to render.
+  it("still calls a 401 WITH a credential a rejection, keeping the escape hatch", () => {
+    const v = identityView(BEARER, null, false, { status: 401, body: "" });
+    expect(v.state).toBe("unconfirmed");
+    expect(v.state === "unconfirmed" && v.warning).toBe(signInMessage(401, ""));
+    expect(v.state === "unconfirmed" && v.warning).toMatch(/credential was rejected/i);
+  });
+
+  it("does not let a cached identity turn an anonymous 401 into a rejection", () => {
+    // The whoami key contains the credential, so a cache entry can outlive the
+    // credential that filled it (sign-out reuses the empty-apikey key). The 401
+    // is the current fact and it says nobody.
+    const info = { tenant: "asm", role: "admin", auth_enabled: true };
+    const v = identityView(NO_KEY, info, false, { status: 401, body: "" });
+    expect(v.state).toBe("signed-out");
+  });
+
+  // A saved token bound to ANOTHER backend resolves to an empty value rather
+  // than being cross-sent (api/config.ts), which is this shape. Nothing is going
+  // out, so signed-out is honest and no Sign out is owed — LoginView reads the
+  // saved token directly and offers to re-confirm it for this backend.
+  it("treats a token that is not being sent here as signed out", () => {
+    const v = identityView(NO_BEARER, null, false, { status: 401, body: "" });
+    expect(v.state).toBe("signed-out");
+  });
+
+  it("does not extend the rule past 401 — an unanswerable check stays unconfirmed", () => {
+    // 503/no-status mean the check could not answer, which is no evidence about
+    // whether anyone is signed in, credential or not.
+    expect(identityView(NO_KEY, null, false, { status: 503, body: "" }).state)
+      .toBe("unconfirmed");
+    expect(identityView(NO_KEY, null, false, { status: null, body: "" }).state)
+      .toBe("unconfirmed");
+    expect(identityView(NO_KEY, null, false, { status: 403, body: "" }).state)
+      .toBe("unconfirmed");
+  });
+
+  // The keyless backend answers an anonymous call with 200, not 401 — the rule
+  // is about failures only and must not touch it, or the one sentence explaining
+  // why an unauthenticated caller is getting admin disappears.
+  it("leaves the keyless 200 alone: still the 'key is ignored' explanation", () => {
+    const v = identityView(NO_KEY, { tenant: "default", role: "admin", auth_enabled: false }, false, null);
+    expect(v.state).toBe("signed-out");
+    expect(v.state === "signed-out" ? (v.warning ?? "") : "").toMatch(/no API keys/i);
+  });
+
+  // Whitespace is not a credential: api/client.ts trims before deciding whether
+  // to attach a header, so this request goes out anonymous too.
+  it("counts a whitespace-only value as nothing sent, as the header builder does", () => {
+    const v = identityView({ mode: "apikey", value: "  " }, null, false, {
+      status: 401,
+      body: "",
+    });
+    expect(v.state).toBe("signed-out");
+  });
+
+  // The in-flight window is untouched: no credential yet and no answer yet is
+  // still "checking", never a refusal. (The login loop this guards shipped once.)
+  it("keeps an unanswered anonymous check as checking, not signed out", () => {
+    expect(identityView(NO_KEY, null, true, null).state).toBe("checking");
   });
 });
 
@@ -442,26 +532,34 @@ describe("identityNeedsExplanation", () => {
     // IDENTITY_PROVIDER unset/none: whoami 200s as the default tenant, so a
     // perfectly good token yields signed-out + the "ignored the token" warning.
     // Landing on Explore hides it and the user loops through the login form.
-    const v = identityView("bearer", IDP_OFF, false, null);
+    const v = identityView(BEARER, IDP_OFF, false, null);
     expect(v.state).toBe("signed-out");
     expect(identityNeedsExplanation(v)).toBe(true);
   });
 
+  // ...but an anonymous 401 is plain signed-out with nothing to read: there is
+  // no sentence, and no completed sign-in whose landing screen could hide one.
+  it("is false for a 401 that only means nobody was signed in", () => {
+    expect(
+      identityNeedsExplanation(identityView(NO_KEY, null, false, { status: 401, body: "" })),
+    ).toBe(false);
+  });
+
   it("is true when the check failed", () => {
-    expect(identityNeedsExplanation(identityView("bearer", null, false, { status: 401, body: "" })))
+    expect(identityNeedsExplanation(identityView(BEARER, null, false, { status: 401, body: "" })))
       .toBe(true);
   });
 
   it("is false on a real sign-in, caveat or not", () => {
     const ok = identityView(
-      "bearer",
+      BEARER,
       { tenant: "bvbrc:alice@patricbrc.org", role: "user", auth_enabled: true },
       false,
       null,
     );
     expect(identityNeedsExplanation(ok)).toBe(false);
     const caveat = identityView(
-      "apikey",
+      KEY,
       { tenant: "bvbrc:alice@patricbrc.org", role: "admin", auth_enabled: false },
       false,
       null,
@@ -471,7 +569,7 @@ describe("identityNeedsExplanation", () => {
   });
 
   it("is false while the check is unresolved — there is nothing to read yet", () => {
-    expect(identityNeedsExplanation(identityView("bearer", null, true, null))).toBe(false);
+    expect(identityNeedsExplanation(identityView(BEARER, null, true, null))).toBe(false);
   });
 });
 

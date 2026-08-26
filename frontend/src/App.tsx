@@ -183,11 +183,14 @@ export function App({
       ? { status: null, body: "" }
       : null;
   // The verdict App itself has to reason about (where a completed sign-in
-  // lands). The two renderers below take the same three inputs — identity,
-  // checking, failure — and resolve it themselves, so neither can be handed a
-  // pre-narrowed conclusion that hides which of the four states it is in.
+  // lands). The two renderers below take the same four inputs — credential,
+  // identity, checking, failure — and resolve it themselves, so neither can be
+  // handed a pre-narrowed conclusion that hides which of the four states it is
+  // in. The whole credential goes in, not just its mode: the check above is made
+  // WITHOUT one when `value` is empty, and identityView needs to know that to
+  // tell an absent credential from a rejected one.
   const identityResolved = identityView(
-    credential.mode,
+    credential,
     identity,
     identityChecking,
     identityFailure,
