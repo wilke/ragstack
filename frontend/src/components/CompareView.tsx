@@ -14,6 +14,12 @@ import {
 import { getStoredAuthMode } from "../api/config";
 import { laneCredential, SIGNED_IN_HINT, type CredentialInput } from "../lib/auth";
 import {
+  collectionTarget,
+  requestCollection,
+  targetInfo,
+  type CollectionTarget,
+} from "../lib/collectionTarget";
+import {
   rerankValue,
   rewriteStrategies,
   type Mode,
@@ -55,13 +61,16 @@ type LaneResult = {
 
 interface Lane {
   key: string;
-  collection: string; // "" → default collection
+  // The explicit collection this lane queries, or null for "whatever the
+  // listing reports as MY default". Not "" — that sentinel is what let a lane's
+  // header name one collection while the request hit another (#420).
+  collection: string | null;
   apiKey: string; // "" → inherit the shared key (same tenant)
   overrides: LeverOverrides; // levers this lane pins; everything else inherits
 }
 
 let _seq = 0;
-const newLane = (collection = ""): Lane => ({
+export const newLane = (collection: string | null = null): Lane => ({
   key: `lane-${_seq++}`,
   collection,
   apiKey: "",
@@ -69,6 +78,17 @@ const newLane = (collection = ""): Lane => ({
 });
 
 const MAX_LANES = 6;
+
+/**
+ * The collections Compare opens with: one lane per listed collection, capped at
+ * MAX_LANES, by REAL id. Exported and pure so the seeding can be tested without
+ * a DOM — `renderToStaticMarkup` runs no effects, so the seed never fires in a
+ * static render and the composition seed → collectionTarget → request/label has
+ * to be asserted directly (#420).
+ */
+export function seedLaneCollections(opts: CollectionInfo[]): string[] {
+  return opts.slice(0, MAX_LANES).map((c) => c.id);
+}
 const GLOBAL_DEFAULT_TOPK = 5;
 
 // The glossary sits at the foot of the page while the agreement band's "What do
@@ -285,7 +305,8 @@ function CompareSource({
 }: {
   rank: number;
   source: Source;
-  collection: string;
+  // The id the lane's query actually carried; null when it omitted the field.
+  collection: string | null;
   // The LANE's credential, already resolved by laneCredential — a lane's own
   // key arrives pinned {mode:"apikey"} so a bearer-mode app can't relabel it
   // (and sendableCredential then drop it), which would 401 the context fetch.
@@ -405,7 +426,10 @@ function CompareSource({
 interface LaneEntry {
   key: string;
   label: string;
-  collection: string; // which collection the lane queried — same value ⇒ same chunker
+  // Which collection the lane actually queried — same value ⇒ same chunker. The
+  // RESOLVED id, so a lane that named its default and one that left it unpicked
+  // compare as the same corpus, which they are.
+  collection: string | null;
   answer: string; // the lane's generated answer, for answer-agreement
   sources: Source[];
 }
@@ -939,30 +963,34 @@ export function CompareView({
 
   const globalTopK = glob.topK ?? GLOBAL_DEFAULT_TOPK;
 
-  // Seed one lane per collection once the registry loads.
+  // Seed one lane per collection once the registry loads — real ids, so each
+  // lane names exactly what it queries from the first render.
   useEffect(() => {
     if (lanes.length === 0 && opts.length > 0) {
-      setLanes(opts.slice(0, MAX_LANES).map((c) => newLane(c.default ? "" : c.id)));
+      setLanes(seedLaneCollections(opts).map((id) => newLane(id)));
     }
   }, [opts, lanes.length]);
 
   // Reconcile lanes when the registry changes (apiKey/tenant switch): a lane
-  // pointing at a collection no longer offered would submit a phantom id (backend
-  // 404) and render a <select> with no matching <option> — reset it to default.
+  // pointing at a collection no longer offered would render a <select> with no
+  // matching <option>. Reset it to null ("use my default"), never to "".
+  // `collectionTarget` already refuses to send a stale id, so this is display
+  // hygiene rather than the guard against a phantom request.
   useEffect(() => {
     if (opts.length === 0) return;
-    const valid = new Set(opts.map((c) => (c.default ? "" : c.id)));
+    const ok = (c: string | null) => c === null || opts.some((o) => o.id === c);
     setLanes((ls) =>
-      ls.every((l) => valid.has(l.collection))
+      ls.every((l) => ok(l.collection))
         ? ls
-        : ls.map((l) => (valid.has(l.collection) ? l : { ...l, collection: "" })),
+        : ls.map((l) => (ok(l.collection) ? l : { ...l, collection: null })),
     );
   }, [opts]);
 
-  const collOf = (collection: string): CollectionInfo | undefined =>
-    opts.find((o) => (o.default ? "" : o.id) === collection);
-  const collLabel = (collection: string): string =>
-    collOf(collection)?.label ?? (collection || "default");
+  // One resolution per lane, shared by its request, its header label, its id
+  // readout and the chunk fetches under its sources — so a lane cannot describe
+  // itself as anything but what it queried (#420).
+  const laneTarget = (lane: Lane): CollectionTarget =>
+    collectionTarget(collections.data, lane.collection);
 
   const run = () => {
     const q = query.trim();
@@ -978,7 +1006,7 @@ export function CompareView({
         {
           query: q,
           top_k: eff.topK ?? globalTopK,
-          collection: lane.collection || undefined,
+          collection: requestCollection(laneTarget(lane)),
           retrieval_mode: eff.mode,
           rerank: rerankValue(eff.rerank),
           use_graph: eff.useGraph,
@@ -1064,8 +1092,9 @@ export function CompareView({
     return {
       key: x.lane.key,
       label:
-        `${x.letter} · ${collLabel(x.lane.collection)}` + (chips.length ? ` · ${chips.join(" ")}` : ""),
-      collection: x.lane.collection,
+        `${x.letter} · ${laneTarget(x.lane).label}` +
+        (chips.length ? ` · ${chips.join(" ")}` : ""),
+      collection: laneTarget(x.lane).id,
       answer: x.res!.data!.answer ?? "",
       sources: x.res!.data!.sources,
     };
@@ -1231,7 +1260,8 @@ export function CompareView({
                 lane.apiKey.trim() ? ["own key"] : [],
               );
               const isPreferred = preferred === lane.key;
-              const c = collOf(lane.collection);
+              const target = laneTarget(lane);
+              const c = targetInfo(collections.data, target);
               const p = c?.provenance;
               const method = p?.chunk_method ?? c?.chunk_method;
               return (
@@ -1244,12 +1274,12 @@ export function CompareView({
                       {laneLetter(i)}
                     </span>
                     <select
-                      value={lane.collection}
+                      value={target.id ?? ""}
                       onChange={(e) => tuneLane(lane.key, { collection: e.target.value })}
                       className="min-w-0 flex-1 cursor-pointer appearance-none truncate border-none bg-transparent p-0 font-display text-[13.5px] font-semibold leading-[1.3] text-ink-900"
                     >
                       {opts.map((o) => (
-                        <option key={o.id} value={o.default ? "" : o.id}>
+                        <option key={o.id} value={o.id}>
                           {o.label}
                         </option>
                       ))}
@@ -1266,8 +1296,11 @@ export function CompareView({
 
                   {/* Collection facts: id, then model · dims · chunking */}
                   <div className="mb-2.5 font-mono text-[10.5px] leading-[1.6] text-dim">
-                    <div className="truncate" title={c?.id ?? lane.collection}>
-                      {c?.id ?? (lane.collection || "default")}
+                    {/* The id this lane really queries — never a guess. "—" when
+                        the listing hasn't answered, rather than a plausible
+                        wrong name. */}
+                    <div className="truncate" title={target.id ?? undefined}>
+                      {target.id ?? "—"}
                     </div>
                     {c ? (
                       <div className="truncate">
@@ -1391,7 +1424,7 @@ export function CompareView({
                               key={s.chunk_id}
                               rank={k + 1}
                               source={s}
-                              collection={lane.collection}
+                              collection={target.id}
                               apiKey={laneCredential(lane.apiKey, apiKey)}
                               letters={succCount >= 2 ? (docLanes.get(s.doc_id) ?? null) : null}
                               laneCount={succCount}

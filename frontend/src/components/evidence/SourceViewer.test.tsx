@@ -45,7 +45,7 @@ const neighbour: ChunkOut = {
 
 function viewer(answer: string): string {
   return render(
-    createElement(SourceViewer, { source: matched, answer, collection: "", apiKey: "" }),
+    createElement(SourceViewer, { source: matched, answer, collection: null, apiKey: "" }),
   );
 }
 

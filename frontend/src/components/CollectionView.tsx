@@ -14,6 +14,7 @@ import { getStoredAuthMode } from "../api/config";
 import { SIGNED_IN_HINT } from "../lib/auth";
 import { describeChunking, type ChunkConfigBody } from "../lib/chunkers";
 import { collectionCreateMessage } from "../lib/collections";
+import { collectionTarget, requestCollection, targetInfo } from "../lib/collectionTarget";
 import { lookupTerm } from "../lib/glossary";
 import { GlossaryPanel } from "./GlossaryPanel";
 import { HelpTip } from "./HelpTip";
@@ -102,7 +103,12 @@ export function CollectionView({
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
-  const [collection, setCollection] = useState(""); // "" → server default (demo)
+  // The explicitly picked upload target, or null for "whatever the listing
+  // reports as MY default". #420 lived here too: the same `c.default ? "" : c.id`
+  // encoding meant no option ever matched "" for a caller who couldn't read the
+  // registry default, so the build-config readout silently vanished and the
+  // upload went somewhere the picker never named.
+  const [selected, setSelected] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
@@ -136,15 +142,17 @@ export function CollectionView({
       ),
     onSuccess: async (info) => {
       await queryClient.invalidateQueries({ queryKey: ["collections", apiKey] });
-      setCollection(info.id); // info.id is server-echoed; option now exists post-refetch
+      setSelected(info.id); // info.id is server-echoed; option now exists post-refetch
       setCreating(false);
     },
   });
 
-  // The collection currently selected as upload target / query source, so its build
-  // config (model + chunker) can be shown next to the picker.
-  const selected = opts.find((c) => (c.default ? "" : c.id) === collection) ?? null;
-  const selectedChunking = selected ? describeChunking(selected) : "";
+  // Where an upload will ACTUALLY land, resolved once — the picker's value, the
+  // build-config readout, the Share target and the request body all read this
+  // one value, so the view cannot name one collection and upload into another.
+  const target = collectionTarget(collections.data, selected);
+  const targetEntry = targetInfo(collections.data, target);
+  const selectedChunking = targetEntry ? describeChunking(targetEntry) : "";
 
   const addFiles = (list: FileList | null) => {
     if (!list) return;
@@ -159,7 +167,7 @@ export function CollectionView({
   const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx));
 
   const upload = useMutation<IngestResponse, Error, void>({
-    mutationFn: () => uploadPdfs(files, collection || undefined, apiKey || undefined),
+    mutationFn: () => uploadPdfs(files, requestCollection(target), apiKey || undefined),
     onSuccess: (res) => setJobId(res.job_id),
   });
 
@@ -234,8 +242,8 @@ export function CollectionView({
               </label>
               <select
                 id="target-collection"
-                value={collection}
-                onChange={(e) => setCollection(e.target.value)}
+                value={target.id ?? ""}
+                onChange={(e) => setSelected(e.target.value)}
                 disabled={opts.length === 0}
                 className="rounded-md border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
               >
@@ -250,7 +258,7 @@ export function CollectionView({
                     // choosing a target, not a detail buried in the ops dashboard.
                     const built = describeChunking(c);
                     return (
-                      <option key={c.id} value={c.default ? "" : c.id}>
+                      <option key={c.id} value={c.id}>
                         {c.label}
                         {c.count != null ? ` (${c.count.toLocaleString()})` : ""}
                         {built ? ` · ${built}` : ""}
@@ -279,8 +287,8 @@ export function CollectionView({
               <button
                 type="button"
                 onClick={() => setSharing((v) => !v)}
-                disabled={!selected}
-                title={selected ? undefined : "Pick a collection to share"}
+                disabled={!targetEntry}
+                title={targetEntry ? undefined : "Pick a collection to share"}
                 className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50"
               >
                 {sharing ? "Cancel" : "Share"}
@@ -290,22 +298,22 @@ export function CollectionView({
           )}
         </div>
 
-        {/* How the selected collection was built. `provenance` (when present) is the
+        {/* How the target collection was built. `provenance` (when present) is the
             manifest a real ingest wrote; otherwise these are the registry's
             declared values. Rendered as text, never markup. */}
-        {selected && !creating ? (
+        {targetEntry && !creating ? (
           <p className="mb-3 text-xs text-gray-400">
-            <span className="font-mono text-gray-500">{selected.model}</span>
-            <span> · {selected.dim}d</span>
+            <span className="font-mono text-gray-500">{targetEntry.model}</span>
+            <span> · {targetEntry.dim}d</span>
             {selectedChunking ? <span> · {selectedChunking}</span> : null}
-            {selected.provenance ? (
+            {targetEntry.provenance ? (
               <span
                 className={
-                  selected.provenance.source === "ingest" ? "text-green-600" : "text-gray-400"
+                  targetEntry.provenance.source === "ingest" ? "text-green-600" : "text-gray-400"
                 }
               >
                 {" "}
-                · {selected.provenance.source === "ingest" ? "verified" : "declared"}
+                · {targetEntry.provenance.source === "ingest" ? "verified" : "declared"}
               </span>
             ) : null}
           </p>
@@ -329,11 +337,11 @@ export function CollectionView({
           </div>
         )}
 
-        {sharing && selected && (
+        {sharing && targetEntry && (
           <ShareDialog
-            key={selected.id}
-            collectionId={selected.id}
-            collectionLabel={selected.label}
+            key={targetEntry.id}
+            collectionId={targetEntry.id}
+            collectionLabel={targetEntry.label}
             apiKey={apiKey}
             onClose={() => setSharing(false)}
           />

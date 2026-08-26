@@ -470,7 +470,16 @@ export interface CollectionInfo {
   dim: number;
   chunk_method?: string | null;
   chunk_size?: number | null;
+  // The GLOBAL registry-pointer flag: true on the entry DEFAULT_COLLECTION_ID
+  // names. NOT this caller's target — that is `CollectionsResponse.default`
+  // below. A caller who cannot read the pointer's target sees this false on
+  // EVERY entry (zero true, not exactly one). Reading it as "the one I'm
+  // querying" is the mis-read that produced #420; use it only for registry
+  // facts, e.g. OpsDashboard's "cannot be unregistered or deleted".
   default: boolean;
+  // The same flag under its canonical spelling (#276). Optional so older
+  // servers stay conformant. Also GLOBAL — see the note on `default`.
+  is_default?: boolean;
   count?: number | null; // vector-store tenant-scoped count
   text_count?: number | null; // text-index (BM25) tenant-scoped count; compare with count for parity
   provenance?: Provenance | null; // verified lineage from the manifest
@@ -478,6 +487,12 @@ export interface CollectionInfo {
 
 export interface CollectionsResponse {
   collections: CollectionInfo[];
+  // THIS CALLER's effective target: the id a request that omits `collection`
+  // resolves to — the registry default when this caller can actually read it,
+  // else their first readable collection ("" when they can read none). Read
+  // THIS, never the per-item flag, to decide what a request will hit. Its one
+  // consumer is lib/collectionTarget.ts; go through that, so the label and the
+  // request body stay the same computation (#420).
   default: string;
 }
 

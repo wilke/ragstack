@@ -21,7 +21,7 @@ describe("Explore help affordances", () => {
     const html = render(
       createElement(ConfigChips, {
         opts: [],
-        collection: "",
+        target: { id: null, label: "default", known: false },
         setCollection: () => {},
         options: DEFAULT_QUERY_OPTIONS,
         onOptionsChange: () => {},

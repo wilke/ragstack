@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { getCollections, getConfig, queryRag, type QueryResponse } from "../api/client";
+import { collectionTarget, requestCollection } from "../lib/collectionTarget";
 import { newRunId, type RunRecord } from "../lib/run";
 import { ConfigChips } from "./explore/ConfigChips";
 import { RunRail } from "./explore/RunRail";
@@ -39,7 +40,12 @@ const RECENT_MAX = 5;
 export function ExploreView(props: ExploreViewProps) {
   const { apiKey, setApiKey, onRun, onOpenEvidence, onSendToCompare } = props;
   const [query, setQuery] = useState("");
-  const [collection, setCollection] = useState(""); // "" → default collection
+  // The user's explicit pick, or null for "I didn't choose — use the default the
+  // listing reports for ME". There is no "" sentinel any more: it used to mean
+  // "let the server pick", and since no option ever mapped back to it for a
+  // caller who couldn't read the registry default, the state was pinned there
+  // with no way out (#420).
+  const [selected, setSelected] = useState<string | null>(null);
   // Pipeline levers from the Options menu. Applied on the NEXT search — an
   // in-flight request keeps the options it was sent with.
   const [options, setOptions] = useState<QueryOptions>(DEFAULT_QUERY_OPTIONS);
@@ -65,19 +71,28 @@ export function ExploreView(props: ExploreViewProps) {
   });
   const serverRerank = config.data ? config.data.rerank_enabled === true : null;
 
-  // Reset a stale selection when the registry changes (apiKey/tenant switch): a
-  // collection no longer offered would be submitted as a phantom id (backend 404),
-  // and the picker hides once only the default remains — leaving it un-clearable.
+  // WHAT THE NEXT REQUEST WILL HIT — resolved ONCE, here, and handed to both the
+  // mutation (as the request body's `collection`) and the chip (as its label).
+  // One value, two consumers: the chip can no longer name a collection the query
+  // will not target, because it no longer computes one (#420).
+  const target = collectionTarget(collections.data, selected);
+
+  // Clear a stale selection when the registry changes (apiKey/tenant switch), so
+  // the <select> isn't left showing a value with no matching <option>. This is
+  // display hygiene only: `collectionTarget` already ignores a selection that
+  // isn't in the listing, so a stale id can never reach a request. The old
+  // version mapped options through `c.default ? "" : c.id`, which for a caller
+  // who couldn't read the registry default matched nothing — so it re-set "" on
+  // every pass and the selection was un-clearable.
   useEffect(() => {
     if (opts.length === 0) return;
-    const valid = new Set(opts.map((c) => (c.default ? "" : c.id)));
-    if (!valid.has(collection)) setCollection("");
-  }, [opts, collection]);
+    if (selected !== null && !opts.some((c) => c.id === selected)) setSelected(null);
+  }, [opts, selected]);
 
   // Snapshot at submit: collection/options may change while the request is in
   // flight, and the RunRecord must describe the request actually sent.
   const inFlight = useRef<{
-    collection: string;
+    collection: string | null;
     options: QueryOptions;
     startedAt: number;
     t0: number;
@@ -86,12 +101,15 @@ export function ExploreView(props: ExploreViewProps) {
   const run = useMutation<QueryResponse, Error, string>({
     mutationFn: (q) =>
       queryRag(
-        { query: q, collection: collection || undefined, ...queryOptionsRequest(options) },
+        { query: q, collection: requestCollection(target), ...queryOptionsRequest(options) },
         apiKey || undefined,
       ),
     onMutate: () => {
       inFlight.current = {
-        collection,
+        // The id actually SENT, not the user's pick — an unpicked request still
+        // carries a concrete collection, and the run rail / Compare hand-off
+        // must describe the real target.
+        collection: target.id,
         options,
         startedAt: Date.now(),
         t0: performance.now(),
@@ -102,7 +120,7 @@ export function ExploreView(props: ExploreViewProps) {
       onRun({
         id: newRunId(),
         query: q,
-        collection: sent?.collection ?? collection,
+        collection: sent ? sent.collection : target.id,
         options: sent?.options ?? options,
         response: data,
         startedAt: sent?.startedAt,
@@ -138,8 +156,8 @@ export function ExploreView(props: ExploreViewProps) {
               levers apply to the default collection too, so it always renders. */}
           <ConfigChips
             opts={opts}
-            collection={collection}
-            setCollection={setCollection}
+            target={target}
+            setCollection={setSelected}
             options={options}
             onOptionsChange={(patch) => setOptions((o) => ({ ...o, ...patch }))}
             serverRerank={serverRerank}
