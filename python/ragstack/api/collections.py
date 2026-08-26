@@ -147,9 +147,22 @@ class CollectionRegistry:
 
     ``default`` is a POINTER, not an entry: the registry refuses to hold an
     entry under the reserved id, and :meth:`resolve` / :meth:`canonical` map
-    that name (like ``None``) to the entry ``default_id`` names. Resolution is
-    one dict lookup — no store is consulted — so an omitted ``collection`` costs
-    nothing on the request path."""
+    that name (like ``None``) to the entry ``default_id`` names. Registry
+    RESOLUTION is still one dict lookup — no store is consulted here.
+
+    What ``default_id`` names is the GLOBAL pointer, though, and since #419 that
+    is no longer by itself what an omitted ``collection`` targets: a caller who
+    cannot read the pointer target gets their own first readable collection
+    instead (:mod:`ragstack.api.default_collection`). So *deciding which id to
+    resolve* now costs one batched ACL round trip — on the implicit path only,
+    and in the routers, never in this class.
+
+    (The previous wording promised "an omitted ``collection`` costs nothing on
+    the request path". That is now false, and
+    ``test_default_pointer.py::test_resolving_an_omitted_collection_makes_no_registry_store_call``
+    would not have caught it: it counts calls on the COLLECTION store, not the
+    ACL store, so it stays green either way. Amended rather than left standing
+    next to a test that only appears to guard it.)"""
 
     def __init__(self, entries: list[CollectionEntry], default_id: str) -> None:
         if not entries:
@@ -239,9 +252,35 @@ def confined_collection_name(
     The knowledge-graph endpoints take no ``collection`` argument — one graph
     store spans every collection — so a tenant confined by ``TENANT_COLLECTIONS``
     would otherwise inspect triples derived from collections it may not query
-    (#209). This picks the same collection an unqualified ``/v1/query`` serves it:
-    the registry default when permitted, else its first allowed collection present
-    in the registry.
+    (#209). It picks the registry default when permitted, else its first allowed
+    collection present in the registry, by LEXICOGRAPHIC order.
+
+    .. warning::
+
+       This used to say it "picks the same collection an unqualified
+       ``/v1/query`` serves". **Since #419 that is false**, and this PR is what
+       falsified it — deliberately, with the divergence tracked rather than
+       papered over. ``/v1/query`` now resolves an omitted ``collection``
+       through :mod:`ragstack.api.default_collection`, which differs here on
+       BOTH axes:
+
+       * **visibility** — the shared resolver intersects the allowlist with the
+         caller's READABLE set; this function still applies the allowlist alone,
+         so it can name a collection the caller cannot read;
+       * **order** — the shared resolver breaks ties in registry INSERTION
+         order (what the listing shows); this one still uses ``sorted()``.
+
+       Concretely, for the ``caller_without_default_access`` persona with an
+       allowlist covering both collections, this returns ``C_default`` while
+       ``/v1/query`` serves ``C_readable``.
+
+       It was NOT unified in #419's PR: it is sync, takes no principal, and is
+       called from the graph path where no ACL round trip is budgeted — and it
+       answers a slightly different question (which *physical* store to scope
+       triples to). Tracked in the #419 follow-up issue, which must decide
+       whether to converge it or keep the divergence on purpose. Live blast
+       radius today is nil: it returns ``None`` without an allowlist, and no
+       deployed tenant sets ``TENANT_COLLECTIONS``.
 
     ``None`` means "don't scope": the caller is unrestricted (operators/admins
     keep the cross-collection inspection view, which is also the only way to see

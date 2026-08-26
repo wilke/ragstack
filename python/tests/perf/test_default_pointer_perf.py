@@ -2,6 +2,13 @@
 ``collection`` is ONE dict lookup on the in-process registry — the durable
 collection store is never consulted.
 
+(Both still true, and both only about ``CollectionRegistry.resolve``. Since #419
+*choosing which id to resolve* for a request that omits ``collection`` costs one
+batched ACL round trip, in the routers. This file times the registry in-process
+— no HTTP, never through ``_resolve_entry``, and no ``api_keys`` configured, so
+``filter_readable`` would no-op anyway. It therefore neither measures nor bounds
+that cost, and a green run here is not evidence about it.)
+
 The registry's ``resolve(None)`` / ``resolve("default")`` p95 stays in the
 microseconds over a 1,000-entry registry (``assert_budget``). The
 no-store-call assertions — a counting fake ``CollectionStore`` that is never

@@ -1,9 +1,26 @@
 """`default` is a POINTER, not a registry entry (#276, ADR-0002 decision 5).
 
-A request that omits ``collection`` resolves — at request time, one dict lookup
-— to ``DEFAULT_COLLECTION_ID`` (else the settings-derived collection, registered
-under its own physical name). ``default`` itself is a reserved, uncreatable id;
-saying ``collection="default"`` means the same as omitting it.
+``default`` itself is a reserved, uncreatable id; saying
+``collection="default"`` means the same as omitting it. The pointer names
+``DEFAULT_COLLECTION_ID`` (else the settings-derived collection, registered
+under its own physical name).
+
+**Amended by #419.** This used to say an omitted ``collection`` resolves "at
+request time, one dict lookup — to ``DEFAULT_COLLECTION_ID``". The REGISTRY
+still resolves an id in one dict lookup, and that is all this file's
+``_CountingStore`` assertion ever measured. But ``DEFAULT_COLLECTION_ID`` is the
+GLOBAL pointer, and it is no longer by itself what a request TARGETS: a caller
+who cannot read the pointer target now gets their own first readable collection
+(:mod:`ragstack.api.default_collection`), which costs one batched ACL round trip
+on the implicit path.
+
+Every test in this file runs KEYLESS, where ``filter_readable`` is a no-op, so
+the pointer is still the answer here and every assertion below still holds
+unchanged. That is also exactly why
+``test_resolving_an_omitted_collection_makes_no_registry_store_call`` could not
+have caught the change: it counts the COLLECTION store, not the ACL store. The
+caller-aware behaviour is pinned in
+``tests/api/test_default_collection_resolution.py``.
 
 The two flags this keeps apart:
 

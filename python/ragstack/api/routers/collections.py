@@ -31,7 +31,6 @@ from ragstack.acl_store import (
 from ragstack.api.access import (
     _subject_is_admin,
     enforce_access,
-    filter_readable,
     owner_quota_exceeded_response,
     revoke_collection_acl,
     write_owner_row,
@@ -43,6 +42,7 @@ from ragstack.api.collections import (
     CollectionSpec,
     is_reserved_collection_id,
 )
+from ragstack.api.default_collection import pick_default, visible_entries
 from ragstack.api.deps import (
     bound_json_body,
     build_collection_entry,
@@ -80,7 +80,7 @@ from ragstack.jobstore import KIND_GRAPH, JobStore
 from ragstack.ops.evict import drop_stores
 from ragstack.provenance import chunk_descriptor, delete_manifest, read_manifest
 from ragstack.stores.qdrant import collection_name
-from ragstack.tenancy import allowed_collection_ids, readable_tenants
+from ragstack.tenancy import readable_tenants
 from ragstack.user_store import RESERVED_SERVICE_SUBJECTS, UserRecord
 
 log = logging.getLogger(__name__)
@@ -235,22 +235,23 @@ async def list_collections(
     """Registry collections with tenant-scoped counts and chunk-strategy labels.
 
     Restricted to the collections the caller's tenant may access (per the
-    per-tenant allowlist); unrestricted tenants see every registered collection.
-    The reported ``default`` is the caller's effective default (the registry
-    default when permitted, else the caller's first accessible collection) so it
-    is always one of the listed ids."""
-    allowed = registry.permitted(
-        allowed_collection_ids(principal.tenant, settings.tenant_collections)
-    )
-    entries = [
-        e for e in registry.entries() if allowed is None or e.id in allowed
-    ]
-    # ...then drop the ones the caller may not READ (owner / grant / public), on
-    # top of the allowlist — ownership INTERSECTS confinement, never replaces it
+    per-tenant allowlist) INTERSECTED with the ones it may read; unrestricted
+    tenants see every registered collection they can read.
+
+    The reported ``default`` is the caller's effective default — and since #419
+    it is the *same computation* ``/v1/query``, ``/v1/retrieve`` and
+    ``/v1/chunks`` use for an omitted ``collection``
+    (:mod:`ragstack.api.default_collection`), not a parallel copy of the rule
+    that can drift from it. It is always one of the listed ids, or ``""`` when
+    the caller can read no collection at all — in which case ``collections`` is
+    empty too and every read endpoint answers 404 "no collection is accessible
+    to this caller". It is NOT the same thing as the per-item ``is_default``
+    flag, which stays the GLOBAL registry pointer."""
+    # allowlist ∩ readable — ownership INTERSECTS confinement, never replaces it
     # (ADR-0003 decision 3). Admin sees all (admin bypass inside resolve_access);
     # keyless dev is a no-op. A store outage here 503s rather than silently hiding
     # a readable collection.
-    entries = await filter_readable(principal, entries)
+    entries = await visible_entries(registry, principal)
     # Per-collection vector + text counts are independent store round-trips —
     # gather them all concurrently so latency is one round-trip, not 2N (the ops
     # dashboard polls this, and Explore/Compare call it on load). Both probes share
@@ -280,13 +281,14 @@ async def list_collections(
     ]
     # The reported default must be one of the listed ids: the registry default
     # when the caller can actually see it (allowlist AND readable), else its first
-    # visible collection.
-    visible_ids = {i.id for i in infos}
-    if registry.default_id in visible_ids:
-        default = registry.default_id
-    else:
-        default = infos[0].id if infos else registry.default_id
-    return CollectionsResponse(collections=infos, default=default)
+    # visible collection. THE SAME CALL the query path makes (#419) — if you are
+    # tempted to inline the rule here again, that is the drift this fixed.
+    # `""` (not the registry pointer) when nothing is visible: handing back an id
+    # that is absent from `collections` and that every read endpoint now refuses
+    # to serve is exactly the lie #419 was about.
+    return CollectionsResponse(
+        collections=infos, default=pick_default(entries, registry) or ""
+    )
 
 
 class ChunkConfig(BaseModel):

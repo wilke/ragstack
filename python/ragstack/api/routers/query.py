@@ -15,6 +15,7 @@ from ragstack.api.collections import (
     CollectionRegistry,
     is_reserved_collection_id,
 )
+from ragstack.api.default_collection import resolve_default_entry
 from ragstack.api.deps import (
     build_generator_for,
     build_reranker_for,
@@ -474,58 +475,78 @@ async def tenant_slot(
         yield tenant
 
 
-def _effective_collection(
-    registry: CollectionRegistry, collection: str | None, tenant: str
-) -> str | None:
-    """Apply the per-tenant collection allowlist, returning the id to resolve.
+def _check_allowlist(
+    registry: CollectionRegistry, collection: str, tenant: str
+) -> None:
+    """The per-tenant ``TENANT_COLLECTIONS`` gate for an EXPLICITLY NAMED id.
 
-    Unrestricted tenants pass through unchanged. A restricted tenant may only name
-    a collection in its set (else 404 — same as an unknown id, so membership isn't
-    leaked); when it names none, it gets its own default (the registry default if
-    permitted, else its first allowed collection present in the registry).
+    Unrestricted tenants pass. A restricted tenant may only name a collection in
+    its set — else 404, the same body an unknown id gets, so membership isn't
+    leaked.
 
-    Naming the pointer (``collection="default"``) is the same as omitting it:
-    ``default`` is not a collection, it is the name of the resolution (#276)."""
-    if is_reserved_collection_id(collection):
-        collection = None
+    Explicit only: the implicit default is not this function's business any more.
+    It used to be, and the copy of the rule it kept here (registry default if
+    permitted, else ``sorted(allowed)[0]``) drifted from the listing's on TWO
+    axes — visibility (this one never consulted the readable set) and order
+    (lexicographic vs. the listing's insertion order). That drift is #419. The
+    one remaining rule lives in :mod:`ragstack.api.default_collection`."""
     allowed = registry.permitted(allowed_collection_ids(tenant, settings.tenant_collections))
-    if allowed is None:
-        return collection
-    if collection is not None:
-        if collection not in allowed:
-            raise HTTPException(
-                status_code=404,
-                detail=f"unknown collection {collection!r}; see GET /v1/collections",
-            )
-        return collection
-    if registry.default_id in allowed:
-        return registry.default_id
-    present = [e.id for e in registry.entries() if e.id in allowed]
-    if not present:
-        raise HTTPException(
-            status_code=404, detail="no collection is accessible to this caller"
-        )
-    return sorted(present)[0]
-
-
-async def _resolve_entry(
-    registry: CollectionRegistry, collection: str | None, principal: Principal
-):
-    """The registry entry for the selected collection (the caller's default when
-    None), after applying the per-tenant allowlist AND the ownership check.
-
-    An unknown or out-of-scope id is a 404 — explicit selection fails loudly
-    rather than serving the wrong corpus. A collection the caller may not READ is
-    a 404 too (the ownership seam, :func:`enforce_access`): membership is never
-    leaked, so "you can't read it" is indistinguishable from "it doesn't exist"."""
-    effective = _effective_collection(registry, collection, principal.tenant)
-    try:
-        entry = registry.resolve(effective)
-    except KeyError:
+    if allowed is not None and collection not in allowed:
         raise HTTPException(
             status_code=404,
             detail=f"unknown collection {collection!r}; see GET /v1/collections",
-        ) from None
+        )
+
+
+# `_resolve_entry` is the ONLY place /v1/query, /v1/retrieve, /v1/chunks and
+# every member of the multi-collection path decide which collection to serve —
+# and, for an omitted `collection`, it must agree with what GET /v1/collections
+# advertised as `default`. It does so by CALLING the same symbol the listing
+# does (`default_collection.resolve_default_entry` / `pick_default`), not by
+# re-implementing the rule. That equivalence is pinned by
+# tests/api/test_default_collection_resolution.py — the two used to be separate
+# expressions and drifted, which is #419. Do not inline a fourth copy.
+async def _resolve_entry(
+    registry: CollectionRegistry, collection: str | None, principal: Principal
+):
+    """The registry entry for the selected collection, after the per-tenant
+    allowlist AND the ownership check.
+
+    **Explicitly named** (unchanged): an unknown or out-of-scope id is a 404 —
+    explicit selection fails loudly rather than serving the wrong corpus — and a
+    collection the caller may not READ is the *same* 404 (the ownership seam,
+    :func:`enforce_access`), so "you can't read it" is indistinguishable from
+    "it doesn't exist".
+
+    **Omitted** (``collection is None``, and naming the pointer ``"default"`` is
+    the same thing — ``default`` is not a collection, it is the name of the
+    resolution, #276): the caller's OWN default, resolved against the allowlist
+    ∩ their readable set exactly as ``GET /v1/collections`` computes the
+    ``default`` it advertises. No readable collection at all is a 404 that names
+    no id.
+
+    So a 404 body can only ever name a collection the CALLER named: after this
+    split the ``unknown collection {id!r}`` message is unreachable from the
+    implicit branch. That property is now a consequence of the control flow
+    rather than a rule someone has to remember."""
+    if is_reserved_collection_id(collection):
+        collection = None
+    if collection is None:
+        entry = await resolve_default_entry(registry, principal)
+    else:
+        _check_allowlist(registry, collection, principal.tenant)
+        try:
+            entry = registry.resolve(collection)
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {collection!r}; see GET /v1/collections",
+            ) from None
+    # Kept on BOTH branches, including after the readable-set pick: the
+    # collection LIFECYCLE gate (dormant → 503 + restore) lives inside
+    # enforce_access and filter_readable does not run it. It can never
+    # contradict the pick — resolve_read_many and resolve_access are
+    # semantically identical for `read`.
     await enforce_access(principal, entry.id, "read")
     return entry
 
