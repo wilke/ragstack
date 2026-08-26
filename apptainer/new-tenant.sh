@@ -425,7 +425,7 @@ MAX_DOCUMENT_BYTES=50000000
 # PORT is informational only — the API's Settings does not read it; uvicorn
 # needs --port $PORT_API explicitly (see the start command below/in the plan).
 PORT=$PORT_API
-LOG_LEVEL=info
+LOG_LEVEL=INFO
 EOF
 }
 

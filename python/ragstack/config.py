@@ -807,7 +807,26 @@ class Settings(BaseSettings):
     crossencoder_sidecar_url: str = "http://localhost:50052"
 
     # Observability
+    # Honoured since #427 — before that this was echoed by GET /v1/config and
+    # written by tenant provisioning while configuring nothing at all. Parsed
+    # case-insensitively and NEVER fatally: the deployed dev/demo tenants carry
+    # `LOG_LEVEL=info`, which `logging.setLevel` rejects outright, and
+    # .env.example has long documented a `warn` that is not a stdlib level name.
+    # An unrecognised value falls back to INFO with a warning
+    # (observability/logging_config.py:resolve_log_level).
     log_level: str = "INFO"
+    # `logfmt` (default) | `json`. logfmt because the only consumer today is a
+    # human on the host with grep — no log shipper or aggregator is deployed.
+    # The json branch is built and tested, so switching is a config change.
+    # NOT echoed by GET /v1/config: config_response.json is
+    # `additionalProperties: false`, so adding a field there is a contract
+    # change, and this setting does not warrant one.
+    log_format: str = "logfmt"
+    # Disable uvicorn's access log because our own per-request summary line is a
+    # strict superset of it. Default FALSE until that line exists (#427 W3) —
+    # turning it on now would just lose the access log and replace it with
+    # nothing.
+    access_log_replaced: bool = False
     otel_exporter_otlp_endpoint: str = ""
 
     # --- Collection lifecycle / restore (#358, phase 2 of #353) ------------ #

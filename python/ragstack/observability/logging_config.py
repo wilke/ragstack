@@ -1,0 +1,233 @@
+"""Configure the root logger — the thing nothing in this repo did.
+
+Before this module, the API installed **no** root handler and set **no** level.
+Consequences, both verified rather than assumed:
+
+* every ``log.info()`` under ``ragstack.*`` was discarded (the root logger sits
+  at ``WARNING`` by default and had no handler to emit through anyway);
+* ``log.warning()`` and above fell through to ``logging.lastResort``, a bare
+  ``StreamHandler(stderr)`` with **no formatter** — so those lines carried no
+  timestamp, no level and no logger name;
+* ``LOG_LEVEL`` — defined in config, echoed by ``GET /v1/config``, written by
+  tenant provisioning — configured nothing at all.
+
+Format: **logfmt by default**, ``LOG_FORMAT=json`` for the alternative. logfmt
+because the only consumer today is a person on the host running ``tail`` and
+``grep``; there is no log shipper and no aggregator deployed anywhere, so JSON's
+payoff is deferred while its cost (unreadable when tailed) is immediate. The
+JSON branch is built and tested **now**, not left aspirational, so the day a
+shipper appears the switch is a config change rather than a project.
+
+.. rubric:: The level is parsed defensively, and this is not decorative
+
+``logging.Logger.setLevel`` raises ``ValueError: Unknown level: 'info'`` on a
+lowercase name. The deployed tenants ``dev`` and ``demo`` both have
+``LOG_LEVEL=info``, written by ``apptainer/new-tenant.sh``, and ``.env.example``
+documents ``debug | info | warn | error`` — all lowercase, and ``warn`` is not
+even a stdlib level name (``WARN`` is). Reading ``settings.log_level`` straight
+into ``setLevel`` would therefore have **crashed those two APIs at startup** —
+the exact opposite of this module's headline fix. So: upper-case it, check it
+against a known set, and on anything unrecognised **fall back to INFO and warn**.
+A bad log level must never be fatal.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+from typing import Any
+
+from ragstack.observability.context import CONTEXT_FIELDS, MISSING, RequestContextFilter
+
+#: Level names accepted in ``LOG_LEVEL``, after upper-casing. ``WARN`` is the
+#: stdlib alias for ``WARNING`` and is included because ``.env.example`` has
+#: documented ``warn`` since before this module existed.
+LOG_LEVEL_NAMES = frozenset(
+    {"CRITICAL", "FATAL", "ERROR", "WARNING", "WARN", "INFO", "DEBUG", "NOTSET"}
+)
+
+#: Marks the handler this module installs so a second call replaces it rather
+#: than stacking a duplicate (which would double every line).
+_HANDLER_NAME = "ragstack.observability"
+
+#: ``LogRecord`` attributes present on every record regardless of context. Used
+#: by the JSON formatter to decide what is a caller-supplied ``extra``.
+_RESERVED = frozenset(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
+) | {"message", "asctime", "taskName", *CONTEXT_FIELDS}
+
+
+def resolve_log_level(raw: str | None) -> tuple[int, str | None]:
+    """``(numeric level, warning to emit or None)`` for a configured value.
+
+    Never raises. An unknown value yields ``INFO`` plus a warning naming what was
+    rejected, because a typo in ``LOG_LEVEL`` must degrade the logs, not take
+    the API down.
+    """
+    name = (raw or "").strip().upper()
+    if not name:
+        return logging.INFO, None
+    if name not in LOG_LEVEL_NAMES:
+        return (
+            logging.INFO,
+            f"LOG_LEVEL={raw!r} is not a known level "
+            f"({', '.join(sorted(LOG_LEVEL_NAMES))}); falling back to INFO",
+        )
+    level = logging.getLevelName(name)
+    if not isinstance(level, int):  # pragma: no cover - unreachable via the set above
+        return logging.INFO, f"LOG_LEVEL={raw!r} did not resolve to a level; using INFO"
+    return level, None
+
+
+def _quote(value: str) -> str:
+    """logfmt value quoting: bare when it is a simple token, quoted otherwise.
+
+    Anything with whitespace, a quote, or a control character is JSON-quoted,
+    which also escapes the newline that would otherwise let a message forge a
+    second log line.
+    """
+    if value == "":
+        return '""'
+    if any(c.isspace() or c in '"\\=' or ord(c) < 0x20 for c in value):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+class LogfmtFormatter(logging.Formatter):
+    """``TS LEVEL logger rid=… tenant=… msg="…"``.
+
+    The message is rendered through the standard ``%``-style machinery first, so
+    the ~219 existing ``log.warning("x %s", y)`` call sites keep working exactly
+    as written and simply gain the context columns.
+    """
+
+    default_time_format = "%Y-%m-%dT%H:%M:%S"
+    default_msec_format = "%s.%03dZ"
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        parts = [
+            self.formatTime(record),
+            record.levelname,
+            record.name,
+        ]
+        for name in CONTEXT_FIELDS:
+            value = getattr(record, name, MISSING)
+            if value and value != MISSING:
+                parts.append(f"{name}={_quote(str(value))}")
+        for key, value in record.__dict__.items():
+            if key not in _RESERVED and not key.startswith("_"):
+                parts.append(f"{key}={_quote(str(value))}")
+        parts.append(f"msg={_quote(message)}")
+        line = " ".join(parts)
+        if record.exc_info:
+            line += "\n" + self.formatException(record.exc_info)
+        if record.stack_info:
+            line += "\n" + self.formatStack(record.stack_info)
+        return line
+
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line — the ``LOG_FORMAT=json`` branch.
+
+    Built and tested now rather than later so that flipping the setting is a
+    config change and not a project. Same fields as the logfmt branch, same
+    ``%``-style message rendering.
+    """
+
+    default_time_format = "%Y-%m-%dT%H:%M:%S"
+    default_msec_format = "%s.%03dZ"
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "ts": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        for name in CONTEXT_FIELDS:
+            value = getattr(record, name, MISSING)
+            if value and value != MISSING:
+                payload[name] = value
+        for key, value in record.__dict__.items():
+            if key not in _RESERVED and not key.startswith("_"):
+                payload[key] = value if isinstance(value, (str, int, float, bool)) else str(value)
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def make_formatter(log_format: str | None) -> logging.Formatter:
+    """The formatter for ``LOG_FORMAT``. Unknown values fall back to logfmt —
+    same "never fatal over a config typo" rule as the level."""
+    return JsonFormatter() if (log_format or "").strip().lower() == "json" else LogfmtFormatter()
+
+
+def configure_logging(
+    *,
+    level: str | None = None,
+    log_format: str | None = None,
+    quiet_uvicorn_access: bool | None = None,
+) -> logging.Handler:
+    """Install the root stderr handler and honour ``LOG_LEVEL``. Idempotent.
+
+    Arguments default to the corresponding settings; they exist so tests can
+    drive this without mutating global settings.
+
+    Idempotent by construction: the handler is named, and a second call replaces
+    the one it installed rather than stacking a duplicate. That matters because
+    this is called at import time of ``api.main`` and again by anything that
+    reconfigures — a stacked handler doubles every line.
+
+    Returns the installed handler.
+    """
+    from ragstack.config import settings
+
+    if level is None:
+        level = settings.log_level
+    if log_format is None:
+        log_format = getattr(settings, "log_format", "logfmt")
+    if quiet_uvicorn_access is None:
+        quiet_uvicorn_access = bool(getattr(settings, "access_log_replaced", False))
+
+    numeric, warning = resolve_log_level(level)
+
+    root = logging.getLogger()
+    for existing in list(root.handlers):
+        if getattr(existing, "name", None) == _HANDLER_NAME:
+            root.removeHandler(existing)
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.name = _HANDLER_NAME
+    handler.setFormatter(make_formatter(log_format))
+    # On the HANDLER, not on a logger: a logger-level filter is not consulted
+    # for records propagating up from child loggers, so most of ragstack.* would
+    # silently miss the context.
+    handler.addFilter(RequestContextFilter())
+    root.addHandler(handler)
+    root.setLevel(numeric)
+
+    # uvicorn configures its own loggers with propagate=False and its own
+    # handlers, so root's handler never sees their records. Attach the filter to
+    # theirs too — otherwise a uvicorn error line is the one line in the file
+    # with no context columns.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for h in logging.getLogger(name).handlers:
+            if not any(isinstance(f, RequestContextFilter) for f in h.filters):
+                h.addFilter(RequestContextFilter())
+
+    if quiet_uvicorn_access:
+        # W3's summary line is a strict superset of uvicorn's access line
+        # (method, path, status, plus id, tenant, timings), so this keeps the
+        # net line count unchanged rather than doubling it. Default OFF in W1,
+        # where that superset line does not exist yet.
+        logging.getLogger("uvicorn.access").disabled = True
+
+    if warning:
+        # Emitted AFTER the handler is installed, or the warning about the
+        # broken LOG_LEVEL would itself be swallowed by the very absence of a
+        # handler this function exists to fix.
+        logging.getLogger(__name__).warning("%s", warning)
+
+    return handler

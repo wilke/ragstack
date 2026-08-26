@@ -34,7 +34,16 @@ from ragstack.api.security import (
 )
 from ragstack.api.upload_guard import UploadContentLengthMiddleware
 from ragstack.config import settings
+from ragstack.observability import RequestContextMiddleware, configure_logging
+from ragstack.observability.middleware import stamp_request_id
 from ragstack.stores.errors import StoreUnavailable
+
+# Before the app is built, and before any module-level log call: until #427 the
+# API installed no root handler and set no level, so every log.info() under
+# ragstack.* was discarded and every warning printed through logging.lastResort
+# with no timestamp, level or logger name. This also makes LOG_LEVEL — which
+# GET /v1/config has always echoed — actually do something.
+configure_logging()
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +71,36 @@ async def _store_unavailable(_: Request, exc: StoreUnavailable) -> JSONResponse:
     )
 
 
+@app.exception_handler(Exception)
+async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
+    """The bare-500 path — and the ONLY place ``X-Request-Id`` can be stamped
+    on it.
+
+    Starlette's ``ServerErrorMiddleware`` sits above every middleware
+    ``add_middleware`` can install, and it renders its 500 with the *original*
+    ``send``. So ``RequestContextMiddleware``'s ``send`` wrapper never sees that
+    response and cannot stamp it. Registering this handler moves the response
+    generation *inside* ``ServerErrorMiddleware`` — where the contextvar is
+    still set — so the header can be attached here by hand.
+
+    The body stays exactly what Starlette's default 500 carries — this exists to
+    stamp the header and log the id, not to expose internals, and putting the id
+    in the body is a schema change this work item deliberately does not make
+    (that is #427 W6's ``error.json``). Note ``ServerErrorMiddleware`` re-raises
+    after sending, so the traceback still reaches the server log and a test that
+    wants to observe this response needs
+    ``ASGITransport(..., raise_app_exceptions=False)``.
+    """
+    headers: dict[str, str] = {}
+    stamp_request_id(headers)
+    log.exception("unhandled %s", type(exc).__name__)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+        headers=headers,
+    )
+
+
 # Upload ingress guard (#202): refuse POST /v1/ingest/upload from its headers
 # alone — Content-Length over max_upload_bytes_per_request (+ framing) → 413,
 # no Content-Length → 411 — before FastAPI's multipart parser can drain the
@@ -79,6 +118,14 @@ app.add_middleware(
     allow_credentials="*" not in settings.allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
+    # A cross-origin browser client can only READ a response header that is
+    # explicitly exposed. X-Request-Id is the whole point of #427 W1 — the id a
+    # user reads off the UI and an operator greps for — so without this the
+    # frontend cannot see it. Retry-After is listed for the same reason: it has
+    # been documented on the 429/503 responses all along and has been
+    # unreadable cross-origin the entire time. That is a latent bug this fixes
+    # in passing.
+    expose_headers=["X-Request-Id", "Retry-After"],
 )
 
 # Mounted-under-a-prefix support. The gateway serves this app at
@@ -88,9 +135,25 @@ app.add_middleware(
 # the schema's `servers` entry from; absent a prefix nothing changes, so
 # direct-port /docs still works. See api/root_path.py.
 #
-# Added LAST so it is the OUTERMOST middleware — the value must be in the scope
-# before routing (add_middleware inserts at the front of the stack).
+# Must sit OUTSIDE CORSMiddleware and the upload guard — the value has to be in
+# the scope before routing (add_middleware inserts at the front of the stack).
+# It is no longer the outermost, RequestContextMiddleware below is; that is
+# harmless because root_path.py only ever sets scope["root_path"] and never
+# scope["path"], so nothing the request-context middleware reads is affected.
 app.add_middleware(RootPathMiddleware)
+
+# Request correlation (#427). Added LAST so it is the OUTERMOST middleware this
+# application installs, which is load-bearing rather than tidy: the upload guard
+# hand-builds its 411/413 response and returns without calling the app at all,
+# so only a send-wrapper outside it can stamp those with X-Request-Id.
+# tests/api/test_request_id_upload_guard.py pins this ordering and fails if the
+# add_middleware calls are reordered.
+#
+# It still cannot be outermost in absolute terms — Starlette's
+# ServerErrorMiddleware is above everything here and renders its 500 with the
+# original send. The _unhandled handler above covers that path; see
+# observability/middleware.py for the probe that established it.
+app.add_middleware(RequestContextMiddleware)
 
 # Health stays open for liveness probes; the data/v1 surface requires an API key
 # when keys are configured (always, in production). resolve_tenant both enforces
