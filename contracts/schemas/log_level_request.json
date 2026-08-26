@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "log_level_request.json",
+  "title": "LogLevelRequest",
+  "description": "Change the running process's log level without restarting it (PUT /v1/admin/log-level body). At least one of `level` or `loggers` must be present; a body carrying neither is a 422, because a request that asks for nothing is far more likely a typo than an intent. Validation is atomic: the whole body is checked before anything is applied, so a rejected request leaves the effective level exactly as it was — there is no half-applied state.",
+  "type": "object",
+  "properties": {
+    "level": {
+      "description": "New ROOT log level. Case-insensitive; `warn` is accepted as an alias for `WARNING` because .env.example has documented it since before LOG_LEVEL was honoured at all. `NOTSET` is rejected here: on the root logger it means 'no threshold' rather than 'inherit', and turning every library in the process to full DEBUG is not what an operator typing it would expect. Deliberately NOT an `enum`: the server validates the vocabulary and answers a 4xx, and an enum here would make that documented response unreachable from a conformant client. That is `UserRoleRequest.role`'s reasoning — note it answers 400 there and this answers 422, because `admin_users.py` reserves 400 for a malformed request to keep it distinct from the 409 its state change can raise, and this endpoint has no such neighbour. The response DOES pin the enum, because there the server is the writer. Omit to leave the root level as it is.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16
+    },
+    "loggers": {
+      "description": "Per-logger overrides, as a name -> level map. REPLACE semantics: whatever is sent becomes the complete set of runtime per-logger overrides, so `{}` clears them all and there is no separate 'unset one logger' verb. Any logger previously overridden and absent here is returned to inheriting (NOTSET) before the root level and the dampen set are re-applied on top. Omit the whole field to leave the current overrides untouched. Names are validated against `^[A-Za-z0-9_.-]{1,128}$` and must ALREADY EXIST in the process's logger registry — `logging.getLogger(name)` creates a logger permanently, so accepting arbitrary names would make this endpoint an unbounded-growth path even behind the admin gate. The count is capped (see `max_logger_overrides` in the response). `ragstack.audit` cannot be overridden: it carries this endpoint's own audit trail.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 16
+      }
+    }
+  },
+  "additionalProperties": false
+}
