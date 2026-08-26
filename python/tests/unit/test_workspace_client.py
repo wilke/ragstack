@@ -1,19 +1,15 @@
 """Unit tests for ``ragstack.workspace`` against an ``httpx.MockTransport`` fake.
 
-The fake models the BV-BRC Workspace JSON-RPC service and Shock closely enough
-to pin the request shapes the real service expects (envelope ``version: "1.1"``,
-``params: [<dict>]``, the ``[path, type, metadata, data]`` object tuple, the
-12-element ObjectMeta reply, an existing folder being silently skipped by
-``create``, ``Object not found!`` as an RPC error, and a Shock ``PUT`` of one
-``upload`` multipart field with ``Authorization: OAuth <token>``). No live
+The fake — :mod:`tests.workspace_support`, shared with the API-level gowe
+upload tests — models the BV-BRC Workspace JSON-RPC service and Shock closely
+enough to pin the request shapes the real service expects, *including* its two
+usermeta constraints: ``create`` silently stores nothing for a dotted field
+name (#408) and ``update_metadata`` refuses one outright (#414). No live
 service is ever contacted.
 """
 from __future__ import annotations
 
-import json
 import logging
-import re
-from typing import Any
 
 import httpx
 import pytest
@@ -28,182 +24,13 @@ from ragstack.workspace import (
     WorkspaceTooLarge,
     _multipart_frame,
 )
-
-TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIG"
-OTHER_TOKEN = "un=bob@patricbrc.org|tokenid=t-2|expiry=9999999999|sig=OTHERSIG"
-SUBJECT = "alice@patricbrc.org"
-WS_URL = "http://workspace.test/services/Workspace"
-SHOCK = "http://shock.test/services/shock_api"
-
-
-class FakeWorkspace:
-    """In-memory Workspace + Shock behind one MockTransport handler."""
-
-    def __init__(self, token: str = TOKEN) -> None:
-        self.token = token
-        self.objects: dict[str, dict[str, Any]] = {}  # path -> {type, metadata, size, shock}
-        self.requests: list[httpx.Request] = []
-        self.rpc_calls: list[tuple[str, dict[str, Any]]] = []
-        self.metadata_writes: list[str] = []  # paths whose user metadata was written
-        self.shock_uploads: list[tuple[str, int]] = []  # (node id, byte count)
-        self.next_node = 0
-        self.rpc_status: int | None = None  # force an HTTP status on every RPC
-        self.contents: dict[str, bytes] = {}  # path -> bytes served by the download URL
-        self.download_status: int | None = None  # force a status on every download
-
-    # -- transport entry point ------------------------------------------------
-    def __call__(self, req: httpx.Request) -> httpx.Response:
-        self.requests.append(req)
-        if req.url.host == "shock.test":
-            return self._shock(req)
-        if req.url.host == "download.test":
-            return self._download(req)
-        return self._rpc(req)
-
-    # -- Workspace download endpoint (what get_download_url points at) -------
-    def _download(self, req: httpx.Request) -> httpx.Response:
-        assert req.method == "GET"
-        if self.download_status is not None:
-            return httpx.Response(self.download_status, text="nope")
-        if req.headers.get("Authorization") != self.token:
-            return httpx.Response(401, text="Authentication failed")
-        path = req.url.path.removeprefix("/dl")
-        if path not in self.contents:
-            return httpx.Response(404, text="not found")
-        return httpx.Response(200, content=self.contents[path])
-
-    def rpc_get_download_url(self, params: dict[str, Any]) -> list[Any]:
-        urls = []
-        for path in params["objects"]:
-            if path not in self.objects and path not in self.contents:
-                raise LookupError(f"Object not found! {path}")
-            urls.append(f"http://download.test/dl{path}")
-        return [urls]
-
-    # -- Workspace JSON-RPC ---------------------------------------------------
-    def _rpc(self, req: httpx.Request) -> httpx.Response:
-        if self.rpc_status is not None:
-            return httpx.Response(self.rpc_status, text="Authentication failed")
-        assert req.method == "POST" and str(req.url) == WS_URL
-        assert req.headers["Content-Type"] == "application/json"
-        body = json.loads(req.content)
-        assert body["version"] == "1.1" and body["id"]
-        assert isinstance(body["params"], list) and len(body["params"]) == 1
-        method, params = body["method"], body["params"][0]
-        self.rpc_calls.append((method, params))
-        if req.headers.get("Authorization") != self.token:
-            return self._error("Token validation failed: bad signature")
-        handler = getattr(self, "rpc_" + method.removeprefix("Workspace."), None)
-        assert handler is not None, f"unexpected RPC {method}"
-        try:
-            return httpx.Response(200, json={"id": body["id"], "version": "1.1",
-                                             "result": handler(params)})
-        except LookupError as exc:
-            return self._error(str(exc))
-
-    @staticmethod
-    def _error(message: str) -> httpx.Response:
-        return httpx.Response(500, json={"version": "1.1", "error": {
-            "name": "JSONRPCError", "code": -32603, "message": message}})
-
-    def _meta(self, path: str) -> list[Any]:
-        o = self.objects[path]
-        parent, name = path.rsplit("/", 1)
-        return [name, o["type"], parent + "/", "2026-08-24T00:00:00Z", "uuid-" + name,
-                SUBJECT, o["size"], o["metadata"], {"is_folder": int(o["type"] == "folder")},
-                "o", "n", o["shock"]]
-
-    def _mkdir_p(self, path: str) -> None:
-        parts = path.strip("/").split("/")
-        for i in range(2, len(parts) + 1):  # /<user>/home always exists
-            p = "/" + "/".join(parts[:i])
-            self.objects.setdefault(p, {"type": "folder", "metadata": {}, "size": 0, "shock": ""})
-
-    def rpc_create(self, params: dict[str, Any]) -> list[Any]:
-        out = []
-        for obj in params["objects"]:
-            path, typ, metadata, data = obj
-            assert isinstance(metadata, dict) and isinstance(path, str) and path.startswith("/")
-            if typ == "folder":
-                if path in self.objects:
-                    continue  # the real service ignores existing folders (and omits them)
-                self._mkdir_p(path.rsplit("/", 1)[0])
-                self.objects[path] = {"type": "folder", "metadata": dict(metadata),
-                                      "size": 0, "shock": ""}
-                if metadata:
-                    self.metadata_writes.append(path)
-            else:
-                if path in self.objects and not params.get("overwrite"):
-                    raise LookupError(f"Overwriting object {path} and overwrite flag is not set!")
-                self._mkdir_p(path.rsplit("/", 1)[0])
-                shock = ""
-                if params.get("createUploadNodes"):
-                    assert data is None
-                    self.next_node += 1
-                    shock = f"{SHOCK}/node/node-{self.next_node}"
-                self.objects[path] = {"type": typ, "metadata": dict(metadata),
-                                      "size": len(data or ""), "shock": shock}
-            out.append(self._meta(path))
-        return [out]
-
-    def rpc_get(self, params: dict[str, Any]) -> list[Any]:
-        out = []
-        for path in params["objects"]:
-            if path not in self.objects:
-                raise LookupError("Object not found!")
-            out.append([self._meta(path)] if params.get("metadata_only") else
-                       [self._meta(path), ""])
-        return [out]
-
-    def rpc_ls(self, params: dict[str, Any]) -> list[Any]:
-        listing: dict[str, list[Any]] = {}
-        for d in params["paths"]:
-            prefix = d.rstrip("/") + "/"
-            for p in self.objects:
-                if p.startswith(prefix) and "/" not in p[len(prefix):]:
-                    listing.setdefault(d, []).append(self._meta(p))
-        return [listing]
-
-    def rpc_update_metadata(self, params: dict[str, Any]) -> list[Any]:
-        assert params.get("append") == 1, "must append — a bare update replaces the whole hash"
-        out = []
-        for path, metadata in params["objects"]:
-            if path not in self.objects:
-                raise LookupError("Object not found!")
-            self.objects[path]["metadata"].update(metadata)
-            self.metadata_writes.append(path)
-            out.append(self._meta(path))
-        return [out]
-
-    def rpc_delete(self, params: dict[str, Any]) -> list[Any]:
-        out = []
-        for path in params["objects"]:
-            if path not in self.objects:
-                raise LookupError("Object not found!")
-            out.append(self._meta(path))
-            del self.objects[path]
-        return [out]
-
-    # -- Shock ---------------------------------------------------------------
-    def _shock(self, req: httpx.Request) -> httpx.Response:
-        assert req.method == "PUT"
-        if req.headers.get("Authorization") != f"OAuth {self.token}":
-            return httpx.Response(401, json={"status": 401, "error": ["Unauthorized"], "data": None})
-        ctype = req.headers["Content-Type"]
-        m = re.match(r"multipart/form-data; boundary=(\S+)", ctype)
-        assert m, ctype
-        boundary = m.group(1).encode()
-        body = req.content
-        head, _, rest = body.partition(b"\r\n\r\n")
-        assert head.startswith(b"--" + boundary + b"\r\n")
-        assert b'name="upload"; filename="' in head
-        payload = rest[: rest.rfind(b"\r\n--" + boundary + b"--")]
-        node = req.url.path.rsplit("/", 1)[-1]
-        self.shock_uploads.append((node, len(payload)))
-        for o in self.objects.values():
-            if o["shock"].endswith("/" + node):
-                o["size"] = len(payload)
-        return httpx.Response(200, json={"status": 200, "data": {"id": node}, "error": None})
+from tests.workspace_support import (
+    OTHER_TOKEN,
+    SUBJECT,
+    TOKEN,
+    WS_URL,
+    FakeWorkspace,
+)
 
 
 @pytest.fixture
@@ -230,20 +57,47 @@ BASE = f"/{SUBJECT}/home/.ragstack/collections/col-1"
 # ---------------------------------------------------------------------------
 
 
+WANTED = {
+    "ragstack_format": ARCHIVE_FORMAT, "ragstack_collection_id": "col-1",
+    "ragstack_tenant": "t1", "ragstack_spec_hash": "h1",
+}
+
+
+def _meta_keys_written(fake: FakeWorkspace) -> set[str]:
+    """Every user_metadata field name the client asked the service to store."""
+    keys: set[str] = set()
+    for method, params in fake.rpc_calls:
+        if method == "Workspace.create":
+            for _p, _t, metadata, _d in params["objects"]:
+                keys |= set(metadata)
+        elif method == "Workspace.update_metadata":
+            for _p, metadata in params["objects"]:
+                keys |= set(metadata)
+    return keys
+
+
 async def test_ensure_collection_folder_creates_layout_and_metadata(client, fake):
     uri = await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
     assert uri == "ws://" + BASE
     assert set(fake.objects) >= {BASE, BASE + "/sources", BASE + "/versions"}
-    assert fake.objects[BASE]["metadata"] == {
-        "ragstack.format": ARCHIVE_FORMAT, "ragstack.collection_id": "col-1",
-        "ragstack.tenant": "t1", "ragstack.spec_hash": "h1",
-    }
+    assert fake.objects[BASE]["metadata"] == WANTED
     assert fake.objects[BASE + "/sources"]["metadata"] == {}
     # The create carried the metadata in the tuple's third slot (the confirmed shape).
     create = next(p for m, p in fake.rpc_calls if m == "Workspace.create")
     assert create["objects"][0][:2] == [BASE, "folder"]
-    assert create["objects"][0][2]["ragstack.format"] == ARCHIVE_FORMAT
+    assert create["objects"][0][2]["ragstack_format"] == ARCHIVE_FORMAT
     assert create["objects"][0][3] is None
+
+
+async def test_no_dotted_field_name_is_ever_sent(client, fake):
+    """#414: a dot in a usermeta field name is unstorable — silently on
+    ``create``, with a hard error on ``update_metadata``. Nothing this client
+    writes may contain one, on any path."""
+    fake._mkdir_p(BASE)  # forces the backfill path too
+    await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
+    written = _meta_keys_written(fake)
+    assert written and not any("." in key for key in written), written
+    assert fake.objects[BASE]["metadata"] == WANTED
 
 
 async def test_ensure_collection_folder_is_idempotent_and_writes_metadata_once(client, fake):
@@ -253,17 +107,85 @@ async def test_ensure_collection_folder_is_idempotent_and_writes_metadata_once(c
     assert not any(m == "Workspace.update_metadata" for m, _ in fake.rpc_calls)
     # /u/home, .ragstack, collections (auto-created parents) + col-1, sources, versions
     assert len(fake.objects) == 6
-    assert fake.objects[BASE]["metadata"]["ragstack.spec_hash"] == "h1"
+    assert fake.objects[BASE]["metadata"]["ragstack_spec_hash"] == "h1"
 
 
 async def test_ensure_collection_folder_backfills_missing_metadata_once(client, fake):
-    fake._mkdir_p(BASE + "/sources")  # pre-existing, user-made, no ragstack.* keys
+    fake._mkdir_p(BASE + "/sources")  # pre-existing, user-made, no ragstack_* keys
     await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
     await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
     assert fake.metadata_writes == [BASE]
     upd = [p for m, p in fake.rpc_calls if m == "Workspace.update_metadata"]
     assert len(upd) == 1 and upd[0]["append"] == 1 and upd[0]["objects"][0][0] == BASE
     assert BASE + "/versions" in fake.objects
+    assert fake.objects[BASE]["metadata"] == WANTED
+
+
+async def test_second_call_on_a_folder_created_before_the_fix_succeeds(client, fake):
+    """The production shape of #414: a collection folder created by the old
+    client exists with ``metadata == {}`` (its dotted keys were dropped). The
+    NEXT ingest must heal it rather than blow up on ``update_metadata``."""
+    fake._mkdir_p(BASE)
+    fake.objects[BASE]["metadata"] = {}
+    for _ in range(3):
+        await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
+    assert fake.objects[BASE]["metadata"] == WANTED
+    assert len([p for m, p in fake.rpc_calls if m == "Workspace.update_metadata"]) == 1
+
+
+async def test_ensure_collection_folder_converges_when_create_stores_no_metadata(client, fake):
+    """#408's pessimistic reading — ``create`` persists no usermeta at all. The
+    read-back then backfills through ``update_metadata``, and the second call
+    (the one that used to 500) is a no-op."""
+    fake.create_stores_metadata = False
+    await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
+    assert fake.objects[BASE]["metadata"] == WANTED  # not silently dropped
+    before = len(fake.rpc_calls)
+    await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
+    assert fake.objects[BASE]["metadata"] == WANTED
+    # Second pass: stat + the subfolder create, and no further metadata write.
+    assert [m for m, _ in fake.rpc_calls[before:]] == ["Workspace.get", "Workspace.create"]
+
+
+async def test_metadata_that_will_not_persist_warns_instead_of_failing(client, fake, caplog):
+    """A folder the service refuses to stamp must not close the collection to
+    ingest — the keys are for discoverability (#353). It warns, loudly, once."""
+    fake.create_stores_metadata = False
+    fake.rpc_update_metadata = lambda params: []  # accepted, stores nothing
+    with caplog.at_level(logging.WARNING, logger="ragstack.workspace"):
+        uri = await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1",
+                                                    spec_hash="h1", tenant="t1")
+    assert uri == "ws://" + BASE
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert BASE in warnings[0].getMessage() and "ragstack_spec_hash" in warnings[0].getMessage()
+    assert TOKEN not in warnings[0].getMessage()
+
+
+async def test_a_dotted_update_is_refused_by_the_service(client, fake):
+    """Pins the constraint the fake encodes: had the client kept the dotted
+    names, this is the error the second upload hit — a plain ``WorkspaceError``
+    (it matches neither the auth nor the not-found pattern), i.e. an unhandled
+    500 on the route."""
+    fake._mkdir_p(BASE)
+    with pytest.raises(WorkspaceError) as ei:
+        await client._rpc(TOKEN, "Workspace.update_metadata",
+                          {"objects": [[BASE, {"ragstack.spec_hash": "h1"}]], "append": 1})
+    assert type(ei.value) is WorkspaceError
+    assert "is not valid for storage" in str(ei.value)
+
+
+async def test_ensure_collection_folder_tolerates_the_legacy_dotted_shape(client, fake):
+    """No live folder carries the dotted keys (they never persisted), but a
+    reader must not mistake one for a foreign collection build if it does."""
+    fake._mkdir_p(BASE)
+    fake.objects[BASE]["metadata"] = {
+        "ragstack.format": ARCHIVE_FORMAT, "ragstack.collection_id": "col-1",
+        "ragstack.tenant": "t1", "ragstack.spec_hash": "h1",
+    }
+    await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
+    with pytest.raises(WorkspaceError, match="different collection build"):
+        await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h2", tenant="t1")
 
 
 async def test_ensure_collection_folder_refuses_foreign_metadata(client, fake):
@@ -451,7 +373,7 @@ async def test_list_versions_missing_folder_is_not_found(client, fake):
 async def test_stat_existing_and_missing(client, fake):
     await client.ensure_collection_folder(TOKEN, SUBJECT, "col-1", spec_hash="h1", tenant="t1")
     st = await client.stat(TOKEN, "ws://" + BASE + "/")
-    assert st.exists and st.is_folder and st.metadata["ragstack.collection_id"] == "col-1"
+    assert st.exists and st.is_folder and st.metadata["ragstack_collection_id"] == "col-1"
     assert st.path == BASE and st.size == 0
     missing = await client.stat(TOKEN, BASE + "/nope")
     assert not missing.exists and missing.metadata == {}

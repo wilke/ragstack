@@ -50,6 +50,10 @@ from ragstack.ingestion.gowe_backend import OUTPUT_STAGING_FAILED, GoWeBackend
 from ragstack.ingestion.gowe_client import GoWeClient
 from ragstack.ingestion.receipts import COMPLETED, ShardReceipt
 from ragstack.workspace import (
+    ARCHIVE_FORMAT,
+    WorkspaceAuthError,
+    WorkspaceClient,
+    WorkspaceError,
     WorkspaceExists,
     WorkspaceNotFound,
     WorkspaceTooLarge,
@@ -57,6 +61,8 @@ from ragstack.workspace import (
     ws_path,
     ws_uri,
 )
+from tests.workspace_support import WS_URL as WS_SERVICE_URL
+from tests.workspace_support import FakeWorkspace as WorkspaceService
 
 TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIGNATURE"
 SUBJECT = "alice@patricbrc.org"
@@ -562,3 +568,98 @@ async def test_ingest_root_not_required_on_gowe(client, gowe, monkeypatch):
     r = await client.post("/v1/ingest", json={"source": f"ws:///{SUBJECT}/home/x.pdf",
                                               "collection": "lib1"}, headers=AUTH)
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# #414 — the second upload into a collection (regression) and Workspace failures
+# ---------------------------------------------------------------------------
+
+
+class _LiveShapeWorkspace(WorkspaceClient):
+    """The REAL :class:`WorkspaceClient` over the strict Workspace service fake
+    (:mod:`tests.workspace_support`), so ``ensure_collection_folder`` and
+    ``upload_source`` are the code under test — usermeta constraints included.
+    Only ``read_file`` is stubbed, to serve the receipt the engine 'delivered'.
+    """
+
+    def __init__(self, http: httpx.AsyncClient, receipts: FakeWorkspace) -> None:
+        super().__init__(WS_SERVICE_URL, http, timeout=5.0)
+        self._receipts = receipts
+
+    async def read_file(self, token: str, path: str) -> bytes:
+        return await self._receipts.read_file(token, path)
+
+
+@pytest.fixture
+async def live_shape_workspace(gowe):
+    """Swap the recording double for the real client + the strict service fake."""
+    service = WorkspaceService(token=TOKEN)
+    http = httpx.AsyncClient(transport=httpx.MockTransport(service))
+    app.state.workspace = _LiveShapeWorkspace(http, gowe["workspace"])
+    try:
+        yield service
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("create_stores_metadata", [True, False])
+async def test_two_consecutive_uploads_into_one_collection_both_succeed(
+    client, gowe, live_shape_workspace, create_stores_metadata,
+):
+    """#414: the collection folder exists after upload 1, so upload 2 takes the
+    metadata-backfill branch of ``ensure_collection_folder``. With dotted key
+    names that branch raised ``WorkspaceError`` out of the route — an unhandled
+    exception, i.e. a bare HTTP 500 — and a collection accepted exactly one
+    ingest job for its lifetime. Both readings of #408 are exercised: a
+    ``create`` that keeps the (non-dotted) usermeta, and one that keeps none.
+    """
+    live_shape_workspace.create_stores_metadata = create_stores_metadata
+    folder = f"/{SUBJECT}/home/.ragstack/collections/lib1"
+
+    r1 = await _upload(client, "a.pdf")
+    assert r1.status_code == 202, r1.text
+    assert (await app.state.job_store.get(r1.json()["job_id"])).status == "completed"
+
+    r2 = await _upload(client, "b.pdf")  # distinct name: a repeat would be a 409
+    assert r2.status_code == 202, r2.text
+    assert (await app.state.job_store.get(r2.json()["job_id"])).status == "completed"
+
+    # Both files landed, one submission each, versions 1 and 2.
+    assert {f"{folder}/sources/a.pdf", f"{folder}/sources/b.pdf"} <= set(
+        live_shape_workspace.objects)
+    assert [s["inputs"]["version"] for s in gowe["engine"].submissions] == ["1", "2"]
+    # …and the folder really is stamped — read back out of the service fake.
+    assert live_shape_workspace.objects[folder]["metadata"] == {
+        "ragstack_format": ARCHIVE_FORMAT, "ragstack_collection_id": "lib1",
+        "ragstack_tenant": TENANT, "ragstack_spec_hash": gowe["spec"].spec_hash(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_workspace_failure_on_the_folder_is_mapped_not_a_500(client, gowe):
+    """A store failure preparing the collection folder must reach the caller as
+    a mapped, actionable response — not an unhandled exception (#414)."""
+    async def boom(*a, **kw):
+        raise WorkspaceError("Workspace.update_metadata: everything is on fire")
+
+    gowe["workspace"].ensure_collection_folder = boom
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 502, r.text
+    detail = r.json()["detail"]
+    assert "lib1" in detail and "on fire" in detail and "No files were uploaded" in detail
+    assert gowe["workspace"].uploads == [] and gowe["engine"].submissions == []
+    # The job row does not linger in flight — which also unblocks the retry.
+    assert [j.status for j in app.state.job_store._jobs.values()] == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_auth_failure_on_the_folder_is_401(client, gowe):
+    async def boom(*a, **kw):
+        raise WorkspaceAuthError("Workspace.get: Token validation failed")
+
+    gowe["workspace"].ensure_collection_folder = boom
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 401, r.text
+    assert "token" in r.json()["detail"].lower()
+    assert TOKEN not in r.text
