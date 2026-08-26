@@ -78,7 +78,19 @@ export function ConfigChips({
           </select>
         </span>
       ) : (
-        <span className={CHIP}>{target.label}</span>
+        // Nothing to pick. `known: false` means the listing hasn't answered, so
+        // "default" is a placeholder rather than a fact — mute it and say so on
+        // hover instead of stating it with the same confidence as a real name.
+        <span
+          className={`${CHIP}${target.known ? "" : " opacity-60"}`}
+          title={
+            target.known
+              ? undefined
+              : "The collection list hasn't loaded, so this is whatever the server picks."
+          }
+        >
+          {target.label}
+        </span>
       )}
       <span className={CHIP}>{options.mode === "bm25" ? "es (bm25)" : options.mode}</span>
       <span className={CHIP}>rerank {effectiveRerank(options, serverRerank)}</span>

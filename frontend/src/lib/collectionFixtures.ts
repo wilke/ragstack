@@ -44,13 +44,33 @@ export const LISTING_WITHOUT_DEFAULT: CollectionsResponse = Object.freeze({
 /**
  * The caller every test was written for: can read the registry default, which
  * is flagged in their listing and is also their effective target.
+ *
+ * The flagged entry is deliberately NOT first. Reading `listing.default` and
+ * reading `collections[0]` are different computations, and #420 was the second
+ * one wearing the first one's name — with the pointer at index 0 they coincide
+ * and no test can tell them apart. Listing order is the registry's insertion
+ * order, which has no reason to put the pointer first, so this is also the more
+ * realistic shape. Do not reorder these for tidiness.
  */
 export const LISTING_WITH_DEFAULT: CollectionsResponse = Object.freeze({
   collections: [
-    entry("C_default", "Curated corpus", true),
     entry("C_other", "Preprints", false),
+    entry("C_default", "Curated corpus", true),
   ],
   default: "C_default",
+}) as CollectionsResponse;
+
+/**
+ * A listing whose `default` names something that is NOT in `collections` — a
+ * server bug, but the one shape where "the label" and "the first option" cannot
+ * coincide. It is the sole discriminator for the invariant that broke in #420:
+ * the chip must name what the request carries, even when that is nothing it can
+ * look up. Without it, a component that re-derived `opts[0]` would pass every
+ * other test in this suite.
+ */
+export const LISTING_GHOST_DEFAULT: CollectionsResponse = Object.freeze({
+  collections: LISTING_WITHOUT_DEFAULT.collections,
+  default: "C_ghost",
 }) as CollectionsResponse;
 
 /**

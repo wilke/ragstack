@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { newLane, seedLaneCollections } from "../components/CompareView";
 import {
   LISTING_EMPTY,
+  LISTING_GHOST_DEFAULT,
   LISTING_ONE_COLLECTION,
   LISTING_WITH_DEFAULT,
   LISTING_WITHOUT_DEFAULT,
@@ -44,6 +45,12 @@ describe("collectionTarget", () => {
         const entry = listing.collections.find((c) => c.id === requestCollection(t));
         expect(t.label).toBe(entry?.label);
         expect(t.known).toBe(true);
+        // The target is read from `listing.default`, not guessed from the first
+        // option. For the pointer-reading caller those are different entries —
+        // that is why the fixture puts the flagged one second.
+        if (listing.collections.length > 1) {
+          expect(t.id).not.toBe(listing.collections[0].id);
+        }
       });
     }
   });
@@ -97,10 +104,7 @@ describe("collectionTarget", () => {
   // is a server bug, but the label must still be the id we will actually send —
   // never a guess at some other entry.
   it("labels an unmatched default with the id itself, never another entry", () => {
-    const t = collectionTarget(
-      { collections: LISTING_WITHOUT_DEFAULT.collections, default: "C_ghost" },
-      null,
-    );
+    const t = collectionTarget(LISTING_GHOST_DEFAULT, null);
     expect(requestCollection(t)).toBe("C_ghost");
     expect(t.label).toBe("C_ghost");
     expect(t.label).not.toBe("My papers");
@@ -136,9 +140,10 @@ describe("Compare lanes seeded from a listing", () => {
 
   it("seeds one lane per collection, by real id, for a caller who reads the pointer", () => {
     const seeded = seedLaneCollections(LISTING_WITH_DEFAULT.collections);
-    expect(seeded).toEqual(["C_default", "C_other"]);
-    // The registry-default lane carries its real id, not the "" sentinel.
-    expect(seeded[0]).not.toBe("");
+    expect(seeded).toEqual(["C_other", "C_default"]);
+    // The registry-default lane carries its real id, not the "" sentinel — on
+    // main it was the one entry that got mapped to "".
+    expect(seeded).not.toContain("");
     for (const [i, id] of seeded.entries()) {
       const t = collectionTarget(LISTING_WITH_DEFAULT, id);
       expect(requestCollection(t)).toBe(id);
