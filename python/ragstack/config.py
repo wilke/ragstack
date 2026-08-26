@@ -807,8 +807,52 @@ class Settings(BaseSettings):
     crossencoder_sidecar_url: str = "http://localhost:50052"
 
     # Observability
+    # Honoured since #427 — before that this was echoed by GET /v1/config and
+    # written by tenant provisioning while configuring nothing at all. Parsed
+    # case-insensitively and NEVER fatally: the deployed dev/demo tenants carry
+    # `LOG_LEVEL=info`, which `logging.setLevel` rejects outright, and
+    # .env.example has long documented a `warn` that is not a stdlib level name.
+    # An unrecognised value falls back to INFO with a warning
+    # (observability/logging_config.py:resolve_log_level).
     log_level: str = "INFO"
+    # `logfmt` (default) | `json`. logfmt because the only consumer today is a
+    # human on the host with grep — no log shipper or aggregator is deployed.
+    # The json branch is built and tested, so switching is a config change.
+    # NOT echoed by GET /v1/config: config_response.json is
+    # `additionalProperties: false`, so adding a field there is a contract
+    # change, and this setting does not warrant one.
+    log_format: str = "logfmt"
+    # Disable uvicorn's access log because our own per-request summary line is a
+    # strict superset of it. Default FALSE until that line exists (#427 W3) —
+    # turning it on now would just lose the access log and replace it with
+    # nothing.
+    access_log_replaced: bool = False
+    # Loggers pinned to WARNING while the root level is INFO or higher, and left
+    # alone at DEBUG. A setting rather than a hardcoded list so an operator can
+    # change it without a code change.
+    #
+    # Why these four: every one is NOTSET, so before #427 they inherited a root
+    # that sat at WARNING with no handler — silent by accident. Raising root to
+    # INFO un-mutes them all at once, and they are HTTP transports on a path
+    # this API takes several times per request. A single /v1/query makes 5
+    # outbound calls minimum (embed, Qdrant, ES, rerank, LLM), 6 with query
+    # rewriting and up to ~14 on the multi-collection path — one httpx INFO
+    # line each. The one summary line #427 exists to produce would arrive at a
+    # signal-to-noise of 1:5, worst case 1:14.
+    #
+    # neo4j and qdrant_client are deliberately NOT here: they sit closer to our
+    # own data path and are far less chatty. The noise problem is the transports.
+    # See observability/logging_config.py for what damping costs and the one
+    # thing W3 must carry forward.
+    log_dampen_loggers: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["httpx", "httpcore", "elastic_transport", "urllib3"]
+    )
     otel_exporter_otlp_endpoint: str = ""
+
+    @field_validator("log_dampen_loggers", mode="before")
+    @classmethod
+    def _split_log_dampen_loggers(cls, value: object) -> object:
+        return _split_list_env(value)
 
     # --- Collection lifecycle / restore (#358, phase 2 of #353) ------------ #
     # Kept together at the end of the class to stay clear of the ingest

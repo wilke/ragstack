@@ -157,7 +157,12 @@ def test_dry_run_plan_env_file_keys(tmp_path):
         "REQUIRE_DURABLE_BACKENDS=true",
         f"INGEST_ROOT={tmp_path}/tenants/acme/ingest",
         "MAX_DOCUMENT_BYTES=",
-        "LOG_LEVEL=info",
+        # Canonical upper case since #427. The script wrote `info` for a long
+        # time and the deployed dev/demo tenants still carry it — which is why
+        # observability/logging_config.py upper-cases before setLevel, since a
+        # lowercase name is a ValueError there. New tenants get the canonical
+        # form; the code tolerates either.
+        "LOG_LEVEL=INFO",
     ]:
         assert token in plan, f"missing env token: {token}"
 

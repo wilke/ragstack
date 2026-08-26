@@ -73,6 +73,7 @@ from ragstack.identity import (
     IdentityUnavailable,
     get_identity_provider,
 )
+from ragstack.observability.context import current_context
 from ragstack.tenancy import DEFAULT_TENANT
 
 logger = logging.getLogger(__name__)
@@ -885,6 +886,18 @@ async def resolve_principal(
         return cached
     principal = await _authenticate(api_key, authorization)
     request.state.principal = principal
+    # Tell the request context who this is (#427) so every log line the rest of
+    # the request produces carries tenant/role. MUTATED IN PLACE, never re-set:
+    # a ContextVar.set() here would be invisible to the middleware that renders
+    # the summary line — see observability/context.py.
+    #
+    # tenant and role ONLY. Never principal.token, never the api_key: Principal
+    # redacts the token in __repr__, but that guard covers repr() alone and does
+    # nothing for a direct attribute read.
+    ctx = current_context()
+    if ctx is not None:
+        ctx.tenant = principal.tenant
+        ctx.role = principal.role
     return principal
 
 
