@@ -1137,7 +1137,10 @@ paths:
         (own + `public`, widened by a read share on that collection; null when
         unavailable). **Owner-filtered**: a caller sees only the collections it
         owns, has been granted, or that are `public` (admins see all). The
-        reported `default` is always one of the listed ids.
+        reported `default` is always one of the listed ids — or the empty string
+        when `collections` is empty, i.e. the caller can read no collection at
+        all — and is the id an omitted `collection` resolves to for this caller
+        on /query, /retrieve and /chunks.
       tags: [Query]
       security:
         - ApiKeyAuth: []
@@ -2134,7 +2137,14 @@ paths:
         - name: collection
           in: query
           required: false
-          description: Registry collection to read from; the default when omitted.
+          description: >-
+            Registry collection to read from. Omitted targets **this caller's**
+            default — the same id `GET /v1/collections` reports as `default`
+            (registry default when readable, else the caller's first readable
+            collection). A caller with no readable collection gets 404 `no
+            collection is accessible to this caller`. An **explicitly named** id
+            that is unknown *or* unreadable is a 404 that does not distinguish
+            the two.
           schema: { type: string }
       responses:
         "200":
@@ -2618,8 +2628,13 @@ components:
           default: null
         collection:
           description: >-
-            Registry collection id to query. null (default) uses the default
-            collection; an unknown id returns 404. See GET /v1/collections.
+            Registry collection id to query. null (default) targets **this
+            caller's** default — the same id `GET /v1/collections` reports as
+            `default` (registry default when readable, else the caller's first
+            readable collection). A caller with no readable collection gets 404
+            `no collection is accessible to this caller`. An **explicitly
+            named** id that is unknown *or* unreadable is a 404 that does not
+            distinguish the two. See GET /v1/collections.
           type: [string, "null"]
           default: null
         collections:
@@ -2726,8 +2741,13 @@ components:
           default: null
         collection:
           description: >-
-            Registry collection id to retrieve from. null (default) uses the
-            default collection; an unknown id returns 404. See GET /v1/collections.
+            Registry collection id to retrieve from. null (default) targets
+            **this caller's** default — the same id `GET /v1/collections`
+            reports as `default` (registry default when readable, else the
+            caller's first readable collection). A caller with no readable
+            collection gets 404 `no collection is accessible to this caller`. An
+            **explicitly named** id that is unknown *or* unreadable is a 404
+            that does not distinguish the two. See GET /v1/collections.
           type: [string, "null"]
           default: null
         collections:
@@ -2798,18 +2818,27 @@ components:
         dim: { type: integer }
         chunk_method: { type: [string, "null"] }
         chunk_size: { type: [integer, "null"] }
-        default: { type: boolean }
+        default:
+          description: >-
+            Deprecated alias of `is_default` (the global registry-pointer flag).
+            New clients read `is_default`; this is NOT the caller's effective
+            target — see `CollectionsResponse.default`.
+          type: boolean
+          deprecated: true
         is_default:
           description: >-
-            True on exactly one listed entry: the collection a request resolves
-            to when it omits `collection` (the `default` pointer,
-            DEFAULT_COLLECTION_ID). `default` is a pointer, never a registry
-            entry of its own (ADR-0002 decision 5); this flag says which real
-            entry it names. This is the canonical long-term field — the older
-            `default` (same value) collides in name with
-            `CollectionsResponse.default`, which is the id string; clients
+            True on at most one listed entry: the collection the registry
+            pointer (`default`, DEFAULT_COLLECTION_ID) names. `default` is a
+            pointer, never a registry entry of its own (ADR-0002 decision 5);
+            this flag says which real entry it names. This is the canonical
+            long-term field — the older `default` (same value) collides in name
+            with `CollectionsResponse.default`, which is the id string; clients
             should read `is_default`. Optional so older servers stay
-            conformant.
+            conformant. Zero listed entries carry it when the caller cannot read
+            the collection the pointer names — in that case
+            `CollectionsResponse.default` names a different, readable
+            collection, or is the empty string when the caller can read none at
+            all.
           type: boolean
         state:
           description: >-
@@ -3569,7 +3598,18 @@ components:
           items:
             $ref: "#/components/schemas/CollectionInfo"
         default:
-          description: The id served when a request omits `collection`.
+          description: >-
+            The id a request from **this caller** targets when it omits
+            `collection`: the registry default when this caller can see it
+            (allowlist AND read), else the first collection in `collections`.
+            Always one of the listed ids — **or the empty string when
+            `collections` is empty**, i.e. the caller can read no collection at
+            all and `/v1/query`, `/v1/retrieve` and `/v1/chunks` answer 404 `no
+            collection is accessible to this caller`. Clients that want a
+            deterministic target should send this id explicitly on `/v1/query`,
+            `/v1/retrieve` and `/v1/chunks`.
+            It is **not** the same thing as the per-item `is_default` flag, which
+            is the global registry pointer.
           type: string
 
     ChunkOut:

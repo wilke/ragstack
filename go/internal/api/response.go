@@ -77,6 +77,13 @@ type TripleResponse struct {
 }
 
 // CollectionInfo describes one registry collection the query API can serve.
+//
+// IsDefault is the canonical spelling of Default and both carry the SAME answer:
+// this entry is the one the global registry pointer (DEFAULT_COLLECTION_ID)
+// names. It is deliberately not `omitempty` — a false must be emitted, not
+// dropped, or an entry would go out as `"default": true` with `"is_default"`
+// missing (or false) and the two spellings would contradict each other. Neither
+// flag is the caller's effective target; that is CollectionsResponse.Default.
 type CollectionInfo struct {
 	ID          string      `json:"id"`
 	Label       string      `json:"label"`
@@ -85,6 +92,7 @@ type CollectionInfo struct {
 	ChunkMethod *string     `json:"chunk_method,omitempty"`
 	ChunkSize   *int        `json:"chunk_size,omitempty"`
 	Default     bool        `json:"default"`
+	IsDefault   bool        `json:"is_default"`
 	Count       *int        `json:"count,omitempty"`
 	Provenance  interface{} `json:"provenance,omitempty"`
 }
