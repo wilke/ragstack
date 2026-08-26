@@ -214,6 +214,30 @@ def test_a_newline_in_a_message_cannot_forge_a_second_line(capsys, fmt):
     assert err.count("\n") == 1, f"message forged an extra line: {err!r}"
 
 
+def test_importing_the_app_installs_the_root_handler():
+    """The production wiring, pinned separately from the function itself.
+
+    Every other test here calls ``configure_logging()`` directly, so all of them
+    would still pass if the call were dropped from ``api/main.py`` — and the
+    original bug was precisely that nobody called it. This is what says the API
+    process actually gets a handler.
+
+    Deliberately asserts on the ROOT logger: the whole point is that the ~219
+    ``ragstack.*`` call sites emit through it without configuring anything
+    themselves.
+    """
+    import ragstack.api.main  # noqa: F401  (imported for its side effect)
+
+    root = logging.getLogger()
+    ours = [h for h in root.handlers if getattr(h, "name", None) == "ragstack.observability"]
+    assert ours, "importing ragstack.api.main did not install a root log handler"
+    assert isinstance(ours[0].formatter, (LogfmtFormatter, JsonFormatter))
+    assert any(isinstance(f, RequestContextFilter) for f in ours[0].filters)
+    assert root.level <= logging.INFO, (
+        f"root logger at {logging.getLevelName(root.level)} — INFO lines are discarded again"
+    )
+
+
 def test_access_log_is_left_alone_by_default():
     """``access_log_replaced`` defaults FALSE in W1 — the summary line that would
     supersede uvicorn's access log does not exist until W3, and turning it off

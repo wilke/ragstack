@@ -134,3 +134,26 @@ async def test_tenant_and_role_reach_the_log_record(client, caplog):
 
     tenants = {getattr(rec, "tenant", "-") for rec in caplog.records}
     assert tenants - {"-"}, "no log record carried a tenant"
+
+
+async def test_request_id_is_readable_by_a_cross_origin_browser_client(client):
+    """A browser can only read a response header the server explicitly exposes.
+    Without ``expose_headers`` the frontend cannot see the id at all, which
+    makes the "user reads it off the screen" half of #427 impossible.
+
+    ``Retry-After`` is asserted alongside it because it has been documented on
+    the 429/503 responses all along and has been unreadable cross-origin the
+    entire time — a latent bug this fixes in passing, and one that would
+    otherwise silently return the moment someone edits this list.
+    """
+    r = await client.get("/health", headers={"Origin": "https://example.test"})
+    exposed = {
+        h.strip().lower()
+        for h in r.headers.get("access-control-expose-headers", "").split(",")
+        if h.strip()
+    }
+    assert "x-request-id" in exposed, (
+        "X-Request-Id is not in Access-Control-Expose-Headers — a cross-origin "
+        "browser client cannot read it"
+    )
+    assert "retry-after" in exposed
