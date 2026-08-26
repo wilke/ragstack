@@ -7,8 +7,13 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
+# httpx is a hard dependency of qdrant-client (which this module imports
+# unconditionally), so this adds no new install requirement. Needed at module
+# scope because _failure_kind classifies the transport exception types.
+import httpx
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http.exceptions import ApiException
 from qdrant_client.models import (
@@ -25,7 +30,13 @@ from qdrant_client.models import (
 )
 
 from ragstack.models import Chunk, ScoredChunk
-from ragstack.stores.errors import StoreUnavailable, VectorDimMismatch
+from ragstack.stores.errors import (
+    KIND_ERROR,
+    KIND_TIMEOUT,
+    KIND_UNREACHABLE,
+    StoreUnavailable,
+    VectorDimMismatch,
+)
 from ragstack.stores.filters import PAYLOAD_RESERVED as _PAYLOAD_RESERVED
 from ragstack.stores.filters import payload_matches, validate_filters
 from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
@@ -48,6 +59,36 @@ __all__ = [
     "collection_name",
     "CollectionHealth",
 ]
+
+
+def _failure_kind(e: Exception) -> str:
+    """Classify a qdrant-client failure into a :data:`STORE_FAILURE_KINDS` value.
+
+    Lives here rather than in ``stores/errors.py`` on purpose: ``errors.py`` is
+    documented dependency-free so a caller can catch ``StoreUnavailable``
+    without importing an optional backend, and this mapping needs ``httpx``.
+
+    .. rubric:: The ordering is load-bearing
+
+    ``httpx.ConnectTimeout`` **is a subclass of** ``httpx.TimeoutException``, so
+    the connect branch must be checked FIRST. Get it the other way round and a
+    connect timeout is reported as ``timeout``, which tells the user "retry, the
+    second read is warm" about a store they never reached. See
+    ``stores/errors.py`` for why that distinction is worth a comment this long.
+    """
+    # `source` is what ResponseHandlingException carries the transport error on;
+    # __cause__ covers a plain `raise ... from`. Deliberately duplicated from
+    # `_describe_failure` rather than factored out — that method's sentence is
+    # the one artefact that made the #427 incident diagnosable and it is left
+    # byte-for-byte alone.
+    cause = getattr(e, "source", None) or getattr(e, "__cause__", None)
+    inner = cause if cause is not None else e
+    if isinstance(inner, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return KIND_UNREACHABLE
+    if isinstance(inner, httpx.TimeoutException):
+        # ReadTimeout / WriteTimeout / PoolTimeout — connected, then too slow.
+        return KIND_TIMEOUT
+    return KIND_ERROR
 
 
 @dataclass(frozen=True)
@@ -297,6 +338,12 @@ class QdrantVectorStore:
     ) -> list[ScoredChunk]:
         q_filter = _build_filter(filters)
         # qdrant-client >= 1.10 deprecated `search()` in favour of `query_points()`.
+        #
+        # Timed, and the elapsed time is NOT inferable from the timeout setting:
+        # a ReadTimeout burns the whole bound while a ConnectError fails in
+        # milliseconds against the same one. #427's incident could not answer
+        # "how much of the 30s did this consume?" — this is that answer.
+        started = perf_counter()
         try:
             response = await self._client.query_points(
                 collection_name=self._collection,
@@ -311,7 +358,12 @@ class QdrantVectorStore:
             # "the store didn't answer", not a bug in this request — surface them
             # as StoreUnavailable so the API answers 503 with the reason instead
             # of a bare 500 and a 40-frame httpx traceback.
-            raise StoreUnavailable("qdrant", self._describe_failure(e)) from e
+            raise StoreUnavailable(
+                "qdrant",
+                self._describe_failure(e),
+                kind=_failure_kind(e),
+                elapsed_s=perf_counter() - started,
+            ) from e
         return [
             ScoredChunk(
                 chunk=_chunk_from_payload(r.payload, r.id),

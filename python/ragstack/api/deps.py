@@ -886,6 +886,7 @@ def _build_text_index_for(index: str):
             settings.elasticsearch_url,
             index,
             settings.elasticsearch_api_key or None,
+            timeout=settings.elasticsearch_timeout,
         )
 
     if settings.require_durable_backends:

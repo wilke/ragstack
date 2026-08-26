@@ -34,7 +34,11 @@ from ragstack.api.security import (
 )
 from ragstack.api.upload_guard import UploadContentLengthMiddleware
 from ragstack.config import settings
-from ragstack.observability import RequestContextMiddleware, configure_logging
+from ragstack.observability import (
+    RequestContextMiddleware,
+    configure_logging,
+    current_context,
+)
 from ragstack.observability.middleware import stamp_request_id
 from ragstack.stores.errors import StoreUnavailable
 
@@ -62,13 +66,43 @@ app = FastAPI(
 async def _store_unavailable(_: Request, exc: StoreUnavailable) -> JSONResponse:
     """A backing store didn't answer (timeout, unreachable, 5xx). That is the
     deployment's problem, not the caller's request — 503 with the reason and a
-    Retry-After, never a bare 500 (which reads as a bug and hides the cause)."""
-    log.warning("%s unavailable: %s", exc.store, exc)
-    return JSONResponse(
-        status_code=503,
-        content={"detail": f"{exc.store} unavailable: {exc}"},
-        headers={"Retry-After": "5"},
-    )
+    Retry-After, never a bare 500 (which reads as a bug and hides the cause).
+
+    The sentence is unchanged: it names the collection, the URL, the error type,
+    the applied timeout *and* the setting that governs it, and it is what made
+    the #427 incident diagnosable in one ``grep``. What W2a adds is the same
+    failure in machine-readable form *alongside* it.
+
+    ``rid``, ``tenant`` and ``role`` are deliberately NOT passed as ``extra``:
+    ``RequestContextFilter`` writes them onto every record from the contextvar,
+    and passing them here would be redundant *and* ignored (the filter
+    overwrites unconditionally).
+    """
+    ctx = current_context()
+    fields: dict[str, object] = {"store": exc.store, "reason": exc.kind}
+    if exc.elapsed_s is not None:
+        # Not inferable from the timeout: a ReadTimeout burns the whole bound,
+        # a ConnectError fails in milliseconds against the same one.
+        fields["elapsed_ms"] = round(exc.elapsed_s * 1000)
+    # Populated by the query path in W3; empty until then, and omitted rather
+    # than logged as a permanent placeholder.
+    if ctx is not None and ctx.collection:
+        fields["coll"] = ctx.collection
+    log.warning("%s unavailable: %s", exc.store, exc, extra=fields)
+
+    body: dict[str, object] = {
+        "detail": f"{exc.store} unavailable: {exc}",
+        # The discriminator the UI needs to tell "retry, it'll be warm" from
+        # "the backend is down" (#427 item D / W6). An enum, not prose — W6's
+        # ErrorBanner renders its own copy and must keep never echoing `detail`.
+        "reason": exc.kind,
+    }
+    if ctx is not None:
+        # Redundant with the X-Request-Id header W1 already stamps, on purpose:
+        # a user who pastes the raw JSON body into a ticket carries the id with
+        # it, and a response header does not survive a copy-paste.
+        body["request_id"] = ctx.request_id
+    return JSONResponse(status_code=503, content=body, headers={"Retry-After": "5"})
 
 
 @app.exception_handler(Exception)
