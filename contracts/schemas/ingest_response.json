@@ -29,6 +29,10 @@
         "pending": { "type": "integer" }
       },
       "additionalProperties": false
+    },
+    "collection": {
+      "type": ["string", "null"],
+      "description": "The collection this job actually targets. Only meaningful when the request omitted `collection` \u2014 that is the case where the SERVER chose. The id is always one from the caller's own GET /v1/collections listing, so echoing it discloses nothing."
     }
   },
   "additionalProperties": false
