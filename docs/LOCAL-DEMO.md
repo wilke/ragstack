@@ -35,14 +35,21 @@ make frontend-install          # npm install in frontend/
 > ## Read this first if you are on the shared deployment host
 >
 > This walkthrough was written for a laptop, where `localhost:6333`, `localhost:9200` and
-> `:8000` are yours. **On the deployment host they are the production Qdrant, the production
-> Elasticsearch, and the legacy production API.** Several steps below write. Before running
+> `:8000` are yours. **On the deployment host `:6333` and `:9200` are the production Qdrant and
+> Elasticsearch, and `:8000` is a reserved production API port.** Several steps below write. Before running
 > any of them, point them somewhere else:
 >
 > ```bash
 > export SCRATCH_QDRANT=http://127.0.0.1:16333   # a scratch instance you started
 > export SCRATCH_ES=http://127.0.0.1:19200
 > export SCRATCH_PORT=18000                       # not 8000
+> ```
+>
+> **On a laptop these guards still apply** — they are unconditional on purpose. Set them to
+> whatever your own stack uses, which for a plain `docker compose` run is:
+>
+> ```bash
+> export SCRATCH_QDRANT=http://localhost:6333 SCRATCH_ES=http://localhost:9200 SCRATCH_PORT=8000
 > ```
 >
 > The ingest step also passes `--tenant public`, and the physical store name is derived from
@@ -52,12 +59,14 @@ make frontend-install          # npm install in frontend/
 ## 1. Infra (Qdrant + Elasticsearch)
 
 ```bash
-# On the deployment host, override the published port — the compose file maps
-# "6333:6333", so this either fails to bind (production Qdrant is up) or TAKES
-# production's port (it is down). Neither is what you want.
-QDRANT_PUBLISHED_PORT=16333 \
+# The compose files publish the store ports, and on the deployment host those are
+# PRODUCTION's ports — so an un-overridden `up` either fails to bind (production is
+# running) or TAKES production's port (it is not). Override all three; the compose
+# files default to the conventional values when these are unset.
+QDRANT_PUBLISHED_PORT=16333 EMBEDDING_PUBLISHED_PORT=15053 \
 docker compose -f deploy/docker-compose.local.yml up -d qdrant   # vectors
-docker compose -f deploy/docker-compose.infra.yml up -d elasticsearch
+ES_PUBLISHED_PORT=19200 \
+  docker compose -f deploy/docker-compose.infra.yml up -d elasticsearch
 ```
 (`docker-compose.local.yml` also defines a BGE sidecar + a containerized API — see step 3A.)
 
@@ -105,7 +114,11 @@ ssh -N -L 9001:localhost:9001 -L 9002:localhost:9002 \
        -L 9003:localhost:9003 -L 9004:localhost:9004 USER@your-gpu-host
 # verify: curl http://localhost:9001/v1/models
 
+# Same hazard as 3A: --qdrant-url defaults to :6333 = PRODUCTION here (#454), and
+# this path builds the SFR-Mistral-4096 collection whose name can collide with a
+# production corpus on the same spec — see the warning at the top.
 cd python && .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
+  --qdrant-url "${SCRATCH_QDRANT:?set it — see the warning at the top}" \
   --tenant public --embedding-api openai \
   --embedding-url http://localhost:9001 http://localhost:9002 http://localhost:9003 http://localhost:9004 \
   --embedding-model Salesforce/SFR-Embedding-Mistral --chunk-method fixed --chunk-size 2000 \
@@ -144,7 +157,12 @@ REQUIRE_DURABLE_BACKENDS=false DEFAULT_ROLE=admin \
 .venv/bin/uvicorn ragstack.api.main:app --host 127.0.0.1 --port "${SCRATCH_PORT:?}" &
 echo $! > ../.localdata/api.pid
 cd ..
-make frontend-dev     # Vite on :5173, proxies /v1 + /health → :8000
+VITE_API_TARGET="http://127.0.0.1:${SCRATCH_PORT:?}" npm --prefix ../frontend run dev &
+echo $! > ../.localdata/vite.pid
+# Vite proxies /v1 + /health to VITE_API_TARGET (default :8000 — which is why it is set here).
+# Launched directly rather than through `make frontend-dev`, so the recorded pid IS vite:
+# killing make's pid would leave the node child orphaned. If :5173 is taken, vite picks
+# the next free port and prints it — read the output rather than assuming :5173.
 ```
 
 `DEFAULT_ROLE=admin` lets the keyless UI reach the admin-gated `/v1/health/deep`.
@@ -170,7 +188,10 @@ make frontend-dev     # Vite on :5173, proxies /v1 + /health → :8000
 for f in .localdata/api.pid .localdata/vite.pid; do
   [ -f "$f" ] || continue
   pid=$(cat "$f")
-  # confirm it is yours before signalling
+  # Refuse to signal anything that is not what we started: a pid file can be stale,
+  # and the pid may since have been reused by something else entirely.
+  grep -qa 'uvicorn ragstack.api.main\|vite' /proc/$pid/cmdline 2>/dev/null || {
+    echo "  skipping $f (pid $pid is not ours)"; continue; }
   tr '\0' ' ' < /proc/$pid/cmdline; readlink -f /proc/$pid/cwd
   kill "$pid" && rm -f "$f"
 done
