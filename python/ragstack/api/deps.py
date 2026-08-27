@@ -163,6 +163,7 @@ def _build_vector_store():
             timeout=settings.qdrant_timeout,
             upsert_batch_size=settings.qdrant_upsert_batch_size,
             upsert_concurrency=settings.qdrant_upsert_concurrency,
+            postmortem_probe=settings.qdrant_postmortem_probe,
         )
 
     if settings.require_durable_backends:
@@ -322,6 +323,7 @@ async def build_collection_entry(
         vector_size=spec.embedding_model_dim,
         api_key=settings.qdrant_api_key or None,
         timeout=settings.qdrant_timeout,
+        postmortem_probe=settings.qdrant_postmortem_probe,
     )
     ti = _build_text_index_for(spec.es_index())
     # Best-effort readiness — a collection that isn't reachable yet shouldn't abort

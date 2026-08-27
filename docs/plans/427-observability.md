@@ -1,8 +1,8 @@
 # Observability (#427)
 
-**Status:** `IN PROGRESS` — 8 of 9 items done. W1/W2a/W2b and the log-level endpoint are
-deployed (`v1.4.2`); W3, W4, W6 and W7 are merged and carried by `v1.5.0`. W9 is the only
-item still open.
+**Status:** `COMPLETE` — 9 of 9 items done (W5 deliberately deferred). W1/W2a/W2b and the
+log-level endpoint are deployed (`v1.4.2`); W3, W4, W6 and W7 are merged and carried by
+`v1.5.0`; W8 and W9 are merged and not yet carried by a tag.
 
 ## Why this exists
 
@@ -50,11 +50,12 @@ reported:
 | **W4** | Latency rollup line | `DONE` | PR #437. p50/p95 per collection from a log line, no contract change — closes the "is the bound creeping" question. Percentiles are bucket **upper bounds** (`p95_ms_le`), and the buckets straddle both 30s and 60s on purpose. |
 | **W5** | `GET /v1/admin/stats/latency` | `DEFERRED` | W4's rollup meets the acceptance bullet without a contract change. Cheaper now that the log-level endpoint is a template, but not more necessary. |
 | **W8** | Runbook + ADR amendment | `DONE` | PR #438. `docs/runbooks/tracing-a-503.md` — the decision procedure from a user's screenshot to the slow leg, with a worked example from a live acceptance run. ADR-0006 amendment **4b** records that the Go trigger's instrument now exists, and the invariant that makes its residual valid. Plus the "pick one home" answer on #89/#90/#114. |
-| **W9** | Qdrant post-mortem probe | `OPEN` | Opt-in, default off. Probes optimizer/indexing churn — a **different** candidate cause from the cold-cache one everyone assumes. Now near-trivial: `collection_health()` already exists. |
+| **W9** | Qdrant post-mortem probe | `DONE` | PR #439. Opt-in (`QDRANT_POSTMORTEM_PROBE`), default off. On a search **timeout only**, logs `status`/`optimizer_ok`/`segments`/`points`/`indexed_vectors` under the failing request's own `rid` — optimizer/indexing churn is a **different** candidate cause from the cold-cache one everyone assumes, and the only one of the three this repo can see. It does **not** see page-cache state. Raw counters only: their difference is meaningless in both regimes. Bounded at 2s and rate-limited to one per collection per 60s, because it asks a store that has just failed to answer one more question. |
 
 **The acceptance criterion is met** — W3 and W4 landed, so the next occurrence of the
 incident is explainable after the fact, and `docs/runbooks/tracing-a-503.md` is the
-procedure for explaining it. W9 remains optional and is not required for it.
+procedure for explaining it. W9 was optional and is not required for it; it ships as an
+opt-in extra that answers one further candidate cause, and the runbook says how to read it.
 
 ## Decisions taken
 

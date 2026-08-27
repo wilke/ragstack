@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # (ReadTimeout → ResponseHandlingException). 30 s lets a slow search finish;
     # what still times out is reported as 503 StoreUnavailable, not 500.
     qdrant_timeout: int = 30
+    # Opt-in post-mortem probe (#427 W9). When a Qdrant SEARCH times out, fire ONE
+    # bounded (2 s) read of that collection's optimizer state and log the raw
+    # counters, so the log can say whether the store was mid-optimize when it
+    # failed to answer — the one candidate cause `elapsed_s`/`reason` cannot see.
+    # Default OFF on purpose: it sends another request to a store that has just
+    # failed to answer one. Rate-limited to once per collection per 60 s. See
+    # QdrantVectorStore._postmortem_probe for what it does and does not buy.
+    qdrant_postmortem_probe: bool = False
     # Upsert batching: chunk each upsert so one request never carries an oversized
     # payload (a single large-shard upsert makes the client raise
     # ResponseHandlingException). qdrant_upsert_concurrency > 1 pipelines the
