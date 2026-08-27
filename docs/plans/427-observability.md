@@ -2,7 +2,7 @@
 
 **Status:** `COMPLETE` — 9 of 9 items done (W5 deliberately deferred). W1/W2a/W2b and the
 log-level endpoint are deployed (`v1.4.2`); W3, W4, W6 and W7 are merged and carried by
-`v1.5.0`; W8 and W9 are merged and not yet carried by a tag.
+`v1.5.0`; W8 and W9 are carried by `v1.5.1`, deployed to `dev` on 2026-08-27.
 
 ## Why this exists
 
