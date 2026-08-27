@@ -32,9 +32,30 @@ cd python && python3 -m venv .venv && .venv/bin/pip install -e ".[vector,text]" 
 make frontend-install          # npm install in frontend/
 ```
 
+> ## Read this first if you are on the shared deployment host
+>
+> This walkthrough was written for a laptop, where `localhost:6333`, `localhost:9200` and
+> `:8000` are yours. **On the deployment host they are the production Qdrant, the production
+> Elasticsearch, and the legacy production API.** Several steps below write. Before running
+> any of them, point them somewhere else:
+>
+> ```bash
+> export SCRATCH_QDRANT=http://127.0.0.1:16333   # a scratch instance you started
+> export SCRATCH_ES=http://127.0.0.1:19200
+> export SCRATCH_PORT=18000                       # not 8000
+> ```
+>
+> The ingest step also passes `--tenant public`, and the physical store name is derived from
+> (model, dim, chunk) — so on a name collision with a production corpus built to the same
+> spec, this data becomes readable to **every caller of every tenant**.
+
 ## 1. Infra (Qdrant + Elasticsearch)
 
 ```bash
+# On the deployment host, override the published port — the compose file maps
+# "6333:6333", so this either fails to bind (production Qdrant is up) or TAKES
+# production's port (it is down). Neither is what you want.
+QDRANT_PUBLISHED_PORT=16333 \
 docker compose -f deploy/docker-compose.local.yml up -d qdrant   # vectors
 docker compose -f deploy/docker-compose.infra.yml up -d elasticsearch
 ```
@@ -65,7 +86,10 @@ cd ..
 
 ```bash
 docker compose -f deploy/docker-compose.local.yml up -d --build embedding-sidecar
+# --qdrant-url is NOT optional here: it defaults to :6333, which is PRODUCTION on the
+# deployment host, and this writes (#454).
 cd python && .venv/bin/python scripts/ingest_jsonl.py ../.localdata/scifact_ingest.jsonl \
+  --qdrant-url "${SCRATCH_QDRANT:?set it — see the warning at the top}" \
   --tenant public --embedding-api sidecar --embedding-url http://localhost:50053 \
   --embedding-model BAAI/bge-base-en-v1.5 --chunk-method fixed --chunk-size 2000 \
   --chunk-token-counter estimate --concurrency 2 && cd ..
@@ -99,7 +123,9 @@ The ingest above wrote vectors to Qdrant. BM25 only needs the text, so backfill 
 Qdrant (no second embedding pass). Use the collection name the ingester printed:
 
 ```bash
+# Both URLs default to production (:6333 / :9200) and this writes an index (#454).
 cd python && .venv/bin/python scripts/backfill_es_from_qdrant.py \
+  --qdrant-url "${SCRATCH_QDRANT:?}" --es-url "${SCRATCH_ES:?}" \
   --collection ragstack_salesforce_sfr_embedding_mistral_4096_<hash> && cd ..
 ```
 
@@ -109,13 +135,14 @@ cd python && .venv/bin/python scripts/backfill_es_from_qdrant.py \
 # API — inline env so it ignores the root .env (Go/compose keys the Python Settings rejects)
 cd python && \
 QDRANT_COLLECTION_EXPLICIT=<the collection from step 3> \
-VECTOR_BACKEND=qdrant QDRANT_URL=http://localhost:6333 \
-TEXT_BACKEND=elasticsearch ELASTICSEARCH_URL=http://localhost:9200 \
+VECTOR_BACKEND=qdrant QDRANT_URL="${SCRATCH_QDRANT:?}" \
+TEXT_BACKEND=elasticsearch ELASTICSEARCH_URL="${SCRATCH_ES:?}" \
 GRAPH_BACKEND=memory JOB_STORE_BACKEND=memory \
 EMBEDDING_API=$EMBAPI EMBEDDING_ENDPOINTS=$EMBURL \
 EMBEDDING_MODEL=$MODEL EMBEDDING_MODEL_DIM=$DIM \
 REQUIRE_DURABLE_BACKENDS=false DEFAULT_ROLE=admin \
-.venv/bin/uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8000 &
+.venv/bin/uvicorn ragstack.api.main:app --host 127.0.0.1 --port "${SCRATCH_PORT:?}" &
+echo $! > ../.localdata/api.pid
 cd ..
 make frontend-dev     # Vite on :5173, proxies /v1 + /health → :8000
 ```
@@ -125,13 +152,29 @@ make frontend-dev     # Vite on :5173, proxies /v1 + /health → :8000
 ## 6. Use it
 
 - **UI:** http://localhost:5173 — **Explore** tab (ask the corpus) and **Ops** tab (store counts + deep health).
-- **API docs:** http://localhost:8000/docs
+- **API docs:** `http://127.0.0.1:$SCRATCH_PORT/docs` — **not** `:8000`, which is a production port here.
 - Try: `folic acid and vitamin B12 in chronic kidney disease`, `antibiotic resistance in bacteria`.
 
 ## 7. Stop / clean up
 
+> **Never stop these by process-name pattern.** `pkill -f "uvicorn ragstack.api.main"`
+> once took every RAGStack API on the shared host down for seventeen hours (#402):
+> production runs the *same command line* as every scratch server, and `pkill -f vite`
+> likewise kills every UI dev server on the host. Stop the pids you started.
+
 ```bash
-pkill -f "uvicorn ragstack.api.main"; pkill -f vite
+# Start the API and the frontend with their pids recorded:
+#   … uvicorn … & echo $! > .localdata/api.pid
+#   make frontend-dev & echo $! > .localdata/vite.pid
+# then stop exactly those:
+for f in .localdata/api.pid .localdata/vite.pid; do
+  [ -f "$f" ] || continue
+  pid=$(cat "$f")
+  # confirm it is yours before signalling
+  tr '\0' ' ' < /proc/$pid/cmdline; readlink -f /proc/$pid/cwd
+  kill "$pid" && rm -f "$f"
+done
+
 docker compose -f deploy/docker-compose.local.yml down
 docker compose -f deploy/docker-compose.infra.yml down elasticsearch
 # scratch data lives in .localdata/ (gitignored)
