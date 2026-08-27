@@ -36,8 +36,12 @@ PYTHON="${PYTHON:-python}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # the conformance/ dir
 # Boot from python/ so `ragstack` resolves to THIS checkout. Without it, an
 # editable install elsewhere on the host wins and the script silently tests a
-# different tree than the one it lives in.
-PY_DIR="$(cd "$HERE/../python" && pwd)"
+# different tree than the one it lives in. The `cd` alone was only incidentally
+# correct — it works because CWD happens to outrank the editable finder — so
+# #432 adds an explicit PYTHONPATH pin and a pre-boot check of the outcome.
+# shellcheck source=conformance/boot_env.sh
+source "$HERE/boot_env.sh"
+PY_DIR="$(ragstack_py_dir "$HERE")"
 LOG="$(mktemp -t identity-conf-XXXXXX.log)"
 INGEST_ROOT="$(mktemp -d -t identity-conf-ingest-XXXXXX)"
 
@@ -70,6 +74,14 @@ cleanup() {
   rm -rf "$INGEST_ROOT" "$LOG"
 }
 trap cleanup EXIT
+
+# Same two pins as the authz runner (#432): which code the server imports, and
+# which services it may reach. The OIDC discovery fetch to accounts.google.com
+# is this suite's whole point and is unaffected — only the store and model
+# backends, which the in-memory selection below never needs, are pinned dead.
+ragstack_pin_pythonpath "$PY_DIR"
+ragstack_pin_dead_backends
+( cd "$PY_DIR" && ragstack_assert_import_origin "$PY_DIR" "$PYTHON" "identity-conf" ) || exit 1
 
 echo "[identity-conf] booting Google-OIDC in-memory API on $HOST:$PORT ..."
 IDENTITY_PROVIDER=oidc \

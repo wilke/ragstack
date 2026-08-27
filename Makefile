@@ -20,11 +20,15 @@ help: ## Show this help
 install-python: ## Install Python package in dev mode
 	cd python && pip install -e ".[all,dev]"
 
+# PYTHONPATH: belt to the conftest guard's braces (#432). The guard fails the
+# run when `ragstack` resolves outside this checkout; pinning the path here
+# means it doesn't have to, whatever the caller's CWD and whatever editable
+# install the active environment happens to carry.
 test-python: ## Run Python unit + API tests
-	cd python && pytest tests/ -v
+	cd python && PYTHONPATH=$(CURDIR)/python pytest tests/ -v
 
 perf-python: ## Run Python performance budget tests
-	cd python && pytest tests/ -m perf -v -s
+	cd python && PYTHONPATH=$(CURDIR)/python pytest tests/ -m perf -v -s
 
 lint-python: ## Lint Python code
 	cd python && ruff check . && mypy ragstack/

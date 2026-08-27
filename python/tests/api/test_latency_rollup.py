@@ -38,6 +38,7 @@ from ragstack.observability.histogram import (
     stop_rollup,
 )
 from ragstack.observability.middleware import RequestContextMiddleware
+from tests.pinned_env_support import PINNED_ENV as _PINNED_ENV
 
 pytestmark = pytest.mark.asyncio
 
@@ -531,18 +532,10 @@ asyncio.run(main())
 #: this host runs a real sidecar there. Reaching a live service from a test is
 #: the failure mode CLAUDE.md names outright, so the model backends are pinned
 #: too, not just the stores.
-_DEAD = "http://127.0.0.1:1"
-_PINNED_ENV = {
-    "QDRANT_URL": _DEAD,
-    "ELASTICSEARCH_URL": _DEAD,
-    "EMBEDDING_SIDECAR_URL": _DEAD,
-    "CROSSENCODER_SIDECAR_URL": _DEAD,
-    "FAISS_SIDECAR_URL": _DEAD,
-    "GOWE_URL": _DEAD,
-    "WORKSPACE_URL": _DEAD,
-    "NEO4J_URI": "bolt://127.0.0.1:1",
-    "REDIS_URL": "redis://127.0.0.1:1",
-}
+#:
+#: That incident is now the whole repo's antidote rather than this file's:
+#: ``tests/pinned_env_support`` owns the dict and every subprocess-spawning test
+#: that can reach a config default uses it (#432).
 
 
 async def test_the_real_lifespan_arms_the_rollup_and_disarms_it(tmp_path):

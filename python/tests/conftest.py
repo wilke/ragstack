@@ -1,4 +1,33 @@
-"""Root-level shared fixtures.
+"""Root-level shared fixtures, and the harness's own preconditions.
+
+**The skip/fail doctrine this file implements** (#432): an absent opt-in is a
+*skip*, loudly, naming the variable that would enable it; a precondition that
+is claimed but false is a *failure*, naming both sides of the comparison. The
+import-origin guard below and ``pg_test_dsn`` are two instances of it.
+
+``pytest_configure`` — the import-origin guard
+----------------------------------------------
+A test run has to be able to prove which ``ragstack`` it imported. On the dev
+host it could not: the conda envs carry an editable install resolving
+``ragstack`` to ``/rag/repos/ragstack/python`` (a legacy *production*
+checkout). ``sys.path`` puts the CWD first, so running from ``python/``
+wins — and under pytest specifically, prepend importmode re-inserts the rootdir
+(``tests/`` is a package, so the basedir is ``python/``), which rescues even the
+wrong-CWD case. That is *incidental protection from another tool*, not a
+property of this suite: it does not hold for a plugin that imports ``ragstack``
+during startup, for a pre-seeded ``sys.modules``, or — the case that actually
+bit — for anything booting the app outside pytest. ``make test-conformance-authz``
+booted uvicorn before it ``cd``'d and so contract-tested the production checkout
+on every run of its life; that path is covered by ``conformance/boot_env.sh``,
+not by this guard.
+
+The guard checks the *outcome* rather than any one cause — it imports
+``ragstack`` and asks where the module actually came from — so it holds no
+matter who imported first or how ``sys.path`` was arranged. Rootdir is
+``python/``, so this one file covers unit, api, ingestion, eval, integration
+and perf. Escape hatch for a deliberate out-of-tree run (validating an
+installed wheel): ``RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT=1`` downgrades it to a
+warning that still prints both paths.
 
 ``pg_test_dsn`` is the ONLY sanctioned way any test in this tree may open a
 Postgres connection (#130 follow-up). A prior version of the Postgres job
@@ -33,10 +62,94 @@ touch a real database by default again:
 from __future__ import annotations
 
 import os
+import sys
 import uuid
+import warnings
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
+
+#: The tree under test: ``python/``, the directory holding ``ragstack/`` and
+#: ``tests/``. Resolved, so worktrees and symlinked checkouts compare equal.
+CHECKOUT_ROOT = Path(__file__).resolve().parents[1]
+
+#: Deliberately verbose and grep-able: nothing routine should set this.
+ALLOW_FOREIGN_IMPORT_VAR = "RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT"
+
+#: Stable marker so the meta-tests (``tests/unit/test_harness_guard.py``) can
+#: assert the guard fired without matching on prose.
+_GUARD_BANNER = "RAGSTACK TEST HARNESS: wrong `ragstack` import origin (#432)"
+
+
+def _import_origin_problem() -> str | None:
+    """Return a message describing the import-origin violation, or ``None``.
+
+    Naming both paths is the contract: the acceptance criterion in #432 is that
+    a run which would import code outside the tree under test fails *loudly*,
+    saying which code it got and which it expected.
+    """
+    try:
+        import ragstack
+    except Exception as exc:  # pragma: no cover - exercised by the meta-tests
+        return (
+            f"{_GUARD_BANNER}\n"
+            f"  imported from: <import failed: {exc!r}>\n"
+            f"  expected under: {CHECKOUT_ROOT}\n"
+            "This suite cannot run without importing the checkout under test. "
+            f"Run pytest with PYTHONPATH={CHECKOUT_ROOT} (or from that directory)."
+        )
+
+    origin = getattr(ragstack, "__file__", None)
+    if origin is None:  # namespace package / frozen import — origin unprovable
+        return (
+            f"{_GUARD_BANNER}\n"
+            "  imported from: <no __file__; a namespace package shadows the checkout>\n"
+            f"  expected under: {CHECKOUT_ROOT}\n"
+            f"Run pytest with PYTHONPATH={CHECKOUT_ROOT} (or from that directory)."
+        )
+
+    imported = Path(origin).resolve()
+    if imported.is_relative_to(CHECKOUT_ROOT):
+        return None
+
+    return (
+        f"{_GUARD_BANNER}\n"
+        f"  imported from: {imported}\n"
+        f"  expected under: {CHECKOUT_ROOT}\n"
+        "This run would prove nothing about this checkout: it exercises the code at "
+        "the first path, not the code at the second. On the dev host the usual cause "
+        "is the editable install in the conda env, which resolves `ragstack` to the "
+        "legacy production checkout whenever the CWD is not the tree under test.\n"
+        f"Fix: run pytest with PYTHONPATH={CHECKOUT_ROOT}, or from that directory "
+        "(`make test-python` does both). To test an installed `ragstack` on purpose, "
+        f"set {ALLOW_FOREIGN_IMPORT_VAR}=1 — the run then warns instead of failing."
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Fail the run before collection if ``ragstack`` came from another tree.
+
+    Deliberately checks the *outcome* — which module object is in
+    ``sys.modules`` — rather than trying to run before whoever imported it.
+    Ordering is not something this can promise (initial conftests load before
+    ``pytest_configure`` for a direct-path invocation, and plugins load earlier
+    still), and it does not need to: whoever imported first, this reports the
+    truth about the module every later test will get.
+    """
+    problem = _import_origin_problem()
+    if problem is None:
+        return
+
+    if os.environ.get(ALLOW_FOREIGN_IMPORT_VAR) == "1":
+        # Still loud, still names both paths — just not fatal.
+        print(f"\n{problem}\n({ALLOW_FOREIGN_IMPORT_VAR}=1 — continuing anyway)\n",
+              file=sys.stderr, flush=True)
+        warnings.warn(problem, RuntimeWarning, stacklevel=2)
+        config.issue_config_time_warning(pytest.PytestConfigWarning(problem), stacklevel=2)
+        return
+
+    raise pytest.UsageError(problem)
 
 
 @pytest_asyncio.fixture
