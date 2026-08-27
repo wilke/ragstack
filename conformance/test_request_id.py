@@ -3,34 +3,19 @@
 Black-box over HTTP against a running server, so it is the drift pin between the
 two implementations that #419's post-mortem asked for.
 
-.. rubric:: Expected-red window — read this before deleting anything
+.. rubric:: Both implementations satisfy this — it is the drift pin, not a target
 
-This test lands with #427 **W1**, which is the Python side. Go does not satisfy
-it until **W7**. So it is skipped for ``RAGSTACK_IMPL=go`` in the meantime,
-deliberately, rather than left red: a permanently-red target trains people to
-ignore the target, which is exactly how the #419 drift happened.
+Python got the header in #427 **W1**, Go in **W7**; W7 deleted the
+``skipif RAGSTACK_IMPL == "go"`` that stood here in between, so this file now
+runs unskipped against both. Keep it that way: a permanently-skipped target
+trains people to ignore the target, which is exactly how the #419 drift
+happened.
 
-.. rubric:: What W7 must NOT do — chi's ``RequestID`` cannot satisfy this file
-
-An earlier draft of this note told W7 to echo chi's ``middleware.GetReqID``.
-That is wrong twice over, and following it would have sent W7 straight to red:
-
-* chi's ``middleware.RequestID`` generates ``"<hostname>/<rand>-<counter>"``,
-  which can never match :data:`RID_RE` below, nor the ``^[0-9a-f]{16}$`` pattern
-  the contract pins at ``components/headers/XRequestId``;
-* chi honours an inbound ``X-Request-Id`` **verbatim**. That is option (i) — the
-  trust-the-caller option the plan explicitly rejected and the contract text
-  forbids — so ``test_inbound_request_id_is_never_echoed`` would fail by
-  construction.
-
-W7 should generate its own 16-hex-character id (Go: 8 random bytes,
-``hex.EncodeToString``), validate any inbound value against the same
-``^[A-Za-z0-9._-]{1,64}$`` charset for recording only, and never echo it. chi's
-``RequestID`` middleware may stay for its own purposes, but it is not the source
-of this header.
-
-**W7 deletes ``requires_request_id`` and this paragraph.** The deletion is part
-of W7's own diff and therefore cannot be forgotten.
+Go generates the id in ``go/internal/observability/requestid.go`` and does
+**not** use chi's ``middleware.RequestID`` — that middleware's
+``"<hostname>/<rand>-<counter>"`` format can never match :data:`RID_RE`, and it
+honours an inbound ``X-Request-Id`` verbatim, which would fail
+``test_inbound_request_id_is_never_echoed`` by construction.
 
 ``/health`` is the subject because it is unauthenticated and exists on both
 implementations, so this needs no credentials and no seeded data.
@@ -38,7 +23,6 @@ implementations, so this needs no credentials and no seeded data.
 
 from __future__ import annotations
 
-import os
 import re
 
 import httpx
@@ -50,14 +34,7 @@ pytestmark = pytest.mark.asyncio
 #: components/headers/XRequestId.
 RID_RE = re.compile(r"^[0-9a-f]{16}$")
 
-#: Deleted by #427 W7, together with the module docstring's note about it.
-requires_request_id = pytest.mark.skipif(
-    os.environ.get("RAGSTACK_IMPL") == "go",
-    reason="Go echoes X-Request-Id from #427 W7; this skip is deleted in that PR",
-)
 
-
-@requires_request_id
 async def test_request_id_header_is_present_and_well_formed(
     client: httpx.AsyncClient,
 ) -> None:
@@ -69,7 +46,6 @@ async def test_request_id_header_is_present_and_well_formed(
     assert RID_RE.match(rid), f"X-Request-Id {rid!r} does not match {RID_RE.pattern}"
 
 
-@requires_request_id
 async def test_request_id_differs_between_requests(client: httpx.AsyncClient) -> None:
     """The property that makes the id useful at all: two concurrent users'
     failures must be distinguishable in the log."""
@@ -79,7 +55,6 @@ async def test_request_id_differs_between_requests(client: httpx.AsyncClient) ->
     assert first != second, "two requests received the same X-Request-Id"
 
 
-@requires_request_id
 async def test_inbound_request_id_is_never_echoed(client: httpx.AsyncClient) -> None:
     """The server always generates its own id. A caller-supplied one is recorded
     for gateway correlation but never becomes the response's — otherwise a
@@ -92,7 +67,6 @@ async def test_inbound_request_id_is_never_echoed(client: httpx.AsyncClient) -> 
     assert RID_RE.match(rid)
 
 
-@requires_request_id
 async def test_hostile_inbound_request_id_is_not_echoed(
     client: httpx.AsyncClient,
 ) -> None:
@@ -105,7 +79,6 @@ async def test_hostile_inbound_request_id_is_not_echoed(
     assert rid and RID_RE.match(rid), f"X-Request-Id {rid!r} is not a server-generated id"
 
 
-@requires_request_id
 async def test_request_id_is_present_on_an_error_response(
     client: httpx.AsyncClient,
 ) -> None:

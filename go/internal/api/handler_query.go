@@ -10,11 +10,11 @@ import (
 func HandleQuery(w http.ResponseWriter, r *http.Request) {
 	var req QueryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeValidationError(w, "invalid request body")
+		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	if req.Query == nil {
-		writeValidationError(w, "field 'query' is required")
+		writeValidationError(w, r, "field 'query' is required")
 		return
 	}
 
@@ -30,11 +30,11 @@ func HandleQuery(w http.ResponseWriter, r *http.Request) {
 func HandleRetrieve(w http.ResponseWriter, r *http.Request) {
 	var req RetrieveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeValidationError(w, "invalid request body")
+		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	if req.Query == nil {
-		writeValidationError(w, "field 'query' is required")
+		writeValidationError(w, r, "field 'query' is required")
 		return
 	}
 
