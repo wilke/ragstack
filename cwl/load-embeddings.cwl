@@ -43,10 +43,16 @@ inputs:
     doc: "Override tenant (default: each file's header tenant)."
   qdrant_url:
     type: string
-    default: "http://localhost:6333"
+    doc: "The Qdrant instance to WRITE to, as seen from the worker.
+      REQUIRED, deliberately without a default (#407): a default here decided
+      where a run wrote whenever a caller omitted it, and the old default
+      (localhost:6333) is production on the deployment host — a dev-tenant
+      ingest built a collection on the production instance. The API seeds this
+      per run from its own settings; a hand-run must name it."
   es_url:
     type: string
-    default: "http://localhost:9200"
+    doc: "The Elasticsearch instance to WRITE to, as seen from the worker.
+      REQUIRED, no default — see qdrant_url."
   fail_on_error:
     type: boolean
     default: true

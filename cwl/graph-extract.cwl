@@ -90,8 +90,10 @@ inputs:
     doc: "neo4j | memory (memory is the process-local dev/test store)."
   neo4j_uri:
     type: string
-    default: "bolt://localhost:7687"
-    doc: "The graph store as seen from the worker (credentials from its env)."
+    doc: "The graph store as seen from the worker
+      (credentials from its env). REQUIRED, deliberately without a default
+      (#407): the old default (bolt://localhost:7687) is production on the
+      deployment host. The API seeds it per run; a hand-run must name it."
   job_id:
     type: ["null", string]
 
@@ -212,9 +214,11 @@ steps:
           type: string
           default: "neo4j"
           inputBinding: {prefix: --graph-backend, position: 4}
+        # No default: the workflow input above is required and wired in at
+        # steps[load].in (#407). A default here would silently re-supply
+        # production if that wiring ever broke.
         neo4j_uri:
           type: string
-          default: "bolt://localhost:7687"
           inputBinding: {prefix: --neo4j-uri, position: 5}
       arguments:
         - {position: 6, prefix: --out, valueFrom: graph-load-summary.json}

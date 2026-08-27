@@ -34,7 +34,8 @@ verified every fact read-only against the host.
 
 **Live state left in place:** dev worktree at `873090b`; the window settings block in the dev
 tenant's env (two `RATE_LIMIT_*` raises revert at cleanup; `GOWE_WORKFLOW_INPUTS_JSON` stays —
-it is the fix for #407); `ADMIN_SUBJECTS` still de-admined for the owner (restore at cleanup —
+it is the WORKAROUND for #407, and must be removed in the same deploy that ships the fix:
+see `docs/runbooks/upgrade-407-remove-gowe-store-urls.md`, or that tenant's API refuses to boot); `ADMIN_SUBJECTS` still de-admined for the owner (restore at cleanup —
 the original is saved in the run record); a scratch Neo4j 5.26.25 in the tenant's port block;
 `devlive_mylib` kept deliberately, corrupt `versions/1` included, as evidence for #172.
 
