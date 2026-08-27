@@ -204,26 +204,24 @@ async def test_p2_private_collection_is_invisible_to_another_non_admin(
 
 
 # --------------------------------------------------------------------------- #
-# F6, the documents surface — a KNOWN drift, pinned so it cannot be re-lost
+# F6, the documents surface — the drift this persona found, now closed
 # --------------------------------------------------------------------------- #
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "OPEN DEFECT (#450), found by this persona on its first run. "
-        "`GET /v1/documents` resolves the GLOBAL registry pointer "
-        "(routers/documents.py::list_documents) instead of the caller-aware "
-        "default that `GET /v1/collections`, `/v1/query`, `/v1/retrieve` and "
-        "`/v1/chunks` all share since #419 — so P2, who owns a perfectly "
-        "readable collection, cannot list documents at all and is told about "
-        "an id it was never shown. api/default_collection.py's module docstring "
-        "already names documents.py as an unfixed drift site ('visibility: "
-        "none'); this is the C-layer proof that it is a live defect and not "
-        "just a note. strict=True so the day it is fixed, this file goes red "
-        "and the xfail must be removed."
-    ),
-)
 async def test_p2_can_list_documents(caller_without_default_access) -> None:
-    """A caller with a readable collection can list its documents."""
+    """A caller with a readable collection can list its documents.
+
+    This landed as a ``strict`` xfail: on this persona's first run it exposed
+    #450 — ``GET /v1/documents`` resolved the GLOBAL registry pointer instead of
+    the caller-aware default that ``GET /v1/collections``, ``/v1/query``,
+    ``/v1/retrieve`` and ``/v1/chunks`` have shared since #419, so P2, who owns
+    a perfectly readable collection, could not list documents at all and was
+    told about an id it was never shown.
+
+    **The xfail was removed by #422 PR-2, which fixed it.** ``list_documents``
+    (and ``DELETE /v1/documents/{doc_id}``) now call ``resolve_default_entry``,
+    the same symbol as the other implicit paths. ``strict=True`` is exactly what
+    made this a handoff rather than a stale note: the day the defect died, this
+    file went red and the marker had to go. This is now a plain regression test
+    — the C-layer proof that the documents surface is caller-aware."""
     p2 = caller_without_default_access
     resp = await p2.client.get("/v1/documents?limit=1", headers=p2.headers)
     assert resp.status_code == 200, (
