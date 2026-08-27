@@ -31,6 +31,19 @@ DEAD_URL = "http://127.0.0.1:1"
 #: Every outbound endpoint ``ragstack.config`` defaults to a live local port.
 #: Keep this in sync with ``ragstack/config.py`` when a new backend is added —
 #: an unpinned key here is a hole straight to whatever runs on that port.
+#:
+#: ``FAISS_SIDECAR_URL`` has no corresponding field in ``config.py`` today. It
+#: is kept because the sidecar is documented in ``.env.example`` and pinning a
+#: name nothing reads costs nothing, while removing it invites re-adding a live
+#: default later. ``conformance/boot_env.sh`` pins the identical set, and
+#: ``test_the_conformance_runners_pin_the_same_set_as_the_python_tests``
+#: enforces that rather than trusting this comment.
+#:
+#: Scope note for ``test_pinned_env_leaves_no_live_local_default``: it flags
+#: settings that resolve to a **local** address, which is the shape that reaches
+#: a service on this host. A default pointing at a live *remote* service —
+#: ``workspace_url`` has one — is outside what that test can see, so dropping
+#: ``WORKSPACE_URL`` from this dict would not fail it.
 PINNED_ENV: dict[str, str] = {
     "QDRANT_URL": DEAD_URL,
     "ELASTICSEARCH_URL": DEAD_URL,

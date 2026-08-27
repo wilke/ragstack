@@ -47,6 +47,12 @@ ragstack_pin_dead_backends() {
   export WORKSPACE_URL="$dead"
   export NEO4J_URI="bolt://127.0.0.1:1"
   export REDIS_URL="redis://127.0.0.1:1"
+  # `postgres_dsn` (config.py) defaults to
+  # postgresql+asyncpg://ragstack:ragstack@localhost/ragstack — verbatim the DSN
+  # that applied a migration to a production `jobs` table in #369. These runners
+  # select JOB_STORE_BACKEND=memory, so nothing reads it today; that is a
+  # shield, not a pin, and shields move.
+  export POSTGRES_DSN="postgresql+asyncpg://ragstack:ragstack@127.0.0.1:1/ragstack"
 }
 
 # Abort, naming both paths, unless $2 (the interpreter that is about to boot the

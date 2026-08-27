@@ -11,11 +11,15 @@ A test run has to be able to prove which ``ragstack`` it imported. On the dev
 host it could not: the conda envs carry an editable install resolving
 ``ragstack`` to ``/rag/repos/ragstack/python`` (a legacy *production*
 checkout). ``sys.path`` puts the CWD first, so running from ``python/``
-usually wins — but that is incidental. Any invocation whose CWD is elsewhere
-(a worktree run from the repo root, an IDE runner, a plugin importing early)
-silently tested the production checkout: a green run that proved nothing about
-the branch, or a red one from code nobody wrote. ``make test-conformance-authz``
-was doing exactly that, because its runner booted uvicorn before it ``cd``'d.
+wins — and under pytest specifically, prepend importmode re-inserts the rootdir
+(``tests/`` is a package, so the basedir is ``python/``), which rescues even the
+wrong-CWD case. That is *incidental protection from another tool*, not a
+property of this suite: it does not hold for a plugin that imports ``ragstack``
+during startup, for a pre-seeded ``sys.modules``, or — the case that actually
+bit — for anything booting the app outside pytest. ``make test-conformance-authz``
+booted uvicorn before it ``cd``'d and so contract-tested the production checkout
+on every run of its life; that path is covered by ``conformance/boot_env.sh``,
+not by this guard.
 
 The guard checks the *outcome* rather than any one cause — it imports
 ``ragstack`` and asks where the module actually came from — so it holds no
@@ -126,8 +130,12 @@ def _import_origin_problem() -> str | None:
 def pytest_configure(config: pytest.Config) -> None:
     """Fail the run before collection if ``ragstack`` came from another tree.
 
-    Runs before ``tests/api/conftest.py`` imports any ``ragstack.*`` module, so
-    the module this checks is the module every later test will get.
+    Deliberately checks the *outcome* — which module object is in
+    ``sys.modules`` — rather than trying to run before whoever imported it.
+    Ordering is not something this can promise (initial conftests load before
+    ``pytest_configure`` for a direct-path invocation, and plugins load earlier
+    still), and it does not need to: whoever imported first, this reports the
+    truth about the module every later test will get.
     """
     problem = _import_origin_problem()
     if problem is None:

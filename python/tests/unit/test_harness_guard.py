@@ -144,6 +144,21 @@ def test_the_escape_hatch_warns_with_both_paths_instead_of_failing(tmp_path):
     assert _EXPECTED_LINE in out, f"the warning omits the expected root:\n{out}"
 
 
+def test_the_escape_hatch_is_exactly_one_value(tmp_path):
+    """``=0`` must not open the hatch.
+
+    The check is ``== "1"``, but nothing proved that: any-truthy would pass
+    every other case here while quietly letting ``RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT=0``
+    — which reads to any operator as *off* — disable the guard.
+    """
+    result = _run_with_decoy(tmp_path, RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT="0")
+    out = result.stdout + result.stderr
+
+    assert result.returncode != 0, f"`=0` opened the escape hatch:\n{out}"
+    assert _imported_line(tmp_path) in out, out
+    assert _EXPECTED_LINE in out, out
+
+
 def test_a_clean_run_is_silent(tmp_path):
     """The control. A guard that fires on correct runs would be turned off in a week."""
     result = subprocess.run(
@@ -204,13 +219,20 @@ def test_es_integration_skips_when_not_opted_in(tmp_path):
 def test_a_stale_old_name_export_does_not_re_arm_the_live_run():
     """**The reason the variable was renamed.**
 
-    Anyone who exported ``TEST_ES_URL=http://localhost:9200`` before this fix —
-    or copied it from the pre-#432 CI job — has a shell that would have pointed
-    the suite straight back at the production cluster. Under the new name that
-    export is inert. Note the value here is only ever *read*: the module skips
-    before it constructs a client, so this test never contacts :9200.
+    Anyone who exported ``TEST_ES_URL`` before this fix — or copied it from the
+    pre-#432 CI job — has a shell that would have pointed the suite straight
+    back at the production cluster. Under the new name that export is inert.
+
+    **The value is a dead port, not the realistic `http://localhost:9200`.** As
+    shipped it is never read, because the module skips first — but the whole
+    point of this test is to fail if that stops being true, and on the failing
+    path the value IS read: `_reachable()` would GET it and the two ES tests
+    would create and delete indices on whatever answers. A probe for a
+    production-default bug must not reproduce the bug on the path it exists to
+    detect. Verified to discriminate identically: this test fails against a
+    module that honours the old name, dead port and all.
     """
-    result = _run_es_module(TEST_ES_URL="http://localhost:9200")
+    result = _run_es_module(TEST_ES_URL="http://127.0.0.1:1")
     out = result.stdout + result.stderr
 
     assert result.returncode in _OK_EXITS, out
@@ -304,3 +326,49 @@ def test_pinned_env_leaves_no_live_local_default(tmp_path):
         "this host that means a live service. Add each to PINNED_ENV in "
         f"tests/pinned_env_support.py: {live}"
     )
+
+
+def test_the_conformance_runners_pin_the_same_set_as_the_python_tests():
+    """``boot_env.sh`` and ``pinned_env_support.py`` must pin the *same* keys.
+
+    Both files said "keep in sync" in a comment, and they were not: the shell
+    side shipped without ``POSTGRES_DSN``, whose default is verbatim the DSN
+    that migrated a production ``jobs`` table in #369. A comment is not a
+    mechanism, so this is the mechanism.
+
+    It *runs* the shell function rather than reading its source, so it checks
+    the environment a booted server would actually inherit. That also makes it
+    the only automated coverage the runner scripts have — nothing in CI invokes
+    them — so deleting ``ragstack_pin_dead_backends``, or having it export
+    nothing, fails here instead of silently un-pinning a self-booted server.
+    """
+    from tests.pinned_env_support import PINNED_ENV
+
+    boot_env = CHECKOUT_ROOT.parent / "conformance" / "boot_env.sh"
+    script = (
+        f'source "{boot_env}"\n'
+        'before=$(compgen -e | sort)\n'
+        'ragstack_pin_dead_backends\n'
+        'for k in $(comm -13 <(echo "$before") <(compgen -e | sort)); do\n'
+        '  printf "%s=%s\\n" "$k" "${!k}"\n'
+        'done\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+    exported = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    assert set(exported) == set(PINNED_ENV), (
+        "the conformance runners and the Python tests pin different sets.\n"
+        f"  only in boot_env.sh: {sorted(set(exported) - set(PINNED_ENV))}\n"
+        f"  only in pinned_env_support.py: {sorted(set(PINNED_ENV) - set(exported))}"
+    )
+    live = {k: v for k, v in exported.items() if "127.0.0.1:1" not in v}
+    assert live == {}, f"boot_env.sh exports these at a reachable target: {live}"
