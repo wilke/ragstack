@@ -80,29 +80,56 @@ paths:
             POST /v1/collections/{collection_id}/restore.
         "503":
           description: >-
-            Authorization store unavailable — refused (fail closed); OR the
-            collection is `dormant` / `restoring` (#358): the first
+            FOUR distinct causes answer with this status; the body's `reason`
+            field (see the `Error` schema) is what tells them apart.
+
+
+            **A backing store did not answer** (#427) — Qdrant or Elasticsearch
+            timed out, was unreachable, or returned a 5xx. This is the only
+            cause that carries `reason` and `request_id`, and the only one whose
+            `Retry-After` is a fixed 5 seconds. `reason: timeout` means the
+            store was reached and the search exceeded its per-request bound, so
+            a retry hits a warm read and often succeeds within seconds;
+            `reason: unreachable` means the store was never reached, so a retry
+            probably will not help; `reason: error` means it answered
+            unhappily. `detail` names the collection, the instance, the error
+            type, the applied timeout and the setting that governs it.
+
+
+            **The authorization store is unavailable** — refused, fail closed.
+            No `Retry-After`: there is no honest estimate to give.
+
+
+            **The collection is `dormant` / `restoring`** (#358): the first
             authenticated read or ingest of a dormant collection submits a
             restore from its Workspace archive (as the caller, with the caller's
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so. A second cause on a dormant collection
-            (#381): the tenant is at capacity — the active bound
-            (`max_collections`) is met and no active collection can be evicted
-            to make room — so the restore is NOT submitted, the row stays
-            `dormant`, and the message names the reason; retry after
+            with a message saying so.
+
+
+            **The tenant is at capacity** on a dormant collection (#381): the
+            active bound (`max_collections`) is met and no active collection can
+            be evicted to make room — so the restore is NOT submitted, the row
+            stays `dormant`, and the message names the reason; retry after
             `Retry-After`.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/XRequestId"
             Retry-After:
               description: >-
-                Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring / at capacity) case.
+                Seconds to wait before retrying. A fixed 5 for the
+                store-unavailable case; the configured lifecycle delay for the
+                dormant / restoring / at-capacity case; absent for the
+                authorization-store case.
               required: false
               schema:
                 type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/retrieve:
     post:
@@ -144,29 +171,56 @@ paths:
             POST /v1/collections/{collection_id}/restore.
         "503":
           description: >-
-            Authorization store unavailable — refused (fail closed); OR the
-            collection is `dormant` / `restoring` (#358): the first
+            FOUR distinct causes answer with this status; the body's `reason`
+            field (see the `Error` schema) is what tells them apart.
+
+
+            **A backing store did not answer** (#427) — Qdrant or Elasticsearch
+            timed out, was unreachable, or returned a 5xx. This is the only
+            cause that carries `reason` and `request_id`, and the only one whose
+            `Retry-After` is a fixed 5 seconds. `reason: timeout` means the
+            store was reached and the search exceeded its per-request bound, so
+            a retry hits a warm read and often succeeds within seconds;
+            `reason: unreachable` means the store was never reached, so a retry
+            probably will not help; `reason: error` means it answered
+            unhappily. `detail` names the collection, the instance, the error
+            type, the applied timeout and the setting that governs it.
+
+
+            **The authorization store is unavailable** — refused, fail closed.
+            No `Retry-After`: there is no honest estimate to give.
+
+
+            **The collection is `dormant` / `restoring`** (#358): the first
             authenticated read or ingest of a dormant collection submits a
             restore from its Workspace archive (as the caller, with the caller's
             token) and answers 503 while the restore runs — retry after the
             delay named in `Retry-After` (seconds). A keyless / API-key caller
             carries no user token, cannot trigger the restore, and gets 503
-            with a message saying so. A second cause on a dormant collection
-            (#381): the tenant is at capacity — the active bound
-            (`max_collections`) is met and no active collection can be evicted
-            to make room — so the restore is NOT submitted, the row stays
-            `dormant`, and the message names the reason; retry after
+            with a message saying so.
+
+
+            **The tenant is at capacity** on a dormant collection (#381): the
+            active bound (`max_collections`) is met and no active collection can
+            be evicted to make room — so the restore is NOT submitted, the row
+            stays `dormant`, and the message names the reason; retry after
             `Retry-After`.
           headers:
             X-Request-Id:
               $ref: "#/components/headers/XRequestId"
             Retry-After:
               description: >-
-                Seconds to wait before retrying. Present for the lifecycle
-                (dormant / restoring / at capacity) case.
+                Seconds to wait before retrying. A fixed 5 for the
+                store-unavailable case; the configured lifecycle delay for the
+                dormant / restoring / at-capacity case; absent for the
+                authorization-store case.
               required: false
               schema:
                 type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/ingest:
     post:
@@ -2613,6 +2667,83 @@ components:
         credential authenticated the request must never be ambiguous. A provider
         that cannot be reached is a **503**, never a 401 and never an allow.
   schemas:
+    Error:
+      type: object
+      description: >-
+        The shape of an error body. Kept in step with
+        `contracts/schemas/error.json`, which the conformance suite validates
+        against; a test asserts the two agree on `required`, the `reason` enum
+        and `additionalProperties`.
+
+
+        It models EXACTLY what the API emits today (#427 W6) — no aspirational
+        fields. `detail` is what FastAPI's `HTTPException` handler produces and
+        is the only guaranteed member; `request_id` and `reason` are the two
+        additions the store-unavailable 503 carries.
+
+
+        `detail` has NO type on purpose. It is a string almost everywhere, an
+        ARRAY for FastAPI's own 422 validation body, and an OBJECT in exactly
+        one place — the `owner_quota_exceeded` 409, which returns
+        `{error, owned, limit, message}` so a caller can act on the numbers
+        without parsing prose. Constraining it to a string would make this
+        schema wrong for two shapes the API already ships.
+
+
+        There is deliberately no `store` field: nothing consumes one (the
+        reference UI branches on `reason` alone) and `detail`'s sentence already
+        names the failing store. Under `additionalProperties: false` a modelled
+        field that is never emitted is harmless, but an emitted field that is
+        not modelled is a conformance failure — so this stays at what ships.
+        Adding `store` later is additive.
+
+
+        `content:` references this schema only from the 503 responses of
+        POST /v1/query and POST /v1/retrieve — the responses #427's incident
+        produced. Every other error body in the API validates against it too
+        (including the hand-built 411/413 the upload guard emits without ever
+        reaching the router), so widening later is a documentation change.
+      required: [detail]
+      properties:
+        detail:
+          description: >-
+            What went wrong. A human-readable sentence for nearly every error;
+            an array of per-field validation errors for a 422; an object for the
+            `owner_quota_exceeded` 409. Deliberately untyped — see above. This
+            is SERVER PROSE and may name internal hosts, collections and
+            settings: the reference UI never renders it to a user, it is for
+            operators and for callers that log it.
+        request_id:
+          description: >-
+            The correlation id for the request that failed — the same value the
+            `X-Request-Id` response header carries, and the `rid=` on every log
+            line the request produced. Redundant with the header on purpose: a
+            header does not survive a user copy-pasting the JSON body into a
+            ticket. Present on the store-unavailable 503; absent from bodies
+            produced by FastAPI's own `HTTPException` handler, which is why it
+            is optional.
+          type: string
+          pattern: "^[0-9a-f]{16}$"
+        reason:
+          description: >-
+            Machine-readable failure class for a store-unavailable 503, from
+            `StoreUnavailable.kind`. The distinction governs what a user should
+            be told: `timeout` means we CONNECTED and the search was too slow,
+            so a retry hits a warm read and often succeeds within seconds;
+            `unreachable` means we never reached the store, so a retry probably
+            will not help; `error` means the store answered unhappily. A
+            `ConnectTimeout` is classified `unreachable`, not `timeout`,
+            precisely so a client does not promise a warm second read that will
+            not happen.
+
+
+            Absent from the other 503 causes on the same endpoints, which are
+            `detail`-only. A consumer must treat an absent OR unrecognised value
+            as the conservative case.
+          type: string
+          enum: [timeout, unreachable, error]
+      additionalProperties: false
+
     ConfigResponse:
       type: object
       description: Allowlisted operational config — no secrets are ever included.
