@@ -7,6 +7,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ragstack.models import Chunk, ContextChunk, ScoredChunk
+
+# The submodule, not the package: ``observability/__init__`` imports the
+# middleware and so pulls in starlette, which this module has no business
+# depending on. ``stage`` is a no-op outside a request context, so the ingest
+# pipeline, the CLI scripts and every library caller are unaffected.
+from ragstack.observability.stages import stage
 from ragstack.protocols import GraphStore, TextIndex, VectorStore
 from ragstack.scoring.scorers import RRFScorer
 from ragstack.tenancy import DEFAULT_TENANT, readable_tenants, scope_filters
@@ -167,24 +173,38 @@ class HybridRetriever:
         depth = top_k * self.candidate_multiplier
         ranked_lists = []
 
+        # Every leg is timed (#427 W3). `self.collection` is the PHYSICAL
+        # collection name and is None for unscoped dev/test retrievers, which
+        # renders as `-`; the registry id lives on the request context.
+        #
         # Dense retrieval — unless BM25-only. (Skips the query embed for bm25 mode.)
         if mode != "bm25":
-            query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
-            ranked_lists.append(
-                await self.vector_store.search(query_vectors[0], top_k=depth, filters=filters)
-            )
+            with stage("embed"):
+                query_vectors: list[list[float]] = await self.embedder.embed([query])  # type: ignore[attr-defined]
+            # The leg that failed in the incident #427 was opened for. The timer
+            # records whether or not the search raises, which is the whole point
+            # — a search that spent 30 s and then timed out is the observation.
+            with stage("vector", self.collection):
+                ranked_lists.append(
+                    await self.vector_store.search(query_vectors[0], top_k=depth, filters=filters)
+                )
 
         # Sparse / BM25 retrieval — unless vector-only.
         if mode != "vector":
-            ranked_lists.append(await self.text_index.search(query, top_k=depth, filters=filters))
+            with stage("text", self.collection):
+                ranked_lists.append(
+                    await self.text_index.search(query, top_k=depth, filters=filters)
+                )
 
         # Optional graph-augmented context (independent of mode).
         if use_graph and self.graph_store:
-            graph_chunks = await self._graph_context(query, top_k, tenant_id)
+            with stage("graph", self.collection):
+                graph_chunks = await self._graph_context(query, top_k, tenant_id)
             if graph_chunks:
                 ranked_lists.append(graph_chunks)
 
-        fused = self.rrf.fuse(ranked_lists)
+        with stage("fuse"):
+            fused = self.rrf.fuse(ranked_lists)
         return self.shape(fused)[:top_k]
 
     def shape(self, fused: list[ScoredChunk]) -> list[ScoredChunk]:
@@ -668,18 +688,24 @@ class MultiCollectionRetriever:
                 by_physical.setdefault(leg.physical, leg.id)
         if not by_physical:
             return []
-        chunks = await graph_context(
-            self.graph_store,
-            query,
-            top_k,
-            tenant_id,
-            list(by_physical),
-            depth=self.graph_context_depth,
-            score=self.graph_context_score,
-            min_confidence=self._min_confidence(),
-            entity_max=self._entity_max(),
-            ngram_max=self._ngram_max(),
-        )
+        # Timed as `graph` like the single-collection leg, and untagged: this is
+        # ONE Neo4j query spanning every member's physical collection, so no
+        # single collection owns it. On the multi path the legs run with
+        # use_graph=False, so without this the request's only graph round trip
+        # would be invisible and would inflate `self_ms` (#427 W3, ADR-0006).
+        with stage("graph"):
+            chunks = await graph_context(
+                self.graph_store,
+                query,
+                top_k,
+                tenant_id,
+                list(by_physical),
+                depth=self.graph_context_depth,
+                score=self.graph_context_score,
+                min_confidence=self._min_confidence(),
+                entity_max=self._entity_max(),
+                ngram_max=self._ngram_max(),
+            )
         out: list[ScoredChunk] = []
         for c in chunks:
             cid = by_physical.get(str(c.chunk.metadata.get("collection", "")))

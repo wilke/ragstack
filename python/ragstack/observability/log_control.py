@@ -74,7 +74,17 @@ would reasonably expect otherwise.
 
 The side benefit is worth stating: a complete "denial of observability" is
 therefore **not** reachable through this endpoint. Whatever level is set here,
-uvicorn's access log survives it — as does the audit line below.
+the audit line below survives it.
+
+One qualification since #427 W3, because the earlier wording named uvicorn's
+access log as the other survivor and that is no longer the whole story:
+``access_log_replaced`` now defaults to TRUE, so ``configure_logging`` sets
+``uvicorn.access.disabled`` and that log is not printing in the first place. Its
+replacement — the per-request summary line from
+``observability.middleware`` — is an ordinary ``ragstack`` logger and **is**
+governed by the root level set here. Setting WARNING therefore drops the success
+lines, which is the intent (every failure line is WARNING); setting CRITICAL
+drops them too. The audit line, not the access log, is the floor.
 
 .. rubric:: The audit line must survive the change it is auditing
 

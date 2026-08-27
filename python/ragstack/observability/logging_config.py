@@ -216,7 +216,7 @@ def apply_dampening(level: int, loggers: Sequence[str]) -> None:
     accounted only for uvicorn's access log and not for the libraries that root's
     new level un-mutes.
 
-    .. rubric:: What damping costs, and the one thing W3 must preserve
+    .. rubric:: What damping costs, and the one thing W3 had to preserve
 
     The honest argument against: because :class:`RequestContextFilter` is on the
     root *handler*, third-party lines **do** carry the ``rid``. They are
@@ -228,7 +228,11 @@ def apply_dampening(level: int, loggers: Sequence[str]) -> None:
     The embedding fleet is six vLLM endpoints, and "was it always the same slow
     one?" is a real question that damping would otherwise make unanswerable.
     **W3 must put the resolved endpoint on the relevant stage tag** so that
-    information survives this.
+    information survives this. *Discharged:* ``embed_pool.PooledEmbedder._embed_one``
+    now records ``ep.health_url`` onto the request's stage accumulator on the
+    success path, and it reaches the summary line as ``embed_ep=`` (comma-joined
+    when one request fanned out across several endpoints). If that call ever
+    moves, the obligation moves with it.
 
     .. rubric:: DEBUG is not a credential-exposure vector — verified, not assumed
 
@@ -365,8 +369,10 @@ def configure_logging(
     if quiet_uvicorn_access:
         # W3's summary line is a strict superset of uvicorn's access line
         # (method, path, status, plus id, tenant, timings), so this keeps the
-        # net line count unchanged rather than doubling it. Default OFF in W1,
-        # where that superset line does not exist yet.
+        # net line count unchanged rather than doubling it. Default ON since W3
+        # landed that line — the flip and the line had to ship together, or the
+        # count-invariance claim would have been false in one direction or the
+        # other.
         logging.getLogger("uvicorn.access").disabled = True
 
     if warning:

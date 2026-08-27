@@ -85,8 +85,10 @@ async def _store_unavailable(_: Request, exc: StoreUnavailable) -> JSONResponse:
         # Not inferable from the timeout: a ReadTimeout burns the whole bound,
         # a ConnectError fails in milliseconds against the same one.
         fields["elapsed_ms"] = round(exc.elapsed_s * 1000)
-    # Populated by the query path in W3; empty until then, and omitted rather
-    # than logged as a permanent placeholder.
+    # Populated by the query path since #427 W3 (`routers.query._resolve_entry`
+    # stamps the registry id), so a store failure now names the collection it
+    # failed on. Still omitted rather than logged as a placeholder on the routes
+    # that resolve no collection.
     if ctx is not None and ctx.collection:
         fields["coll"] = ctx.collection
     log.warning("%s unavailable: %s", exc.store, exc, extra=fields)

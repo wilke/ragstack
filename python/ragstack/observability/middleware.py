@@ -43,6 +43,37 @@ Note the middleware does **not** ``reset()`` the contextvar in its ``finally``:
 that ``Exception`` handler runs after this ``finally``, in the same task context,
 and a reset would blank the id it needs. Per-request isolation comes from
 installing a *fresh* context object at entry.
+
+.. rubric:: The summary line (#427 W3)
+
+One line per request, emitted from the ``finally`` so it arrives on **failure**
+as well as on success — that is the acceptance criterion of #427 in a sentence,
+and before W3 a successful request logged nothing at all. It answers, in one
+greppable row: which request (``rid``), whose (``tenant``/``role``), which leg
+(the ``*_ms`` stage fields), how much of the bound it consumed (``wall_ms``), and
+how many other requests the process was serving (``inflight``).
+
+Level by outcome, and the split is deliberate:
+
+=======================  =======  =======================================
+outcome                  level    status
+=======================  =======  =======================================
+``ok`` (< 500)           INFO     as observed
+``server_error``         WARNING  as observed
+``unhandled``            WARNING  500 (stamped by the branch below)
+``client_disconnected``  INFO     as observed; ``None`` renders as ``-``
+=======================  =======  =======================================
+
+So ``LOG_LEVEL=WARNING`` — settable at runtime now via
+``PUT /v1/admin/log-level``, without a restart — drops every success and keeps
+every failure. ``client_disconnected`` is INFO on purpose: a user closing a tab
+is not a server fault and must never page anyone or enter W4's error rate, but a
+disconnect during a 30-second query is evidence in exactly the scenario this
+issue exists for, so it is not DEBUG either.
+
+``status`` renders as ``-`` when none was ever observed rather than being
+replaced by a plausible number: an invented status on the least-explained
+failures is the failure mode this line exists to end.
 """
 
 from __future__ import annotations
@@ -51,16 +82,42 @@ import asyncio
 import logging
 import re
 import uuid
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from starlette.datastructures import MutableHeaders
 
-from ragstack.observability.context import RequestContext, current_context, set_context
+from ragstack.observability.context import (
+    MISSING,
+    RequestContext,
+    current_context,
+    set_context,
+)
+from ragstack.observability.stages import StageTimings
 
 if TYPE_CHECKING:  # pragma: no cover
     from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 log = logging.getLogger(__name__)
+
+#: Requests currently inside this middleware, process-wide.
+#:
+#: The incident that opened #427 could not answer "was the box busy when that
+#: search blew through its 30-second bound?", and this is the field that does.
+#: Process-global rather than per-tenant on purpose: ``tenant_max_concurrency``
+#: defaults to ``0`` and ``TenantQuota.slot`` then keeps no counter at all, so a
+#: per-tenant number would render ``-`` on every deployment we have, including
+#: all four production tenants.
+#:
+#: A plain ``int`` with no lock: every request runs on one event loop and there
+#: is no await between the read and the write, so the increment is atomic with
+#: respect to anything that could observe it.
+_inflight = 0
+
+#: Outcomes that mean the SERVER failed, and so are logged at WARNING to survive
+#: ``LOG_LEVEL=WARNING``. ``client_disconnected`` is pointedly absent — see the
+#: level table in the module docstring.
+_FAULT_OUTCOMES = frozenset({"server_error", "unhandled"})
 
 #: The header we read (case-insensitively) and the one we write. Same name; the
 #: values are never the same value — see ``_upstream_id``.
@@ -123,6 +180,54 @@ def _route_label(scope: Scope) -> str:
     return f"{method} {path}"
 
 
+def _ms(seconds: float) -> str:
+    """Milliseconds to one decimal, as a string.
+
+    Formatted here rather than handed to the formatter as a float because
+    ``str(0.0412...)`` renders seventeen significant figures of noise on a line
+    a human is meant to scan, and because the stage fields are ``sum/count``
+    strings anyway — one shape for every duration on the line.
+    """
+    return f"{seconds * 1000:.1f}"
+
+
+def _log_summary(
+    ctx: RequestContext,
+    status: int | None,
+    outcome: str,
+    wall: float,
+    concurrent: int,
+) -> None:
+    """Emit the one line per request. See the module docstring for the level
+    table and for what each field is for.
+
+    ``rid``, ``tenant``, ``role`` and ``route`` are deliberately **not** in
+    ``extra``: :class:`~ragstack.observability.context.RequestContextFilter`
+    puts them on every record in the process, and duplicating them here would
+    collide with the formatter's own reserved-name handling.
+    """
+    fields: dict[str, str | int] = {
+        "status": status if status is not None else MISSING,
+        "outcome": outcome,
+        "wall_ms": _ms(wall),
+        "inflight": concurrent,
+    }
+    stages = ctx.stages
+    if stages is not None:
+        fields["self_ms"] = _ms(stages.self_seconds(wall))
+    if ctx.collection:
+        fields["coll"] = ctx.collection
+    if ctx.collections:
+        fields["colls"] = ctx.collections
+    if ctx.qsha:
+        fields["qsha"] = ctx.qsha
+    if stages is not None:
+        fields.update(stages.fields())
+
+    level = logging.WARNING if outcome in _FAULT_OUTCOMES else logging.INFO
+    log.log(level, "request complete", extra=fields)
+
+
 class RequestContextMiddleware:
     """Install a per-request :class:`RequestContext` and stamp the response."""
 
@@ -136,18 +241,25 @@ class RequestContextMiddleware:
             await self.app(scope, receive, send)
             return
 
+        global _inflight
+
         request_id = new_request_id()
-        # A FRESH object per request. A shared or module-scope one would leak
-        # request N's data onto N+1; see context.py mechanic 3.
+        # A FRESH object per request, accumulator included. A shared or
+        # module-scope one would leak request N's timings onto N+1 and every
+        # number after that would be quietly wrong; see context.py mechanic 3
+        # and stages.py mechanic 3.
         ctx = RequestContext(
             request_id=request_id,
             upstream_request_id=_upstream_id(scope),
             route=_route_label(scope),
+            stages=StageTimings(),
         )
         set_context(ctx)
 
         status: int | None = None
         outcome = "ok"
+        _inflight += 1
+        started = perf_counter()
 
         async def _send(message: Message) -> None:
             nonlocal status
@@ -162,9 +274,11 @@ class RequestContextMiddleware:
             # A cancellation is almost always the CLIENT going away mid-request,
             # not a server fault. Recorded separately BEFORE the generic branch
             # below, which would otherwise stamp it status=500/outcome=unhandled
-            # and invent a server error out of a user closing a tab. Invisible
-            # today (this line is DEBUG), but W3 promotes it to INFO/WARNING —
-            # at which point a disconnect would start paging someone.
+            # and invent a server error out of a user closing a tab. W1 wrote
+            # this branch while the line was still DEBUG, precisely so that W3's
+            # promotion would not turn every closed tab into a 500 in the log
+            # and, via W4's rollup, into the error rate. The line is INFO now
+            # (see the level table above) and a disconnect pages nobody.
             #
             # `status` is left as observed: if the response had already started
             # the client did get that status, and if it had not, None is the
@@ -183,12 +297,16 @@ class RequestContextMiddleware:
         finally:
             # Deliberately no _ctx.reset(): main.py's Exception handler runs
             # after this and reads the context to stamp the header.
+            wall = perf_counter() - started
             if status is not None and status >= 500 and outcome == "ok":
                 outcome = "server_error"
-            log.debug(
-                "request complete",
-                extra={"status": status if status is not None else "-", "outcome": outcome},
-            )
+            # Sampled BEFORE the decrement, so the value counts this request
+            # too: "N requests were in flight as this one finished", which is
+            # what an operator reading a slow line wants to know. Decremented
+            # after, so a raise on the way out cannot leak a permanent +1.
+            concurrent = _inflight
+            _inflight -= 1
+            _log_summary(ctx, status, outcome, wall, concurrent)
 
 
 def stamp_request_id(headers: MutableHeaders | dict[str, str]) -> str:
