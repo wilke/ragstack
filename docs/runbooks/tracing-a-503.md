@@ -177,9 +177,65 @@ segment-level search counters, page-cache residency — which is not this
 repository. Do not report "cold cache" as a finding; report it as the surviving
 hypothesis and say what would falsify it.
 
-(#427 W9 — **open, not yet shipped** — will add an opt-in post-mortem probe for
-a *third* candidate this data cannot see either: optimizer/indexing churn. It
-will be off by default. Until it lands there is no probe to look for.)
+### The post-mortem probe — the one candidate that *is* now visible (#427 W9)
+
+There is a **third** candidate the fields above cannot see either:
+**optimizer/indexing churn**. A collection that was mid-optimize when it failed
+to answer looks identical, in `elapsed_ms` and `reason`, to one that was idle.
+The probe closes that specific gap and no other.
+
+It is **off by default** — it sends a request to a store that has just failed to
+answer one. Turn it on per tenant with `QDRANT_POSTMORTEM_PROBE=true` in the
+tenant's env, and restart that API: unlike the log level (§7) this is **not**
+runtime-switchable, so it is something you enable on a tenant that keeps
+timing out, not a knob you reach for mid-incident.
+
+With it on, a **search timeout** — and only a timeout, never `reason=unreachable`
+— adds a third line to the `rid` grep, before the two in §2:
+
+```
+2026-08-27T12:33:40.928Z WARNING ragstack.stores.qdrant rid=396fb7425f8748dc
+  tenant=<tenant>:<user> role=user route="POST /v1/query"
+  store=qdrant probe_collection=<collection> status=yellow optimizer_ok=True
+  segments=192 points=47600000 indexed_vectors=47500000 probe_ms=61
+  msg="qdrant post-mortem probe on '<collection>'"
+```
+
+How to read it:
+
+- **`status=yellow`/`grey`, or `optimizer_ok=False`** — the store was optimizing
+  or its optimizer had failed when your search timed out. That is a finding, and
+  it is a *different* one from the top row of §3's table: the box was doing
+  work, not merely cold. Check the collection's ingest/optimizer activity at
+  that timestamp before you tell the user "retry, it'll be warm".
+- **`status=green` and `optimizer_ok=True`** — supports the smaller claim **"not
+  optimizer churn"**, which leaves §3's cold-read and query-vector hypotheses
+  where they were. It is **not** evidence for the cache. The probe cannot see
+  page-cache state any more than the rest of §4 can.
+- **`points` and `indexed_vectors` are raw counters. Do not subtract them.**
+  Their difference is meaningless in both regimes — it is 0 by design below
+  Qdrant's indexing threshold, and on a mature collection `indexed` routinely
+  *exceeds* `points` (measured at +125,051 on a 24.8M-point production
+  collection). They are here to be read, not differenced.
+- **`probe_ms`** is how long the probe itself took. A probe that answers in
+  milliseconds while the search burned 30 s is itself informative: the store was
+  responsive to a cheap call and slow only on the search.
+
+Two lines you may see instead:
+
+- `msg="qdrant post-mortem probe failed on '<collection>' — TimeoutError; probe
+  bound is 2.0s"` — the store did not answer the probe either, within its own
+  2 s bound (deliberately far below `QDRANT_TIMEOUT`, so the probe cannot add a
+  minute to a request that has already failed). Read it as a store that is
+  wedged rather than slow; the 503 the user got is unchanged either way.
+- **No probe line at all** on a `reason=timeout` failure — either the tenant has
+  not enabled it, or the rate limit swallowed it. It probes **at most once per
+  collection per 60 s**, so during a bad minute only the first failure carries
+  one. Do not read a missing probe line as a healthy collection.
+
+The probe never changes the response: any failure of its own is swallowed to a
+log line and the original 503 propagates unchanged, and `elapsed_ms` on the
+failure line is the *store's* latency, captured before the probe runs.
 
 ## 5. `self_ms` is an upper bound, and on bearer deployments it is inflated
 

@@ -336,6 +336,58 @@ async def test_a_raising_probe_does_not_change_the_failure(caplog):
 
 
 @pytest.mark.asyncio
+async def test_cancellation_during_the_probe_propagates(monkeypatch):
+    """A cancellation mid-probe must propagate, NOT be swallowed into a 503.
+
+    The docstring on ``_postmortem_probe`` claims this — ``except Exception``,
+    deliberately not ``BaseException``, because the caller has gone away and
+    answering a request nobody is waiting for is the wrong trade. Review found
+    the claim had **no guard**: widening the catch to ``BaseException`` passed
+    the entire suite. Under that mutant the search swallows the cancellation and
+    raises ``StoreUnavailable``, doing exactly what the docstring says it
+    refuses. This is that guard.
+
+    The probe bound is raised well above the test's own timescale so that
+    ``wait_for`` cannot be the thing that ends the probe — the cancellation must
+    be, or the test is measuring the previous test's behaviour.
+    """
+    monkeypatch.setattr(qdrant_mod, "_PROBE_TIMEOUT_S", 30.0)
+    entered = asyncio.Event()
+
+    class _HangingClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(TIMEOUT_EXC)
+            self.cancelled = False
+
+        async def get_collection(self, _name: str) -> object:
+            self.get_collection_calls += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()  # never set
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            raise AssertionError("unreachable")
+
+    client = _HangingClient()
+    store = _store(client=client)
+
+    task = asyncio.ensure_future(store.search([0.1], top_k=1))
+    # CONTROL bound: if the probe is never entered this fails in 5s instead of
+    # hanging the suite. It can never end the probe — only the cancel below can.
+    await asyncio.wait_for(entered.wait(), 5.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled(), (
+        "the cancellation was swallowed and turned into some other outcome — a "
+        "503 answered to a caller that had already gone away"
+    )
+    assert client.cancelled, "the probe's own request was left in flight"
+
+
+@pytest.mark.asyncio
 async def test_elapsed_s_excludes_the_probe(monkeypatch):
     """``elapsed_s`` is the STORE's latency — the measurement #427 could not
     make. Capturing it after the probe would fold up to 2s of our own probe into
