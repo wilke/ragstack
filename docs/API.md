@@ -70,11 +70,33 @@ one authorization seam (`resolve_access`):
   gets a **403**; one who cannot read it gets the same **404** as an unknown id —
   a 403 there would make the write endpoints an existence oracle for private
   collections.
-- **Ingest into the default collection and `DELETE /v1/documents/{id}`** need
-  **read** access to the (shared, backfilled-public) default collection: it is
-  the pre-ownership multi-tenant surface, where the per-chunk tenant stamp — not
-  collection ownership — isolates writers (each write/delete only ever touches
-  the caller's own tenant's chunks).
+- **An omitted `collection` is resolved per caller, not per registry** (#422,
+  #453). On ingest (`POST /v1/ingest`, `POST /v1/ingest/upload`) the target is
+  the caller's **writable** default: their [visible listing](#get-v1collections)
+  narrowed to what they may write, then the same pick — the registry pointer
+  when it survives, else the first entry in listing order. Two refusals, and
+  **neither names a collection id** (naming one would make the refusal an
+  existence oracle for a collection the caller was never shown):
+  - **403** `no collection accepts your uploads: name a collection you own
+    explicitly in 'collection', or create your own (POST /v1/collections)` —
+    the caller can read something but write nothing.
+  - **404** `no collection is accessible to this caller` — the caller can read
+    nothing at all. Byte-identical to the read paths' refusal, and the same
+    state in which `GET /v1/collections` reports `default: ""` with an empty
+    `collections`.
+
+  An **explicitly named** id never enters that picker: it stays
+  403-if-readable / 404-if-not, so no request is ever silently rerouted from the
+  collection the caller chose to one the server did.
+- **The read exemption keys on the shared-surface flag, never on the pointer.**
+  Both ingest branches and `DELETE /v1/documents/{doc_id}` authorize with
+  `read` when the resolved entry **is the legacy shared surface**
+  (`is_shared_surface`) and `write` otherwise — because there the per-chunk
+  tenant stamp, not collection ownership, isolates writers (each write/delete
+  only ever touches the caller's own tenant's chunks). It is deliberately *not*
+  keyed on "is this what `default` points at": aim the pointer at a genuinely
+  owned collection (#276) and a pointer-keyed exemption would let any reader of
+  it ingest into somebody else's corpus just by omitting `collection`.
 - **`DELETE /v1/collections/{id}`** also **revokes every ACL row** of the
   collection (softly — audit history survives), so a later collection reusing
   the same id never inherits the deleted one's owner row or `public` grant.
@@ -109,33 +131,71 @@ keys are configured.
 
 ## Endpoints
 
-| Method | Path | Summary |
-|---|---|---|
-| GET | `/health` | Liveness check |
-| POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate |
-| POST | `/v1/retrieve` | Retrieve chunks only (no answer) |
-| POST | `/v1/collections` | Create a collection (any principal; `embedding`/`chunk` overrides admin-only) |
-| GET | `/v1/collections/{id}/shares` | List a collection's shares + owner (owner-or-admin) |
-| POST | `/v1/collections/{id}/shares` | Grant a read share (or publish via `@public`) — owner-or-admin |
-| DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (un-publish) — owner-or-admin |
-| POST | `/v1/collections/{id}/owner` | Transfer ownership to another user — current-owner-or-admin |
-| POST | `/v1/groups` | Create a group (any authenticated caller owns what they create) |
-| GET | `/v1/groups` | List the groups the caller owns or belongs to |
-| GET | `/v1/groups/{id}` | Group details + members (owner-or-member; non-member 404) |
-| DELETE | `/v1/groups/{id}` | Delete a group (owner-or-admin; `public` not deletable) |
-| POST | `/v1/groups/{id}/members` | Add a member (owner-or-admin) |
-| DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member (owner-or-admin) |
-| POST | `/v1/admin/service-accounts` | Register a machine identity (admin only) |
-| GET | `/v1/admin/service-accounts` | List registered service accounts (admin only) |
-| POST | `/v1/admin/service-accounts/{subject}/disable` | Soft-revoke an account's key (admin only) |
-| POST | `/v1/admin/service-accounts/{subject}/enable` | Re-enable a disabled account (admin only) |
-| PATCH | `/v1/admin/users/{subject}/role` | Grant/revoke the admin role for a federated user (admin only) |
-| POST | `/v1/ingest` | Ingest a file/directory (async job) |
-| GET | `/v1/ingest/{job_id}` | Poll ingest job status |
-| GET | `/v1/documents` | List indexed documents |
-| DELETE | `/v1/documents/{doc_id}` | Delete a document + its chunks |
-| GET | `/v1/graph/entities` | List knowledge-graph entities |
-| GET | `/v1/graph/neighbors/{entity}` | Entity neighborhood triples |
+All **49** operations in the contract. "Gate" is the authorization the route
+applies on top of authentication; *authenticated* means any valid credential of
+either kind. Rows without a link are covered in [Operations &
+admin](#operations--admin).
+
+| Method | Path | Gate | Summary |
+|---|---|---|---|
+| GET | [`/health`](#get-health) | **open** — no credential | Liveness check |
+| POST | [`/v1/query`](#post-v1query) | authenticated | Full RAG: rewrite → retrieve → rerank → generate |
+| POST | [`/v1/retrieve`](#post-v1retrieve) | authenticated | Retrieve chunks only (no answer) |
+| GET | [`/v1/chunks`](#get-v1chunks) | authenticated | Fetch chunks by id (client-side context expansion) |
+| GET | [`/v1/collections`](#get-v1collections) | authenticated (**owner-filtered**) | List readable collections + the caller's `default` |
+| POST | [`/v1/collections`](#post-v1collections) | authenticated; **admin** for `embedding`/`chunk`, or if `ALLOW_USER_COLLECTION_CREATE=false` | Create a collection |
+| DELETE | [`/v1/collections/{id}`](#delete-v1collectionsid) | owner-or-admin | Unregister a collection, optionally purging its data |
+| POST | [`/v1/collections/{id}/restore`](#post-v1collectionsidrestore) | owner-or-admin, **bearer only** | Restore a dormant collection from its Workspace archive |
+| POST | [`/v1/collections/{id}/graph`](#post-v1collectionsidgraph) | owner-or-admin, **bearer only** | Extract the knowledge graph of one archived version |
+| GET | [`/v1/collections/{id}/shares`](#collection-shares) | owner-or-admin | List a collection's shares + owner |
+| POST | [`/v1/collections/{id}/shares`](#collection-shares) | owner-or-admin | Grant a read share (or publish via `@public`) |
+| DELETE | [`/v1/collections/{id}/shares/{share_id}`](#collection-shares) | owner-or-admin | Revoke a share (un-publish) |
+| POST | [`/v1/collections/{id}/owner`](#post-v1collectionsidowner) | current-owner-or-admin | Transfer ownership to another user |
+| POST | [`/v1/groups`](#groups) | authenticated (owns what it creates) | Create a group |
+| GET | [`/v1/groups`](#groups) | authenticated | List the groups the caller owns or belongs to |
+| GET | [`/v1/groups/{id}`](#groups) | owner-or-member (non-member 404) | Group details + members |
+| DELETE | [`/v1/groups/{id}`](#groups) | owner-or-admin (`public` not deletable) | Delete a group |
+| POST | [`/v1/groups/{id}/members`](#groups) | owner-or-admin | Add a member |
+| DELETE | [`/v1/groups/{id}/members/{subject}`](#groups) | owner-or-admin | Remove a member |
+| POST | [`/v1/ingest`](#post-v1ingest) | authenticated; owner-or-admin on a named collection; **bearer** under `INGEST_BACKEND=gowe` | Ingest a path or Workspace reference (async job) |
+| POST | [`/v1/ingest/upload`](#post-v1ingestupload) | same as `/v1/ingest` | Upload files for ingestion (multipart, async job) |
+| GET | [`/v1/ingest/{job_id}`](#get-v1ingestjob_id) | authenticated | Poll ingest job status |
+| GET | [`/v1/documents`](#get-v1documents--delete-v1documentsdoc_id) | authenticated | List indexed documents (paginated) |
+| DELETE | [`/v1/documents/{doc_id}`](#get-v1documents--delete-v1documentsdoc_id) | `write` on the resolved collection — `read` on the legacy shared surface | Delete a document + its chunks |
+| GET | [`/v1/graph/entities`](#get-v1graphentities--get-v1graphneighborsentity--get-v1graphstats) | authenticated | List knowledge-graph entities (`?limit=`) |
+| GET | [`/v1/graph/neighbors/{entity}`](#get-v1graphentities--get-v1graphneighborsentity--get-v1graphstats) | authenticated | Entity neighborhood triples (`?depth=`, ≤ 5) |
+| GET | [`/v1/graph/stats`](#get-v1graphentities--get-v1graphneighborsentity--get-v1graphstats) | authenticated | KG entity/relationship counts (tenant-scoped) |
+| GET | [`/v1/models/available`](#get-v1modelsavailable) | authenticated | Models assignable per-request as `llm` / `reranker` |
+| GET | [`/v1/stats/stores`](#operations--admin) | authenticated (scoped to readable tenants) | Per-store chunk/document counts |
+| GET | [`/v1/stats/tenants`](#get-v1statstenants) | authenticated (`policy` admin-only) | Who am I: identity, reach, tenant × collection counts |
+| GET | [`/v1/stats/models`](#operations--admin) | **admin** | Model endpoint reachability, latency, pool health |
+| POST | [`/v1/stats/models/benchmark`](#operations--admin) | **admin** | Short, bounded embedding/LLM throughput probe |
+| GET | [`/v1/config`](#operations--admin) | **admin** | Allowlisted effective configuration (no secrets) |
+| GET | [`/v1/health/deep`](#get-v1healthdeep) | **admin** | Per-dependency health probe with latencies |
+| GET | [`/v1/jobs`](#get-v1jobs) | **admin** | Recent ingest jobs (`source` can carry a path) |
+| GET | [`/v1/admin/log-level`](#get--put--delete-v1adminlog-level) | **admin** | The log level in effect in this process |
+| PUT | [`/v1/admin/log-level`](#get--put--delete-v1adminlog-level) | **admin** | Change it live, optionally with a TTL auto-revert |
+| DELETE | [`/v1/admin/log-level`](#get--put--delete-v1adminlog-level) | **admin** | Drop the override, return to the configured level |
+| GET | [`/v1/admin/models/registry`](#operations--admin) | **admin** | Registered models + hot-swappable assignments |
+| POST | [`/v1/admin/models/registry`](#operations--admin) | **admin** | Register a model (SSRF-checked `base_urls`) |
+| PUT | [`/v1/admin/models/registry/{model_id}`](#operations--admin) | **admin** | Replace a registered model |
+| DELETE | [`/v1/admin/models/registry/{model_id}`](#operations--admin) | **admin** | Remove a registered model |
+| PATCH | [`/v1/admin/config/assignments`](#operations--admin) | **admin** | Assign models to hot-swappable tasks, applied live |
+| POST | [`/v1/admin/collections/evict`](#operations--admin) | **admin** | Evict k LRU archived collections (`?dry_run=`) |
+| POST | [`/v1/admin/service-accounts`](#service-accounts) | **admin** | Register a machine identity |
+| GET | [`/v1/admin/service-accounts`](#service-accounts) | **admin** | List registered service accounts |
+| POST | [`/v1/admin/service-accounts/{subject}/disable`](#service-accounts) | **admin** | Soft-revoke an account's key |
+| POST | [`/v1/admin/service-accounts/{subject}/enable`](#service-accounts) | **admin** | Re-enable a disabled account |
+| PATCH | [`/v1/admin/users/{subject}/role`](#patch-v1adminuserssubjectrole--bearer-admins) | **admin** | Grant/revoke the admin role for a federated user |
+
+Everything under `/v1/admin/*`, plus `/v1/config`, `/v1/health/deep`,
+`/v1/jobs`, `/v1/stats/models` and the benchmark, tests the **authenticated
+principal's role** — not which header carried it, so a bearer identity an admin
+source names reaches every one of them. The Go scaffold implements only
+`/health`, query/retrieve, ingest (+upload, +status), documents (list/delete),
+collections (list/create/delete), chunks, `models/available`, the model-registry
+listing and the two graph reads; everything else is **Python only**, and the Go
+side has no `X-API-Key` or bearer identity path at all.
 
 ### GET /health
 
@@ -161,8 +221,8 @@ gracefully** (HTTP 200 with sources) rather than erroring.
 | `rewrite_strategies` | string[] | `["passthrough"]` | also `multiquery`, `hyde` (LLM-backed; ignored if no LLM) |
 | `filters` | object | `{}` | metadata equality filters (ANDed); see [Metadata & filtering](#metadata--filtering) |
 | `use_graph` | bool | true | include the knowledge-graph retrieval leg |
-| `stream` | bool | false | reserved |
-| `collection` | string \| null | null | registry collection id to query; null = the default collection. Unknown **or unreadable** → `404` |
+| `stream` | bool | false | **accepted and ignored** — no streaming is implemented and no response differs (#458). Do not build on it |
+| `collection` | string \| null | null | registry collection id to query; null (or the reserved pointer name `"default"`, which #276 makes equivalent to omitting) = **[the caller's default collection](#get-v1collections)** — the id `GET /v1/collections` advertises as `default`, not the global registry pointer. Unknown **or unreadable** → `404`; no readable collection at all → `404` naming no id |
 | `collections` | string[] \| null | null | [multi-collection fused retrieval](#multi-collection-retrieval-collections) (issue #253): 1–5 unique registry ids to query together; mutually exclusive with `collection` (both, more than 5, duplicates or `[]` → `422`). Every id is resolved and read-authorized before any retrieval runs: one unknown/unreadable → `404`, one dormant → `503` + `Retry-After`, for the whole request |
 | `retrieval_mode` | `hybrid` \| `vector` \| `bm25` | `hybrid` | which retrieval legs run: dense + BM25 fused, dense only, or keyword only. Graph leg is orthogonal (`use_graph`) |
 | `rerank` | bool \| null | null | force the cross-encoder on/off for this request; null keeps the server setting (rerank iff a reranker is configured) |
@@ -292,14 +352,16 @@ a hit (the server-side alternative is [`context_window`](#context-expansion-cont
 `max_chunk_ids`); typically the
 `prev_chunk_id` / `next_chunk_id` a source's metadata carries, so a client can
 page through the document one chunk at a time (each returned chunk carries its
-own neighbour ids — the ids are the cursor). `collection` defaults to the
-default collection. Tenant-scoped like every read (own + `public`): ids that do
+own neighbour ids — the ids are the cursor). An omitted `collection` resolves to
+**[the caller's default collection](#get-v1collections)** — the same rule
+`/v1/query` and `/v1/retrieve` use, evaluated through the same function — and a
+caller who can read none gets `404` naming no id. Tenant-scoped like every read (own + `public`): ids that do
 not exist or that the caller may not read are **silently omitted**; order
 follows the request. At a document's first/last chunk the neighbour id is
 absent (older bulk loads stamped the literal string `"None"`).
 
 ```bash
-curl -s ""$BASE"/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
+curl -s "$BASE/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
   -H 'X-API-Key: kp'
 # {"chunks":[{"doc_id":"…","chunk_id":"…","content":"…","metadata":{…}}, …]}
 ```
@@ -307,15 +369,103 @@ curl -s ""$BASE"/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
 `404` — unknown or unreadable collection. `422` — more than `max_chunk_ids`
 ids. `503` — authorization store unavailable.
 
+### GET /v1/collections
+
+The collections this caller may serve `collection` / `collections` from, and the
+id an omitted `collection` resolves to **for them**. Any authenticated caller;
+there is no role gate.
+
+**Owner-filtered.** The listing is the per-tenant allowlist (`TENANT_COLLECTIONS`)
+**intersected with what the caller may actually read** — owned, granted, group-
+or `public`-shared; admins see everything. Order is registry **insertion** order,
+deliberately not sorted, because the tie-break below depends on it. An
+authorization-store outage is **503**, not a short list: the endpoint refuses
+rather than risk hiding a readable collection (fail closed).
+
+**Response** (`CollectionsResponse`): `{ collections: CollectionInfo[], default }`.
+
+> **`default` and `is_default` are two different things, and conflating them is
+> [#419](../CHANGELOG.md).** Read the right one:
+>
+> | | `CollectionsResponse.default` | `CollectionInfo.is_default` |
+> |---|---|---|
+> | Type | **string** (an id) | **boolean** |
+> | Means | the id **this caller's** omitted `collection` targets | the **global registry pointer** (`DEFAULT_COLLECTION_ID`) names this entry |
+> | Scope | per caller — two callers get different values | per deployment — the same for everyone who can see it |
+> | How many | exactly one value, always | true on **at most one** listed entry, and on **zero** when the caller cannot read the one the pointer names |
+> | When the caller can read nothing | `""` (empty string) | no entries at all to carry it |
+>
+> `CollectionInfo.default` is a **deprecated alias of `is_default`** — same
+> boolean, confusable name. New clients read `is_default`.
+>
+> A client that wants a deterministic target should send
+> `CollectionsResponse.default` **explicitly** on `/v1/query`, `/v1/retrieve` and
+> `/v1/chunks` rather than omitting the field.
+
+**How `default` is computed** — one function, called by the listing, by
+`/v1/query`, `/v1/retrieve`, `/v1/chunks` and by both ingest paths, so the
+advertised id and the resolved id cannot drift (they used to be separate
+expressions, which is #419):
+
+1. the per-tenant allowlist ∩ the caller's readable set = `collections`;
+2. the **registry pointer** if it is among them, else the **first entry in
+   insertion order**;
+3. nothing readable → `default: ""`, `collections: []`, and every implicit-target
+   route answers **404** `no collection is accessible to this caller`.
+
+Ingest adds one narrowing step between (1) and (2) — the writable subset — and
+its own 403 when that subset is empty; see [Collection
+ownership](#authentication--tenancy) and [POST /v1/ingest](#post-v1ingest).
+
+**`CollectionInfo`** — `id`, `label`, `model`, `dim` and `default` are required;
+the rest are optional:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `label` | string | registry id and display label |
+| `model`, `dim` | string, int | the bound embedding model and its dimension |
+| `chunk_method`, `chunk_size` | string \| null, int \| null | the bound chunk strategy |
+| `is_default` | bool | the **global registry pointer** flag (see above) |
+| `default` | bool | deprecated alias of `is_default` |
+| `state` | string \| null | `active` \| `archiving` \| `dormant` \| `restoring` \| `lost`; null for a collection the registry does not track (the settings-derived default). See [POST /v1/collections/{id}/restore](#post-v1collectionsidrestore) |
+| `archive_pending` | bool \| null | the last load succeeded but its archive step failed — the collection stays active and cannot be evicted |
+| `versions` | int[] \| null | ordered archive version numbers on the registry row; a restore replays them in this order |
+| `count`, `text_count` | int \| null | tenant-scoped vector and BM25 chunk counts (own + `public`, widened by a read share); null when unavailable — compare the two for a vector↔text parity check |
+| `provenance` | object \| null | build lineage from the collection's manifest; `source` is `ingest` (verified) or `config` (declared). Deliberately omits `embedding_endpoints` — internal infra URLs are not exposed here |
+
+```bash
+curl -s "$BASE"/v1/collections -H 'X-API-Key: kp'
+# {"collections":[{"id":"open-access","label":"Open access","model":"BAAI/bge-m3",
+#                  "dim":1024,"default":true,"is_default":true,"state":"active",
+#                  "count":25143002,"text_count":25143002},
+#                 {"id":"my-papers","label":"My papers","model":"BAAI/bge-m3",
+#                  "dim":1024,"default":false,"is_default":false,"state":"active"}],
+#  "default":"open-access"}
+```
+
+`401` — missing or invalid credential. `503` — authorization store unavailable.
+Schemas: `contracts/schemas/collections_response.json`, `collection_info.json`.
+
 ### POST /v1/collections
 
 Create a collection. `id` and `label` are optional; omitting `embedding` and `chunk`
 builds from the **server-default build spec** (resolved to concrete values at create
 time, so later default changes never re-identify an existing collection). Supplying
-`embedding` or `chunk` is an **admin-only** override → `403` otherwise. `409` when the
-spec collides with an existing collection; `507` when the `max_collections` bound on
-**active** collections is met and nothing can be evicted to make room (see below).
+`embedding` or `chunk` is an **admin-only** override → `403` otherwise.
 Full schema: `contracts/schemas/collection_create_request.json`.
+
+**Success is `201`** with the new `CollectionInfo`. Refusals:
+
+| Status | When |
+|---|---|
+| `400` | the referenced model is not an **embedding** model; or the chunk config cannot chunk — an unknown `chunk.method` (the message lists the valid ones), a negative overlap, or an overlap ≥ the effective chunk size (both would loop forever) |
+| `403` | the admin-only `embedding`/`chunk` override without the admin role; or `ALLOW_USER_COLLECTION_CREATE=false` and the caller is not an admin; or the deployment's effective cap is zero |
+| `404` | the referenced embedding model is not registered (`GET /v1/admin/models/registry`) |
+| `409` | the resolved spec collides with an existing collection; or the id is the reserved pointer name `default`; or the id carries residual ACL state owned by another subject (the create is rolled back rather than inheriting it); or the caller already owns `MAX_COLLECTIONS_PER_OWNER` collections — a structured `{owned, limit}` `detail` |
+| `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) |
+| `429` | `rate_limit_collections_create_per_hour` exceeded (default **5**/h; `Retry-After` in seconds; admins exempt) — see [Rate limits](#rate-limits-issue-87) |
+| `503` | the authorization store could not record ownership — the create is rolled back (fail closed) |
+| `507` | the `max_collections` bound on **active** collections is met and nothing can be evicted to make room (see below) |
 
 The bound counts **active** rows (`state == active`) of the **durable registry**
 (`collections_file` / the `collections` table), not the serving process's in-memory
@@ -356,6 +506,84 @@ curl -s "$BASE"/v1/collections \
   -d '{"id": "my-papers", "label": "My papers"}'
 ```
 
+### DELETE /v1/collections/{id}
+
+Unregister a collection, optionally purging its data. **Owner-or-admin** (no
+longer admin-only — a user manages its own private collections, ADR-0003 §2),
+gated through the same seam and with the same leak-safe statuses as the share
+routes: **403** readable-but-not-owned, **404** unknown *or* unreadable, **503**
+store outage.
+
+**The two forms are mutually exclusive by design, and exactly one is always legal**,
+so nothing is undeletable:
+
+| `?purge=` | What happens | Refused (**409**) when |
+|---|---|---|
+| `false` (default) | drops the **binding** only; the Qdrant collection and the ES index stay | **no other registry entry claims that store** — unregistering would strand data no entry claims and no ACL governs (ADR-0002 decision 5 toward zero), and repeated create/delete cycles would accumulate orphaned stores the collection cap never sees. → **204** |
+| `true` | also deletes the Qdrant collection, the ES index, the collection's knowledge-graph triples (**every tenant's**, when a graph backend is configured) and the provenance manifest. **Irreversible** — recoverable only by re-ingesting | the store is **shared with another registry entry** (content-addressed collections built from an identical spec share one store; the message names the others). → **200** `CollectionPurgeReport` |
+
+Both forms are also **409** for the legacy shared collection and for the current
+default pointer's target. Purging is **idempotent**: a target already gone is
+listed under the report's `absent`, not an error, and a partial failure (Qdrant
+dropped, ES errored) is *reported* — never rolled back, never hidden behind a 500.
+
+Deleting **revokes every ACL row** of the collection — the owner row and all
+shares, softly, so audit history survives — which is what stops a later
+collection reusing the same id from inheriting the deleted one's owner row or
+`public` grant.
+
+```bash
+curl -s -X DELETE "$BASE"/v1/collections/my-papers          -H 'X-API-Key: kp'  # 204 unregister
+curl -s -X DELETE "$BASE"/v1/collections/my-papers?purge=true -H 'X-API-Key: kp'  # 200 + report
+```
+
+Schema: `contracts/schemas/collection_purge_report.json`.
+
+### POST /v1/collections/{id}/restore
+
+Explicit, **owner-or-admin** counterpart of the on-access restore (#358). A
+collection whose physical stores were evicted is `dormant`: only its archive —
+`versions/<n>/` under the **owner's** Workspace, one directory per completed
+ingest or delete — still exists. This lists those versions and submits the
+`restore-collection` workflow **as the caller** (their bearer token authenticates
+the submission and pre-stages every `ws://` version directory), replaying them in
+order: every file's sha256 is verified and the manifest's `spec_hash` must equal
+the registry row's **before anything is written**; chunk versions upsert both legs
+with deterministic ids, tombstone versions delete by doc id.
+
+**Bearer only.** An API-key principal carries no Workspace token and is **400** —
+not 401, because the credential is valid, it just cannot be used to submit.
+
+**Idempotent**, and the state is a compare-and-swap so concurrent callers cannot
+double-submit:
+
+| Row state on arrival | Result |
+|---|---|
+| `dormant` | submits, flips the row to `restoring`, returns `submission_id` |
+| `restoring` | **202**, no second submission, `submission_id: null` |
+| `active` / `archiving` | **202**, nothing to do, `submission_id: null` |
+| `lost` | **may retry** — unlike the on-access path, which answers 409 here, since the owner may have repaired the archive |
+
+On completion the row flips `restoring → active`; an engine failure returns it to
+`dormant` with the error recorded; a checksum or spec-hash failure marks it `lost`
+with the reason.
+
+```bash
+curl -s -X POST "$BASE"/v1/collections/my-papers/restore \
+  -H "Authorization: Bearer $BVBRC_TOKEN"
+# {"collection_id": "my-papers", "state": "restoring", "submission_id": "sub_…",
+#  "message": "restore of 3 version(s) submitted"}
+```
+
+**202** `CollectionRestoreResponse` `{ collection_id, state, submission_id?,
+message }`. Refusals: **400** no bearer credential, or the registry row records no
+owner subject so its Workspace folder cannot be located; **403** readable but not
+owned; **404** unknown/unreadable; **502** the Workspace listing or the engine
+submission failed (the row is left as it was — retry is safe); **503** the
+authorization store is unavailable, *or* no workflow engine is configured, *or*
+the tenant is [at capacity](#post-v1collections) (`Retry-After` set; nothing is
+submitted). Schema: `contracts/schemas/collection_restore_response.json`.
+
 ### Collection shares
 
 `GET`/`POST`/`DELETE /v1/collections/{id}/shares` manage who may **read** a
@@ -372,7 +600,7 @@ back in the response so a typo — an unclaimable grant — is visible):
 |---|---|
 | `@public` or `public` | the built-in world-readable **public group** (read-only) |
 | `@group:<id>` or `group:<id>` | a named **group** by id (read-only; the group must exist — else **422** echoing the id) |
-| `@service:<subject>` | a **service account** (#258) — the subject is kept **colon-free**, i.e. exactly the string its API key authenticates as |
+| `@service:<subject>` | a **service account** (#258) — the subject is kept **colon-free**, i.e. exactly the string its API key authenticates as. An empty subject, a subject containing `:`, or one of the reserved fallback tenants `default` / `public` is **422**: those two are the tenants every *unmapped* API key resolves to, so `@service:default` would be an unrestricted `@public` wearing a single-account name (use `@public` if that is the intent) |
 | a value containing `:` | a full `issuer:subject` string, kept **verbatim** (issuer/subject halves must both be non-empty) |
 | a bare username | prefixed with `issuer` (default `bvbrc`) → `bvbrc:<username>` |
 
@@ -767,40 +995,110 @@ and `stats.policy`. Schemas: `contracts/schemas/user_role_request.json`,
 
 ### POST /v1/ingest
 
-Accepts a file or directory `source` (resolved within `INGEST_ROOT`) and processes
-it in the **background**, returning immediately with a `job_id`. **`INGEST_ROOT`
-must be configured**: with it unset the endpoint returns `503` on every request,
-because an unconfined `source` is an arbitrary server-side file read whose text is
-retrievable back through `/v1/retrieve`. A directory is
-ingested recursively (`.pdf`/`.txt`/`.md`/`.jsonl`), one document per item.
-Re-ingesting the same source **replaces** that document's chunks (deterministic
-document id) rather than duplicating; a re-ingest that yields no embeddable chunks
-fails the job and leaves the prior version intact.
+Accepts a `source` and processes it in the **background**, returning immediately
+with a `job_id`. What a `source` *is*, and which gates run, depend on
+`INGEST_BACKEND`:
+
+| | `INGEST_BACKEND=local` (default) | `INGEST_BACKEND=gowe` (#203/#353) |
+|---|---|---|
+| `source` | a file or directory path, resolved within `INGEST_ROOT` | a **Workspace reference** — `ws:///<user>/home/…` or `/<user>/home/…`; anything else is **400** |
+| Credential | API key or bearer | **bearer BV-BRC identity required** — the job is submitted to the engine *as the caller*; an API-key or keyless principal is **401** |
+| `INGEST_ROOT` | **must be configured** — unset, every request is `503` | **never consulted**; nothing is read on the API host, the engine pre-stages the `ws://` source with the caller's token |
+| Where the work runs | in-process background task | the GoWe workflow engine |
+
+The `INGEST_ROOT` gate on the local backend is a confinement guard, not a
+configuration nag: an unconfined `source` is an arbitrary server-side file read
+whose text is retrievable back through `/v1/retrieve`. It is checked at request
+time (so it closes keyless deployments too, and cannot brick a running
+deployment that never ingests) and **only on the local path** — under `gowe`
+control never reaches it.
+
+On the local backend a directory is ingested recursively
+(`.pdf`/`.txt`/`.md`/`.jsonl`), one document per item. Re-ingesting the same
+source **replaces** that document's chunks (deterministic document id) rather
+than duplicating; a re-ingest that yields no embeddable chunks fails the job and
+leaves the prior version intact.
 
 > For multi-hundred-MB JSONL corpus dumps, use the operator tool
 > `python/scripts/ingest_jsonl.py` instead — it streams, fans out across embedding
 > endpoints, and bypasses the per-file size guard. See [Bulk ingestion](#bulk-ingestion).
 
-**Request** (`IngestRequest`): `source` (required), `metadata` (`{}`).
+**Request** (`IngestRequest`)
 
-**Response** (`IngestResponse`): `{ job_id, status, chunk_ids[], items? }`.
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `source` | string | — | **required**; a path under `INGEST_ROOT` (local) or a Workspace reference (gowe) |
+| `metadata` | object | `{}` | stamped onto every chunk of the document |
+| `collection` | string \| null | null | target registry collection. Omitted (or the reserved name `"default"`) targets the caller's **writable** default — see [Collection ownership](#authentication--tenancy). An explicitly named id is never rerouted: unknown/unreadable → `404`, readable-but-not-writable → `403` |
+
+**Response** (`IngestResponse`): `{ job_id, status, chunk_ids[], items?, collection? }`.
+`collection` names the collection the job **actually** targets — the point of it
+is the case where the *server* chose, so a caller who omitted the field learns
+where the write landed without guessing. The id is always one from the caller's
+own `GET /v1/collections`, so echoing it discloses nothing.
 
 ```bash
 curl -s "$BASE"/v1/ingest \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
-  -d '{"source": "papers/2024_review.pdf"}'
-# {"job_id": "...", "status": "accepted"}
+  -d '{"source": "papers/2024_review.pdf", "collection": "my-papers"}'
+# {"job_id": "...", "status": "accepted", "collection": "my-papers"}
 ```
 
 ### GET /v1/ingest/{job_id}
 
 Polls status: `accepted` → `running` → `completed` | `failed` (unknown id →
 `unknown`, HTTP 200). Batch/directory jobs include `items`:
-`{ total, completed, failed, pending }`.
+`{ total, completed, failed, pending }`. The response also carries `collection` —
+the row's **own** stamp, so a poll answers "where did this land?" with the same
+id the accept did; `null` on legacy rows written before the stamp existed.
 
 ```bash
 curl -s "$BASE"/v1/ingest/<job_id> -H 'X-API-Key: kp'
+# {"job_id":"…","status":"completed","chunk_ids":[…],"collection":"my-papers"}
 ```
+
+### POST /v1/ingest/upload
+
+Multipart counterpart to `POST /v1/ingest`: the caller uploads the bytes instead
+of naming a server-side path. Each file is staged under a per-tenant, per-job
+directory below `INGEST_ROOT` with a sanitized, traversal-confined filename, then
+the same background ingest path runs over it — **202** with a `job_id`, polled at
+[`GET /v1/ingest/{job_id}`](#get-v1ingestjob_id) exactly as a path ingest is.
+Under `INGEST_BACKEND=gowe` the files go to the caller's Workspace and
+`INGEST_ROOT` is not used.
+
+**Request**: `multipart/form-data` with one or more `files` parts (required) and
+an optional `collection` field carrying the same semantics as
+`IngestRequest.collection` — omitted targets the caller's **writable** default.
+The tenant is derived server-side from the credential, never from the body.
+
+```bash
+# curl sets multipart/form-data itself — do NOT add -H 'Content-Type: …' here.
+curl -s -X POST "$BASE"/v1/ingest/upload \
+  -H 'X-API-Key: kp' \
+  -F 'files=@2024_review.pdf' \
+  -F 'files=@notes.md' \
+  -F 'collection=my-papers'
+# {"job_id": "...", "status": "accepted", "collection": "my-papers"}
+```
+
+Bounds are all checked **before anything is staged or written**, and re-checked
+while the files stream out of the server's spool, so nothing oversized reaches
+the Workspace or `INGEST_ROOT`: content type in `UPLOAD_CONTENT_TYPES` and a
+declared PDF starting with `%PDF` (**415**); per-file `MAX_DOCUMENT_BYTES`, at
+most `MAX_UPLOAD_FILES` files, at most `MAX_UPLOAD_BYTES_PER_REQUEST` in total
+(**413**). Before the body is read at all, a `Content-Length` over that
+per-request cap (plus multipart framing) is **413** and a request without one
+(chunked) is **411** — a client that *lies* about `Content-Length` is only
+stopped at the gateway, which is why the deployment must enforce a matching body
+cap (see DEPLOYMENT.md). **One ingest job per principal at a time**: while a job
+of the caller's is still `accepted`/`running`, a new upload is **429** +
+`Retry-After` (admins exempt); the same 429 covers the ingest rate-limit bucket
+this route **shares** with `POST /v1/ingest`. Also **403**/**404** for the target
+collection exactly as on `POST /v1/ingest`, **409** for a `lost` collection,
+and **503** when `INGEST_ROOT` is unconfigured, the authorization store is down,
+the target is `dormant`/`restoring`, or the tenant is at capacity. Bound values:
+[Configuration](#configuration-server); status meanings: [Errors](#errors).
 
 ### GET /v1/documents · DELETE /v1/documents/{doc_id}
 
@@ -822,12 +1120,263 @@ requires `write` on the resolved collection — except on the legacy shared surf
 > The Go scaffold still returns `[]` here. This section describes the Python
 > implementation.
 
-### GET /v1/graph/entities · GET /v1/graph/neighbors/{entity}
+### GET /v1/graph/entities · GET /v1/graph/neighbors/{entity} · GET /v1/graph/stats
 
-List KG entities (`EntityInfo[]`: `{ name, triple_count }`) or fetch an entity's
-neighborhood triples (`TripleResponse[]`: `{ subject, predicate, object }`,
-optional `?depth=` query param, default 1). Requires the graph backend (Neo4j) to
-be configured; otherwise these return empty.
+All three are scoped to the caller's readable tenants (own + `public`) and, for a
+confined tenant, to its collection. All three **degrade rather than error** when
+no graph backend (Neo4j) is configured.
+
+- **`GET /v1/graph/entities`** → `EntityInfo[]` `{ name, triple_count }`,
+  most-connected first. `?limit=` (default **100**, `1`–`MAX_LIST_LIMIT` = 500;
+  outside the range → **422**). No graph store → `[]`.
+- **`GET /v1/graph/neighbors/{entity}`** → `TripleResponse[]`. `?depth=`
+  (default **1**, `1`–`MAX_GRAPH_DEPTH` = **5**; above → **422**). The cap is a
+  DoS guard, not a preference: `depth` feeds a Cypher variable-length traversal.
+  No graph store → `[]`.
+- **`GET /v1/graph/stats`** → `GraphStatsResponse`
+  `{ backend, available, entities, relationships }`. With no graph store
+  configured — or when the probe itself fails — it answers `available: false`
+  with null counts rather than a 500 (the failing probe is logged, so an
+  operator can tell "not configured" from "down").
+
+**`TripleResponse`** carries the `subject` / `predicate` / `object` triple plus
+the **#347 provenance fields** — optional in the contract, always emitted by the
+Python implementation, and empty/zero when unknown. These are what the
+[graph-extraction](#post-v1collectionsidgraph) leg archives beside a version:
+
+| Field | Type | Notes |
+|---|---|---|
+| `evidence` | string | the verbatim span the triple was read from |
+| `chunk_id` | string | the chunk that produced it |
+| `derived_by` | string | `llm`, `tool:<source>`, or `""` (unknown) |
+| `confidence` | int (0–3) | `0` unknown, `1` LLM-plausible, `2` corroborated by a tool, `3` verified against a structured source. **An LLM-derived triple is never above 1** |
+| `subject_id`, `object_id` | string | typed ids where known, e.g. `bvbrc:genome:<id>` |
+
+Schema: `contracts/schemas/triple_response.json`.
+
+### GET /v1/models/available
+
+The models registered for a **hot-swappable** task, i.e. the ids that are legal
+in `/v1/query`'s `llm` and `reranker` fields. **Any authenticated caller** — this
+is the picker's data source, so it is not admin-gated; `base_urls` are
+deliberately **not** exposed here (registration is admin-only and SSRF-checked,
+and the endpoint URLs are infrastructure).
+
+```bash
+curl -s "$BASE"/v1/models/available -H 'X-API-Key: kp'
+# {"models":[{"id":"llama-70b","task":"llm","label":"Llama 3.3 70B",
+#             "model":"meta-llama/Llama-3.3-70B-Instruct","provider":"vllm"}, …]}
+```
+
+**200** `AvailableModelsResponse` `{ models: [{ id, task, label, model,
+provider }] }`. `401` only. An unknown id on a request is **404**; a registered
+id used for the wrong task is **400**. Schema:
+`contracts/schemas/available_models_response.json`.
+
+### GET /v1/stats/tenants
+
+The de-facto **"who am I"** call — there is no `/v1/me` — plus a tenant ×
+collection count grid. Any authenticated caller.
+
+Where [`GET /v1/stats/stores`](#operations--admin) collapses the caller's readable
+tenants into one number per store, this **splits** that union, so an operator can
+see which tenant actually owns a corpus (data sitting in `public` rather than the
+org's own tenant) and per collection rather than in aggregate.
+
+**The grid is what makes it expensive** — one count per tenant × collection ×
+store, seconds on a large corpus. **`?counts=false` answers the identity half
+alone**: the same response shape, every `vector_count`/`text_count` null, and
+**no store probed**. Use that for a whoami.
+
+```bash
+curl -s "$BASE/v1/stats/tenants?counts=false" -H 'X-API-Key: kp'
+# {"tenant":"asm","role":"user","readable":["asm","public"],
+#  "restricted_to":null,"auth_enabled":true,"policy":null,
+#  "tenants":[{"tenant":"asm","own":true,"collections":[…]}, …]}
+```
+
+**200** `TenantsResponse`:
+
+| Field | Notes |
+|---|---|
+| `tenant`, `role` | the authenticated principal and its resolved role |
+| `readable` | own + `public` — the tenants every read is filtered to |
+| `restricted_to` | this tenant's collection allowlist; `null` = unrestricted |
+| `auth_enabled` | false on the keyless dev path (production startup forbids it) |
+| `policy` | **admin only** — the full tenant → collections map. `null` for everyone else, since it names other tenants |
+| `tenants[]` | one row per readable tenant: `{ tenant, own, collections[] }` |
+
+Rows cover the tenants this caller may read, **including a writer-tenant whose
+data a share makes readable** — such a row is scoped to the shared collections
+(other cells null) and is **omitted entirely when it carries no chunks**, so it
+never discloses an owner the caller could not already see. Columns are only
+collections the allowlist permits. Each count degrades to `null` independently.
+`503` when the authorization store is unavailable — the breakdown is
+owner-filtered, so it refuses rather than risk hiding a readable collection.
+
+### GET /v1/jobs
+
+Recent ingest jobs, most-recent-activity first, for the Ops dashboard.
+**Admin only** — a job's `source` can carry a filesystem path, so a non-admin
+gets **403**. `?limit=` (default **25**, 1–100).
+
+```bash
+curl -s "$BASE/v1/jobs?limit=10" -H 'X-API-Key: kadmin'
+# {"jobs":[{"job_id":"…","status":"completed","source":"papers/","error":"",
+#           "chunks":412,"items":{"total":17,"completed":17,"failed":0,"pending":0}}]}
+```
+
+**200** `JobsResponse` `{ jobs: JobSummary[] }`; each `{ job_id, status, source,
+error, chunks, items }`. `error` is a **caller-safe label — the exception class
+only, never a raw message**. `chunks` counts the `chunk_ids` stamped on the
+record (single-document runs). This is a listing, not a poll: for one job's live
+state use [`GET /v1/ingest/{job_id}`](#get-v1ingestjob_id), which needs no role.
+
+### GET /v1/health/deep
+
+Liveness of each backing store — vector, text, graph, job store — with
+per-check latency and backend detail. **Admin only**: the `detail` strings can
+carry backend hostnames and versions, so a non-admin gets **403**. The open,
+keyless liveness check is [`GET /health`](#get-health); this one is neither.
+
+```bash
+curl -s "$BASE"/v1/health/deep -H 'X-API-Key: kadmin'
+# {"status":"ok","checks":[{"name":"vector","ok":true,"detail":"qdrant 1.12.1",
+#                           "latency_ms":3.4}, …]}
+```
+
+**200** `DeepHealthResponse` `{ status, checks: [{ name, ok, detail,
+latency_ms }] }` — a failing dependency is reported **inside a 200**, in its own
+check, rather than turning the probe itself into a 5xx. Schema:
+`contracts/schemas/deep_health_response.json`.
+
+### GET · PUT · DELETE /v1/admin/log-level
+
+Change the running process's log level **without a restart**, and see what is in
+force. Admin only on all three.
+
+**Process-local, and it resets on restart** — a feature, not an oversight: a
+debugging session left at DEBUG cannot silently become a tenant's permanent
+configuration. To make a level stick, change `LOG_LEVEL` and restart. `pid` in
+the response says which process answered; every production launch today is a
+single uvicorn process with no `--workers`, so one call reaches the one process
+that serves every request.
+
+- **`GET`** → the live state: `configured_level` (the **raw** `LOG_LEVEL` string,
+  exactly as `GET /v1/config` echoes it — including a value the server rejected),
+  `configured_level_resolved` (what it resolves to; `INFO` when unrecognised),
+  `effective_level` (the root logger **right now**), `runtime_override`,
+  `changed_at`/`changed_by`, the dampen set, the per-logger `loggers` list with
+  `logger_override_count`/`max_logger_overrides`, and the pending-expiry fields
+  below.
+- **`PUT`** (`LogLevelRequest`) → **200** with the new state. Applied live, on the
+  very next log call. **Validation is atomic**: the whole body is checked before
+  anything is applied, so a `422` leaves the effective level exactly as it was.
+  - `level` — the new **root** level. Case-insensitive; `warn` is accepted;
+    `NOTSET` is rejected.
+  - `loggers` — a name → level map with **replace semantics**: what you send
+    becomes the complete set of runtime overrides, `{}` clears them all, and
+    omitting the field leaves them untouched. Names are charset/length checked
+    and **must already exist in the process** — `logging.getLogger(name)` creates
+    a logger permanently, so accepting arbitrary names would be an
+    unbounded-growth path even behind an admin gate. `ragstack.audit` cannot be
+    overridden.
+  - `ttl_seconds` — auto-revert after N seconds (1–`max_ttl_seconds`, default no
+    expiry). At the deadline the process reverts to the **configured defaults** —
+    the same end state `DELETE` produces, *not* whatever was in force before the
+    PUT — audited as `audit=expired` and carrying the principal that armed it.
+  - **Both fields are optional but a body needs one of them**, and a body
+    carrying **only** `ttl_seconds` is refused: a TTL modifies a change, it is
+    not one.
+  - **A later PUT supersedes an earlier one, expiry included** — every PUT cancels
+    any pending revert *before* applying, so two TTLs can never fight. The
+    corollary is worth reading twice: **a follow-up PUT that omits `ttl_seconds`
+    disarms the expiry the earlier one armed.** `auto_revert_pending`,
+    `expires_at` and `expires_in_seconds` in the response say so immediately.
+- **`DELETE`** → **200**, idempotent (there is nothing to 404 on: "no override"
+  is a valid state to reset from). Clears the root and per-logger overrides,
+  re-applies `LOG_LEVEL` + `LOG_DAMPEN_LOGGERS`, and **cancels any pending
+  auto-revert**. Audited as `audit=reset`, distinct from `audit=expired`.
+
+**`level` does not govern `uvicorn.*`.** Uvicorn's loggers set
+`propagate=False` and carry their own handlers, so `{"level":"CRITICAL"}` leaves
+the access line printing and `{"level":"DEBUG"}` does not turn uvicorn debug on.
+Name `uvicorn`, `uvicorn.error` or `uvicorn.access` in `loggers` to reach them —
+that works, and it is the only way to. The side benefit is that a full "denial of
+observability" is not reachable through this endpoint at all.
+
+```bash
+# Debug for ten minutes, then revert itself.
+curl -s -X PUT "$BASE"/v1/admin/log-level \
+  -H 'X-API-Key: kadmin' -H 'Content-Type: application/json' \
+  -d '{"level": "DEBUG", "ttl_seconds": 600}'
+curl -s "$BASE"/v1/admin/log-level -H 'X-API-Key: kadmin'
+curl -s -X DELETE "$BASE"/v1/admin/log-level -H 'X-API-Key: kadmin'   # back to configured
+```
+
+Why the TTL exists: httpcore emits roughly **15 log lines per outbound HTTP
+call**, and DEBUG deliberately *releases* the dampen set, so one `/v1/query` goes
+from about 3 lines to **75–210**. The failure mode is not an attacker; it is an
+admin who turned DEBUG on to investigate something and never came back. Every
+accepted change is logged at **WARNING**, with the calling principal and the
+before/after, on a logger pinned to WARNING so the record survives the very
+change that raises the threshold. `422` — an unknown or `NOTSET` level, a body
+with neither `level` nor `loggers`, a `ttl_seconds` out of range or alone, an
+unknown/invalid logger name, or more overrides than `max_logger_overrides`;
+nothing is applied. Schemas: `contracts/schemas/log_level_request.json`,
+`log_level_response.json`.
+
+### Operations & admin
+
+The remaining operator surface. All of these are **admin only** except
+`GET /v1/stats/stores`, which is scoped to the caller instead.
+
+- **`GET /v1/config`** → `ConfigResponse`. The allowlisted, non-sensitive
+  effective runtime configuration for the sysadmin dashboard. **Secrets are never
+  returned** — API keys, passwords, DSNs and the `api_key_tenants` /
+  `api_key_roles` maps are all excluded. It echoes the **raw** `LOG_LEVEL`
+  string, which is why `GET /v1/admin/log-level` exists to report the
+  *effective* one.
+- **`GET /v1/admin/models/registry`** → the registered models for the pipeline's
+  tasks (embedding, tokenizer, llm, reranker) plus the current hot-swappable
+  assignments. **`POST`** registers one (**201**; `base_urls` must pass the
+  server's SSRF allowlist; a **duplicate id is 400** — use `PUT` to update).
+  **`PUT /v1/admin/models/registry/{model_id}`** replaces one (**200**; unknown
+  id **404**). **`DELETE …/{model_id}`** removes one (**204**; **409** when a
+  task is still assigned to it).
+- **`PATCH /v1/admin/config/assignments`** → binds registered models to the
+  **hot-swappable** tasks (`llm`, `reranker`) and applies **live**: the affected
+  client is rebuilt and atomically swapped, no restart. Only the fields present
+  change; a field set to `null` reverts that task to its settings default.
+  Build-time tasks (embedding, chunking) are **422** — changing those builds a
+  new collection, it does not reconfigure this one.
+- **`POST /v1/admin/collections/evict?need=k[&dry_run=true]`** → the operator's
+  handle on the active-collection bound (#359), running by hand exactly the
+  policy [`POST /v1/collections`](#post-v1collections) runs automatically. Picks
+  up to `need` victims (1–1000, default 1), least-recently-accessed first among
+  **active** collections whose Workspace archive is current, and makes each
+  `dormant`: the registry row is compare-and-swapped `active → dormant`
+  **first** — readers get `503` + `Retry-After` from that instant — and only then
+  are the Qdrant collection and ES index dropped, best-effort per target. Never
+  evicted: one with an `accepted`/`running` ingest job, one whose stores are the
+  legacy shared surface's, one whose stores are shared with another registry id.
+  `dry_run=true` returns the plan and changes nothing. Schema:
+  `contracts/schemas/eviction_response.json`.
+- **`GET /v1/stats/stores`** → chunk/document counts for the vector, text and
+  graph stores, each **filtered to the caller's readable tenants** (own +
+  `public`, widened per collection by a read share) — **never a global store
+  total**, so a caller can never learn another tenant's corpus size. *Which*
+  collections is the caller's allowlist ∩ ownership, the same filter
+  `GET /v1/collections` applies, so a count reports what a query over that
+  collection would return and never more. Cost scales with the number of
+  readable collections (one probe per physical store per leg) — **poll slowly**;
+  the Ops dashboard uses 15 s. An unavailable store degrades to `null`.
+- **`GET /v1/stats/models`** → per-role (embedding / llm / reranker) model status
+  with per-endpoint reachability, latency and pool health. Admin only: `url` and
+  `detail` can carry backend hostnames.
+- **`POST /v1/stats/models/benchmark`** → a small, **bounded** embedding + LLM
+  throughput probe with per-model timings. Admin only, and the request bounds are
+  what keep it from being coaxed into a load test.
 
 ---
 
@@ -842,6 +1391,11 @@ be configured; otherwise these return empty.
 | `content` | string | chunk text |
 | `score` | number | RRF fused score, or the cross-encoder score when reranking is on |
 | `metadata` | object | arbitrary per-chunk metadata (see below) |
+| `context` | object[] | **optional.** Neighbouring chunks of the same document, each `{ chunk_id, position, content }` and ordered by `position` (negative = before, positive = after). Present only when the request set `context_window > 0` **and** at least one neighbour is visible — never an empty list. See [Context expansion](#context-expansion-context_window) |
+| `collection` | string | **optional.** The registry id this source came from. Present only on a [multi-collection](#multi-collection-retrieval-collections) request (`collections`, #253); a single-collection response is unchanged |
+
+`doc_id`, `chunk_id`, `content` and `score` are required; the rest are optional.
+Schema: `contracts/schemas/source.json`.
 
 ---
 
@@ -905,7 +1459,8 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `GRAPH_BACKEND`, `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`, `NEO4J_DATABASE` | `memory` (default, in-process, lost on restart) \| `neo4j` (durable property graph). `neo4j` requires the `neo4j` driver — the `graph` extra (`pip install ragstack[graph]`) — installed in **both** the API's environment **and** the worker image (`load_graph.py`, and `load_embeddings.py`'s graph replay, both construct `Neo4jGraphStore`; `extract_graph.py` does not — it only writes the extraction delta); it is not bundled by default. Constructing the store happens at API startup (`lifespan`), so a selected-but-missing driver is a **fatal boot-time error**, not a lazy failure on the first graph call (#404) |
 | `RERANK_ENABLED`, `RERANK_CANDIDATES`, `CROSSENCODER_SIDECAR_URL` | cross-encoder rerank stage |
 | `LLM_ENDPOINT`, `LLM_MODEL` | OpenAI-compatible chat endpoint for generation (empty → retrieval-only) |
-| `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard. `INGEST_ROOT` unset → `POST /v1/ingest` returns **503** (an unset root would make it an arbitrary server-side file read); logged as a warning at startup. `INGEST_ROOT=/`, or a path that is not an existing directory, is **refused at startup**. Additionally required non-empty when `REQUIRE_DURABLE_BACKENDS=true` |
+| `INGEST_BACKEND` | `local` (default) \| `gowe`. Selects what a `POST /v1/ingest` `source` means and which gates run — see [POST /v1/ingest](#post-v1ingest). Under `gowe` the job is submitted to the workflow engine as the caller, so a **bearer BV-BRC identity is required** and `INGEST_ROOT` is never consulted |
+| `INGEST_ROOT`, `MAX_DOCUMENT_BYTES` | ingest path confinement + size guard. **On `INGEST_BACKEND=local` only**, `INGEST_ROOT` unset → `POST /v1/ingest` and `POST /v1/ingest/upload` return **503** (an unset root would make ingest an arbitrary server-side file read); logged as a warning at startup. Under `gowe` nothing is read on this host and the gate is never reached. `INGEST_ROOT=/`, or a path that is not an existing directory, is **refused at startup**. Additionally required non-empty when `REQUIRE_DURABLE_BACKENDS=true` |
 | `MAX_UPLOAD_FILES`, `MAX_UPLOAD_BYTES_PER_REQUEST`, `UPLOAD_CONTENT_TYPES` | `POST /v1/ingest/upload` bounds (#202): at most **50** files per request, at most **500 MB** across them, and the content-type allowlist (default `application/pdf,text/plain,text/markdown,application/xml,text/xml`; a PDF must also start with `%PDF`) → `413` / `415`. Each file is still capped by `MAX_DOCUMENT_BYTES`. Checked against the declared sizes before anything is staged or written (the multipart body has by then been received and spooled by the server); a request whose `Content-Length` exceeds the per-request cap (plus multipart framing) is refused with `413` before the body is read, and one without a `Content-Length` with `411`. **The deployment gateway must enforce a body cap ≈ `MAX_UPLOAD_BYTES_PER_REQUEST`** — a client that lies about `Content-Length` is only stopped there (see DEPLOYMENT.md). One ingest job per principal at a time (`429` + `Retry-After` while one is accepted/running and written to within the last 6 h; admins exempt) is not a setting. All three reported in `GET /v1/config` |
 | `REQUIRE_DURABLE_BACKENDS` | production marker — fail fast on missing/unreachable durable backend instead of degrading to in-memory |
 | `TENANT_MAX_CONCURRENCY` | per-tenant admission cap on the shared embedding fleet |
@@ -951,21 +1506,48 @@ extracted citation list); `--no-index` produces the catalog without embedding.
 
 ## Errors
 
+**Every response carries `X-Request-Id`** — a 16-hex correlation id, stamped by
+middleware and **exposed to cross-origin browser clients** (along with
+`Retry-After`) so a UI can show it. It is the `rid=` on every log line the
+request produced, and the `Reference:` a user reads off an error screen; see
+[docs/runbooks/tracing-a-503.md](runbooks/tracing-a-503.md).
+
+**Error body** (`contracts/schemas/error.json`):
+
+| Field | Notes |
+|---|---|
+| `detail` | **required and deliberately untyped.** A **string** almost everywhere; an **array** of per-field errors for FastAPI's own `422`; an **object** `{error, owned, limit, message}` for the `owner_quota_exceeded` `409`. This is server prose and may name internal hosts, collections and settings — it is for operators and for callers that log it, not for rendering to an end user |
+| `request_id` | 16-hex, the same value as the `X-Request-Id` header. Redundant on purpose: a header does not survive a user pasting the JSON into a ticket. Present on the **store-unavailable 503** of `/v1/query` and `/v1/retrieve`; absent from bodies FastAPI's own handler produces |
+| `reason` | `timeout` \| `unreachable` \| `error` — the failure class of that same 503. `timeout` means we connected and the search was too slow (a retry often succeeds); `unreachable` means we never reached the store (a retry probably will not help — a connect timeout is classified here, *not* as `timeout`); `error` means the store answered unhappily. **Absent on the other 503 causes**, so treat an absent or unrecognised value as the conservative case |
+
 | Status | When |
 |---|---|
 | `200` | success — **including** graceful degradation (LLM/rewrite/rerank failure returns sources with a note) |
-| `204` | document deleted |
-| `401` | unknown/invalid API key |
-| `403` | authenticated but not permitted — supplying an admin-only build-spec override, or writing/deleting a collection you don't own (only when you *can* read it; otherwise `404`) |
-| `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed) |
+| `202` | accepted for background work — ingest upload, collection restore, graph extraction |
+| `204` | deleted: a document, a share, a group, a group member, a service-account state change, an unregistered collection |
+| `400` | a malformed `?cursor=` on `GET /v1/documents` (generic on purpose — the supplied value is never reflected back); a `filters` key `GET /v1/chunks` refuses while `context_window > 0`; an invalid chunk config or a non-embedding model on `POST /v1/collections`; a `permission: owner` share; a group form (`@public`, `@group:`) as an ownership-transfer `subject`; a colon-free subject on `PATCH …/role`; both an API key and an `Authorization` credential in one request; a non-Workspace `source` under `INGEST_BACKEND=gowe`; a restore without a bearer credential |
+| `401` | missing, unknown or invalid credential; a disabled service account's key; a bearer-only route (`/graph`, `/restore`) reached with an API key or keyless |
+| `403` | authenticated but not permitted — an admin-only route or build-spec override without the role; writing or deleting a collection you don't own (only when you *can* read it; otherwise `404`); or, on an ingest that **omitted `collection`**, `no collection accepts your uploads: name a collection you own explicitly in 'collection', or create your own (POST /v1/collections)` — which names no id |
+| `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed); an unknown share/group/job/model id; or, on any implicit-target route, `no collection is accessible to this caller` — which also names no id, and is the same state as `default: ""` from `GET /v1/collections` |
+| `409` | one of the busiest codes here, and always a **state** conflict, never a permission one: a duplicate active share grant, or one to the current owner; an ownership transfer replayed (it is not idempotent) or one with no active owner row; a `lost` collection; a colliding collection spec, the reserved id `default`, or residual ACL state under the id; the owner quota (`MAX_COLLECTIONS_PER_OWNER`) — the one **object** `detail`; a service-account subject that already exists as a **human** account; revoking the last stored admin of a deployment with no other admin source; deleting the built-in `public` group or revoking an active owner row; the graph/purge/unregister lifecycle guards |
 | `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) on `POST /v1/ingest`, `POST /v1/collections` or `POST /v1/collections/{id}/shares`; or `POST /v1/ingest/upload` breaks a bound — a file over `max_document_bytes`, more than `max_upload_files` files, or files totalling more than `max_upload_bytes_per_request` (#202) |
 | `411` | `POST /v1/ingest/upload` without a `Content-Length` (chunked transfer) — an upload must declare its length so it can be refused before the body is read (#202) |
 | `415` | an uploaded file's content type is not in `upload_content_types`, or a declared PDF has no `%PDF` header (#202) |
 | `422` | request body fails validation, or a request-shape bound is exceeded (`top_k`, `GET /v1/chunks` `ids`, a list `limit`) |
 | `429` | rate limit exceeded (issue #87) — see below; or, on `POST /v1/ingest/upload`, an ingest job of yours is still in flight (#202: one accepted/running job per principal; `Retry-After` set, admins exempt) |
-| `503` | a durable backend (including the authorization store) is unavailable — the request fails closed rather than degrading to open. Since #346 this includes a Qdrant search that exceeds `QDRANT_TIMEOUT` (`detail` starts `qdrant unavailable:`; a `Retry-After` header is set) |
+| `502` | an upstream the request is *proxying to* refused: the Workspace listing or the workflow-engine submission on a restore or a graph extraction. The registry row is left as it was, so a retry is safe |
+| `503` | a durable backend is unavailable — the request fails closed rather than degrading to open. **Four distinct causes** on `/v1/query` and `/v1/retrieve`, and only the first carries `reason`/`request_id` and a fixed 5 s `Retry-After`: (1) **the store did not answer** — including a Qdrant search that exceeds `QDRANT_TIMEOUT` (#346; `detail` starts `qdrant unavailable:`); (2) the **authorization store** could not answer (fail closed — never a silent allow); (3) the collection is **`dormant`/`restoring`** (#358 — the restore is submitted as the caller, `Retry-After` set); (4) the **tenant is at capacity** (#381). Elsewhere: ingest with no `INGEST_ROOT`, and a restore on a server with no workflow engine |
+| `507` | `POST /v1/collections` only: the active-collection bound (`MAX_COLLECTIONS`) is met and **nothing can be evicted** to make room. The `detail` counts the ineligible collections per reason (`not_active`, `archive_pending`, `no_archive`, `in_flight`, `protected`, `unregistered`) |
 
 Error responses never leak filesystem paths or upstream exception text.
+
+> **Unknown request fields are silently ignored (#457).** Every request schema in
+> `contracts/schemas/` sets `additionalProperties: false`, but the Python request
+> models for `/v1/query`, `/v1/retrieve` and `/v1/ingest` do not set Pydantic's
+> `extra="forbid"`, so a typo'd or invented field is dropped instead of being a
+> `422`. The contract is authoritative and the implementation is the bug — do not
+> rely on an unknown field being either rejected *or* honoured. The admin, group,
+> share and collection bodies **do** forbid extras.
 
 ### Rate limits (issue #87)
 
