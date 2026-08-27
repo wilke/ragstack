@@ -47,10 +47,11 @@ STAGES = {
     "generate": (1.2, 1),
 }
 
-#: Per-`record()` budget. Measured at ~4 µs for eleven series (11 dict lookups,
-#: 11 bisects, 44 adds); budgeted at 100 µs — twenty-five times that — because
-#: this is a shared box with no CI and a perf test that flakes gets deleted
-#: rather than investigated.
+#: Per-`record()` budget. Measured at ~4 µs per call, and each call touches
+#: ELEVEN series (one `wall` plus the ten stages in `STAGES` below) — so the
+#: number to quote is 4 µs per recorded REQUEST, not per series. Budgeted at
+#: 100 µs, twenty-five times that, because this is a shared box with no CI and a
+#: perf test that flakes gets deleted rather than investigated.
 RECORD_BUDGET_S = 0.0001
 
 #: p95 of (allowlisted route) minus p95 of (non-allowlisted route), end to end.

@@ -52,6 +52,19 @@ a new series is *not* created and a counter increments, so the map stops growing
 and the rollup line says out loud that it is no longer complete. Silent
 truncation would be worse than the leak.
 
+**What 512 series buys, stated in collections rather than in series**, because
+the multiplier is easy to miss: a ``(route, collection)`` pair costs
+``1 + <stages that ran>`` series, and a fully-wired query runs about ten — so
+roughly **11 series per pair, i.e. ~46 collections** across both routes before
+the cap bites. Production tenants hold one or two collections each, so this is
+ample; it is written here so nobody reads "512" as "512 collections". Memory at
+the cap is ``512 × ~200 B ≈ 100 KB``.
+
+One accepted wart of the suffix match: a 404 probe at ``POST /junk/v1/query``
+records into the ``(POST /v1/query, -)`` row. Cardinality-safe by construction —
+it cannot mint a series — but it is mild distribution pollution on the unscoped
+row, and it is named rather than left to be discovered.
+
 .. rubric:: What a "stage" observation is, under fan-out
 
 The middleware's ``finally`` has aggregates, not individual calls:

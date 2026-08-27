@@ -505,34 +505,123 @@ async def test_starting_twice_does_not_leave_an_orphan():
 
 
 # --------------------------------------------------------------------------- #
-# The lifespan wiring — structural, because nothing here can run a lifespan
+# The lifespan wiring — one behavioural test, one fast structural guard
 # --------------------------------------------------------------------------- #
+
+#: Run inside a subprocess by the test below. Enters the app's REAL lifespan and
+#: reports whether the rollup task was armed inside it and disarmed after.
+_LIFESPAN_PROBE = '''
+import asyncio
+from ragstack.api.main import app
+from ragstack.observability.histogram import rollup_running
+
+async def main():
+    async with app.router.lifespan_context(app):
+        print("INSIDE", rollup_running(), flush=True)
+    print("AFTER", rollup_running(), flush=True)
+
+asyncio.run(main())
+'''
+
+#: Every outbound endpoint the lifespan touches, pinned to a dead port.
+#:
+#: Not a formality. A scratch run of this probe with only the STORES pinned
+#: silently reached the live cross-encoder sidecar on ``:50052`` — the reranker
+#: model-verification probe at the end of ``lifespan`` is a real HTTP call and
+#: this host runs a real sidecar there. Reaching a live service from a test is
+#: the failure mode CLAUDE.md names outright, so the model backends are pinned
+#: too, not just the stores.
+_DEAD = "http://127.0.0.1:1"
+_PINNED_ENV = {
+    "QDRANT_URL": _DEAD,
+    "ELASTICSEARCH_URL": _DEAD,
+    "EMBEDDING_SIDECAR_URL": _DEAD,
+    "CROSSENCODER_SIDECAR_URL": _DEAD,
+    "FAISS_SIDECAR_URL": _DEAD,
+    "GOWE_URL": _DEAD,
+    "WORKSPACE_URL": _DEAD,
+    "NEO4J_URI": "bolt://127.0.0.1:1",
+    "REDIS_URL": "redis://127.0.0.1:1",
+}
+
+
+async def test_the_real_lifespan_arms_the_rollup_and_disarms_it(tmp_path):
+    """**The behavioural test of the production wiring.**
+
+    ``deps.lifespan`` holds the only two lines that arm and disarm this feature
+    on a real deployment, and ``ASGITransport`` does not run a lifespan — so
+    without this, deleting them would leave the whole suite green while the
+    rollup never ran anywhere. That is the "unarmed timer" shape this series has
+    already been bitten by once.
+
+    **A subprocess, and both reasons are load-bearing.** In-process, the real
+    lifespan rebuilds ``app.state``'s singletons on the shared module-level app
+    and would clobber the conftest's in-memory doubles for every test after this
+    one. And it is the only way to guarantee the environment: a fresh process
+    with every backend pinned to a dead port, ``cwd`` in ``tmp_path`` so no
+    checkout ``.env`` is read (``Settings.model_config`` sets ``env_file=".env"``
+    relative to the working directory), and a private ``HOME``.
+
+    Every startup probe in ``lifespan`` is best-effort — it warns and continues —
+    so with nothing reachable the whole thing completes in about a tenth of a
+    second. It was **not**, as an earlier version of this file claimed, dependent
+    on live infrastructure. That claim was wrong, and this test is what disproves
+    it.
+    """
+    import os
+    import subprocess
+    import sys
+
+    import ragstack
+
+    probe = tmp_path / "probe_lifespan.py"
+    probe.write_text(_LIFESPAN_PROBE)
+    package_root = os.path.dirname(os.path.dirname(os.path.abspath(ragstack.__file__)))
+
+    result = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=tmp_path,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(tmp_path),
+            "PYTHONPATH": package_root,
+            **_PINNED_ENV,
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, f"the lifespan raised:\n{result.stdout}\n{result.stderr}"
+    assert "INSIDE True" in result.stdout, (
+        "the rollup task was NOT running inside the lifespan — the feature would "
+        f"never arm on a real deployment.\n{result.stdout}\n{result.stderr}"
+    )
+    assert "AFTER False" in result.stdout, (
+        "the rollup task was still running after the lifespan exited — shutdown "
+        f"leaks it.\n{result.stdout}\n{result.stderr}"
+    )
+    # The startup line an operator greps to confirm the interval that was applied.
+    assert "latency rollup every" in result.stderr
 
 
 async def test_the_lifespan_starts_the_rollup_and_stops_it_in_its_finally():
-    """Structural, not behavioural — and labelled as such because the honest
-    limitation matters more than the assertion.
+    """The fast structural guard beside the subprocess test above.
 
-    ``ASGITransport`` does not run the lifespan (``tests/api/conftest.py`` says
-    so in its own docstring), and running the real one means building every
-    singleton against real infrastructure. So **no test in this repository
-    executes the two lines that arm and disarm this feature in production.**
-    Deleting them would leave the whole suite green while the rollup never ran
-    on any deployment — precisely the "unarmed timer" failure this series has
-    already hit once.
-
-    An AST check over ``deps.lifespan`` is what is available, and it is a real
-    guard against deletion even though it proves nothing about behaviour. It
-    also pins the *placement*: the stop must be inside the ``finally``, or a
-    startup that fails after the task is created leaks it. The same shape as
+    Kept because it costs microseconds and pins one thing the behavioural test
+    cannot: that the stop lives in a ``finally``. **Measured, not assumed** —
+    moving ``stop_rollup()`` onto the success path only (out of the ``finally``,
+    just after the ``yield``) is caught by *this* test and **passes** the
+    subprocess one, because that probe exits cleanly and never exercises the
+    path where a startup fails after the task was created. Same shape as
     ``test_bearer_admin.test_default_role_appears_nowhere_in_the_bearer_role_resolution``.
 
     **Exactly what it catches, measured rather than claimed.** Deleting the
     ``start_rollup()`` call fails this test; moving ``stop_rollup()`` out of the
     ``finally`` fails this test; wrapping the call in ``if False and …`` — still
     a call, as far as an AST is concerned — **passes**. A structural test sees
-    shape, not reachability, and that residue is stated here rather than left
-    for someone to discover by trusting it too far.
+    shape, not reachability, which is exactly why it is no longer the only thing
+    covering this wiring.
     """
     import ast
     import pathlib
