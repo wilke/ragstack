@@ -1,6 +1,8 @@
 # Observability (#427)
 
-**Status:** `IN PROGRESS` — 6 of 9 items done, all deployed as part of `v1.4.2`.
+**Status:** `IN PROGRESS` — 8 of 9 items done. W1/W2a/W2b and the log-level endpoint are
+deployed (`v1.4.2`); W3, W4, W6 and W7 are merged and carried by `v1.5.0`. W9 is the only
+item still open.
 
 ## Why this exists
 
@@ -44,13 +46,15 @@ reported:
 | **—** | TTL / auto-revert | `DEPLOYED` | PR #431. `ttl_seconds` so DEBUG turns itself off. DEBUG costs ~15 log lines per outbound call and releases dampening: one `/v1/query` goes from ~3 lines to 75–210, and without a TTL it survives until restart. |
 | **W6** | Error contract + UI 503 | `DONE` | PR #434. The repo's first error schema. A user now learns whether retrying will help. Found that the 503 is **overloaded** — store-unavailable, authz fail-closed, dormant, at-capacity — and that the contract never documented the store cause at all. |
 | **W7** | Go request-id parity + first Go CI job | `DONE` | PR #433. Includes an **ADR-0006 amendment** — the scaffold freeze said "neither extended nor deleted", and this extends it. Recorded as a bounded exception with a falsifiable test. |
-| **W3** | Per-stage query timings | `IN PROGRESS` | The load-bearing item. ~10 timing points across the retriever and query router. |
-| **W4** | Latency rollup line | `OPEN` | p50/p95 per collection, no contract change. Closes the "is the bound creeping" question. |
+| **W3** | Per-stage query timings | `DONE` | PR #435. The load-bearing item — ~10 timing points across the retriever and query router, one accumulator on the request context, and the promoted summary line. `self_ms` is a labelled **upper bound**, not a measurement: see the two untimed dependency-layer calls named in `stages.py` and in ADR-0006 amendment 4b. |
+| **W4** | Latency rollup line | `DONE` | PR #437. p50/p95 per collection from a log line, no contract change — closes the "is the bound creeping" question. Percentiles are bucket **upper bounds** (`p95_ms_le`), and the buckets straddle both 30s and 60s on purpose. |
 | **W5** | `GET /v1/admin/stats/latency` | `DEFERRED` | W4's rollup meets the acceptance bullet without a contract change. Cheaper now that the log-level endpoint is a template, but not more necessary. |
-| **W8** | Runbook + ADR amendment | `OPEN` | `docs/runbooks/tracing-a-503.md`; amend ADR-0006 to name the instrument that now exists. |
+| **W8** | Runbook + ADR amendment | `DONE` | PR #438. `docs/runbooks/tracing-a-503.md` — the decision procedure from a user's screenshot to the slow leg, with a worked example from a live acceptance run. ADR-0006 amendment **4b** records that the Go trigger's instrument now exists, and the invariant that makes its residual valid. Plus the "pick one home" answer on #89/#90/#114. |
 | **W9** | Qdrant post-mortem probe | `OPEN` | Opt-in, default off. Probes optimizer/indexing churn — a **different** candidate cause from the cold-cache one everyone assumes. Now near-trivial: `collection_health()` already exists. |
 
-**Minimum remaining to meet the acceptance criterion: W3 + W4.**
+**The acceptance criterion is met** — W3 and W4 landed, so the next occurrence of the
+incident is explainable after the fact, and `docs/runbooks/tracing-a-503.md` is the
+procedure for explaining it. W9 remains optional and is not required for it.
 
 ## Decisions taken
 

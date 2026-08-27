@@ -96,6 +96,10 @@ work on the Go API (#41, the `TODO(parity)` items) until one of these fires:
 | a tenant needs more concurrent queries than horizontally scaled uvicorn workers can hold | the same instrument, plus a load test (#118) | the same |
 | a component must run where the conda environment cannot be installed | operational need, not a metric | a static-binary tool, the `cmd/mcp` pattern — first candidate: a loader/verifier CLI for GoWe workers |
 
+**The instrument in rows 1 and 2 now exists** — see amendment **4b** below for what it
+records and for the invariant that has to hold before its residual may be read against
+these triggers.
+
 Until then the Go API scaffold is neither extended nor deleted, and the README/STATUS
 must stop describing it as a peer implementation. What keeps the port possible at any
 time is already in place and stays **mandatory for every API change**: `contracts/`
@@ -137,6 +141,52 @@ Go is given ahead of them.
 
 **The test of whether this exception held:** the next Go change is either a conformance
 file Go must satisfy, or it needs its own amendment here.
+
+**4b. The instrument exists — and the residual is only valid if every external call is
+timed.** *(Amendment, 2026-08-27; #427 W3/W4, PRs #435 and #437.)* Decision 4 made the
+first two triggers depend on per-stage timings (#89/#90), and the consequences section
+below still records them as "an instrument that does not exist yet". They exist now, in
+`python/` only, exactly as the boundary in 4a requires:
+
+- **per-stage timings on every request** — `embed`, `vector`, `text`, `graph`, `fuse`,
+  `rerank`, `rewrite`, `authz`, `expand`, `generate` — rendered on the request summary
+  line as `<stage>_ms=<sum>/<count>` beside `wall_ms`, `inflight` and `self_ms`;
+- **`self_ms`**, the residual this decision's first trigger reads: wall time minus the
+  *mean* of each recognised external stage;
+- **a bucketed latency histogram and a periodic rollup line**, so a p95 per collection is
+  readable from a log without adding instrumentation first.
+
+**The invariant, and it is the whole point of recording this:** *`self_ms` is honest only
+if every external call on the request is timed.* An untimed store or model round trip
+does not disappear — it lands in the residual and inflates "the Python layer", and could
+therefore justify a port the measurement does not support. Two conservatisms hold the
+number to an *upper* bound rather than a firing threshold: means rather than sums (N
+concurrent legs of 9 s occupy 9 s of wall time, not 45 s), and a stage name not declared
+external is **not** subtracted, so a newly added external call inflates `self_ms` loudly
+instead of deflating it silently.
+
+**Two known exceptions, named rather than assumed away.** The invariant holds for the
+query *handler*; it does not hold for the dependency layer, which runs before the handler
+and which the handler-level stage-name test cannot see:
+
+- `python/ragstack/api/security.py` — `provider.authenticate` on the **bearer** path, a
+  round trip to an identity provider;
+- `python/ragstack/api/security.py` — `_service_account_disabled` on the **API-key**
+  path, a store read that is TTL-cached, so usually free and occasionally not.
+
+Both sit inside `wall_ms` and outside every stage, so on a bearer-auth deployment
+`self_ms` is inflated by an unmeasured network call.
+
+**What must happen before this trigger is fired**, therefore: time those two as `authz`
+or subtract them by hand, and take the measurement serialised (concurrency-1 — a load
+test, #118) rather than from production traffic, where the mean-based subtraction
+under-subtracts by design. `docs/runbooks/tracing-a-503.md` §5 is the operator-facing
+statement of the same caveat, so a number read off a live log is not quoted here without
+it.
+
+**Unchanged by this amendment:** the trigger table itself, the thresholds (still "the
+budget a consumer states", still unstated), and 4a's boundary — stage timings stay out of
+Go, in `python/` only. The instrument existing is not itself a trigger.
 
 **6. Two entry points for user-triggered work, and only one of them submits to GoWe.**
 *(Amendment, 2026-08-25.)* A user action can reach the offline plane two ways, and they are not
@@ -182,6 +232,9 @@ which is the property decision 1 was chosen for.
 - **The Go gate depends on an instrument that does not exist yet.** Per-stage query
   timings (#89/#90) are now on the critical path for *two* reasons — the dashboard and
   this decision — which is an argument for building them early, not for waiving the gate.
+  *(Resolved 2026-08-27 — the instrument shipped in #427 W3/W4. See amendment 4b, which
+  also states the condition under which its residual may be read against the triggers.
+  The gate was not waived; it now has something to read.)*
 - **`GoWeBackend` becomes production code the moment #203 lands** and needs the same
   verification discipline the driver has (receipts, ledger, floor alarm), which it does not
   have today.
