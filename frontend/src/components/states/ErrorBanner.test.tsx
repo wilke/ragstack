@@ -40,21 +40,32 @@ describe("ErrorBanner 503 copy", () => {
     expect(markup).not.toContain("often succeeds within seconds");
   });
 
-  it("uses the conservative copy when reason is absent", () => {
-    // The 503's other causes — authorization store down, a collection
-    // restoring, the tenant at capacity — carry no `reason` at all, and so does
-    // any server older than #427 W2a.
-    const markup = render(new ApiError(503, "collection is restoring"));
+  it("names no cause at all when reason is absent", () => {
+    // THE ABSENT CASE IS NOT AN UNKNOWN. The API emits `reason` from exactly
+    // one place — the store-unavailable handler — so a 503 without it is one of
+    // this endpoint's three OTHER 503 causes: the authorization store
+    // fail-closed, a dormant/restoring collection (#358), or the tenant at
+    // capacity. The contract this PR writes says the last two are retryable
+    // after the delay in `Retry-After`, so "a search backend is not responding,
+    // retrying may not help" would be a false cause AND wrong advice — a
+    // regression in truthfulness dressed as better copy.
+    const markup = render(new ApiError(503, "collection 'x' is restoring: …"));
 
-    expect(markup).toContain("Retrying may not help right now");
+    expect(markup).toContain("temporarily unavailable");
+    expect(markup).toContain("try again shortly");
+    expect(markup).not.toContain("not responding");
+    expect(markup).not.toContain("may not help");
     expect(markup).not.toContain("often succeeds within seconds");
   });
 
-  it("degrades an unrecognised reason to the conservative copy", () => {
-    // `reason` is a server enum that may grow. A value this build has never
-    // heard of must NOT fall through to the optimistic branch.
+  it("degrades an unrecognised reason to the no-promise store copy", () => {
+    // `reason` is a server enum that may grow, and EVERY value of it comes from
+    // the store-unavailable path — so "a backend is not responding" stays true
+    // for a value this build has never heard of, while the optimistic warm-read
+    // promise is withheld. Unrecognised belongs here, not in the absent branch.
     const markup = render(new ApiError(503, "…", "a1b2c3d4e5f60789", "quantum_flux"));
 
+    expect(markup).toContain("not responding");
     expect(markup).toContain("Retrying may not help right now");
     expect(markup).not.toContain("often succeeds within seconds");
   });
@@ -104,19 +115,26 @@ describe("the no-echo rule", () => {
   // the server's sentence fails here instead of shipping.
   const MARKER = "MARKER_internal_host_9f2b";
 
+  // Each case names the copy that MUST be there in the marker's place. A bare
+  // `toMatch(/Retry|retry/)` would not do it: the Retry BUTTON always renders,
+  // so that assertion is satisfied by a banner whose message is empty. Pairing
+  // the absent marker with the specific sentence for that status is what makes
+  // "it rendered our copy instead" a real claim.
   it.each([
-    ["503 with a reason", new ApiError(503, MARKER, "8f3a2b1c9d4e5f60", "timeout")],
-    ["503 without one", new ApiError(503, MARKER)],
-    ["500", new ApiError(500, MARKER)],
-    ["401", new ApiError(401, MARKER)],
-    ["a plain Error", new Error(MARKER)],
-  ])("never renders error.message — %s", (_label, error) => {
+    [
+      "503 with a reason",
+      new ApiError(503, MARKER, "8f3a2b1c9d4e5f60", "timeout"),
+      "took longer than the server allows",
+    ],
+    ["503 without one", new ApiError(503, MARKER), "temporarily unavailable"],
+    ["500", new ApiError(500, MARKER), "The server had a problem (error 500)"],
+    ["401", new ApiError(401, MARKER), "Check your API key."],
+    ["a plain Error", new Error(MARKER), "Something went wrong reaching the API"],
+  ])("never renders error.message — %s", (_label, error, expected) => {
     const markup = render(error);
 
     expect(markup).not.toContain(MARKER);
-    // Non-vacuous: the banner did render, and it rendered OUR copy. Without
-    // this an empty string would satisfy the assertion above.
     expect(markup).toContain('role="alert"');
-    expect(markup).toMatch(/Retry|retry/);
+    expect(markup).toContain(expected);
   });
 });
