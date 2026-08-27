@@ -61,8 +61,15 @@ async def _stopped(coro) -> None:
     ``stop()`` directly, because a ``stop()`` that forgot to cancel would
     otherwise await a ``while True`` loop that never ends — turning a broken
     shutdown into a **hung test suite** instead of a failing test. (Observed:
-    removing ``task.cancel()`` hung the run indefinitely until this was added.)
-    Five seconds is far above the microseconds a cancellation takes.
+    removing ``task.cancel()`` hung a mutation run indefinitely until this was
+    added.) Five seconds is far above the microseconds a cancellation takes.
+
+    It is a **safety net, not an assertion**: on timeout ``wait_for`` cancels
+    what it is waiting on, which cancels the loop task too — so it repairs the
+    exact defect it would otherwise expose. Nothing here may be read as evidence
+    that ``stop()`` cancels anything; that is
+    ``test_shutdown_with_a_rollup_pending_neither_hangs_nor_raises``'s job, and
+    its docstring explains why it is written the way it is.
     """
     await asyncio.wait_for(coro, timeout=5.0)
 
@@ -431,18 +438,47 @@ async def test_shutdown_with_a_rollup_pending_neither_hangs_nor_raises():
     """The shutdown property, and it is a real one: a 300-second sleep is
     genuinely pending when the process is asked to stop.
 
-    ``wait_for`` is the test — a ``stop()`` that awaited the natural end of the
-    loop would hang here for five minutes rather than failing an assertion, and
-    a task merely dropped instead of cancelled would leave "Task was destroyed
-    but it is pending!" on the way out. Asserting ``cancelled()`` pins the
-    difference.
+    **This test is written the awkward way on purpose, and the obvious version
+    of it does not work.** The obvious version is
+    ``await asyncio.wait_for(stop_rollup(), timeout=2)`` plus
+    ``assert inner.cancelled()``. That version passes even with ``task.cancel()``
+    DELETED from ``stop()`` — verified by mutation. The reason: when ``wait_for``
+    times out it cancels the coroutine it is waiting on, that cancellation
+    propagates into the task that coroutine is awaiting, and so ``wait_for``
+    performs the very cancellation the implementation forgot. ``stop()`` then
+    swallows the ``CancelledError`` it was written to swallow, returns normally,
+    and every assertion downstream — including ``inner.cancelled()`` — is
+    satisfied by the test harness rather than by the code under test.
+
+    So the assertion here is instead **that ``stop()`` returns within a handful
+    of event-loop turns with nobody cancelling anything from outside**. A
+    correct ``stop()`` needs about three: cancel, let the loop task raise, let
+    the await resume. One that only awaits needs 300 seconds, and ``done()`` is
+    ``False`` when we look.
     """
     assert start_rollup(300.0) is True
     task = hist_mod._rollup
     assert task is not None and task.running
 
     inner = task._task
-    await asyncio.wait_for(stop_rollup(), timeout=2.0)
+    stopper = asyncio.create_task(stop_rollup())
+    try:
+        for _ in range(20):
+            if stopper.done():
+                break
+            await asyncio.sleep(0)
+        assert stopper.done(), (
+            "stop() had not returned after 20 event-loop turns: it is awaiting a "
+            "loop it never cancelled, and shutdown would hang for a full interval"
+        )
+        assert stopper.exception() is None, "shutdown raised"
+    finally:
+        # Only reached when the assertion above already failed; without it the
+        # orphaned tasks would leak into the next test in this loop.
+        if not stopper.done():
+            stopper.cancel()
+        if inner is not None and not inner.done():
+            inner.cancel()
 
     assert rollup_running() is False
     assert inner is not None and inner.done()
@@ -466,6 +502,68 @@ async def test_starting_twice_does_not_leave_an_orphan():
         assert hist_mod._rollup is first, "a second start replaced the running task"
     finally:
         await _stopped(stop_rollup())
+
+
+# --------------------------------------------------------------------------- #
+# The lifespan wiring — structural, because nothing here can run a lifespan
+# --------------------------------------------------------------------------- #
+
+
+async def test_the_lifespan_starts_the_rollup_and_stops_it_in_its_finally():
+    """Structural, not behavioural — and labelled as such because the honest
+    limitation matters more than the assertion.
+
+    ``ASGITransport`` does not run the lifespan (``tests/api/conftest.py`` says
+    so in its own docstring), and running the real one means building every
+    singleton against real infrastructure. So **no test in this repository
+    executes the two lines that arm and disarm this feature in production.**
+    Deleting them would leave the whole suite green while the rollup never ran
+    on any deployment — precisely the "unarmed timer" failure this series has
+    already hit once.
+
+    An AST check over ``deps.lifespan`` is what is available, and it is a real
+    guard against deletion even though it proves nothing about behaviour. It
+    also pins the *placement*: the stop must be inside the ``finally``, or a
+    startup that fails after the task is created leaks it. The same shape as
+    ``test_bearer_admin.test_default_role_appears_nowhere_in_the_bearer_role_resolution``.
+
+    **Exactly what it catches, measured rather than claimed.** Deleting the
+    ``start_rollup()`` call fails this test; moving ``stop_rollup()`` out of the
+    ``finally`` fails this test; wrapping the call in ``if False and …`` — still
+    a call, as far as an AST is concerned — **passes**. A structural test sees
+    shape, not reachability, and that residue is stated here rather than left
+    for someone to discover by trusting it too far.
+    """
+    import ast
+    import pathlib
+
+    import ragstack.api.deps as deps_mod
+
+    tree = ast.parse(pathlib.Path(deps_mod.__file__).read_text())
+    lifespan = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    called = {
+        node.func.attr
+        for node in ast.walk(lifespan)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "start_rollup" in called, "lifespan never arms the latency rollup"
+
+    tries = [node for node in ast.walk(lifespan) if isinstance(node, ast.Try) and node.finalbody]
+    stopped_in_finally = {
+        node.func.attr
+        for t in tries
+        for stmt in t.finalbody
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "stop_rollup" in stopped_in_finally, (
+        "the rollup is not stopped from a `finally`; a startup that fails after "
+        "the task is created would leak it"
+    )
 
 
 # --------------------------------------------------------------------------- #
