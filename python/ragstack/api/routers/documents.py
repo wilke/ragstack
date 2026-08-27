@@ -26,7 +26,10 @@ from ragstack.api.collections import (
     CollectionRegistry,
     is_reserved_collection_id,
 )
-from ragstack.api.default_collection import resolve_default_entry
+from ragstack.api.default_collection import (
+    resolve_default_entry,
+    resolve_ingest_default_entry,
+)
 from ragstack.api.deps import (
     BuildSpecMismatch,
     bound_json_body,
@@ -111,7 +114,7 @@ async def _run_ingest(
     job_id: str,
     source: str,
     tenant_id: str,
-    target: CollectionEntry | None = None,
+    target: CollectionEntry,
     every_file: bool = False,
     collection_store: CollectionStore | None = None,
 ) -> None:
@@ -182,7 +185,15 @@ async def _run_ingest(
     # good/config manifest for the derived collection.
     if final == COMPLETED:
         chunks = sum(len(r.chunk_ids or []) for r in results)
-        if target is not None:
+        # Keyed on the SURFACE FLAG, not on `target is None` (#422 passes the
+        # surface entry through now). The surface keeps the app-level manifest
+        # it has always written — per-collection manifests/versions are for
+        # collections this API created, and starting to write them for the
+        # settings-derived corpus would be a new behaviour, not a cleanup.
+        # NOTE the GoWe path (_run_gowe_ingest) deliberately differs: it writes
+        # a per-collection manifest and appends a version for EVERY entry,
+        # surface included, and has always done so. Do not "align" it here.
+        if not target.is_shared_surface:
             from ragstack.api.deps import write_ingest_manifest_for
 
             write_ingest_manifest_for(target, source=source, chunk_count=chunks or None)
@@ -219,7 +230,7 @@ async def _fail_unsupported_items(
 
 
 async def _chunk_cap_for(
-    target: CollectionEntry | None,
+    target: CollectionEntry,
     collection_store: CollectionStore,
     record: CollectionRecord | None = None,
 ) -> int | None:
@@ -228,12 +239,13 @@ async def _chunk_cap_for(
     Resolved ONCE per job, before it runs: the registry entry's ``max_chunks``
     override wins (``0`` exempts); otherwise ``max_chunks_per_collection``
     applies iff the collection is user-created (:func:`is_user_created`: an
-    owner row whose owner is not an admin). The legacy shared surface
-    (``target is None``) is a curated corpus and is never capped. ``record``
+    owner row whose owner is not an admin). The legacy shared surface is a
+    curated corpus and is never capped — keyed on the flag, since #422 passes
+    that entry through rather than ``None``. ``record``
     (the row a gowe caller already fetched) saves the registry read. A registry
     that cannot answer is treated as "no override" — the derivation still
     applies, so an outage can never lift a cap."""
-    if target is None or target.is_shared_surface:
+    if target.is_shared_surface:
         return None
     if record is None:
         try:
@@ -255,84 +267,94 @@ async def _authorize_ingest_target(
     collection_id: str | None,
     principal: Principal,
     collections: CollectionRegistry,
-) -> CollectionEntry | None:
-    """Resolve + authorize an optional target collection; ``None`` means the
-    legacy shared-surface default (the prebuilt app ingestor's stores).
+) -> CollectionEntry:
+    """Resolve + authorize the target collection for one ingest. Always returns
+    an entry — never ``None``.
 
     The authorization half of :func:`_resolve_ingest_target` — the tenant
     allowlist check, the OWNERSHIP check, and the build-spec guard — split out so
     the GoWe path (which builds no in-process ingestor: the workflow does the
-    loading) runs exactly the same gates as the local one. Omitting the
-    collection (or naming the default id) resolves the default pointer. An id
-    the tenant may not access, or an unknown id, is a 404 (never a silent write
-    elsewhere). A non-default collection the caller can read but does not OWN
-    is a 403 (:func:`enforce_access`, write action): ingest there is
-    owner-or-admin (ADR-0003; write shares deferred); one it cannot even read is
-    the same 404 as an unknown id (no existence oracle).
+    loading) runs exactly the same gates as the local one.
 
-    The DEFAULT collection is the exception, deliberately: it is the shared
-    pre-ownership multi-tenant surface (backfilled ``public read``, synthetic
-    ``acl_backfill_owner``), where per-chunk ``tenant_id`` stamping — not
-    collection ownership — is what isolates writers, exactly as before ownership
-    existed. Requiring ownership there would lock every non-admin out of the
-    flagship shared corpus (and break the conformance contract: core data ops
-    need auth, not a role). So the default branch enforces READ on the default
-    collection — still the one seam, still 404 for a tenant that may not see it
-    (e.g. an operator who revoked its ``public`` row) — and the write lands
-    tenant-stamped. The gate has to run on this branch too: a tenant confined
-    *away* from the default can still be handed the prebuilt default ingestor by
-    omitting ``collection``.
+    **IMPLICIT** (``collection`` omitted, or the reserved pointer NAME, which
+    #276 makes equivalent to omitting): the target is
+    :func:`resolve_ingest_default_entry` — the caller's writable default. That
+    is the read-side picker narrowed to what the caller may actually write to,
+    so an upload is never routed into a collection they can only read. Nothing
+    writable in their listing is a 403 naming no id; nothing readable at all is
+    the same 404 the read paths give. See #422.
+
+    **EXPLICIT** (any other id, *including* one that happens to equal
+    ``collections.default_id``): allowlist 404, resolve-or-404, then
+    ``enforce_access``. An explicitly named id NEVER enters the picker — a
+    request is never silently rerouted from the collection the caller chose, and
+    an id they cannot write stays 403-if-readable / 404-if-not, exactly as
+    before (no existence oracle).
+
+    **The action on both branches is ``"read" if is_shared_surface else
+    "write"``**, and that is load-bearing rather than cosmetic. The exemption
+    exists for the LEGACY SHARED SURFACE: there per-chunk ``tenant_id`` stamping
+    — not collection ownership — is what isolates writers, so demanding
+    ownership would lock every non-admin out of the flagship shared corpus (and
+    break the conformance contract: core data ops need auth, not a role). It
+    keys on the SURFACE FLAG and never on "is this what ``default`` points at":
+    point the pointer at a genuinely owned collection (#276) and a
+    pointer-keyed exemption would let any reader of it ingest into somebody
+    else's corpus just by omitting ``collection``.
+
+    Two consequences of applying it on the EXPLICIT branch too, both deliberate:
+
+    * it is what stops this split from breaking our own UI. Post-#420
+      ``frontend/src/lib/collectionTarget.ts`` resolves the listing's advertised
+      ``default`` and sends it as an **explicit** id, so the shared surface now
+      arrives here by name. The surface is public-read backfilled, so plain
+      ``"write"`` would deny a caller who *can* read it — a **403** on the
+      flagship corpus, to our own uploader. (The same fact means the UI does not
+      exercise the implicit picker at all: that path serves raw API/CLI callers
+      who omit the field.)
+    * it *loosens* one pre-existing case: explicitly naming the surface while
+      the pointer aims elsewhere used to demand ``write`` and now does not. That
+      matches the documented intent, and the write still lands tenant-stamped.
+
+    One further behaviour change the split carries: the implicit branch used to
+    skip the tenant allowlist entirely, so a tenant confined *away* from the
+    default could still reach the shared surface by omitting ``collection`` or
+    by naming the pointer target's id. Both now go through the allowlist —
+    implicitly via ``visible_entries``, explicitly via the 404 below.
 
     Both branches run :func:`check_ingest_build_spec` against the collection the
-    write will land in, including the default one: a pinned
-    ``qdrant_collection_explicit`` keeps its name across a settings change, so the
-    default collection is precisely where a swapped embedder or chunker would
+    write will land in, including the shared surface: a pinned
+    ``qdrant_collection_explicit`` keeps its name across a settings change, so
+    that collection is precisely where a swapped embedder or chunker would
     quietly append incoherent data to a 25M-point index.
     """
-    if (
-        not collection_id
-        or is_reserved_collection_id(collection_id)  # naming the pointer == omitting
-        or collection_id == collections.default_id
-    ):
-        default = collections.resolve(collections.default_id)
-        _guard(default)
-        # (The prebuilt-ingestor / build_ingestor_for split happens in
-        # _resolve_ingest_target; this function only decides WHICH entry.)
-        # READ-not-write is an exemption for the LEGACY SHARED SURFACE, not for
-        # "whatever default points at". On that surface per-chunk ``tenant_id``
-        # is the isolation and every caller writes into their own stripe, so a
-        # write gate would block the thing it is built for. Once ``default`` is
-        # a configurable pointer (#276) it can name a genuinely OWNED collection
-        # — and there the same exemption would let any reader ingest into
-        # somebody else's corpus just by omitting ``collection``. So the
-        # exemption keys on the surface, and everything else needs write.
-        await enforce_access(
-            principal, default.id, "read" if default.is_shared_surface else "write"
+    if not collection_id or is_reserved_collection_id(collection_id):
+        # Naming the pointer == omitting it (#276).
+        target = await resolve_ingest_default_entry(collections, principal)
+    else:
+        allowed = collections.permitted(
+            allowed_collection_ids(principal.tenant, settings.tenant_collections)
         )
-        if default.is_shared_surface:
-            # The derived entry IS app.state's ingestor — same stores, no build.
-            return None
-        # The pointer names some OTHER collection. `prebuilt` writes to the
-        # settings-derived stores, so handing it out here would authorize against
-        # one collection and land the bytes in another — the #275 shape inverted.
-        return default
-    allowed = collections.permitted(
-        allowed_collection_ids(principal.tenant, settings.tenant_collections)
-    )
-    if allowed is not None and collection_id not in allowed:
-        raise HTTPException(
-            status_code=404,
-            detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
-        )
-    try:
-        target = collections.resolve(collection_id)
-    except KeyError:
-        raise HTTPException(
-            status_code=404,
-            detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
-        ) from None
+        if allowed is not None and collection_id not in allowed:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
+            )
+        try:
+            target = collections.resolve(collection_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown collection {collection_id!r}; see GET /v1/collections",
+            ) from None
     _guard(target)
-    await enforce_access(principal, target.id, "write")
+    # Enforcement runs after BOTH branches. On the implicit one it cannot
+    # contradict the pick (resolve_write_many and resolve_access's write branch
+    # are the same policy, in the same file) — what it adds is the collection
+    # LIFECYCLE gate, which no filter in default_collection.py runs.
+    await enforce_access(
+        principal, target.id, "read" if target.is_shared_surface else "write"
+    )
     return target
 
 
@@ -342,15 +364,25 @@ async def _resolve_ingest_target(
     collections: CollectionRegistry,
     app_state: Any,
     prebuilt: ShardedIngestor,
-) -> tuple[CollectionEntry | None, ShardedIngestor]:
-    """Resolve an optional target collection to ``(entry, ingestor)`` for the
-    LOCAL path: :func:`_authorize_ingest_target`, then the prebuilt app ingestor
-    for the shared-surface default or a per-collection ingestor bound to the
-    entry's embedder/chunker/stores (so vectors match its model and land in its
-    index). Shared by both local entry points so the routing cannot drift."""
+) -> tuple[CollectionEntry, ShardedIngestor]:
+    """Resolve the target collection to ``(entry, ingestor)`` for the LOCAL
+    path: :func:`_authorize_ingest_target`, then the prebuilt app ingestor for
+    the legacy shared surface or a per-collection ingestor bound to the entry's
+    embedder/chunker/stores (so vectors match its model and land in its index).
+    Shared by both local entry points so the routing cannot drift.
+
+    The entry is ALWAYS returned, the shared surface included (#422). It used to
+    come back as ``None`` there, which was tolerable only while the surface and
+    the pointer target were necessarily the same entry: the picker can choose the
+    surface while the pointer names something else, and the callers'
+    ``resolve(default_id)`` back-fill would then have named the wrong collection
+    on the job row. The prebuilt ingestor still keys on the SURFACE FLAG — its
+    stores are the settings-derived ones, so handing it out for any other entry
+    would authorize against one collection and land the bytes in another."""
     target = await _authorize_ingest_target(collection_id, principal, collections)
-    if target is None:
-        return None, prebuilt
+    if target.is_shared_surface:
+        # The derived entry IS app.state's ingestor — same stores, no build.
+        return target, prebuilt
     try:
         run_ingestor = build_ingestor_for(app_state, target)
     except ValueError as e:
@@ -777,7 +809,10 @@ async def _gowe_upload_sources(
 class IngestRequest(BaseModel):
     source: str
     metadata: dict[str, Any] = Field(default_factory=dict)
-    collection: str | None = None  # target collection id; None → server default
+    # Target collection id. None (or the reserved pointer name) → the caller's
+    # WRITABLE default: their advertised listing `default` when they can write
+    # it or it is the shared surface, else their first writable collection (#422).
+    collection: str | None = None
 
 
 class IngestItemCounts(BaseModel):
@@ -792,6 +827,14 @@ class IngestResponse(BaseModel):
     status: str
     chunk_ids: list[str] = Field(default_factory=list)
     items: IngestItemCounts | None = None
+    #: The collection this job actually targets (#422). It matters when the
+    #: request OMITTED `collection`: that is the case where the SERVER picked,
+    #: and a caller whose read default differs from their write pick would
+    #: otherwise have to infer where their upload landed. Echoing the id is safe
+    #: — the picker only ever chooses from the caller's own visible set, and on
+    #: the explicit path it is the id the caller sent. Optional in the schema, so
+    #: the Go stub need not emit it.
+    collection: str | None = None
 
 
 class DocumentInfo(BaseModel):
@@ -844,8 +887,6 @@ async def ingest(
         token, subject = _gowe_caller(principal)
         uri = _workspace_reference(request.source)
         entry = await _authorize_ingest_target(request.collection, principal, collections)
-        if entry is None:
-            entry = collections.resolve(collections.default_id)
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
@@ -878,7 +919,9 @@ async def ingest(
                 version=version,
             )
             job.dispatched()  # _run_gowe_ingest terminalizes the row from here
-            return IngestResponse(job_id=job.job_id, status=job.status)
+            return IngestResponse(
+                job_id=job.job_id, status=job.status, collection=entry.id
+            )
     # Fail closed when ingest is unconfined. `request.source` is a server-side
     # path; with ingest_root empty, build_manifest skips confine_to_root entirely,
     # so any readable file or tree is ingested and then readable back through
@@ -907,7 +950,7 @@ async def ingest(
     # argument, evaluated inside the window the scope has to cover.
     async with job_lifecycle(
         job_store, source=request.source, tenant_id=principal.tenant,
-        collection_id=target.id if target is not None else collections.default_id,
+        collection_id=target.id,
     ) as job:
         background_tasks.add_task(
             _run_ingest,
@@ -921,7 +964,9 @@ async def ingest(
             collection_store=get_collection_store(http_request),
         )
         job.dispatched()  # _run_ingest terminalizes the row from here
-        return IngestResponse(job_id=job.job_id, status=job.status)
+        return IngestResponse(
+            job_id=job.job_id, status=job.status, collection=target.id
+        )
 
 
 _PDF_MAGIC = b"%PDF"
@@ -1197,8 +1242,6 @@ async def ingest_upload(
         # reserved: an up-front refusal must not burn a version number.
         kinds, budget = await _admit_uploads(files)
         entry = await _authorize_ingest_target(collection, principal, collections)
-        if entry is None:
-            entry = collections.resolve(collections.default_id)
         collection_store = get_collection_store(http_request)
         record = await _registry_row(entry, collection_store)
         backend = _gowe_backend(http_request)
@@ -1238,7 +1281,9 @@ async def ingest_upload(
                 version=version,
             )
             job.dispatched()  # _run_gowe_ingest terminalizes the row from here
-            return IngestResponse(job_id=job.job_id, status=job.status)
+            return IngestResponse(
+                job_id=job.job_id, status=job.status, collection=entry.id
+            )
     kinds, budget = await _admit_uploads(files)
     if not settings.ingest_root.strip():
         raise HTTPException(
@@ -1259,7 +1304,7 @@ async def ingest_upload(
     # the row. The scope starts at the create and ends past add_task.
     async with job_lifecycle(
         job_store, source="upload", tenant_id=principal.tenant,
-        collection_id=target.id if target is not None else collections.default_id,
+        collection_id=target.id,
     ) as job:
         # Staging dir is server-side root + tenant + the freshly minted job_id — none
         # client-controlled today — and each file dest is re-confined under it. But
@@ -1309,7 +1354,9 @@ async def ingest_upload(
             collection_store=get_collection_store(http_request),
         )
         job.dispatched()  # _run_ingest terminalizes the row from here
-        return IngestResponse(job_id=job.job_id, status=job.status)
+        return IngestResponse(
+            job_id=job.job_id, status=job.status, collection=target.id
+        )
 
 
 @router.get("/ingest/{job_id}", response_model=IngestResponse)
@@ -1349,7 +1396,10 @@ async def ingest_status(
         else None
     )
     return IngestResponse(
-        job_id=job.job_id, status=job.status, chunk_ids=job.chunk_ids, items=items
+        job_id=job.job_id, status=job.status, chunk_ids=job.chunk_ids, items=items,
+        # The row's own stamp, so a poll answers "where did this land?" with the
+        # same id the 202 did. Legacy rows carry "" — report null, not "".
+        collection=job.collection_id or None,
     )
 
 

@@ -293,14 +293,32 @@ async def caller_without_default_access(client, monkeypatch):
     monkeypatch.setattr(cfg, "tenant_collections", {})
     monkeypatch.setattr(deps.settings, "default_collection_id", "")
 
-    def _entry(cid: str) -> CollectionEntry:
+    def _entry(cid: str, *, shared: bool = False) -> CollectionEntry:
         """Its OWN vector store + text index + retriever, so which entry a
-        request landed on is observable from what comes back."""
-        vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
+        request landed on is observable from what comes back.
+
+        ``shared`` marks it the LEGACY SHARED SURFACE. The persona's two standard
+        entries are both non-surface, and the standard keyless ``client`` fixture
+        cannot stand in: with auth unconfigured every ACL filter no-ops, so a
+        shared-surface test there would be vacuous (this fixture's own R6 guard
+        below says exactly that). Any test of the surface exemption under
+        ENFORCED auth needs this knob (#422).
+
+        A ``shared`` entry is bound to ``app.state``'s stores, exactly as the
+        real settings-derived entry is (see this file's one-entry registry
+        above). That is not a detail: the ingest path deliberately hands the
+        SHARED SURFACE the prebuilt app ingestor rather than building a
+        per-collection one, so a surface entry with private stores would accept
+        the write and then land it somewhere the entry cannot see — the test
+        would assert on the wrong stores and read zero."""
+        if shared:
+            vs, ti = app.state.vector_store, app.state.text_index
+        else:
+            vs, ti = InMemoryVectorStore(), InMemoryTextIndex()
         return CollectionEntry(
             id=cid, label=cid, collection=cid, model="test-model", dim=4,
             chunk_method="fixed", chunk_size=None, chunk_overlap=None, chunk_params={},
-            is_shared_surface=False, owner="",
+            is_shared_surface=shared, owner="",
             retriever=HybridRetriever(vs, ti, app.state.embedder),
             vector_store=vs, text_index=ti, embedder=app.state.embedder,
         )
@@ -335,11 +353,13 @@ async def caller_without_default_access(client, monkeypatch):
     for cid in (PERSONA_DEFAULT_ID, PERSONA_READABLE_ID):
         await acl.grant(cid, GRANTEE_USER, "sharee", PERM_READ, granted_by="curator")
 
-    async def _make_entry(cid: str, text: str, tenant: str) -> CollectionEntry:
+    async def _make_entry(
+        cid: str, text: str, tenant: str, *, shared: bool = False
+    ) -> CollectionEntry:
         """Build + seed one more collection for a test that needs a third axis
-        (e.g. allowlist ∩ readable). Not registered and not granted — the test
-        decides both."""
-        e = _entry(cid)
+        (e.g. allowlist ∩ readable, or the shared-surface arm — ``shared=True``).
+        Not registered and not granted — the test decides both."""
+        e = _entry(cid, shared=shared)
         await _seed(e, f"{cid}-c1", text, tenant)
         return e
 

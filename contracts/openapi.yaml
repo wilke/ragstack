@@ -247,6 +247,17 @@ paths:
         disabled and every request returns 503: an unconfined `source` would be
         an arbitrary server-side file read whose text is retrievable back through
         /v1/retrieve.
+
+
+        Omitting `collection` targets the caller's **writable** default: the id
+        `GET /v1/collections` advertises as `default` when the caller can write
+        it (or it is the legacy shared surface), otherwise the first collection
+        in their listing that accepts their writes. Reads and ingest therefore
+        answer the same id in every case except one — a caller whose advertised
+        `default` is a collection they can only READ, and which is not the shared
+        surface. `IngestResponse.collection` names the collection the job
+        actually targets, so the answer is never left to be inferred. An
+        explicitly named `collection` is never rerouted: it is used or refused.
       tags: [Documents]
       requestBody:
         required: true
@@ -263,15 +274,26 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "403":
           description: >-
-            The caller can read the named non-default collection but does not own
-            it — ingest there is owner-or-admin (ADR-0003; write shares
-            deferred). Ingest into the default collection needs read access only
-            (writes there are isolated per-tenant by chunk stamping).
+            The caller named a collection they can read but do not own — ingest
+            there is owner-or-admin (ADR-0003; write shares deferred). Ingest
+            into the legacy shared surface needs read access only (writes there
+            are isolated per-tenant by chunk stamping).
+
+
+            Also: `collection` was omitted and no collection in the caller's
+            listing accepts their writes. That refusal names **no** collection
+            id; name a collection you own explicitly, or create one with
+            POST /v1/collections.
         "404":
           description: >-
             Unknown collection, one out of the caller's allowlist, or one the
             caller may not read — an unreadable collection is reported exactly
             like an unknown one so its existence is not leaked (ADR-0003 §2).
+
+
+            Also: `collection` was omitted and the caller can read no collection
+            at all — the same state in which `GET /v1/collections` reports
+            `default: ""`. That body names no collection id either.
         "413":
           description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
         "422":
@@ -357,6 +379,14 @@ paths:
         nowhere confined to land and every request returns 503 (matching
         POST /v1/ingest); under ingest_backend=gowe the files go to the caller's
         Workspace and INGEST_ROOT is not used.
+
+
+        Omitting `collection` targets the caller's **writable** default, exactly
+        as for POST /v1/ingest: the id `GET /v1/collections` advertises as
+        `default` when the caller can write it (or it is the legacy shared
+        surface), otherwise the first collection in their listing that accepts
+        their writes. `IngestResponse.collection` names the collection the job
+        actually targets. An explicitly named `collection` is never rerouted.
       tags: [Documents]
       requestBody:
         required: true
@@ -378,7 +408,8 @@ paths:
                   type: string
                   description: >
                     Optional target collection id (same semantics as
-                    IngestRequest.collection); omit for the server default.
+                    IngestRequest.collection); omit to target the caller's
+                    writable default (see the endpoint description).
       responses:
         "202":
           description: Upload accepted and queued for ingestion
@@ -388,15 +419,26 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "403":
           description: >-
-            The caller can read the named non-default collection but does not own
-            it — ingest there is owner-or-admin (ADR-0003; write shares
-            deferred). Ingest into the default collection needs read access only
-            (writes there are isolated per-tenant by chunk stamping).
+            The caller named a collection they can read but do not own — ingest
+            there is owner-or-admin (ADR-0003; write shares deferred). Ingest
+            into the legacy shared surface needs read access only (writes there
+            are isolated per-tenant by chunk stamping).
+
+
+            Also: `collection` was omitted and no collection in the caller's
+            listing accepts their writes. That refusal names **no** collection
+            id; name a collection you own explicitly, or create one with
+            POST /v1/collections.
         "404":
           description: >-
             Unknown collection, one out of the caller's allowlist, or one the
             caller may not read (unreadable == unknown, so existence is not
             leaked — ADR-0003 §2).
+
+
+            Also: `collection` was omitted and the caller can read no collection
+            at all — the same state in which `GET /v1/collections` reports
+            `default: ""`. That body names no collection id either.
         "411":
           description: >-
             The request has no Content-Length (chunked transfer encoding); an
@@ -4384,6 +4426,15 @@ components:
               type: integer
             pending:
               type: integer
+        collection:
+          type: [string, "null"]
+          description: >-
+            The collection this job actually targets. Always present on the
+            ingest/upload acceptance response; `null` when the implementation
+            does not report it. Only meaningful when the request OMITTED
+            `collection` — that is the case where the server chose, and the
+            chosen id is always one from the caller's own GET /v1/collections
+            listing, so echoing it discloses nothing.
 
     DocumentInfo:
       type: object

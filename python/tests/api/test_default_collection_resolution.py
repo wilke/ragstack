@@ -90,18 +90,27 @@ async def test_naming_the_unreadable_pointer_target_is_indistinguishable_from_un
     caller may not read stays a 404 whose body is the same sentence a genuinely
     unknown id gets — the read seam never distinguishes the two."""
     p = caller_without_default_access
-    unreadable = await p.client.post(
-        "/v1/query", json={"query": "x", "collection": p.default_id}, headers=p.headers
-    )
-    unknown = await p.client.post(
-        "/v1/query", json={"query": "x", "collection": "no-such-collection"}, headers=p.headers
-    )
-    assert unreadable.status_code == unknown.status_code == 404
-    # The bodies differ only by the id the CALLER supplied; substitute it out
-    # and they must be byte-identical.
-    assert unreadable.json()["detail"].replace(repr(p.default_id), "<id>") == unknown.json()[
-        "detail"
-    ].replace(repr("no-such-collection"), "<id>")
+    # #422 extends this from /v1/query alone to the WRITE endpoints too. Those
+    # are the ones an oracle would be built from: the read seam already returned
+    # 404 for both cases, but a write denial that answered 403 on a readable
+    # collection and 404 on an unknown one would distinguish them. It must not,
+    # for a collection the caller cannot read.
+    for path, body in (
+        ("/v1/query", {"query": "x"}),
+        ("/v1/ingest", {"source": "x.txt"}),
+    ):
+        unreadable = await p.client.post(
+            path, json={**body, "collection": p.default_id}, headers=p.headers
+        )
+        unknown = await p.client.post(
+            path, json={**body, "collection": "no-such-collection"}, headers=p.headers
+        )
+        assert unreadable.status_code == unknown.status_code == 404, (path, unreadable.text)
+        # The bodies differ only by the id the CALLER supplied; substitute it out
+        # and they must be byte-identical.
+        assert unreadable.json()["detail"].replace(
+            repr(p.default_id), "<id>"
+        ) == unknown.json()["detail"].replace(repr("no-such-collection"), "<id>"), path
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +212,13 @@ async def test_no_implicit_path_4xx_names_a_collection_outside_the_callers_listi
     """
     p = caller_without_default_access
     every_id = {p.readable_id, p.default_id}
-    for headers, who in ((p.headers, "persona"), (p.outsider_headers, "outsider")):
+    for headers, who in (
+        (p.headers, "persona"),
+        (p.outsider_headers, "outsider"),
+        # #422: the caller who can READ both and write neither — the state that
+        # produces the picker's new 403, which is not reachable for the other two.
+        (p.sharee_headers, "sharee"),
+    ):
         listing = (await p.client.get("/v1/collections", headers=headers)).json()
         listed = {c["id"] for c in listing["collections"]}
         responses = [
@@ -220,6 +235,19 @@ async def test_no_implicit_path_4xx_names_a_collection_outside_the_callers_listi
             # from these is by construction server-chosen.
             await p.client.get("/v1/documents", headers=headers),
             await p.client.delete("/v1/documents/doc-nothing", headers=headers),
+            # ...and the two INGEST routes with `collection` omitted, where the
+            # picker chooses. Both of the picker's refusals (403 nothing
+            # writable, 404 nothing readable) must name no id.
+            await p.client.post("/v1/ingest", json={"source": "x.txt"}, headers=headers),
+            await p.client.post(
+                "/v1/ingest/upload",
+                files=[("files", ("x.txt", b"x", "text/plain"))],
+                headers=headers,
+            ),
+            await p.client.post(
+                "/v1/ingest", json={"source": "x.txt", "collection": "default"},
+                headers=headers,
+            ),
             # ...and the pointer-name management 409s, which refuse BEFORE any
             # ACL check and so answer the same body to every caller (W7).
             await p.client.delete("/v1/collections/default", headers=headers),
