@@ -211,18 +211,27 @@ async def _records_by_id(store: CollectionStore) -> dict[str, CollectionRecord]:
         return {}
 
 
-def _refuse_pointer_name(collection_id: str, registry: CollectionRegistry) -> None:
+def _refuse_pointer_name(collection_id: str) -> None:
     """409 when a management route is addressed to the literal pointer name
     ``default``. Resolving it through would act on a collection the caller
     never named — the same rule ``DELETE /v1/collections/default`` applies —
     and the ACL rows of share / revoke / transfer / restore are keyed by the
-    REAL id, so the caller must say which one (#276)."""
+    REAL id, so the caller must say which one (#276).
+
+    The message deliberately names **no** id (#422). It used to echo
+    ``registry.default_id`` — the GLOBAL pointer target — to a caller who might
+    never have been shown that collection, in an error path that runs before any
+    ACL check. Pointing at the caller's own listing is both honest and
+    oracle-free: since #419 that listing's ``default`` already answers "what does
+    an omitted ``collection`` mean *for me*", and for a caller who cannot see the
+    global pointer target it correctly names a different id. No ACL round trip in
+    an error path, and no branch whose shape leaks whether the target exists."""
     if is_reserved_collection_id(collection_id):
         raise HTTPException(
             409,
             f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection; "
-            f"it currently resolves to {registry.default_id!r} — address that id "
-            "explicitly if that is what you mean",
+            "name the collection id explicitly (GET /v1/collections lists your "
+            "collections and the id an omitted 'collection' resolves to for you)",
         )
 
 
@@ -847,7 +856,7 @@ async def restore_collection(
     other identity to use (``security.gowe_caller``, shared with ingest).
     The ``owner`` action is never lifecycle-gated, so managing a dormant
     collection does not require restoring it first."""
-    _refuse_pointer_name(collection_id, registry)
+    _refuse_pointer_name(collection_id)
     from ragstack.api.lifecycle import get_lifecycle_gate
     from ragstack.collection_store import (
         ACTIVE,
@@ -1003,7 +1012,7 @@ async def extract_collection_graph(
     on (#380). A load refused at the cap fails the job ``graph_cap_exceeded``
     with nothing loaded and nothing archived.
     """
-    _refuse_pointer_name(collection_id, registry)
+    _refuse_pointer_name(collection_id)
     from ragstack.collection_store import ACTIVE, ARCHIVING
     from ragstack.graph_extract import GraphExtractError
 
@@ -1246,12 +1255,15 @@ async def delete_collection(
     if is_reserved_collection_id(collection_id):
         # The pointer's own name. There is nothing to delete under it, and
         # resolving it through to the target would delete a collection the
-        # caller never named.
+        # caller never named. Names no id, for the same reason
+        # `_refuse_pointer_name` doesn't (#422): this guard fires BEFORE any ACL
+        # check, so echoing the global pointer target here told an arbitrary
+        # caller which collection it is.
         raise HTTPException(
             409,
             f"{RESERVED_COLLECTION_ID!r} is the pointer name, not a collection; "
-            f"it currently resolves to {registry.default_id!r} — delete that id "
-            "explicitly if that is what you mean",
+            "name the collection id explicitly (GET /v1/collections lists your "
+            "collections and the id an omitted 'collection' resolves to for you)",
         )
     # TWO guards, because this used to be one by accident. The pointer target and
     # the legacy shared surface were always the same entry, so `== default_id`
@@ -1629,7 +1641,7 @@ async def create_share(
     ``grant_option`` is not exposed (defaults false). A duplicate active grant is
     a 409. A 404 hides an unknown/unreadable collection; 403 a readable non-owned
     one; 503 a store outage."""
-    _refuse_pointer_name(collection_id, registry)
+    _refuse_pointer_name(collection_id)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1749,7 +1761,7 @@ async def revoke_share(
     a mismatch (or unknown id) is a 404, never a cross-collection revoke. The
     active owner row is not revocable through this endpoint (that would strip
     ownership; use delete/transfer)."""
-    _refuse_pointer_name(collection_id, registry)
+    _refuse_pointer_name(collection_id)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:
@@ -1917,7 +1929,7 @@ async def transfer_collection_owner(
     never-seen subject's owned count is always 0 and would otherwise make the
     quota fully evadable; 503 for a store outage (fail closed).
     """
-    _refuse_pointer_name(collection_id, registry)
+    _refuse_pointer_name(collection_id)
     try:
         entry = registry.resolve(collection_id)
     except KeyError:

@@ -500,6 +500,14 @@ paths:
         job registry, so bulk/CLI-ingested corpora are included), scoped to the
         caller's readable tenants. Paginate with `limit` and the opaque `cursor`
         echoed from the prior response's `X-Next-Cursor` header.
+
+
+        There is no `collection` parameter: the listing targets the collection
+        an omitted `collection` resolves to **for this caller** — the id
+        `GET /v1/collections` reports as `default` (the registry pointer when
+        that caller can see it, else the first collection in their listing). The
+        listed surface therefore moves per caller rather than being one
+        server-wide collection.
       tags: [Documents]
       parameters:
         - name: limit
@@ -538,8 +546,14 @@ paths:
           description: Malformed pagination cursor
         "404":
           description: >-
-            The caller may not read the (default) collection the listing targets
-            — reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+            The caller can read no collection at all, so there is nothing for an
+            omitted `collection` to resolve to — the same state in which
+            `GET /v1/collections` reports `default: ""` and an empty
+            `collections` array. The body names **no** collection id: the target
+            was chosen by the server, not by the caller, so echoing it would
+            disclose a collection they were never shown (ADR-0003 §2). A caller
+            who *can* read something is never refused here for lack of access to
+            some other collection.
         "409":
           description: >-
             The collection is `lost` (#358): its Workspace archive is missing or
@@ -577,9 +591,16 @@ paths:
       summary: Delete a document and all its chunks
       description: >-
         Scoped to the caller's own tenant — one tenant can never delete
-        another's document, even by id. Targets the default collection's stores;
-        like ingest into it, the gate is READ access to that shared collection
-        (the per-tenant chunk stamp is the write isolation there, ADR-0003 §3).
+        another's document, even by id.
+
+
+        There is no `collection` parameter: the delete targets the collection an
+        omitted `collection` resolves to **for this caller** — the id
+        `GET /v1/collections` reports as `default` — so the surface moves per
+        caller. READ access suffices only when that collection is the legacy
+        shared surface, where the per-tenant chunk stamp is the write isolation
+        (ADR-0003 §3); anywhere else this is a mutation of an owned collection
+        and needs write access.
       tags: [Documents]
       parameters:
         - name: doc_id
@@ -592,8 +613,11 @@ paths:
           description: Document deleted
         "404":
           description: >-
-            The caller may not read the (default) collection the delete targets —
-            reported as 404, not 403, so existence is not leaked (ADR-0003 §2).
+            The caller can read no collection at all, so there is nothing for an
+            omitted `collection` to resolve to — the same state in which
+            `GET /v1/collections` reports `default: ""`. The body names **no**
+            collection id (the target was chosen by the server, not the caller;
+            ADR-0003 §2).
         "409":
           description: >-
             The collection is `lost` (#358): its Workspace archive is missing or

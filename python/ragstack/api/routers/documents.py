@@ -26,6 +26,7 @@ from ragstack.api.collections import (
     CollectionRegistry,
     is_reserved_collection_id,
 )
+from ragstack.api.default_collection import resolve_default_entry
 from ragstack.api.deps import (
     BuildSpecMismatch,
     bound_json_body,
@@ -1374,18 +1375,27 @@ async def list_documents(
     nothing visible is indexed. ``metadata`` carries the document-level fields
     (title, doc_type, doi, …) plus ``chunk_count``.
 
-    Listing targets the default collection's text index today (there is no
-    per-collection document endpoint yet), so the ownership seam runs against the
-    default collection: a caller who may not READ it gets the same 404 as an
-    unknown collection.
+    There is no way to name a collection here (no per-collection document
+    endpoint exists yet), so the route is IMPLICIT-only and targets whatever an
+    omitted ``collection`` resolves to **for this caller** —
+    :func:`resolve_default_entry`, the same symbol ``/v1/query`` and the
+    ``GET /v1/collections`` listing use. The surface therefore MOVES per caller:
+    a caller who cannot read the registry pointer target lists their own first
+    visible collection instead of being told, by id, that a collection they were
+    never shown does not exist (#422 — the ``/v1/query`` half of this was #419).
+    A caller who can read nothing at all gets the 404 that names no id.
     """
     # Authorize AND read the same entry. These used to be the same store by
     # construction (the pointer was always the settings-derived entry, and
-    # `get_text_index` returns that entry's index). Now that the pointer is
-    # configurable they can differ — and reading `app.state`'s index after
-    # authorizing against the pointer target served one collection's documents
-    # under another collection's ACL.
-    default = registry.resolve(registry.default_id)
+    # `get_text_index` returns that entry's index). Now that the target is both
+    # configurable AND caller-aware they can differ — and reading `app.state`'s
+    # index after authorizing against the resolved entry would serve one
+    # collection's documents under another collection's ACL.
+    #
+    # The resolver deliberately does not authorize: `enforce_access` stays,
+    # because the collection LIFECYCLE gate lives inside it and `filter_readable`
+    # does not run it (see api/default_collection.py's module docstring).
+    default = await resolve_default_entry(registry, principal)
     await enforce_access(principal, default.id, "read")
     try:
         docs, next_cursor = await default.text_index.list_documents(
@@ -1428,15 +1438,19 @@ async def delete_document(
     tenant cannot delete another's document even by id. Purge both retrieval
     legs (vector + text) so a deleted doc can't resurface via BM25.
 
-    The route targets the collection ``default`` points at. READ suffices only on
-    the LEGACY SHARED SURFACE — there per-chunk ``tenant_id`` stamping is the
-    isolation and the delete can only ever remove the caller's own chunks, so a
-    write gate would lock every non-admin out of the shared corpus. Anywhere else
-    this is a mutation of somebody's owned collection and needs write; the
-    exemption must not follow the pointer (see
-    :attr:`CollectionEntry.is_shared_surface`). Stores are taken from the same
-    entry that was authorized, never from ``app.state``."""
-    default = registry.resolve(registry.default_id)
+    Like ``GET /v1/documents`` this route is IMPLICIT-only — there is no way to
+    name a collection — so it targets whatever an omitted ``collection``
+    resolves to **for this caller** (:func:`resolve_default_entry`, #422), not
+    the global registry pointer. READ suffices only on the LEGACY SHARED SURFACE
+    — there per-chunk ``tenant_id`` stamping is the isolation and the delete can
+    only ever remove the caller's own chunks, so a write gate would lock every
+    non-admin out of the shared corpus. Anywhere else this is a mutation of
+    somebody's owned collection and needs write; the exemption keys on the
+    SURFACE FLAG, never on "is this what default points at" (see
+    :attr:`CollectionEntry.is_shared_surface`). For a caller whose resolved
+    entry is their own collection, ``write`` passes via ownership. Stores are
+    taken from the same entry that was authorized, never from ``app.state``."""
+    default = await resolve_default_entry(registry, principal)
     await enforce_access(
         principal, default.id, "read" if default.is_shared_surface else "write"
     )

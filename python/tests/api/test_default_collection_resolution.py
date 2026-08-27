@@ -215,6 +215,15 @@ async def test_no_implicit_path_4xx_names_a_collection_outside_the_callers_listi
             await p.client.post(
                 "/v1/query", json={"query": "x", "collection": "default"}, headers=headers
             ),
+            # #422 — the two implicit-ONLY document routes. Neither accepts a
+            # `collection` at all, so ANY collection id appearing in a 4xx body
+            # from these is by construction server-chosen.
+            await p.client.get("/v1/documents", headers=headers),
+            await p.client.delete("/v1/documents/doc-nothing", headers=headers),
+            # ...and the pointer-name management 409s, which refuse BEFORE any
+            # ACL check and so answer the same body to every caller (W7).
+            await p.client.delete("/v1/collections/default", headers=headers),
+            await p.client.post("/v1/collections/default/restore", headers=headers),
         ]
         for r in responses:
             if r.status_code < 400:
@@ -399,3 +408,289 @@ async def test_keyless_dev_still_resolves_the_registry_pointer(client, monkeypat
     assert body["default"] == SHARED_ID
     r = await client.post("/v1/query", json={"query": "x"})
     assert r.status_code == 200, r.text
+
+
+# --------------------------------------------------------------------------- #
+# #422 A — /v1/documents GET + DELETE join the shared resolver
+# --------------------------------------------------------------------------- #
+#
+# Both routes are IMPLICIT-ONLY (no `collection` parameter exists) and both
+# resolved the GLOBAL registry pointer, then 404'd on the ownership seam. Same
+# defect #419 fixed for /v1/query — and the reason the affected production user
+# could ask questions but could neither see nor delete their own documents.
+#
+# OBSERVABILITY. `/v1/documents` is scoped by the caller's TENANT as well as by
+# the collection, and the fixture stamps `personal-mine`'s chunk `persona` and
+# `curated-corpus`'s chunk `curator`. That alone cannot discriminate "which
+# collection was resolved" for the sharee (tenant `sharee`, who owns no chunk
+# anywhere) and would let the curator arm pass on the tenant filter alone. So
+# each test below seeds a DECOY: a chunk stamped with the CALLER's tenant in the
+# collection they must NOT be served from. A wrong pick then returns the decoy
+# instead of an empty list — the assertion fails on content, not on a count.
+
+
+def _doc_ids(body: list[dict]) -> list[str]:
+    return [d["doc_id"] for d in body]
+
+
+async def _seed_doc(entry, doc_id: str, tenant: str) -> None:
+    """Put one chunk stamped ``tenant`` into ``entry``'s own stores."""
+    from ragstack.models import Chunk
+
+    chunk = Chunk(
+        id=f"{doc_id}-c", doc_id=doc_id, content=f"content of {doc_id}",
+        embedding=[0.1, 0.2, 0.3, 0.4], metadata={"tenant_id": tenant},
+    )
+    await entry.vector_store.upsert([chunk])
+    await entry.text_index.index([chunk])
+
+
+def _entries(p):
+    from ragstack.api.main import app as _app
+
+    by_id = {e.id: e for e in _app.state.collections.entries()}
+    return by_id[p.readable_id], by_id[p.default_id]
+
+
+async def test_list_documents_serves_the_callers_own_default(
+    caller_without_default_access,
+):
+    """A1 — the reproduction. The persona lists THEIR document instead of a 404.
+
+    The decoy (`decoy-persona`, tenant `persona`, seeded into the pointer
+    target) makes this discriminate the COLLECTION: resolving the global pointer
+    and skipping the ACL would return the decoy; resolving it and running the
+    ACL is the 404 this fixes. Only the caller-aware resolution returns exactly
+    the persona's own document."""
+    p = caller_without_default_access
+    mine, curated = _entries(p)
+    await _seed_doc(curated, "decoy-persona", "persona")
+
+    r = await p.client.get("/v1/documents", headers=p.headers)
+    assert r.status_code == 200, r.text
+    assert _doc_ids(r.json()) == [f"doc-{p.readable_chunk_id}"]
+
+
+async def test_list_documents_is_unchanged_for_a_caller_who_can_read_the_pointer(
+    caller_without_default_access,
+):
+    """A2 — the invariant that this is a FIX, not a reroute. The ``sharee`` can
+    read BOTH collections and the persona's is ``entries[0]``, so a picker that
+    just took the first visible entry would move them off the curated corpus.
+
+    Two chunks stamped ``sharee``, one in each collection: the answer names
+    which collection was resolved."""
+    p = caller_without_default_access
+    mine, curated = _entries(p)
+    await _seed_doc(mine, "sharee-in-mine", "sharee")
+    await _seed_doc(curated, "sharee-in-curated", "sharee")
+
+    r = await p.client.get("/v1/documents", headers=p.sharee_headers)
+    assert r.status_code == 200, r.text
+    assert _doc_ids(r.json()) == ["sharee-in-curated"]
+
+
+async def test_list_documents_agrees_with_the_listings_default(
+    caller_without_default_access,
+):
+    """A3 — THE equivalence, and the thing that stops the drift coming back:
+    ``GET /v1/collections``'s advertised ``default`` is the collection whose
+    documents ``GET /v1/documents`` returns, for every caller who can read
+    anything. Asserted as a property over three callers whose answers DISAGREE,
+    so no arm can pass by accident.
+
+    Each caller gets one chunk in each collection, both stamped with their own
+    tenant, so the collection is the only variable left."""
+    p = caller_without_default_access
+    mine, curated = _entries(p)
+    for who in ("persona", "sharee", "curator"):
+        await _seed_doc(mine, f"{who}-in-mine", who)
+        await _seed_doc(curated, f"{who}-in-curated", who)
+
+    for who, headers, expected_collection in (
+        ("persona", p.headers, p.readable_id),
+        ("sharee", p.sharee_headers, p.default_id),
+        ("curator", p.curator_headers, p.default_id),
+    ):
+        listing = (await p.client.get("/v1/collections", headers=headers)).json()
+        assert listing["default"] == expected_collection, who
+        assert listing["default"] in {c["id"] for c in listing["collections"]}, who
+
+        docs = await p.client.get("/v1/documents", headers=headers)
+        assert docs.status_code == 200, (who, docs.text)
+        served = _doc_ids(docs.json())
+        expected = f"{who}-in-mine" if expected_collection == p.readable_id \
+            else f"{who}-in-curated"
+        assert expected in served, (who, served)
+        # ...and nothing from the OTHER collection.
+        other = f"{who}-in-curated" if expected == f"{who}-in-mine" else f"{who}-in-mine"
+        assert other not in served, (who, served)
+
+
+async def test_list_documents_for_a_caller_who_can_read_nothing_is_the_honest_404(
+    caller_without_default_access,
+):
+    """A4. Byte-identical to the message every other implicit path uses, and it
+    names NO id — the target was chosen by the server, so echoing it would
+    disclose a collection this caller was never shown."""
+    p = caller_without_default_access
+    r = await p.client.get("/v1/documents", headers=p.outsider_headers)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "no collection is accessible to this caller"
+
+
+async def test_delete_document_targets_the_callers_own_default(
+    caller_without_default_access,
+):
+    """A5. The persona deletes their own document: 204, and the chunk is gone
+    from BOTH legs of THEIR stores. Before this the delete authorized against
+    the pointer target and 404'd.
+
+    The decoy in the pointer target — same doc id, stamped ``persona`` — is the
+    guard against a delete that resolved (or read) the wrong entry: it must
+    survive untouched."""
+    p = caller_without_default_access
+    mine, curated = _entries(p)
+    doc = f"doc-{p.readable_chunk_id}"
+    await _seed_doc(curated, doc, "persona")
+
+    r = await p.client.delete(f"/v1/documents/{doc}", headers=p.headers)
+    assert r.status_code == 204, r.text
+
+    # Purged from the persona's own collection, both legs.
+    assert await mine.text_index.count_tenants(["persona"]) == 0
+    assert await mine.vector_store.count_tenants(["persona"]) == 0
+    assert _doc_ids((await p.client.get("/v1/documents", headers=p.headers)).json()) == []
+    # ...and the identically-named document in the pointer target is untouched.
+    assert await curated.text_index.count_tenants(["persona"]) == 1
+    assert await curated.vector_store.count_tenants(["persona"]) == 1
+
+
+async def test_delete_document_for_a_caller_who_can_read_nothing_is_the_honest_404(
+    caller_without_default_access,
+):
+    """A6. Same refusal as the listing; still names no id."""
+    p = caller_without_default_access
+    r = await p.client.delete("/v1/documents/doc-anything", headers=p.outsider_headers)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "no collection is accessible to this caller"
+
+
+async def test_delete_document_still_needs_write_on_a_non_surface_collection(
+    caller_without_default_access,
+):
+    """A7 — the exemption did NOT widen. The ``sharee`` resolves to the curated
+    corpus (they can read it), holds only READ, and it is not the legacy shared
+    surface — so the delete is refused and the chunk survives. Without this,
+    "adopt the caller-aware resolver" could quietly have become "let any reader
+    delete"."""
+    p = caller_without_default_access
+    _mine, curated = _entries(p)
+    await _seed_doc(curated, "sharee-in-curated", "sharee")
+
+    r = await p.client.delete("/v1/documents/sharee-in-curated", headers=p.sharee_headers)
+    assert r.status_code == 403, r.text
+    assert await curated.text_index.count_tenants(["sharee"]) == 1
+
+
+async def test_documents_routes_keep_working_keyless(client, monkeypatch):
+    """A8. With auth unconfigured ``filter_readable`` no-ops, so the open dev
+    path resolves the registry pointer exactly as before. The whole keyless
+    suite depends on this, and a resolver that started answering 404 here would
+    break every keyless deployment."""
+    monkeypatch.setattr(security.settings, "api_keys", [])
+    from tests.api.conftest import SHARED_ID
+
+    body = (await client.get("/v1/collections")).json()
+    assert body["default"] == SHARED_ID
+    r = await client.get("/v1/documents")
+    assert r.status_code == 200, r.text
+    assert (await client.delete("/v1/documents/doc-nothing")).status_code == 204
+
+
+async def test_a_dormant_collection_is_still_gated_on_the_documents_routes(
+    caller_without_default_access,
+):
+    """The lifecycle gate lives inside ``enforce_access``, not in the resolver,
+    and it must still run after the pick. When the persona's only readable
+    collection is dormant, both document routes answer 503 + ``Retry-After`` —
+    not the 404 a lifecycle-aware picker would produce by filtering it out, and
+    not a 200 served off a collection that is not there."""
+    from ragstack.api.lifecycle import (
+        LifecycleGate,
+        reset_lifecycle_gate,
+        set_lifecycle_gate,
+    )
+    from ragstack.collection_store import (
+        DORMANT,
+        CollectionSpec,
+        InMemoryCollectionStore,
+    )
+
+    p = caller_without_default_access
+    store = InMemoryCollectionStore()
+    await store.put(
+        CollectionSpec(
+            id=p.readable_id, label=p.readable_id, owner="persona",
+            collection=p.readable_id, embedding_api="openai",
+            embedding_model="test-model", embedding_model_dim=4, chunk_method="fixed",
+        )
+    )
+    await store.set_state(p.readable_id, DORMANT, reason="evicted")
+    prior = getattr(app.state, "collection_store", None)
+    app.state.collection_store = store
+    set_lifecycle_gate(LifecycleGate(store, cache_seconds=0.0, retry_after=30))
+    try:
+        for r in (
+            await p.client.get("/v1/documents", headers=p.headers),
+            await p.client.delete(
+                f"/v1/documents/doc-{p.readable_chunk_id}", headers=p.headers
+            ),
+        ):
+            assert r.status_code == 503, r.text
+            assert r.headers.get("Retry-After") == "30"
+            assert DORMANT in r.json()["detail"]
+    finally:
+        reset_lifecycle_gate()
+        if prior is None:
+            del app.state.collection_store
+        else:
+            app.state.collection_store = prior
+
+
+# --------------------------------------------------------------------------- #
+# #422 W7 — the pointer-name 409s stop echoing the pointer target
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "method,path,body",
+    [
+        # The inline copy of the refusal, in the DELETE handler...
+        ("delete", "/v1/collections/default", None),
+        # ...and `_refuse_pointer_name`, shared by the other four routes.
+        ("post", "/v1/collections/default/restore", None),
+        ("post", "/v1/collections/default/owner", {"subject": "someone"}),
+        (
+            "post",
+            "/v1/collections/default/shares",
+            {"grantee": "someone", "permission": "read"},
+        ),
+    ],
+)
+async def test_the_pointer_name_409_names_no_collection(
+    caller_without_default_access, method, path, body
+):
+    """These guards fire BEFORE any ACL check, so whatever they say is said to
+    anyone who can reach the route. Echoing ``registry.default_id`` told the
+    persona — who cannot read that collection, and whose own listing never
+    mentions it — exactly what the tenant pointer names. The refusal itself is
+    unchanged (still 409, still no side effect); only the body moved, and it now
+    points at the caller's own listing."""
+    p = caller_without_default_access
+    r = await p.client.request(method, path, json=body, headers=p.headers)
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert p.default_id not in detail, detail
+    assert "pointer name" in detail, detail
+    assert "GET /v1/collections" in detail, detail

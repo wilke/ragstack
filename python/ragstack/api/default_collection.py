@@ -21,11 +21,18 @@ site                                             visibility        fallback orde
 ``routers/documents.py``                         none              n/a
 ===============================================  ================  ==================
 
-This module is the shared symbol the first two now import, so "who else resolves
-a default?" is a one-grep question. The last two are a tracked follow-up — and
-the ingest half of ``documents.py`` needs a **writable**-set picker, not this
-read-based one, or an upload would be routed into a collection the caller can
-read but not own.
+This module is the shared symbol the other sites import, so "who else resolves a
+default?" is a one-grep question.
+
+Converged so far: the listing and ``query.py`` (#419); ``documents.py``'s two
+**read** paths — ``GET /v1/documents`` and ``DELETE /v1/documents/{doc_id}``,
+both implicit-only, so their whole surface moved per caller (#422 PR-2).
+
+Still open: ``confined_collection_name`` (allowlist-only, lexicographic — it
+answers a different question, "which PHYSICAL store do I scope triples to", and
+has no principal to intersect with); and the INGEST half of ``documents.py``,
+which needs a **writable**-set picker rather than this read-based one, or an
+upload would be routed into a collection the caller can read but not own.
 
 **The rules, in one place:**
 

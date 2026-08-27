@@ -471,7 +471,16 @@ async def test_backfill_skips_the_publish_when_the_lookback_fails(caplog):
 async def test_management_routes_refuse_the_literal_pointer_name(client, _auth_on):
     """share / revoke / transfer / restore on `/collections/default` are 409:
     resolving through would act on a collection the caller never named (the
-    same rule as DELETE), and their ACL rows are keyed by the REAL id."""
+    same rule as DELETE), and their ACL rows are keyed by the REAL id.
+
+    #422 FLIPPED the assertion on the body. It used to require the message to
+    echo the pointer target (``'owned'``); it now requires the message NOT to.
+    These guards fire before any ACL check, so the old wording told every caller
+    who could reach the route which collection the GLOBAL pointer names — a
+    collection their own ``GET /v1/collections`` may never list, and since #419
+    not even the id their omitted-``collection`` requests target. The message
+    points at that listing instead. The status and the no-side-effects half are
+    unchanged; only the prose moved."""
     shared, owned = _entry(SHARED_ID, shared=True), _entry("owned", owner="owner")
     _install([shared, owned], pointer="owned")
     await _own("owned", "owner")
@@ -481,11 +490,17 @@ async def test_management_routes_refuse_the_literal_pointer_name(client, _auth_o
         ("delete", "/v1/collections/default/shares/some-share-id", None),
         ("post", "/v1/collections/default/owner", {"subject": "reader"}),
         ("post", "/v1/collections/default/restore", None),
+        # The DELETE guard is an INLINE second copy of the same refusal
+        # (collections.py), so it needs its own arm or the copy can drift back.
+        ("delete", "/v1/collections/default", None),
     ]
     for method, path, body in calls:
         r = await client.request(method, path, json=body, headers=_h("owner"))
         assert r.status_code == 409, (method, path, r.status_code, r.text)
-        assert "pointer name" in r.json()["detail"] and "'owned'" in r.json()["detail"]
+        detail = r.json()["detail"]
+        assert "pointer name" in detail, (method, path, detail)
+        assert "owned" not in detail, (method, path, detail)
+        assert "GET /v1/collections" in detail, (method, path, detail)
     # Nothing happened to the real target.
     assert await get_acl_store().owner_of("owned") == "owner"
     assert [r for r in await get_acl_store().shares_for("owned") if r.grantee_id == "reader"] == []
