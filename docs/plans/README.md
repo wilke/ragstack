@@ -7,10 +7,10 @@ what was decided **and why**, so a decision can be re-argued rather than re-disc
 `IN PROGRESS` being built now · `OPEN` planned, not started · `BLOCKED` waiting on something
 named · `ABANDONED` decided against, with the reason kept.
 
-Last updated 2026-08-27. Fleet: **`dev` on `v1.5.1`; `asm-next`, `lucid-next`, `demo` on `v1.5.0`**.
-`dev` runs ahead on purpose — `v1.5.1` carries the #407 boot refusal, which needs a one-time
-`tenant.env` edit ([runbook](../runbooks/upgrade-407-remove-gowe-store-urls.md)). Only `dev` was
-affected: it is the only tenant setting `INGEST_BACKEND=gowe`, and the refusal lives on that path. The other three move once `dev` is accepted.
+Last updated 2026-08-27. Fleet: **all four tenants on `v1.5.2`** — `dev`, `demo`, `lucid-next`,
+`asm-next`, upgraded in that order. Revert point is `v1.5.1` for `dev` and `v1.5.0` for the other
+three; for those three a plain `git checkout` + restart is sufficient (no config coupling — the
+`GOWE_WORKFLOW_INPUTS_JSON` dependency is gowe-only, and `dev` is the only gowe tenant).
 
 ---
 
@@ -18,19 +18,32 @@ affected: it is the only tenant setting `INGEST_BACKEND=gowe`, and the refusal l
 
 | | |
 |---|---|
-| **Deploying #422** | `NEXT`. #447 and #453 are merged and unreleased. Until they ship, the user from the #419 incident can ask questions but **still cannot list documents or upload** — the fix exists only on `main`. This is the one item with a person waiting on it. |
-| **#422 PR-4 (W12–W14)** | `NOT STARTED`, and deliberately not blocking the deploy. |
+| **#422 PR-4 (W12–W14)** | `NOT STARTED`. |
+| **#415 W4–W10** | `NOT STARTED`. A wedged job row still has no self-service recovery — no cancel endpoint, and the admin exemption cannot work on the gowe path (it needs a BV-BRC bearer). |
+| **#454** | `OPEN`. Five write-path CLI scripts still default their store URLs to production. |
 
-Merged this cycle, unreleased: **#452** (#405 — the P2 conformance persona), **#447** and **#453**
-(#422 — the documents read paths and the writable-set ingest picker).
+**Shipped in `v1.5.2` and live on all four tenants:** #452 (the P2 conformance persona), #447 and
+#453 (the documents read paths and the writable-set ingest picker).
 
-Sequencing: tag and deploy to `dev`, re-run the affected user's journey there, then move
-`asm-next` / `lucid-next` / `demo` off `v1.5.0`. Those three were held while `v1.5.1` carried
-nothing user-facing; that stops being true with #422 in the release.
+**What the deploy did and did not prove.** Every tenant restarted clean, the registry line is
+byte-identical to its own baseline on all four, and `/v1/collections` + `/v1/documents` are
+byte-identical before and after for every key tested. That is a no-regression result.
 
-**Not proven live:** every #422 claim is an F/C-layer claim. The L-layer re-run against a real
-caller has not happened, and neither has the multi-batch upload run that #414/#415 blocked —
-those defects are fixed in code and unre-proven on live infrastructure.
+It is **not** an acceptance test of #422, and no tenant can be one:
+
+- The API-key callers on `dev`, `demo` and `lucid` can all already read their tenant's pointer
+  target, so the caller-aware pick resolves to the same collection it did before. The divergence
+  #447 fixes only appears for a caller *without* that grant.
+- On `asm-next` those callers exist (the #419 cohort), but they authenticate with BV-BRC bearer
+  tokens, not API keys, so the journey cannot be driven from a shell. **The user-facing claim —
+  that they can now list documents — is still unconfirmed against a real session.**
+- **The #453 ingest picker has had no live exercise on any tenant.** The only way to test it is to
+  write, and `demo`/`asm` write to the *production* Qdrant and Elasticsearch. The C-layer proof
+  (the review's ASGI experiments, including a mutation of the echo line) was judged sufficient
+  rather than buying one echoed id with a production write.
+
+Also unre-proven live: the multi-batch upload run that #414/#415 blocked. Those are fixed in code
+and never re-run.
 
 ---
 
@@ -53,6 +66,7 @@ those defects are fixed in code and unre-proven on live infrastructure.
 | `v1.4.1` | A 401 with no credential means signed out, not "that credential was rejected". |
 | `v1.4.2` | The API can now explain its own failures. Request ids, a working `LOG_LEVEL`, Elasticsearch error handling, runtime log control. |
 | `v1.5.0` | A 503 you can explain. One greppable line per request with per-stage timings, a five-minute p50/p95 rollup in bucket upper bounds, and a 503 body that says whether retrying will help. |
+| `v1.5.2` | The caller's own collection, on every surface. `/v1/documents` lists what the *caller* can read (#447) and an omitted `collection` on ingest targets what they can *write* (#453); conformance can finally express a second principal (#452). No config change, no UI redeploy. |
 | `v1.5.1` | The runbook for reading those lines, an opt-in Qdrant post-mortem probe (default off), the API seeding its own ingest store targets (#407), and a harness that proves which `ragstack` it imported (#432 PR-1). **Deploying it requires removing `qdrant_url`/`es_url` from `dev/config/tenant.env`'s `GOWE_WORKFLOW_INPUTS_JSON`** — the API refuses to boot otherwise, by design. Those were dev's only two keys, so the whole line went; the blob may stay for genuine per-deployment extras. |
 
 Revert path is `git checkout <tag>` in the tenant worktree, then restart the API and the
