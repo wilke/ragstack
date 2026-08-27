@@ -100,7 +100,7 @@ Read `wall_ms` first, then find which stage accounts for it.
 |---|---|---|
 | `vector_ms` ≈ `wall_ms`, **`inflight` low**, and a fast retry on the same `coll` | **A cold read.** The store was not busy and was not broken; this request paid for warming, the next one did not. | Retry is the right advice, and it is honest — say so. Watch the rollup line (§8) for whether it is becoming routine. |
 | `vector_ms` dominant, **`inflight` high** | **Contention, not the store.** The box was serving many requests at once; the vector leg is where the queueing surfaced, not where the fault is. | Do not chase the store. Look at concurrency and at what else was running (the same grep window, other `rid`s). |
-| `gen_ms` dominant | **The LLM.** | Nothing to do with the vector store. Check the generation backend. |
+| `generate_ms` dominant | **The LLM.** (The field is `generate_ms` — the stage is named `generate`; earlier drafts of this procedure said `gen_ms`, which matches nothing in the log.) | Nothing to do with the vector store. Check the generation backend. |
 | `rerank_ms` dominant | **The cross-encoder sidecar.** | Same — the store is fine. |
 | `embed_ms` dominant | **The embedding fleet.** `embed_ep` names the endpoint that served this call. | Check that endpoint specifically; the pool picks least-loaded per call, so a single bad member shows up here and nowhere else. |
 | `text_ms` dominant | **Elasticsearch**, the other half of a hybrid query. Instrumented since W2b — before that it was a bare 500 with a traceback. | Check ES, not Qdrant. |
@@ -231,6 +231,8 @@ Every `LATENCY_ROLLUP_SECONDS` (default 300) the process emits one INFO line per
 ```
 grep "latency rollup" /rag/data/tenants/<tenant>/logs/api-<tenant>.log
 ```
+
+Illustrative shape (this one is not from the live run above):
 
 ```
 for_route="POST /v1/query" coll=<collection> n=412 errors=1
