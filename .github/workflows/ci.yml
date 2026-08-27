@@ -88,10 +88,15 @@ jobs:
     # together"; conformance is the pin, but a pin nothing holds is not a pin.
     #
     # build/vet/test only, deliberately NOT golangci-lint: `golangci-lint run
-    # ./...` currently reports four pre-existing errcheck findings in test files
-    # (three in internal/api/router_test.go, one in internal/mcp/backend_test.go)
+    # ./...` currently reports FIVE pre-existing errcheck findings in test files
+    # (four in internal/api/router_test.go, one in internal/mcp/backend_test.go)
     # that predate this change, so a lint step would land red on its first run —
     # the failure mode this job exists to avoid. Clean those up and add the step.
+    #
+    # Count them with `--max-same-issues=0`: golangci-lint defaults that to 3 and
+    # go/.golangci.yml sets no override, so a plain run truncates the router_test
+    # group to three and under-reports the backlog by one. Whoever clears this
+    # should fix five, not the four a bare run shows.
     #
     # ~30 s; no services, no model downloads — the Go suite is entirely offline.
     name: go (build · vet · test)

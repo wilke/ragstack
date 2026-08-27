@@ -169,8 +169,18 @@ func TestGraphNeighborsReturnsEmptyList(t *testing.T) {
 // --- X-Request-Id (#427 W7) ---------------------------------------------------
 //
 // The Go half of the parity the conformance suite pins over HTTP
-// (conformance/test_request_id.py). These are the same properties asserted
-// in-process, so a break is caught by `go test` without a running server.
+// (conformance/test_request_id.py), asserted in-process so most breaks are
+// caught by `go test` without a running server.
+//
+// "Most", not "all", and the gap is worth knowing: httptest.ResponseRecorder's
+// Header() is a LIVE map, so a header `Set` performed after the handler chain
+// has run is still visible to a later `Get` on it. A real server serialises the
+// header block when the response is written and cannot see such a `Set` at all.
+// So the recorder-based tests below pin the header's VALUE but not the point at
+// which it is stamped — and that point is the whole design (it is what covers
+// chi's 404 and Recoverer's panic-500).
+// TestRequestIDIsPresentOnAnErrorResponse runs over a real socket for exactly
+// that reason; do not "simplify" it back to a recorder.
 
 func TestRequestIDHeaderIsPresentAndWellFormed(t *testing.T) {
 	w := doGet(t, newRouter(), "/health", nil)
@@ -255,14 +265,27 @@ func TestHostileInboundRequestIDIsRejectedAndNeverLogged(t *testing.T) {
 func TestRequestIDIsPresentOnAnErrorResponse(t *testing.T) {
 	// The whole point: the id has to be on the responses a user reports, not
 	// just on the ones that worked. chi's own 404 handler runs at the end of the
-	// middleware chain, so stamping the header BEFORE the chain covers it —
-	// pinned here because conformance asserts exactly this path over HTTP.
-	w := doGet(t, newRouter(), "/v1/this-route-does-not-exist", nil)
+	// middleware chain, so stamping the header BEFORE the chain is what covers
+	// it — along with Recoverer's panic-500.
+	//
+	// Over a REAL socket, deliberately, and this is the one test in the file
+	// that is: a ResponseRecorder's live header map would let a stamp performed
+	// AFTER the chain pass just as happily, so a recorder cannot distinguish the
+	// implementation from a mutant of it that breaks every conformance test.
+	// This is the in-tree pin for the property the whole PR exists to establish.
+	srv := httptest.NewServer(newRouter())
+	defer srv.Close()
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
+	resp, err := http.Get(srv.URL + "/v1/this-route-does-not-exist")
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
 	}
-	if rid := w.Header().Get("X-Request-Id"); !ridRE.MatchString(rid) {
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+	if rid := resp.Header.Get("X-Request-Id"); !ridRE.MatchString(rid) {
 		t.Fatalf("X-Request-Id %q on a 404 is not a server-generated id", rid)
 	}
 }
