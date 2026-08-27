@@ -17,7 +17,8 @@ Interactive docs are served by the Python app at `/docs` (Swagger UI) and `/redo
 > command with no `BASE` set is a production write.
 >
 > ```bash
-> export BASE=http://localhost:8000                      # a local dev server you started
+> export BASE=http://127.0.0.1:$PORT                      # a dev server YOU started
+>                                                        # (not :8000 — see above)
 > export BASE=https://<host>:9000/ragstack/<tenant>/api   # through the gateway
 > ```
 >
@@ -576,10 +577,13 @@ curl -s -X POST "$BASE"/v1/collections/my-papers/restore \
 ```
 
 **202** `CollectionRestoreResponse` `{ collection_id, state, submission_id?,
-message }`. Refusals: **400** no bearer credential, or the registry row records no
-owner subject so its Workspace folder cannot be located; **403** readable but not
-owned; **404** unknown/unreadable; **502** the Workspace listing or the engine
-submission failed (the row is left as it was — retry is safe); **503** the
+message }`. Refusals: **400** no bearer credential (the credential is valid and
+authenticated — it simply carries no Workspace token); **403** readable but not
+owned; **404** unknown/unreadable; **409** the registry does not track this row
+(the settings-derived default has no archive to restore from); **502** the
+Workspace listing or the engine submission failed, **or the registry row records
+no owner subject** so its Workspace folder cannot be located — the row is left as
+it was, so a retry is safe; **503** the
 authorization store is unavailable, *or* no workflow engine is configured, *or*
 the tenant is [at capacity](#post-v1collections) (`Retry-After` set; nothing is
 submitted). Schema: `contracts/schemas/collection_restore_response.json`.
@@ -1109,7 +1113,8 @@ absent on the last page. A malformed cursor is **400** (deliberately generic; th
 value is never reflected back). `metadata` carries `chunk_count`. **There is no ordering
 guarantee** — treat the sequence as unordered.
 
-Both operations resolve the **caller's** default collection when `collection` is omitted
+Both operations are **implicit-only**: neither accepts a `collection` parameter, and both
+resolve the **caller's** default collection
 (#447), not the global registry pointer. A backend fault degrades to `[]` at 200, so an
 empty list does not prove an empty corpus.
 
@@ -1223,7 +1228,7 @@ gets **403**. `?limit=` (default **25**, 1–100).
 ```bash
 curl -s "$BASE/v1/jobs?limit=10" -H 'X-API-Key: kadmin'
 # {"jobs":[{"job_id":"…","status":"completed","source":"papers/","error":"",
-#           "chunks":412,"items":{"total":17,"completed":17,"failed":0,"pending":0}}]}
+#           "chunks":412,"items":{"completed":17,"failed":0,"pending":0}}]}
 ```
 
 **200** `JobsResponse` `{ jobs: JobSummary[] }`; each `{ job_id, status, source,
@@ -1299,8 +1304,12 @@ that serves every request.
   auto-revert**. Audited as `audit=reset`, distinct from `audit=expired`.
 
 **`level` does not govern `uvicorn.*`.** Uvicorn's loggers set
-`propagate=False` and carry their own handlers, so `{"level":"CRITICAL"}` leaves
-the access line printing and `{"level":"DEBUG"}` does not turn uvicorn debug on.
+`propagate=False` and carry their own handlers, so `{"level":"DEBUG"}` does not
+turn uvicorn debug on. Nor does raising `level` silence the request log the way
+you might expect: `access_log_replaced` is on by default, so uvicorn's own access
+logger is disabled and the per-request summary line that replaces it **is**
+governed by the root level — `{"level":"CRITICAL"}` silences that line too. The
+audit logger, not the access line, is the floor that cannot be raised away.
 Name `uvicorn`, `uvicorn.error` or `uvicorn.access` in `loggers` to reach them —
 that works, and it is the only way to. The side benefit is that a full "denial of
 observability" is not reachable through this endpoint at all.
