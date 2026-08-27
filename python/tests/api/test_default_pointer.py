@@ -248,7 +248,24 @@ async def test_reader_of_an_owned_pointer_target_cannot_write_by_omitting_collec
     """THE HAZARD. A reader of an owned collection that the pointer happens to
     name must not be able to ingest into it, or delete from it, by omitting
     ``collection`` — the read-not-write exemption belongs to the legacy shared
-    surface, not to whatever ``default`` points at."""
+    surface, not to whatever ``default`` points at.
+
+    **The reader's ingest answer changed in #422, and this is the arm that
+    documents it.** The invariant — *nothing of the reader's ever lands in
+    ``owned``* — is unchanged and is what is asserted below. What changed is
+    the shape of the refusal: the implicit ingest picker now chooses among the
+    caller's WRITABLE collections, and this reader has one, the legacy shared
+    surface (registered here, and tenant-stamped, so writing there is safe).
+    So their omitted-``collection`` ingest is accepted INTO THE SURFACE rather
+    than refused — and the 202 says so, in ``IngestResponse.collection``,
+    precisely so the divert is never silent.
+
+    The companion test below removes the surface from the registry and pins the
+    other arm: with nothing writable at all, the same request is a 403.
+
+    ``DELETE /v1/documents`` is unchanged (403): the delete path resolves the
+    caller's READ default, which for this reader is the pointer target, and
+    that is not the shared surface, so it demands write."""
     shared, owned = _entry(SHARED_ID, shared=True), _entry("owned", owner="owner")
     await _seed(owned, "owners-chunk", tenant="owner")
     _install([shared, owned], pointer="owned")
@@ -258,18 +275,56 @@ async def test_reader_of_an_owned_pointer_target_cannot_write_by_omitting_collec
     r = await client.get("/v1/chunks", params={"ids": "owners-chunk"}, headers=_h("reader"))
     assert r.status_code == 200, r.text  # (resolution works; scope filters the rows)
 
-    # ...but omitting `collection` is not a way to write to it.
+    # ...but omitting `collection` is not a way to write to it. The picker skips
+    # `owned` (readable, not owned) and lands on the shared surface, which says
+    # so out loud.
     r = await client.post("/v1/ingest", json={"source": "x.txt"}, headers=_h("reader"))
-    assert r.status_code == 403, r.text
+    assert r.status_code == 200, r.text
+    assert r.json()["collection"] == SHARED_ID
+    job = await app.state.job_store.get(r.json()["job_id"])
+    assert job.collection_id == SHARED_ID  # ...and the job row agrees
+
     r = await client.delete("/v1/documents/doc-owners-chunk", headers=_h("reader"))
     assert r.status_code == 403, r.text
     assert await owned.vector_store.count() == 1  # nothing was deleted
 
-    # The owner, of course, can — through the very same omitted-collection path.
+    # The owner, of course, can — through the very same omitted-collection path,
+    # and for them the pointer target IS writable, so that is where it goes.
     r = await client.post("/v1/ingest", json={"source": "x.txt"}, headers=_h("owner"))
     assert r.status_code == 200, r.text
+    assert r.json()["collection"] == "owned"
     r = await client.delete("/v1/documents/doc-owners-chunk", headers=_h("owner"))
     assert r.status_code == 204, r.text
+
+
+async def test_a_reader_with_nothing_writable_is_refused_without_being_told_an_id(
+    client, _auth_on
+):
+    """The other arm of the hazard, and the one the surface was masking above:
+    strip the shared surface out of the registry and the reader of the pointer
+    target has NOTHING that accepts their writes.
+
+    They get a 403 — not a 200 into somebody's corpus, and not the read path's
+    404, because "you can read collections but own none" is a different and
+    actionable state. The body names no collection id at all, so the refusal is
+    the same sentence for every caller in that state and can never be used to
+    probe which collections exist."""
+    owned = _entry("owned", owner="owner")
+    await _seed(owned, "owners-chunk", tenant="owner")
+    _install([owned], pointer="owned")
+    await _own("owned", "owner")
+    await _publish("owned")
+
+    r = await client.post("/v1/ingest", json={"source": "x.txt"}, headers=_h("reader"))
+    assert r.status_code == 403, r.text
+    detail = r.json()["detail"]
+    assert "owned" not in detail, detail
+    assert detail == (
+        "no collection accepts your uploads: name a collection you own "
+        "explicitly in 'collection', or create your own (POST /v1/collections)"
+    )
+    # Nothing was written, and no job row was minted.
+    assert await owned.vector_store.count() == 1
 
 
 async def test_the_legacy_shared_surface_keeps_read_not_write(client, _auth_on):

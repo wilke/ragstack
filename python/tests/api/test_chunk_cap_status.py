@@ -139,7 +139,10 @@ async def test_local_refusal_surfaces_on_the_job_status(client, principals, _cle
     job_id = r.json()["job_id"]
     body = await _poll(client, job_id, _h("owner"))
     # The poll response keeps its contract shape; the reason is on the job.
-    assert set(body) == {"job_id", "status", "chunk_ids", "items"}
+    # (`collection` joined the shape in #422 — the job row's own stamp, so a
+    # poll answers "where did this land?" with the same id the 202 did.)
+    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection"}
+    assert body["collection"] == "lib"
     assert body["status"] == "failed" and body["chunk_ids"] == []
     assert body["items"] == {"total": 1, "completed": 0, "failed": 1, "pending": 0}
     job = await app.state.job_store.get(job_id)
@@ -239,7 +242,7 @@ async def test_gowe_receipt_label_is_lifted_onto_the_job(client, gowe):  # noqa:
     assert r.status_code == 202, r.text
     job_id = r.json()["job_id"]
     body = await _poll(client, job_id, AUTH)
-    assert set(body) == {"job_id", "status", "chunk_ids", "items"}
+    assert set(body) == {"job_id", "status", "chunk_ids", "items", "collection"}
     assert body["status"] == "failed"
     assert body["items"] == {"total": 2, "completed": 0, "failed": 2, "pending": 0}
     job = await app.state.job_store.get(job_id)

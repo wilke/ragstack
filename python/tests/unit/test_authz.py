@@ -20,6 +20,7 @@ from ragstack.authz import (
     AuthzUnavailable,
     resolve_access,
     resolve_read_many,
+    resolve_write_many,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -239,3 +240,90 @@ async def test_read_many_admin_bypasses_with_one_summary_log(caplog):
 async def test_read_many_fails_closed_on_store_error():
     with pytest.raises(AuthzUnavailable):
         await resolve_read_many(ALICE, "user", [COLL], _BrokenStore())
+
+
+# --------------------------------------------------------------------------- #
+# resolve_write_many — the picker batch (#422): same policy as the write branch
+# --------------------------------------------------------------------------- #
+
+
+async def test_write_many_agrees_with_per_collection_decisions(store):
+    """THE coupling assertion. ``resolve_write_many`` is deliberately not derived
+    from ``resolve_read_many``'s ``via`` field — it restates the write policy
+    beside ``resolve_access``'s write branch — so the one thing that must hold is
+    that the two never disagree.
+
+    The matrix is chosen so every arm of the policy is exercised and none can
+    pass by coincidence: an OWNER, a caller with a direct READ share, a caller
+    reached only by the ``public`` group, and a stranger; against an owned
+    collection, a public one, and one with no rows at all. Read-allows-but-write-
+    denies is the interesting cell and there are three of them here."""
+    await store.grant(COLL, "user", ALICE, "read", granted_by=OWNER)
+    await store.grant("col-open", "group", "public", "read", granted_by=OWNER)
+    await store.grant("col-open", "user", ALICE, "owner", granted_by=ALICE)
+    cids = [COLL, "col-open", "col-hidden"]
+    saw_read_without_write = False
+    for subject in (OWNER, ALICE, STRANGER):
+        batch = await resolve_write_many(subject, "user", cids, store)
+        for cid in cids:
+            single = await resolve_access(subject, "user", cid, "write", store)
+            assert batch[cid].allowed == single.allowed, (subject, cid)
+            assert batch[cid].via == single.via, (subject, cid)
+            readable = await resolve_access(subject, "user", cid, "read", store)
+            saw_read_without_write |= readable.allowed and not batch[cid].allowed
+    assert saw_read_without_write, (
+        "the matrix must contain a readable-but-not-writable cell, or this test "
+        "would pass against a resolver that simply mirrored the read decision"
+    )
+
+
+async def test_write_many_touches_the_store_exactly_once(store):
+    """One ``grants_for_subject`` for the whole batch, not N x (owner_of +
+    grants) — the reason this exists rather than a loop over resolve_access."""
+    calls = {"n": 0}
+    inner = store.grants_for_subject
+
+    async def counting(subject):
+        calls["n"] += 1
+        return await inner(subject)
+
+    store.grants_for_subject = counting  # type: ignore[method-assign]
+    batch = await resolve_write_many(OWNER, "user", [COLL, "a", "b", "c"], store)
+    assert calls["n"] == 1
+    assert batch[COLL].allowed and batch[COLL].via == "owner"
+    assert not any(batch[c].allowed for c in ("a", "b", "c"))
+
+
+async def test_write_many_admin_bypasses_with_one_summary_log(caplog):
+    class Exploding:
+        def __getattr__(self, name):
+            raise AssertionError("admin bypass must not consult the store")
+
+    with caplog.at_level(logging.INFO, logger="ragstack.authz"):
+        batch = await resolve_write_many(STRANGER, "admin", ["a", "b", "c"], Exploding())
+    assert all(d.allowed and d.via == "admin-bypass" for d in batch.values())
+    bypass = [r for r in caplog.records if "admin-bypass" in r.getMessage()]
+    assert len(bypass) == 1  # one summary line per batch, not one per entry
+
+
+async def test_write_many_fails_closed_on_store_error():
+    """A picker that treated an outage as "nothing is writable" would refuse; one
+    that treated it as "everything is" would route the upload somewhere the
+    caller may not own. Neither: it raises, and the API answers 503."""
+    with pytest.raises(AuthzUnavailable):
+        await resolve_write_many(ALICE, "user", [COLL], _BrokenStore())
+
+
+async def test_write_many_ignores_read_and_public_grants(store):
+    """The MVP cut, asserted rather than assumed: a direct ``write`` SHARE does
+    not make a collection writable (write shares are deferred), and neither does
+    a ``public`` row. Only an owner row does. When write shares land, this test
+    is the one that must be changed deliberately — together with
+    ``resolve_access``'s write branch."""
+    await store.grant("col-shared", "user", ALICE, "write", granted_by=OWNER)
+    await store.grant("col-public", "group", "public", "read", granted_by=OWNER)
+    batch = await resolve_write_many(ALICE, "user", ["col-shared", "col-public"], store)
+    assert not batch["col-shared"].allowed
+    assert not batch["col-public"].allowed
+    # ...and the single-decision seam says the same thing.
+    assert not (await resolve_access(ALICE, "user", "col-shared", "write", store)).allowed

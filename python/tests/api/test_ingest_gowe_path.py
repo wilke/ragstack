@@ -749,3 +749,82 @@ async def test_workspace_auth_failure_on_the_folder_is_401(client, gowe):
     assert r.status_code == 401, r.text
     assert "token" in r.json()["detail"].lower()
     assert TOKEN not in r.text
+
+
+# --------------------------------------------------------------------------- #
+# #422 — the GoWe leg of "the job row records the same id the picker chose"
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_the_picked_collection_agrees_across_response_job_row_and_submission(
+    client, gowe
+):
+    """Acceptance B's agreement property, on the GoWe path.
+
+    The GoWe branch used to back-fill a ``None`` target with
+    ``collections.resolve(collections.default_id)`` — the GLOBAL pointer — for
+    the job row, while ``_gowe_inputs`` was built from the authorized entry.
+    While the pointer target and the shared surface were necessarily the same
+    entry those two agreed by accident; the picker can choose the surface while
+    the pointer names something else, and then the row would have named a
+    different collection than the run actually wrote to. #422 deletes the
+    back-fill, so all three come from one value.
+
+    Asserted as an EQUALITY CHAIN over three independently-produced strings —
+    the 202's ``collection``, the job row's ``collection_id``, and the submitted
+    workflow inputs' ``collection_id`` — rather than three assertions against a
+    literal, so nothing here can pass by all three being wrong the same way."""
+    r = await _upload(client, "a.pdf", collection="lib1")
+    assert r.status_code == 202, r.text
+    body = r.json()
+    job = await app.state.job_store.get(body["job_id"])
+    submitted = gowe["engine"].submissions[0]["inputs"]
+
+    assert body["collection"] == job.collection_id == submitted["collection_id"]
+    assert body["collection"] == "lib1"
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_collection_agrees_too_and_picks_the_writable_default(
+    client, gowe, _acl_store
+):
+    """The same chain with ``collection`` OMITTED — the case the picker actually
+    decides, and the one the deleted back-fill was covering for.
+
+    The registry pointer names the legacy shared surface, which is writable by
+    exemption, so ``pick_default`` would prefer it — and the GoWe path then
+    refuses it with a pre-existing 400 (that branch archives into a REGISTERED
+    collection's Workspace folder and the settings-derived corpus has no
+    registry row; the arm below pins that, unchanged). Revoking this caller's
+    read on the surface leaves ``lib1`` as their only visible collection, so the
+    picker must choose it — and the three records must agree on that."""
+    from tests.api.conftest import SHARED_ID
+
+    for share in await _acl_store.shares_for(SHARED_ID):
+        await _acl_store.revoke(share.id, revoked_by="system:test")
+
+    r = await _upload(client, "a.pdf", collection=None)
+    assert r.status_code == 202, r.text
+    body = r.json()
+    job = await app.state.job_store.get(body["job_id"])
+    submitted = gowe["engine"].submissions[0]["inputs"]
+
+    assert body["collection"] == job.collection_id == submitted["collection_id"]
+    assert body["collection"] == "lib1"
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_collection_onto_the_shared_surface_is_the_same_400(
+    client, gowe
+):
+    """The arm the test above steps around, pinned so #422 is not read as having
+    changed it. When the picker lands on the legacy shared surface, the GoWe
+    branch still refuses with the pre-existing 400: that path archives into a
+    REGISTERED collection's Workspace folder and the settings-derived corpus has
+    no registry row. Before #422 an omitted ``collection`` resolved the same
+    entry through the pointer and hit the same refusal."""
+    r = await _upload(client, "a.pdf", collection=None)
+    assert r.status_code == 400, r.text
+    assert "not a registered collection" in r.json()["detail"]
+    assert gowe["engine"].submissions == []

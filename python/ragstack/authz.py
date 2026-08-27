@@ -198,3 +198,75 @@ async def resolve_read_many(
                 allowed=False, reason="no owner row and no active read grant", via=None
             )
     return out
+
+
+async def resolve_write_many(
+    subject: str,
+    role: str,
+    collection_ids: list[str],
+    store: AclStore,
+) -> dict[str, AccessDecision]:
+    """Batch counterpart of :func:`resolve_access` for ``write`` — same seam,
+    same semantics, ONE store round-trip for the whole batch.
+
+    **The write policy lives here, adjacent to** :func:`resolve_access`'s write
+    branch, and is deliberately NOT derived from :func:`resolve_read_many`'s
+    ``via`` field. Today "write == ownership" (an owner row, or the admin
+    bypass), so ``via == "owner"`` from the read resolver would coincide — and
+    that coincidence is exactly the trap. When write shares land,
+    ``resolve_access``'s write branch and this function must change TOGETHER;
+    keeping them in one file, side by side, is what makes that one visible edit
+    rather than a divergence nobody notices. Do not reimplement either in terms
+    of the other.
+
+    Used by the implicit-ingest picker (#422): "which of the caller's visible
+    collections would accept their upload?" is one question about N collections,
+    so it costs one ``grants_for_subject`` call, not N × (``owner_of`` + grants).
+
+    What is NOT part of "writable": ``ALLOW_USER_COLLECTION_CREATE`` governs
+    *creating* collections and has no bearing on picking among existing ones;
+    and the legacy shared surface's read-suffices exemption is a property of the
+    registry ENTRY, not of the ACL, so it is applied by the caller
+    (``api/access.py``) and never smuggled in here — this module must stay
+    ignorant of registry entries.
+
+    Raises :class:`AuthzUnavailable` when the store cannot answer (the whole
+    batch fails closed — a picker that silently dropped a writable collection
+    would route the caller's upload somewhere else, which is the #422 defect
+    family, not a graceful degradation)."""
+    if role == "admin":
+        log.info(
+            "authz admin-bypass: subject=%s action=write collections=%d (picker)",
+            subject, len(collection_ids),
+        )
+        return {
+            cid: AccessDecision(
+                allowed=True, reason="admin role bypasses ownership", via="admin-bypass"
+            )
+            for cid in collection_ids
+        }
+    try:
+        grants = await store.grants_for_subject(subject)
+    except Exception as e:
+        raise AuthzUnavailable(
+            f"ACL store unavailable resolving grants for {subject!r}"
+        ) from e
+    owned = {
+        g.collection_id
+        for g in grants
+        if g.grantee_type == GRANTEE_USER
+        and g.grantee_id == subject
+        and g.permission == PERM_OWNER
+    }
+    return {
+        cid: (
+            AccessDecision(allowed=True, reason="collection owner", via="owner")
+            if cid in owned
+            else AccessDecision(
+                allowed=False,
+                reason="'write' requires ownership (write shares are deferred)",
+                via=None,
+            )
+        )
+        for cid in collection_ids
+    }

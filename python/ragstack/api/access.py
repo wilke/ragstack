@@ -48,7 +48,13 @@ from ragstack.acl_store import (
 )
 from ragstack.api.lifecycle import enforce_lifecycle
 from ragstack.api.security import Principal
-from ragstack.authz import Action, AuthzUnavailable, resolve_access, resolve_read_many
+from ragstack.authz import (
+    Action,
+    AuthzUnavailable,
+    resolve_access,
+    resolve_read_many,
+    resolve_write_many,
+)
 from ragstack.collection_store import RESERVED_COLLECTION_ID
 from ragstack.config import settings
 from ragstack.identity import get_identity_provider
@@ -183,6 +189,50 @@ async def filter_readable(
     except AuthzUnavailable as e:
         raise _unavailable() from e
     return [e for e in entries if decisions[e.id].allowed]
+
+
+async def filter_writable(
+    principal: Principal, entries: list[Any], store: AclStore | None = None
+) -> list[Any]:
+    """Keep only the ``entries`` an implicit ingest may land in: those the
+    principal may WRITE (today: owns, or is admin), plus any entry flagged
+    ``is_shared_surface``.
+
+    The mirror of :func:`filter_readable`, and it must stay one: a **no-op when
+    auth is unconfigured** (keyless dev would otherwise start refusing every
+    implicit upload the moment this landed), and a **503** when the store cannot
+    answer — a picker that silently dropped a writable collection would route
+    the caller's upload elsewhere, which is the #422 defect family rather than
+    graceful degradation.
+
+    THE SHARED-SURFACE EXEMPTION IS APPLIED HERE, not in ``authz.py``, and it
+    keys on the ENTRY FLAG — never on "is this what the ``default`` pointer aims
+    at". On the legacy shared surface, per-chunk ``tenant_id`` stamping is the
+    write isolation and every caller writes into their own stripe, so demanding
+    ownership there would lock every non-admin out of the flagship corpus. Point
+    the pointer at a genuinely OWNED collection and the same exemption, keyed on
+    the pointer instead, would let any reader of it ingest into somebody else's
+    corpus just by omitting ``collection``. Hence the flag (#276, #422).
+
+    Feed this the caller's VISIBLE entries (allowlist ∩ readable), not the whole
+    registry: writability narrows visibility, it never widens it."""
+    if not auth_configured():
+        return list(entries)
+    store = store if store is not None else get_acl_store()
+    needs_acl = [e for e in entries if not getattr(e, "is_shared_surface", False)]
+    decisions: dict[str, Any] = {}
+    if needs_acl:
+        try:
+            decisions = await resolve_write_many(
+                principal.tenant, principal.role, [e.id for e in needs_acl], store
+            )
+        except AuthzUnavailable as e:
+            raise _unavailable() from e
+    return [
+        e
+        for e in entries
+        if getattr(e, "is_shared_surface", False) or decisions[e.id].allowed
+    ]
 
 
 async def write_owner_row(
