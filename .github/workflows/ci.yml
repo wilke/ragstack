@@ -4,10 +4,11 @@ name: CI
 # slips that have reached main without CI (a unit-test AttributeError, a ruff
 # UP017, an untypechecked frontend change).
 #
-# Jobs: python (offline: unit/ingestion/api/registry — in-memory doubles),
-# frontend (typecheck/test/build), integration (tests/integration against ES +
-# Postgres service containers). Still out of scope: tests/eval and the conformance
-# suite need the embedding/crossencoder sidecars (model downloads) + a full stack.
+# Jobs: python (offline: unit/ingestion/api/registry — in-memory doubles), go
+# (build/vet/test — the whole Go suite is offline), frontend
+# (typecheck/test/build), integration (tests/integration against ES + Postgres
+# service containers). Still out of scope: tests/eval and the conformance suite
+# need the embedding/crossencoder sidecars (model downloads) + a full stack.
 
 # DISABLED 2026-08-06 — GitHub Actions stopped producing runs for this repo
 # (no run object was created for PR #272 at all, through a 10-minute wait, a
@@ -24,14 +25,20 @@ name: CI
 #     branches: [main]
 #   pull_request:
 #
-# LOCAL EQUIVALENT (run all four before merging; this is exactly what the jobs
+# LOCAL EQUIVALENT (run all five before merging; this is exactly what the jobs
 # below do, minus the integration services):
 #
 #   cd python
 #   PYTHONPATH=$PWD python -m pytest tests -q      # the `python` job
 #   PYTHONPATH=$PWD python -m ruff check .
 #   PYTHONPATH=$PWD python -m mypy ragstack
+#   cd ../go && go build ./... && go vet ./... && go test ./...   # the `go` job
 #   cd ../frontend && npm run typecheck && npx vitest run   # the `frontend` job
+#
+# On a host with no Go toolchain, the `go` line runs in a container instead:
+#   apptainer exec docker://golang:1.23 bash -c \
+#     'cd go && export GOTOOLCHAIN=local GOMODCACHE=$HOME/go/pkg/mod; \
+#      go build ./... && go vet ./... && go test ./...'
 #
 # The `integration` job (ES + Postgres containers) has NO local equivalent
 # without those services; on a host that has them, run
@@ -72,6 +79,43 @@ jobs:
         # tests use in-memory doubles (tests/api/conftest.py). integration/eval
         # need live backends and run in the integration job / not at all.
         run: pytest tests/unit tests/ingestion tests/api tests/test_document_registry.py -q
+
+  go:
+    # Added by #427 W7. Until now nothing in CI built or ran Go at all, so
+    # `make lint-go` / `make test-go` — both listed in CLAUDE.md as standard
+    # targets — had never once run here. #419's post-mortem is explicit that the
+    # two implementations "drifted precisely because nothing pinned them
+    # together"; conformance is the pin, but a pin nothing holds is not a pin.
+    #
+    # build/vet/test only, deliberately NOT golangci-lint: `golangci-lint run
+    # ./...` currently reports FIVE pre-existing errcheck findings in test files
+    # (four in internal/api/router_test.go, one in internal/mcp/backend_test.go)
+    # that predate this change, so a lint step would land red on its first run —
+    # the failure mode this job exists to avoid. Clean those up and add the step.
+    #
+    # Count them with `--max-same-issues=0`: golangci-lint defaults that to 3 and
+    # go/.golangci.yml sets no override, so a plain run truncates the router_test
+    # group to three and under-reports the backlog by one. Whoever clears this
+    # should fix five, not the four a bare run shows.
+    #
+    # ~30 s; no services, no model downloads — the Go suite is entirely offline.
+    name: go (build · vet · test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod   # single source of truth for the version
+          cache-dependency-path: go/go.sum
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test ./...
 
   frontend:
     name: frontend (typecheck · test · build)

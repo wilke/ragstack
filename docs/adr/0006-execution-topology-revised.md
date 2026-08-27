@@ -104,6 +104,40 @@ time is already in place and stays **mandatory for every API change**: `contract
 remains a first-class module for `cmd/mcp` and any future static-binary tool; those are
 built, tested and released, not frozen.
 
+**4a. One bounded exception to the freeze: conformance parity and a CI job.**
+*(Amendment, 2026-08-26; #427 W7, PR #433.)* Decision 4 says the scaffold is "neither
+extended nor deleted." #427 W7 extends it — it wires the discarded logger, echoes
+`X-Request-Id`, and matches the Python error-body shape. That is a real conflict with
+this record, and it is resolved here rather than left as undocumented drift.
+
+**Permitted, and why it serves decision 4 rather than eroding it.** The freeze's own
+stated rationale is that what keeps the port possible is `contracts/` plus a
+`conformance/` suite that "runs black-box against any implementation selected by
+`RAGSTACK_IMPL`" — and that suite is called **mandatory for every API change**. A
+scaffold that cannot pass the contract's own tests is not a preserved option; it is a
+decaying one, and the freeze would be quietly converting the kept-open door into a shut
+one. [#419](https://github.com/wilke/ragstack/issues/419) is the counterweight to a
+literal reading: the two implementations drifted precisely because nothing pinned them
+together, and a real user lost a working tenant to it. `main` already carries a committed
+expectation of this work — the merged `conformance/test_request_id.py` names W7 three
+times and documents its own skip deletion as part of W7's diff.
+
+**The boundary — what this does NOT license.** The exception is exactly: satisfying an
+existing conformance file, and running `go build` / `go vet` / `go test` in CI so the pin
+is actually held. It is not a re-opening of parity work; the `TODO(parity)` items and #41
+stay frozen, and the trigger table above is untouched.
+
+**Stage timings stay out of Go specifically**, and that is the sharpest edge of this
+boundary. `go/internal/api/handler_query.go` returns `"[pipeline not yet wired]"`.
+Instrumenting a stub would produce numbers describing nothing while creating a second
+place where the timing contract lives — the "fork the logic" mistake this record exists
+to prevent, in miniature. Per-stage timings are #89/#90 in `python/` only, and they
+remain the *instrument* this decision's first two triggers are measured with, not a thing
+Go is given ahead of them.
+
+**The test of whether this exception held:** the next Go change is either a conformance
+file Go must satisfy, or it needs its own amendment here.
+
 **6. Two entry points for user-triggered work, and only one of them submits to GoWe.**
 *(Amendment, 2026-08-25.)* A user action can reach the offline plane two ways, and they are not
 interchangeable:

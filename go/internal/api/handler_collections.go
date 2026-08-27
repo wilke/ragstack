@@ -59,7 +59,7 @@ func HandleListCollections(w http.ResponseWriter, _ *http.Request) {
 func HandleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	var req CollectionCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeValidationError(w, "invalid request body")
+		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	id := "pending"

@@ -12,11 +12,11 @@ import (
 func HandleIngest(w http.ResponseWriter, r *http.Request) {
 	var req IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeValidationError(w, "invalid request body")
+		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	if req.Source == nil {
-		writeValidationError(w, "field 'source' is required")
+		writeValidationError(w, r, "field 'source' is required")
 		return
 	}
 
@@ -33,10 +33,9 @@ func HandleIngest(w http.ResponseWriter, r *http.Request) {
 // Phase 1 scaffold: file-upload ingestion (issue #202) is implemented in the
 // Python surface only; this returns 501 until the Go pipeline can stage and
 // ingest uploaded files.
-func HandleIngestUpload(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{
-		"detail": "file upload ingestion is not yet implemented in the Go server",
-	})
+func HandleIngestUpload(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusNotImplemented,
+		"file upload ingestion is not yet implemented in the Go server")
 }
 
 // HandleIngestStatus returns the status of an ingestion job.
