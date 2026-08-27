@@ -177,8 +177,38 @@ several rows below are ⚠️ rather than ✅.
 |---|---|---|---|---|
 | H1 | The deployed worker image can import every configured backend | L | ❌ | **#404 — tests import it, the image never had it** |
 | H2 | Workers start with their env and secret files | L | ✅ | #412 |
-| H3 | A tenant's config never resolves to another tenant's stores | F·L | ❌ | **the #363/#369/#392/#407 family** |
+| H3 | A tenant's config never resolves to another tenant's stores | F·L | ❌ | **the #363/#369/#392/#407 family** — see H5, the harness's own instance |
+| H3a | **The harness proves which code it ran and which stores it touched** | F | ✅ | #432 — see below |
 | H4 | An API restart leaves no job stranded | F | ⚠️ | `jobstore.fail_interrupted` — scope unverified |
+
+### H3a — the harness is itself an H3 instance (#432)
+
+Everything else in this document is evidence only if the suite that produced it
+imported *this* code and touched no live store. Twice it did neither:
+
+- `pytest` resolved `ragstack` through the conda env's editable install to
+  `/rag/repos/ragstack/python` — a legacy **production** checkout — whenever the
+  CWD was not `python/`. `make test-conformance-authz` did that on every run,
+  because its runner booted uvicorn before it `cd`'d, so the one keyed
+  conformance invocation in the repo had been contract-testing production code.
+- `tests/integration/test_elasticsearch.py` defaulted to `http://localhost:9200`,
+  the production cluster, and created and deleted indices there during
+  unattended full-suite runs.
+
+Closed at the **F** layer, in the shape the rest of this table asks for — a
+precondition that is claimed but false *fails*, loudly, naming both sides:
+
+| what | where |
+|---|---|
+| import-origin guard: `ragstack.__file__` must be under the rootdir, else `pytest.UsageError` naming both paths (escape hatch `RAGSTACK_TEST_ALLOW_FOREIGN_IMPORT=1` warns) | `python/tests/conftest.py` |
+| meta-tests proving the guard fails *loudly* — subprocess, exit code **and** message text | `python/tests/unit/test_harness_guard.py` |
+| ES is opt-in via `RAGSTACK_TEST_ES_URL`; unset skips, and the old `TEST_ES_URL` name is not honoured so a stale export cannot re-arm it | `python/tests/integration/test_elasticsearch.py` |
+| dead-port environment for every child process that can reach a `config.py` URL default | `python/tests/pinned_env_support.py` |
+| `PYTHONPATH` pin, pre-boot import-origin assertion, and dead-port pins for the self-booted conformance servers | `conformance/boot_env.sh` |
+
+Residual, deliberately: the guard covers pytest-mediated runs only — `python
+scripts/…` outside `python/` can still import the wrong tree, which is why the
+dev conda env's editable install is also being removed as an ops step.
 
 ---
 

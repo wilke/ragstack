@@ -35,6 +35,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# What the server imports, and what it may talk to (#432). The boot below runs
+# from the CALLER's CWD — the repo root under `make` — where `import ragstack`
+# on this host resolved to the legacy production checkout, so every run of this
+# target was contract-testing that code and not the branch. See boot_env.sh.
+# shellcheck source=conformance/boot_env.sh
+source "$HERE/boot_env.sh"
+PY_DIR="$(ragstack_py_dir "$HERE")"
+ragstack_pin_pythonpath "$PY_DIR"
+ragstack_pin_dead_backends
+ragstack_assert_import_origin "$PY_DIR" "$PYTHON" "authz-conf"
+
 echo "[authz-conf] booting keyed in-memory API on $HOST:$PORT ..."
 API_KEYS="[\"$ADMIN_KEY\",\"$USER_KEY\"]" \
 API_KEY_ROLES="{\"$ADMIN_KEY\":\"admin\",\"$USER_KEY\":\"user\"}" \

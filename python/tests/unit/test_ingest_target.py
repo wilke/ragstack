@@ -384,22 +384,26 @@ _SCRIPTS = [
 def test_bulk_writer_refuses_an_unregistered_store(script, argv, tmp_path):
     """Every one of these invocations used to mint a physical store the registry
     never saw. They now exit 2 before touching a backend."""
-    import os
     import subprocess
     import sys
     from pathlib import Path
 
+    from tests.pinned_env_support import pinned_env
+
     root = Path(__file__).resolve().parents[2]
     reg = tmp_path / "empty.json"
     reg.write_text("[]")
-    env = {
-        **os.environ,
-        "COLLECTIONS_FILE": str(reg),
-        "COLLECTION_STORE_BACKEND": "json",
-        "PYTHONPATH": str(root),
+    # Dead-port pins (#432): these children are bulk writers whose whole claim is
+    # that they exit 2 *before* touching a backend. If that guard ever regresses,
+    # the child must fail against 127.0.0.1:1 rather than reach the live stores
+    # and sidecars this host actually runs on the config defaults.
+    env = pinned_env(
+        COLLECTIONS_FILE=str(reg),
+        COLLECTION_STORE_BACKEND="json",
+        PYTHONPATH=str(root),
         # do not inherit an operator's ambient target
-        "RAGSTACK_COLLECTION_ID": "",
-    }
+        RAGSTACK_COLLECTION_ID="",
+    )
     r = subprocess.run(
         [sys.executable, str(root / "scripts" / script), *argv],
         capture_output=True, text=True, timeout=180, cwd=tmp_path, env=env,

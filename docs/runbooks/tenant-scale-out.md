@@ -180,11 +180,21 @@ file the operator edited.
 
 Run these from the **repo root** — §2's provisioning commands were run from
 `apptainer/`, and starting the API in a subshell keeps the working directory
-from drifting so `pytest conformance/` still resolves:
+from drifting so `pytest conformance/` still resolves.
+
+`PYTHONPATH` is not optional here (#432). `uvicorn` is a *console script*: it
+puts its own `bin/` directory on `sys.path[0]`, **not** the CWD, so the `cd
+python` does nothing for import resolution and `ragstack` resolves through the
+env's editable install — on this host, to the legacy production checkout at
+`/rag/repos/ragstack/python`. Followed without the pin, this command checks a
+new tenant against code from a different tree. No `tenant.env` sets it.
 
 ```bash
 set -a; . <RAG_DATA>/tenants/<new-tenant>/config/tenant.env; set +a
-(cd python && uvicorn ragstack.api.main:app --host 0.0.0.0 --port "$PORT" &)
+(cd python && PYTHONPATH="$PWD" uvicorn ragstack.api.main:app --host 0.0.0.0 --port "$PORT" &)
+
+# Confirm the server is running THIS checkout before trusting anything below:
+(cd python && PYTHONPATH="$PWD" python -c "import ragstack; print(ragstack.__file__)")
 
 # 1. liveness (no key)
 curl -s "http://localhost:$PORT/health"                                     # {"status":"ok"}

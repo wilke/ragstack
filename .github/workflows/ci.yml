@@ -185,7 +185,14 @@ jobs:
             echo "waiting for ES ($i)..."; sleep 5
           done
       - name: pytest (integration)
+        # These name the job's own service containers, which are scratch by
+        # construction. `RAGSTACK_TEST_ES_URL` is the post-#432 name — the old
+        # `TEST_ES_URL` is deliberately not honoured, so leaving it here would
+        # have silently turned this job into a no-op. `TEST_PG_DSN` is likewise
+        # the pre-#369 name and the Postgres tests already skip on it; renaming
+        # it would re-enable a suite this workflow has not run in months, so it
+        # is left alone here and tracked separately.
         env:
-          TEST_ES_URL: http://localhost:9200
+          RAGSTACK_TEST_ES_URL: http://localhost:9200
           TEST_PG_DSN: postgresql://ragstack:ragstack@localhost:5432/ragstack
         run: pytest tests/integration -q

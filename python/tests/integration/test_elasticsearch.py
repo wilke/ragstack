@@ -1,19 +1,45 @@
-"""Live integration test for ElasticsearchTextIndex.
+"""Live integration test for ElasticsearchTextIndex — **opt-in only** (#432).
 
-Skipped unless the elasticsearch client is installed and an ES reachable at
-TEST_ES_URL. Uses a dedicated test index it deletes afterward, so it never
-touches the real ``ragstack`` index.
+This test writes to whatever **cluster** ``RAGSTACK_TEST_ES_URL`` names: it
+creates indices, deletes them, consumes heap and shard budget, and shows up in
+that cluster's logs. The per-worker index name below keeps it from colliding
+with anything already stored there, but that is *index*-level tidiness while
+the blast radius is *cluster*-level — do not read it as "this never touches
+real data". Point it at a SCRATCH Elasticsearch you own.
+
+It used to default to ``http://localhost:9200``, which on the dev host is the
+production cluster holding the open-access index; unattended full-suite runs
+therefore created and dropped indices there. So:
+
+- The variable is ``RAGSTACK_TEST_ES_URL``, deliberately **not** the old
+  ``TEST_ES_URL`` — a stale export of the old name from before this fix cannot
+  silently re-arm a live run. Same rename, same reason, as ``pg_test_dsn``'s
+  ``RAGSTACK_TEST_PG_DSN`` (``tests/conftest.py``).
+- Unset means **skip**, never a fallback URL. The skip is placed before the
+  ``elasticsearch`` import check so the reason names the opt-in rather than a
+  missing package.
+- ``_reachable()`` stays as a second gate, so an opted-in-but-down cluster
+  skips too — with a different, honest message.
 """
 import os
 
 import pytest
+
+URL = os.environ.get("RAGSTACK_TEST_ES_URL")
+if not URL:
+    pytest.skip(
+        "set RAGSTACK_TEST_ES_URL to a SCRATCH Elasticsearch cluster to run the ES "
+        "integration tests — they create and delete indices on whatever cluster the "
+        "variable names. There is no default (it used to be the production cluster, "
+        "#432), and the old TEST_ES_URL name is deliberately not honoured.",
+        allow_module_level=True,
+    )
 
 pytest.importorskip("elasticsearch")
 
 from ragstack.models import Chunk  # noqa: E402
 from ragstack.stores.elasticsearch import ElasticsearchTextIndex  # noqa: E402
 
-URL = os.environ.get("TEST_ES_URL", "http://localhost:9200")
 # Per-worker index name so pytest-xdist workers don't race on a shared index
 # (each would otherwise delete the others' data in the finally block).
 INDEX = f"ragstack_estest_{os.environ.get('PYTEST_XDIST_WORKER', 'gw0')}"
@@ -40,7 +66,7 @@ def _chunk(cid: str, doc_id: str, tenant: str, content: str, **meta: object) -> 
 @pytest.mark.asyncio
 async def test_es_bm25_tenant_scoped_search_and_delete():
     if not await _reachable():
-        pytest.skip("elasticsearch not reachable at TEST_ES_URL")
+        pytest.skip(f"elasticsearch not reachable at RAGSTACK_TEST_ES_URL={URL}")
 
     idx = ElasticsearchTextIndex(URL, INDEX)
     await idx.ensure_index()
@@ -99,7 +125,7 @@ async def test_es_empty_terms_matches_nothing_server_side():
     unit test still passes — this is the test that would catch it.
     """
     if not await _reachable():
-        pytest.skip("elasticsearch not reachable at TEST_ES_URL")
+        pytest.skip(f"elasticsearch not reachable at RAGSTACK_TEST_ES_URL={URL}")
 
     idx = ElasticsearchTextIndex(URL, INDEX)
     await idx.ensure_index()

@@ -28,6 +28,7 @@ from ragstack.collection_store import (
     make_collection_store,
     seed_from_json,
 )
+from tests.pinned_env_support import pinned_env
 
 pytestmark = pytest.mark.asyncio
 
@@ -216,8 +217,10 @@ async def test_json_concurrent_writers_across_processes_lose_nothing(tmp_path):
     script.write_text(_WRITER)
     workers, per_worker = 6, 8
     # Point the children at THIS checkout, not whatever `ragstack` the
-    # interpreter happens to have installed (worktrees share one env).
-    env = dict(os.environ, PYTHONPATH=str(pathlib.Path(__file__).resolve().parents[2]))
+    # interpreter happens to have installed (worktrees share one env), and pin
+    # every store/model URL dead (#432) — the child imports `ragstack.config`,
+    # whose defaults name live ports on this host.
+    env = pinned_env(PYTHONPATH=str(pathlib.Path(__file__).resolve().parents[2]))
     procs = [
         subprocess.Popen(
             [sys.executable, str(script), path, f"c{w}", str(per_worker)], env=env
@@ -347,7 +350,7 @@ async def test_json_cap_holds_across_processes(tmp_path):
     script = tmp_path / "cap_writer.py"
     script.write_text(_CAP_WRITER)
     workers, per_worker, limit = 6, 8, 10
-    env = dict(os.environ, PYTHONPATH=str(pathlib.Path(__file__).resolve().parents[2]))
+    env = pinned_env(PYTHONPATH=str(pathlib.Path(__file__).resolve().parents[2]))
     procs = [
         subprocess.Popen(
             [sys.executable, str(script), path, f"c{w}", str(per_worker), str(limit)],
