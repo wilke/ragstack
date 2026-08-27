@@ -38,7 +38,8 @@ The `Bearer ` prefix is optional; BV-BRC's token format carries no scheme.
 
 > `present exactly one credential: X-API-Key or Authorization, not both`
 
-An **empty** `X-API-Key:` header still counts as present, so it trips the same 400.
+An **empty** `X-API-Key:` header does *not* count — the framework normalises it to absent, so
+an empty key alongside a bearer takes the bearer path rather than tripping the 400.
 
 **UI** — the header chip → `Sign in`. The provider dropdown offers BV-BRC, Google (listed
 but not available, with the reason shown) and API key. For BV-BRC your password goes
@@ -72,8 +73,10 @@ identity provider.
 
 ## Can I query without signing in?
 
-Only when the deployment has no API keys configured **and** no identity provider. Then
-every caller is the `default` tenant and ACL enforcement is a no-op.
+Whenever the deployment has **no API keys configured** — whether or not an identity provider
+is set up. Every caller is then admitted as the `default` tenant and ACL enforcement is a
+no-op. (A production deployment is stopped from running keyless by
+`REQUIRE_DURABLE_BACKENDS`, which refuses to boot without keys — not by the provider.)
 
 If keys are configured, an anonymous request is `401 missing or invalid API key`.
 
@@ -187,6 +190,10 @@ the endpoint never confirms a foreign job exists.
 | Refusal | Cause |
 |---|---|
 | **415** | Not an accepted type. Defaults: PDF, plain text, Markdown, XML. A file claiming to be a PDF must actually start with `%PDF`. |
+
+> **XML is accepted by the upload guard but has no loader on the local ingest path** — the
+> job returns 202 and the item then fails with `no loader for .xml`. Only the GoWe path
+> handles JATS. Accepted is not the same as ingestible.
 | **413** | Too big: 50 files, 500 MB per request, 50 MB per document — or the whole body exceeded the cap before a byte was read. |
 | **411** | No `Content-Length`. Chunked uploads are not accepted. |
 | **429** | You already have an ingest job in flight. Poll it; `Retry-After` is a hint, not a promise. |
@@ -287,7 +294,7 @@ Read `reason` in the body.
 
 | `reason` | Meaning | Retry? |
 |---|---|---|
-| `timeout` | We reached the store; the search took longer than allowed. | **Yes** — usually a large collection warming up; the second read is often fast. |
+| `timeout` | We reached the store; the operation took longer than allowed. | **Yes** — retrying often succeeds within seconds. Not *because* the read will be warm: Elasticsearch maps connect-phase timeouts here too, so the code deliberately never promises that. |
 | `unreachable` | We never reached the store at all. | Probably not. A connect timeout lands here deliberately, so nothing promises you a warm second read. |
 | `error` | The store answered unhappily. | No promise. |
 | **absent** | Not a store failure. Authorization store down, the collection is dormant or restoring, or the tenant is at capacity. | Usually yes, shortly. |
@@ -355,10 +362,12 @@ null, `collections` null (1–5, mutually exclusive with `collection`), `retriev
 
 **Two things to know before you build against this:**
 
-- **Unknown fields are silently ignored** (#457). Every request schema says
-  `additionalProperties: false`, but the models do not enforce it, so `rerank_candidate`
-  (singular) is dropped and the request succeeds with defaults. Check your field names
-  against the schema; the server will not.
+- **Unknown fields are silently ignored on the query-shaped bodies** (#457) — query,
+  retrieve, chunks and ingest. Their schemas say `additionalProperties: false`, but those
+  models do not set `extra="forbid"`, so `rerank_candidate` (singular) is dropped and the
+  request succeeds with defaults. The admin, share, group, owner-transfer and log-level
+  bodies *do* forbid extras and answer 422 — which is why passing a key to the
+  service-account endpoint is a 422, not a silent no-op.
 - **`stream` is accepted and does nothing** (#458). It is in the schema and inert.
 
 On a multi-collection request every id is resolved and read-authorized **before** any
@@ -787,7 +796,8 @@ current, or one whose physical stores are shared with another registry id. The r
 is flipped to `dormant` **first** — so readers immediately get 503 + `Retry-After` — and only
 then are the stores dropped.
 
-`POST /v1/collections/{id}/restore` is idempotent and always 202. It verifies every file's
+`POST /v1/collections/{id}/restore` is idempotent, and a **successful** call is always 202
+(it can still refuse: 400 without a bearer, 404, 409 for an untracked row, 502, 503). It verifies every file's
 checksum and the manifest's spec hash **before writing anything**, and it needs a bearer
 credential, because the archive is read as the caller.
 
