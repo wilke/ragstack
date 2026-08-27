@@ -69,3 +69,17 @@ apptainer/images/*.sif
 ragstack_collections.db
 ragstack_jobs.db
 ragstack_users.db
+
+# Rendered docs site — build output, not source.
+# CI publishes from `python docs/build_docs.py --site _site`; run the same command
+# without --site to render into docs/ locally. Committing the output let it drift
+# three days behind the markdown, and the stale copy still carried a `pkill -f`
+# cleanup step that had already been removed from the source (#402).
+docs/*.html
+
+# Rendered docs site — build output, not source.
+# CI publishes from `python docs/build_docs.py --site _site`. Run the same command
+# without --site to render into docs/ locally. Committing the output let it drift
+# three days behind the markdown, and the stale copy still carried the `pkill -f`
+# cleanup step that had already been removed from the source (#402, #460).
+docs/*.html
