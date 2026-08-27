@@ -9,8 +9,8 @@ named · `ABANDONED` decided against, with the reason kept.
 
 Last updated 2026-08-27. Fleet: **`dev` on `v1.5.1`; `asm-next`, `lucid-next`, `demo` on `v1.5.0`**.
 `dev` runs ahead on purpose — `v1.5.1` carries the #407 boot refusal, which needs a one-time
-`tenant.env` edit ([runbook](../runbooks/upgrade-407-remove-gowe-store-urls.md)) and only `dev`
-was affected. The other three move once `dev` is accepted.
+`tenant.env` edit ([runbook](../runbooks/upgrade-407-remove-gowe-store-urls.md)). Only `dev` was
+affected: it is the only tenant setting `INGEST_BACKEND=gowe`, and the refusal lives on that path. The other three move once `dev` is accepted.
 
 ---
 
@@ -34,7 +34,7 @@ user-facing.
 | Plan | Status | Summary |
 |---|---|---|
 | [Personal collections (#201)](201-personal-collections.md) | `DEPLOYED`, partly proven | Six phases, all built. The user story works end to end on live infrastructure. Restore, the limits firing, and the graph leg are built but unexercised. |
-| [Observability (#427)](427-observability.md) | `COMPLETE` — 9 of 9 items | The API could name a failure but not explain it. W1–W9 are merged; W1–W7 shipped in `v1.5.0`, W8/W9 in `v1.5.1`. |
+| [Observability (#427)](427-observability.md) | `COMPLETE` — 9 of 9 items (W5 deferred) | The API could name a failure but not explain it. W1/W2 and the log-level endpoint shipped in `v1.4.2`; W3/W4/W6/W7 in `v1.5.0`; W8/W9 in `v1.5.1`. |
 | [Backlog](backlog.md) | `OPEN` | 25 open issues grouped by theme, with the ones that bite hardest called out. |
 
 ---
@@ -48,15 +48,18 @@ user-facing.
 | `v1.4.1` | A 401 with no credential means signed out, not "that credential was rejected". |
 | `v1.4.2` | The API can now explain its own failures. Request ids, a working `LOG_LEVEL`, Elasticsearch error handling, runtime log control. |
 | `v1.5.0` | A 503 you can explain. One greppable line per request with per-stage timings, a five-minute p50/p95 rollup in bucket upper bounds, and a 503 body that says whether retrying will help. |
-| `v1.5.1` | The runbook for reading those lines, an opt-in Qdrant post-mortem probe (default off), the API seeding its own ingest store targets (#407), and a harness that proves which `ragstack` it imported (#432 PR-1). **Deploying it requires removing `GOWE_WORKFLOW_INPUTS_JSON` from `dev/config/tenant.env`** — the API refuses to boot otherwise, by design. |
+| `v1.5.1` | The runbook for reading those lines, an opt-in Qdrant post-mortem probe (default off), the API seeding its own ingest store targets (#407), and a harness that proves which `ragstack` it imported (#432 PR-1). **Deploying it requires removing `qdrant_url`/`es_url` from `dev/config/tenant.env`'s `GOWE_WORKFLOW_INPUTS_JSON`** — the API refuses to boot otherwise, by design. Those were dev's only two keys, so the whole line went; the blob may stay for genuine per-deployment extras. |
 
 Revert path is `git checkout <tag>` in the tenant worktree, then restart the API and the
 Vite server by the pids recorded at launch. Never by process-name pattern (#402).
 
-Reverting `dev` below `v1.5.1` is a **triple**, not a checkout: the code, the CWL it points at,
-and `tenant.env`'s `GOWE_WORKFLOW_INPUTS_JSON` move together. Under `v1.5.0` the blob is
-load-bearing again, because the pre-#407 CWL restores the production store defaults.
-The backup taken at deploy is `dev/config/tenant.env.pre-v1.5.1.bak` (mode 600).
+Reverting `dev` below `v1.5.1` is a checkout **plus a `tenant.env` edit** — three things that
+must end mutually consistent, but only two actions. The CWL rides the checkout, because
+`GOWE_WORKFLOW_CWL` points *inside* the worktree; the separate action is restoring
+`GOWE_WORKFLOW_INPUTS_JSON` from `dev/config/tenant.env.pre-v1.5.1.bak` (mode 600). It is
+load-bearing again below `v1.5.1`, because the pre-#407 CWL restores the production store
+defaults — so a code revert without the config restore ingests into production. (If
+`GOWE_WORKFLOW_CWL` is ever pointed outside the worktree, this becomes a genuine triple.)
 
 ---
 
