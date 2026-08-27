@@ -74,6 +74,24 @@ issue exists for, so it is not DEBUG either.
 ``status`` renders as ``-`` when none was ever observed rather than being
 replaced by a plausible number: an invented status on the least-explained
 failures is the failure mode this line exists to end.
+
+Two honest limits on the numbers, stated here because this is where they are
+read rather than only in ``stages.py`` where they are computed:
+
+* **``self_ms`` is an UPPER BOUND on Python-layer time**, not a measurement of
+  it. It subtracts each external stage's mean, does not subtract a stage name it
+  does not recognise, and does not see the dependency layer's own round trips
+  (``security.provider.authenticate`` on the bearer path). Read it as "no more
+  than this", and see ``stages.py`` before quoting it at ADR-0006's Go trigger.
+* **A 5xx that has already started, followed by a client disconnect, logs
+  ``client_disconnected`` at INFO** — the CancelledError branch only claims the
+  outcome while it is still ``ok``, but the ``>= 500`` promotion runs after it
+  and does not override what that branch set. The error is then below
+  ``LOG_LEVEL=WARNING``. Rare (the client has to go away between the response
+  start and the end of the body) and deliberate — attributing a disconnect to the
+  server would be the worse error, and the store-failure line for such a request
+  is a WARNING on its own — but it is a real hole in "WARNING keeps every
+  failure", so it is written down rather than left to be found.
 """
 
 from __future__ import annotations

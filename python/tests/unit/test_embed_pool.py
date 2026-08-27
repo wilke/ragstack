@@ -339,3 +339,87 @@ async def test_concurrency_cap_still_bounds_the_fanout():
     pool, _, gauge = _fanout_pool(n_eps=4, max_concurrency=2, request_batch=5)
     await pool.embed([f"t{i}" for i in range(60)])
     assert gauge["max"] <= 2
+
+
+# --------------------------------------------------------------------------- #
+# Which endpoint served the call (#427 W3)
+# --------------------------------------------------------------------------- #
+#
+# W1's log dampening mutes httpx at INFO, and `logging_config.apply_dampening`
+# records why that is safe EXCEPT for one thing those lines uniquely carried:
+# which of the six vLLM endpoints served the embed call. Its docstring makes
+# preserving that an obligation on W3, and W3 discharges it here — the endpoint
+# is chosen per call, least-loaded, inside `_embed_one`, and the call site
+# cannot recover it afterwards.
+#
+# These tests exist because that obligation was, for one review cycle, marked
+# "Discharged" in two docstrings and pinned by NOTHING: deleting the `note(...)`
+# call left the whole suite green (3133 passed). Documentation asserting a
+# property, with no test to say when it stops holding, is worse than no
+# documentation — a future reader trusts it. So: if `embed_ep` stops reaching
+# the summary line, these fail.
+
+
+@pytest.fixture
+def _request_context():
+    """A request in flight, with an accumulator, as the middleware installs it."""
+    from ragstack.observability.context import RequestContext, clear_context, set_context
+    from ragstack.observability.stages import StageTimings
+
+    acc = StageTimings()
+    clear_context()
+    set_context(RequestContext(request_id="r" * 16, stages=acc))
+    yield acc
+    clear_context()
+
+
+@pytest.mark.asyncio
+async def test_the_serving_endpoint_reaches_the_summary_line(http, _request_context):
+    pool = _pool(http, _FakeEmbedder(1.0))
+    await pool.embed(["a"])
+    assert _request_context.fields()["embed_ep"] == "http://e0/health", (
+        "the endpoint that served the embed is not on the request — the one "
+        "thing damping the httpx lines cost us is lost again"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fanned_out_embed_names_every_endpoint_it_touched(_request_context):
+    """One embed() larger than ``request_batch`` splits across the fleet, so a
+    single request legitimately touches several endpoints. "Was it always the
+    same slow one?" needs all of them, deduplicated."""
+    pool, log, _ = _fanout_pool(n_eps=3, max_concurrency=6, request_batch=10)
+    await pool.embed([f"t{i}" for i in range(100)])
+
+    reported = set(_request_context.fields()["embed_ep"].split(","))
+    touched = {f"http://e{tag[2:]}/health" for tag, _ in log}
+    assert reported == touched, f"reported {reported}, actually used {touched}"
+    assert len(reported) > 1, "the fan-out reached one endpoint; test is vacuous"
+
+
+@pytest.mark.asyncio
+async def test_the_endpoint_recorded_is_the_one_that_SUCCEEDED(http, _request_context):
+    """Recorded from the ``else:`` clause, so a failover names the endpoint that
+    answered — not the one that died. The failure is already reported by
+    ``_embed_one``'s own WARNING; attributing the *latency* to a dead endpoint
+    would send an operator to the wrong machine."""
+    bad = _FakeEmbedder(1.0, fail=httpx.ConnectError("down"))
+    good = _FakeEmbedder(2.0)
+    eps = [Endpoint(bad, "http://bad/health"), Endpoint(good, "http://good/health")]
+    pool = PooledEmbedder(eps, http=http)
+
+    assert await pool.embed(["x"]) == [[2.0]]
+    assert _request_context.fields()["embed_ep"] == "http://good/health"
+
+
+@pytest.mark.asyncio
+async def test_embedding_outside_a_request_records_nothing_and_does_not_raise(http):
+    """The ingest path and the CLI scripts drive this pool with no request
+    context. ``note()`` must no-op there — an observability feature must never be
+    the thing that takes a bulk load down."""
+    from ragstack.observability.context import clear_context, current_context
+
+    clear_context()
+    pool = _pool(http, _FakeEmbedder(1.0))
+    assert await pool.embed(["a"]) == [[1.0]]
+    assert current_context() is None

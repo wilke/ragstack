@@ -68,6 +68,27 @@ number that could fire that trigger spuriously:
 
 A clean residual needs a serialised (concurrency-1) measurement, which is what a
 load test (#118) would provide. Until then: upper bound, and the runbook says so.
+
+.. rubric:: Two external calls that are deliberately NOT timed, and why it matters
+
+"Every external call on the query path is timed" is true of the **handler**, and
+the A5 test in ``tests/api/test_query_summary_line.py`` keeps it true by pinning
+the emitted name set. It is **not** true of the **dependency layer**, which runs
+before the handler and which that test cannot see:
+
+* ``api/security.py`` — ``provider.authenticate`` in the bearer path is a round
+  trip to an identity provider (its own docstring names a reachable key server);
+* ``api/security.py`` — ``_service_account_disabled`` in the API-key path is a
+  store read, TTL-cached, so it is usually free and occasionally is not.
+
+Both sit inside ``wall_ms`` and outside every stage, so on a bearer-auth
+deployment they inflate ``self_ms``. That is the same silent-inflation class this
+docstring says must not happen silently, so it is written down rather than left
+to be discovered: **when ADR-0006's residual is read, either time these as
+``authz`` first or subtract them by hand.** They are not timed here because
+timing them means instrumenting the dependency layer, which is a wider change
+than W3, and because doing it wrong (double-counting a cached read) is worse than
+a named exception.
 """
 
 from __future__ import annotations

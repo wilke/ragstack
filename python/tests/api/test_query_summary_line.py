@@ -331,6 +331,55 @@ async def test_the_level_matches_the_outcome(caplog, raised, expected_outcome, e
     assert line.levelno == expected_level
 
 
+@pytest.mark.parametrize(
+    ("sent_status", "expected_outcome", "expected_level"),
+    [
+        (200, "ok", logging.INFO),
+        (404, "ok", logging.INFO),
+        (499, "ok", logging.INFO),
+        (500, "server_error", logging.WARNING),
+        (503, "server_error", logging.WARNING),
+    ],
+)
+async def test_the_fault_boundary_is_exactly_five_hundred(
+    caplog, sent_status, expected_outcome, expected_level
+):
+    """``status >= 500``, pinned from both sides.
+
+    499 and 500 are the assertions that carry this: the incident's own 503
+    satisfies ``>= 500`` and ``> 500`` alike, so a suite that only ever exercises
+    503 leaves the boundary free to drift by one and never notice. No production
+    path returns a clean 500 through the send wrapper today — ``main.py``'s is
+    generated above the middleware and an escaped exception is ``unhandled`` —
+    which is exactly why this is driven at the ASGI layer rather than through a
+    route: the boundary is real code with no behavioural coverage otherwise.
+
+    404 is here to keep the other side honest: a 4xx is the caller's problem, so
+    it must stay INFO and must not survive ``LOG_LEVEL=WARNING`` as if the server
+    had failed.
+    """
+    caplog.set_level(logging.INFO)
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": sent_status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[dict] = []
+
+    async def _send(message):
+        sent.append(message)
+
+    await RequestContextMiddleware(_app)(
+        {"type": "http", "method": "GET", "path": "/v1/query", "headers": []}, None, _send
+    )
+    assert sent, "the app under test sent no response"
+
+    line = _one_summary(caplog)
+    assert line.status == sent_status
+    assert line.outcome == expected_outcome
+    assert line.levelno == expected_level
+
+
 async def test_a_disconnect_before_any_response_reports_no_status_rather_than_a_guess(caplog):
     """``status=-``, never a number. The whole point of this line is that the
     least-explained failures stop being described with invented facts; a
