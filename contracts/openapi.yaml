@@ -1068,6 +1068,14 @@ paths:
         what it resolves to, and `effective_level` is the live root level.
 
 
+        **It also reports a pending auto-revert.** If a PUT armed a
+        `ttl_seconds` expiry, `auto_revert_pending` is true and
+        `expires_in_seconds` counts down to the moment this process will change
+        its own level back to the configured defaults. An operator has to be able
+        to see that the level will move under them, and nothing else in the
+        response would say so.
+
+
         Runtime state is **process-local and resets on restart** — see the PUT
         below.
       tags: [Admin]
@@ -1112,6 +1120,41 @@ paths:
         The number of overrides is capped (`max_logger_overrides`).
 
 
+        **`ttl_seconds` auto-reverts the change.** Absent or null means no
+        expiry — exactly the behaviour this endpoint shipped with, unchanged.
+        Set it and the process reverts to the **configured defaults** at the
+        deadline: the same end state `DELETE` produces, not a restoration of
+        whatever was in force before this PUT. The revert is audited at WARNING
+        as `audit=expired`, distinct from an operator's `audit=reset`, and
+        carries the principal that armed it — a level change nobody typed has to
+        be explainable afterwards. Range 1..86400 seconds (`max_ttl_seconds` in
+        the response); out of range is a 422 that applies nothing. A body
+        carrying only `ttl_seconds` is refused, because a TTL modifies a change
+        and is not one.
+
+
+        This exists because leaving DEBUG on is expensive and easy to forget:
+        httpcore emits roughly **15 log lines per outbound HTTP call**, and DEBUG
+        deliberately *releases* the dampen set, so a single `/v1/query` — 5
+        outbound calls minimum, ~14 on the multi-collection path — goes from
+        about 3 lines to **75–210**. The failure mode is not an attacker; it is
+        an admin who turned DEBUG on to investigate something, got interrupted,
+        and never came back.
+
+
+        **A later PUT supersedes an earlier one, expiry included.** Every PUT
+        cancels any pending auto-revert *before* applying, and arms a new one
+        only if this body carries `ttl_seconds`. Two overlapping TTLs therefore
+        cannot exist and cannot fight; the first timer can never fire later and
+        clobber the second change. The corollary is worth reading twice: **a
+        follow-up PUT that omits `ttl_seconds` disarms the expiry the earlier one
+        armed.** That is deliberate — the expiry belongs to the change that
+        armed it — and it is visible immediately in the response
+        (`auto_revert_pending: false`) and on the audit line, which carries the
+        `ttl_seconds`/`expires_at` columns on every change, including the ones
+        that clear them. `DELETE` cancels a pending revert too.
+
+
         Validation is **atomic**. The whole body is checked before anything is
         applied, so a 422 leaves the effective level exactly as it was.
 
@@ -1148,9 +1191,11 @@ paths:
         "422":
           description: >-
             An unknown or `NOTSET` level, a body with neither `level` nor
-            `loggers`, a logger name that fails the charset/length rule or does
-            not exist in this process, an attempt to override `ragstack.audit`,
-            or more overrides than `max_logger_overrides`. Nothing was applied.
+            `loggers`, a `ttl_seconds` outside 1..`max_ttl_seconds` or not an
+            integer, a body carrying only `ttl_seconds`, a logger name that fails
+            the charset/length rule or does not exist in this process, an attempt
+            to override `ragstack.audit`, or more overrides than
+            `max_logger_overrides`. Nothing was applied.
     delete:
       operationId: resetLogLevel
       summary: Drop the runtime override and return to the configured level (admin only)
@@ -1159,6 +1204,13 @@ paths:
         re-apply what `LOG_LEVEL` and `LOG_DAMPEN_LOGGERS` configure — the state
         the process would come back to after a restart. The caller does not need
         to know what those values were.
+
+
+        **Cancels any pending `ttl_seconds` auto-revert**, since it produces that
+        revert's end state right now — leaving the timer armed would mean a
+        second, pointless "change" landing in the audit trail later. Audited as
+        `audit=reset`, which is how an operator's reset is told apart from the
+        `audit=expired` line an auto-revert writes.
 
 
         Idempotent, always 200 (there is nothing to 404 on: no override is a
@@ -3711,6 +3763,15 @@ components:
         for nothing is far more likely a typo than an intent. Validation is
         atomic — the whole body is checked before anything is applied, so a
         rejected request leaves the effective level exactly as it was.
+
+
+        `ttl_seconds` adds an expiry to the change. Every PUT **supersedes** the
+        previous one, expiry included: any pending auto-revert is cancelled
+        first, and a new one is armed only if this body carries `ttl_seconds`.
+        Two overlapping TTLs therefore cannot exist and cannot fight. The
+        corollary: a follow-up PUT that omits `ttl_seconds` **disarms** the
+        expiry the earlier one armed — visible immediately in the response and on
+        the audit line.
       properties:
         level:
           description: >-
@@ -3754,6 +3815,31 @@ components:
             type: string
             minLength: 1
             maxLength: 16
+        ttl_seconds:
+          description: >-
+            Auto-revert this change after N seconds. Absent or null means **no
+            expiry** — exactly the behaviour this endpoint has always had,
+            unchanged. When set, the process reverts to the CONFIGURED defaults
+            at the deadline: the same end state `DELETE` produces, **not** a
+            restoration of whatever was in force before this PUT, so an override
+            an operator had deliberately set beforehand is dropped at expiry too.
+            The revert is audited at WARNING as `audit=expired` (distinct from an
+            operator's `audit=reset`) carrying the principal that armed it.
+
+
+            Bounds are **1..86400** (24h): a TTL is for a debugging session an
+            operator is present for, and a day bounds the blast radius of a
+            forgotten DEBUG — the failure this field exists to prevent. Anything
+            longer is a `LOG_LEVEL` change plus a restart, which is reviewable
+            and survives the process. The server validates the range and answers
+            422 with `{"detail": "<sentence>"}`, atomically with the rest of the
+            body; the bounds are declared here as documentation, the way
+            `loggers.maxProperties` mirrors `max_logger_overrides`. A body
+            carrying ONLY `ttl_seconds` is refused — a TTL modifies a change, it
+            is not one.
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 86400
       additionalProperties: false
 
     LogLevelResponse:
@@ -3774,10 +3860,18 @@ components:
         Runtime state is PROCESS-LOCAL and resets on restart — see the PUT
         operation for why that is deliberate and what would change if
         `--workers` were ever added.
+
+
+        A `ttl_seconds` expiry is reported by `auto_revert_pending`,
+        `expires_at` and `expires_in_seconds`. It is process-local too, and it is
+        dropped at shutdown without firing — a restart reverts the level anyway,
+        so an expiry that outlived its process would have nothing left to revert.
       required:
         [pid, configured_level, configured_level_resolved, effective_level,
          runtime_override, changed_at, changed_by, dampening_active,
-         dampen_loggers, loggers, logger_override_count, max_logger_overrides]
+         dampen_loggers, loggers, logger_override_count, max_logger_overrides,
+         auto_revert_pending, ttl_seconds, expires_at, expires_in_seconds,
+         max_ttl_seconds]
       properties:
         pid:
           description: >-
@@ -3815,14 +3909,18 @@ components:
           type: boolean
         changed_at:
           description: >-
-            ISO-8601 UTC timestamp of the last runtime change (PUT or DELETE);
-            empty string if this process has never had one. Empty rather than
-            null, matching `UserRoleRecord.role_set_at`.
+            ISO-8601 UTC timestamp of the last runtime change (PUT, DELETE, or a
+            `ttl_seconds` auto-revert); empty string if this process has never had
+            one. Empty rather than null, matching `UserRoleRecord.role_set_at`.
           type: string
         changed_by:
           description: >-
             Tenant of the admin principal who made that last change; empty string
-            if there has never been one. The same identity appears on the WARNING
+            if there has never been one. A NON-empty `changed_at` with an EMPTY
+            `changed_by` is the signature of an auto-revert: the process changed
+            its own level and no principal typed it; the `audit=expired` line
+            names the principal that armed the TTL. The same identity appears on
+            the WARNING
             audit line in the log, which is the durable record — this field is a
             convenience and dies with the process.
           type: string
@@ -3878,6 +3976,43 @@ components:
           description: >-
             The cap on that count. A PUT that would exceed it is a 422 and
             changes nothing.
+          type: integer
+        auto_revert_pending:
+          description: >-
+            True when a `ttl_seconds` expiry is armed and this process will
+            change its own log level when it fires. An operator MUST be able to
+            see this: the level is going to move under them, and nothing else in
+            this response would say so. False exactly when `expires_in_seconds`
+            is null.
+          type: boolean
+        ttl_seconds:
+          description: >-
+            The TTL that was requested on the change now in force, or null when
+            none is armed. The value as sent, not a countdown —
+            `expires_in_seconds` is the countdown.
+          type: [integer, "null"]
+        expires_at:
+          description: >-
+            ISO-8601 UTC wall-clock deadline of the pending auto-revert; empty
+            string when none is armed (empty rather than null, matching
+            `changed_at`). `expires_in_seconds` is measured on a MONOTONIC clock
+            and is the authority — this field is for a human, and a wall-clock
+            step (NTP, a suspended VM) moves it without moving the deadline.
+          type: string
+        expires_in_seconds:
+          description: >-
+            Seconds remaining until the auto-revert fires, rounded UP so a
+            freshly armed 600s TTL reads 600; null when none is armed. Clamped at
+            0 rather than going negative: 0 with `auto_revert_pending: true`
+            means the deadline has passed and the callback has not run yet, which
+            on a busy loop is a moment, not a state.
+          type: [integer, "null"]
+        max_ttl_seconds:
+          description: >-
+            The upper bound on `ttl_seconds` (the lower bound is 1). A PUT
+            outside the range is a 422 and changes nothing. Reported the way
+            `max_logger_overrides` is, so the bound is discoverable at runtime
+            rather than only in this document.
           type: integer
       additionalProperties: false
 

@@ -67,6 +67,14 @@ class LogLevelResponse(BaseModel):
     loggers: list[LoggerLevel]
     logger_override_count: int
     max_logger_overrides: int
+    #: The pending auto-revert. An operator must be able to see that the level
+    #: will change under them — nothing else in this response would say so.
+    auto_revert_pending: bool
+    ttl_seconds: int | None
+    #: Wall-clock, for a human; the countdown below is monotonic and authoritative.
+    expires_at: str
+    expires_in_seconds: int | None
+    max_ttl_seconds: int
 
 
 class LogLevelRequest(BaseModel):
@@ -112,6 +120,29 @@ class LogLevelRequest(BaseModel):
             "the field leaves them untouched."
         ),
     )
+    #: Bounds are deliberately NOT `ge=`/`le=` here. Pydantic keeps the type
+    #: check (a fractional or non-numeric value is a 422 before the handler
+    #: runs), but the range belongs in `log_control` with every other semantic
+    #: refusal: that is what keeps it atomic with the rest of the body and what
+    #: makes the message a sentence naming the bound rather than a pydantic
+    #: error object.
+    #:
+    #: `strict=True` because pydantic's LAX mode coerces `true` to `1` — caught
+    #: in test: `{"ttl_seconds": true}` was accepted as a one-second TTL, which
+    #: is not what anyone typing it means, and `"60"` was accepted as 60. The
+    #: schema says `["integer", "null"]`; strict is what makes the field agree
+    #: with the contract instead of quietly widening it.
+    ttl_seconds: int | None = Field(
+        default=None,
+        strict=True,
+        description=(
+            "Auto-revert this change to the CONFIGURED defaults after N seconds "
+            "(1..86400) — the same end state DELETE produces. Omit or send null "
+            "for no expiry, which is the unchanged default. Every PUT supersedes "
+            "the last one's expiry: a pending revert is cancelled first, and a new "
+            "one armed only if this body carries `ttl_seconds`."
+        ),
+    )
 
 
 @router.get("/log-level", response_model=LogLevelResponse)
@@ -135,10 +166,18 @@ async def set_log_level(
     ``principal.tenant`` — never a token, never an API key — goes on the WARNING
     audit line so that whoever finds DEBUG on in production can find out who
     turned it on and when.
+
+    ``ttl_seconds`` arms an auto-revert to the configured defaults. Every PUT
+    supersedes the previous one's expiry — cancelled before this change is
+    applied, re-armed only if this body asked for one — so two TTLs can never
+    overlap and an earlier timer can never fire later and undo this call.
     """
     try:
         return log_control.set_level(  # type: ignore[return-value]
-            level=body.level, loggers=body.loggers, principal=principal.tenant
+            level=body.level,
+            loggers=body.loggers,
+            ttl_seconds=body.ttl_seconds,
+            principal=principal.tenant,
         )
     except log_control.LogControlError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -150,5 +189,9 @@ async def reset_log_level(
 ) -> dict[str, Any]:
     """Drop every runtime override and re-apply the configured defaults — the
     state a restart would produce, without the caller needing to know what
-    ``LOG_LEVEL`` says. Idempotent, always 200, and audited like a change."""
+    ``LOG_LEVEL`` says. Idempotent, always 200, and audited like a change.
+
+    Cancels any pending ``ttl_seconds`` auto-revert, because it produces that
+    revert's end state right now. Audited as ``reset``, which is what tells it
+    apart from the ``expired`` line an auto-revert writes."""
     return log_control.reset(principal=principal.tenant)  # type: ignore[return-value]
