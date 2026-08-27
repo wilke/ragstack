@@ -6,16 +6,20 @@
 
 ## Bites hardest — a default that resolves to production
 
-Six instances of one defect class. The newest two are the worst because they are in the test
-harness, and a suite that may import production code or write to a production cluster cannot be
-the evidence base for anything else.
+**Eight instances** of one defect class, counted by the rule in
+[README.md](README.md#recurring-defect-class-a-default-that-resolves-to-production): one entry per
+distinct defect, counted once however often it is rediscovered. The harness ones are the worst,
+because a suite that may import production code or write to a production cluster cannot be the
+evidence base for anything else.
 
 | # | What | Status |
 |---|---|---|
-| **#432** | `pytest` imports **production code** unless `PYTHONPATH` is pinned (the conda env's editable install resolves `ragstack` to `/rag/repos/ragstack/python`); and `tests/integration/test_elasticsearch.py` defaults to the **production ES cluster** | `OPEN` — file first |
-| **#407** | A tenant's GoWe ingest silently targets production stores. The API never seeds store URLs; the CWL defaults are production. **Only a per-tenant config workaround is deployed** — the code fix is unmerged | `OPEN` |
-| #392 | `build_collection_entry` constructs a real Qdrant store for every configured spec | `OPEN` |
+| **#454** | Seven `python/scripts/` CLIs default `--qdrant-url`/`--es-url` to `:6333`/`:9200` — production on this host. **Five are write paths.** #407 set the no-default-on-a-write-target principle for the CWL half; the CLI half was never swept | `OPEN` — the live one |
+| #392 | `build_collection_entry` constructs a real Qdrant store for every configured spec, with no `vector_backend` branch. Rediscovered as #451 (closed as duplicate); #444's dead-port pinning hides the symptom without fixing it | `OPEN` |
 | #369 | The Postgres test DSN defaults to the shared instance backing a production job store | `OPEN` |
+| #432 | `pytest` imported **production code** unless `PYTHONPATH` was pinned, and the ES integration test defaulted to the **production cluster** | `CLOSED` by #444 (guard + opt-in `RAGSTACK_TEST_ES_URL`) and #452 |
+| #405 | `conformance/conftest.py` defaulted `RAGSTACK_BASE_URL` to `http://localhost:8000` — a suite that creates and deletes collections, pointed at production's address | `CLOSED` by #452 — now required, with an error naming the hazard |
+| #407 | A tenant's GoWe ingest silently targeted production stores | `CLOSED` by #441 — the API seeds the URLs per run, the CWL defaults are gone, and a stale config workaround now refuses the boot |
 
 `docs/testing/use-case-matrix.md` row **H3** ("a tenant's config never resolves to another
 tenant's stores") is ❌ and is the #1 item in that document's own build-first list.
@@ -26,7 +30,7 @@ tenant's stores") is ❌ and is the #1 item in that document's own build-first l
 
 | # | What | Status |
 |---|---|---|
-| **#422** | `/v1/documents` and the **ingest** path still resolve the global default. So a caller who cannot read the tenant default can now ask questions but **cannot list documents or upload**. The ingest half needs a **writable**-set picker — reusing the read-based one would route an upload into a collection the caller can read but does not own | `OPEN` |
+| **#422** | `/v1/documents` (#447) and the **ingest** picker (#453) are fixed and merged: a caller who cannot read the tenant default can now list documents and upload. The writable-set picker is in, so an omitted `collection` targets what the caller can *write*. **PR-4 (W12–W14) is not started**, and none of it is deployed | `PARTIAL` |
 | **#415** | A failed upload strands its job row. #418 (W1–W3) shrank the class; W4–W10 remain — a cancel endpoint, a reaper, sticky terminal states | `PARTIAL` |
 | #86 | Catalog view — phase 4 remainder | `OPEN` |
 | #281 | Rename / transfer / merge gaps | `OPEN` |
