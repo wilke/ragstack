@@ -199,7 +199,13 @@ async def test_a_ttl_is_reported_and_then_reverts_the_server(
     assert body["ttl_seconds"] == 1
     assert body["expires_in_seconds"] == 1
     assert body["expires_at"] != ""
-    assert body["max_ttl_seconds"] >= 1
+    # Against the PUBLISHED bound, not `>= 1` and not the server's own constant.
+    # Review caught this: `MAX_TTL_SECONDS = 3600` passed the whole Python suite
+    # because every assertion tracked the constant, so the contract's
+    # `maximum: 86400` was pinned by nothing and the code was free to drift from
+    # the document it publishes.
+    published = schemas["log_level_request"]["properties"]["ttl_seconds"]
+    assert body["max_ttl_seconds"] == published["maximum"]
 
     deadline = time.monotonic() + 15.0
     state = body
@@ -259,11 +265,16 @@ async def test_no_ttl_arms_no_expiry(
 
 async def test_an_out_of_range_ttl_is_4xx_and_changes_nothing(
     client: httpx.AsyncClient,
+    schemas: dict[str, dict],
     admin_headers: dict[str, str],
     restored: dict[str, Any],
 ) -> None:
+    """Either side of the bound the CONTRACT publishes, so a server that
+    enforced a different range would fail here rather than pass by agreeing with
+    itself."""
     before = (await client.get(URL, headers=admin_headers)).json()
-    for ttl in (0, 86_401):
+    published = schemas["log_level_request"]["properties"]["ttl_seconds"]
+    for ttl in (published["minimum"] - 1, published["maximum"] + 1):
         resp = await client.put(
             URL, json={"level": "DEBUG", "ttl_seconds": ttl}, headers=admin_headers
         )

@@ -545,6 +545,17 @@ def test_get_reports_the_pending_expiry_and_it_decreases(clock):
     assert later["expires_at"] == state["expires_at"], "the deadline must not drift"
     assert later["auto_revert_pending"] is True
 
+    # A FRACTIONAL step, which is the only thing that distinguishes rounding up
+    # from rounding down. Every other advance in this file lands on a whole
+    # second, where floor and ceil agree — so without this, "rounded UP so a
+    # freshly armed 600s TTL reads 600" is a comment decorating an assertion
+    # that never exercises it, and `math.floor` passes the suite. Found by
+    # review. 569.5s left must read 570: "at most this long", never less.
+    clock.advance(0.5)
+    assert log_control.describe()["expires_in_seconds"] == 570
+    clock.advance(0.5)
+    assert log_control.describe()["expires_in_seconds"] == 569
+
 
 def test_max_ttl_seconds_is_reported_so_the_bound_is_discoverable(clock):
     assert log_control.describe()["max_ttl_seconds"] == log_control.MAX_TTL_SECONDS
@@ -791,9 +802,18 @@ def test_a_pending_revert_does_not_outlive_or_upset_a_closing_loop():
 
     Runs a loop to completion with a real ``call_later`` revert armed and NOT
     cancelled — the worst case, i.e. the hook having been skipped entirely. The
-    loop must still finish and close without asyncio emitting the ``Task was
-    destroyed but it is pending`` / ``Future exception was never retrieved``
-    grumble a Task-based implementation would produce here.
+    loop must still finish and close, and the armed thing must be a
+    ``TimerHandle``.
+
+    **The load-bearing assertion is the ``isinstance`` one, not the log check.**
+    An earlier version of this docstring claimed the test caught the ``Task was
+    destroyed but it is pending`` grumble; review showed it cannot. That warning
+    is emitted from ``Task.__del__``, i.e. at garbage collection — after this
+    handler is removed, and while the test is still holding a reference to the
+    object anyway. A standalone probe captured zero records. The log assertion is
+    kept as a cheap tripwire for noise that *is* emitted during ``close()``, and
+    it is honest about being that and no more; a Task-based implementation is
+    caught here by the type assertion.
 
     Not an ``async def`` test: it has to own the loop in order to close it.
     """

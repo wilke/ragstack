@@ -25,6 +25,7 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+import yaml
 from fastapi import FastAPI
 
 from ragstack.api import security
@@ -41,11 +42,13 @@ URL = "/v1/admin/log-level"
 #: The published contract, read from ``contracts/`` rather than restated here —
 #: the same pattern as ``test_evict_on_create.py``. If the response drifts from
 #: what the OpenAPI document promises, these tests fail before conformance does.
-SCHEMA = json.loads(
-    (
-        Path(__file__).resolve().parents[3] / "contracts" / "schemas" / "log_level_response.json"
-    ).read_text()
-)
+_CONTRACTS = Path(__file__).resolve().parents[3] / "contracts"
+SCHEMA = json.loads((_CONTRACTS / "schemas" / "log_level_response.json").read_text())
+
+#: The REQUEST contract, read for the same reason: `ttl_seconds`' bounds are
+#: published in three places (this schema, the OpenAPI component, and
+#: `log_control`'s constants) and nothing else makes them agree.
+REQUEST_SCHEMA = json.loads((_CONTRACTS / "schemas" / "log_level_request.json").read_text())
 
 
 @pytest.fixture(autouse=True)
@@ -406,6 +409,14 @@ async def test_get_reports_the_countdown_decreasing(client, monkeypatch, clock):
     assert first["expires_at"] == second["expires_at"], "the deadline must not drift"
     assert second["auto_revert_pending"] is True
 
+    # A FRACTIONAL step, which is the only thing that tells rounding up from
+    # rounding down: 539.5s left is reported as 540 ("at most this long"), not
+    # 539. Every other advance here lands on a whole second, where floor and ceil
+    # agree — so without this line the "rounded UP" contract is asserted nowhere
+    # in this file and `math.floor` would pass the whole suite.
+    clock.advance(0.5)
+    assert (await client.get(URL, headers=headers)).json()["expires_in_seconds"] == 540
+
 
 async def test_no_ttl_leaves_the_level_alone_forever(client, monkeypatch, clock):
     """The behaviour the endpoint shipped with, unchanged."""
@@ -619,6 +630,13 @@ async def test_the_lifespan_disarms_a_pending_revert_at_shutdown(monkeypatch, ca
     way out. Deliberately NOT reverted: the process is going away and a restart
     reverts the level anyway, so firing it here would only write a confusing
     audit line.
+
+    **The load-bearing assertion is ``handle.cancelled()``**, plus the
+    ``isinstance`` type check. The asyncio-log check at the end is a tripwire for
+    noise emitted *during* teardown and nothing more: review established that the
+    ``Task was destroyed but it is pending`` warning it used to claim to catch
+    fires from ``Task.__del__`` at garbage collection, after this handler is
+    gone. Said plainly here so nobody trusts it for more than it does.
     """
     caplog.set_level(logging.DEBUG, logger="asyncio")
     from ragstack.api.deps import lifespan
@@ -638,3 +656,41 @@ async def test_the_lifespan_disarms_a_pending_revert_at_shutdown(monkeypatch, ca
 
     noisy = [r for r in caplog.records if r.levelno >= logging.WARNING and r.name == "asyncio"]
     assert not noisy, [r.getMessage() for r in noisy]
+
+
+async def test_the_published_ttl_bounds_and_the_enforced_ones_are_the_same(
+    client, monkeypatch, clock
+):
+    """The bounds are written down in THREE places — this request schema, the
+    OpenAPI component, and `log_control`'s constants — and until this test
+    nothing made them agree.
+
+    Found by review: `MAX_TTL_SECONDS = 3600` passed the entire suite, because
+    every bounds test tracks the constant (`MAX_TTL = log_control.MAX_TTL_SECONDS`)
+    and the response assertion was self-referential (`max_ttl_seconds ==
+    log_control.MAX_TTL_SECONDS`). The published `maximum: 86400` was pinned by
+    nothing, so the code could silently drift from the document — a contract
+    asserting something no test checks, which is the failure this repo keeps
+    finding. So: compare the enforced constants against the CONTRACT, and prove
+    the boundary either side of it over HTTP.
+    """
+    published = REQUEST_SCHEMA["properties"]["ttl_seconds"]
+    assert published["maximum"] == log_control.MAX_TTL_SECONDS
+    assert published["minimum"] == log_control.MIN_TTL_SECONDS
+
+    openapi = yaml.safe_load((_CONTRACTS / "openapi.yaml").read_text())
+    component = openapi["components"]["schemas"]["LogLevelRequest"]["properties"]["ttl_seconds"]
+    assert component["maximum"] == published["maximum"]
+    assert component["minimum"] == published["minimum"]
+
+    headers = _admin(monkeypatch)
+    at_cap = await client.put(
+        URL, json={"level": "DEBUG", "ttl_seconds": published["maximum"]}, headers=headers
+    )
+    assert at_cap.status_code == 200, at_cap.text
+    assert at_cap.json()["max_ttl_seconds"] == published["maximum"]
+
+    over = await client.put(
+        URL, json={"level": "DEBUG", "ttl_seconds": published["maximum"] + 1}, headers=headers
+    )
+    assert over.status_code == 422, over.text
