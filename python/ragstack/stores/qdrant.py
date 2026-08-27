@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from time import perf_counter
@@ -52,6 +53,19 @@ _TENANT_FIELD = OWNER_FIELD
 # Upper bound (seconds) on a tenant-filtered count, so an unindexed large
 # collection degrades to "unavailable" fast instead of hanging the read.
 _COUNT_TIMEOUT_S = 5
+# Upper bound (seconds) on the opt-in post-mortem probe (#427 W9). It CANNOT be
+# left to the client's own timeout: that is `qdrant_timeout`, 30 s by default and
+# 60 s on the two tenants serving the collection from the incident, so an
+# unbounded probe would add a minute to a request that has already failed.
+_PROBE_TIMEOUT_S = 2.0
+# One probe per collection per this many seconds. A store having a bad minute
+# must not earn a probe per failed request.
+_PROBE_MIN_INTERVAL_S = 60.0
+# Module-level alias, deliberately: it is the seam tests drive the rate limiter
+# through (monkeypatch a controllable clock) — same style as the existing
+# `monkeypatch.setattr(qdrant_mod, "AsyncQdrantClient", ...)`. Monotonic, so a
+# system clock step cannot open or wedge the window.
+_monotonic = time.monotonic
 
 __all__ = [
     "QdrantVectorStore",
@@ -214,6 +228,7 @@ class QdrantVectorStore:
         timeout: int | None = None,
         upsert_batch_size: int = 256,
         upsert_concurrency: int = 1,
+        postmortem_probe: bool = False,
     ) -> None:
         # `timeout` (seconds) bounds each request; raise it for heavy ops (large
         # filtered deletes) so they fail fast/explicitly instead of hanging.
@@ -233,6 +248,13 @@ class QdrantVectorStore:
         # under a capped/optimizing collection).
         self._upsert_batch_size = max(1, upsert_batch_size)
         self._upsert_concurrency = max(1, upsert_concurrency)
+        # #427 W9, opt-in and default off — see _postmortem_probe. The rate-limit
+        # state lives on the instance because an instance is bound to exactly one
+        # collection (``self._collection`` is fixed at construction), so
+        # per-instance IS per-collection, with no module-global to leak between
+        # requests, processes or tests.
+        self._postmortem_enabled = postmortem_probe
+        self._probe_last: float | None = None
 
     async def ensure_collection(self) -> None:
         """Create the collection if absent; if present, verify its vector size
@@ -358,11 +380,19 @@ class QdrantVectorStore:
             # "the store didn't answer", not a bug in this request — surface them
             # as StoreUnavailable so the API answers 503 with the reason instead
             # of a bare 500 and a 40-frame httpx traceback.
+            kind = _failure_kind(e)
+            # Captured BEFORE the probe, deliberately: `elapsed_s` is the STORE's
+            # own latency — the measurement #427 could not make — and letting the
+            # probe's up-to-2 s ride into it would corrupt the number this field
+            # exists to report.
+            elapsed_s = perf_counter() - started
+            if kind == KIND_TIMEOUT:
+                await self._postmortem_probe()
             raise StoreUnavailable(
                 "qdrant",
                 self._describe_failure(e),
-                kind=_failure_kind(e),
-                elapsed_s=perf_counter() - started,
+                kind=kind,
+                elapsed_s=elapsed_s,
             ) from e
         return [
             ScoredChunk(
@@ -386,6 +416,110 @@ class QdrantVectorStore:
         return (
             f"qdrant search on {self._collection!r} at {self._url} failed — {reason}; "
             f"per-request timeout is {bound}"
+        )
+
+    async def _postmortem_probe(self) -> None:
+        """After a search TIMED OUT, read this collection's optimizer state once
+        and log the raw counters (#427 W9). Opt-in, default off, never raises.
+
+        .. rubric:: What this buys that the shipped fields do not
+
+        W2a already puts ``elapsed_s`` and ``reason`` on every store failure, so
+        the log answers *how long* the store took and *which failure class* it
+        was. Neither can see **optimizer or indexing churn**: a collection
+        mid-optimize is a genuinely different candidate cause from the cold page
+        cache everyone assumes, and today the two are indistinguishable after the
+        fact. ``status`` (``yellow``/``grey``/``red``), ``optimizer_ok`` and the
+        segment count are the only evidence in this repo's reach that separates
+        them. That distinction is the entire justification for this method.
+
+        .. rubric:: What it does NOT buy
+
+        It does **not** distinguish a cold page cache — the incident's other
+        leading hypothesis. Host-level cache state is Qdrant-side telemetry and
+        is not observable from this process at all. Do not read a green, idle
+        probe as "so it must have been the cache"; read it as "not optimizer
+        churn", which is a smaller claim and the only one it supports.
+
+        .. rubric:: Why it is opt-in, bounded and rate-limited
+
+        It sends a request to a store that has just failed to answer one. So:
+        off unless ``QDRANT_POSTMORTEM_PROBE`` is set; bounded at
+        ``_PROBE_TIMEOUT_S`` by ``asyncio.wait_for`` rather than by the client's
+        own 30–60 s ``QDRANT_TIMEOUT``; and at most one per collection per
+        ``_PROBE_MIN_INTERVAL_S``, so a store having a bad minute cannot earn a
+        probe per failed request. Only ``kind="timeout"`` reaches here — a store
+        that was never reached (``unreachable``) will not answer a probe either,
+        and trying costs the caller 2 s for nothing.
+
+        .. rubric:: Raw counters only
+
+        ``points_count`` and ``indexed_vectors_count`` are logged as read. No
+        backlog is derived from their difference: :class:`CollectionHealth`
+        records, from live measurement, that the difference is meaningless in
+        both regimes (0 by design below the indexing threshold; routinely
+        NEGATIVE on a mature collection). A human reads the two numbers.
+
+        .. rubric:: It must never make the failure worse
+
+        Every ``Exception`` the probe raises — including its own timeout — is
+        swallowed to one log line, and the original ``StoreUnavailable`` then
+        propagates unchanged. The one deliberate exception is
+        ``asyncio.CancelledError``: it is a ``BaseException``, it means the
+        caller went away mid-probe, and swallowing a cancellation to keep
+        answering a request nobody is waiting for is the wrong trade (W1's
+        middleware already records that case as ``client_disconnected``).
+
+        The line is emitted at WARNING, matching the store-failure line it
+        explains: an operator who has set ``LOG_LEVEL=WARNING`` (or flipped it at
+        runtime via ``PUT /v1/admin/log-level``) keeps both lines or neither.
+        Keeping the failure and losing its explanation would defeat the point.
+        No ``rid`` is passed: ``RequestContextFilter`` stamps it on every record
+        from the contextvar, so this line already carries the id of the request
+        whose failure it explains — that correlation is what makes it usable.
+        """
+        if not self._postmortem_enabled:
+            return
+        now = _monotonic()
+        last = self._probe_last
+        if last is not None and (now - last) < _PROBE_MIN_INTERVAL_S:
+            return
+        # Check and set with NO await in between: on a single-threaded event loop
+        # that makes the gate atomic, so N concurrent timeouts on this collection
+        # yield exactly one probe rather than N in flight together.
+        self._probe_last = now
+        started = perf_counter()
+        try:
+            health = await asyncio.wait_for(self.collection_health(), _PROBE_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001 — see "never make the failure worse"
+            # Same shape as _describe_failure's sentence, and it names the bound:
+            # the commonest case here is our own TimeoutError, whose str() is
+            # empty, which would otherwise log a reason of nothing at all.
+            reason = f"{type(e).__name__}: {e}".rstrip(": ")
+            log.warning(
+                "qdrant post-mortem probe failed on %r — %s; probe bound is %ss",
+                self._collection, reason, _PROBE_TIMEOUT_S,
+                extra={
+                    "store": "qdrant",
+                    # The PHYSICAL Qdrant collection, which is not necessarily the
+                    # failure line's `coll` (that one is the registry id).
+                    "probe_collection": self._collection,
+                    "probe_ms": round((perf_counter() - started) * 1000),
+                },
+            )
+            return
+        log.warning(
+            "qdrant post-mortem probe on %r", self._collection,
+            extra={
+                "store": "qdrant",
+                "probe_collection": self._collection,
+                "status": health.status,
+                "optimizer_ok": health.optimizer_ok,
+                "segments": health.segments_count,
+                "points": health.points_count,
+                "indexed_vectors": health.indexed_vectors_count,
+                "probe_ms": round((perf_counter() - started) * 1000),
+            },
         )
 
     async def count_tenants(self, tenants: list[str]) -> int:
