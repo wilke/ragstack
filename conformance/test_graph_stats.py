@@ -7,6 +7,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -38,7 +40,11 @@ async def test_graph_stats_schema(client: httpx.AsyncClient, schemas: dict[str, 
         assert body["entities"] is None and body["relationships"] is None
 
 
-async def test_graph_stats_requires_key_when_configured(client: httpx.AsyncClient) -> None:
+async def test_graph_stats_requires_key_when_configured(
+    anon_client: httpx.AsyncClient,
+) -> None:
+    """``anon_client``, not ``client``: the shared client carries
+    ``$RAGSTACK_API_KEY`` since #405, and httpx merges its headers in."""
     if not (os.environ.get("RAGSTACK_API_KEY") or None):
-        pytest.skip("server is keyless; nothing to enforce")
-    assert (await client.get("/v1/graph/stats")).status_code == 401
+        skip_no_credential("server is keyless (no RAGSTACK_API_KEY); nothing to enforce")
+    assert (await anon_client.get("/v1/graph/stats")).status_code == 401

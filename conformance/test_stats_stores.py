@@ -13,6 +13,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -52,11 +54,19 @@ async def test_stats_stores_schema(client: httpx.AsyncClient, schemas: dict[str,
         assert count is None or count >= 0
 
 
-async def test_stats_stores_requires_key_when_configured(client: httpx.AsyncClient) -> None:
-    """When the server is key-protected, an unauthenticated call is rejected."""
+async def test_stats_stores_requires_key_when_configured(
+    anon_client: httpx.AsyncClient,
+) -> None:
+    """When the server is key-protected, an unauthenticated call is rejected.
+
+    ``anon_client``, not ``client``: since #405 the shared client sends
+    ``$RAGSTACK_API_KEY`` and httpx merges its headers into every request, so
+    this assertion would be authenticated and would fail for the right reason
+    only by accident.
+    """
     if not _key("RAGSTACK_API_KEY"):
-        pytest.skip("server is keyless; nothing to enforce")
-    resp = await client.get("/v1/stats/stores")
+        skip_no_credential("server is keyless (no RAGSTACK_API_KEY); nothing to enforce")
+    resp = await anon_client.get("/v1/stats/stores")
     assert resp.status_code == 401
 
 
@@ -64,7 +74,14 @@ async def test_stats_stores_no_cross_tenant_leak(client: httpx.AsyncClient) -> N
     """Two tenant-mapped keys must see disjoint tenant scopes."""
     a, b = _key("RAGSTACK_API_KEY"), _key("RAGSTACK_API_KEY_B")
     if not (a and b):
-        pytest.skip("needs two tenant-mapped keys (RAGSTACK_API_KEY, RAGSTACK_API_KEY_B)")
+        skip_no_credential(
+            "needs two tenant-mapped keys (RAGSTACK_API_KEY, RAGSTACK_API_KEY_B); "
+            "`make test-conformance-keyed` maps four keys to four subjects"
+        )
+    assert a != b, (
+        "RAGSTACK_API_KEY and RAGSTACK_API_KEY_B hold the same value, so this "
+        "test would be comparing one tenant's scope with its own (#405)"
+    )
     ta = (await client.get("/v1/stats/stores", headers={"X-API-Key": a})).json()["tenants"]
     tb = (await client.get("/v1/stats/stores", headers={"X-API-Key": b})).json()["tenants"]
     # Each sees its own tenant (+ public); their non-public tenants differ.

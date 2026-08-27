@@ -12,6 +12,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -30,7 +32,9 @@ def _validate(data, schema_name: str, schemas: dict[str, dict]) -> None:
 async def test_models_status_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
     resp = await client.get("/v1/stats/models")
     if resp.status_code in (401, 403):
-        pytest.skip("caller lacks admin access to /v1/stats/models")
+        skip_no_credential(
+            "the configured RAGSTACK_API_KEY lacks admin access to /v1/stats/models"
+        )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, "models_status_response", schemas)
@@ -45,7 +49,10 @@ async def test_models_benchmark_schema(client: httpx.AsyncClient, schemas: dict[
         "/v1/stats/models/benchmark", json={"embed_batch": 4, "llm_tokens": 16}, timeout=120.0
     )
     if resp.status_code in (401, 403):
-        pytest.skip("caller lacks admin access to the benchmark endpoint")
+        skip_no_credential(
+            "the configured RAGSTACK_API_KEY lacks admin access to the benchmark "
+            "endpoint"
+        )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, "benchmark_response", schemas)

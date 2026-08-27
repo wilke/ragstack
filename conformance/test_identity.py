@@ -27,6 +27,8 @@ import os
 import httpx
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 IDENTITY_ENABLED = bool(os.environ.get("RAGSTACK_IDENTITY_ENABLED"))
@@ -54,19 +56,19 @@ JUNK_JWT = (
     [JUNK_JWT, "Bearer " + JUNK_JWT, "not-a-token-at-all", "un=root|sig=deadbeef"],
     ids=["junk-jwt", "bearer-junk-jwt", "garbage", "fake-bvbrc-token"],
 )
-async def test_unverifiable_credential_is_rejected(client: httpx.AsyncClient, credential):
+async def test_unverifiable_credential_is_rejected(anon_client: httpx.AsyncClient, credential):
     """401 or 503 — never 200. The credential is not signed by the pinned issuer,
     so the only two honest answers are "no" and "I could not check"."""
-    resp = await client.get("/v1/stats/tenants", headers={"Authorization": credential})
+    resp = await anon_client.get("/v1/stats/tenants", headers={"Authorization": credential})
     assert resp.status_code in (401, 503), resp.text
 
 
 @requires_identity
-async def test_both_credentials_is_400(client: httpx.AsyncClient):
+async def test_both_credentials_is_400(anon_client: httpx.AsyncClient):
     """Which credential authenticated a request must never be a guess."""
     if not API_KEY:
-        pytest.skip("no RAGSTACK_API_KEY configured")
-    resp = await client.get(
+        skip_no_credential("no RAGSTACK_API_KEY configured")
+    resp = await anon_client.get(
         "/v1/stats/tenants",
         headers={"Authorization": f"Bearer {JUNK_JWT}", "X-API-Key": API_KEY},
     )
@@ -75,10 +77,10 @@ async def test_both_credentials_is_400(client: httpx.AsyncClient):
 
 @requires_identity
 async def test_no_credential_at_all_is_not_authenticated_as_a_bearer_user(
-    client: httpx.AsyncClient,
+    anon_client: httpx.AsyncClient,
 ):
     """An empty Authorization header must not become an identity."""
-    resp = await client.get("/v1/stats/tenants", headers={"Authorization": ""})
+    resp = await anon_client.get("/v1/stats/tenants", headers={"Authorization": ""})
     if resp.status_code == 200:
         # Keyless dev server: the caller is the default tenant, NOT an issuer one.
         assert not resp.json()["tenant"].startswith(f"{ISSUER_LABEL}:")
@@ -88,11 +90,11 @@ async def test_no_credential_at_all_is_not_authenticated_as_a_bearer_user(
 
 @pytest.mark.skipif(not ID_TOKEN, reason="no RAGSTACK_GOOGLE_ID_TOKEN configured")
 @requires_identity
-async def test_real_google_id_token_authenticates(client: httpx.AsyncClient):
+async def test_real_google_id_token_authenticates(anon_client: httpx.AsyncClient):
     """The positive path: a genuine Google ID token minted for the server's
     configured client id resolves to an issuer-scoped tenant with the explicit
     user role — never the deployment's default role."""
-    resp = await client.get(
+    resp = await anon_client.get(
         "/v1/stats/tenants", headers={"Authorization": f"Bearer {ID_TOKEN}"}
     )
     assert resp.status_code == 200, resp.text
@@ -105,6 +107,6 @@ async def test_real_google_id_token_authenticates(client: httpx.AsyncClient):
 
 @pytest.mark.skipif(not ID_TOKEN, reason="no RAGSTACK_GOOGLE_ID_TOKEN configured")
 @requires_identity
-async def test_admin_surface_stays_closed_to_a_bearer_identity(client: httpx.AsyncClient):
-    resp = await client.get("/v1/config", headers={"Authorization": f"Bearer {ID_TOKEN}"})
+async def test_admin_surface_stays_closed_to_a_bearer_identity(anon_client: httpx.AsyncClient):
+    resp = await anon_client.get("/v1/config", headers={"Authorization": f"Bearer {ID_TOKEN}"})
     assert resp.status_code == 403, resp.text

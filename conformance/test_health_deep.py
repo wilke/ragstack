@@ -13,6 +13,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 _BACKEND_LEAK_RE = re.compile(
@@ -36,7 +38,7 @@ def _validate(data, schemas: dict[str, dict]) -> None:
 async def test_health_deep_non_admin_is_forbidden(client: httpx.AsyncClient) -> None:
     key = os.environ.get("RAGSTACK_API_KEY_NONADMIN") or None
     if not key:
-        pytest.skip("needs a non-admin key (RAGSTACK_API_KEY_NONADMIN)")
+        skip_no_credential("needs a non-admin key (RAGSTACK_API_KEY_NONADMIN)")
     resp = await client.get("/v1/health/deep", headers={"X-API-Key": key})
     assert resp.status_code == 403
     assert not _BACKEND_LEAK_RE.search(resp.text), resp.text
@@ -45,7 +47,7 @@ async def test_health_deep_non_admin_is_forbidden(client: httpx.AsyncClient) -> 
 async def test_health_deep_admin_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
     key = os.environ.get("RAGSTACK_API_KEY_ADMIN") or None
     if not key:
-        pytest.skip("needs an admin key (RAGSTACK_API_KEY_ADMIN)")
+        skip_no_credential("needs an admin key (RAGSTACK_API_KEY_ADMIN)")
     resp = await client.get("/v1/health/deep", headers={"X-API-Key": key})
     assert resp.status_code == 200, resp.text
     body = resp.json()

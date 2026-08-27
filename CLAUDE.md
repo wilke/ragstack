@@ -54,11 +54,19 @@ make sidecars-{pull,up,down}-apptainer    # Embedding sidecar via Apptainer
 make test-conformance-python     # RAGSTACK_BASE_URL=http://localhost:8000 RAGSTACK_IMPL=python pytest conformance/
 make test-conformance-go         # RAGSTACK_BASE_URL=http://localhost:8080 RAGSTACK_IMPL=go pytest conformance/
 make test-conformance            # both, sequentially
+make test-conformance-authz      # boots its own keyed in-memory API; runs test_authz.py against it
+make test-conformance-keyed      # same boot, FOUR distinct principals, whole suite (#405)
 ```
 
-Conformance tests assume a server is **already running** at the URL — they don't start one. Bring it up with `make up-python` / `make up-go` (or `run-python` / `run-go` for non-Docker dev) first.
+Conformance tests assume a server is **already running** at the URL — they don't start one. Bring it up with `make up-python` / `make up-go` (or `run-python` / `run-go` for non-Docker dev) first. The two keyed targets are the exception: they boot and tear down their own server.
 
-To run a single test: `cd python && pytest tests/path/to/test_x.py::test_name -v` (or the equivalent `go test -run` in `go/`). To run a single conformance test, prefix with the same `RAGSTACK_BASE_URL`/`RAGSTACK_IMPL` env vars the Make target uses.
+`RAGSTACK_BASE_URL` is **required and has no default**. It used to default to `http://localhost:8000`, which on this host is a live legacy production API — and this suite creates and deletes collections. See `docs/plans/README.md` § *a default that resolves to production*.
+
+**`make test-conformance-keyed`** is the invocation that proves the authorization surface. It boots an in-memory API with four distinct keys mapped to four distinct subjects (admin / P1 / P2 / a second tenant), makes the registry pointer's target private so the **P2** persona is real, and runs everything. Expected as of this commit: **137 passed, 13 skipped, 1 xfailed**, then a second short-lived boot with `ALLOW_USER_COLLECTION_CREATE=false` for **2 passed** (matrix row A3).
+
+Read those counts as documentation, not as a gate — they drift as tests are added, and the matrix's *re-measure before quoting* rule applies. The **invariant** lives in the script: any skip tagged `RAGSTACK_CREDENTIAL_SKIP` fails the run, because on a server the script provisioned itself, "I had no credential for that" is a harness bug. The 13 legitimate skips are the identity suite (no OIDC provider configured), the create-gate file (the first boot has creates enabled — it passes on the second), one duplicate-coverage skip and the un-triggerable store-503 body. The xfail is an **open defect this persona found** (#450): `GET /v1/documents` still resolves the global registry pointer, so P2 cannot list documents (`test_persona_p2.py::test_p2_can_list_documents`, `strict=True`, so it goes red the day it is fixed).
+
+To run a single test: `cd python && pytest tests/path/to/test_x.py::test_name -v` (or the equivalent `go test -run` in `go/`). To run a single conformance test, prefix with the same `RAGSTACK_BASE_URL`/`RAGSTACK_IMPL` env vars the Make target uses; against the keyed server, pass `AUTHZ_CONF_SCOPE='test_x.py -k name'` to `conformance/run_authz_keyed.sh` instead, so the principals come with it.
 
 ## Implementation layout
 
