@@ -83,8 +83,18 @@ diagnostic that would have caught all six, from the W7 implementer:
 
 ### Recurring defect class: a default that resolves to production
 
-Six instances found so far — #363, #369, #392, #407, and both halves of #432. The newest are the
-worst, because they are in the test harness itself: `pytest` imports production code unless
-`PYTHONPATH` is pinned, and the Elasticsearch integration test defaults to the production cluster.
-A suite that may import production code and may write to a production cluster cannot be the
-evidence base for anything else.
+Seven instances found so far — #363, #369, #392, #407, both halves of #432, and
+`conformance/conftest.py`'s `RAGSTACK_BASE_URL` default (#405). The newest are the worst, because
+they are in the test harness itself: `pytest` imports production code unless `PYTHONPATH` is
+pinned, the Elasticsearch integration test defaulted to the production cluster, and the
+conformance suite — which *creates and deletes collections* — defaulted to `http://localhost:8000`,
+the live legacy API on this host. A suite that may import production code, write to a production
+cluster and provision collections on a production API cannot be the evidence base for anything
+else.
+
+The shape is the same in all seven: the default **is** the documented convention (port 8000 is
+Python, `localhost:9200` is Elasticsearch), and the convention is right — on a laptop. It is a
+defect here because the deployment host is also the development host, so the convention and
+production name the same address. The fix is never to change the convention; it is to make the
+value *required*, and to keep the convention in the invocation (a Make target), where it cannot
+fire by accident.

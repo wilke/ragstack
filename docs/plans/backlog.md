@@ -38,13 +38,23 @@ tenant's stores") is ❌ and is the #1 item in that document's own build-first l
 
 | # | What | Status |
 |---|---|---|
-| **#405** | The conformance client fixture sends **no auth header**, and `run_authz_keyed.sh` wires the admin and non-admin keys to the **same value**. The suite's two-principal axis is fictional — which is why #419 shipped | `OPEN` |
+| **#405** | The conformance client fixture sent **no auth header**, and `run_authz_keyed.sh` wired the admin and non-admin keys to the **same value** — the suite's two-principal axis was fictional, which is why #419 shipped | `DONE` — `client` sends the key (`anon_client` for the 401s), the runner provisions four distinct principals and makes the pointer's target private, and `test_persona_p2.py` asserts the P2 rows. `make test-conformance-keyed` |
 | #366 | `GET /v1/config` is never schema-validated | `OPEN` |
 | #394 | Graph neighbour items are never validated against the schema | `OPEN` |
 | #364 | The g1 sweep's timing cells share one rerank cache and exclude query embedding | `OPEN` |
 
 The persona axis (`caller_without_default_access` — P2 in the use-case matrix) exists in Python
-fixtures but **cannot be expressed in conformance today**. That is #405.
+fixtures **and, since #405, in conformance**: `make test-conformance-keyed` boots a keyed
+in-memory API with four distinct principals and runs the whole suite against it, failing rather
+than skipping when a principal it provisioned is missing.
+
+What that run still cannot express, stated so it is not rediscovered:
+
+* a second **tenant** (A4 / #100) — P2 is a second principal inside one tenant;
+* an **upload** (C1/C7) — conformance never sends a file, so nothing downstream of one is proven;
+* a real **eviction** (E1) — the only eviction call is `dry_run`;
+* **retrieval quality** — the keyed run embeds through a hash stub over empty collections, which
+  is a plumbing claim and never an L-layer one.
 
 ---
 

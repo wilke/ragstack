@@ -83,9 +83,18 @@ P2's four "not"s are load-bearing: an admin bypasses `authz.resolve_access` enti
 branch, and with auth unconfigured `api/access.py::filter_readable` is a no-op — any one of them makes a P2 test vacuous. Reference
 implementations: `python/tests/api/conftest.py:215` (pytest fixture, which asserts its own
 preconditions) and `frontend/src/lib/collectionFixtures.ts` (`LISTING_WITHOUT_DEFAULT`).
-P2 **cannot be expressed in `conformance/` today** — the suite's only principal axis is role, and
-`run_authz_keyed.sh` wires its "non-admin" key to the same value as the primary. That gap is why
-several rows below are ⚠️ rather than ✅.
+P2 **is now expressible in `conformance/`** (#405, `conformance/test_persona_p2.py` +
+the `caller_without_default_access` fixture in `conformance/conftest.py`). It was not
+until then: the suite's only principal axis was *role*, because `run_authz_keyed.sh` wired
+its "non-admin" key to the **same value** as the primary — two names, one principal. The
+keyed runner now provisions four distinct keys with four distinct subjects and revokes the
+`public` read grant on the registry pointer's target, so P1 (can read it) and P2 (cannot)
+are genuinely different callers. Run it with `make test-conformance-keyed`.
+
+The conformance fixture asserts the same four "not"s the Python one does, over HTTP —
+including the allowlist one, via `GET /v1/stats/tenants`'s `restricted_to` (`null` =
+unconfined). A precondition that is *claimed but false* fails the run; only a missing
+credential skips, and the runner fails on those too, because it provisioned them itself.
 
 ---
 
@@ -95,8 +104,8 @@ several rows below are ⚠️ rather than ✅.
 |---|---|---|---|---|
 | A1 | Sign in with a BV-BRC token; a user row appears on first auth | C·L | ✅ | `conformance/test_identity.py` |
 | A2 | An expired/invalid token is refused everywhere, including mid-job | F·L | ⚠️ | mid-job expiry unproven |
-| A3 | A read-only service account cannot create a collection | F·C | ⚠️ | #287; already principal-aware. F only — conformance's create round-trip **skips** a non-admin caller instead of asserting the refusal (`test_collections.py:118`) |
-| A4 | Job status is not readable across tenants | F·C | ⚠️ | #130; already principal-aware. F only — conformance explicitly excludes `GET /v1/ingest/{job_id}`: *"a real assertion here still needs a two-tenant fixture this single-tenant probe harness doesn't have"* (`test_authz.py:122-128`) |
+| A3 | A read-only service account cannot create a collection | F·C | ✅ | #287. C leg closed by #405: `conformance/test_create_gate.py`, run against a second boot with `ALLOW_USER_COLLECTION_CREATE=false` — a non-admin create is 403 **and names the switch**, an admin create still succeeds. Note the refusal mechanism is that deployment-wide switch, not the service account: `POST /v1/admin/service-accounts` registers an identity but **mints no credential**, so conformance has nothing to call with |
+| A4 | Job status is not readable across tenants | F·C | ⚠️ | #130; already principal-aware. F only — conformance explicitly excludes `GET /v1/ingest/{job_id}`: *"a real assertion here still needs a two-tenant fixture this single-tenant probe harness doesn't have"* (`test_authz.py`). **Still blocked after #405**: P2 is a second *principal*, not a second *tenant*. Tracked under #100 |
 | A5 | An API-key admin cannot perform a gowe ingest (needs a bearer) | F | ❌ | surfaced by #415; undocumented |
 
 ## B. Collection lifecycle
@@ -109,7 +118,7 @@ several rows below are ⚠️ rather than ✅.
 | B4 | Create at the tenant's active bound → evict one or 507 (#379/#397) | F·L | ⚠️ | |
 | B5 | Re-create an id that was purged → clean, no stale state | C·L | ❌ | **the archive folder outlives the purge** |
 | B6 | `default` resolves as a pointer (#390), for a caller who **can** read the target (P1) | F·C | ✅ | `test_default_pointer.py`; conformance asserts `default ∈ collections[]` |
-| B6a | **…and for one who cannot (P2): listing and query agree on the target** | F·C·L | ⚠️ | #419 fixed (#421/#423), live-verified; F-layer only — P2 is inexpressible in conformance |
+| B6a | **…and for one who cannot (P2): listing and query agree on the target** | F·C·L | ✅ | #419 fixed (#421/#423), live-verified; C leg closed by #405 — `test_p2_advertised_default_is_readable_and_is_not_the_pointer` (the listing advertises an id P2 can use) and `test_p2_omitted_collection_is_not_the_419_404` (the implicit query agrees) |
 | B7 | Rename / transfer; shares follow correctly | F·C | ⚠️ | #281 open |
 
 ## C. Ingest — the sequence that broke
@@ -143,7 +152,7 @@ several rows below are ⚠️ rather than ✅.
 
 | # | Use case | Layer | State | Note |
 |---|---|---|---|---|
-| E1 | Evict → dormant; queries answer 503 + Retry-After | F·C | ⚠️ | #376; F only — conformance's only eviction call is `dry_run`, so no collection is ever dormant there |
+| E1 | Evict → dormant; queries answer 503 + Retry-After | F·C | ⚠️ | #376; F only — conformance's only eviction call is `dry_run`, so no collection is ever dormant there. **Unchanged by #405**: this needs a real eviction, not a second principal |
 | E2 | **Cold restore rebuilds a dormant collection; counts match** | L | ❌ | built, never run live |
 | E3 | Restore replays versions in order, tombstones included | F | ⚠️ | |
 | E4 | Evict → restore → query returns the same results as before | L | ❌ | the round trip |
@@ -154,12 +163,12 @@ several rows below are ⚠️ rather than ✅.
 
 | # | Use case | Layer | State | Note |
 |---|---|---|---|---|
-| F1 | Query a named collection I can read; results are mine only | C | ⚠️ | proven only as P1 — the conformance credential also owns the registry default |
+| F1 | Query a named collection I can read; results are mine only | C | ✅ | the refusal half is proven as P2 since #405 — `test_p2_query_naming_the_pointer_target_is_refused` (create as A, call as B → **404**, never 403: a 403 would be an existence oracle) and `test_p2_private_collection_is_invisible_to_another_non_admin` (the other direction). The *results* half stays an L-layer claim — the self-booted run has no corpus |
 | F2 | Fused query across N readable collections, capped (#395) | C | ⚠️ | #395; the readable-set filter is untested — the conformance caller can read everything |
 | F3 | A shared collection reports a correct count (#396) | C | ✅ | #274 |
 | F4 | Prev/next expansion returns neighbours, ranking unchanged (#385) | C | ✅ | |
 | F5 | Retrieval quality on a small library is not degraded | L | ⚠️ | #200 — gate inconclusive |
-| F6 | **Omitting `collection` serves the id `GET /v1/collections` advertised as `default`** | F·C·L | ⚠️ | #419 fixed (#423), live-verified against the affected user; `test_default_collection_resolution.py`. C leg needs the P2 persona |
+| F6 | **Omitting `collection` serves the id `GET /v1/collections` advertised as `default`** | F·C·L | ⚠️ | #419 fixed (#423), live-verified against the affected user; `test_default_collection_resolution.py`. C leg landed with #405 for `/v1/query`, `/v1/retrieve`, `/v1/chunks` and the listing — **but `GET /v1/documents` still resolves the GLOBAL registry pointer** (`routers/documents.py::list_documents`), so P2 cannot list documents at all and is told about an id it was never shown. #450, pinned as a `strict` xfail in `test_persona_p2.py::test_p2_can_list_documents`; `api/default_collection.py` already names documents.py as an unfixed drift site |
 | F7 | **The UI's collection chip names the collection the request actually targets** | F | ✅ | #420 fixed (#424) — `collectionTarget.ts`, one function feeds both label and request body |
 
 ## G. Deletion

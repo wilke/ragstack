@@ -38,6 +38,8 @@ from typing import Any, AsyncGenerator
 import httpx
 import jsonschema
 import pytest
+
+from conftest import skip_no_credential
 import pytest_asyncio
 
 pytestmark = pytest.mark.asyncio
@@ -55,7 +57,7 @@ def _python_only(impl: str) -> None:
 def admin_headers() -> dict[str, str]:
     key = os.environ.get("RAGSTACK_API_KEY_ADMIN") or None
     if not key:
-        pytest.skip("needs an admin key (RAGSTACK_API_KEY_ADMIN)")
+        skip_no_credential("needs an admin key (RAGSTACK_API_KEY_ADMIN)")
     return {"X-API-Key": key}
 
 
@@ -158,15 +160,18 @@ async def test_non_admin_is_forbidden(client: httpx.AsyncClient) -> None:
     than a user needs to know."""
     key = os.environ.get("RAGSTACK_API_KEY_NONADMIN") or None
     if not key:
-        pytest.skip("needs a non-admin key (RAGSTACK_API_KEY_NONADMIN)")
+        skip_no_credential("needs a non-admin key (RAGSTACK_API_KEY_NONADMIN)")
     headers = {"X-API-Key": key}
     assert (await client.get(URL, headers=headers)).status_code == 403
     assert (await client.put(URL, json={"level": "DEBUG"}, headers=headers)).status_code == 403
     assert (await client.delete(URL, headers=headers)).status_code == 403
 
 
-async def test_unauthenticated_is_rejected(client: httpx.AsyncClient) -> None:
-    resp = await client.get(URL)
+async def test_unauthenticated_is_rejected(anon_client: httpx.AsyncClient) -> None:
+    """``anon_client``, not ``client``: since #405 the shared client carries
+    ``$RAGSTACK_API_KEY``, and httpx merges its headers into every request — so
+    this assertion would be sent authenticated."""
+    resp = await anon_client.get(URL)
     assert resp.status_code in (401, 403), resp.status_code
 
 

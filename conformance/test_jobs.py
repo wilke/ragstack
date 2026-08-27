@@ -10,6 +10,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -28,7 +30,9 @@ def _validate(data, schemas: dict[str, dict]) -> None:
 async def test_jobs_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
     resp = await client.get("/v1/jobs")
     if resp.status_code in (401, 403):
-        pytest.skip("caller lacks admin access to /v1/jobs")
+        skip_no_credential(
+            "the configured RAGSTACK_API_KEY lacks admin access to /v1/jobs"
+        )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, schemas)
@@ -42,5 +46,7 @@ async def test_jobs_limit_bounds(client: httpx.AsyncClient) -> None:
     """`limit` is validated (1..100) — an out-of-range value is a 422."""
     resp = await client.get("/v1/jobs", params={"limit": 0})
     if resp.status_code in (401, 403):
-        pytest.skip("caller lacks admin access to /v1/jobs")
+        skip_no_credential(
+            "the configured RAGSTACK_API_KEY lacks admin access to /v1/jobs"
+        )
     assert resp.status_code == 422, resp.text

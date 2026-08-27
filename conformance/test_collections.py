@@ -13,6 +13,8 @@ import httpx
 import jsonschema
 import pytest
 
+from conftest import skip_no_credential
+
 pytestmark = pytest.mark.asyncio
 
 
@@ -118,7 +120,11 @@ async def test_create_collection_python(
         pytest.skip("create/list/delete round-trip is python-authoritative in phase 3")
     mid = "conf-emb-create"
     if await _register_embedding(client, mid) in (401, 403):
-        pytest.skip("caller lacks admin access to register a model / create a collection")
+        skip_no_credential(
+            "the configured RAGSTACK_API_KEY lacks admin access to register a model "
+            "/ create a collection (A3 asserts the refusal itself — see "
+            "test_create_gate.py)"
+        )
 
     created = await client.post(
         "/v1/collections",
