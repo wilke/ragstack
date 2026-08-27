@@ -78,10 +78,67 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    // The server's correlation id for the failed request (#427). Read from the
+    // `X-Request-Id` response header, with the error body's `request_id` as a
+    // fallback. Shown to the user as "Reference: <id>" so a bug report — or a
+    // screenshot — is one `grep rid=<id>` away from the server's own log lines.
+    public requestId?: string,
+    // The machine-readable failure class on a store-unavailable 503:
+    // "timeout" | "unreachable" | "error" (contracts/schemas/error.json). It is
+    // the ONE thing that distinguishes "the search was too slow, a retry hits a
+    // warm read" from "the backend is not answering, a retry will not help" —
+    // which read identically to a user before this. Deliberately typed `string`
+    // rather than a union: an unrecognised value from a newer server must
+    // degrade to the conservative message, not fail to type-check.
+    public reason?: string,
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * The one place a failed `Response` becomes an `ApiError`. Five call sites
+ * duplicated this and all five discarded the `Response` — so neither the
+ * `X-Request-Id` header nor the body's `reason` reached the user, and a store
+ * timeout and a dead backend produced the same sentence (#427).
+ *
+ * `message` stays EXACTLY what it was: the raw body text, or `statusText` when
+ * the body cannot be read. `lib/auth.ts` renders sign-in sentences from it via
+ * `apiFailure`, and `ErrorBanner` deliberately never shows it. The JSON parse
+ * below is additive — it only ever populates `reason` and the `requestId`
+ * fallback.
+ *
+ * NOTHING here may throw. This runs on the failure path, where a non-JSON body
+ * (an nginx 502 page, a truncated response) is normal; a parse error escaping
+ * would replace a useful `ApiError` with a `SyntaxError` and lose the status.
+ * Hence `catch {}` around both the read and the parse.
+ *
+ * NOT used by `getApiVersion`, whose `!res.ok` returns `null` rather than
+ * throwing — an absent version must read as "unknown", never as an error.
+ */
+async function throwForResponse(res: Response): Promise<never> {
+  const detail = await res.text().catch(() => res.statusText);
+
+  let bodyRequestId: string | undefined;
+  let reason: string | undefined;
+  try {
+    const parsed = JSON.parse(detail) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const obj = parsed as Record<string, unknown>;
+      if (typeof obj.request_id === "string") bodyRequestId = obj.request_id;
+      if (typeof obj.reason === "string") reason = obj.reason;
+    }
+  } catch {
+    // Not JSON. Expected — see above.
+  }
+
+  // Header first: it is present on every response including the ones with no
+  // body at all, and it is the value the server logged. The body field is the
+  // same id, carried redundantly for copy-paste, so it is a pure fallback.
+  const requestId = res.headers.get("x-request-id") || bodyRequestId || undefined;
+
+  throw new ApiError(res.status, detail || res.statusText, requestId, reason);
 }
 
 /**
@@ -133,10 +190,7 @@ async function post<T>(path: string, body: unknown, apiKey?: CredentialInput): P
     headers,
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, detail || res.statusText);
-  }
+  if (!res.ok) await throwForResponse(res);
   return (await res.json()) as T;
 }
 
@@ -186,10 +240,7 @@ export async function uploadPdfs(
     headers,
     body: form,
   });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, detail || res.statusText);
-  }
+  if (!res.ok) await throwForResponse(res);
   return (await res.json()) as IngestResponse;
 }
 
@@ -203,10 +254,7 @@ export function getIngestJob(jobId: string, apiKey?: CredentialInput): Promise<I
 async function get<T>(path: string, apiKey?: CredentialInput): Promise<T> {
   const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { headers });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, detail || res.statusText);
-  }
+  if (!res.ok) await throwForResponse(res);
   return (await res.json()) as T;
 }
 
@@ -215,10 +263,7 @@ async function get<T>(path: string, apiKey?: CredentialInput): Promise<T> {
 async function del(path: string, apiKey?: CredentialInput): Promise<void> {
   const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { method: "DELETE", headers });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, detail || res.statusText);
-  }
+  if (!res.ok) await throwForResponse(res);
 }
 
 // DELETE that answers 200 + a body (the collection purge report). Same error
@@ -226,10 +271,7 @@ async function del(path: string, apiKey?: CredentialInput): Promise<void> {
 async function delJson<T>(path: string, apiKey?: CredentialInput): Promise<T> {
   const headers = authHeaders(apiKey);
   const res = await fetch(apiUrl(path), { method: "DELETE", headers });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, detail || res.statusText);
-  }
+  if (!res.ok) await throwForResponse(res);
   return (await res.json()) as T;
 }
 
