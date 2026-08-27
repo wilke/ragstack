@@ -50,6 +50,33 @@
 > can never delegate more than they hold … MUST be enforced when a later unit exposes
 > delegated granting" — remains correctly unfulfilled and moves past the MVP.
 
+> **Implementation notes (added 2026-08-27 as ownership transfer shipped as its own
+> endpoint):**
+> Decision 5 says an owner change is *"an ordinary revoke+grant pair in the same audited
+> table"*. That stayed true of the **data** and stopped being true of the **API**.
+> `POST /v1/collections/{id}/shares` now **rejects `permission: owner` with a 400** naming
+> `POST /v1/collections/{id}/owner`, which is the only route by which ownership moves.
+> Three reasons, each a consequence of this ADR's own decisions rather than a departure
+> from them. (1) *Atomicity.* Decision 5's partial unique index means there is exactly one
+> active owner row, so a handover is a revoke **and** a grant that must both land or
+> neither; it runs inside one transaction in `AclStore.transfer_owner` on every backend.
+> Exposed as a pair of share calls it would be two requests, and a caller who made the
+> first and not the second would leave a collection with no owner. (2) *It is not a
+> grant-shaped thing.* Granting is additive; a transfer is a state transition with audit
+> side effects, and replaying it is a 409, not a no-op — which is also why the endpoint is
+> POST rather than PATCH (there is no `GET …/owner` document to merge into). (3) *The
+> outgoing owner loses access*, with no consolation `read` grant minted: that would be a
+> second write outside the transaction, and every permission here comes from an explicit
+> row with a real `granted_by` — a row the system invented on the actor's behalf would be
+> a grant nobody asked for, still active, that the new owner must discover and revoke.
+> Decision 6's soft revoke keeps the handover in the audit trail either way.
+>
+> Ownership *acquisition* is also where ADR-0003's per-owner quota is enforced alongside
+> creation, so a transfer can neither be used to evade the quota nor to weaponise it by
+> filling a colleague's. Nothing about the **schema** changed: `permission = 'owner'`, one
+> active row, `shares_active_owner`. What changed is that the shares API is now read-only
+> in the strict sense — it grants `read` and nothing else (any other permission is a 422).
+
 ## Context
 
 ADR-0003 put access on the collection — an owner, a visibility, a share list — but that

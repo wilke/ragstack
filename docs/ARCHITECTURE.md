@@ -9,7 +9,7 @@ where the extension points are.
 > the design does. For a specific deployment, see [DEPLOYMENT.md](DEPLOYMENT.md) and that
 > environment's own operations page.
 >
-> Reflects `main` as of 2026-08-04. The **Python** implementation is the one in service;
+> Reflects `main` as of 2026-08-27. The **Python** implementation is the one in service;
 > the **Go** implementation is a Phase-1 scaffold whose handlers largely return stubs.
 > Where they differ, this document describes Python and flags Go explicitly.
 
@@ -31,13 +31,15 @@ contract.
 | **Cross-encoder reranking** | Re-score the fused pool with a cross-encoder, cut to `top_k`; boilerplate suppression and per-document diversity caps | ✅ Python |
 | **Grounded answer generation** | Synthesise a cited answer from retrieved sources via an OpenAI-compatible LLM | ✅ Python |
 | **Collections** | Named, registered bindings of `(model, dim, chunker)` → physical stores, with an immutable build spec and provenance — see [§3](#3-the-collection-model) | ✅ Python |
+| **Collection lifecycle** | Archive → evict → restore: a collection's stores can be released and rebuilt from its Workspace archive, so `max_collections` bounds *physically present* stores rather than registered rows — see [§3.1](#31-lifecycle-a-collection-you-created-may-not-be-physically-present) | ✅ Python |
 | **Knowledge graph** | LLM triple extraction → Neo4j; entity/neighbour queries scoped by tenant *and* collection | ✅ Python (opt-in) |
 | **Multi-tenancy** | Access is asserted at the collection (`resolve_access`, [ADR-0003](adr/0003-access-control.md)); the per-chunk `tenant_id`/owner stamp is writer provenance, kept enforced as defence in depth (reads scope to `own + public`, resolved server-side); tenant-as-instance is ADR-0005 | ✅ Python |
 | **Identity & RBAC** | API keys, or verified bearer credentials (BV-BRC, OIDC) behind a flag; two roles — `admin`, `user` (`researcher` accepted as a deprecated alias; see [ADR-0003](adr/0003-access-control.md)) | ✅ Python |
-| **Runtime model registry** | Register models and hot-swap task assignments (embedding / LLM / reranker) without a restart; per-request overrides | ✅ Python |
+| **Runtime model registry** | Register models for any task (embedding / tokenizer / LLM / reranker) and hot-swap the **assignable** ones — `HOT_SWAPPABLE = {llm, reranker}` — without a restart; per-request overrides. Embedding and tokenizer are build-time: changing one means a new collection ([model-registry.md](model-registry.md) §1) | ✅ Python |
 | **Resumable bulk ingest** | Checkpointed, crash-safe, out-of-order-aware ingestion that scales 1 → 500k docs and resumes without re-embedding completed work | ✅ Python |
 | **Workflow-engine ingest** | Submit sharded ingest to a CWL workflow engine (GoWe) instead of running in-process — see [ADR-0001](adr/0001-execution-topology.md) | ✅ Python |
 | **Scale & resilience** | Multi-endpoint embedder pool (least-loaded routing, failover, health re-probe), upsert backpressure, per-tenant concurrency quota, poison-input isolation, graceful degradation | ✅ Python |
+| **Observability** | `X-Request-Id` on every response, one summary line per request with per-stage timings, periodic latency rollups, runtime log-level control (#427) — see [§4.7](#47-cross-cutting) | ✅ Python |
 | **MCP server** | Exposes retrieval to MCP clients (Claude Desktop / Code) | ✅ Python · ✅ Go |
 | **Dashboard / Explorer** | React + Vite SPA — query console, collection admin, ops panels | 🚧 MVP |
 
@@ -110,6 +112,39 @@ unregisters the binding; `?purge=true` also destroys the data.
 > Rationale, the failure modes that forced it, and the alternatives weighed:
 > **[ADR-0002 — Collection identity](adr/0002-collection-identity.md)**.
 
+### 3.1 Lifecycle: a collection you created may not be physically present
+
+A registry entry is durable; its **stores are not**. Since #353 every row carries
+a lifecycle state (`collection_store.py`), and a reader has to know it, because
+the same id answers differently depending on which one it is in:
+
+| State | What exists | What a request gets |
+|---|---|---|
+| `active` | Qdrant collection + ES index | normal service |
+| `archiving` | both, while an archive version is being written | normal service |
+| `dormant` | only the Workspace archive | **503 + `Retry-After`**; the first authenticated access *triggers a restore* |
+| `restoring` | the loader is rebuilding the stores | **503 + `Retry-After`** |
+| `lost` | archive missing or failed verification | **409** until the owner repairs it and restores explicitly |
+
+`PHYSICAL = {active, archiving, restoring}` is the set that **holds a slot**, and
+it — not the number of registered rows — is what `max_collections` bounds. A
+`dormant` or `lost` row is still a collection (it is listed, owned, shared and
+counted against the per-owner quota) but costs nothing physical.
+
+**At the bound, a create evicts rather than refuses.** `ops/evict.py` picks the
+least-recently-accessed `active` collection whose archive is current and swaps it
+to `dormant`, then drops its two stores; the create then takes the freed slot.
+Only when *nothing* is evictable is the create **507** (naming the per-reason
+counts); a *restore* competing for the last slot answers **503 +
+`Retry-After`** and leaves its row `dormant`. `POST /v1/admin/collections/evict`
+runs the same policy by hand. Details, the never-a-victim list, and the settings:
+[ingest-paths.md § Eviction](ingest-paths.md#eviction-the-active-bound-359) and
+[ADR-0005 decision 5](adr/0005-tenant-anatomy.md).
+
+The practical consequence for anything built on this API: **presence is not
+implied by existence**. A client that treats 503 + `Retry-After` on a collection
+it created yesterday as an outage is wrong; that is the restore path working.
+
 ---
 
 ## 4. System components
@@ -125,8 +160,14 @@ store-only decision function, the future ACL-sidecar API), `ragstack/acl_store.p
 per-tenant shares/ownership store beside the user store), and `api/access.py` (the HTTP
 mapping — 404 for read-deny, 403 for write-deny-when-readable, 503 fail-closed, plus
 `filter_readable` for listings and the startup ownership backfill).
-Routers: `query`, `documents`, `collections`, `graph`, `stats`, `jobs`, `models`,
-`models_registry`, `admin`, `health`, `health_deep`.
+Routers: `query`, `documents`, `collections`, `groups`, `graph`, `stats`, `jobs`,
+`models`, `models_registry`, `service_accounts`, `admin_users`,
+`admin_collections`, `admin_log_level`, `admin`, `health`, `health_deep`.
+The five mounted under `/v1/admin` (`models_registry`, `service_accounts`,
+`admin_users`, `admin_collections`, `admin_log_level`) plus `admin`, `models`,
+`jobs` and `health_deep` carry `Depends(require_role(ROLE_ADMIN))` **at include
+time**, so every route under them is admin-only by construction rather than by
+a per-handler check that a new route could forget.
 
 ### 4.2 Identity (`python/ragstack/identity/`)
 A pluggable `IdentityProvider` that verifies a bearer credential and returns a principal.
@@ -195,8 +236,14 @@ ownership model will sit on.
   OpenAI-compatible server (vLLM, hosted) are one flag apart.
 - **embed_pool.py** — `PooledEmbedder`: least-loaded routing across endpoints, failover,
   lazy health re-probe. Adding embedding capacity is adding endpoints to the pool.
-- **api/model_registry.py** — register models at runtime; assign them to tasks
-  (embedding / llm / reranker) and hot-swap without a restart; per-request overrides.
+- **api/model_registry.py** — register models at runtime for any of
+  `TASKS = {embedding, tokenizer, llm, reranker}`, but only
+  `HOT_SWAPPABLE = {llm, reranker}` may be *assigned* live: `PATCH
+  /v1/admin/config/assignments` forbids the other two (`AssignmentsPatch` is
+  `extra="forbid"`, so naming `embedding` is a 422; `resolve_assignment` raises
+  otherwise). Embedding and tokenizer are baked into a collection at ingest —
+  changing one is a new collection and a re-ingest, never a swap. Per-request
+  overrides exist for the hot-swappable pair only.
   Design and phased plan: [model-registry.md](model-registry.md).
 - **llm.py** — `OpenAILLM` + `RagGenerator` (cited answer synthesis).
 - **graph/extractor.py** — `LLMKGExtractor` (strict-JSON triple extraction, per-chunk degrade).
@@ -208,6 +255,25 @@ ownership model will sit on.
 - **jobstore.py** — `InMemory` / `Sqlite` / `Postgres` job stores for async + resumable ingest.
 - **provenance.py** — build manifests recording how a collection was produced.
 - **sidecar_http.py** — shared `SidecarClient` JSON-over-HTTP plumbing.
+- **observability/** (#427) — the request-correlation and timing layer.
+  `middleware.py` stamps a server-generated **`X-Request-Id`** (16 lowercase hex)
+  on **every** response, success and error alike, and emits one `request
+  complete` summary line per request carrying `status`, `outcome`, `wall_ms`,
+  `self_ms`, in-flight count and the collection(s) touched. The id is never
+  taken from the request — an inbound `X-Request-ID` is *recorded* beside it as
+  `upstream_rid` when it matches `^[A-Za-z0-9._-]{1,64}$` and dropped otherwise,
+  so it stays unique and un-forgeable and a newline cannot forge a log line.
+  `stages.py` gives the `with stage("vector", coll):` timer, which records
+  whether or not the body raised — the incident it exists for is a stage that
+  raised after 30 s. `histogram.py` folds those into a periodic `latency
+  rollup` line per `(route, collection)`. `context.py` puts `rid`/`tenant`/
+  `role`/`route` on every record in the process; `log_control.py` backs
+  `GET/PUT/DELETE /v1/admin/log-level`, which changes this process's level
+  without a restart (process-local, reset on restart, every change audited at
+  WARNING with the principal).
+  **Per-stage timings are in the LOGS ONLY** — no response body carries them.
+  Debugging a user-reported 5xx therefore starts from the `Reference:` id on
+  their screen: see [docs/runbooks/tracing-a-503.md](runbooks/tracing-a-503.md).
 - **mcp/** — an MCP server exposing retrieval to MCP clients. Go ships an equivalent
   under `go/cmd/mcp/` — the one place the Go side is not a stub.
 
@@ -355,19 +421,68 @@ The authoritative definition is `contracts/openapi.yaml`; per-field reference is
 
 The **Auth** column reads: `principal` = any authenticated caller; `read-owner` =
 the caller must additionally be able to *read* the resolved collection (owner, an
-active read grant, or `public`) — a listing endpoint filters to what it may read;
-`owner-or-admin` = it must *own* the collection (or be admin) — ingest into a
-named non-default collection, and collection delete. Document-level ops on the
-**default** collection (ingest without a `collection`, `DELETE /v1/documents`)
-are `read-owner`: it is the shared pre-ownership surface where the per-chunk
-tenant stamp isolates writers. Every collection decision runs through the one
-seam (`ragstack.authz.resolve_access`, reached via `ragstack.api.access`);
-`admin` bypasses it as a named branch logged on every bypass (ADR-0003 §5). A
-read denial is a 404 (existence not leaked); a write/owner denial is a 403 only
-when the caller can read the collection, and the same 404 otherwise (no
-existence oracle via the write endpoints); an ACL-store outage is a 503 (fail
-closed). Underneath, the per-chunk `tenant_id` filter and the
-`TENANT_COLLECTIONS` allowlist stay in force — defence in depth (ADR-0003 §3).
+active read grant, membership of a group holding one, or `public`) — a listing
+endpoint filters to what it may read; `owner-or-admin` = it must *own* the
+collection, or be admin; `admin` = the admin role, enforced at router include
+time for everything under `/v1/admin`. Two document routes are marked
+**`read-if-shared · write`** — their required action depends on a flag on the
+target entry, which is the next paragraph.
+
+Every collection decision runs through the one seam
+(`ragstack.authz.resolve_access`, reached via `ragstack.api.access`); `admin`
+bypasses it as a named branch logged on every bypass (ADR-0003 §5). A read
+denial is a 404 (existence not leaked); a write/owner denial is a 403 only when
+the caller can read the collection, and the same 404 otherwise (no existence
+oracle via the write endpoints); an ACL-store outage is a 503 (fail closed).
+Underneath, the per-chunk `tenant_id` filter and the `TENANT_COLLECTIONS`
+allowlist stay in force — defence in depth (ADR-0003 §3).
+
+#### The shared-surface write exemption is keyed on a flag, never on `default`
+
+Ingest (`POST /v1/ingest`, `/v1/ingest/upload`) and `DELETE
+/v1/documents/{doc_id}` compute their required action, on **every** branch,
+as literally
+
+```python
+"read" if target.is_shared_surface else "write"
+```
+
+`is_shared_surface` is a field of the **registry entry**, set `True` at exactly
+one construction site: the settings-derived entry `api/deps.py` builds for the
+legacy multi-tenant corpus. Every spec-derived entry — that is, every collection
+anyone has ever created through `POST /v1/collections` or the bulk path — is
+constructed `is_shared_surface=False`, so a user-created collection can never
+acquire the exemption. On that one surface the per-chunk `tenant_id` stamp, not
+collection ownership, is what isolates writers: each caller writes into their own
+stripe, and a delete can only ever remove their own chunks. Demanding ownership
+there would lock every non-admin out of the flagship corpus.
+
+**It is deliberately not keyed on "is this what `default` points at".** `default`
+is a *pointer*, never an entry (ADR-0002 decision 5): repointing it moves no
+data, no ACL row and no exemption, and since
+[#276](https://github.com/wilke/ragstack/issues/276) it may name an ordinary,
+owned collection. The code states the consequence plainly — pointing `default` at
+an owned collection *"would let any reader of it ingest into somebody else's
+corpus just by omitting `collection`"*, i.e. the pointer-keyed formulation is a
+**privilege escalation**, not a wording variant. Read that as the reason the flag
+exists, not as a footnote to it.
+
+Two further properties of the same design:
+
+- **The exemption is applied in the HTTP layer** — `api/access.py::filter_writable`
+  and the routers' action choice — and explicitly *not* in `ragstack/authz.py`,
+  which stays the sterile, store-only decision function (the future ACL-sidecar
+  API). A legacy carve-out belongs with the surface it is legacy *for*, not in the
+  seam a second consumer will code against.
+- **An omitted `collection` is resolved caller-relative** (#419/#422). The implicit
+  ingest picker runs over the caller's *writable* entries
+  (`filter_writable` ∘ visible = allowlist ∩ readable), so an upload is never
+  routed into something the caller can only read: nothing writable is a **403**
+  that names no id, nothing readable at all is a **404** that names no id. An
+  explicitly named id never enters the picker, so a request is never silently
+  rerouted away from the collection the caller chose. `enforce_access` still runs
+  after both branches — it is what applies the [lifecycle gate](#31-lifecycle-a-collection-you-created-may-not-be-physically-present),
+  which no picker filter runs.
 
 | Method | Path | Purpose | Auth | Python | Go |
 |---|---|---|---|---|---|
@@ -378,12 +493,21 @@ closed). Underneath, the per-chunk `tenant_id` filter and the
 | GET | `/v1/collections` | List collections + counts + provenance (owner-filtered) | principal · read-owner | ✅ | ⚠️ stub |
 | POST | `/v1/collections` | Create a collection (private to creator; supplying `embedding`/`chunk` is admin-only) | principal | ✅ | ⚠️ stub |
 | DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | owner-or-admin | ✅ | ⚠️ stub |
-| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | read-owner (default) · owner-or-admin (named) | ✅ | ⚠️ stub |
-| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | read-owner (default) · owner-or-admin (named) | ✅ | ⚠️ stub |
+| POST | `/v1/collections/{id}/restore` | Replay the Workspace archive for a `dormant`/`lost` collection | owner-or-admin | ✅ | ❌ |
+| POST | `/v1/collections/{id}/graph` | Submit LLM triple extraction over one archived version | owner-or-admin | ✅ | ❌ |
+| GET,POST | `/v1/collections/{id}/shares` | List / grant shares (`read` only; `owner` is refused — see below) | owner-or-admin | ✅ | ❌ |
+| DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (soft — `revoked_by`/`revoked_at`) | owner-or-admin | ✅ | ❌ |
+| POST | `/v1/collections/{id}/owner` | Transfer ownership (atomic revoke+grant pair) | owner-or-admin | ✅ | ❌ |
+| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | read-if-shared · write | ✅ | ⚠️ stub |
+| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | read-if-shared · write | ✅ | ⚠️ stub |
 | GET | `/v1/ingest/{job_id}` | Poll job status + per-item progress | principal | ✅ | ⚠️ stub |
 | GET | `/v1/jobs` | List ingest jobs | admin | ✅ | ❌ |
 | GET | `/v1/documents` | List indexed documents | principal · read-owner | ✅ | ⚠️ stub |
-| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs (own tenant only) | principal · read-owner | ✅ | ⚠️ stub |
+| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs (own tenant only) | read-if-shared · write | ✅ | ⚠️ stub |
+| GET,POST | `/v1/groups` | List / create RAGStack-native groups (share targets) | principal · member-or-owner | ✅ | ❌ |
+| GET,DELETE | `/v1/groups/{id}` | View / soft-delete a group | view: member-or-owner · delete: owner-or-admin | ✅ | ❌ |
+| POST | `/v1/groups/{id}/members` | Add a member | owner-or-admin | ✅ | ❌ |
+| DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member | owner-or-admin | ✅ | ❌ |
 | GET | `/v1/graph/entities` | List graph entities (own + public) | principal | ✅ | ⚠️ stub |
 | GET | `/v1/graph/neighbors/{entity}` | Neighbourhood triples (depth 1–5) | principal | ✅ | ⚠️ stub |
 | GET | `/v1/graph/stats` | Entity / relationship counts | principal | ✅ | ❌ |
@@ -394,7 +518,13 @@ closed). Underneath, the per-chunk `tenant_id` filter and the
 | GET | `/v1/models/available` | Models assignable per-request | principal | ✅ | ⚠️ stub |
 | GET,POST | `/v1/admin/models/registry` | List / register models | admin | ✅ | ⚠️ GET stub |
 | PUT,DELETE | `/v1/admin/models/registry/{id}` | Update / remove a model | admin | ✅ | ❌ |
-| PATCH | `/v1/admin/config/assignments` | Hot-swap llm / reranker assignment | admin | ✅ | ❌ |
+| PATCH | `/v1/admin/config/assignments` | Hot-swap llm / reranker assignment (only these two) | admin | ✅ | ❌ |
+| GET,POST | `/v1/admin/service-accounts` | List / register machine identities (**mints no credential**) | admin | ✅ | ❌ |
+| POST | `/v1/admin/service-accounts/{subject}/disable` | Soft revoke (fails **open** on a store outage) | admin | ✅ | ❌ |
+| POST | `/v1/admin/service-accounts/{subject}/enable` | Reverse a disable (never erases the audit pair) | admin | ✅ | ❌ |
+| PATCH | `/v1/admin/users/{subject}/role` | Grant/revoke `admin` on a bearer identity | admin | ✅ | ❌ |
+| POST | `/v1/admin/collections/evict` | Run the LRU eviction policy by hand (`need`, `dry_run`) | admin | ✅ | ❌ |
+| GET,PUT,DELETE | `/v1/admin/log-level` | Read / set / reset this process's log level, no restart (#427) | admin | ✅ | ❌ |
 | GET | `/v1/config` | Allowlisted config, secrets redacted | admin | ✅ | ❌ |
 | GET | `/v1/health/deep` | Deep dependency probe + latencies | admin | ✅ | ❌ |
 
@@ -402,8 +532,24 @@ closed). Underneath, the per-chunk `tenant_id` filter and the
 deprecated alias for `user`, normalized at startup with a warning; `engineer`/`manager` were
 removed ([ADR-0003](adr/0003-access-control.md)) and are rejected at startup.
 
+**Sharing vs. ownership.** `POST /v1/collections/{id}/shares` is `read`-only in
+v1: `permission: owner` is a **400** naming the transfer endpoint (there is
+exactly one active owner row per collection, so a handover is a revoke+grant
+*pair* that must be atomic), any other permission is a 422, and `grant_option` is
+not writable. Ownership therefore moves through `POST /v1/collections/{id}/owner`
+alone. Creating a collection can also be closed off entirely for non-admins
+(`ALLOW_USER_COLLECTION_CREATE=false`), and each principal may own at most
+`MAX_COLLECTIONS_PER_OWNER` (default 5, admins exempt) — see
+[ADR-0003](adr/0003-access-control.md) and [ADR-0004](adr/0004-users-groups-shares.md).
+
+**Every response carries `X-Request-Id`** — success and error alike, always
+server-generated (§4.7). It is the `Reference:` id a user sees on a failure and
+the one field that turns a screenshot into `grep rid=<id>`.
+
 > The `stream` field exists on the query request model but there is **no** separate
 > streaming endpoint yet. Go request models still lack `rerank` / `rerank_candidates` (#27).
+> The Go scaffold implements none of the sharing, groups, identity-admin or
+> lifecycle routes above.
 
 ---
 

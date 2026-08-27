@@ -1,7 +1,8 @@
 # RAGStack — Glossary
 
 Four words carry most of the weight in this system, and three of them are
-overloaded by something else in the stack. Every access-control bug found in
+overloaded by something else in the stack — plus a fifth, **"default"**, which
+this codebase overloads against *itself*. Every access-control bug found in
 August 2026 lived exactly where these definitions blur, so they are written down
 here rather than left to context.
 
@@ -40,8 +41,20 @@ rows that describe and govern it:
 - its **ACL rows** (`shares` table): one active owner, plus grants
 
 A collection is what a request names in the `collection` field, what
-`GET /v1/collections` lists, what ownership and shares attach to, and what
-`MAX_COLLECTIONS` counts. **It holds no data.**
+`GET /v1/collections` lists, and what ownership and shares attach to. **It holds
+no data.**
+
+It also has a **lifecycle state** — `active`, `archiving`, `dormant`, `restoring`,
+`lost` — and this is where `MAX_COLLECTIONS` gets misread. The cap counts the
+rows that are **physically present**: `PHYSICAL = {active, archiving, restoring}`,
+the states in which a Qdrant collection and an ES index actually exist
+(`collection_store.py`). A `dormant` or `lost` row is still a collection in every
+other sense — listed, owned, shareable, counted against the per-owner quota — but
+it holds no store and **is not counted**. So "I have 100 collections and the cap
+is 100" does not by itself mean the next create is refused; and at the bound a
+create does not simply refuse, it **evicts** the least-recently-accessed active
+collection whose archive is current and takes the freed slot
+([ADR-0005](adr/0005-tenant-anatomy.md) decision 5).
 
 ## Store
 
@@ -123,7 +136,7 @@ strand the other side.
 
 ---
 
-## Two overloaded words to watch
+## Three overloaded words to watch
 
 **"Collection"** — Qdrant calls *its* physical containers "collections" too. In
 this codebase, an unqualified "collection" means the RAGStack registry entry; the
@@ -133,13 +146,49 @@ docs say *two ids over one collection*, they mean one **Qdrant** collection.
 **"Index"** — Elasticsearch's unit, and also the verb for writing to it. The ES
 index is one leg of a store, never the store itself.
 
+**"Default"** — two different things, and conflating them *is* bug
+[#419](https://github.com/wilke/ragstack/issues/419):
+
+| | **The registry pointer** | **The caller-effective target** |
+|---|---|---|
+| what it is | one deployment-wide setting (`DEFAULT_COLLECTION_ID`, else the settings-derived entry) | the id *this caller's* request lands in when it omits `collection` |
+| on the wire | `CollectionInfo.is_default` (per item) | `CollectionsResponse.default` (top level) |
+| computed from | config alone | allowlist ∩ readable, then: the pointer **if this caller can see it**, else the first visible entry in listing (insertion) order — and for ingest, narrowed again to what they may *write* |
+| same for everyone? | yes | no |
+
+The pointer is a **pointer, never an entry** (ADR-0002 decision 5): repointing it
+moves no data, no ACL row and no exemption. The bug it caused: `/v1/query`,
+`/v1/retrieve` and `/v1/chunks` resolved the *pointer* and then 404'd on the
+ownership seam, so a caller whose readable set excluded the tenant default was
+told, by id, that a collection they had never been shown did not exist. One
+module — `api/default_collection.py` — is now the single answer to "which
+collection does an omitted `collection` mean?", so the listing and the query
+target cannot disagree again.
+
+The distinction is also load-bearing for **authorization**, and in a way that is
+easy to get backwards. The legacy shared surface's write exemption (a `read`
+grant suffices to ingest there, because per-chunk `tenant_id` stamping is what
+isolates writers) keys on the entry's `is_shared_surface` **flag** — never on
+what `default` points at. Keyed on the pointer, aiming `default` at an owned
+collection would let any *reader* of it ingest into somebody else's corpus just
+by omitting `collection`.
+
 ---
 
 ## Known gap in this model
 
 `DELETE /v1/collections/{id}?purge=true` removes the **registry entry, vectors,
-text index and manifest** — but **not Neo4j triples**, which have no
-per-collection deletion (`stores/neo4j.py` offers `delete_by_doc` only). Because
-store names are deterministic, a later collection built from the same spec
-inherits the previous one's graph edges. Graph is `tbd` in the store definition
-above for exactly this reason.
+text index, manifest and Neo4j triples**. The graph leg is
+`GraphStore.delete_collection(tenant_id=None, collection)` — collection-wide, like
+the two physical drops, deliberately *not* tenant-scoped, so a co-writer's edges
+cannot be inherited by the next owner of a deterministic store name (#295/#380).
+
+The residual gap is **eviction**, not purge. `api/eviction.py` passes
+`graph_store=None`, so evicting a collection to `dormant` leaves its triples in
+place. That is a rule, not an oversight: eviction may only destroy what exists
+somewhere else, and the archive has no triples leg for a version until the
+extract-graph step has run over it (`archive.py` writes `"graph": false`, and
+replay has no extractor), so a dropped graph could not be rebuilt. The plumbing
+(`ops/evict.py`'s `graph_store=` argument) is in place and unit-tested for when
+per-version triples archiving lands (#350). Until then an evicted collection's
+triples remain, and every read of them stays collection-scoped.

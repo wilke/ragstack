@@ -61,12 +61,72 @@ store call. A collection carries an owner, a visibility (`public` | `private`), 
 list. This aligns with Qdrant's own RBAC direction and removes security from the filter
 path entirely.
 
+**2b. The one check reads two inputs, not one.** *(Amendment, 2026-08-27.)* Decision 2's
+"one check at collection resolution" survives, but two things it did not anticipate now sit
+on either side of it, and both are worth stating because each looks like a violation until
+you know why it is not.
+
+*The target of an omitted `collection` is caller-relative* (#419/#422/#447/#453). "Collection
+resolution" was implicitly a global act: one registry pointer, the same for everyone, resolved
+and then checked. It is not. `api/default_collection.py` is now the single answer to "which
+collection does an omitted `collection` mean?", and it answers **per caller**: visibility is
+allowlist ∩ readable, and the pick is the registry pointer *when this caller can see it*, else
+the first visible entry in listing (insertion) order. Ownership **intersects** confinement, it
+never replaces it, so this is a narrowing of decision 3's `TENANT_COLLECTIONS` and not a second
+authorization mechanism. It shipped because resolving the global pointer and *then* running the
+ownership seam produced a 404 naming an id the caller had never been shown — a conformance
+violation against the contract's own definition of the field, resolved on the contract's side.
+
+*The shared-surface write exemption is a carve-out, applied in the HTTP layer.* On the legacy
+multi-tenant surface, a `read` grant suffices to ingest and to `DELETE /v1/documents/{doc_id}`;
+the required action is literally `"read" if is_shared_surface else "write"`. There, per-chunk
+`tenant_id` stamping — the mechanism decision 1 *demoted to provenance* — is still what isolates
+writers: every caller writes into their own stripe and can delete only their own chunks, so
+demanding ownership would lock every non-admin out of the flagship corpus. This is the one place
+decision 1's demotion is not yet complete, and it is scoped to exactly one entry:
+`is_shared_surface` is set `True` at a single construction site (the settings-derived entry in
+`api/deps.py`), so no created collection can ever carry it.
+
+Two placement decisions go on the record with it. **The exemption keys on the entry flag, never
+on what `default` points at.** Since #276 the pointer may name an ordinary owned collection, and
+a pointer-keyed exemption would then let any *reader* of that collection ingest into it simply
+by omitting `collection` — a privilege escalation, not a wording variant. **And it lives in
+`api/access.py` + the routers, not in `authz.py`.** `resolve_access` stays the sterile,
+store-only decision function this ADR promised as the future ACL-sidecar API; a legacy
+compatibility carve-out belongs with the surface it is legacy for, where a second consumer
+coding against the seam will not silently inherit it.
+
 **3. A library is a collection.** One-to-one, no separate entity — already true in the code
 since #228, where a named collection *is* one Qdrant collection plus one ES index and
 "library" survives only as the `lib` marker in the derived store name. Users create
 collections directly; `collection_create_request` currently requires `embedding` and
 `chunk`, so a server-configured **default build spec** must supply them, with those fields
 admin-only. A `user` may create and share private collections and read public ones.
+
+*Amended (two limits on "a user may create"), 2026-08-27.* Creation is still open by default,
+but a deployment and a quota can each narrow it, and neither is expressible as an ACL check —
+creation is **object-less**, so there is nothing yet to check an ACL against. Hence both live
+in config rather than in the seam.
+
+- **`ALLOW_USER_COLLECTION_CREATE`** (default `true`, #287) is a deployment-wide capability
+  switch. `false` makes creation admin-only, closing the one write a non-owner could always
+  perform — the case that forced it is a read-only service account handed to an integration
+  partner, where every *other* write already 403s. It is checked first and unconditionally,
+  before the body is examined, so it closes the endpoint regardless of what was sent. A
+  `reader` **role** was rejected for this: it would invert the fail-closed floor `_bearer_role`
+  relies on. Per-person granularity is a future `creators` group (#245 already has what it
+  needs), to be added when that granularity is actually asked for.
+- **`MAX_COLLECTIONS_PER_OWNER`** (default 5, #290) bounds how many collections one principal
+  may **own** at once, counting active `owner` rows. Distinct from ADR-0005's
+  `max_collections`, which protects the physical stores and therefore binds admins too: this
+  one is an authorization-style limit, so **admins are exempt** (an explicit, logged branch).
+  It is enforced on **acquisition** — both create and `POST /v1/collections/{id}/owner` —
+  because creation-only would be trivially evadable (create at the limit, transfer one away,
+  create again) and weaponisable (transfer junk collections onto a colleague to fill their
+  quota). Over-quota is a 409 with a structured `{owned, limit}` detail, checked atomically
+  with the owner-row write. `0` disables it; the boot-time owner backfill never refuses on it,
+  it logs a WARNING instead — repairing existing state must not be blocked by a limit added
+  after that state existed.
 
 **4. Two roles: `admin` and `user`.** Drop `engineer` and `manager` — both inert. Rename
 `researcher` → `user` (coordinated: the API-key fallback in `security.py`

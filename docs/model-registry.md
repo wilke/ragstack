@@ -1,6 +1,6 @@
 # Model registry, task assignment & dynamic config
 
-**Status:** Phase 1 shipped ([PR #166](https://github.com/wilke/ragstack/pull/166), branch `feat/model-registry`). Phases 2–4 planned (see [Roadmap](#roadmap)).
+**Status:** Phases 1–3 shipped; Phase 4 (the config page) planned — see [Roadmap](#5-roadmap). Phase 1 was [PR #166](https://github.com/wilke/ragstack/pull/166), branch `feat/model-registry`.
 **Audience:** anyone reviewing or extending the dynamic-config work.
 
 Goal: **change model configuration on the fly** — register models and model URLs, assign them to tasks (embedding, chunking, LLM, reranker), and reconfigure a running server without a restart, surfaced through a config page for the API and workflows.
@@ -25,7 +25,7 @@ A subtlety: some *scalars* (`rrf_k`, `retrieval_candidate_multiplier`, graph par
 ## 2. How model selection works today (baseline)
 
 - **Query / retrieve** pick a model *indirectly* via the **`collection`** parameter. A collection *is* a bound `(embedding model + chunker + stores)` tuple, content-addressed with a provenance manifest. Retrieval must use the exact embedder the corpus was indexed with — so there is no direct "embedding model" query param, by design.
-- **Ingest over HTTP** (`POST /v1/ingest`) takes only `{source, metadata}` and uses the server's **statically-configured** pipeline. **No per-request model or chunker selection.** There is no standalone chunking endpoint.
+- **Ingest over HTTP** (`POST /v1/ingest`) took only `{source, metadata}` when this was written, and used the server's statically-configured pipeline. *Since Phase 3 it also takes `collection`* — which is how a per-request model/chunker is chosen: by naming a collection already built that way, never by naming a model on the ingest call. The build spec itself is fixed at `POST /v1/collections` (below) and is immutable thereafter (ADR-0002). There is still no standalone chunking endpoint.
 - **The CLI** (`scripts/ingest_jsonl.py`) *does* accept `--embedding-model / --embedding-api / --chunk-method / …` — that is how the demo's collections were built.
 - **LLM / reranker / rewriter** are built once at startup from `settings` into `app.state` (`_build_llm`, `_build_reranker`, `_build_rewriters` in `deps.py`) and read per-request via `get_generator` / `get_reranker` / `get_rewriters`.
 - **Config is read-only**: `GET /v1/config` (admin) reports effective config; there is no write path. Changing anything means editing env / `collections.json` and restarting.
@@ -85,18 +85,24 @@ Every route requires the **admin** role (`require_role(ROLE_ADMIN)`), like `GET 
 
 ### 4.3 Example flow
 
+`$API` is **your own** API's base URL. Do not copy a bare `localhost:8000` from
+this page: on the deployment host that port is a production API, and a
+production-resolving default in a doc is the defect class of #363/#369/#392.
+
 ```bash
+API="http://127.0.0.1:${MY_SCRATCH_PORT}"   # or your tenant's URL
+
 # register the LLM
-curl -X POST localhost:8000/v1/admin/models/registry -H 'content-type: application/json' -d '{
+curl -X POST "$API/v1/admin/models/registry" -H 'content-type: application/json' -d '{
   "id":"mango-scout","task":"llm","provider":"vllm",
   "base_urls":["http://localhost:9005"],
   "model":"RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic"}'
 
 # assign it live (no restart) — rebuilds generator + rewriters
-curl -X PATCH localhost:8000/v1/admin/config/assignments -H 'content-type: application/json' -d '{"llm":"mango-scout"}'
+curl -X PATCH "$API/v1/admin/config/assignments" -H 'content-type: application/json' -d '{"llm":"mango-scout"}'
 
 # subsequent /v1/query calls now generate with mango; revert with:
-curl -X PATCH localhost:8000/v1/admin/config/assignments -H 'content-type: application/json' -d '{"llm":null}'
+curl -X PATCH "$API/v1/admin/config/assignments" -H 'content-type: application/json' -d '{"llm":null}'
 ```
 
 ### 4.4 Persistence & security
@@ -113,7 +119,7 @@ curl -X PATCH localhost:8000/v1/admin/config/assignments -H 'content-type: appli
 - **Go:** `GET /v1/admin/models/registry` returns an empty, schema-valid snapshot (Phase-1 scaffold parity, like `/v1/collections`); the write + PATCH routes are Python-only in Phase 1.
 - **Tests:** 16 python API tests (`tests/api/test_model_registry.py`: CRUD, SSRF reject, live llm/reranker swap, unassign-reverts, delete-while-assigned `409`, wrong-task `400`, build-time `422`, admin-required `403`) + conformance on both impls (`conformance/test_model_registry.py`, GET schema; skips on non-admin like the other admin conformance).
 
-### 4.6 Live verification (`:8000` demo)
+### 4.6 Live verification (2026-08, on the then-`:8000` demo — that port now serves production; re-verify against a scratch server)
 
 | Check | Result |
 |---|---|
@@ -133,12 +139,12 @@ Phase 1 is standalone and independently mergeable. Later phases each need an exp
 
 1. **Registry + hot-swap** — ✅ **done** (this doc, PR #166). No re-ingest; live LLM/reranker swap.
 2. **Query-time levers** — ✅ **done** (PR #167). Per-request `llm` / `reranker` refs on `/v1/query` (+ reranker on `/v1/retrieve`); `GET /v1/models/available` picker; Compare per-lane `llm` / `rr·model` selects. Overrides build an ephemeral client (no `app.state` mutation); unknown → 404, wrong-task → 400.
-3. **Ingest model selection** — `POST /v1/collections` (or extend `/v1/ingest`) accepting `{embedding: <model-ref>, chunk: {...}}` → builds a content-addressed collection via `provenance.make_ingest_manifest`. The build-time path, over HTTP, referencing registered models.
+3. **Ingest model selection** — ✅ **done**. `POST /v1/collections` accepts `{embedding: <model-ref>, chunk: {...}}` and builds a content-addressed collection; `embedding` resolves against this registry. Both fields are **optional and admin-only**: omitted → the server's default build spec is resolved into concrete values at create time; supplied by a non-admin → **403** (they decide what every future ingest into that collection produces, and `embedding` names admin-registered infra). The open decision below resolved to the dedicated endpoint: `/v1/ingest` gained only a `collection` field, so ingest *selects* a build spec, it never sets one.
 4. **Config page** — frontend tabs: **Models** (registry CRUD), **Assignments** (live-editable for llm/reranker; build-time shown as "create a collection"), **Workflows** (parameterize the offline CWL embed/load runs by model ref). Built on `GET /v1/config` + the registry endpoints.
 
 ### Open decisions (carried forward)
 - **Persistence:** file (`models.json`, single-worker) — current default. Move to Postgres before multi-worker.
-- **Ingest surface (Phase 3):** extend `POST /v1/ingest` vs. a dedicated `POST /v1/collections`. Lean: dedicated endpoint (cleaner separation).
+- ~~**Ingest surface (Phase 3):** extend `POST /v1/ingest` vs. a dedicated `POST /v1/collections`.~~ **Settled:** the dedicated endpoint. `/v1/ingest` takes `collection` only.
 - **Scalar hot-reload:** whether to add the "rebuild retrievers to change `rrf_k`/`top_k`" path (deferred from Phase 1).
 
 ---

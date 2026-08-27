@@ -31,7 +31,9 @@ to the deeper docs rather than repeating them.
   (`ingest_jsonl.py`). See
   [`docs/cookbook-new-org-ingest.md`](cookbook-new-org-ingest.md).
 - **You want the offline plane to scatter pre-sharded JSONL over GoWe workers**
-  → GoWe backend (`INGEST_BACKEND=gowe`, needs `gowe_workflow_cwl` + `gowe_url`).
+  → GoWe backend (`INGEST_BACKEND=gowe`, needs `gowe_workflow_cwl` + `gowe_url`;
+  do **not** put `qdrant_url`/`es_url` in `GOWE_WORKFLOW_INPUTS_JSON` —
+  [that refuses the boot](#where-a-workflow-run-writes-the-api-seeds-the-store-urls-407)).
   See [`docs/gowe-integration.md`](gowe-integration.md) and
   [`docs/m1-scalable-pdf-ingest-plan.md`](m1-scalable-pdf-ingest-plan.md).
 - **You have raw PDFs and want them ingested through GoWe** → `INGEST_BACKEND=gowe`
@@ -60,9 +62,10 @@ not change. What changed is **how they learn where to write**:
 python scripts/ingest_jsonl.py corpus.jsonl --collection-id asm-tok256
 
 # create it through the API first, so the cap, the owner row and the build
-# spec all come from the normal path
+# spec all come from the normal path. $API is YOUR api — never a bare
+# localhost:8000, which is a production API on the deployment host.
 python scripts/ingest_shard.py shard.jsonl \
-    --collection-id new-corpus --create-via-api http://localhost:8000
+    --collection-id new-corpus --create-via-api "$API"
 ```
 
 `--collection-id` resolves through the configured collection store
@@ -85,6 +88,54 @@ own build parameters against that entry before writing anything.
 Wired: `ingest_jsonl.py`, `ingest_shard.py`, `ingest_chunks.py`,
 `load_embeddings.py`. The eval harnesses under `scripts/eval/` still name their
 own throwaway stores — see the gap below.
+
+---
+
+## Where a workflow run writes: the API seeds the store URLs (#407)
+
+**Read this before configuring the GoWe path — one of the keys below now refuses
+the boot.**
+
+The store targets a CWL ingest/restore run writes to are **owned by the API and
+seeded per run**. They are not workflow defaults and they are not operator
+config:
+
+- **The API seeds them.** `api/routers/documents.py` puts `qdrant_url` and
+  `es_url` into every submission's inputs, taking `qdrant_url` from
+  `store_routing.qdrant_url_for(collection, settings)` — so a collection routed
+  to its own Qdrant instance via `QDRANT_COLLECTION_ROUTES` is honoured — and
+  `es_url` from `elasticsearch_url`. The restore path does the same in
+  `api/deps.py`. One implementation, because a second copy that forgot
+  `qdrant_collection_routes` is exactly how a write lands on the wrong instance.
+- **The CWL inputs are REQUIRED, with no default.** `cwl/pdf-ingest-scatter.cwl`,
+  `cwl/restore-collection.cwl` and `cwl/load-embeddings.cwl` all declare
+  `qdrant_url` / `es_url` as `type: string` with the default deliberately
+  removed. The old default was `localhost:6333`, which **is production on the
+  deployment host** — a dev-tenant ingest built its collection on the production
+  instance. A hand-run (`cwltool`) must now name both explicitly; an omission is
+  a loud CWL error instead of a silent production write.
+- **Setting them in `GOWE_WORKFLOW_INPUTS_JSON` is a BOOT FAILURE.** Since the
+  per-run value wins the merge, a `qdrant_url` or `es_url` in that blob would be
+  silently **inert** — config an operator believes is steering their writes but
+  isn't. `ingestion/backends.py` therefore refuses the key at startup rather
+  than ignore it:
+
+  ```
+  gowe_workflow_inputs_json may not set qdrant_url, es_url: ingest store
+  targets are seeded per run from the QDRANT_URL / ELASTICSEARCH_URL settings
+  (and QDRANT_COLLECTION_ROUTES) and would override these keys silently.
+  ```
+
+  The blob remains for genuine per-deployment extras. If your API will not start
+  with that message, the fix is to remove the two keys and set `QDRANT_URL` /
+  `ELASTICSEARCH_URL` instead — the step-by-step is
+  [`docs/runbooks/upgrade-407-remove-gowe-store-urls.md`](runbooks/upgrade-407-remove-gowe-store-urls.md).
+
+The same reasoning applies to `collection_restore_inputs_json` in the restore
+table below, with one difference: that setting is **override-only, not required**
+(the API already seeds both keys), so it is not refused — it is merged *over* the
+seeded values, for the case where the worker reaches the stores at a different
+address than the API does.
 
 ---
 
@@ -383,13 +434,17 @@ and the worker has a graph store (#350). The API-side settings, all at the end o
 | `collection_restore_poll_interval` | `5` | Seconds between submission polls. |
 | `collection_restore_cwl` | `""` | Absolute path to `restore-collection.cwl`; empty = the repo copy next to the package. |
 | `collection_restore_workflow_name` | `ragstack-restore-collection` | Name the workflow is registered under. |
-| `collection_restore_inputs_json` | `{}` | Extra/overriding static inputs — typically `qdrant_url` / `es_url` as seen from the worker. Worker group comes from `gowe_worker_group`. |
+| `collection_restore_inputs_json` | `{}` | Extra/**overriding** static inputs. Not required: the API already seeds `qdrant_url` (= `QDRANT_URL`) and `es_url` (= `ELASTICSEARCH_URL`) into every restore submission (#407). Set them here **only** when the worker reaches those stores at a different address than the API does — the values here are merged over the seeded ones. Worker group comes from `gowe_worker_group`. |
 
 ## Eviction: the active bound (#359)
 
-`max_collections` bounds **active** collections (`state == active` — the ones whose
-Qdrant collection and ES index exist), not registered ones; a `dormant` collection
-costs nothing physical. When a create meets the bound, `ops/evict.py` chooses the
+`max_collections` bounds the collections whose stores are **physically present**, not
+registered ones. That set is `PHYSICAL = {active, archiving, restoring}`
+(`collection_store.py`): `archiving` holds its Qdrant/ES pair while the archive step
+runs, and `restoring` is rebuilding one — both occupy a slot, and neither is
+evictable, which is why the restore admission above takes a slot too. Only `active`
+is a candidate for eviction. A `dormant` (or `lost`) collection costs nothing
+physical and is not counted. When a create meets the bound, `ops/evict.py` chooses the
 least-recently-accessed active collection whose archive is current
 (`archive_pending=false`, `versions` non-empty) and makes it dormant: the registry row
 is compare-and-swapped `active → dormant` **first** (readers get 503 + `Retry-After`
@@ -403,8 +458,20 @@ it would destroy every tenant's legacy data), or one whose store another registr
 also serves. With no candidate the create is **507**, naming the per-reason counts.
 `POST /v1/admin/collections/evict?need=k[&dry_run=true]` runs the same policy by hand.
 `last_accessed_at` is the LRU key (batched writes — the tracker is flushed before
-selection); a never-accessed collection falls back to its creation time. The graph
-leg is not touched yet: `GraphStore` has no per-collection delete (phase 6 of #353).
+selection); a never-accessed collection falls back to its creation time.
+
+**The graph leg is not dropped on eviction** — but not for want of a delete.
+`GraphStore.delete_collection(tenant_id, collection)` exists (`protocols.py`;
+Neo4j and memory backends), and `ops/evict.py`'s `drop_stores` plumbs it as a
+third target, collection-wide like the other two, so the **purge** path
+(`DELETE /v1/collections/{id}?purge=true`) does drop triples. Eviction does not,
+because `api/eviction.py` deliberately passes `graph_store=None`: eviction may
+only destroy what exists somewhere else, and the archive has no triples leg for a
+version until the extract-graph step has run over it (`archive.py` writes
+`"graph": false`; replay has no extractor), so an evicted graph could not be
+restored. The argument is plumbed and unit-tested for when per-version triples
+archiving is complete (#350/#380); until then an evicted collection's triples
+stay in place, and every read of them stays collection-scoped.
 
 `MAX_COLLECTIONS` is set per tenant from the tightest of three measured ceilings at
 60 % (memory mappings vs `vm.max_map_count`, threads vs the process limit, resident
