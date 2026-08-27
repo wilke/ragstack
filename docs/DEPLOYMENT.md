@@ -251,9 +251,29 @@ services unless `--start`.
 Start the API against the stamped env:
 
 ```bash
+# Create the tenant's worktree at the release tag first — a new tenant has none:
+#   git -C /rag/repos/ragstack worktree add --detach /rag/repos/tenants/acme <tag>
+cd /rag/repos/tenants/acme/python          # the tenant's OWN checkout
 set -a; . $RAG_DATA/tenants/acme/config/tenant.env; set +a
-uvicorn ragstack.api.main:app --host 0.0.0.0 --port <api port from the plan>
+[ -f $RAG_DATA/tenants/acme/config/secrets.env ] && \
+  { set -a; . $RAG_DATA/tenants/acme/config/secrets.env; set +a; }
+export HF_HOME=/rag/cache PYTHONPATH=$PWD
+nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app \
+  --host 0.0.0.0 --port <api port from the plan> \
+  >> $RAG_DATA/tenants/acme/logs/api-acme.log 2>&1 &
+echo $! > $RAG_DATA/tenants/acme/api-acme.pid
 ```
+
+> **`PYTHONPATH=$PWD` is not optional.** The shared venv carries an editable install that
+> resolves `ragstack` to `/rag/repos/ragstack/python` — a **frozen pre-security checkout**
+> (`prod-2026-08-01-pre-security`), not the tenant's code. Without the pin, this command
+> starts that July tree against the tenant's production stores (#432). Verify after
+> starting: `tr '\0' '\n' < /proc/$(cat $RAG_DATA/tenants/acme/api-acme.pid)/environ | grep ^PYTHONPATH=`.
+>
+> Only `dev` and `demo` have a `secrets.env`; `asm` and `lucid` do not — hence the guard.
+> Note the path asymmetry: **data dirs drop the `-next` suffix** (`/rag/data/tenants/asm`)
+> while worktrees and pid-file names keep it (`/rag/repos/tenants/asm-next`,
+> `api-asm-next.pid`).
 
 > The two pre-ADR production tenants stay untouched until their migration (#246); the
 > **ops architecture reference artifact still shows the shared ES** and is updated at
@@ -375,13 +395,43 @@ API_KEY_TENANTS='{"EXISTING_KEY_USER":"ASM_TENANT","EXISTING_KEY_ADMIN":"ASM_TEN
 API_KEY_ROLES='{"EXISTING_KEY_USER":"user","EXISTING_KEY_ADMIN":"admin","SVC_KEY":"user"}'
 ```
 
-Restart the tenant's **API process** so the new settings are read (the stores keep
-running; only the API reads these):
+### Restart a tenant
+
+The recipe below is the general one — it is what a config change, a deploy and a
+revert all use. It is written against these variables; **set all of them** before
+pasting, or `PID` is empty and the wait loop spins forever:
 
 ```bash
-# stop the running API for this tenant, then start it against the stamped env
+export TENANT_NAME=asm-next                              # worktree + pid-file name
+export TENANT_DATA=/rag/data/tenants/asm                 # NOTE: no -next suffix
+export TENANT_WORKTREE=/rag/repos/tenants/$TENANT_NAME
+export TENANT_ENV=$TENANT_DATA/config/tenant.env
+export TENANT_SECRETS=$TENANT_DATA/config/secrets.env    # absent on asm and lucid
+export TENANT_LOG=$TENANT_DATA/logs/api-$TENANT_NAME.log
+export TENANT_API_PORT=24020 BIND_ADDR=0.0.0.0
+```
+
+Restarting re-reads the settings; the stores keep running, only the API reads these.
+
+```bash
+# 1. Stop it BY THE RECORDED PID. Never by process-name pattern: production runs the
+#    same command line as every scratch server, and `pkill -f` took the whole fleet
+#    down for seventeen hours (#402).
+PID=$(cat "$TENANT_DATA/api-$TENANT_NAME.pid")
+tr '\0' ' ' < /proc/$PID/cmdline; readlink -f /proc/$PID/cwd   # READ THIS OUTPUT FIRST
+
+# Then, as a separate step — a pid file can be stale and the pid since reused:
+grep -qa 'uvicorn ragstack.api.main' /proc/$PID/cmdline || { echo "not ours; stop"; }
+kill -TERM "$PID"; while [ -d /proc/$PID ]; do sleep 1; done
+
+# 2. Start it from the tenant's OWN checkout, with PYTHONPATH pinned (#432).
+cd "$TENANT_WORKTREE/python"
 set -a; . "$TENANT_ENV"; set +a
-uvicorn ragstack.api.main:app --host BIND_ADDR --port TENANT_API_PORT
+[ -f "$TENANT_SECRETS" ] && { set -a; . "$TENANT_SECRETS"; set +a; }
+export HF_HOME=/rag/cache PYTHONPATH=$PWD
+nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app \
+  --host BIND_ADDR --port TENANT_API_PORT >> "$TENANT_LOG" 2>&1 &
+echo $! > "$TENANT_DATA/api-$TENANT_NAME.pid"
 ```
 
 Startup is the check: under `REQUIRE_DURABLE_BACKENDS=true` (what

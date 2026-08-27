@@ -1,4 +1,30 @@
-# Production restore runbook
+# Production restore runbook — **SUPERSEDED, do not follow**
+
+> ## Superseded 2026-08-27. Following §3 today would cause an outage.
+>
+> This document restores a **three-process fleet that no longer exists** (`:8000` asm,
+> `:8010` lucid, `:8020` demo — nothing listens on any of them) using
+> `/rag/repos/ragstack`, which is frozen at `prod-2026-08-01-pre-security` (`6d6fcf6`)
+> and predates every fix through `v1.5.2`. Its start commands name
+> `QDRANT_URL=http://localhost:6333` and `ELASTICSEARCH_URL=http://localhost:9200` —
+> the stores that **four currently-serving tenants** use. Running §3 starts a second,
+> pre-security API against live production data.
+>
+> Its verify step, `curl localhost:8000/v1/health`, has never worked: the health router
+> is mounted with no prefix, so the path is `/health`. `/v1/health/deep` exists and is
+> admin-gated.
+>
+> **The live fleet** is four tenants behind nginx `:9000` at `/ragstack/<tenant>/api/` —
+> lucid-next 24000, asm-next 24020, dev 24040, demo 24060 — all on `v1.5.2`. To restart
+> one, use [DEPLOYMENT.md](DEPLOYMENT.md) § *Restart a tenant*
+> or [runbooks/tenant-scale-out.md](runbooks/tenant-scale-out.md) § *Start the API*.
+>
+> **The one paragraph still worth reading** is **§1 ("Stop")** — resolve the pid with
+> `ss -lntp`, verify it, `kill <pid>`, and explicitly *do not* `pkill -f`. That
+> discipline predates #402 and was right. **Not §2 ("Restore the code")**, which is
+> `git checkout` + `git reset --hard` against the frozen checkout.
+>
+> Kept as a historical record of the pre-ADR-0005 topology.
 
 Recorded 2026-07-31, before any restart carrying the #195/#196/#207 security fixes.
 Verified read-only from `/proc/<pid>/{cmdline,cwd,environ}` on coconut.
