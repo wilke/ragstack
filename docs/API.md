@@ -8,8 +8,22 @@ authoritative and both implementations conform to it.
 - **Python** (FastAPI) — default port **8000**
 - **Go** (Chi) — default port **8080**
 
-All examples below use `http://localhost:8000`. Interactive docs are served by the
-Python app at `/docs` (Swagger UI) and `/redoc`.
+Interactive docs are served by the Python app at `/docs` (Swagger UI) and `/redoc`.
+
+> **Set `BASE` before running anything below.** The examples use `"$BASE"`, deliberately
+> without a default, because the obvious default is dangerous: on the deployment host
+> `http://localhost:8000` is the **legacy production API**, and the examples in this file
+> create collections, grant shares, transfer ownership and ingest documents. A copy-pasted
+> command with no `BASE` set is a production write.
+>
+> ```bash
+> export BASE=http://localhost:8000                      # a local dev server you started
+> export BASE=https://<host>:9000/ragstack/<tenant>/api   # through the gateway
+> ```
+>
+> Behind the gateway the prefix (`/ragstack/<tenant>/api`) is stripped before the app sees
+> the request; the app emits correct absolute URLs for `/docs` and `/openapi.json` from
+> `X-Forwarded-Prefix`, or from `ROOT_PATH` when that is pinned (#332).
 
 ---
 
@@ -83,7 +97,7 @@ one authorization seam (`resolve_access`):
 - A request with an unknown key returns **401**.
 
 ```bash
-curl -s http://localhost:8000/v1/query \
+curl -s "$BASE"/v1/query \
   -H 'X-API-Key: <your-key>' -H 'Content-Type: application/json' \
   -d '{"query": "..."}'
 ```
@@ -126,7 +140,7 @@ keys are configured.
 ### GET /health
 
 ```bash
-curl -s http://localhost:8000/health
+curl -s "$BASE"/health
 # {"status": "ok"}
 ```
 
@@ -167,7 +181,7 @@ is visible — see [Context expansion](#context-expansion-context_window).
 source came from.
 
 ```bash
-curl -s http://localhost:8000/v1/query \
+curl -s "$BASE"/v1/query \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"query": "how do viruses evade innate immunity?", "top_k": 5}'
 ```
@@ -182,7 +196,7 @@ Same retrieval (hybrid + optional rerank) but no answer generation.
 (`RetrieveResponse`): `{ sources[] }`.
 
 ```bash
-curl -s http://localhost:8000/v1/retrieve \
+curl -s "$BASE"/v1/retrieve \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"query": "mechanisms of antibiotic resistance", "top_k": 10,
        "filters": {"doc_type": "article"}}'
@@ -222,7 +236,7 @@ the main one, or "everything I can see". Semantics:
   `collection: "x"` plus the stamp.
 
 ```bash
-curl -s http://localhost:8000/v1/retrieve \
+curl -s "$BASE"/v1/retrieve \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"query": "efflux pumps and multidrug resistance", "top_k": 5,
        "collections": ["open-access", "my-notes"]}'
@@ -285,7 +299,7 @@ follows the request. At a document's first/last chunk the neighbour id is
 absent (older bulk loads stamped the literal string `"None"`).
 
 ```bash
-curl -s "http://localhost:8000/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
+curl -s ""$BASE"/v1/chunks?collection=open-access&ids=<prev_id>,<next_id>" \
   -H 'X-API-Key: kp'
 # {"chunks":[{"doc_id":"…","chunk_id":"…","content":"…","metadata":{…}}, …]}
 ```
@@ -337,7 +351,7 @@ that window self-heals: the startup backfill repairs the owner row from the
 spec-recorded creator (privately — it never publishes a spec-owned collection).
 
 ```bash
-curl -s http://localhost:8000/v1/collections \
+curl -s "$BASE"/v1/collections \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"id": "my-papers", "label": "My papers"}'
 ```
@@ -385,16 +399,17 @@ not just the ACL.
 
 ```bash
 # Grant read to a BV-BRC user, then publish, then list, then un-publish
-curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
+curl -s -X POST "$BASE"/v1/collections/my-papers/shares \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"grantee": "alice"}'                 # -> 201, grantee_id "bvbrc:alice"
-curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
+curl -s -X POST "$BASE"/v1/collections/my-papers/shares \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"grantee": "@service:svc-askclark"}' # -> 201, grantee_id "svc-askclark"
-curl -s -X POST http://localhost:8000/v1/collections/my-papers/shares \
-  -H 'X-API-Key: kp' -d '{"grantee": "@public"}'   # publish (read to everyone)
-curl -s http://localhost:8000/v1/collections/my-papers/shares -H 'X-API-Key: kp'
-curl -s -X DELETE http://localhost:8000/v1/collections/my-papers/shares/<share_id> \
+curl -s -X POST "$BASE"/v1/collections/my-papers/shares \
+  -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
+  -d '{"grantee": "@public"}'                      # publish (read to everyone)
+curl -s "$BASE"/v1/collections/my-papers/shares -H 'X-API-Key: kp'
+curl -s -X DELETE "$BASE"/v1/collections/my-papers/shares/<share_id> \
   -H 'X-API-Key: kp'                        # -> 204 (un-publish / revoke)
 ```
 
@@ -450,7 +465,7 @@ is grantable to users only, never to a group. A subject that has never
 authenticated is pre-provisioned, exactly as a share grantee is.
 
 ```bash
-curl -s -X POST http://localhost:8000/v1/collections/my-papers/owner \
+curl -s -X POST "$BASE"/v1/collections/my-papers/owner \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"subject": "bob"}'   # -> 200, owner "bvbrc:bob"
 # {"collection_id": "my-papers", "owner": "bvbrc:bob",
@@ -506,7 +521,7 @@ extract step exits 1 (retryable) when every attempted chunk — or more than
 fails it `OUTPUT_STAGING_FAILED` with nothing recorded.
 
 ```bash
-curl -s -X POST http://localhost:8000/v1/collections/my-papers/graph \
+curl -s -X POST "$BASE"/v1/collections/my-papers/graph \
   -H "Authorization: Bearer $BVBRC_TOKEN"        # -> 202
 # {"collection_id": "my-papers", "version": 2, "job_id": "…",
 #  "submission_id": "sub_…", "message": "graph extraction of version 2 submitted; …"}
@@ -771,7 +786,7 @@ fails the job and leaves the prior version intact.
 **Response** (`IngestResponse`): `{ job_id, status, chunk_ids[], items? }`.
 
 ```bash
-curl -s http://localhost:8000/v1/ingest \
+curl -s "$BASE"/v1/ingest \
   -H 'X-API-Key: kp' -H 'Content-Type: application/json' \
   -d '{"source": "papers/2024_review.pdf"}'
 # {"job_id": "...", "status": "accepted"}
@@ -784,15 +799,28 @@ Polls status: `accepted` → `running` → `completed` | `failed` (unknown id �
 `{ total, completed, failed, pending }`.
 
 ```bash
-curl -s http://localhost:8000/v1/ingest/<job_id> -H 'X-API-Key: kp'
+curl -s "$BASE"/v1/ingest/<job_id> -H 'X-API-Key: kp'
 ```
 
 ### GET /v1/documents · DELETE /v1/documents/{doc_id}
 
-List documents (`DocumentInfo[]`: `{ doc_id, source, metadata }`) — **not yet
-implemented: currently returns `[]`** (needs a document-registry metadata store;
-the vector store holds chunks, not documents). Or delete one document and all
-its chunks (scoped to the caller's tenant; **204** on success).
+List the documents the caller can see, aggregated by `doc_id` from the served text
+index. Paginated: `?limit=` (default 100, max `MAX_LIST_LIMIT` = 500) and an opaque
+`?cursor=` taken from the previous response's **`X-Next-Cursor`** header — the header is
+absent on the last page. A malformed cursor is **400** (deliberately generic; the supplied
+value is never reflected back). `metadata` carries `chunk_count`. **There is no ordering
+guarantee** — treat the sequence as unordered.
+
+Both operations resolve the **caller's** default collection when `collection` is omitted
+(#447), not the global registry pointer. A backend fault degrades to `[]` at 200, so an
+empty list does not prove an empty corpus.
+
+`DELETE /v1/documents/{doc_id}` removes one document and all its chunks (**204**). It
+requires `write` on the resolved collection — except on the legacy shared surface, where
+`read` suffices because per-chunk `tenant_id` stamping is the write isolation.
+
+> The Go scaffold still returns `[]` here. This section describes the Python
+> implementation.
 
 ### GET /v1/graph/entities · GET /v1/graph/neighbors/{entity}
 
@@ -904,7 +932,11 @@ operator tool streams, enriches scholarly metadata, fans out embedding across
 endpoints, and is resumable:
 
 ```bash
-python scripts/ingest_jsonl.py corpus.jsonl --tenant public \
+# Run from python/. --qdrant-url and --es-url are NOT optional in practice: they
+# default to :6333 and :9200, which on the deployment host are the PRODUCTION
+# stores, and this is a write path that creates an index and upserts points (#454).
+cd python && python scripts/ingest_jsonl.py corpus.jsonl --tenant public \
+  --qdrant-url "$QDRANT_URL" --es-url "$ES_URL" \
   --embedding-api openai \
   --embedding-url http://gpu0:9001 http://gpu1:9002 \
   --embedding-model <model> \
