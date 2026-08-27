@@ -12,6 +12,13 @@ overwriting) and rewrites its location to ``ws://``. Those invariants — plus
 report reaches ingest_shard" (the scanned-PDF signal) — are the ones that break
 silently, so they are asserted here rather than left to a live submission.
 
+This file also carries a **repo-wide sweep** over every ``cwl/*.cwl`` and every
+``cwl/*.inputs.yml`` (bottom of the file): no input anywhere may default to a
+store address, and no example job may name a live one. It lives here rather than
+in its own file because this is where the CWL contract is already asserted
+offline — see the #407 block above those tests for why the class needs a sweep
+and not five one-line fixes.
+
 Offline: parses the YAML, runs nothing. The end-to-end run under cwltool is
 ``tests/integration/test_pdf_ingest_batch_cwl.py``.
 """
@@ -246,6 +253,29 @@ def test_no_cwl_input_defaults_to_a_localhost_address(cwl: Path) -> None:
         f"{cwl.name} defaults an input to a live-looking address: {offenders}. "
         "Store/service targets must be required inputs (#407) — the caller names "
         "them, or the run refuses."
+    )
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_no_cwl_write_target_declares_a_default_at_all(cwl: Path) -> None:
+    """A write-target input may carry NO default, whatever the value.
+
+    The localhost sweep above is necessary but not sufficient: a default written
+    as the host's own name (``http://coconut:6333``) is just as much production
+    on that box and matches no loopback pattern. There is no legitimate default
+    for "which store does this run write to" — the caller names it or the run
+    refuses — so the honest rule is the absence of a default, not the shape of
+    its value. This is the assertion that actually closes the class; the regex
+    one stays because it also covers inputs these three keys do not name."""
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    offenders = [
+        (where, value)
+        for where, value in _defaults(doc)
+        if any(where.endswith(f"{key}.default") for key in _STORE_KEYS)
+    ]
+    assert offenders == [], (
+        f"{cwl.name} gives a write target a default: {offenders}. Store targets are "
+        "required inputs (#407) — delete the default and let an omission refuse."
     )
 
 
