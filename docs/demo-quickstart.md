@@ -11,14 +11,38 @@ against a deployed instance.
 
 For the exact API contract see [`contracts/openapi.yaml`](../contracts/openapi.yaml);
 for MCP wiring detail see [`python/ragstack/mcp/README.md`](../python/ragstack/mcp/README.md).
+For an existing deployment rather than one you stand up, start at the
+[user guide](USER-GUIDE.md) and [COOKBOOK.md](COOKBOOK.md).
 
 ---
+
+> ### Set `BASE` and `QDRANT_URL` yourself. There are no defaults here, on purpose.
+>
+> Every command below uses `"$BASE"`, and step 1 requires `QDRANT_URL`. Neither
+> has a default, because the obvious defaults are dangerous: on the RAGStack
+> deployment host `http://localhost:6333` and `http://localhost:9200` are the
+> **production Qdrant and Elasticsearch**, and `http://localhost:8000` is the
+> **legacy production API**. This guide creates collections and ingests
+> documents — a copy-pasted command with those defaults is a production write.
+>
+> ```bash
+> export PORT=8030                           # a port you own — check `ss -ltn` first
+> export BASE=http://127.0.0.1:$PORT         # the API *you* start in step 1
+> export QDRANT_URL=http://127.0.0.1:6399    # a Qdrant *you* started
+> ```
+>
+> On a laptop with nothing else running, the standard ports are fine. On a
+> shared host, they are not — pick ports you own, and check with
+> `ss -ltn` before you bind. The same applies to any `python/scripts/` CLI:
+> pass `--qdrant-url` / `--es-url` explicitly, never rely on their defaults
+> (#454).
 
 ## 0. Prerequisites
 
 You need three model backends reachable from the API:
 
-- **A Qdrant instance** (vector store), e.g. `http://localhost:6333`.
+- **A Qdrant instance** (vector store) at the `QDRANT_URL` you just set — one
+  you started, not one you found listening.
 - **An embeddings endpoint** that speaks the OpenAI `/v1/embeddings` API — a
   vLLM server, or the bundled embedding sidecar. Note its model name and vector
   dimension.
@@ -37,7 +61,7 @@ at your backends. Adjust the values to your environment:
 ```bash
 export PYTHONPATH="$PWD/python"
 export INGEST_ROOT=/var/lib/ragstack/ingest      # a writable dir for staged uploads
-export QDRANT_URL=http://localhost:6333
+# QDRANT_URL is already exported — see the box above. Do NOT default it.
 export EMBEDDING_API=openai
 export EMBEDDING_MODEL=your-embedding-model       # e.g. Salesforce/SFR-Embedding-Mistral
 export EMBEDDING_MODEL_DIM=4096                   # must match the model's real dim
@@ -53,8 +77,12 @@ export DEFAULT_ROLE=admin                         # demo convenience; needed for
                                                   # Plain collection creation (server-default
                                                   # build spec) works for any principal.
 
-uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8030
+uvicorn ragstack.api.main:app --host 127.0.0.1 --port "$PORT"
 ```
+
+> Bound to `127.0.0.1`, not `0.0.0.0`: with no credential configured this API is
+> open to anyone who can reach the socket, and `DEFAULT_ROLE=admin` above makes
+> every such caller an admin. Widen the bind only once you have set `API_KEYS`.
 
 > `EMBEDDING_ENDPOINTS` must be a **comma-separated list**, not a JSON array —
 > if you source these vars from a shell file the quotes get stripped and a JSON
@@ -63,7 +91,7 @@ uvicorn ragstack.api.main:app --host 0.0.0.0 --port 8030
 Confirm it is up:
 
 ```bash
-curl -s http://localhost:8030/health          # -> {"status":"ok"}
+curl -s "$BASE"/health          # -> {"status":"ok"}
 ```
 
 ## 2. Register an embedding model (admin)
@@ -72,7 +100,7 @@ A collection binds to a *registered* embedding model. Register one first
 (admin role required):
 
 ```bash
-curl -s -X POST http://localhost:8030/v1/admin/models/registry \
+curl -s -X POST "$BASE"/v1/admin/models/registry \
   -H 'Content-Type: application/json' \
   -d '{
         "id": "my-embedder",
@@ -93,7 +121,7 @@ config (model, dim, chunk method) *is* the collection's identity — you populat
 it via ingest, you do not re-point it at a different embedder later.
 
 ```bash
-curl -s -X POST http://localhost:8030/v1/collections \
+curl -s -X POST "$BASE"/v1/collections \
   -H 'Content-Type: application/json' \
   -d '{
         "embedding": "my-embedder",
@@ -119,21 +147,27 @@ Verify with `GET /v1/collections`.
 `POST /v1/ingest/upload` is the multipart counterpart to `POST /v1/ingest`
 (which takes a server-side path). Each file is staged under
 `{INGEST_ROOT}/uploads/{tenant}/{job_id}/` and ingested in the background.
-It returns **202** with a `job_id`; non-PDFs are rejected (415), oversize files
-(413).
+It returns **202** with a `job_id`. The content-type allowlist
+(`UPLOAD_CONTENT_TYPES`) accepts **PDF, plain text, Markdown and XML** by
+default — anything outside it, or a "PDF" that does not start with `%PDF`, is a
+`415`; oversize files are a `413`. (An `.xml` file is accepted at the door but
+has no loader yet, so its *item* fails inside the job.)
 
 ```bash
-curl -s -X POST http://localhost:8030/v1/ingest/upload \
+curl -s -X POST "$BASE"/v1/ingest/upload \
   -F 'collection=my_papers' \
   -F 'files=@paper1.pdf' \
   -F 'files=@paper2.pdf'
-# -> {"job_id":"...","status":"pending"}
+# -> {"job_id":"...","status":"accepted"}
 ```
+
+The lifecycle is `accepted` → `running` → `completed` | `failed`. There is no
+`pending` state — polling for one never terminates.
 
 Poll the job until it finishes:
 
 ```bash
-curl -s http://localhost:8030/v1/ingest/<job_id>
+curl -s "$BASE"/v1/ingest/<job_id>
 ```
 
 Re-check `GET /v1/collections` — the chunk count for `my_papers` should climb as
@@ -144,7 +178,7 @@ ingest completes.
 Retrieval only (ranked chunks, no LLM):
 
 ```bash
-curl -s -X POST http://localhost:8030/v1/retrieve \
+curl -s -X POST "$BASE"/v1/retrieve \
   -H 'Content-Type: application/json' \
   -d '{"query":"What is the main finding?","collection":"my_papers","top_k":5}'
 ```
@@ -152,7 +186,7 @@ curl -s -X POST http://localhost:8030/v1/retrieve \
 Full RAG (retrieval + generated answer with citations):
 
 ```bash
-curl -s -X POST http://localhost:8030/v1/query \
+curl -s -X POST "$BASE"/v1/query \
   -H 'Content-Type: application/json' \
   -d '{"query":"What is the main finding?","collection":"my_papers"}'
 ```
@@ -172,7 +206,7 @@ Configure Claude Code:
 
 ```bash
 claude mcp add ragstack \
-  -e RAGSTACK_BASE_URL=http://localhost:8030 \
+  -e RAGSTACK_BASE_URL="$BASE" \
   -e RAGSTACK_COLLECTION=my_papers \
   -- /path/to/python -m ragstack.mcp
 ```
@@ -187,7 +221,7 @@ a project `.mcp.json`:
       "command": "/path/to/python",
       "args": ["-m", "ragstack.mcp"],
       "env": {
-        "RAGSTACK_BASE_URL": "http://localhost:8030",
+        "RAGSTACK_BASE_URL": "http://127.0.0.1:8030",
         "RAGSTACK_COLLECTION": "my_papers"
       }
     }
@@ -213,7 +247,7 @@ the client host. It reads the same `RAGSTACK_BASE_URL` / `RAGSTACK_COLLECTION` /
     "ragstack": {
       "command": "/path/to/ragstack-mcp",
       "env": {
-        "RAGSTACK_BASE_URL": "http://localhost:8030",
+        "RAGSTACK_BASE_URL": "http://127.0.0.1:8030",
         "RAGSTACK_COLLECTION": "my_papers"
       }
     }
@@ -226,8 +260,7 @@ ask real questions — Claude will call `answer`/`search` and cite the sources.
 
 ## Example questions
 
-Point these at your own corpus; for the biomedical demo library below they work
-as-is:
+Point these at your own corpus — they assume a biomedical / AMR library:
 
 - "What mechanisms do bacteria use to develop resistance to antibiotics?"
 - "Summarize the mechanisms of carbapenem resistance in Klebsiella."
@@ -235,20 +268,12 @@ as-is:
 
 ---
 
-## Current live demo
+## Want a populated corpus instead of building one?
 
-There is a running demo on this host (for internal use):
-
-- **API:** port **8030**
-- **Collection:** `demo_g1_sfr_tok512` (~1216 chunks of AMR / antimicrobial-
-  resistance literature), embedded with an SFR-Embedding-Mistral model at 4096-d,
-  `fixed_token` chunking (size 512, overlap 64).
-
-It is already populated — query it directly (steps 5–6); you do not need to run
-steps 1–4. Example:
-
-```bash
-curl -s -X POST http://localhost:8030/v1/query \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"What mechanisms do bacteria use to develop resistance to antibiotics?"}'
-```
+This guide stands up your own stack. If you just want to *ask questions* of an
+existing one, do not run any of the above: the deployments on `coconut` are
+already populated, and the [user guide](USER-GUIDE.md#1-pick-a-deployment-what-the-api-calls-a-tenant)
+has the table of base URLs, what each one holds, and how to authorize. The
+`demo` deployment serves the `open-access` corpus through the gateway at
+`/ragstack/demo/api`; [cookbook-users.md](cookbook-users.md) is the copy-paste
+version and [COOKBOOK.md](COOKBOOK.md) answers the questions that come after.

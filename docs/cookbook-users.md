@@ -3,9 +3,11 @@
 *Copy-paste recipes for the questions people actually ask: pick a deployment,
 sign in, make a collection, put papers in it, ask it things, read around a hit,
 see how the server is configured. The concepts behind each step are in the
-[user guide](USER-GUIDE.md); the reference is [API.md](API.md). Provisioning a
-whole new deployment is a different cookbook:
-[cookbook-new-org-ingest.md](cookbook-new-org-ingest.md).*
+[user guide](USER-GUIDE.md); the reference is [API.md](API.md). For the same
+ground as questions — including the error contract, the `Reference:` id, which
+503s are worth retrying, and what an omitted `collection` targets — see
+[COOKBOOK.md](COOKBOOK.md). Provisioning a whole new deployment is a different
+cookbook: [cookbook-new-org-ingest.md](cookbook-new-org-ingest.md).*
 
 Every recipe assumes two shell variables. Set them once:
 
@@ -15,7 +17,8 @@ export BASE=http://coconut.cels.anl.gov:9000/ragstack/demo/api
 
 # EITHER a key the operator gave you …
 export AUTH="X-API-Key: rk-your-key-here"
-# … OR your own BV-BRC identity (dev and lucid-next accept ONLY this):
+# … OR your own BV-BRC identity. All four deployments accept both —
+# pick one, never send both:
 p3-login <your-bvbrc-username>            # writes ~/.patric_token
 export AUTH="Authorization: $(cat ~/.patric_token)"
 
@@ -30,16 +33,24 @@ recipe is easier to read with it.
 ## 1. Who am I, and what can I read?
 
 ```bash
-curl -s $BASE/v1/stats/tenants -H "$AUTH" | jq '{tenant, role, readable, auth_enabled}'
+curl -s "$BASE/v1/stats/tenants?counts=false" -H "$AUTH" \
+  | jq '{tenant, role, readable, auth_enabled}'
 ```
 ```json
 {"tenant": "demo-ops", "role": "admin", "readable": ["demo-ops", "public"], "auth_enabled": true}
 ```
 
 `tenant` is the scope your writes land in; `readable` is what your reads cover
-(always your own scope plus the shared `public` one). The same response lists
-every collection in each readable scope with its counts — the full picture of
-what this credential can see.
+(always your own scope plus the shared `public` one).
+
+**`counts=false` is not optional politeness.** The default probes one count per
+tenant × collection × store; on the demo corpus that is seconds of waiting —
+and the four fields above need no store at all. Drop it only when you actually
+want the numbers:
+
+```bash
+curl -s $BASE/v1/stats/tenants -H "$AUTH" | jq '.tenants'   # slow: counts every cell
+```
 
 ## 2. List the collections
 
@@ -52,9 +63,13 @@ curl -s $BASE/v1/collections -H "$AUTH" \
 {"id":"open-access","label":"open-access","count":47625155,"text_count":47625155,"chunk_method":"fixed_token","dim":4096}
 ```
 
-`.default` is the id used when a request omits `collection`. `count` is the
-vector-store count *as visible to you*; `text_count` the BM25 side — they
-should match.
+`.default` is the id **your** requests hit when they omit `collection` — it is
+computed per caller, so read it here rather than assuming the deployment's
+pointer. (The per-entry `is_default` flag is a *different* thing: the global
+registry pointer. When you cannot read the collection that pointer names, no
+entry carries the flag and `.default` still names a readable collection of
+yours.) `count` is the vector-store count *as visible to you*; `text_count` the
+BM25 side — they should match.
 
 ## 3. Create a collection
 
@@ -68,7 +83,12 @@ curl -s -X POST $BASE/v1/collections -H "$AUTH" -H 'Content-Type: application/js
 - `409` → that id is taken (or, with `id` omitted, a corpus with this exact
   build spec already exists — that is the same store, use it).
 - `403` → you passed `embedding`/`chunk` without the admin role, or the
-  deployment is at its collection cap.
+  deployment sets `ALLOW_USER_COLLECTION_CREATE=false`.
+- `507` → the deployment is at its active-collection bound and nothing could be
+  evicted. Normally invisible: at the bound the server evicts one
+  least-recently-used archived collection and retries. `detail` names the
+  per-reason counts, so you can tell "wait for an in-flight ingest" from "ask
+  the operator to raise `MAX_COLLECTIONS`".
 
 Omit `id` when you want a content-addressed corpus rather than a named library;
 see [user guide §3](USER-GUIDE.md#3-create-a-collection).
@@ -86,7 +106,20 @@ watch -n 5 "curl -s $BASE/v1/ingest/$JOB -H '$AUTH' | jq '{status, error, chunks
 curl -s $BASE/v1/collections -H "$AUTH" | jq '.collections[] | select(.id=="my-papers") | .count'
 ```
 
-PDFs only (`415` otherwise), ≤ 50 MB each (`413`), ≤ 50 files per request.
+PDF, plain text, Markdown and XML (JATS) are accepted — the deployment's
+`UPLOAD_CONTENT_TYPES`; anything else, or a "PDF" that does not start with
+`%PDF`, is `415`. ≤ 50 MB each (`413`), ≤ 50 files and ≤ 500 MB per request.
+An `.xml` file is accepted but has no loader yet: its *item* fails with
+`no loader for .xml`.
+
+Always pass `-F collection=…` as above. **If you omit it**, the upload goes to
+the first collection *you can write* — and if you own none, that is a `403`
+`no collection accepts your uploads`, not a `404` (#453). The `404`
+`no collection is accessible to this caller` is the different case: you can read
+nothing at all. See
+[COOKBOOK.md → Why was my upload refused when I can read the collection
+fine?](COOKBOOK.md).
+
 `GET /v1/documents` lists your documents (paginated: `limit`, `cursor`);
 `DELETE /v1/documents/{doc_id}` removes one document's chunks.
 
@@ -171,8 +204,8 @@ curl -s $BASE/v1/models/available -H "$AUTH"           # {"models":[{"id":…,"t
 ## 8. Read around a hit — the previous and next chunks
 
 Every source carries the ids of its neighbours in the same document. Fetch them
-by id (up to 20 per call, order preserved, anything you may not read silently
-omitted):
+by id (up to **200** per call, `422` above that; order preserved, anything you
+may not read silently omitted):
 
 ```bash
 # take the top hit's neighbours…
@@ -228,13 +261,37 @@ operator is expected to set, with their gotchas, are tabulated in
 
 | You see | It means | Do |
 |---|---|---|
-| `401 missing or invalid API key` / `invalid or expired bearer credential` | wrong key, expired token, or a token sent to a deployment without identity support | recipe 1 against the right `$BASE`; `p3-login` again |
+| `401` **with** a credential sent (`missing or invalid API key` / `invalid or expired bearer credential`) | that credential was refused — wrong key, expired token | recipe 1 against the right `$BASE`; `p3-login` again |
+| `401` with **no** credential sent | not a refusal: you are simply signed out. A keyed backend 401s an anonymous caller | send `$AUTH`. Re-running `p3-login` changes nothing |
 | `400 present exactly one credential` | both headers sent | unset one |
-| `403` on `POST /v1/collections` | you sent `embedding`/`chunk`, or the cap is reached | drop the override; ask an admin |
+| `403` on `POST /v1/collections` | you sent `embedding`/`chunk` without admin, or the deployment sets `ALLOW_USER_COLLECTION_CREATE=false` | drop the override; ask an admin |
+| `507` on `POST /v1/collections` | at the active-collection bound and nothing was evictable | read `detail`'s per-reason counts; wait, delete one of yours, or ask the operator to raise `MAX_COLLECTIONS` |
+| `403 no collection accepts your uploads` on ingest | you omitted `collection` and own none | name one you own, or create one (recipe 3) |
+| `404 no collection is accessible to this caller` | your readable set is empty | ask for a share (recipe 5) |
 | `404` on a collection you know exists | you cannot read it | ask the owner for a share (recipe 5) |
 | `409` on create | id taken / spec exists | pick another id, or use the existing one |
 | `422` | body failed validation | read `detail` — usually a wrong type or an unknown `retrieval_mode` |
-| `503 qdrant unavailable: … ReadTimeout … QDRANT_TIMEOUT` | the vector store was too slow for this request (host under load) | retry after `Retry-After`; if it persists, tell the operator — it is the deployment, not your request |
+| `503` with `"reason": "timeout"` | we reached the store and the search was too slow | **retry** — the second read is often warm |
+| `503` with `"reason": "unreachable"` or `"error"` | we never reached the store, or it answered unhappily | a retry probably will not help; send the operator the `request_id` |
+| `503` with **no** `reason` | a different cause: authorization store failing closed, a dormant/restoring collection (its restore was kicked off), or the tenant at capacity | honour `Retry-After`; treat as "do not assume a retry helps" |
 | `503` on ingest | `INGEST_ROOT` unset on that deployment | operator setting; uploads are disabled there |
-| UI says "not signed in" right after signing in | that backend has no identity provider, so the token is not an authentication input | switch to a deployment that verifies tokens, or use a key |
+| UI says **"Checking sign-in…"** | the identity check has not answered yet | wait — this is not a verdict, and there is nothing to act on |
+| UI says **"Not confirmed"** / `unconfirmed` | the check *failed*, so there is no verdict either way; your credential is still stored and still being sent | read the amber sentence; it is usually the API being unreachable, not your credential |
+| UI says **"not signed in"** with an amber sentence about the token being ignored | that backend has no identity provider, so every caller is the default tenant | none of the four `coconut` deployments is in this state — check you are on the backend you think you are |
 | The answer is `[LLM not configured]` | no LLM on this deployment | the sources are real; use `/v1/retrieve`, or pass `llm` if a model is registered |
+
+**Every response carries `X-Request-Id`**, and the UI prints it under an error as
+`Reference: <id>`. Quote it verbatim when you report a problem — it is the grep
+key for [the operator's runbook](runbooks/tracing-a-503.md). To capture it
+yourself:
+
+```bash
+curl -sS -D- -o /dev/null -X POST $BASE/v1/retrieve -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"query":"x"}' | grep -i x-request-id
+```
+
+A store-unavailable `503` also puts it in the body as `request_id`, next to
+`reason` — a header does not survive a copy-paste into a ticket, so the body
+carries it too. Depth on all of this:
+[COOKBOOK.md → What does an error look like, and how do I correlate it?](COOKBOOK.md)
+and *Which 503s are worth retrying?*.
