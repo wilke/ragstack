@@ -1833,9 +1833,25 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             log.warning("could not verify reranker model at startup: %s", e)
 
+    # Start the latency rollup (#427 W4): every LATENCY_ROLLUP_SECONDS, one
+    # INFO line per (route, collection) carrying n / errors / p50 / p95 / max,
+    # so "is p95 creeping toward QDRANT_TIMEOUT?" is answered by grepping the
+    # log rather than by adding instrumentation after the next incident.
+    # `LATENCY_ROLLUP_SECONDS=0` starts no task at all. Stopped in the `finally`
+    # below, beside the other thing this issue started.
+    from ragstack.observability import histogram as _latency
+
+    if _latency.start_rollup():
+        log.info(
+            "latency rollup every %ss", settings.latency_rollup_seconds
+        )
+
     try:
         yield
     finally:
+        # Stop the latency rollup before anything it might describe is torn
+        # down. Cancels and awaits, so no pending task survives into shutdown.
+        await _latency.stop_rollup()
         # Disarm any pending log-level auto-revert (#427). A `call_later` timer
         # handle cannot keep the loop alive and is dropped when the loop closes,
         # so this is not load-bearing for a clean shutdown — but whatever starts

@@ -864,6 +864,20 @@ class Settings(BaseSettings):
     log_dampen_loggers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["httpx", "httpcore", "elastic_transport", "urllib3"]
     )
+    # How often the in-process latency histogram writes its rollup line (#427
+    # W4). `0` DISABLES it — no task is created at all, which is what an off
+    # switch has to mean if it is not to be a busy loop.
+    #
+    # 300 s because the line is cumulative-since-start rather than windowed: its
+    # job is to make "is p95 creeping toward QDRANT_TIMEOUT?" answerable by
+    # diffing two lines out of a log, and five minutes is fine-grained enough
+    # for a bound that crept over weeks — while costing at most a handful of
+    # lines an hour, and none at all on a process that has served no query.
+    #
+    # NOT echoed by GET /v1/config, for the same reason `log_format` is not:
+    # config_response.json is `additionalProperties: false`, so adding a field
+    # there is a contract change and W4 deliberately makes none.
+    latency_rollup_seconds: float = 300.0
     otel_exporter_otlp_endpoint: str = ""
 
     @field_validator("log_dampen_loggers", mode="before")

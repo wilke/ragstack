@@ -92,6 +92,16 @@ read rather than only in ``stages.py`` where they are computed:
   server would be the worse error, and the store-failure line for such a request
   is a WARNING on its own — but it is a real hole in "WARNING keeps every
   failure", so it is written down rather than left to be found.
+
+.. rubric:: The latency histogram (#427 W4)
+
+The same ``finally`` also feeds ``observability.histogram``, which keeps a
+bucketed distribution so that *"is the bound creeping?"* is answerable from a
+log rather than from a new instrumentation project. Two asymmetries with the
+summary line, both in ``_record_latency`` and both deliberate: the histogram
+records only an **allowlist of parameter-free routes** (the raw path this
+middleware sees would otherwise mint a series per job id), and it does not
+record ``client_disconnected`` at all.
 """
 
 from __future__ import annotations
@@ -111,6 +121,7 @@ from ragstack.observability.context import (
     current_context,
     set_context,
 )
+from ragstack.observability.histogram import latency_histogram, route_key
 from ragstack.observability.stages import StageTimings
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -246,6 +257,47 @@ def _log_summary(
     log.log(level, "request complete", extra=fields)
 
 
+def _record_latency(
+    hist_route: str | None,
+    ctx: RequestContext,
+    outcome: str,
+    wall: float,
+) -> None:
+    """Feed the in-process histogram (#427 W4). Skipped for most requests.
+
+    Two exclusions, both deliberate:
+
+    * ``hist_route is None`` — every route outside ``histogram.ALLOWED_ROUTES``.
+      This middleware knows only the raw path, so a histogram keyed on it would
+      mint one series per ``GET /v1/ingest/<job_id>``. The summary line above
+      still covers every route; only the *distribution* is restricted.
+    * ``client_disconnected`` — the wall time of a request whose client walked
+      away measures how long the client stayed, not how long the server took.
+      Recording it would both poison the latency distribution and put a closed
+      tab into the error rate, which the level table above promises it never
+      does.
+
+    Wrapped in ``except Exception`` because this is the last statement of a
+    ``finally``: an exception raised here would REPLACE the exception the
+    ``unhandled`` branch is in the middle of propagating, turning a diagnosable
+    500 into a mystery inside the observability code. The recording itself is
+    integer and float arithmetic with no failure mode; the guard is for the
+    version of this function somebody writes later.
+    """
+    if hist_route is None or outcome == "client_disconnected":
+        return
+    try:
+        latency_histogram().record(
+            hist_route,
+            ctx.collection,
+            wall,
+            ctx.stages.totals() if ctx.stages is not None else None,
+            is_error=outcome in _FAULT_OUTCOMES,
+        )
+    except Exception:  # noqa: BLE001 — see the docstring; never mask the request's own error
+        log.debug("latency histogram recording failed", exc_info=True)
+
+
 class RequestContextMiddleware:
     """Install a per-request :class:`RequestContext` and stamp the response."""
 
@@ -273,6 +325,13 @@ class RequestContextMiddleware:
             stages=StageTimings(),
         )
         set_context(ctx)
+
+        # Resolved ONCE, at entry, and `None` for all but two routes — see
+        # `histogram.route_key`. Doing it here rather than in the `finally`
+        # keeps the allowlist check off the path of the exception handling, and
+        # means every other route pays two string compares for the whole
+        # feature.
+        hist_route = route_key(scope.get("method", ""), scope.get("path", ""))
 
         status: int | None = None
         outcome = "ok"
@@ -325,6 +384,7 @@ class RequestContextMiddleware:
             concurrent = _inflight
             _inflight -= 1
             _log_summary(ctx, status, outcome, wall, concurrent)
+            _record_latency(hist_route, ctx, outcome, wall)
 
 
 def stamp_request_id(headers: MutableHeaders | dict[str, str]) -> str:
