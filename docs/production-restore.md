@@ -16,12 +16,13 @@
 >
 > **The live fleet** is four tenants behind nginx `:9000` at `/ragstack/<tenant>/api/` —
 > lucid-next 24000, asm-next 24020, dev 24040, demo 24060 — all on `v1.5.2`. To restart
-> one, use [DEPLOYMENT.md](DEPLOYMENT.md) § *Restart a tenant* or
-> [runbooks/tenant-scale-out.md](runbooks/tenant-scale-out.md).
+> one, use [DEPLOYMENT.md](DEPLOYMENT.md) § *Restart a tenant*
+> or [runbooks/tenant-scale-out.md](runbooks/tenant-scale-out.md) § *Start the API*.
 >
-> **The one paragraph still worth reading** is §2's stop procedure — resolve the pid
-> with `ss -lntp`, verify it, `kill <pid>`, and explicitly *do not* `pkill -f`. That
-> discipline predates #402 and was right.
+> **The one paragraph still worth reading** is **§1 ("Stop")** — resolve the pid with
+> `ss -lntp`, verify it, `kill <pid>`, and explicitly *do not* `pkill -f`. That
+> discipline predates #402 and was right. **Not §2 ("Restore the code")**, which is
+> `git checkout` + `git reset --hard` against the frozen checkout.
 >
 > Kept as a historical record of the pre-ADR-0005 topology.
 

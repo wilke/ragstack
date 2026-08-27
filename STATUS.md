@@ -277,7 +277,7 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 
 ```
 /rag/
-├── repos/ragstack/      # FROZEN pre-security checkout (6d6fcf6) — serves nothing
+├── repos/ragstack/      # FROZEN pre-security checkout (6d6fcf6) — serves no API
 ├── repos/tenants/<t>/   # the four SERVING checkouts, all at v1.5.2
 ├── apptainer/images/    # SIFs (qdrant.sif, elasticsearch.sif, neo4j.sif, postgres.sif, redis.sif, python.sif)
 ├── data/                # all service persistence (qdrant/, elasticsearch/, neo4j/, postgres/, redis/, embedding/)
@@ -301,14 +301,26 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 # now: python, pip, ragstack package, env vars, conda env all set
 cd $RAG_REPO/python
 # --qdrant-url defaults to :6333 — PRODUCTION on this host, and this writes (#454).
+# The :? guard matters: `. /rag/bin/activate` does NOT export QDRANT_URL, and an
+# EMPTY --qdrant-url resolves right back to localhost:6333 inside the client.
 python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpus \
-  --qdrant-url "$QDRANT_URL"
+  --qdrant-url "${QDRANT_URL:?point at a scratch or dev-tenant Qdrant (dev is :24041) — :6333 is production}"
 
 # operator: start/stop services from any cwd
 /rag/bin/rag infra-up-apptainer
 /rag/bin/rag sidecars-up-apptainer
-/rag/bin/rag infra-down-apptainer && /rag/bin/rag sidecars-down-apptainer
+
+# ⚠ THE DOWN TARGETS STOP PRODUCTION. Apptainer instance names are user-global, so
+# `down` matches the bare names `qdrant elasticsearch neo4j postgres redis` — which
+# ARE the live production stores that the asm and demo tenants serve from (and
+# `sidecars-down` takes the live embedding sidecar). "From any cwd" is the hazard,
+# not a convenience: there is no scratch/production distinction in the instance name.
+# /rag/bin/rag infra-down-apptainer && /rag/bin/rag sidecars-down-apptainer
 ```
+
+`make infra-up-apptainer` from a fresh clone collides with those same user-global
+instance names and ports — see [DEPLOYMENT.md](docs/DEPLOYMENT.md) before running it
+on this host.
 
 ### Source-of-truth rules
 
@@ -343,10 +355,11 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 5. **Smoke-test the Qdrant pipeline**
    ```bash
    cd python
-   # Both default to :6333 — PRODUCTION on the deployment host (#454). Pin them.
+   # Both default to :6333 — PRODUCTION on the deployment host (#454). An EMPTY value
+# resolves back to :6333 inside the client, so the :? guard is what actually pins it.
 python scripts/ingest_chunks.py scripts/example_chunks.json --collection demo \
-  --qdrant-url "$QDRANT_URL"
-   python scripts/search.py "what is HNSW" --collection demo --qdrant-url "$QDRANT_URL"
+  --qdrant-url "${QDRANT_URL:?set a scratch Qdrant — :6333 is production}"
+   python scripts/search.py "what is HNSW" --collection demo --qdrant-url "${QDRANT_URL:?}"
    ```
 6. **For the next chunk of work**, see "Near-term TODOs" above and the most recent `scratchpad.md` session entry.
 
