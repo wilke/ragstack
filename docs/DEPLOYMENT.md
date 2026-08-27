@@ -251,9 +251,27 @@ services unless `--start`.
 Start the API against the stamped env:
 
 ```bash
+cd /rag/repos/tenants/acme/python          # the tenant's OWN checkout
 set -a; . $RAG_DATA/tenants/acme/config/tenant.env; set +a
-uvicorn ragstack.api.main:app --host 0.0.0.0 --port <api port from the plan>
+[ -f $RAG_DATA/tenants/acme/config/secrets.env ] && \
+  { set -a; . $RAG_DATA/tenants/acme/config/secrets.env; set +a; }
+export HF_HOME=/rag/cache PYTHONPATH=$PWD
+nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app \
+  --host 0.0.0.0 --port <api port from the plan> \
+  >> $RAG_DATA/tenants/acme/logs/api-acme.log 2>&1 &
+echo $! > $RAG_DATA/tenants/acme/api-acme.pid
 ```
+
+> **`PYTHONPATH=$PWD` is not optional.** The shared venv carries an editable install that
+> resolves `ragstack` to `/rag/repos/ragstack/python` — a **frozen pre-security checkout**
+> (`prod-2026-08-01-pre-security`), not the tenant's code. Without the pin, this command
+> starts that July tree against the tenant's production stores (#432). Verify after
+> starting: `tr '\0' '\n' < /proc/$(cat …/api-acme.pid)/environ | grep ^PYTHONPATH=`.
+>
+> Only `dev` and `demo` have a `secrets.env`; `asm` and `lucid` do not — hence the guard.
+> Note the path asymmetry: **data dirs drop the `-next` suffix** (`/rag/data/tenants/asm`)
+> while worktrees and pid-file names keep it (`/rag/repos/tenants/asm-next`,
+> `api-asm-next.pid`).
 
 > The two pre-ADR production tenants stay untouched until their migration (#246); the
 > **ops architecture reference artifact still shows the shared ES** and is updated at
@@ -379,9 +397,21 @@ Restart the tenant's **API process** so the new settings are read (the stores ke
 running; only the API reads these):
 
 ```bash
-# stop the running API for this tenant, then start it against the stamped env
+# 1. Stop it BY THE RECORDED PID. Never by process-name pattern: production runs the
+#    same command line as every scratch server, and `pkill -f` took the whole fleet
+#    down for seventeen hours (#402).
+PID=$(cat "$TENANT_DATA/api-$TENANT_NAME.pid")
+tr '\0' ' ' < /proc/$PID/cmdline; readlink -f /proc/$PID/cwd   # confirm both first
+kill -TERM "$PID"; while [ -d /proc/$PID ]; do sleep 1; done
+
+# 2. Start it from the tenant's OWN checkout, with PYTHONPATH pinned (#432).
+cd "$TENANT_WORKTREE/python"
 set -a; . "$TENANT_ENV"; set +a
-uvicorn ragstack.api.main:app --host BIND_ADDR --port TENANT_API_PORT
+[ -f "$TENANT_SECRETS" ] && { set -a; . "$TENANT_SECRETS"; set +a; }
+export HF_HOME=/rag/cache PYTHONPATH=$PWD
+nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app \
+  --host BIND_ADDR --port TENANT_API_PORT >> "$TENANT_LOG" 2>&1 &
+echo $! > "$TENANT_DATA/api-$TENANT_NAME.pid"
 ```
 
 Startup is the check: under `REQUIRE_DURABLE_BACKENDS=true` (what

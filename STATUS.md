@@ -2,7 +2,17 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-08-05
+**Last updated:** 2026-08-27
+**Deployed:** all four tenants on [`v1.5.2`](https://github.com/wilke/ragstack/releases/tag/v1.5.2)
+(`b0fa27b`) — lucid-next 24000, asm-next 24020, dev 24040, demo 24060, behind the nginx
+gateway on `:9000` at `/ragstack/<tenant>/api/`. Their checkouts are
+`/rag/repos/tenants/<name>` and their data `/rag/data/tenants/<name>` — **note the data
+dirs drop the `-next` suffix**. `/rag/repos/ragstack` is a **frozen** pre-security
+checkout (`6d6fcf6`) that serves nothing; do not restart anything from it.
+**`main @ 31ad073`.**
+
+<details><summary>Historical header (v0.15.0 era, kept for the release narrative below)</summary>
+
 **Current tag:** [`v0.15.0`](https://github.com/wilke/ragstack/releases/tag/v0.15.0) at `28dbb8f` · **`main @ bdeecf4`** (post-v0.15.0 merges below; the **access-control MVP** — users/ownership/sharing/groups, ADR-0003/0004/0005 — is the newest block; **read [ROADMAP.md](ROADMAP.md) for what's next + what blocks what**)
 **Branch:** `main` (synced with `origin`). M1 ingest hardening (PR #4), M2 scalable ingestion (PR #5), the multi-endpoint embedder pool (PR #8), tenant isolation (PR #10), LLM answer generation (PR #12), the per-tenant concurrency quota (PR #13), the Elasticsearch BM25 text index + hybrid retrieval (PRs #14/#15/#16), and the **M5 intelligence layer + scholarly ingestion** — query rewriting (PR #17), cross-encoder reranking (PRs #20/#23), JSONL corpus ingestion with metadata enrichment (PRs #19/#22), and the parallel bulk ingester (PR #21) — merged. **v0.11.0** adds M4 Phase 1 (Neo4j graph store + tenant-scoped graph endpoints, PR #35), pluggable chunkers (PR #36), per-request rerank control (PR #33), injectable publisher profiles (PR #34), a shared sidecar HTTP client (PR #32), and upsert-then-prune ingest safety (PR #37). See the sections below.
 **v0.12.0** adds M4 Phase 2 — LLM KG extractor + tenant-scoped graph-retrieval fusion (PR #40, folding in the [#38](https://github.com/wilke/ragstack/issues/38) graph tenant fix); `--chunk-method {fixed,sentence,words,semantic}` in the bulk JSONL ingester, with a semantic embed-bridge and `--embedding-api-key` for token-authed embedding endpoints (PR #42); and a standalone chunking-mode comparison eval harness (`python/scripts/eval/chunking_compare.py`) benchmarking fixed/sentence/semantic on retrieval quality + cost (PR #44, recommendation: the uniformly-sized modes — semantic costs most with no quality upside). Open follow-up: Go parity for KG extraction ([#41](https://github.com/wilke/ragstack/issues/41)).
@@ -35,6 +45,9 @@ Each unit: multi-agent build (map→implement→adversarial verify→fix) + an i
 **Operational — live 3-corpus A/B rebuild** (test/prod on `coconut`; an experiment, not a repo deliverable): the SFR-Embedding-Mistral (4096-d) scientific corpus (~448k docs) is being rebuilt side-by-side in **three chunking variants** — `ragstack_sfr_tok256`, `ragstack_sfr_tok512`, `ragstack_sfr_semantic` (`semantic_pooled`) — via a 12-GPU sharded loader (coconut `:9001–9008` + lambda13; 24 shards pinned `k%N`; upsert-only + deterministic uuid5 ids). Tracked in the `prod-rebuild-dual-corpus-plan` memory + [`/rag/documents/HANDOFF-2026-07-02.md`](../../documents/HANDOFF-2026-07-02.md). **This A/B currently has no committed eval home** — see the "3-corpus A/B eval gap" TODO below.
 
 **Deployed location (test+prod):** `/rag/` on host `coconut`. See [Production layout](#production-layout-rag) below.
+
+
+</details>
 
 ## Where this fits
 
@@ -264,7 +277,8 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 
 ```
 /rag/
-├── repos/ragstack/      # git checkout — code is single-source-of-truth here
+├── repos/ragstack/      # FROZEN pre-security checkout (6d6fcf6) — serves nothing
+├── repos/tenants/<t>/   # the four SERVING checkouts, all at v1.5.2
 ├── apptainer/images/    # SIFs (qdrant.sif, elasticsearch.sif, neo4j.sif, postgres.sif, redis.sif, python.sif)
 ├── data/                # all service persistence (qdrant/, elasticsearch/, neo4j/, postgres/, redis/, embedding/)
 │   └── tenants/         # per-tenant dedicated stores + manifest.tsv (ADR-0005; provisioned by apptainer/new-tenant.sh)
@@ -286,7 +300,9 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 . /rag/bin/activate
 # now: python, pip, ragstack package, env vars, conda env all set
 cd $RAG_REPO/python
-python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpus
+# --qdrant-url defaults to :6333 — PRODUCTION on this host, and this writes (#454).
+python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpus \
+  --qdrant-url "$QDRANT_URL"
 
 # operator: start/stop services from any cwd
 /rag/bin/rag infra-up-apptainer
@@ -327,8 +343,10 @@ python scripts/ingest_chunks.py /rag/documents/chunks.json --collection my_corpu
 5. **Smoke-test the Qdrant pipeline**
    ```bash
    cd python
-   python scripts/ingest_chunks.py scripts/example_chunks.json --collection demo
-   python scripts/search.py "what is HNSW" --collection demo
+   # Both default to :6333 — PRODUCTION on the deployment host (#454). Pin them.
+python scripts/ingest_chunks.py scripts/example_chunks.json --collection demo \
+  --qdrant-url "$QDRANT_URL"
+   python scripts/search.py "what is HNSW" --collection demo --qdrant-url "$QDRANT_URL"
    ```
 6. **For the next chunk of work**, see "Near-term TODOs" above and the most recent `scratchpad.md` session entry.
 
