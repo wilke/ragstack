@@ -153,6 +153,12 @@ def test_five_pdfs_in_batches_of_two_yield_three_tasks_and_five_rows(
         "chunk_method": "fixed", "chunk_size": 200, "chunk_overlap": 20,
         "embedding_url": [embeddings_url], "embedding_model": "fake-model",
         "version": "3", "collection_id": "col-x", "spec_hash": "beef", "job_id": "j1",
+        # qdrant_url/es_url are REQUIRED inputs with no default (#407) — omitting
+        # them used to be legal only because the workflow defaulted them to
+        # production. Dead addresses: the ingest tool is forced to the in-memory
+        # backends below, so nothing dials them; a regression that started
+        # honouring them would fail to connect rather than write somewhere real.
+        "qdrant_url": "http://127.0.0.1:1", "es_url": "http://127.0.0.1:1",
     }), encoding="utf-8")
     outdir = tmp_path / "out"
     env = {**os.environ, "PYTHONPATH": str(PY_DIR)}

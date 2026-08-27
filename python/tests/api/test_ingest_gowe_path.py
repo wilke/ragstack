@@ -64,6 +64,11 @@ from ragstack.workspace import (
 from tests.workspace_support import WS_URL as WS_SERVICE_URL
 from tests.workspace_support import FakeWorkspace as WorkspaceService
 
+# Dead-but-distinctive store addresses the `gowe` fixture pins settings to (#407).
+QDRANT_UNDER_TEST = "http://127.0.0.1:1/qdrant-under-test"
+ES_UNDER_TEST = "http://127.0.0.1:1/es-under-test"
+ROUTED_UNDER_TEST = "http://127.0.0.1:1/routed-qdrant-under-test"
+
 TOKEN = "un=alice@patricbrc.org|tokenid=t-1|expiry=9999999999|sig=SECRETSIGNATURE"
 SUBJECT = "alice@patricbrc.org"
 TENANT = f"bvbrc:{SUBJECT}"
@@ -211,6 +216,13 @@ async def gowe(client, monkeypatch, _acl_store):
     monkeypatch.setattr(settings, "ingest_backend", "gowe")
     monkeypatch.setattr(security.settings, "identity_provider", "bvbrc")
     set_identity_provider(_Provider())
+    # #407: the API seeds the submission's store targets from ITS OWN settings.
+    # Distinctive and DEAD (port 1, a path no real store carries) so an assertion
+    # on them cannot be satisfied by an ambient default, and so a regression that
+    # actually dialled them would fail to connect rather than reach a live store.
+    monkeypatch.setattr(settings, "qdrant_url", QDRANT_UNDER_TEST)
+    monkeypatch.setattr(settings, "elasticsearch_url", ES_UNDER_TEST)
+    monkeypatch.setattr(settings, "qdrant_collection_routes", {})
 
     engine = FakeEngine()
     workspace = FakeWorkspace(engine)
@@ -218,7 +230,15 @@ async def gowe(client, monkeypatch, _acl_store):
     backend = GoWeBackend(
         GoWeClient("http://gowe.test", token="", http=http),
         "cwlVersion: v1.2\n", workflow_name="ragstack-pdf-ingest-scatter",
-        static_inputs={"embedding_url": ["http://emb.test/v1"], "qdrant_url": "http://q.test"},
+        # `qdrant_url` here is what an operator's GOWE_WORKFLOW_INPUTS_JSON used to
+        # be able to set. Constructed directly (not through make_ingest_backend,
+        # which now refuses these keys outright) so this fixture can assert the
+        # SECOND, independent guarantee: even if the blob carries a store target,
+        # the per-run seed wins the merge. `worker_scratch` is the control — a
+        # genuine extra, which must still pass through.
+        static_inputs={"embedding_url": ["http://emb.test/v1"],
+                       "qdrant_url": "http://evil:6333",
+                       "worker_scratch": "/scratch/under-test"},
         shards_input_key="pdfs", receipts_output_key="receipts", poll_interval=0, timeout=5,
         output_wait_timeout=5,
     )
@@ -305,7 +325,15 @@ async def test_upload_writes_sources_then_submits_once_as_the_user(client, gowe)
     assert inputs["tenant"] == TENANT and inputs["collection"] == "lib1_phys"
     assert inputs["es_index"] == "lib1_phys" and inputs["embedding_model"] == "test-model"
     assert inputs["embedding_url"] == ["http://emb.lib1/v1"]  # the entry's, over static
-    assert inputs["qdrant_url"] == "http://q.test"  # static input passes through
+    # #407: store targets are seeded PER RUN from settings, and the per-run input
+    # wins GoWeBackend's `{**static_inputs, **inputs}` merge — so the fixture's
+    # static `http://evil:6333` cannot redirect this ingest. Before the fix the
+    # submission carried no store URLs at all and the CWL's own production
+    # defaults decided; a dev-tenant ingest wrote to the production instances.
+    assert inputs["qdrant_url"] == QDRANT_UNDER_TEST
+    assert inputs["es_url"] == ES_UNDER_TEST
+    # Control: the blob is still honoured for keys the API does not own.
+    assert inputs["worker_scratch"] == "/scratch/under-test"
     assert (inputs["chunk_method"], inputs["chunk_size"], inputs["chunk_overlap"]) == (
         "fixed_token", 256, 32)
     assert "shards" not in inputs
@@ -377,6 +405,64 @@ async def test_version_increments_across_jobs(client, gowe):
     assert refs == [VERSIONS + "1", VERSIONS + "2"]
     assert gowe["store"].calls == {"get": 2, "next_version": 2, "append_version": 2}
     assert (await gowe["store"]._inner.get("lib1")).versions == [1, 2]
+
+
+# --- #407: the API seeds the store targets, per run, from its own settings --- #
+
+@pytest.mark.asyncio
+async def test_ingest_submission_carries_the_api_settings_store_urls(client, gowe):
+    """``POST /v1/ingest`` (the ws:// reference leg), not just upload.
+
+    Both legs build their inputs through ``_gowe_inputs``, and this asserts the
+    seeding on the leg the upload test does not cover — the two call sites are
+    why the seed lives in that one helper."""
+    r = await client.post("/v1/ingest",
+                          json={"source": f"ws:///{SUBJECT}/home/papers/x.pdf",
+                                "collection": "lib1"}, headers=AUTH)
+    assert r.status_code == 200, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["qdrant_url"] == QDRANT_UNDER_TEST
+    assert inputs["es_url"] == ES_UNDER_TEST
+
+
+@pytest.mark.asyncio
+async def test_a_routed_collection_is_ingested_to_its_routed_instance(
+    client, gowe, monkeypatch
+):
+    """A collection listed in ``qdrant_collection_routes`` lives on its OWN
+    Qdrant instance, and the ingest must write THERE.
+
+    The route keys on the PHYSICAL collection name (``lib1_phys``), the same key
+    the API's own store construction uses — seeding the bare ``qdrant_url``
+    instead would build a second, invisible copy of a store that already exists
+    on the routed instance. This is the deliberate divergence from the restore
+    path, which still seeds the unrouted URL (tracked as a follow-up)."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"lib1_phys": ROUTED_UNDER_TEST})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    inputs = gowe["engine"].submissions[0]["inputs"]
+    assert inputs["qdrant_url"] == ROUTED_UNDER_TEST
+    # ES has no routing analogue in config, so it stays the bare setting.
+    assert inputs["es_url"] == ES_UNDER_TEST
+
+
+@pytest.mark.asyncio
+async def test_a_route_for_another_collection_does_not_touch_this_one(
+    client, gowe, monkeypatch
+):
+    """Discriminator for the test above: with routes configured but naming a
+    DIFFERENT collection, the seed falls back to ``qdrant_url``. Without this, a
+    seed that blindly returned "the first route" would pass the routed test."""
+    from ragstack.config import settings
+
+    monkeypatch.setattr(settings, "qdrant_collection_routes",
+                        {"some_other_phys": ROUTED_UNDER_TEST})
+    r = await _upload(client, "a.pdf")
+    assert r.status_code == 202, r.text
+    assert gowe["engine"].submissions[0]["inputs"]["qdrant_url"] == QDRANT_UNDER_TEST
 
 
 @pytest.mark.parametrize("source", [

@@ -104,6 +104,11 @@ def make_ingest_backend(
     )
 
 
+# Workflow inputs the API owns and seeds per run (#407). An operator setting
+# these in GOWE_WORKFLOW_INPUTS_JSON is refused at boot — see _make_gowe_backend.
+_RESERVED_STATIC_INPUTS = frozenset({"qdrant_url", "es_url"})
+
+
 def _make_gowe_backend(
     settings: Settings, http: httpx.AsyncClient | None
 ) -> IngestBackend:
@@ -133,6 +138,20 @@ def _make_gowe_backend(
         raise ValueError(f"gowe_workflow_inputs_json is not valid JSON: {e}") from e
     if not isinstance(static_inputs, dict):
         raise ValueError("gowe_workflow_inputs_json must be a JSON object")
+    # #407: store targets are seeded per run by the ingest router, from this
+    # API's own settings, and a per-run input wins the merge in GoWeBackend.run
+    # — so these keys here would be silently INERT. Refuse at boot rather than
+    # let an operator believe a blob that does nothing is steering their writes:
+    # inert config believed live is exactly the defect this issue is.
+    reserved = sorted(k for k in _RESERVED_STATIC_INPUTS if k in static_inputs)
+    if reserved:
+        raise ValueError(
+            f"gowe_workflow_inputs_json may not set {', '.join(reserved)}: ingest store "
+            "targets are seeded per run from the QDRANT_URL / ELASTICSEARCH_URL settings "
+            "(and QDRANT_COLLECTION_ROUTES) and would override these keys silently. "
+            "Remove them from GOWE_WORKFLOW_INPUTS_JSON and set those settings instead; "
+            "the blob remains for genuine per-deployment extras."
+        )
 
     client = GoWeClient(
         base_url=settings.gowe_url, token=settings.gowe_token or None, http=http

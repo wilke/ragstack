@@ -95,7 +95,14 @@ def _job(tmp_path: Path, vdir: Path, **extra) -> Path:
         "version_dir": {"class": "Directory", "path": str(vdir)},
         "version": vdir.name, "collection_id": "lib", "tenant": "bvbrc:alice@patricbrc.org",
         "spec_hash": "cafe0001", "llm_endpoint": "http://unused.test", "llm_model": "fake",
-        "concurrency": 2, "graph_backend": "memory", **extra,
+        "concurrency": 2, "graph_backend": "memory",
+        # neo4j_uri is a REQUIRED input with no default (#407) — omitting it used
+        # to be legal only because the workflow defaulted it to bolt://localhost:7687,
+        # which is production on the deployment host. Dead address: graph_backend
+        # is `memory` here, so nothing dials it; a regression that started using it
+        # would fail to connect rather than write into the production graph.
+        "neo4j_uri": "bolt://127.0.0.1:1",
+        **extra,
     }))
     return job
 

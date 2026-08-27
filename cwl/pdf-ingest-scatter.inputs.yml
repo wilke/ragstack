@@ -1,7 +1,7 @@
 # Example inputs for cwl/pdf-ingest-scatter.cwl (one task chain + one receipt per
-# BATCH of batch_size PDFs; a row per document inside). Run against the live
-# embedding fleet (:9001-9004) + Qdrant (:6333) + ES (:9200). Use a
-# demo_*-prefixed throwaway collection for smoke tests.
+# BATCH of batch_size PDFs; a row per document inside). The store targets below are
+# PLACEHOLDERS you must replace (#407); use a demo_*-prefixed throwaway collection
+# on a NON-production instance for smoke tests.
 #
 #   CWL_SINGULARITY_CACHE=apptainer/images \
 #   APPTAINER_BIND=/rag/cache HF_HOME=/rag/cache \
@@ -23,8 +23,12 @@ embedding_url:
   - http://localhost:9003
   - http://localhost:9004
 embedding_model: Salesforce/SFR-Embedding-Mistral
-qdrant_url: http://localhost:6333
-es_url: http://localhost:9200
+# Store targets: PLACEHOLDERS on purpose (#407). Replace with the instances you
+# intend to WRITE to, and check them twice — a hand-run with a real address here
+# writes into whatever it names. The defaults these replaced pointed at the
+# deployment host's PRODUCTION Qdrant/Elasticsearch.
+qdrant_url: http://CHANGE-ME-QDRANT:6333
+es_url: http://CHANGE-ME-ES:9200
 # Archive (#357): the run's version directory lands at <outdir>/<version>/.
 version: "1"
 collection_id: demo_gowe_pdf_scatter

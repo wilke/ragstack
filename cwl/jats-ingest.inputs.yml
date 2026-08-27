@@ -38,8 +38,12 @@ embedding_url:
   - http://localhost:9002
 embedding_model: Salesforce/SFR-Embedding-Mistral
 
-# Dev tenant stores (from /rag/data/tenants/dev/config/tenant.env).
-qdrant_url: http://localhost:24041
-es_url: http://localhost:24043
+# Store targets: PLACEHOLDERS on purpose (#407). Replace with the instances you
+# intend to WRITE to, and check them twice — a hand-run with a real address here
+# writes into whatever it names. The defaults these replaced pointed at the
+# deployment host's PRODUCTION Qdrant/Elasticsearch.
+# (These previously named the dev tenant's LIVE stores, :24041/:24043.)
+qdrant_url: http://CHANGE-ME-QDRANT:6333
+es_url: http://CHANGE-ME-ES:9200
 
 backpressure: false

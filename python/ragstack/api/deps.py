@@ -59,6 +59,7 @@ from ragstack.rewriting.rewriters import (
     PassthroughRewriter,
 )
 from ragstack.scoring.scorers import RRFScorer, SidecarReranker
+from ragstack.store_routing import qdrant_url_for
 from ragstack.stores import InMemoryGraphStore, InMemoryTextIndex, InMemoryVectorStore
 from ragstack.stores.errors import VectorDimMismatch
 from ragstack.workspace import WorkspaceClient
@@ -67,13 +68,17 @@ log = logging.getLogger(__name__)
 
 
 def _qdrant_url_for(collection: str) -> str:
-    """The Qdrant base URL serving ``collection``.
+    """The Qdrant base URL serving ``collection`` — see
+    :func:`ragstack.store_routing.qdrant_url_for`, which holds the logic.
 
-    An alternate instance when the collection is routed via
-    ``qdrant_collection_routes`` (its own vm.max_map_count budget — see the config
-    field), else the default ``qdrant_url``. Keeps single-instance deployments
-    byte-for-byte unchanged (empty routes → always ``qdrant_url``)."""
-    return (settings.qdrant_collection_routes or {}).get(collection, settings.qdrant_url)
+    Kept as a name here because ``ops/store_inventory.py`` and this module's
+    tests reach for it at this path. The logic was hoisted out of ``api.deps``
+    so the ingest router can seed the same URL into a GoWe submission (#407)
+    without importing the API's dependency graph.
+
+    Reads this module's ``settings`` global on purpose — ``ops.store_inventory``
+    swaps it to audit another deployment's config through the serving code."""
+    return qdrant_url_for(collection, settings)
 
 
 def _derived_collection_name() -> str:

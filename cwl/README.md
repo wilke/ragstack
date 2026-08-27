@@ -374,6 +374,29 @@ step (#357). A static `version` in `gowe_workflow_inputs_json` is inherently
 **single-job** — every submission would write the same `versions/1/` — fine for
 a hand-driven run, but the API path below assigns them per job.
 
+### Store targets are required inputs, with no defaults (#407)
+
+`qdrant_url` / `es_url` (and `neo4j_uri` in `graph-extract.cwl`) are **required**
+inputs of every workflow that writes: name them, or the run refuses. They used to
+carry defaults (`http://localhost:6333`, `http://localhost:9200`,
+`bolt://localhost:7687`) — which on the deployment host are **production**, so a
+run that omitted them wrote to production. That is how a dev-tenant ingest built a
+collection and an index on the production instances. The `*.inputs.yml` examples
+now carry `CHANGE-ME` placeholders for the same reason: an example file naming a
+real instance is one hand-run away from writing to it.
+
+They are **not** operator config either. The API seeds them into every ingest
+submission per run from its own `QDRANT_URL` / `ELASTICSEARCH_URL` settings
+(honouring `QDRANT_COLLECTION_ROUTES` for the vector store). Because
+`GoWeBackend.run` merges `{**static_inputs, **per_run_inputs}`, the per-run value
+wins — `GOWE_WORKFLOW_INPUTS_JSON` is *structurally* unable to redirect an ingest
+at another instance, and setting these keys in it is **refused at boot** rather
+than left silently inert. The blob remains for genuine per-deployment extras.
+
+A sweep in `python/tests/ingestion/test_pdf_ingest_scatter_cwl.py` walks every
+`cwl/*.cwl` — inlined `steps[].run` tools included — and fails on any `default:`
+naming a localhost address, so the class cannot come back one file at a time.
+
 > **Reachable from config since #203 (2a).** `GOWE_SHARDS_INPUT_KEY` (default
 > `pdfs`) and `GOWE_RECEIPTS_OUTPUT_KEY` (default `receipts`) are `Settings`
 > fields that `make_ingest_backend` threads into `GoWeBackend`; set

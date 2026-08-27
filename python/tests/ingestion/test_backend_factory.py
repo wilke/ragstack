@@ -81,6 +81,56 @@ def test_gowe_non_object_inputs_json_raises(tmp_path):
         ))
 
 
+@pytest.mark.parametrize("blob, named", [
+    ('{"qdrant_url": "http://evil:6333"}', "qdrant_url"),
+    ('{"es_url": "http://evil:9200"}', "es_url"),
+    ('{"es_url": "http://e:9200", "qdrant_url": "http://e:6333"}', "es_url, qdrant_url"),
+])
+def test_gowe_inputs_json_may_not_set_store_targets(tmp_path, blob, named):
+    """#407: the ingest router seeds ``qdrant_url``/``es_url`` per run from
+    QDRANT_URL / ELASTICSEARCH_URL, and a per-run input wins GoWeBackend's merge
+    — so these keys in the blob are INERT. Refuse at boot rather than let an
+    operator run for months believing config that does nothing is steering their
+    writes: inert config believed live is this very defect family (#407 is its
+    fourth instance). The message must name the remedy, because the operator who
+    hits this is mid-deploy."""
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text("cwlVersion: v1.2\nclass: Workflow\n")
+    with pytest.raises(ValueError) as exc:
+        make_ingest_backend(_settings(
+            ingest_backend="gowe", gowe_workflow_cwl=str(cwl),
+            gowe_workflow_inputs_json=blob,
+        ))
+    msg = str(exc.value)
+    assert f"may not set {named}" in msg
+    assert "QDRANT_URL" in msg and "ELASTICSEARCH_URL" in msg
+
+
+def test_gowe_inputs_json_still_accepts_genuine_extras(tmp_path):
+    """Control for the refusal above — it must reject the reserved keys, not the
+    blob. A refusal that rejected any non-empty blob would pass the test above."""
+    cwl = tmp_path / "wf.cwl"
+    cwl.write_text("cwlVersion: v1.2\nclass: Workflow\n")
+    b = make_ingest_backend(_settings(
+        ingest_backend="gowe", gowe_workflow_cwl=str(cwl),
+        gowe_workflow_inputs_json='{"batch_size": 20, "qdrant_urls": "not-reserved"}',
+    ))
+    assert b.static_inputs == {"batch_size": 20, "qdrant_urls": "not-reserved"}
+
+
+def test_local_backend_ignores_a_store_target_in_the_blob(tmp_path):
+    """The refusal is scoped to the gowe backend, where the blob is read at all.
+
+    Blast radius check (#407): of the four deployed tenants only ``dev`` sets
+    ``INGEST_BACKEND=gowe``, so an upgrade cannot brick a tenant whose blob is a
+    leftover but whose backend is local."""
+    assert isinstance(
+        make_ingest_backend(_settings(
+            gowe_workflow_inputs_json='{"qdrant_url": "http://evil:6333"}')),
+        LocalAsyncIORunner,
+    )
+
+
 def test_gowe_backend_built_with_static_inputs(tmp_path):
     cwl = tmp_path / "ingest-bulk.cwl"
     cwl.write_text("cwlVersion: v1.2\nclass: Workflow\n")

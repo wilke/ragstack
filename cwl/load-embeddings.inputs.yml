@@ -6,8 +6,12 @@ embeddings:
 collection: ragstack_sfr_tok256
 es_index: ragstack_sfr_tok256
 tenant: public
-qdrant_url: http://localhost:6333
-es_url: http://localhost:9200
+# Store targets: PLACEHOLDERS on purpose (#407). Replace with the instances you
+# intend to WRITE to, and check them twice — a hand-run with a real address here
+# writes into whatever it names. The defaults these replaced pointed at the
+# deployment host's PRODUCTION Qdrant/Elasticsearch.
+qdrant_url: http://CHANGE-ME-QDRANT:6333
+es_url: http://CHANGE-ME-ES:9200
 fail_on_error: true
 # Upsert backpressure (#141) is OFF by default — the capped-Qdrant A/B benchmark
 # found it adds latency without preventing drops below crash-scale. Set true for a

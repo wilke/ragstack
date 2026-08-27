@@ -17,6 +17,7 @@ Offline: parses the YAML, runs nothing. The end-to-end run under cwltool is
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,103 @@ def test_max_chunks_is_an_optional_input_threaded_to_ingest_shard(wf: dict) -> N
     tool_in = ingest["run"]["inputs"]["max_chunks"]
     assert tool_in["type"] == "int" and tool_in["default"] == 0
     assert tool_in["inputBinding"]["prefix"] == "--max-chunks"
+
+
+# --- the store-target sweep: every CWL in the repo, not just this one -------- #
+#
+# #407: `qdrant_url`/`es_url` defaulted to `http://localhost:6333`/`:9200` and
+# `neo4j_uri` to `bolt://localhost:7687` — which on the deployment host are the
+# PRODUCTION instances. A run that omitted them wrote to production, and one
+# did: a dev-tenant ingest built a collection and an index on the production
+# Qdrant and Elasticsearch. That is the fourth instance of "a default that
+# resolves to the wrong thing" (#363, #369, #392, #407), so these two tests
+# guard the CLASS across every file in `cwl/`, not the five that were wrong.
+
+CWL_DIR = CWL_PATH.parent
+_LIVE_URL = re.compile(r"^(https?|bolt)://(localhost|127\.0\.0\.1)")
+# The keys that name a store the run WRITES to. Deliberately not
+# `embedding_url`: an embedding endpoint is read-only and the examples legitimately
+# name the local fleet, so sweeping every URL-shaped value would force a
+# placeholder there and teach the next reader to ignore this test.
+_STORE_KEYS = ("qdrant_url", "es_url", "neo4j_uri")
+
+
+def _defaults(node: object, path: str = "") -> list[tuple[str, object]]:
+    """Every value under a ``default`` key ANYWHERE in a parsed CWL document.
+
+    Recursive on purpose: a scan of top-level ``inputs`` misses the tool inlined
+    at ``steps.load.run`` in ``graph-extract.cwl``, which carried its own
+    ``bolt://localhost:7687`` — a real hit this test is required to catch."""
+    found: list[tuple[str, object]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key == "default":
+                found.append((here, value))
+            found.extend(_defaults(value, here))
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            found.extend(_defaults(value, f"{path}[{i}]"))
+    return found
+
+
+def _cwl_files() -> list[Path]:
+    return sorted(CWL_DIR.glob("*.cwl"))
+
+
+def test_the_sweep_actually_sees_the_cwl_files() -> None:
+    """Anti-vacuity guard for the parametrized sweep below.
+
+    ``_cwl_files()`` runs at COLLECTION time: a checkout without ``cwl/`` (or a
+    moved directory) would parametrize over an empty list, and a sweep that
+    examines nothing passes. This fails instead, and pins the known hits'
+    files so a rename can't quietly shrink the swept set."""
+    names = {p.name for p in _cwl_files()}
+    assert len(names) >= 10, f"only {len(names)} CWL files found under {CWL_DIR}"
+    assert {
+        "pdf-ingest-scatter.cwl", "pdf-ingest.cwl", "load-embeddings.cwl",
+        "restore-collection.cwl", "graph-extract.cwl",
+    } <= names
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_no_cwl_input_defaults_to_a_localhost_address(cwl: Path) -> None:
+    """No input of any workflow or tool — inlined ``steps[].run`` tools included
+    — may default to a localhost address.
+
+    An address default is a decision about WHERE a run writes, made by the file
+    instead of the caller, and on this host every localhost store address is a
+    production one. Required inputs make an omission refuse loudly instead."""
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    offenders = [
+        (where, value)
+        for where, value in _defaults(doc)
+        if isinstance(value, str) and _LIVE_URL.match(value)
+    ]
+    assert offenders == [], (
+        f"{cwl.name} defaults an input to a live-looking address: {offenders}. "
+        "Store/service targets must be required inputs (#407) — the caller names "
+        "them, or the run refuses."
+    )
+
+
+def test_no_cwl_example_job_names_a_live_store() -> None:
+    """The ``*.inputs.yml`` examples must name placeholder stores.
+
+    Not a style point: ``jats-ingest.inputs.yml`` pointed ``qdrant_url``/``es_url``
+    at :24041/:24043 — the DEV TENANT's live stores — so a copy-paste hand-run
+    with the example file wrote into a live tenant. Only the write-target keys
+    are swept; ``embedding_url`` names read-only model endpoints and may stay
+    concrete."""
+    offenders = []
+    for job in sorted(CWL_DIR.glob("*.inputs.yml")):
+        doc = yaml.safe_load(job.read_text(encoding="utf-8")) or {}
+        for key in _STORE_KEYS:
+            value = doc.get(key)
+            if isinstance(value, str) and _LIVE_URL.match(value):
+                offenders.append((job.name, key, value))
+    assert offenders == [], (
+        f"example job files name live stores: {offenders}. Use an obvious "
+        "placeholder (http://CHANGE-ME-QDRANT:6333) — an example that names a real "
+        "instance is one hand-run away from writing to it (#407)."
+    )
