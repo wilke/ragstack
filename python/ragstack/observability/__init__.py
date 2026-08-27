@@ -47,13 +47,25 @@ from ragstack.observability.logging_config import (
     resolve_log_level,
 )
 from ragstack.observability.middleware import RequestContextMiddleware, new_request_id
+from ragstack.observability.stages import (
+    EXTERNAL_STAGES,
+    STAGE_NAMES,
+    StageTimings,
+    note,
+    note_query_sha,
+    query_sha,
+    stage,
+)
 
 __all__ = [
     "DEFAULT_DAMPEN_LOGGERS",
+    "EXTERNAL_STAGES",
     "LOG_LEVEL_NAMES",
     "RequestContext",
     "RequestContextFilter",
     "RequestContextMiddleware",
+    "STAGE_NAMES",
+    "StageTimings",
     "apply_dampening",
     "apply_log_level",
     "clear_context",
@@ -61,6 +73,10 @@ __all__ = [
     "configured_dampen_loggers",
     "current_context",
     "new_request_id",
+    "note",
+    "note_query_sha",
+    "query_sha",
     "resolve_log_level",
     "set_context",
+    "stage",
 ]

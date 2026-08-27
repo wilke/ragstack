@@ -830,10 +830,18 @@ class Settings(BaseSettings):
     # change, and this setting does not warrant one.
     log_format: str = "logfmt"
     # Disable uvicorn's access log because our own per-request summary line is a
-    # strict superset of it. Default FALSE until that line exists (#427 W3) —
-    # turning it on now would just lose the access log and replace it with
-    # nothing.
-    access_log_replaced: bool = False
+    # strict superset of it: method, path and status, plus the request id, the
+    # tenant, the wall time, the per-stage breakdown and the in-flight count.
+    #
+    # Default TRUE since #427 W3 landed that line. The two must flip together or
+    # the volume argument is false. That argument, stated correctly: the line
+    # count is invariant GIVEN dampening plus this access-log replacement —
+    # every request already produced one uvicorn access line and ours replaces
+    # it 1:1, while W1's `log_dampen_loggers` removes the 5-14 transport lines
+    # per query that root-at-INFO would otherwise have added. Bytes per line
+    # grow roughly 3-4x (~100 -> ~350 B). Set FALSE to keep uvicorn's access log
+    # as well, at the cost of two lines per request.
+    access_log_replaced: bool = True
     # Loggers pinned to WARNING while the root level is INFO or higher, and left
     # alone at DEBUG. A setting rather than a hardcoded list so an operator can
     # change it without a code change.
@@ -850,7 +858,9 @@ class Settings(BaseSettings):
     # neo4j and qdrant_client are deliberately NOT here: they sit closer to our
     # own data path and are far less chatty. The noise problem is the transports.
     # See observability/logging_config.py for what damping costs and the one
-    # thing W3 must carry forward.
+    # thing it had to carry forward — which endpoint served the embed call. W3
+    # discharged that: embed_pool records it and it reaches the summary line as
+    # `embed_ep=`.
     log_dampen_loggers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["httpx", "httpcore", "elastic_transport", "urllib3"]
     )

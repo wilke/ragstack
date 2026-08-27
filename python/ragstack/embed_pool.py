@@ -17,6 +17,10 @@ import httpx
 
 from ragstack.embedders import make_embedder
 
+# The submodule, not the package (which would drag starlette in through the
+# middleware). `note` no-ops outside a request, which is the ingest path.
+from ragstack.observability.stages import note
+
 log = logging.getLogger(__name__)
 
 # 4xx codes that mean "retry on another endpoint", not "bad input": a busy /
@@ -108,7 +112,7 @@ class PooledEmbedder:
                     break
                 ep.active += 1
                 try:
-                    return await ep.embedder.embed(texts)
+                    vectors = await ep.embedder.embed(texts)
                 except (httpx.HTTPError, OSError) as e:
                     status = (
                         e.response.status_code
@@ -136,6 +140,18 @@ class PooledEmbedder:
                         status or "network",
                         e,
                     )
+                else:
+                    # WHICH endpoint served this embed. Before #427 this was
+                    # carried only by httpx's INFO lines, and W1's log dampening
+                    # mutes those — `logging_config.apply_dampening` names
+                    # preserving it as W3's obligation, because "was it always
+                    # the same slow one?" is a real question about a six-endpoint
+                    # vLLM fleet and nothing else can answer it. The choice is
+                    # made here, per call, least-loaded: the caller cannot
+                    # recover it. Distinct values accumulate, so a request whose
+                    # batches fanned out shows all of them.
+                    note("embed_ep", ep.health_url)
+                    return vectors
                 finally:
                     ep.active -= 1
             raise RuntimeError("all embedding endpoints failed") from last_exc

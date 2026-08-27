@@ -32,6 +32,8 @@ from ragstack.api.scope import shared_scope
 from ragstack.api.security import Principal, resolve_principal, resolve_tenant
 from ragstack.config import settings
 from ragstack.models import ContextChunk, ScoredChunk, Source
+from ragstack.observability.context import current_context
+from ragstack.observability.stages import note_query_sha, stage
 from ragstack.protocols import QueryRewriter
 from ragstack.retrieval.retriever import (
     STAMP_KEY,
@@ -267,7 +269,8 @@ async def _maybe_rerank(
     if reranker is None or not scored:
         return scored
     try:
-        reranked = await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
+        with stage("rerank"):
+            reranked = await reranker.score(query, [s.chunk for s in scored], top_k=top_k)
         return _restamp(scored, reranked)
     except asyncio.CancelledError:
         raise
@@ -351,7 +354,8 @@ async def _retrieve_fused(
                 for v in variants
             )
         )
-        scored = _RRF.fuse(list(ranked))
+        with stage("fuse"):
+            scored = _RRF.fuse(list(ranked))
     # Multi-collection fan-out (#253): the wrapper returns the fused UNION of
     # its legs (up to N × depth candidates). The rerank pool is a cost the
     # caller budgets with ``rerank_candidates`` (the pool "fed to the
@@ -548,6 +552,15 @@ async def _resolve_entry(
     # contradict the pick — resolve_read_many and resolve_access are
     # semantically identical for `read`.
     await enforce_access(principal, entry.id, "read")
+    # Stamp the registry id onto the request context so every log line this
+    # request produces — the summary line included — names the collection. Every
+    # collection-scoped route funnels through here, so this is the one place it
+    # has to go. On a multi-collection request this loop runs once per member
+    # and the LAST one wins; `collections=N` below says how many there were and
+    # the summary line's `by_coll` carries the per-leg timings.
+    ctx = current_context()
+    if ctx is not None:
+        ctx.collection = entry.id
     return entry
 
 
@@ -594,6 +607,9 @@ async def _resolve_retrieval(
             status_code=422,
             detail="collections: two ids resolve to the same collection",
         )
+    ctx = current_context()
+    if ctx is not None:
+        ctx.collections = len(entries)
     legs: list[CollectionLeg] = []
     targets: dict[str | None, tuple[Any, dict[str, Any]]] = {}
     for entry in entries:
@@ -649,9 +665,19 @@ async def retrieve(
     """Retrieve relevant chunks (caller's tenant + public) via hybrid
     vector + BM25 retrieval (+ optional cross-encoder rerank), without
     generating an answer."""
-    retriever, filters, targets = await _resolve_retrieval(
-        registry, request.collection, request.collections, principal, tenant, request.filters
-    )
+    # The query TEXT is never logged (#114); its 8-hex fingerprint is, so two
+    # occurrences of the same query can be correlated across requests. Computed
+    # here because the middleware cannot read the request body.
+    note_query_sha(request.query)
+    # `authz` is not an optional stage: since #419 _resolve_retrieval is a
+    # batched ACL round trip to Postgres plus the lifecycle gate, i.e. an
+    # EXTERNAL call. ADR-0006 makes the Go trigger a residual over "everything
+    # not attributable to an external call", so leaving this untimed would
+    # inflate the Python layer's apparent cost (#427 W3).
+    with stage("authz"):
+        retriever, filters, targets = await _resolve_retrieval(
+            registry, request.collection, request.collections, principal, tenant, request.filters
+        )
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     scored = await _retrieve_fused(
         retriever,
@@ -666,7 +692,11 @@ async def retrieve(
         tenant_id=tenant,
         mode=request.retrieval_mode,
     )
-    context = await _expand_sources(targets, scored, request.context_window)
+    # `expand` likewise: N batched get_chunks round trips to the vector store.
+    # Recorded even when context_window=0 makes it a no-op — "we timed it and it
+    # was zero" is a fact; a missing field is an unanswered question.
+    with stage("expand"):
+        context = await _expand_sources(targets, scored, request.context_window)
     return RetrieveResponse(sources=_to_sources(scored, context))
 
 
@@ -749,12 +779,20 @@ async def query(
     request only (the global assignment is untouched) — the corpus and, for the
     llm override, the retrieval path stay fixed, so it's a clean A/B.
     """
+    note_query_sha(request.query)  # fingerprint only, never the text (#114)
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
-    retriever, filters, targets = await _resolve_retrieval(
-        registry, request.collection, request.collections, principal, tenant, request.filters
-    )
-    variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
+    # `authz` is not an optional stage: since #419 _resolve_retrieval is a
+    # batched ACL round trip to Postgres plus the lifecycle gate, i.e. an
+    # EXTERNAL call. ADR-0006 makes the Go trigger a residual over "everything
+    # not attributable to an external call", so leaving this untimed would
+    # inflate the Python layer's apparent cost (#427 W3).
+    with stage("authz"):
+        retriever, filters, targets = await _resolve_retrieval(
+            registry, request.collection, request.collections, principal, tenant, request.filters
+        )
+    with stage("rewrite"):
+        variants = await _expand_query(request.query, request.rewrite_strategies, rewriters)
     scored = await _retrieve_fused(
         retriever,
         reranker,
@@ -773,13 +811,18 @@ async def query(
     # list and only decorates the sources. The generator sees the decorated
     # sources, so with ``context_window > 0`` the answer is grounded in each
     # passage plus its neighbours (see RagGenerator._format_context).
-    context = await _expand_sources(targets, scored, request.context_window)
+    # `expand` likewise: N batched get_chunks round trips to the vector store.
+    # Recorded even when context_window=0 makes it a no-op — "we timed it and it
+    # was zero" is a fact; a missing field is an unanswered question.
+    with stage("expand"):
+        context = await _expand_sources(targets, scored, request.context_window)
     sources = _to_sources(scored, context)
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:
         try:
-            answer = await generator.generate(request.query, sources)
+            with stage("generate"):
+                answer = await generator.generate(request.query, sources)
         except Exception:
             # Retrieval already succeeded — don't fail the whole query on an LLM
             # outage or a malformed/empty response. Return the sources with a note.

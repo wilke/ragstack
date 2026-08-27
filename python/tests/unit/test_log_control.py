@@ -332,13 +332,20 @@ def test_uvicorn_loggers_are_not_governed_by_the_root_level():
     ``effective_level: DEBUG`` may reasonably expect otherwise, so the behaviour
     is pinned here and documented in the contract.
 
-    The side benefit: a complete denial of observability is not reachable through
-    this endpoint — uvicorn's access log survives any level set here.
+    Scoped to LEVELS. Whether the access log is *enabled* is a separate switch:
+    #427 W3 flipped ``access_log_replaced`` to True, so importing the app calls
+    ``configure_logging`` and sets ``uvicorn.access.disabled``, process-wide, for
+    the rest of the session. ``isEnabledFor`` consults that flag, so the test
+    clears it here (and restores it) rather than asserting through it — the
+    claim under test is "root's level does not reach uvicorn", not "the access
+    log is on".
     """
     access = logging.getLogger("uvicorn.access")
     before, before_propagate = access.level, access.propagate
+    before_disabled = access.disabled
     try:
         access.propagate = False
+        access.disabled = False
         access.setLevel(logging.INFO)
 
         log_control.set_level(level="CRITICAL")
@@ -354,6 +361,7 @@ def test_uvicorn_loggers_are_not_governed_by_the_root_level():
         log_control.reset()
         access.setLevel(before)
         access.propagate = before_propagate
+        access.disabled = before_disabled
 
 
 # --------------------------------------------------------------------------- #

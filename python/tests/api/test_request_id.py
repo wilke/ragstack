@@ -190,11 +190,13 @@ async def test_a_client_disconnect_is_not_recorded_as_a_server_error(
     """``except BaseException`` also catches ``asyncio.CancelledError``, which on
     an ASGI server means the CLIENT went away — not a server fault.
 
-    Harmless today because this line is DEBUG, but #427 W3 promotes it to
-    INFO/WARNING with a status, at which point every user who closes a tab
+    Written while this line was still DEBUG and therefore harmless, so that W3's
+    promotion to INFO/WARNING would inherit the right behaviour rather than
+    having to notice it: without this branch every user who closed a tab
     mid-query would manufacture a 500 in the log and, via W4's rollup, in the
-    error rate. Pre-empted here so W3 inherits the right behaviour rather than
-    having to notice it.
+    error rate. W3 has landed; the OUTCOME is pinned here and the LEVEL that
+    goes with it (``client_disconnected`` at INFO) is pinned in
+    ``test_query_summary_line.py::test_the_level_matches_the_outcome``.
 
     Driven at the ASGI layer directly: httpx cannot produce a mid-request client
     disconnect against ``ASGITransport``, and the point is what the middleware

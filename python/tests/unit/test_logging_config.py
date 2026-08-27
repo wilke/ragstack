@@ -421,13 +421,37 @@ def test_apply_log_level_never_raises_on_a_bad_value():
     assert warning is not None
 
 
-def test_access_log_is_left_alone_by_default():
-    """``access_log_replaced`` defaults FALSE in W1 — the summary line that would
-    supersede uvicorn's access log does not exist until W3, and turning it off
-    now would just lose the access log and replace it with nothing."""
+def test_the_access_log_switch_goes_both_ways():
+    """``quiet_uvicorn_access`` is honoured in both directions, and is
+    re-appliable — ``configure_logging`` is called at import and again by
+    anything that reconfigures."""
     logging.getLogger("uvicorn.access").disabled = False
     configure_logging(level="INFO", quiet_uvicorn_access=False)
     assert logging.getLogger("uvicorn.access").disabled is False
 
     configure_logging(level="INFO", quiet_uvicorn_access=True)
     assert logging.getLogger("uvicorn.access").disabled is True
+
+
+def test_the_uvicorn_access_log_is_replaced_by_default():
+    """``access_log_replaced`` defaults TRUE since #427 W3, and the flip had to
+    ship in the same PR as the per-request summary line: with the line and
+    without the flip every request logs twice; with the flip and without the
+    line the access log is lost and replaced by nothing.
+
+    The volume claim, stated correctly — the plan's original wording was
+    falsified by W1 and must not be repeated: line count is invariant **given**
+    dampening plus this replacement. Ours replaces uvicorn's 1:1, and
+    ``log_dampen_loggers`` removes the 5-14 transport lines per query that
+    root-at-INFO would otherwise have added. Bytes per line grow ~3-4x
+    (~100 -> ~350 B).
+    """
+    from ragstack.config import settings
+
+    assert settings.access_log_replaced is True
+
+    logging.getLogger("uvicorn.access").disabled = False
+    configure_logging(level="INFO")
+    assert logging.getLogger("uvicorn.access").disabled is True, (
+        "the summary line exists, so uvicorn's access line is a duplicate"
+    )

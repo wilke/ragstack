@@ -11,8 +11,9 @@ Nothing in the API-level tests actually pins that distinction, and it is easy to
 believe they do: ``resolve_principal`` is an async dependency running in the
 request's own context chain, so a ``set()`` *there* is visible and converting it
 changes nothing. The difference only appears across a task boundary — which is
-exactly where W3 will be writing. So it is pinned here, directly, before anyone
-builds on it.
+exactly where W3 writes: ``observability.stages.stage`` records from inside the
+``asyncio.gather`` children of the query path's three (nested) fan-out sites. So
+it is pinned here, directly, rather than inferred from those.
 """
 import asyncio
 import contextvars
