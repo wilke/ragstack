@@ -18,14 +18,19 @@ affected: it is the only tenant setting `INGEST_BACKEND=gowe`, and the refusal l
 
 | | |
 |---|---|
-| **#422 PR-2 / PR-3 — the remaining "caller's default collection" copies** | `IN PROGRESS`. The read paths (`GET`/`DELETE /v1/documents`) and the writable-set ingest picker. Until both land, the user from the #419 incident can ask questions but **still cannot list documents or upload**. |
-| **#405 — a second principal in conformance** (#432 PR-2) | `IN PROGRESS`. Four distinct keys, `RAGSTACK_API_KEY_P2`, and a `client` fixture that actually authenticates — the persona axis P1–P4 exists in the matrix but cannot be expressed over HTTP today. |
+| **Deploying #422** | `NEXT`. #447 and #453 are merged and unreleased. Until they ship, the user from the #419 incident can ask questions but **still cannot list documents or upload** — the fix exists only on `main`. This is the one item with a person waiting on it. |
+| **#422 PR-4 (W12–W14)** | `NOT STARTED`, and deliberately not blocking the deploy. |
 
-Both are being built from Fable-reviewed plans, one worktree each. #422 is the user-facing one.
+Merged this cycle, unreleased: **#452** (#405 — the P2 conformance persona), **#447** and **#453**
+(#422 — the documents read paths and the writable-set ingest picker).
 
-Immediately after: deploy whichever lands first, then move `asm-next` / `lucid-next` / `demo`
-from `v1.5.0` to the current tag — they have been held only because `v1.5.1` carries nothing
-user-facing.
+Sequencing: tag and deploy to `dev`, re-run the affected user's journey there, then move
+`asm-next` / `lucid-next` / `demo` off `v1.5.0`. Those three were held while `v1.5.1` carried
+nothing user-facing; that stops being true with #422 in the release.
+
+**Not proven live:** every #422 claim is an F/C-layer claim. The L-layer re-run against a real
+caller has not happened, and neither has the multi-batch upload run that #414/#415 blocked —
+those defects are fixed in code and unre-proven on live infrastructure.
 
 ---
 
@@ -99,18 +104,29 @@ diagnostic that would have caught all six, from the W7 implementer:
 
 ### Recurring defect class: a default that resolves to production
 
-Seven instances found so far — #363, #369, #392, #407, both halves of #432, and
-`conformance/conftest.py`'s `RAGSTACK_BASE_URL` default (#405). The newest are the worst, because
-they are in the test harness itself: `pytest` imports production code unless `PYTHONPATH` is
-pinned, the Elasticsearch integration test defaulted to the production cluster, and the
-conformance suite — which *creates and deletes collections* — defaulted to `http://localhost:8000`,
-the live legacy API on this host. A suite that may import production code, write to a production
-cluster and provision collections on a production API cannot be the evidence base for anything
-else.
+**Eight instances**, by the counting rule below — #363, #369, #392, #407, both halves of #432,
+`conformance/conftest.py`'s `RAGSTACK_BASE_URL` default (#405), and the write-path CLI scripts
+(#454). The harness ones are the worst, because they undermine every other claim: `pytest`
+imports production code unless `PYTHONPATH` is pinned, the Elasticsearch integration test
+defaulted to the production cluster, and the conformance suite — which *creates and deletes
+collections* — defaulted to `http://localhost:8000`, the legacy production API's address on this
+host. A suite that may import production code, write to a production cluster and provision
+collections on a production API cannot be the evidence base for anything else.
 
-The shape is the same in all seven: the default **is** the documented convention (port 8000 is
+**Counting rule** (so the number stops drifting every time someone adds a line): one entry per
+*distinct defect* — issue-tracked, in mainline code or the test harness, whose default resolves to
+a live production store or API on this host — counted **once however often it is rediscovered**.
+#451 was #392 found a second time from a different direction and is closed as a duplicate rather
+than counted twice. Deliberately excluded: example inputs and `.env.example` (documentation, not a
+firing default), and runbook prose.
+
+The shape is the same in all eight: the default **is** the documented convention (port 8000 is
 Python, `localhost:9200` is Elasticsearch), and the convention is right — on a laptop. It is a
 defect here because the deployment host is also the development host, so the convention and
 production name the same address. The fix is never to change the convention; it is to make the
 value *required*, and to keep the convention in the invocation (a Make target), where it cannot
 fire by accident.
+
+One caution about the evidence: whether a given address is *listening right now* is not what makes
+these defects. `:8000` was down when #405's fix was reviewed. The defect is that the value names
+production, and the fleet's uptime is not a safety property of the test suite.
