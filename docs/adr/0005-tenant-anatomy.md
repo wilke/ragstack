@@ -64,6 +64,37 @@ an authorization tier, so there is no bypass role. `0` disables it. Because the 
 per store instance and stores are per tenant, the cap multiplies with tenants exactly as
 ADR-0003 intended.
 
+*Amended (the cap counts physical presence, and is met by eviction rather than refusal),
+2026-08-27.* Two things changed under this decision; the cap itself, its value and its
+applicability to admins are unchanged.
+
+*What it counts.* Collections now have a lifecycle (`active`, `archiving`, `dormant`,
+`restoring`, `lost`), and the cap bounds the rows whose stores are **physically present** —
+`PHYSICAL = {active, archiving, restoring}` — not registered rows. A `dormant` collection
+holds only its Workspace archive and is not counted. This is what closes amendment 6's
+second bullet: the cap "could not count the thing it protects" and now does, which is only
+sound because exclusive ownership makes a physical count a per-tenant count. The count runs
+inside the same atomic store section as the id reservation, so eviction freeing a slot and a
+create taking it cannot interleave (#286).
+
+*What happens at the bound.* It is no longer a plain refusal. A create at the bound
+**evicts**: `ops/evict.py` picks the least-recently-accessed `active` collection whose
+archive is current, compare-and-swaps its row `active → dormant` first, then drops its two
+stores, and the create proceeds into the freed slot. Refusal is now the exhausted case —
+**507**, naming the per-reason counts, when nothing is evictable (an in-flight ingest, a
+pending archive, the legacy shared surface's stores, or a store another registry id also
+serves). A **restore** competing for the same last slot answers **503 + `Retry-After`**
+with its row left `dormant`, because unlike a create it is a resumable wait rather than a
+failure. The two admissions pass the same effective limit, so the physically-present count
+cannot exceed the bound across creates and restores (#359/#381).
+
+That a cap can now *silently release someone else's stores* is the consequence to state
+plainly: it is safe only because eviction may destroy nothing that does not exist elsewhere
+— hence "whose archive is current" — and because a dormant collection restores on first
+access. Where an archive is missing or fails verification the row is `lost` and answers 409
+until its owner repairs it; that state is the honest failure of this bargain, not an
+exception to it.
+
 ## Migration
 
 Only two real tenants exist; everything else in the shared stores is test/demo. Both run
