@@ -52,6 +52,16 @@ PAGES = [
         blurb="Pick a deployment, sign in, create a collection, query it, walk to the next chunk, read the config — for people using RAGStack, not running it.",
     ),
     dict(
+        src="COOKBOOK.md", out="cookbook.html", label="Cookbook",
+        card="Cookbook — tasks, by audience",
+        blurb="Thirty-six questions people actually ask, answered in the UI and over the API: signing in, finding your collection, uploading, sharing, reading a 503, tracing a request id, rotating keys.",
+    ),
+    dict(
+        src="API.md", out="api.html", label="Reference",
+        card="API Reference",
+        blurb="Every endpoint: auth and tenancy, request and response shapes, status codes, limits, and the data models.",
+    ),
+    dict(
         src="cookbook-users.md", out="cookbook-users.html", label="Cookbook",
         card="Cookbook — Using a deployment",
         blurb="Copy-paste curl recipes for every step of the user guide, against the live gateway, plus a troubleshooting table.",
