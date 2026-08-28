@@ -13,7 +13,7 @@ Every recipe assumes two shell variables. Set them once:
 
 ```bash
 # 0. Pick a deployment (see the table in the user guide) and a credential.
-export BASE=http://coconut.cels.anl.gov:9000/ragstack/demo/api
+export BASE=https://www.bv-brc.org/ragstack/demo/api
 
 # EITHER a key the operator gave you …
 export AUTH="X-API-Key: rk-your-key-here"

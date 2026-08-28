@@ -23,14 +23,19 @@ mounts every deployment under one hostname:
 
 | Deployment | UI | API base | Who it is for |
 |---|---|---|---|
-| `dev` | `http://coconut.cels.anl.gov:9000/ragstack/dev/ui/` | `…/ragstack/dev/api` | Sandbox with its own stores (`oa-dev`, ~24k chunks). Break things here. |
+| `dev` | `https://www.bv-brc.org/ragstack/dev/ui/` | `…/ragstack/dev/api` | Sandbox with its own stores (`oa-dev`, ~24k chunks). Break things here. |
 | `demo` | `…/ragstack/demo/ui/` | `…/ragstack/demo/api` | Demonstrations over the `open-access` corpus (47.6M chunks). |
 | `asm-next` | `…/ragstack/asm-next/ui/` | `…/ragstack/asm-next/api` | The ASM corpora (`ragstack_sfr_tok256` etc.) behind the current access-control code. |
 | `lucid-next` | `…/ragstack/lucid-next/ui/` | `…/ragstack/lucid-next/api` | The Lucid corpus, likewise. |
 | `asm`, `lucid` | `…/ragstack/asm/…`, `…/ragstack/lucid/…` | | The two legacy **production doors**: older code, no collection ownership. **Down since 2026-08-25** — the gateway still routes them, so an API call there answers `502`, not `404`. Use `asm-next` / `lucid-next`. |
 
-`https://coconut.cels.anl.gov:9443/…` serves the same routes over TLS with a
-self-signed certificate.
+All four are reachable at `https://www.bv-brc.org/ragstack/<name>/…` — that is the
+URL to use and to share. On the deployment host itself the same routes answer on
+`http://127.0.0.1:9000/…`, which is what the runbooks use.
+
+**`/ragstack/<name>/api` is not part of the API.** The gateway strips it before
+forwarding, so the server only ever sees `/health` and `/v1/…` — the same paths a
+directly-started server serves. Keep it in the base URL, never in a route.
 
 **The word "tenant".** On the wire, `tenant` is the data-isolation scope a
 credential carries — the value you see in `GET /v1/stats/tenants` and stamped
@@ -50,7 +55,7 @@ for, so a token is never silently sent to a different deployment.
 guide uses `$BASE`:
 
 ```bash
-export BASE=http://coconut.cels.anl.gov:9000/ragstack/dev/api
+export BASE=https://www.bv-brc.org/ragstack/dev/api
 curl -s $BASE/health      # {"status":"ok"} — needs no credential
 ```
 
