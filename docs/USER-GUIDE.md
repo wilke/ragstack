@@ -6,9 +6,11 @@ deployment want [Deployment](DEPLOYMENT.md) and the
 [new-org cookbook](cookbook-new-org-ingest.md) instead; the copy-paste companion
 to this guide is [cookbook-users.md](cookbook-users.md).*
 
-Everything below is true of `main` as of 2026-08-24 and was checked against the
-live deployments on `coconut`. Where the UI and the API answer the same question
-differently, both answers are given.
+Everything below describes `main` at **v1.5.2** — the version deployed on all
+four `coconut` tenants — and was checked against those deployments' own config.
+Where the UI and the API answer the same question differently, both answers are
+given. A version goes stale more slowly than a date; if a behaviour here
+disagrees with `GET /v1/config`, the deployment wins.
 
 ---
 
@@ -21,14 +23,19 @@ mounts every deployment under one hostname:
 
 | Deployment | UI | API base | Who it is for |
 |---|---|---|---|
-| `dev` | `http://coconut.cels.anl.gov:9000/ragstack/dev/ui/` | `…/ragstack/dev/api` | Sandbox with its own stores (`oa-dev`, ~24k chunks). Break things here. |
+| `dev` | `https://www.bv-brc.org/ragstack/dev/ui/` | `…/ragstack/dev/api` | Sandbox with its own stores (`oa-dev`, ~24k chunks). Break things here. |
 | `demo` | `…/ragstack/demo/ui/` | `…/ragstack/demo/api` | Demonstrations over the `open-access` corpus (47.6M chunks). |
 | `asm-next` | `…/ragstack/asm-next/ui/` | `…/ragstack/asm-next/api` | The ASM corpora (`ragstack_sfr_tok256` etc.) behind the current access-control code. |
 | `lucid-next` | `…/ragstack/lucid-next/ui/` | `…/ragstack/lucid-next/api` | The Lucid corpus, likewise. |
-| `asm`, `lucid` | `…/ragstack/asm/…`, `…/ragstack/lucid/…` | | The two **production doors**: older code, no collection ownership, reads allowed without a credential. Read-only at the gateway. |
+| `asm`, `lucid` | `…/ragstack/asm/…`, `…/ragstack/lucid/…` | | The two legacy **production doors**: older code, no collection ownership. **Down since 2026-08-25** — the gateway still routes them, so an API call there answers `502`, not `404`. Use `asm-next` / `lucid-next`. |
 
-`https://coconut.cels.anl.gov:9443/…` serves the same routes over TLS with a
-self-signed certificate.
+All four are reachable at `https://www.bv-brc.org/ragstack/<name>/…` — that is the
+URL to use and to share. On the deployment host itself the same routes answer on
+`http://127.0.0.1:9000/…`, which is what the runbooks use.
+
+**`/ragstack/<name>/api` is not part of the API.** The gateway strips it before
+forwarding, so the server only ever sees `/health` and `/v1/…` — the same paths a
+directly-started server serves. Keep it in the base URL, never in a route.
 
 **The word "tenant".** On the wire, `tenant` is the data-isolation scope a
 credential carries — the value you see in `GET /v1/stats/tenants` and stamped
@@ -48,9 +55,15 @@ for, so a token is never silently sent to a different deployment.
 guide uses `$BASE`:
 
 ```bash
-export BASE=http://coconut.cels.anl.gov:9000/ragstack/dev/api
-curl -s $BASE/health      # {"status":"ok"} — the only route that needs no credential
+export BASE=https://www.bv-brc.org/ragstack/dev/api
+curl -s $BASE/health      # {"status":"ok"} — needs no credential
 ```
+
+Four routes are unauthenticated: `/health`, and the interactive docs
+`/docs`, `/redoc` and `/openapi.json`. Everything under `/v1/` needs a
+credential. (The docs pages are served *through* the gateway prefix too — the
+app rebuilds their absolute URLs from `X-Forwarded-Prefix`, so
+`$BASE/docs` works.)
 
 ---
 
@@ -64,10 +77,12 @@ accepted; sending both is a `400`.
 | `X-API-Key: <key>` | A per-deployment key handed out by the operator ("for operators and scripts: a configured key, not a person") | the tenant that key is mapped to (e.g. `asm-ops`) | the role the key is mapped to (`user` or `admin`) |
 | `Authorization: <BV-BRC token>` | Your own BV-BRC identity. The `Bearer ` prefix is optional — the raw token works | `bvbrc:<your login>` — a personal scope | `user`, unless an operator listed you in `ADMIN_SUBJECTS` or granted `admin` |
 
-Which one you can use depends on the deployment: `dev` and `lucid-next` are
-**bearer-only** (no API keys configured); `demo` and `asm-next` accept both.
-All four verify BV-BRC tokens (`IDENTITY_PROVIDER=bvbrc`). The two production
-doors (`asm`, `lucid`) predate identity support.
+**All four deployments accept both.** Each of `dev`, `demo`, `asm-next` and
+`lucid-next` configures a non-empty `API_KEYS` list *and* verifies BV-BRC tokens
+(`IDENTITY_PROVIDER=bvbrc`); none of them is bearer-only or key-only. Which one
+you use is your choice, not the deployment's: a key for scripts, your own token
+for anything attributable to you. The two legacy doors (`asm`, `lucid`) predate
+identity support and are down anyway.
 
 ### Getting a BV-BRC token
 
@@ -101,23 +116,31 @@ other; *Sign out* clears it.
 ### Who am I?
 
 There is no `/v1/me`. The de-facto identity call is
+`GET /v1/stats/tenants` — **with `?counts=false`**:
 
 ```bash
-curl -s $BASE/v1/stats/tenants -H "X-API-Key: $KEY"
+curl -s "$BASE/v1/stats/tenants?counts=false" -H "X-API-Key: $KEY"
 # {"tenant":"demo-ops","role":"admin","readable":["demo-ops","public"],
 #  "auth_enabled":true,"tenants":[{"tenant":"demo-ops","own":true,
-#  "collections":[{"collection":"open-access","vector_count":47625155,...}]}]}
+#  "collections":[{"collection":"open-access","vector_count":null,...}]}]}
 ```
 
 `tenant` is the scope you write into, `readable` is what you read from, `role`
 decides the admin routes. The UI shows the same on the *Account* page and in
 the header's user menu.
 
+**Always pass `counts=false` when you only want the identity.** The default
+(`counts=true`) probes one count per tenant × collection × store; on a 47M-chunk
+corpus that is seconds of waiting — Qdrant's exact count hits its own timeout and
+falls back to an estimate — for three fields that need no store at all. The UI's
+own sign-in check moved off the counting form for exactly this reason (#332).
+Ask for the counts only when you want the counts.
+
 ### What each status code means here
 
 | Status | Meaning |
 |---|---|
-| `401` | Unknown key, or an invalid/expired token. Also what you get when a deployment has no identity provider and you sent a token. |
+| `401` | Two different facts, told apart by whether you *sent* a credential. With one: it was rejected — unknown key, invalid or expired token. With none: you are simply not signed in, and re-running `p3-login` changes nothing. |
 | `403` | Authenticated, but not allowed: an admin-only field, or writing a collection you can read but do not own. |
 | `404` | Unknown collection **or one you may not read** — deliberately indistinguishable, so private collections cannot be probed. |
 | `413` | Your JSON body is over the deployment's size cap (creating/ingesting/sharing), or an upload breaks a bound: a file over `max_document_bytes`, more than `max_upload_files` files, or files totalling more than `max_upload_bytes_per_request`. |
@@ -125,7 +148,37 @@ the header's user menu.
 | `415` | An uploaded file's content type is not accepted (PDF, plain text, Markdown, JATS XML by default), or a file sent as a PDF does not start with `%PDF`. |
 | `422` | Request validation failed, or you're over a bound like `top_k`, `GET /v1/chunks` `ids`, or a list `limit`. |
 | `429` | You've hit the per-hour rate limit on this write endpoint (issue #87) — see below — or, on upload, an ingest job of yours is still running: poll it and retry after `Retry-After`. |
-| `503` | A backing store did not answer (authorization store, or — since #346 — a Qdrant search that exceeded `QDRANT_TIMEOUT`). Fail-closed, never a silent allow. Retry after the `Retry-After` header. |
+| `503` | Something the request depended on did not answer. **Four different causes** — see below; only one of them tells you whether a retry helps. Fail-closed, never a silent allow. |
+| `507` | The deployment is at its **active-collection** bound and nothing could be evicted to make room. The `detail` names the per-reason counts (in-flight ingests, pending archives, …). See §3. |
+
+### Every response carries a request id, and a 503 says whether to retry
+
+Every response — success or failure — carries an **`X-Request-Id`** header: a
+16-hex-digit id that is also the `rid=` on every log line the request produced
+(#427). The UI prints it under an error as **`Reference: <id>`**. That id is the
+entry point to [the tracing runbook](runbooks/tracing-a-503.md), so quote it
+verbatim in any bug report — a screenshot without it is much harder to trace.
+
+A `503` from `POST /v1/query` or `POST /v1/retrieve` when a **backing store**
+failed also carries the id in the body as `request_id`, plus a machine-readable
+**`reason`**:
+
+| `reason` | What happened | Is a retry worth it? |
+|---|---|---|
+| `timeout` | We connected and the search was too slow (over `QDRANT_TIMEOUT`) | **Yes** — the second read is often warm and succeeds within seconds. |
+| `unreachable` | We never reached the store at all (including a connect timeout) | Probably not. Tell the operator. |
+| `error` | The store answered, unhappily | Probably not. Tell the operator. |
+
+That 503 carries a fixed `Retry-After: 5`. The *other* three 503 causes on the
+same endpoints carry **no `reason` at all** and must be treated as the
+conservative case: the authorization store failing closed; a **dormant or
+restoring** collection (its restore has been kicked off — this one carries its
+own, variable `Retry-After`); and the tenant being at capacity. Treat an absent
+*or* unrecognised `reason` as "do not assume a retry helps".
+
+Copy-paste recipes for reading these are in
+[COOKBOOK.md → What does an error look like, and how do I correlate it?](COOKBOOK.md)
+and *Which 503s are worth retrying?*.
 
 **Rate limits**: creating collections, ingesting documents (path or upload,
 shared budget) and granting shares are each capped per hour, per caller — a
@@ -135,7 +188,9 @@ is higher than the configured number, not exactly it. A rejected request still
 usually spends a token toward that hour (a validation error, an authorization
 denial, a bad upload) — only an unauthenticated call and an oversized body
 don't — so retrying a broken request in a loop burns your own budget rather
-than getting free attempts.
+than getting free attempts. **An `admin` principal is exempt** from all three
+buckets *and* from the one-job-at-a-time rule below; the exemption is logged,
+so it is visible in an access review.
 
 ---
 
@@ -166,15 +221,25 @@ curl -s -X POST $BASE/v1/collections \
   (idempotent) and the registry answers `409`.
 - The new collection is **private to you** — owned by its creator, unreadable
   by anyone else until shared. `409` on an id collision; `403` when the
-  deployment's `MAX_COLLECTIONS` cap (default 100) is reached — that cap applies
-  to admins too — or when the deployment has set
-  `ALLOW_USER_COLLECTION_CREATE=false` (creation is then admin-only). You are
-  also capped at `MAX_COLLECTIONS_PER_OWNER` collections owned at once (default
+  deployment has set `ALLOW_USER_COLLECTION_CREATE=false` (creation is then
+  admin-only). You are also capped at
+  `MAX_COLLECTIONS_PER_OWNER` collections owned at once (default
   **5**) — `409` with the count and the limit if you're already there; admins
   are exempt from this one. Transferring ownership (`POST
   /v1/collections/{id}/owner`) is checked the same way on the *recipient's*
   side, so you can't dodge your own quota by handing a collection off and
   creating another.
+
+**When the deployment is full.** `MAX_COLLECTIONS` (default 100) bounds the
+*active* collections on a deployment — dormant (archived) ones hold no slot, and
+the cap applies to admins too. Meeting it is normally invisible: the create
+**evicts exactly one** least-recently-accessed collection whose archive is
+current, then retries. You only see an error when nothing can be evicted, and it
+is **`507`**, whose `detail` names the per-reason counts — in-flight ingests,
+archives not yet current — so you can tell "wait a minute" from "ask the
+operator to raise the cap". A `403` for capacity means only one thing: a
+deployment whose *effective* cap is zero, which refuses every create and where
+evicting would gain nothing.
 
 Then put documents in it. PDFs go through the multipart upload; it answers
 `202` with a job you poll:
@@ -187,8 +252,19 @@ curl -s $BASE/v1/ingest/<job_id> -H "X-API-Key: $KEY"       # accepted → runni
 curl -s $BASE/v1/collections -H "X-API-Key: $KEY"           # count climbs as chunks land
 ```
 
-Ingest into a named collection is owner-or-admin. The upload accepts PDF,
-plain text, Markdown and JATS XML (the deployment's `UPLOAD_CONTENT_TYPES`);
+Ingest into a named collection is owner-or-admin. **Omitting `collection`
+targets what you can *write*, not what you can read** (#453): the registry
+pointer if you own it, else the first collection in *your* listing that accepts
+your writes. Two refusals, and the difference is the whole point — `403` *"no
+collection accepts your uploads"* means you can see collections but own none
+(name one you own, or `POST /v1/collections`), while `404` *"no collection is
+accessible to this caller"* means you can read nothing at all. Neither names an
+id. Worked through in
+[COOKBOOK.md → Why was my upload refused when I can read the collection
+fine?](COOKBOOK.md).
+
+The upload accepts PDF, plain text, Markdown and JATS XML
+(the deployment's `UPLOAD_CONTENT_TYPES`);
 anything else — or a "PDF" without a `%PDF` header — is `415`. Per request:
 at most `MAX_UPLOAD_FILES` (50) files and `MAX_UPLOAD_BYTES_PER_REQUEST`
 (500 MB) across them, each file at most `MAX_DOCUMENT_BYTES` (50 MB) — over any
@@ -200,7 +276,8 @@ of about the same size — that, not the API, is what stops a client that lies
 about its length. You get **one ingest job at a time**: while a job of yours
 is still `accepted`/`running`, a new upload is `429` with a `Retry-After` —
 poll the job and resubmit once it is `completed` or `failed` (a job that has
-not moved for 6 hours stops counting). A scanned (image-only) PDF is accepted
+not moved for 6 hours stops counting; an `admin` principal is exempt from this
+rule, as from the hourly buckets). A scanned (image-only) PDF is accepted
 but its item fails with `no extractable text (scanned PDF?)`; there is no OCR
 yet. A JATS XML file is accepted but there is no loader for it yet — its item
 fails with `no loader for .xml` rather than vanishing. Large pre-extracted
@@ -245,7 +322,7 @@ The request fields that matter to a user:
 
 | Field | Default | What it does |
 |---|---|---|
-| `collection` | the deployment's default | Which registry collection to search. Unknown *or unreadable* → `404`. `GET /v1/collections` lists what you can see; the entry with `is_default: true` is the one an omitted `collection` resolves to. `default` is that pointer's name, not a collection: sending `collection=default` is the same as omitting it, and the deployment's built-in corpus appears under its own (content-addressed) id — which changes, together with its access grants, if the operator changes the embedding model or chunker. |
+| `collection` | **your** default (see below) | Which registry collection to search. Unknown *or unreadable* → `404`. `default` is a pointer, not a collection: sending `collection=default` is the same as omitting it, and the deployment's built-in corpus appears under its own (content-addressed) id — which changes, together with its access grants, if the operator changes the embedding model or chunker. |
 | `collections` | `null` | Search **several** collections at once — `["open-access", "my-notes"]`, up to 5 unique ids (more, duplicates, or together with `collection` → `422`). One retrieval leg runs per collection, the legs are fused (RRF), reranked once, and cut to `top_k`; every source says which collection it came from in `collection`, and a document you have in two collections shows up once per collection. Every id is checked *before* anything runs: one you can't read → `404` for the whole request, one that is dormant → `503` + `Retry-After` for the whole request (its restore is kicked off, retry later). `["x"]` is exactly `"collection": "x"` plus the stamp. |
 | `top_k` | 5 | How many sources to return. |
 | `retrieval_mode` | `hybrid` | `hybrid` (dense + BM25, fused), `vector` (dense only — meaning-similar text without shared words), `bm25` (keyword only — fast, rewards exact terms). |
@@ -254,6 +331,21 @@ The request fields that matter to a user:
 | `filters` | `{}` | Metadata equality filters, ANDed — e.g. `{"journal": "mBio"}`. Fields are whatever the ingester stamped; see the metadata on any source. |
 | `use_graph` | `true` | Include the knowledge-graph leg where a deployment has one (most don't — `graph_backend` is `disabled`). |
 | `llm`, `reranker` | `null` | A registered model id from `GET /v1/models/available`, for this request only. |
+
+**Which collection does an omitted `collection` mean?** Yours, not the
+deployment's. Read it off `GET /v1/collections` as the **top-level `default`
+string** — that field is documented as *"the id a request from this caller
+targets when it omits `collection`"*, and it is computed the same way the query
+path computes it: your allowlist intersected with what you may read, then the
+registry pointer *if you can see it*, else the first entry in the listing
+(insertion order). When you can read nothing at all it is the empty string and
+the request is a `404` naming no id.
+
+Do **not** read it off the per-entry `is_default: true` flag. That flag is the
+*global* registry pointer, and the schema says so explicitly — when you cannot
+read the collection the pointer names, **zero** listed entries carry it while
+`default` still names a real, readable collection of yours. Clients that want a
+deterministic target should send the id explicitly.
 
 Every source is `{doc_id, chunk_id, content, score, metadata}` — plus
 `collection` on a `collections` request. On the scholarly corpora the metadata carries `title`, `authors`, `journal`, `doi`,
@@ -380,9 +472,14 @@ Per-request overrides (`top_k`, `retrieval_mode`, `rerank`, `llm`, `reranker`,
 in §4, and never change the deployment.
 
 **Operators:** a deployment's actual values live in
-`/rag/data/tenants/<name>/config/tenant.env` (source with `set -a`); the
-[ops page](https://claude.ai/code/artifact/d4e3f303-62db-4f6d-9d1d-c7d7e57061a4)
-maps every running service.
+`/rag/data/tenants/<dir>/config/tenant.env` (source with `set -a`). **`<dir>` is
+not always the name from the §1 table.** The on-disk data directories drop the
+`-next` suffix — `asm-next` is `/rag/data/tenants/asm/`, `lucid-next` is
+`/rag/data/tenants/lucid/`; `dev` and `demo` are themselves. Worktrees, pid
+files and log file names **keep** the suffix. Substituting a §1 name blindly
+gives you a path that does not exist for two of the four. The gateway route is
+the mapping that matters: `/ragstack/asm-next/api` → `127.0.0.1:24020`, which is
+the `asm` directory.
 
 ---
 
@@ -390,6 +487,12 @@ maps every running service.
 
 - [cookbook-users.md](cookbook-users.md) — every step above as copy-paste
   recipes, plus troubleshooting.
+- [COOKBOOK.md](COOKBOOK.md) — the same ground as questions, in three parts
+  (using a deployment / integrating / operating). Go there for the error
+  contract, the `Reference:` id, which 503s are worth retrying, and what an
+  omitted `collection` targets.
+- [runbooks/tracing-a-503.md](runbooks/tracing-a-503.md) — what an operator does
+  with the `Reference:` id you send them.
 - [API.md](API.md) — the reference: every endpoint, the ownership and sharing
   model, error semantics.
 - [GLOSSARY.md](GLOSSARY.md) and the UI's own glossary (the ⓘ tips) — the words:
