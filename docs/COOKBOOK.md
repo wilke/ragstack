@@ -11,13 +11,27 @@ endpoint reference, [USER-GUIDE.md](USER-GUIDE.md) for the guided walkthrough,
 ## Before anything: set `BASE`
 
 ```bash
-export BASE=https://<host>:9000/ragstack/<tenant>/api   # through the gateway
-export BASE=http://localhost:8000                        # a dev server you started yourself
+# The deployment, through the public gateway — <tenant> is one of
+# dev | demo | asm-next | lucid-next
+export BASE=https://www.bv-brc.org/ragstack/dev/api
+
+# Or a server you started yourself, where there is no gateway and no prefix:
+export BASE=http://127.0.0.1:8000
 ```
 
-There is deliberately **no default**. On the deployment host `http://localhost:8000` is the
-legacy **production** API, and half the recipes below write. The gateway strips the
-`/ragstack/<tenant>/api` prefix before the app sees the request.
+**`/ragstack/<tenant>/api` is not part of the API.** It is gateway routing, stripped before
+the request reaches the server, which only ever sees `/health` and `/v1/…`. So it belongs
+inside `$BASE` and never inside a path: `"$BASE"/v1/query`, never `/ragstack/v1/query`. The
+same recipes work unchanged against a local server, where `$BASE` has no prefix at all.
+
+There is deliberately **no default** for `BASE`. On the deployment host
+`http://localhost:8000` is a reserved production API port, and half the recipes below write.
+
+Quick check that you have it right — this needs no credential:
+
+```bash
+curl -s "$BASE"/health          # {"status":"ok"}
+```
 
 ---
 
@@ -334,12 +348,18 @@ in that view invents a number the API did not return.
 
 ## What base URL do I use, and does `/docs` work behind the gateway?
 
-Direct: `http://<host>:8000` (Python) or `:8080` (Go). Through the gateway:
-`https://<host>:9000/ragstack/<tenant>/api`.
+Public gateway: `https://www.bv-brc.org/ragstack/<tenant>/api`. Direct, for a server you
+started: `http://<host>:8000` (Python) or `:8080` (Go).
 
-The gateway strips the prefix, so the app only ever sees `/v1/...`. It learns the prefix
-back from `X-Forwarded-Prefix` and uses it to emit correct absolute URLs — which is what
-makes `/docs` and `/openapi.json` work through the gateway rather than 404 (#332).
+**The prefix is not API surface.** The gateway strips `/ragstack/<tenant>/api` before
+forwarding, so the app only ever sees `/health` and `/v1/…` — identical to the direct case.
+Treat the prefix as part of the host, not part of the route: nothing in the contract, the
+schemas or the router knows it exists.
+
+What the app *does* do with it is emit correct absolute URLs. It reads the stripped prefix
+back from `X-Forwarded-Prefix`, which is what makes `/docs` and `/openapi.json` resolve
+through the gateway rather than 404 (#332). That is the only place the prefix appears in a
+response.
 
 The header is validated, not trusted: one leading slash, a restricted charset, no `..`
 segments. `ROOT_PATH` **pins** the prefix instead, and an invalid value fails closed rather
@@ -832,8 +852,15 @@ Three things in that recipe are load-bearing:
 (`/rag/data/tenants/asm`) while worktrees and pid-file names keep it
 (`/rag/repos/tenants/asm-next`, `api-asm-next.pid`).
 
-Verify through the gateway: `GET /ragstack/<tenant>/api/v1/collections?counts=false`.
-**401 means alive**; 502 means the API is down.
+Verify through the gateway — on the host, or publicly:
+
+```bash
+curl -so /dev/null -w '%{http_code}\n' \
+  'http://127.0.0.1:9000/ragstack/<tenant>/api/v1/collections?counts=false'
+```
+
+**401 means alive**; 502 means the API is down. (The `/ragstack/<tenant>/api` part is the
+gateway's routing prefix — the API itself only sees `/v1/collections`.)
 
 Reverting is the same recipe with the previous tag — **plus any config the release
 required**. A code revert that leaves the config behind can put a tenant back to writing
