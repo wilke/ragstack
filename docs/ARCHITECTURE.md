@@ -9,16 +9,16 @@ where the extension points are.
 > the design does. For a specific deployment, see [DEPLOYMENT.md](DEPLOYMENT.md) and that
 > environment's own operations page.
 >
-> Reflects `main` as of 2026-08-27. The **Python** implementation is the one in service;
-> the **Go** implementation is a Phase-1 scaffold whose handlers largely return stubs.
-> Where they differ, this document describes Python and flags Go explicitly.
+> Reflects `main` as of 2026-08-27. This describes the **Python** implementation, which is
+> the one in service. (`go/` holds an unfinished Phase-1 scaffold that is not deployed and
+> not part of the API surface; it is out of scope here.)
 
 ---
 
 ## 1. What it is
 
 RAGStack is a **multi-tenant Retrieval-Augmented Generation platform** exposed as a single
-HTTP API, with two implementations (Python/FastAPI, Go/Chi) conforming to one OpenAPI 3.1
+HTTP API (Python/FastAPI) conforming to one OpenAPI 3.1
 contract.
 
 | Capability | What it does | Status |
@@ -40,7 +40,7 @@ contract.
 | **Workflow-engine ingest** | Submit sharded ingest to a CWL workflow engine (GoWe) instead of running in-process — see [ADR-0001](adr/0001-execution-topology.md) | ✅ Python |
 | **Scale & resilience** | Multi-endpoint embedder pool (least-loaded routing, failover, health re-probe), upsert backpressure, per-tenant concurrency quota, poison-input isolation, graceful degradation | ✅ Python |
 | **Observability** | `X-Request-Id` on every response, one summary line per request with per-stage timings, periodic latency rollups, runtime log-level control (#427) — see [§4.7](#47-cross-cutting) | ✅ Python |
-| **MCP server** | Exposes retrieval to MCP clients (Claude Desktop / Code) | ✅ Python · ✅ Go |
+| **MCP server** | Exposes retrieval to MCP clients (Claude Desktop / Code) | ✅ Python |
 | **Dashboard / Explorer** | React + Vite SPA — query console, collection admin, ops panels | 🚧 MVP |
 
 **Design principles that recur throughout:** composability via `Protocol` interfaces (every
@@ -58,9 +58,9 @@ black-box conformance suite that neither implementation can import from.
 | Directory | Contents |
 |---|---|
 | `contracts/` | `openapi.yaml` + JSON schemas (`additionalProperties: false`) + fixtures. **Source of truth for the API surface.** |
-| `python/` | Python / FastAPI implementation — the complete one |
-| `go/` | Go / Chi implementation — Phase-1 scaffold |
-| `conformance/` | pytest + httpx, over HTTP, against a running server; selected by env var, no imports from either implementation |
+| `python/` | Python / FastAPI implementation — **the API** |
+| `go/` | An unfinished scaffold. Not deployed, not on the published surface. |
+| `conformance/` | pytest + httpx, over HTTP, against a running server; selected by env var, no imports from the implementation |
 | `sidecars/` | Independent FastAPI model services (embedding, cross-encoder, legacy FAISS) |
 | `cwl/` | CWL tool + workflow definitions for the workflow-engine ingest path |
 | `frontend/` | React + Vite SPA |
@@ -274,8 +274,7 @@ ownership model will sit on.
   **Per-stage timings are in the LOGS ONLY** — no response body carries them.
   Debugging a user-reported 5xx therefore starts from the `Reference:` id on
   their screen: see [docs/runbooks/tracing-a-503.md](runbooks/tracing-a-503.md).
-- **mcp/** — an MCP server exposing retrieval to MCP clients. Go ships an equivalent
-  under `go/cmd/mcp/` — the one place the Go side is not a stub.
+- **mcp/** — an MCP server exposing retrieval to MCP clients.
 
 ### 4.8 Model sidecars (`sidecars/`)
 Independent FastAPI services the API calls over HTTP, each resolved by URL from config:
@@ -306,7 +305,7 @@ graph TB
         EXT["External callers"]
     end
 
-    subgraph api["RAGStack API (FastAPI · Go Chi)"]
+    subgraph api["RAGStack API (FastAPI)"]
         SEC["Security<br/>API key or bearer → principal<br/>tenant · RBAC"]
         RT["Routers<br/>query · documents · collections<br/>graph · stats · jobs · models · admin"]
         REG["Collection registry<br/>+ model registry"]
@@ -484,49 +483,49 @@ Two further properties of the same design:
   after both branches — it is what applies the [lifecycle gate](#31-lifecycle-a-collection-you-created-may-not-be-physically-present),
   which no picker filter runs.
 
-| Method | Path | Purpose | Auth | Python | Go |
-|---|---|---|---|---|---|
-| GET | `/health` | Liveness probe | none | ✅ | ✅ |
-| POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate | principal · read-owner | ✅ | ⚠️ stub |
-| POST | `/v1/retrieve` | Hybrid retrieval, no generation | principal · read-owner | ✅ | ⚠️ stub |
-| GET | `/v1/chunks` | Fetch chunks by id (context expansion) | principal · read-owner | ✅ | ⚠️ stub |
-| GET | `/v1/collections` | List collections + counts + provenance (owner-filtered) | principal · read-owner | ✅ | ⚠️ stub |
-| POST | `/v1/collections` | Create a collection (private to creator; supplying `embedding`/`chunk` is admin-only) | principal | ✅ | ⚠️ stub |
-| DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | owner-or-admin | ✅ | ⚠️ stub |
-| POST | `/v1/collections/{id}/restore` | Replay the Workspace archive for a `dormant`/`lost` collection | owner-or-admin | ✅ | ❌ |
-| POST | `/v1/collections/{id}/graph` | Submit LLM triple extraction over one archived version | owner-or-admin | ✅ | ❌ |
-| GET,POST | `/v1/collections/{id}/shares` | List / grant shares (`read` only; `owner` is refused — see below) | owner-or-admin | ✅ | ❌ |
-| DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (soft — `revoked_by`/`revoked_at`) | owner-or-admin | ✅ | ❌ |
-| POST | `/v1/collections/{id}/owner` | Transfer ownership (atomic revoke+grant pair) | owner-or-admin | ✅ | ❌ |
-| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | read-if-shared · write | ✅ | ⚠️ stub |
-| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | read-if-shared · write | ✅ | ⚠️ stub |
-| GET | `/v1/ingest/{job_id}` | Poll job status + per-item progress | principal | ✅ | ⚠️ stub |
-| GET | `/v1/jobs` | List ingest jobs | admin | ✅ | ❌ |
-| GET | `/v1/documents` | List indexed documents | principal · read-owner | ✅ | ⚠️ stub |
-| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs (own tenant only) | read-if-shared · write | ✅ | ⚠️ stub |
-| GET,POST | `/v1/groups` | List / create RAGStack-native groups (share targets) | principal · member-or-owner | ✅ | ❌ |
-| GET,DELETE | `/v1/groups/{id}` | View / soft-delete a group | view: member-or-owner · delete: owner-or-admin | ✅ | ❌ |
-| POST | `/v1/groups/{id}/members` | Add a member | owner-or-admin | ✅ | ❌ |
-| DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member | owner-or-admin | ✅ | ❌ |
-| GET | `/v1/graph/entities` | List graph entities (own + public) | principal | ✅ | ⚠️ stub |
-| GET | `/v1/graph/neighbors/{entity}` | Neighbourhood triples (depth 1–5) | principal | ✅ | ⚠️ stub |
-| GET | `/v1/graph/stats` | Entity / relationship counts | principal | ✅ | ❌ |
-| GET | `/v1/stats/stores` | Per-store counts (vector/text/graph) | principal | ✅ | ❌ |
-| GET | `/v1/stats/tenants` | Tenant × collection breakdown (owner-filtered) | principal · read-owner | ✅ | ❌ |
-| GET | `/v1/stats/models` | Per-endpoint liveness, latency, in-flight | admin | ✅ | ❌ |
-| POST | `/v1/stats/models/benchmark` | On-demand throughput probe | admin | ✅ | ❌ |
-| GET | `/v1/models/available` | Models assignable per-request | principal | ✅ | ⚠️ stub |
-| GET,POST | `/v1/admin/models/registry` | List / register models | admin | ✅ | ⚠️ GET stub |
-| PUT,DELETE | `/v1/admin/models/registry/{id}` | Update / remove a model | admin | ✅ | ❌ |
-| PATCH | `/v1/admin/config/assignments` | Hot-swap llm / reranker assignment (only these two) | admin | ✅ | ❌ |
-| GET,POST | `/v1/admin/service-accounts` | List / register machine identities (**mints no credential**) | admin | ✅ | ❌ |
-| POST | `/v1/admin/service-accounts/{subject}/disable` | Soft revoke (fails **open** on a store outage) | admin | ✅ | ❌ |
-| POST | `/v1/admin/service-accounts/{subject}/enable` | Reverse a disable (never erases the audit pair) | admin | ✅ | ❌ |
-| PATCH | `/v1/admin/users/{subject}/role` | Grant/revoke `admin` on a bearer identity | admin | ✅ | ❌ |
-| POST | `/v1/admin/collections/evict` | Run the LRU eviction policy by hand (`need`, `dry_run`) | admin | ✅ | ❌ |
-| GET,PUT,DELETE | `/v1/admin/log-level` | Read / set / reset this process's log level, no restart (#427) | admin | ✅ | ❌ |
-| GET | `/v1/config` | Allowlisted config, secrets redacted | admin | ✅ | ❌ |
-| GET | `/v1/health/deep` | Deep dependency probe + latencies | admin | ✅ | ❌ |
+| Method | Path | Purpose | Auth |
+|---|---|---|---|
+| GET | `/health` | Liveness probe | none |
+| POST | `/v1/query` | Full RAG: rewrite → retrieve → rerank → generate | principal · read-owner |
+| POST | `/v1/retrieve` | Hybrid retrieval, no generation | principal · read-owner |
+| GET | `/v1/chunks` | Fetch chunks by id (context expansion) | principal · read-owner |
+| GET | `/v1/collections` | List collections + counts + provenance (owner-filtered) | principal · read-owner |
+| POST | `/v1/collections` | Create a collection (private to creator; supplying `embedding`/`chunk` is admin-only) | principal |
+| DELETE | `/v1/collections/{id}` | Unregister; `?purge=true` destroys data | owner-or-admin |
+| POST | `/v1/collections/{id}/restore` | Replay the Workspace archive for a `dormant`/`lost` collection | owner-or-admin |
+| POST | `/v1/collections/{id}/graph` | Submit LLM triple extraction over one archived version | owner-or-admin |
+| GET,POST | `/v1/collections/{id}/shares` | List / grant shares (`read` only; `owner` is refused — see below) | owner-or-admin |
+| DELETE | `/v1/collections/{id}/shares/{share_id}` | Revoke a share (soft — `revoked_by`/`revoked_at`) | owner-or-admin |
+| POST | `/v1/collections/{id}/owner` | Transfer ownership (atomic revoke+grant pair) | owner-or-admin |
+| POST | `/v1/ingest` | Async ingest of a server-side path → `job_id` | read-if-shared · write |
+| POST | `/v1/ingest/upload` | Multipart upload → stage → ingest | read-if-shared · write |
+| GET | `/v1/ingest/{job_id}` | Poll job status + per-item progress | principal |
+| GET | `/v1/jobs` | List ingest jobs | admin |
+| GET | `/v1/documents` | List indexed documents | principal · read-owner |
+| DELETE | `/v1/documents/{doc_id}` | Delete a doc from vector + text legs (own tenant only) | read-if-shared · write |
+| GET,POST | `/v1/groups` | List / create RAGStack-native groups (share targets) | principal · member-or-owner |
+| GET,DELETE | `/v1/groups/{id}` | View / soft-delete a group | view: member-or-owner · delete: owner-or-admin |
+| POST | `/v1/groups/{id}/members` | Add a member | owner-or-admin |
+| DELETE | `/v1/groups/{id}/members/{subject}` | Remove a member | owner-or-admin |
+| GET | `/v1/graph/entities` | List graph entities (own + public) | principal |
+| GET | `/v1/graph/neighbors/{entity}` | Neighbourhood triples (depth 1–5) | principal |
+| GET | `/v1/graph/stats` | Entity / relationship counts | principal |
+| GET | `/v1/stats/stores` | Per-store counts (vector/text/graph) | principal |
+| GET | `/v1/stats/tenants` | Tenant × collection breakdown (owner-filtered) | principal · read-owner |
+| GET | `/v1/stats/models` | Per-endpoint liveness, latency, in-flight | admin |
+| POST | `/v1/stats/models/benchmark` | On-demand throughput probe | admin |
+| GET | `/v1/models/available` | Models assignable per-request | principal |
+| GET,POST | `/v1/admin/models/registry` | List / register models | admin |
+| PUT,DELETE | `/v1/admin/models/registry/{id}` | Update / remove a model | admin |
+| PATCH | `/v1/admin/config/assignments` | Hot-swap llm / reranker assignment (only these two) | admin |
+| GET,POST | `/v1/admin/service-accounts` | List / register machine identities (**mints no credential**) | admin |
+| POST | `/v1/admin/service-accounts/{subject}/disable` | Soft revoke (fails **open** on a store outage) | admin |
+| POST | `/v1/admin/service-accounts/{subject}/enable` | Reverse a disable (never erases the audit pair) | admin |
+| PATCH | `/v1/admin/users/{subject}/role` | Grant/revoke `admin` on a bearer identity | admin |
+| POST | `/v1/admin/collections/evict` | Run the LRU eviction policy by hand (`need`, `dry_run`) | admin |
+| GET,PUT,DELETE | `/v1/admin/log-level` | Read / set / reset this process's log level, no restart (#427) | admin |
+| GET | `/v1/config` | Allowlisted config, secrets redacted | admin |
+| GET | `/v1/health/deep` | Deep dependency probe + latencies | admin |
 
 **RBAC roles:** `admin` (superuser) · `user` (everything not admin-gated). `researcher` is a
 deprecated alias for `user`, normalized at startup with a warning; `engineer`/`manager` were
@@ -546,10 +545,8 @@ alone. Creating a collection can also be closed off entirely for non-admins
 server-generated (§4.7). It is the `Reference:` id a user sees on a failure and
 the one field that turns a screenshot into `grep rid=<id>`.
 
-> The `stream` field exists on the query request model but there is **no** separate
-> streaming endpoint yet. Go request models still lack `rerank` / `rerank_candidates` (#27).
-> The Go scaffold implements none of the sharing, groups, identity-admin or
-> lifecycle routes above.
+> The `stream` field exists on the query request model, is published in the schema, and is
+> **accepted and ignored** — there is no streaming endpoint (#458).
 
 ---
 

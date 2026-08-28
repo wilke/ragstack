@@ -11,14 +11,14 @@ served by two implementations of one contract-first HTTP API.
 | Knowledge graphs | Neo4j + entity extraction |
 | Query rewriting | HyDE, multi-query, step-back, entity expansion |
 | Scorer / reranker | Cross-encoder + Reciprocal Rank Fusion |
-| REST API | FastAPI (Python) and Chi (Go), with auth, tenancy and rate limiting |
+| REST API | FastAPI (Python), with auth, tenancy and rate limiting |
 
 ## Quick Start
 
 Everything runs through the root `Makefile`, which `cd`s into the right
 subdirectory for you. **Run these from the repository root** — there is no
 top-level `pyproject.toml`, `tests/` or `docker-compose.yml`; the Python package
-lives under `python/`, the Go one under `go/`, and the compose files under
+lives under `python/`, and the compose files under
 `deploy/`.
 
 ```bash
@@ -31,7 +31,7 @@ sidecars, in Docker:
 
 ```bash
 cp .env.example .env   # then edit it
-make up-python         # infra + sidecars + the Python API   (make up-go for Go)
+make up-python         # infra + sidecars + the API
 make down              # stop everything
 ```
 
@@ -42,7 +42,7 @@ On a host without Docker, use `make infra-up-apptainer` /
 
 Interactive API docs are served by the running server at `/docs` (Swagger) and
 `/redoc` — `http://localhost:8000/docs` for the server `make run-python` just
-started. Ports are fixed by convention: **Python 8000, Go 8080**.
+started. The API listens on **8000** by convention.
 
 ## Documentation
 
@@ -64,7 +64,7 @@ Start here, in this order:
 ```
 contracts/     # openapi.yaml + JSON schemas + fixtures — SOURCE OF TRUTH for the API
 python/        # Python/FastAPI implementation (:8000) — package, tests, scripts
-go/            # Go/Chi implementation (:8080)
+go/            # unfinished scaffold — not deployed, not part of the API
 conformance/   # black-box pytest suite, run over HTTP against either one
 sidecars/      # embedding / crossencoder / faiss model services
 frontend/      # React + Vite SPA (explorer, compare, evidence, ops)
@@ -75,15 +75,14 @@ docs/          # guides, ADRs, runbooks, and the static-site builder
 ```
 
 Changing the API means: edit `contracts/` first, implement in **both** `python/`
-and `go/`, then prove it with `make test-conformance`.
+then prove it with `make test-conformance-python`.
 
 ## Development
 
 ```bash
 make test-python           # pytest, inside python/
 make lint-python           # ruff check . && mypy ragstack/
-make test-go / lint-go     # go test ./... / golangci-lint run ./...
-make test-all              # both unit suites
+make test-all              # the unit suites
 
 make up-python             # conformance needs a server ALREADY running
 make test-conformance      # both implementations, over HTTP

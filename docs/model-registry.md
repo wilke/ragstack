@@ -113,10 +113,9 @@ curl -X PATCH "$API/v1/admin/config/assignments" -H 'content-type: application/j
 - **Admin only.** All routes gated by the admin role.
 - **No secrets in payloads.** API keys are never accepted in a `ModelEntry`; the LLM key comes from `settings.openai_api_key` (referenced, not stored in the registry). A future enhancement can reference a named secret per entry.
 
-### 4.5 Contracts, Go, tests
+### 4.5 Contracts and tests
 
 - **Contracts:** `contracts/openapi.yaml` (5 paths) + `ModelEntry` / `ModelsRegistryResponse` / `AssignmentsPatch` schemas + `contracts/schemas/models_registry_response.json`.
-- **Go:** `GET /v1/admin/models/registry` returns an empty, schema-valid snapshot (Phase-1 scaffold parity, like `/v1/collections`); the write + PATCH routes are Python-only in Phase 1.
 - **Tests:** 16 python API tests (`tests/api/test_model_registry.py`: CRUD, SSRF reject, live llm/reranker swap, unassign-reverts, delete-while-assigned `409`, wrong-task `400`, build-time `422`, admin-required `403`) + conformance on both impls (`conformance/test_model_registry.py`, GET schema; skips on non-admin like the other admin conformance).
 
 ### 4.6 Live verification (2026-08, on the then-`:8000` demo — that port now serves production; re-verify against a scratch server)
@@ -159,7 +158,6 @@ Phase 1 is standalone and independently mergeable. Later phases each need an exp
 | Router mount | `python/ragstack/api/main.py` |
 | Settings | `python/ragstack/config.py` (`models_registry_file`, `model_url_allowlist`) |
 | Contracts | `contracts/openapi.yaml`, `contracts/schemas/models_registry_response.json` |
-| Go scaffold | `go/internal/api/handler_models_registry.go`, `response.go`, `router.go` |
 | Tests | `python/tests/api/test_model_registry.py`, `conformance/test_model_registry.py` |
 
 ### Operating the demo

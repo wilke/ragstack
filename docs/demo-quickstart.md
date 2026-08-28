@@ -199,7 +199,7 @@ The response has `answer`, `sources` (each with `doc_id`, `chunk_id`, `score`,
 RAGStack ships an MCP server exposing three tools — `search` (retrieval),
 `answer` (full RAG), and `list_collections`. There are two ways to run it.
 
-### Option A — Python MCP server (in this repo)
+### The MCP server
 
 Needs a Python env with RAGStack + the `mcp` SDK (`pip install -e ".[mcp]"`).
 Configure Claude Code:
@@ -232,31 +232,6 @@ a project `.mcp.json`:
 Set `RAGSTACK_API_KEY` too if the server enforces one. See
 [`python/ragstack/mcp/README.md`](../python/ragstack/mcp/README.md) for the full
 reference.
-
-### Option B — Go single-binary MCP server (no clone)
-
-A standalone Go binary (`go/cmd/mcp`, PR
-[#220](https://github.com/wilke/ragstack/pull/220)) is the no-clone alternative:
-build it once, ship the binary, and no Python env or repo checkout is needed on
-the client host. It reads the same `RAGSTACK_BASE_URL` / `RAGSTACK_COLLECTION` /
-`RAGSTACK_API_KEY` env vars and exposes the same three tools:
-
-```json
-{
-  "mcpServers": {
-    "ragstack": {
-      "command": "/path/to/ragstack-mcp",
-      "env": {
-        "RAGSTACK_BASE_URL": "http://127.0.0.1:8030",
-        "RAGSTACK_COLLECTION": "my_papers"
-      }
-    }
-  }
-}
-```
-
-Once wired up, ask Claude *"What collections are available?"* to confirm, then
-ask real questions — Claude will call `answer`/`search` and cite the sources.
 
 ## Example questions
 
