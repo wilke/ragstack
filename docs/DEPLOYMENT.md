@@ -20,7 +20,6 @@ how to bring it up — it consolidates setup knowledge previously scattered acro
 flowchart TB
   subgraph api["API layer"]
     PY["Python API :8000<br/>(reference impl)"]
-    GO["Go API :8080<br/>(scaffold)"]
     WK["Celery worker<br/>(compose only)"]
   end
   subgraph sc["Model sidecars (FastAPI)"]
@@ -46,11 +45,11 @@ flowchart TB
 
 | Path | When | Entry |
 |---|---|---|
-| **Docker Compose** | Laptop / any host with Docker | `make up-python` or `make up-go` |
+| **Docker Compose** | Laptop / any host with Docker | `make up-python` |
 | **Apptainer (rootless)** | Hosts without Docker; HPC; the `coconut` dev host | `make infra-up-apptainer` + `make sidecars-up-apptainer` |
 
 Port convention (do not swap — hardcoded in `.env.example` and the conformance targets):
-**Python API = 8000, Go API = 8080.**
+**The API listens on 8000.**
 
 ---
 
@@ -91,14 +90,13 @@ Compose is split into **layered files stacked with multiple `-f` flags** (not us
 | `deploy/docker-compose.infra.yml` | Qdrant · Elasticsearch · Neo4j · Postgres · Redis |
 | `deploy/docker-compose.sidecars.yml` | embedding · crossencoder · faiss sidecars |
 | `deploy/docker-compose.python.yml` | Python `api` (:8000) + Celery `worker` |
-| `deploy/docker-compose.yml` | Go `api` (:8080) — this is the **base/Go** file |
+| `deploy/docker-compose.yml` | The base compose file (carries the unfinished Go scaffold; not used by any deployment) |
 
 The `make` targets do the stacking for you:
 
 ```bash
 make infra-up        # infra only (5 stores)
 make up-python       # infra + sidecars + Python API   (docker compose -f infra -f sidecars -f python up)
-make up-go           # infra + sidecars + Go API
 make down            # stop everything (all -f files combined)
 ```
 
@@ -106,7 +104,6 @@ For non-Docker dev of the API alone (stores/sidecars still needed):
 
 ```bash
 make run-python      # uvicorn ragstack.api.main:app --reload --port 8000
-make run-go          # build + run the Go binary on :8080
 ```
 
 ### Infrastructure services

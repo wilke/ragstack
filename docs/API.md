@@ -3,12 +3,10 @@
 HTTP API for the RAGStack Retrieval-Augmented Generation platform. The surface is
 defined contract-first in [`contracts/openapi.yaml`](../contracts/openapi.yaml)
 (OpenAPI 3.1) with JSON Schemas under `contracts/schemas/`; that contract is
-authoritative and both implementations conform to it.
+authoritative and the server conforms to it.
 
-- **Python** (FastAPI) — default port **8000**
-- **Go** (Chi) — default port **8080**
-
-Interactive docs are served by the Python app at `/docs` (Swagger UI) and `/redoc`.
+The API is **Python** (FastAPI), default port **8000**. Interactive docs are served at
+`/docs` (Swagger UI) and `/redoc`.
 
 > **Set `BASE` before running anything below.** The examples use `"$BASE"`, deliberately
 > without a default, because the obvious default is dangerous: on the deployment host
@@ -202,11 +200,7 @@ admin](#operations--admin).
 Everything under `/v1/admin/*`, plus `/v1/config`, `/v1/health/deep`,
 `/v1/jobs`, `/v1/stats/models` and the benchmark, tests the **authenticated
 principal's role** — not which header carried it, so a bearer identity an admin
-source names reaches every one of them. The Go scaffold implements only
-`/health`, query/retrieve, ingest (+upload, +status), documents (list/delete),
-collections (list/create/delete), chunks, `models/available`, the model-registry
-listing and the two graph reads; everything else is **Python only**, and the Go
-side has no `X-API-Key` or bearer identity path at all.
+source names reaches every one of them.
 
 ### GET /health
 
@@ -930,7 +924,6 @@ exactly as before, and nothing on the key path ever writes a user row. Bearer
 authentication is untouched. Schemas:
 `contracts/schemas/service_account_record.json`,
 `service_accounts_response.json`, `service_account_create_request.json`.
-Python only — the Go implementation has no `X-API-Key` authentication path.
 
 ### PATCH /v1/admin/users/{subject}/role — bearer admins
 
@@ -1005,7 +998,7 @@ Two properties of the auth-time read are contract, not implementation detail:
 the deployment (ownership is bypassed with a logged `admin-bypass` decision),
 plus all of `/v1/admin/*`, `/v1/config`, `/v1/health/deep`, the model registry
 and `stats.policy`. Schemas: `contracts/schemas/user_role_request.json`,
-`user_role_record.json`. Python only — Go serves no bearer identity surface.
+`user_role_record.json`.
 
 ### POST /v1/ingest
 
@@ -1131,9 +1124,6 @@ empty list does not prove an empty corpus.
 `DELETE /v1/documents/{doc_id}` removes one document and all its chunks (**204**). It
 requires `write` on the resolved collection — except on the legacy shared surface, where
 `read` suffices because per-chunk `tenant_id` stamping is the write isolation.
-
-> The Go scaffold still returns `[]` here. This section describes the Python
-> implementation.
 
 ### GET /v1/graph/entities · GET /v1/graph/neighbors/{entity} · GET /v1/graph/stats
 

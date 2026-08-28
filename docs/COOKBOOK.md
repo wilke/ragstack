@@ -349,7 +349,7 @@ in that view invents a number the API did not return.
 ## What base URL do I use, and does `/docs` work behind the gateway?
 
 Public gateway: `https://www.bv-brc.org/ragstack/<tenant>/api`. Direct, for a server you
-started: `http://<host>:8000` (Python) or `:8080` (Go).
+started: `http://<host>:8000`.
 
 **The prefix is not API surface.** The gateway strips `/ragstack/<tenant>/api` before
 forwarding, so the app only ever sees `/health` and `/v1/…` — identical to the direct case.
@@ -526,24 +526,12 @@ check that can, since the framework otherwise spools the whole multipart body to
 first. A client that lies about `Content-Length` is only stopped by your gateway, so
 configure one with a comparable body cap.
 
-## How do I tell which implementation I am talking to?
-
-**Nothing on the wire says.** `/health` is byte-identical and the schema has no room for a
-version field. Behavioural tells only: `/docs`, `/redoc` and `/openapi.json` exist on
-Python and are absent on Go; Go's `/v1/query` returns a literal `[pipeline not yet wired]`
-placeholder; Go's `/v1/ingest/upload` is the surface's only 501.
-
-The Go scaffold implements **no authentication or authorization at all** — no key check, no
-bearer, no tenancy, no collection ACL — and most surfaces are stubs. Treat it as a contract
-fixture, not a deployment.
-
 ## How do I run conformance against my own build?
 
 The suite is black-box over HTTP and **does not start a server** — bring one up first.
 
 ```bash
 make test-conformance-python      # :8000
-make test-conformance-go          # :8080
 make test-conformance-keyed       # self-booted, in-memory, four distinct principals
 ```
 

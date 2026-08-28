@@ -252,7 +252,7 @@ The same container images run everywhere — only the runtime differs.
 
 | Environment | Runtime | Orchestration |
 |-------------|---------|---------------|
-| **Laptop / dev** | Docker Compose | `make up-go` or `make up-python` |
+| **Laptop / dev** | Docker Compose | `make up-python` |
 | **HPC / bare-metal** | Apptainer | Shell scripts (dev) / systemd (prod) |
 | **Cloud / enterprise** | Kubernetes | Helm chart *(planned — M8)* |
 
@@ -276,14 +276,13 @@ Both implementations share the same API contract and conformance tests.
 contracts/          ← OpenAPI spec + JSON schemas (single source of truth)
 conformance/        ← HTTP black-box tests run against either implementation
     │
-    ├── RAGSTACK_BASE_URL=:8080  → tests Go
     └── RAGSTACK_BASE_URL=:8000  → tests Python
 ```
 
 | | Go | Python |
 |-|-------|--------|
 | **Best for** | Production, multi-tenant, K8s | Prototyping, ML-heavy workloads |
-| **Router** | Chi v5 | FastAPI |
+| **Router** | FastAPI |
 | **Concurrency** | goroutines + errgroup | asyncio |
 | **ML access** | HTTP sidecars | In-process |
 | **Binary** | Single static binary, ~10MB | Virtualenv, ~500MB |
@@ -305,7 +304,6 @@ conformance/        ← HTTP black-box tests run against either implementation
 | **Scale + resilience** | Done | Multi-endpoint embedder pool · per-tenant quota · poison isolation · graceful degradation |
 | **Chunking eval** | Done | 7-way + SciFact (BEIR) harness with bootstrap CIs — `fixed_tok512` is retrieval-indistinguishable |
 | **Python API** | Done | FastAPI · all endpoints wired to durable backends |
-| **Go API** | Scaffold | Chi router + contract; handlers return stubs |
 | **Deployment** | Done | Docker Compose + Apptainer rootless; Helm/K8s planned (M8) |
 
 ### What's next
