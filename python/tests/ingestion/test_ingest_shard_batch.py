@@ -244,8 +244,12 @@ def test_extract_report_tolerates_old_shape_and_garbage() -> None:
 # the CLI: exit code follows the batch rule
 # --------------------------------------------------------------------------- #
 def _cli(shard: str, report: str, out: Path, emb: Path) -> list[str]:
+    # The store URLs are REQUIRED (#454) even on the memory backend: the flag is
+    # what makes an omission refuse instead of silently writing to production.
+    # Dead ports, so a regression that ignores --vector-backend fails loudly.
     return [shard, "--extract-report", report, "--out", str(out), "--embedding-file", str(emb),
             "--shard-id", "batch-0", "--vector-backend", "memory", "--text-backend", "memory",
+            "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1",
             "--chunk-method", "fixed", "--chunk-token-counter", "estimate"]
 
 

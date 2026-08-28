@@ -299,3 +299,94 @@ def test_no_cwl_example_job_names_a_live_store() -> None:
         "placeholder (http://CHANGE-ME-QDRANT:6333) — an example that names a real "
         "instance is one hand-run away from writing to it (#407)."
     )
+
+
+#: CLIs that WRITE to a vector or text store. A workflow invoking one of these
+#: decides where those writes land, so it must take that decision from its
+#: caller. ``embed_shard.py`` is deliberately absent: it produces an embeddings
+#: file and touches no store — ``load_embeddings.py`` is the step that writes it.
+_WRITE_CLIS = ("ingest_shard.py", "load_embeddings.py")
+
+
+def _base_commands(node: object) -> list[str]:
+    """Every ``baseCommand`` string anywhere in a parsed CWL document."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "baseCommand":
+                found.extend(str(v) for v in (value if isinstance(value, list) else [value]))
+            found.extend(_base_commands(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_base_commands(value))
+    return found
+
+
+def _invokes_a_write_cli(doc: object) -> bool:
+    """Does this document actually RUN a write CLI?
+
+    Reads ``baseCommand``, not the file text. A raw substring search also matches
+    prose: ``pdf-extract.cwl``'s header comment names ``ingest_shard.py`` to say
+    what consumes its output, and it writes to no store at all."""
+    cmds = _base_commands(doc)
+    return any(cli in cmd for cmd in cmds for cli in _WRITE_CLIS)
+
+
+def test_the_write_cli_sweep_matches_the_workflows_that_write() -> None:
+    """Anti-vacuity guard: the set below must be non-empty and must be the
+    workflows that actually run a write CLI.
+
+    Pinned by name because the interesting failure is *shrinkage* — a workflow
+    that stops matching (renamed CLI, a wrapper script) silently drops out of
+    the presence test below and takes its store inputs with it."""
+    writers = {
+        p.name for p in _cwl_files()
+        if _invokes_a_write_cli(yaml.safe_load(p.read_text(encoding="utf-8")))
+    }
+    assert writers == {
+        "ingest-bulk.cwl", "jats-ingest.cwl", "load-embeddings.cwl",
+        "pdf-ingest.cwl", "pdf-ingest-scatter.cwl", "restore-collection.cwl",
+    }, f"the set of write-path workflows changed: {sorted(writers)}"
+
+
+@pytest.mark.parametrize("cwl", _cwl_files(), ids=lambda p: p.name)
+def test_every_write_workflow_declares_its_store_targets(cwl: Path) -> None:
+    """A workflow that runs a write CLI must DECLARE ``qdrant_url``/``es_url``
+    and thread them to the step. Presence, not just the absence of a default.
+
+    This is the hole ``ingest-bulk.cwl`` fell through (#454). The two sweeps
+    above are absence-based — "no declared default is production", "no write
+    target declares a default at all" — and a workflow that declares no store
+    input **at all** has nothing for them to examine, so it passes vacuously
+    while every worker falls through to the CLI's own default. That default was
+    ``localhost:6333``/``:9200``: production on the deployment host, on a path
+    that bulk-ingests a whole corpus.
+
+    The absence tests stay; they catch a different mistake (declaring the input
+    and giving it a bad default). This one catches not declaring it."""
+    doc = yaml.safe_load(cwl.read_text(encoding="utf-8"))
+    if not _invokes_a_write_cli(doc):
+        pytest.skip(f"{cwl.name} runs no write CLI")
+    inputs = doc.get("inputs") or {}
+    for key in ("qdrant_url", "es_url"):
+        assert key in inputs, (
+            f"{cwl.name} runs a write CLI but declares no {key!r} input, so every "
+            f"worker falls through to the CLI's own default — production on this "
+            f"host (#454). Declare it as a required string, no default."
+        )
+        spec = inputs[key]
+        assert "default" not in spec, f"{cwl.name}: {key} must have no default"
+
+    threaded = [
+        name for name, step in (doc.get("steps") or {}).items()
+        if _invokes_a_write_cli(step.get("run", {}))
+    ]
+    assert threaded, f"{cwl.name}: no step found running a write CLI"
+    for name in threaded:
+        step_in = doc["steps"][name].get("in") or {}
+        for key in ("qdrant_url", "es_url"):
+            assert step_in.get(key) == key, (
+                f"{cwl.name}: step {name!r} runs a write CLI but does not receive "
+                f"{key!r} — declaring the input without threading it is the same "
+                f"hole one level down."
+            )
