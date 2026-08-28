@@ -17,14 +17,24 @@ Interactive docs are served by the Python app at `/docs` (Swagger UI) and `/redo
 > command with no `BASE` set is a production write.
 >
 > ```bash
-> export BASE=http://127.0.0.1:$PORT                      # a dev server YOU started
->                                                        # (not :8000 — see above)
-> export BASE=https://<host>:9000/ragstack/<tenant>/api   # through the gateway
+> # the public gateway — <tenant> is dev | demo | asm-next | lucid-next
+> export BASE=https://www.bv-brc.org/ragstack/dev/api
+>
+> # or a server you started yourself — no gateway, no prefix
+> export BASE=http://127.0.0.1:$PORT                       # not :8000 — see above
+>
+> curl -s "$BASE"/health                                   # {"status":"ok"}, no credential
 > ```
 >
-> Behind the gateway the prefix (`/ragstack/<tenant>/api`) is stripped before the app sees
-> the request; the app emits correct absolute URLs for `/docs` and `/openapi.json` from
-> `X-Forwarded-Prefix`, or from `ROOT_PATH` when that is pinned (#332).
+> **`/ragstack/<tenant>/api` is not part of the API.** It is the gateway's routing prefix,
+> stripped before the request reaches the app, which only ever sees `/health` and `/v1/…` —
+> exactly the paths a direct call uses. Nothing in this document, the contract or the router
+> knows the prefix exists: it belongs inside `$BASE`, never inside a route.
+>
+> The one place it appears in a *response* is `/docs` and `/openapi.json`, whose absolute
+> URLs the app rebuilds from `X-Forwarded-Prefix` — or from `ROOT_PATH` when that is pinned
+> (#332). That is what makes the interactive docs resolve through the gateway rather than
+> 404.
 
 ---
 
