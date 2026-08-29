@@ -116,6 +116,81 @@ already holds the collection registry, ACLs, users and jobs.
 
 ---
 
+### 2b. Chunk text: one copy, addressed by offset
+
+**The chunk text is stored twice and is already fully derivable from three fields we also
+store.** Verified on a real document in the production index — the top-level payload of
+every chunk is:
+
+```
+chunk_id, doc_id, start_char, end_char, content
+```
+
+and the offsets tile the document with the configured overlap:
+
+| chunk | start | end | length | delta from previous end |
+|---|---|---|---|---|
+| 0 | 0 | 2044 | 2044 | |
+| 1 | 1797 | 3779 | 1982 | −247 |
+| 2 | 3547 | 5354 | 1807 | −232 |
+| 3 | 5108 | 6920 | 1812 | −246 |
+
+−247 characters is the `fixed_token 512/64` overlap (64 tokens ≈ 250 chars). So
+`start_char`/`end_char` are **a consistent coordinate system over one contiguous document
+text** — not per-chunk bookkeeping. `content` is a cached substring of a document we could
+address directly.
+
+That makes the offset model available without inventing anything:
+
+```
+document text  ──uploaded once──►  object store node
+chunk          ──────────────────►  (node_id, start_char, end_char)
+```
+
+**Shock supports exactly this shape.** It is a RESTful object store with node indices
+(`PUT /node/{nid}/index/{type}` — `size` is *virtual*, needing no precalculation; plus
+`line`, `column`, `record`, `chunkrecord`, and `subset`, which is built on an existing
+index), so parts of a parent file are individually addressable, and it supports bulk
+retrieval. Correcting an earlier misreading in this plan: Shock's role in the BV-BRC
+Workspace — opaque bytes behind a node URL — is *how we currently use it*, not the limit of
+what it does.
+
+#### What this buys, and what it costs
+
+Storage, measured: **vectors 727 GB, Qdrant payload+index ~113 GB, Elasticsearch 82 GB.**
+Text is ~23% of the Qdrant+ES footprint. Removing both copies is real but is not the
+headline — the vectors dominate and cannot be deduplicated.
+
+The stronger arguments are structural:
+
+- **One canonical copy.** Two copies that can disagree is the shape of #471. A chunk becomes
+  a *pointer*, and pointers cannot drift.
+- **Re-chunking stops being a re-ingest.** Today changing the chunk size means re-extracting
+  every document. With the text addressable, a new chunking is a new set of offsets over
+  bytes that are already there — the expensive part (embedding) is unavoidable either way,
+  but the extraction is not.
+- **It composes with §2.** The document record gets a `text_node_id`; the chunk keeps the
+  facets and the span.
+
+The costs are real and belong in the decision:
+
+- **Elasticsearch must still hold the text to invert it** — BM25 is an inverted index over
+  the terms. What can go is ES's *retained* copy (`_source`), not the index. That is a
+  smaller saving than it first appears, and disabling `_source` also disables reindex-in-place
+  and highlighting.
+- **A read-path dependency.** Rendering a response would need a bulk span fetch per query.
+  If the object store is slow or down, the system can rank but not answer. That is a new
+  availability coupling and needs an explicit answer — a cache, or keeping content in one
+  index as the fallback.
+- **Granularity is an open question.** One node per document (~1.44M nodes) with an index
+  for span addressing, versus one node per chunk (47.6M nodes). The first is what the index
+  mechanism appears designed for.
+
+**Recommendation:** treat this as the target shape and prove it on one collection —
+`oa-dev` (~24k chunks) — measuring bulk span-fetch latency at realistic `top_k` before
+committing. The offsets already exist, so the migration is additive: write `text_node_id`,
+verify spans reproduce `content` byte-for-byte, and only then stop writing `content`.
+
 ## 3. What goes in the knowledge graph
 
 **Triples with provenance. Not chunks.** This is already decided in `models.py::Triple` and
