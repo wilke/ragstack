@@ -53,6 +53,7 @@ and never re-run.
 |---|---|---|
 | [Personal collections (#201)](201-personal-collections.md) | `DEPLOYED`, partly proven | Six phases, all built. The user story works end to end on live infrastructure. Restore, the limits firing, and the graph leg are built but unexercised. |
 | [Observability (#427)](427-observability.md) | `COMPLETE` — 9 of 9 items (W5 deferred) | The API could name a failure but not explain it. W1/W2 and the log-level endpoint shipped in `v1.4.2`; W3/W4/W6/W7 in `v1.5.0`; W8/W9 in `v1.5.1`. |
+| [Date filtering](date-filtering.md) | `SCOPED`, not started | A range operator in the filter grammar, and a `year` backfill on `open-access`. `year` is the only temporal field and covers **14.8%** of that corpus; 8,408 chunks are dated in the future. |
 | [Backlog](backlog.md) | `OPEN` | 25 open issues grouped by theme, with the ones that bite hardest called out. |
 
 ---
