@@ -28,13 +28,42 @@ Measured on the production `open-access` index by aggregation:
 Qdrant payload indexes on that collection: **`doc_id` and `tenant_id` only.** `year` is
 **not** indexed across 47.6M points.
 
-> ⚠️ **The distinct-document count is not established.** The ES cardinality aggregation
-> estimates ~16.7M documents, which at 47.6M chunks implies ~2.9 chunks/document — hard to
-> reconcile with the 118.3 chunks/document measured on full-text PDFs. Either a large
-> fraction of the corpus is abstract-only, or the estimate is bad at this scale
-> (`precision_threshold` caps at 40 000). **This is step 0 of Part B**, because it decides
-> whether the backfill addresses ~10^5 or ~10^7 documents — a difference between a day and
-> a quarter.
+### The source XML has the year. All of it. (measured 2026-08-29)
+
+**This overturns the original sizing of Part B and is the most important fact on this page.**
+
+The corpus behind `open-access` is on disk as JATS XML at `/rag/oa/corpus/clean/` —
+**1,439,753 files**. A random sample of 250 of them:
+
+| field | present |
+|---|---|
+| `article-meta/pub-date/year` | **250/250 — 100%**, all parseable 4-digit, range 1986–2026 |
+| `journal-title`, `article-title`, `permissions/license`, `pub-history`, `article-id[doi]` | 100% |
+| `contrib` (authors), `article-id[pmid]`, `volume` | 98–99% |
+| `abstract` | 96% |
+| `publisher-name` | 93% |
+| `issue`, `funding-group` | 60% |
+| `kwd` (keywords) | 53% |
+
+So the year is **not missing from the source**. It is lost somewhere between the XML and
+the store, and `ragstack/ingestion/jats.py` already extracts it
+(`.//article-meta//pub-date/year`, first match wins).
+
+Two consequences:
+
+1. **The backfill is a local re-extraction, not a network operation.** No Crossref, no
+   DataCite, no rate limits. The original plan's dominant cost and its "could take weeks"
+   risk both disappear.
+2. **The document count is ~1.44M, not ~16.7M.** 47.6M chunks over 1,439,753 articles is
+   ~33 chunks/article, which is a sane number for 512-token chunks of full text. The ES
+   cardinality aggregation was simply wrong at that scale (`precision_threshold` caps at
+   40 000) — a reminder not to size work off an approximate aggregation.
+
+**The open question is no longer "can we recover the year" but "why was it dropped".** One
+signal: `jats.py` emits `year` as a **string**, while production chunks carry an **int** —
+so the deployed `open-access` was probably not built by this JATS path at all. Finding
+which path built it is now step 0, because whatever dropped the year is still in service
+and will drop it again on the next corpus.
 
 ---
 
@@ -100,21 +129,22 @@ and re-ingest question, not a filter question.
 
 85% of chunks have no year. The recovery path is **not** uniform:
 
-- Documents with a `pmcid` (the sampled ones all had) may carry a year in the PMC metadata
-  already held at ingest, in which case this is a **local** re-derivation, not a network
-  operation.
-- Documents needing Crossref/DataCite resolution are rate-limited network work, and at
-  10^6–10^7 documents that is the dominant cost and the reason step 0 matters.
+- **The year is recoverable locally for the whole corpus** — 100% of sampled source files
+  carry a parseable `pub-date/year`, and the files are on disk. Re-extracting 1.44M small
+  XML files is an afternoon of CPU, parallelisable, with no external dependency.
+- Crossref/DataCite resolution — the original plan's dominant cost — **is not needed**.
 
 Both stores must be updated **together**. Updating one and not the other reproduces #471's
 divergence at data level, permanently and silently.
 
 ### Work
 
-0. **Establish the true document count and the recoverable fraction.** Sample N documents
-   lacking `year`, and measure: how many have a `pmcid`, how many have a resolvable DOI,
-   how many have neither. Everything below is sized off this number and it is currently
-   unknown to an order of magnitude.
+0. **Find the ingest path that built the deployed `open-access`, and why it dropped the
+   year.** Superseded question: the count is ~1.44M and the source coverage is 100%, so
+   recoverability is settled. What is not settled is the defect — production stores `year`
+   as an `int` while `jats.py` produces a `str`, which suggests a different path built this
+   collection. Whatever dropped the year is still in service; backfilling without fixing it
+   means doing this again after the next corpus.
 1. **Correct the 8,408 future-dated chunks.** Small, bounded, and independently useful —
    these actively corrupt any "recent" query. Find the parse path in `doi_metadata.py` that
    produced 2049 before fixing the values, or the next ingest reintroduces them.
@@ -134,8 +164,8 @@ divergence at data level, permanently and silently.
 - **It writes to production stores** serving four tenants. Needs the Fable plan CLAUDE.md
   mandates for live-infrastructure operations, off-peak scheduling, and a rollback position
   (a payload write is not trivially reversible — capture the prior values).
-- **Crossref rate limits** could make the network path take weeks. Step 0 decides whether
-  that path is needed at all.
+- ~~Crossref rate limits~~ — **retired.** The source XML has the year; no network
+  resolution is involved.
 - **A partial backfill is worse than none for user trust** if it lands unevenly: a year
   filter that returns 30% of the true matches looks like an empty corpus, not a broken
   filter.
