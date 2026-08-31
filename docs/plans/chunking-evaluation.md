@@ -105,6 +105,114 @@ it on chunk-size tuning.
 
 ---
 
+## Overlap belongs in the grid — as a fraction, not a token count
+
+`chunk_overlap` is an **absolute token count** today, so holding it at 64 across a size
+ladder does not hold overlap constant:
+
+| size | 64 tokens is | chunk inflation |
+|---|---|---|
+| 256 | **25.0%** | 1.33× |
+| 512 | 12.5% | 1.14× |
+| 1024 | 6.2% | 1.07× |
+| 2048 | **3.1%** | 1.03× |
+
+A size sweep at fixed `overlap=64` would confound the size effect with a **fading overlap
+effect** and could not separate them. Parameterise overlap as a **fraction** — 0% / 12.5% /
+25% — so it means the same thing at every rung.
+
+Inflation is `1/(1−f)` and multiplies vectors one for one. For the ~498k-article OA target
+at fp32 4096-dim:
+
+| size | 0% | 12.5% | 25% |
+|---|---|---|---|
+| 512 | 16.4M · 0.24 TB | 18.8M · 0.28 TB | 21.9M · 0.33 TB |
+| 1024 | 8.2M · 0.12 TB | 9.4M · 0.14 TB | 11.0M · 0.16 TB |
+| 2048 | 4.1M · 0.06 TB | 4.7M · 0.07 TB | 5.5M · 0.08 TB |
+
+**Include 0% at every size.** It is the cheapest configuration, so the burden of proof sits
+on overlap.
+
+### What the model limits allow
+
+Queried live, not recalled:
+
+| component | model | limit |
+|---|---|---|
+| embedding | `Salesforce/SFR-Embedding-Mistral` | **`max_model_len: 4096`** |
+| LLM | `RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic` | **`max_model_len: 60000`** |
+| reranker | `BAAI/bge-reranker-v2-m3` | **not reported by the sidecar** |
+
+256 / 512 / 1024 / 2048 all fit the embedding window with room; even 2048 × top_k 20 uses
+two-thirds of the LLM window. **Chunk size here is a retrieval-quality and storage decision,
+not a context-window one.**
+
+**Measure the reranker's truncation point before the run.** If `bge-reranker-v2-m3`
+truncates at 2048-token chunks, the 2048 arm's rerank score measures truncation rather than
+quality — and rerank score is the metric this study leans on.
+
+---
+
+## Cost: factorial vs staged, on the existing 4-endpoint fleet
+
+**Rate.** ~**80k tokens/s** aggregate, from the live-validation record: 5,915
+`fixed_token 512` chunks embedded in 38.4 s of compute (~3.0M tokens), on 3 of 4 workers.
+Treat as **±2×** — it is one measurement, not a benchmark.
+
+**What actually costs.** Embedding tracks **total tokens**, which is roughly invariant to
+chunk *size* over the same corpus — but overlap adds tokens directly (`1/(1−f)`), and the
+**distractor ladder multiplies the whole corpus and is re-embedded per arm**. Chunking
+itself is ~2,200 chunks/s on CPU and is noise.
+
+Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9M,
+`trec-covid` ~60M (estimates — only scifact is in `HF_HOME` today). ~72M tokens for all four.
+
+| ladder rung | corpus | **per arm** |
+|---|---|---|
+| ×1 | 72M tokens | 0.3 h |
+| ×10 | 723M | 2.5 h |
+| ×100 | 7.2B | **25 h** |
+| ×1000 | 72B | **251 h** |
+
+### Full factorial — 12 arms × 4 datasets × 4 rungs
+
+**≈ 3,350 GPU-hours ≈ 139 days** of fleet wall-clock. Not a long experiment; a project that
+would occupy the embedding fleet for a third of a year.
+
+### Staged
+
+| stage | what | cost |
+|---|---|---|
+| 1 | 12 arms (4 sizes × 3 overlaps), `scifact` only, ×1 rung | **~5 minutes** |
+| 2 | ~4 survivors, 4 datasets, ×1 / ×10 / ×100 | **~111 h (4.6 days)** |
+| | **total** | **~112 h — 30× cheaper** |
+
+### Why staged, beyond the 30×
+
+1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
+   to find out whether overlap's effect depends on size. If it does not, the grid collapses
+   from 12 arms to 4 and the expensive stage shrinks by 3× before it starts.
+2. **The ladder is the expensive axis, so it must carry the fewest arms.** Every arm on the
+   ×100 rung costs 25 h. Arms are cheap at ×1 and ruinous at ×100 — which is an argument for
+   deciding as much as possible at ×1.
+3. **The ×1000 rung is outside the operating range anyway.** 72B tokens is ~2.2M documents;
+   the OA target is ~500k, which ×100 (≈220k docs) already brackets. Dropping it removes
+   **251 h per arm** for no loss of relevance — cost and validity agreeing for once.
+4. **Failing fast is worth more than completeness.** If the structure-aware arm does not beat
+   the fixed window on `scifact`, that is known in minutes rather than after a week of
+   padding embeddings.
+
+**What staging costs us:** a genuine interaction that only appears at scale or in another
+domain would be missed, because stage 1 prunes on one small dataset. Mitigation — carry any
+arm within noise of the winner rather than only the winner, and keep `fixed_tok512/64` in
+stage 2 as the shipping control regardless of how it places.
+
+**Caveat on all of it:** embedding cost per token is **super-linear in sequence length**
+(attention), so the 2048 arms cost somewhat more than a token-proportional model predicts.
+The ranking of the options does not change; the absolute hours are a floor.
+
+---
+
 ## The proposed new arm: a structure-aware token packer
 
 The pieces exist and have never been combined:
