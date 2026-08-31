@@ -88,9 +88,34 @@ Subsampling a corpus destroys the judgments: most queries lose their relevant do
 scores rise because the haystack shrank. The design that works — and which that pilot names —
 is a **distractor ladder**:
 
-- hold the **judged set fixed** (all documents any query is judged against),
-- vary the number of **unjudged distractor** documents around it: ×1, ×10, ×100, ×1000,
-- same queries and same needles at every rung.
+- hold the **judged set fixed** — every document any query is judged against,
+- vary the number of **unjudged distractor** documents around it,
+- same queries and same needles at every step.
+
+**A *rung* is one step on that ladder — one corpus size.** `×10` means ten distractor
+documents for every judged one. The judged set never changes, so a score moving across rungs
+is the chunking degrading under competition, not the task getting easier or harder.
+
+### Measured judged coverage (all four datasets now cached in `HF_HOME`)
+
+| dataset | docs | queries | qrels | judged docs | tokens |
+|---|---|---|---|---|---|
+| `scifact` | 5,183 | 1,109 | 339 | 283 (**5%**) | 2.2M |
+| `nfcorpus` | 3,633 | 3,237 | 12,334 | 3,128 (86%) | 1.7M |
+| `scidocs` | 25,657 | 1,000 | 29,928 | 25,657 (**100%**) | 8.8M |
+| `trec-covid` | 171,332 | **50** | 66,336 | 35,480 (21%) | 76.5M |
+
+Three consequences for the design:
+
+- **`scidocs` cannot supply its own distractors** — every document is somebody's answer.
+  Padding must come from outside, and our PMC corpus is the natural source: an in-domain
+  distractor is a harder and more honest one than out-of-domain filler.
+- **`trec-covid` has 50 queries.** Deeply judged (1,327 qrels per query) but thin for
+  confidence intervals. Use it for realism — it is the closest thing to the PMC target — not
+  as the decisive comparison.
+- **`scifact` is 5% judged and `nfcorpus` 86%.** scifact is already 95% distractor at ×1, so
+  the rung labels are not comparable across datasets. Normalise on distractors-per-judged-doc,
+  not on the multiplier.
 
 That measures the thing actually in question: *does this chunking degrade as the corpus
 grows?* — which matters because the target is ~500k articles and every number we have comes
@@ -167,25 +192,28 @@ itself is ~2,200 chunks/s on CPU and is noise.
 Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9M,
 `trec-covid` ~60M (estimates — only scifact is in `HF_HOME` today). ~72M tokens for all four.
 
-| ladder rung | corpus | **per arm** |
-|---|---|---|
-| ×1 | 72M tokens | 0.3 h |
-| ×10 | 723M | 2.5 h |
-| ×100 | 7.2B | **25 h** |
-| ×1000 | 72B | **251 h** |
+> **Corrected 2026-08-31.** An earlier version of this table multiplied the *whole corpus*
+> by the rung. That is not the design: the ladder pads around the **judged set**, which is
+> small. The real figures are ~2.5× lower, from the datasets now cached locally.
+
+| rung | distractor docs | tokens | **per arm** |
+|---|---|---|---|
+| ×1 | 64,548 | 54M | 0.19 h |
+| ×10 | 645,480 | 306M | 1.06 h |
+| ×100 | 6,454,800 | 2.8B | **9.8 h** |
+| ×1000 | 64,548,000 | 28B | **97 h** |
 
 ### Full factorial — 12 arms × 4 datasets × 4 rungs
 
-**≈ 3,350 GPU-hours ≈ 139 days** of fleet wall-clock. Not a long experiment; a project that
-would occupy the embedding fleet for a third of a year.
+**≈ 1,300 GPU-hours ≈ 54 days** of fleet wall-clock.
 
 ### Staged
 
 | stage | what | cost |
 |---|---|---|
 | 1 | 12 arms (4 sizes × 3 overlaps), `scifact` only, ×1 rung | **~5 minutes** |
-| 2 | ~4 survivors, 4 datasets, ×1 / ×10 / ×100 | **~111 h (4.6 days)** |
-| | **total** | **~112 h — 30× cheaper** |
+| 2 | ~4 survivors, 4 datasets, ×1 / ×10 / ×100 | **~44 h (1.9 days)** |
+| | **total** | **~44 h — 26× cheaper** |
 
 ### Why staged, beyond the 30×
 
@@ -195,9 +223,10 @@ would occupy the embedding fleet for a third of a year.
 2. **The ladder is the expensive axis, so it must carry the fewest arms.** Every arm on the
    ×100 rung costs 25 h. Arms are cheap at ×1 and ruinous at ×100 — which is an argument for
    deciding as much as possible at ×1.
-3. **The ×1000 rung is outside the operating range anyway.** 72B tokens is ~2.2M documents;
-   the OA target is ~500k, which ×100 (≈220k docs) already brackets. Dropping it removes
-   **251 h per arm** for no loss of relevance — cost and validity agreeing for once.
+3. **The ×1000 rung is outside the operating range anyway.** It is 64.5M distractor
+   documents against a ~500k-article target, which ×100 already brackets. Dropping it removes
+   **97 h per arm** for no loss of relevance — now mostly a relevance argument rather than a
+   cost one, since the corrected figure is 2.5× lower than first stated.
 4. **Failing fast is worth more than completeness.** If the structure-aware arm does not beat
    the fixed window on `scifact`, that is known in minutes rather than after a week of
    padding embeddings.
@@ -236,6 +265,56 @@ boundaries in flattened text.
 
 ---
 
+## The reranker: measure with it and without it
+
+**Correction to an earlier draft of this plan.** It named *"rerank score"* as the deciding
+signal. That conflated two different columns, and the full report already separates them:
+
+| mode | recall@5 | nDCG@10 | **rerank recall@5** | **rerank MRR@10** | mean score |
+|---|---|---|---|---|---|
+| fixed | 0.896 | 0.890 | **0.900** | 0.881 | 8.330 |
+| sentence | 0.898 | 0.884 | **0.900** | 0.887 | 8.279 |
+| semantic | 0.899 | 0.889 | **0.896** | 0.878 | **7.107** |
+
+**After reranking, semantic and fixed are 0.004 apart.** The 8.33 → 7.11 movement is in the
+*mean cross-encoder score* — how confident the reranker is — not in ranking quality. Saying
+larger chunks "cost precision, and the rerank drop is that cost" overstated it: the score
+fell, the ranking did not.
+
+Mean score is a **diagnostic**. Reranked recall/MRR are the **quality measures**. Keep both,
+and do not let the first stand in for the second.
+
+### Why the reranker is central, and why both arms are needed
+
+1. **It is the last gate before the LLM.** Retrieval decides what is *reachable*; the
+   reranker decides what actually reaches the answer. A chunking that improves recall but
+   whose chunks the reranker then mis-scores has not improved the product.
+2. **It is the stage most sensitive to chunk size.** It scores query–chunk pairs directly, so
+   a larger chunk dilutes the match with surrounding text in a way a dense retriever's pooled
+   embedding partly hides.
+3. **Its truncation limit is unknown.** `bge-reranker-v2-m3` truncates, and the sidecar does
+   not report the limit. At 2048-token chunks the reranker may be scoring a prefix.
+
+Point 3 is exactly why **with/without is a factor, not an afterthought** — and it turns a
+confound into a diagnostic:
+
+| retrieval-only | reranked | reading |
+|---|---|---|
+| improves with size | improves | the chunking genuinely helps |
+| improves with size | **degrades** | **the reranker is truncating** — an artefact, not a quality loss |
+| flat | improves | the reranker is rescuing a weak retrieval |
+| degrades | degrades | the chunking is worse, full stop |
+
+Without the retrieval-only arm, rows 1 and 2 are indistinguishable, and we would have
+concluded "big chunks hurt quality" when the truth was "our reranker cannot see them".
+
+**Every arm therefore reports both**, and the with-minus-without delta is a reported quantity
+in its own right. The existing harness already emits both column families — this is making
+the contrast explicit, not new instrumentation.
+
+**Still a prerequisite:** measure the sidecar's effective truncation point before the run, so
+the 2048 arm's numbers can be interpreted rather than argued about afterwards.
+
 ## Metrics, and reporting cost beside quality
 
 `recall@{1,5,10}`, `nDCG@10`, `MRR@10`, **rerank score**, `chunks/doc`, chunking seconds,
@@ -253,10 +332,11 @@ Without this the output is a table nobody acts on.
 | decision | the arm that settles it | what would change it |
 |---|---|---|
 | chunk size for the OA load | `fixed_tok512` vs `fixed_tok1024/0` | if 1024/0 loses ≤0.01 nDCG for ~2× fewer chunks, take it — that is 0.25 TB |
-| build the structure-aware chunker? | `structure_tok512` vs `fixed_tok512` | build it only if **rerank score** improves at comparable chunks/doc; a recall-only tie is not enough |
+| build the structure-aware chunker? | `structure_tok512` vs `fixed_tok512` | build it only if **reranked recall/MRR** improves at comparable chunks/doc — mean score alone is a diagnostic, not a result |
 | keep the 64-token overlap? | `fixed_tok512/64` vs `/0` | drop it unless it earns >0.01 recall@5; it costs 12.5% of the index |
-| revisit semantic? | `semantic_tok512_capped` | only if it wins on **rerank score** with its cap policy declared — the current claim rests on a proxy that flatters lead chunks |
+| revisit semantic? | `semantic_tok512_capped` | only if it wins on **reranked** metrics with its cap policy declared. Its current 0.004 reranked gap is inside noise on a proxy that flatters lead chunks — neither a win nor a loss |
 
-**Prediction on record:** structure-aware chunking improves rerank score at similar chunk
-counts, because less irrelevant text rides along in each chunk — which is precisely where
-semantic chunking lost. If that does not reproduce, keep the fixed window and tune size.
+**Prediction on record:** structure-aware chunking improves **reranked** recall/MRR at
+similar chunk counts, because less irrelevant text rides along in each chunk. If only the
+mean score moves and the ranking does not, that is *not* the prediction confirmed — it is the
+same non-result semantic produced.
