@@ -84,6 +84,10 @@ hand.
 
 ### Collection size: a distractor ladder, **not** subsampling
 
+> Terms — **judged set**, **distractor**, **rung**, **ladder** — are defined in
+> [GLOSSARY.md](../GLOSSARY.md#judged-set-distractor-rung-ladder). A **rung is a corpus**,
+> which is why `index builds = configs × rungs`.
+
 **The repo has already hit this trap.** The G1 pilot ran 50/100/200-document rungs and the
 verdict was:
 

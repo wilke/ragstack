@@ -178,6 +178,41 @@ and never require a rebuild. That is why they can be varied freely while configs
 > and an index build, which is how a twelve-build stage got costed as four. Say which one you
 > mean.
 
+## Judged set, distractor, rung, ladder
+
+The vocabulary of a retrieval evaluation whose corpus size varies. A **rung is a corpus**, so
+it sits on the same axis as *index build* above: `index builds = chunking configs × rungs`.
+
+**Judged set** — every document that any query in the evaluation is judged against, taken
+from the dataset's qrels. The set of possible right answers, and it is held **fixed**.
+
+**Distractor** — an unjudged document added purely as competition. No query has it as an
+answer, so adding one can only make the task harder; it can never change what "correct"
+means.
+
+**Rung** — one step on the ladder: **one corpus**, formed as the judged set plus N
+distractors per judged document. `×10` means ten distractors for every judged document.
+
+**Distractor ladder** — the design: the same queries and the same judged set, evaluated at
+several rungs, so a score that moves across rungs is retrieval degrading under competition
+rather than the task changing.
+
+It exists to avoid a trap the G1 pilot hit: **subsampling a corpus destroys the judgments.**
+Take 200 documents from 5,183 and most queries lose the documents they were judged against;
+scores then rise because the haystack shrank, not because anything improved. That pilot's
+verdict on its own size comparison was *"not answerable… 'small corpora are easy', not a
+comparison."*
+
+Two cautions that follow from the measured datasets:
+
+- **Rung labels are not comparable across datasets.** The judged fraction differs enormously
+  — `scifact` is 5% judged, `nfcorpus` 86%, `scidocs` 100% — so `scifact` at ×1 is already
+  95% distractor while `scidocs` at ×1 has none. Normalise on distractors per judged
+  document, not on the multiplier.
+- **A fully-judged dataset cannot supply its own distractors.** Every `scidocs` document is
+  somebody's answer, so its padding must come from outside — and an in-domain corpus is the
+  better source, since an out-of-domain distractor is an easier one.
+
 ## Three overloaded words to watch
 
 **"Collection"** — Qdrant calls *its* physical containers "collections" too. In
