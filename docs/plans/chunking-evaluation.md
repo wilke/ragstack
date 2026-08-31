@@ -24,12 +24,12 @@ measured). Those are different chunkers with the same label.
 
 **3. "Semantic" was a method plus an undeclared truncation policy.** Unbounded chunks,
 **9,365 capped**, and a prior benchmark recording **12% would overflow the 4096-token
-window**. An arm whose oversize handling is not pinned measures configuration, not method.
+window**. A config whose oversize handling is not pinned measures configuration, not method.
 
-**4. The token counter can silently resize every arm.** `make_token_counter` defaults to
+**4. The token counter can silently resize every config.** `make_token_counter` defaults to
 `chars_per_token = 2.5` and `chunker_config` **falls back to `estimate` when a model is
 unavailable** — it logs, it does not refuse. Production measures **3.50 chars/token**, so a
-"512-token" arm can really be 366 tokens: **29% under-filled, ~1.4× the chunks**.
+"512-token" config can really be 366 tokens: **29% under-filled, ~1.4× the chunks**.
 
 ---
 
@@ -44,15 +44,22 @@ make the value required rather than defaulted. Re-running experiments on top of 
 
 ## Design
 
-### Arms are configurations, not names
+### Vocabulary — see [GLOSSARY.md](../GLOSSARY.md#chunking-config-and-index-build)
 
-Every arm declares: kind, target size, overlap, **token counter backend**, cap policy, and
-boundary rule. Two arms differing only in size are two arms — that is the point, since size
-is the lever the current data says dominates.
+A **chunking config** is `(kind, size, overlap, token counter)` plus its cap policy — the
+tuple that decides where cuts fall. An **index build** is one config materialised over one
+corpus. They are not 1:1: `index builds = configs × corpora`, so four configs across three
+ladder rungs is **twelve builds**.
 
-Minimum set:
+Retrieval mode, reranking on/off and `top_k` are **query-time** — they re-query an existing
+index and never force a rebuild. That is why they can be varied freely and configs cannot.
 
-| arm | why it is in |
+The word *config* is not used below; it was used for both meanings once, and a twelve-build
+stage got costed as four.
+
+Minimum set of configs:
+
+| config | why it is in |
 |---|---|
 | `fixed_tok512/64` | the shipping default — the thing to beat |
 | `fixed_tok1024/0` | the memory lever, isolated: bigger chunks, no overlap |
@@ -70,7 +77,7 @@ relevant documents per query, no rating effort.
 | `scifact` | biomedical claims | the existing baseline, comparable to G1 |
 | `nfcorpus` | nutrition/medical | different query style, many relevant per query |
 | `trec-covid` | biomedical, full text | closest to the PMC target |
-| `scidocs` | broader science | the "different scientific area" arm |
+| `scidocs` | broader science | the "different scientific area" config |
 
 That covers *"different scientific area"* and *"mixed documents"* with judgments already in
 hand.
@@ -173,7 +180,7 @@ two-thirds of the LLM window. **Chunk size here is a retrieval-quality and stora
 not a context-window one.**
 
 **Measure the reranker's truncation point before the run.** If `bge-reranker-v2-m3`
-truncates at 2048-token chunks, the 2048 arm's rerank score measures truncation rather than
+truncates at 2048-token chunks, the 2048 config's rerank score measures truncation rather than
 quality — and rerank score is the metric this study leans on.
 
 ---
@@ -186,7 +193,7 @@ Treat as **±2×** — it is one measurement, not a benchmark.
 
 **What actually costs.** Embedding tracks **total tokens**, which is roughly invariant to
 chunk *size* over the same corpus — but overlap adds tokens directly (`1/(1−f)`), and the
-**distractor ladder multiplies the whole corpus and is re-embedded per arm**. Chunking
+**distractor ladder multiplies the whole corpus and is re-embedded per config**. Chunking
 itself is ~2,200 chunks/s on CPU and is noise.
 
 Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9M,
@@ -196,14 +203,14 @@ Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9
 > by the rung. That is not the design: the ladder pads around the **judged set**, which is
 > small. The real figures are ~2.5× lower, from the datasets now cached locally.
 
-| rung | distractor docs | tokens | **per arm** |
+| rung | distractor docs | tokens | **per index build** |
 |---|---|---|---|
 | ×1 | 64,548 | 54M | 0.19 h |
 | ×10 | 645,480 | 306M | 1.06 h |
 | ×100 | 6,454,800 | 2.8B | **9.8 h** |
 | ×1000 | 64,548,000 | 28B | **97 h** |
 
-### Full factorial — 12 arms × 4 datasets × 4 rungs
+### Full factorial — 48 configs × 4 datasets × 4 rungs
 
 **≈ 1,300 GPU-hours ≈ 54 days** of fleet wall-clock.
 
@@ -211,38 +218,38 @@ Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9
 
 | stage | what | cost |
 |---|---|---|
-| 1 | 12 arms (4 sizes × 3 overlaps), `scifact` only, ×1 rung | **~5 minutes** |
-| 2 | ~4 survivors, 4 datasets, ×1 / ×10 / ×100 | **~44 h (1.9 days)** |
-| | **total** | **~44 h — 26× cheaper** |
+| 1 | 24 configs — 12 `fixed`×sizes×overlaps, then 12 other kinds×sizes — `scifact`, ×1 | **~2.8 h** |
+| 2 | ~4 surviving configs × 3 rungs = **12 builds**, 4 datasets | **~51 h** |
+| | **total** | **~54 GPU-hours** |
 
 ### Why staged, beyond the 30×
 
 1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
    to find out whether overlap's effect depends on size. If it does not, the grid collapses
-   from 12 arms to 4 and the expensive stage shrinks by 3× before it starts.
-2. **The ladder is the expensive axis, so it must carry the fewest arms.** Every arm on the
+   from 12 configs to 4 and the expensive stage shrinks by 3× before it starts.
+2. **The ladder is the expensive axis, so it must carry the fewest configs.** Every config on the
    ×100 rung costs 25 h. Arms are cheap at ×1 and ruinous at ×100 — which is an argument for
    deciding as much as possible at ×1.
 3. **The ×1000 rung is outside the operating range anyway.** It is 64.5M distractor
    documents against a ~500k-article target, which ×100 already brackets. Dropping it removes
-   **97 h per arm** for no loss of relevance — now mostly a relevance argument rather than a
+   **97 h per build** for no loss of relevance — now mostly a relevance argument rather than a
    cost one, since the corrected figure is 2.5× lower than first stated.
-4. **Failing fast is worth more than completeness.** If the structure-aware arm does not beat
+4. **Failing fast is worth more than completeness.** If the structure-aware config does not beat
    the fixed window on `scifact`, that is known in minutes rather than after a week of
    padding embeddings.
 
 **What staging costs us:** a genuine interaction that only appears at scale or in another
 domain would be missed, because stage 1 prunes on one small dataset. Mitigation — carry any
-arm within noise of the winner rather than only the winner, and keep `fixed_tok512/64` in
+config within noise of the winner rather than only the winner, and keep `fixed_tok512/64` in
 stage 2 as the shipping control regardless of how it places.
 
 **Caveat on all of it:** embedding cost per token is **super-linear in sequence length**
-(attention), so the 2048 arms cost somewhat more than a token-proportional model predicts.
+(attention), so the 2048 configs cost somewhat more than a token-proportional model predicts.
 The ranking of the options does not change; the absolute hours are a floor.
 
 ---
 
-## The proposed new arm: a structure-aware token packer
+## The proposed new config: a structure-aware token packer
 
 The pieces exist and have never been combined:
 
@@ -284,7 +291,7 @@ fell, the ranking did not.
 Mean score is a **diagnostic**. Reranked recall/MRR are the **quality measures**. Keep both,
 and do not let the first stand in for the second.
 
-### Why the reranker is central, and why both arms are needed
+### Why the reranker is central, and why both **evaluations** are needed
 
 1. **It is the last gate before the LLM.** Retrieval decides what is *reachable*; the
    reranker decides what actually reaches the answer. A chunking that improves recall but
@@ -295,7 +302,8 @@ and do not let the first stand in for the second.
 3. **Its truncation limit is unknown.** `bge-reranker-v2-m3` truncates, and the sidecar does
    not report the limit. At 2048-token chunks the reranker may be scoring a prefix.
 
-Point 3 is exactly why **with/without is a factor, not an afterthought** — and it turns a
+Point 3 is exactly why **with/without is a factor, not an afterthought** — and note this is
+a third thing the word *arm* used to cover: a measurement condition, not a chunking config — and it turns a
 confound into a diagnostic:
 
 | retrieval-only | reranked | reading |
@@ -305,15 +313,15 @@ confound into a diagnostic:
 | flat | improves | the reranker is rescuing a weak retrieval |
 | degrades | degrades | the chunking is worse, full stop |
 
-Without the retrieval-only arm, rows 1 and 2 are indistinguishable, and we would have
+Without the retrieval-only **evaluation**, rows 1 and 2 are indistinguishable, and we would have
 concluded "big chunks hurt quality" when the truth was "our reranker cannot see them".
 
-**Every arm therefore reports both**, and the with-minus-without delta is a reported quantity
+**Every config therefore reports both**, and the with-minus-without delta is a reported quantity
 in its own right. The existing harness already emits both column families — this is making
 the contrast explicit, not new instrumentation.
 
 **Still a prerequisite:** measure the sidecar's effective truncation point before the run, so
-the 2048 arm's numbers can be interpreted rather than argued about afterwards.
+the 2048 config's numbers can be interpreted rather than argued about afterwards.
 
 ## Metrics, and reporting cost beside quality
 
@@ -329,7 +337,7 @@ unreported figure was **748× the chunking cost** and an **8.33 → 7.11 rerank-
 
 Without this the output is a table nobody acts on.
 
-| decision | the arm that settles it | what would change it |
+| decision | the config that settles it | what would change it |
 |---|---|---|
 | chunk size for the OA load | `fixed_tok512` vs `fixed_tok1024/0` | if 1024/0 loses ≤0.01 nDCG for ~2× fewer chunks, take it — that is 0.25 TB |
 | build the structure-aware chunker? | `structure_tok512` vs `fixed_tok512` | build it only if **reranked recall/MRR** improves at comparable chunks/doc — mean score alone is a diagnostic, not a result |

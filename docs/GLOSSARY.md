@@ -136,6 +136,48 @@ strand the other side.
 
 ---
 
+## Chunking config and index build
+
+Two terms the evaluation work needs, kept distinct because they were conflated once and the
+arithmetic came out wrong.
+
+**Chunking config** — the tuple that deterministically decides where a document is cut:
+
+```
+(kind, size, overlap, token counter)
+```
+
+`kind` is `fixed_token` | `sentence` | `semantic` | `structure`; `size` and `overlap` are in
+**tokens** (overlap is best expressed as a *fraction* of size — see below); `token counter`
+is `hf` | `endpoint` | `estimate`.
+
+A config is **named** for the record: `fixed_tok512/64@hf`. The name carries every field,
+because two runs labelled "512 tokens" with different counters produce **different chunks**
+— `estimate` defaults to 2.5 chars/token against a measured 3.50, a ~40% resize. The counter
+is part of the config, not part of the environment.
+
+**Overlap is a fraction, not a token count.** `overlap=64` is 25% of a 256-token chunk and
+3.1% of a 2048-token one, so a size sweep at fixed absolute overlap silently varies two
+things at once.
+
+**Index build** — one chunking config materialised over one **corpus**: chunk, embed, load.
+This is the unit that costs GPU time.
+
+```
+index builds = chunking configs × corpora
+```
+
+They are **not** 1:1. Evaluating four configs at three corpus sizes is **twelve index
+builds**, not four.
+
+**What is *not* part of either.** Retrieval mode (`vector` | `bm25` | `hybrid`), reranking
+on/off, and `top_k` are **query-time** settings: they re-query an index that already exists
+and never require a rebuild. That is why they can be varied freely while configs cannot.
+
+> **Do not write "arm."** In experiment write-ups it has been used for both a chunking config
+> and an index build, which is how a twelve-build stage got costed as four. Say which one you
+> mean.
+
 ## Three overloaded words to watch
 
 **"Collection"** — Qdrant calls *its* physical containers "collections" too. In
