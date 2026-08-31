@@ -53,6 +53,7 @@ and never re-run.
 |---|---|---|
 | [Personal collections (#201)](201-personal-collections.md) | `DEPLOYED`, partly proven | Six phases, all built. The user story works end to end on live infrastructure. Restore, the limits firing, and the graph leg are built but unexercised. |
 | [Observability (#427)](427-observability.md) | `COMPLETE` — 9 of 9 items (W5 deferred) | The API could name a failure but not explain it. W1/W2 and the log-level endpoint shipped in `v1.4.2`; W3/W4/W6/W7 in `v1.5.0`; W8/W9 in `v1.5.1`. |
+| [PMC Open Access ingest](oa-full-ingest.md) | `PROPOSED` | Download the whole OA subset as compressed JATS (~223 GB gzip), filter at parse time to the bacteria ∪ viruses union (~498k articles). The FTP bulk path is being retired; the AWS channel we already use is the supported one. Includes a compliance gap: articles withdrawn from OA must be deletable. |
 | [Backlog](backlog.md) | `OPEN` | 25 open issues grouped by theme, with the ones that bite hardest called out. |
 
 ---
