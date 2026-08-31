@@ -138,6 +138,106 @@ Doing these after the load means doing 16M+ chunks twice.
 
 ---
 
+## Chunking: the memory lever is size, not strategy
+
+Measured by the repo's own eval harness (`python/scripts/eval/chunking_compare.py`):
+
+| mode | #chunks | /doc | median chars | ingest s | **chunking s** | recall@5 | nDCG@10 | rerank |
+|---|---|---|---|---|---|---|---|---|
+| fixed | 394,353 | 103.3 | 512 | 1541.5 | **4.3** | 0.896 | 0.890 | **8.330** |
+| sentence | 415,443 | 108.8 | 447 | 1603.1 | 30.3 | 0.898 | 0.884 | 8.279 |
+| semantic | **89,556** | 23.5 | **1602** | 3802.8 | **3,214.6** | 0.899 | 0.889 | **7.107** |
+
+Semantic does produce **4.4× fewer chunks** — but its median chunk is **3.1× larger**, and
+chunk count is total tokens ÷ chunk size. The boundary algorithm decides *where* the cuts
+fall, not how many there are.
+
+**The control in the same repo settles it.** From the 7-way run, with no semantics involved:
+`fixed_char512` → 28,112 chunks; `fixed_char2048` → **7,111**. A **4.0× reduction from
+changing one number.**
+
+Semantic's cost is not small: the chunking step is **748× more expensive** (4.3 s →
+3,214.6 s) because it embeds the text to find boundaries — you pay for embeddings twice —
+and total ingest is 2.5× slower. Retrieval quality is a wash (recall@5 +0.003, nDCG −0.001)
+except for **mean rerank score, which drops 8.33 → 7.11**: the cross-encoder judging the
+retrieved passages a worse match, which is the expected cost of larger chunks. Two
+operational hazards come with it: 9,365 chunks hit the token cap, and a prior benchmark
+recorded in `reports/chunking-comparison.md:129` found **12% of semantic chunks would
+overflow the 4096-token window**.
+
+This matches PR #44's conclusion, already in `STATUS.md`: *"the uniformly-sized modes —
+semantic costs most with no quality upside."*
+
+### For the OA target
+
+| chunk size | chunks (~498k articles) | fp32 4096-dim |
+|---|---|---|
+| 512 tokens | ~16M | ~0.5 TB |
+| 1024 tokens | ~8M | ~0.25 TB |
+| + drop the 64-token overlap | −12.5% again | |
+
+Bigger chunks buy memory and cost precision — the rerank drop is that cost, measured. Tune
+**size** as the lever with recall and rerank score as the guardrail; leave semantic chunking
+alone unless something other than storage motivates it.
+
+## Chunking: respect the structure the source already has
+
+### The token counter can silently resize every chunk
+
+`make_token_counter` defaults to **`chars_per_token = 2.5`** for the `estimate` backend, and
+`chunker_config` **falls back to `estimate` when a model is unavailable** — it logs, it does
+not refuse.
+
+Measured against production: the open-access chunks are 512-token windows whose char lengths
+run 1610–2044, i.e. **3.14–3.99 chars/token, mean 3.50**. A 512-token budget evaluated at
+2.5 c/t cuts at 1280 chars, which is **366 real tokens — 29% under-filled, ~1.4× more chunks
+than intended**.
+
+So a corpus built on a host without the tokenizer gets 40% more vectors than one built with
+it, from the same command. **For a corpus-scale build the estimator should be an explicit
+opt-in, not a fallback** — the same "make it required rather than defaulted" rule as #454.
+
+### Sentence and paragraph boundaries
+
+Today's production chunker, `FixedTokenWindowChunker`, slides a token window and **cuts
+wherever the window ends** — mid-sentence, mid-word. It is exact on token counts and offsets,
+which is why it is the baseline, but it has no notion of structure.
+
+The pieces to do better already exist and have never been combined:
+
+| have | gives |
+|---|---|
+| `SentenceChunker` | *"no chunk ever splits a sentence"*, and packs to a **token** budget when given `max_tokens` + a counter |
+| `RecursiveCharacterChunker` | a separator hierarchy — paragraph/line breaks first, then weaker separators |
+| `FixedTokenWindowChunker` | exact token accounting and offset mapping |
+
+**And for JATS we should not be inferring paragraphs at all.** The source is marked up:
+`<sec>`, `<title>`, `<p>` are real structural units, and `jats.py` already reads section
+titles. Chunking *within* structural units — never crossing a section, preferring not to
+cross a paragraph — is strictly better than detecting boundaries from newlines in flattened
+text.
+
+### Proposed chunker
+
+A **structure-aware token packer**:
+
+1. Split on the source's own structure (JATS `<sec>`/`<p>`; blank-line paragraphs for
+   plain text and Markdown).
+2. Within a unit, split to sentences (Punkt, as `SentenceChunker` already does).
+3. Pack whole sentences to a **real token budget** — never `estimate` for a corpus build.
+4. Never cross a section boundary; avoid crossing a paragraph unless a chunk would otherwise
+   be under some floor.
+5. Keep exact `start_char`/`end_char`, which every existing chunker already maintains and
+   which the offset model in [metadata-and-kg.md](metadata-and-kg.md) depends on.
+
+**It must be evaluated, not assumed.** `chunking_compare.py` already produces the numbers
+that would decide it — recall@k, nDCG, rerank score, chunks/doc, ingest time — so the new
+mode gets added to the 7-way run and stands or falls on the same table. The prediction worth
+testing is that respecting boundaries improves the **rerank score** (less irrelevant text per
+chunk) at similar chunk counts, which is precisely where semantic chunking lost.
+
+---
+
 ## Idempotency and updates
 
 - **Articles are versioned** (`PMC9297083.1`). Re-ingesting must replace, not duplicate — a
