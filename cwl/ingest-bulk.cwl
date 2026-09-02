@@ -67,6 +67,18 @@ inputs:
   embedding_api_key:
     type: ["null", string]
     doc: "Bearer token for keyed endpoints."
+  qdrant_url:
+    type: string
+    doc: "The Qdrant instance to WRITE to, as seen from the worker.
+      REQUIRED, deliberately without a default (#407/#454): a default here
+      decided where a run wrote whenever a caller omitted it, and the old
+      fallback (the CLI's localhost:6333) is production on the deployment host.
+      This workflow had no such input at all, so every bulk run inherited that
+      fallback."
+  es_url:
+    type: string
+    doc: "The Elasticsearch instance to WRITE to, as seen from the worker.
+      REQUIRED, no default — see qdrant_url."
 
 steps:
   ingest_shard:
@@ -82,6 +94,8 @@ steps:
       embedding_url: embedding_url
       embedding_model: embedding_model
       embedding_api_key: embedding_api_key
+      qdrant_url: qdrant_url
+      es_url: es_url
     out: [receipt]
     run:
       class: CommandLineTool
@@ -106,6 +120,8 @@ steps:
         embedding_url:
           type: string[]
           inputBinding: {prefix: --embedding-url, position: 10}
+        qdrant_url: {type: string, inputBinding: {prefix: --qdrant-url, position: 13}}
+        es_url: {type: string, inputBinding: {prefix: --es-url, position: 14}}
       arguments:
         - {position: 11, prefix: --es-index, valueFrom: $(inputs.collection)}
         - {position: 12, prefix: --out, valueFrom: receipt.json}
