@@ -136,6 +136,83 @@ strand the other side.
 
 ---
 
+## Chunking config and index build
+
+Two terms the evaluation work needs, kept distinct because they were conflated once and the
+arithmetic came out wrong.
+
+**Chunking config** — the tuple that deterministically decides where a document is cut:
+
+```
+(kind, size, overlap, token counter)
+```
+
+`kind` is `fixed_token` | `sentence` | `semantic` | `structure`; `size` and `overlap` are in
+**tokens** (overlap is best expressed as a *fraction* of size — see below); `token counter`
+is `hf` | `endpoint` | `estimate`.
+
+A config is **named** for the record: `fixed_tok512/64@hf`. The name carries every field,
+because two runs labelled "512 tokens" with different counters produce **different chunks**
+— `estimate` defaults to 2.5 chars/token against a measured 3.50, a ~40% resize. The counter
+is part of the config, not part of the environment.
+
+**Overlap is a fraction, not a token count.** `overlap=64` is 25% of a 256-token chunk and
+3.1% of a 2048-token one, so a size sweep at fixed absolute overlap silently varies two
+things at once.
+
+**Index build** — one chunking config materialised over one **corpus**: chunk, embed, load.
+This is the unit that costs GPU time.
+
+```
+index builds = chunking configs × corpora
+```
+
+They are **not** 1:1. Evaluating four configs at three corpus sizes is **twelve index
+builds**, not four.
+
+**What is *not* part of either.** Retrieval mode (`vector` | `bm25` | `hybrid`), reranking
+on/off, and `top_k` are **query-time** settings: they re-query an index that already exists
+and never require a rebuild. That is why they can be varied freely while configs cannot.
+
+> **Do not write "arm."** In experiment write-ups it has been used for both a chunking config
+> and an index build, which is how a twelve-build stage got costed as four. Say which one you
+> mean.
+
+## Judged set, distractor, rung, ladder
+
+The vocabulary of a retrieval evaluation whose corpus size varies. A **rung is a corpus**, so
+it sits on the same axis as *index build* above: `index builds = chunking configs × rungs`.
+
+**Judged set** — every document that any query in the evaluation is judged against, taken
+from the dataset's qrels. The set of possible right answers, and it is held **fixed**.
+
+**Distractor** — an unjudged document added purely as competition. No query has it as an
+answer, so adding one can only make the task harder; it can never change what "correct"
+means.
+
+**Rung** — one step on the ladder: **one corpus**, formed as the judged set plus N
+distractors per judged document. `×10` means ten distractors for every judged document.
+
+**Distractor ladder** — the design: the same queries and the same judged set, evaluated at
+several rungs, so a score that moves across rungs is retrieval degrading under competition
+rather than the task changing.
+
+It exists to avoid a trap the G1 pilot hit: **subsampling a corpus destroys the judgments.**
+Take 200 documents from 5,183 and most queries lose the documents they were judged against;
+scores then rise because the haystack shrank, not because anything improved. That pilot's
+verdict on its own size comparison was *"not answerable… 'small corpora are easy', not a
+comparison."*
+
+Two cautions that follow from the measured datasets:
+
+- **Rung labels are not comparable across datasets.** The judged fraction differs enormously
+  — `scifact` is 5% judged, `nfcorpus` 86%, `scidocs` 100% — so `scifact` at ×1 is already
+  95% distractor while `scidocs` at ×1 has none. Normalise on distractors per judged
+  document, not on the multiplier.
+- **A fully-judged dataset cannot supply its own distractors.** Every `scidocs` document is
+  somebody's answer, so its padding must come from outside — and an in-domain corpus is the
+  better source, since an out-of-domain distractor is an easier one.
+
 ## Three overloaded words to watch
 
 **"Collection"** — Qdrant calls *its* physical containers "collections" too. In
