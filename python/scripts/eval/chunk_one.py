@@ -20,13 +20,17 @@ Usage::
 
     python scripts/eval/chunk_one.py --config fixed_tok512 \
         --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
-        --embedding-api-key BRCMistral --out metrics.json
+        --embedding-api-key "$EMBED_API_KEY" --out metrics.json
 
 ``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default. This step
 ingests into a store and drops it again; where that happens is the caller's
 decision, and the localhost fallback it used to inherit from the harness is
 production on the deployment host (#476). The CWL workflow threads them from
 required workflow inputs of the same names.
+
+``--embedding-api-key`` stays optional (keyless endpoints ignore it), but it has
+no committed default and never should: pass it from the environment, so a key is
+not written into a command someone pastes into a file in a public repo.
 """
 from __future__ import annotations
 

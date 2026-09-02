@@ -20,10 +20,10 @@ async def test_openai_embedder_sends_bearer_when_api_key_set():
     seen: dict = {}
     async with httpx.AsyncClient(transport=_capture_auth_transport(seen)) as http:
         emb = make_embedder(
-            api="openai", base_url="http://embed", model="m", http=http, api_key="BRCMistral"
+            api="openai", base_url="http://embed", model="m", http=http, api_key="test-key-not-real"
         )
         await emb.embed(["hello"])
-    assert seen["authorization"] == "Bearer BRCMistral"
+    assert seen["authorization"] == "Bearer test-key-not-real"
 
 
 @pytest.mark.asyncio

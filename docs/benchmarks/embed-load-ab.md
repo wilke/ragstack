@@ -134,8 +134,9 @@ git worktree add ~/Development/worktrees/bench-main main
 ## Results
 
 **Run 1 (2026-07-04).** Corpus: 3000 synthetic docs → **6000 chunks**, `fixed_token
-256/32`, **SFR 4096-d via lambda13** (`:9990–9997`, key `BRCMistral`; ~330
-texts/s/endpoint). Throwaway Qdrant `:6353` (healthy, uncapped). Single run
+256/32`, **SFR 4096-d via lambda13** (`:9990–9997`, keyed — the bearer key comes
+from `EMBED_API_KEY` at run time and is not recorded here; ~330 texts/s/endpoint).
+Throwaway Qdrant `:6353` (healthy, uncapped). Single run
 (medians pending). Tests 1–2 completed; tests 3–4 (capped backpressure,
 resumability) deferred — see below.
 

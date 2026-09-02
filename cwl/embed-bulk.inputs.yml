@@ -11,4 +11,4 @@ embedding_url:
   - http://localhost:9001
   - http://localhost:9002
 # Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
-embedding_api_key: BRCMistral
+embedding_api_key: CHANGE-ME-EMBED-API-KEY

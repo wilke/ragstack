@@ -436,7 +436,11 @@ PYTHONPATH=<checkout>/python /rag/envs/ragstack/bin/python \
 
 Both are parameterized by env vars (`INPUT`, `N_SAMPLE`, `EMBED_MODEL`/`REF_MODEL`,
 `REF_URLS`, `REF_KEY`, `CHEAP_URL`, `MAX_TOKENS`, `CHEAP_MAX_TOKENS`, `BUFFER_SIZE`)
-— see each script's docstring. Defaults reproduce the runs recorded here.
+— see each script's docstring. The defaults reproduce the runs recorded here, with
+one exception: `REF_KEY` is **required and has no default** (a committed default
+would be a committed credential), so export it — empty for the keyless
+`localhost:9001..9008` endpoints these runs used, or the bearer key for a keyed
+fleet.
 
 ## Data
 

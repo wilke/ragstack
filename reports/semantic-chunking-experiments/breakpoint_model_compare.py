@@ -18,7 +18,8 @@ Reproduce (coconut prod layout):
     /rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/breakpoint_model_compare.py
 
 Env vars: INPUT, N_SAMPLE (10), REF_MODEL (Salesforce/SFR-Embedding-Mistral),
-REF_URLS (comma-sep, default localhost:9001..9008), REF_KEY (BRCMistral),
+REF_URLS (comma-sep, default localhost:9001..9008), REF_KEY (REQUIRED, no
+default — the bearer key for REF_URLS, or empty for keyless endpoints),
 CHEAP_URL (http://localhost:50053, the BGE sidecar), MAX_TOKENS (4096),
 CHEAP_MAX_TOKENS (0 = use MAX_TOKENS; set 512 to bound buffers to BGE context),
 BUFFER_SIZE (3), EMBED_SUBBATCH (32).
@@ -45,7 +46,15 @@ from ragstack.models import Document
 INPUT = os.environ.get("INPUT", "/rag/ingest/inputs/09320c55-a8a7-4f4d-81b3-ae55b7a329fa.jsonl")
 REF_MODEL = os.environ.get("REF_MODEL", "Salesforce/SFR-Embedding-Mistral")
 REF_URLS = os.environ.get("REF_URLS", ",".join(f"http://localhost:900{i}" for i in range(1, 9))).split(",")
-REF_KEY = os.environ.get("REF_KEY", "BRCMistral")
+# REF_KEY is REQUIRED and has NO default — a committed default is a committed
+# credential, and this repo is public. Keyless endpoints (the default REF_URLS)
+# are served by exporting it empty, which is distinct from leaving it unset.
+if "REF_KEY" not in os.environ:
+    raise SystemExit(
+        "REF_KEY is not set and has no default. Export REF_KEY with the bearer key "
+        "for the endpoints in REF_URLS, or REF_KEY='' for keyless endpoints."
+    )
+REF_KEY = os.environ["REF_KEY"]
 CHEAP_URL = os.environ.get("CHEAP_URL", "http://localhost:50053")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "4096"))
 CHEAP_MAX_TOKENS = int(os.environ.get("CHEAP_MAX_TOKENS", "0")) or MAX_TOKENS
