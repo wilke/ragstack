@@ -3,9 +3,14 @@
 Both ``scripts/ingest_jsonl.py`` and ``scripts/ingest_shard.py`` need to turn a
 chunk-method + size/overlap + embedding-model into a ready chunker with its token
 counter and per-chunk token budget resolved. That wiring is subtle — the
-``fixed_token`` sliding window *requires* the HF offset tokenizer, and a missing
-model must fall back to the zero-dependency estimator — so it lives here once
-rather than being copied into each tool (the #25 no-fork rule the ADR rests on).
+``fixed_token`` sliding window *requires* the HF offset tokenizer, and an
+hf/endpoint backend without a model cannot be built at all — so it lives here
+once rather than being copied into each tool (the #25 no-fork rule the ADR rests
+on).
+
+Every one of those conditions is a refusal, not a demotion: the estimator is
+reached by asking for it (``--chunk-token-counter estimate``), never by a
+degrade, because a silently substituted counter re-sizes the whole corpus.
 
 ``build_chunker`` returns the resolved ``token_counter`` and ``max_tokens``
 alongside the chunker because callers reuse them (e.g. the doc-metrics writer and
@@ -32,8 +37,13 @@ def resolve_token_backend(
 
     ``fixed_token`` forces ``hf`` (only :class:`HFTokenCounter` exposes the offset
     mapping its sliding window needs; an estimate/endpoint counter would collapse a
-    doc to one whole-doc chunk) and requires a model. Any hf/endpoint backend
-    without a model falls back to ``estimate`` so sizing still works.
+    doc to one whole-doc chunk) and requires a model.
+
+    An hf/endpoint backend **without** a model raises. It used to degrade to
+    ``estimate`` with a warning, which is the defect: sizing did keep "working",
+    but with a chars-per-token heuristic instead of the model's tokenizer, so the
+    same command produced a differently-chunked corpus and only a stderr line
+    said so. The estimator is still available — by asking for it.
     """
     backend = token_backend
     if method == "fixed_token":
@@ -47,9 +57,14 @@ def resolve_token_backend(
                  f"backend {backend!r} -> 'hf'.")
             backend = "hf"
     if backend in ("hf", "endpoint") and not model:
-        warn(f"[chunker] token backend {backend!r} needs a model; falling back to "
-             "'estimate'.")
-        backend = "estimate"
+        raise ValueError(
+            f"token counter backend {backend!r} needs an embedding model, and none "
+            f"was given. Refusing to fall back to 'estimate': it would size chunks "
+            f"by a chars-per-token heuristic instead of the model's tokenizer, "
+            f"silently changing the chunking of the whole run. Pass the embedding "
+            f"model (--embedding-model), or choose the estimator explicitly with "
+            f"--chunk-token-counter estimate."
+        )
     return backend
 
 

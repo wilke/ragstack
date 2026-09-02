@@ -26,19 +26,34 @@ measured). Those are different chunkers with the same label.
 **9,365 capped**, and a prior benchmark recording **12% would overflow the 4096-token
 window**. A config whose oversize handling is not pinned measures configuration, not method.
 
-**4. The token counter can silently resize every config.** `make_token_counter` defaults to
-`chars_per_token = 2.5` and `chunker_config` **falls back to `estimate` when a model is
-unavailable** — it logs, it does not refuse. Production measures **3.50 chars/token**, so a
-"512-token" config can really be 366 tokens: **29% under-filled, ~1.4× the chunks**.
+**4. The token counter could silently resize every config.** `make_token_counter` defaults to
+`chars_per_token = 2.5`, and `chunker_config` used to **fall back to `estimate` when a model
+was unavailable** — it logged, it did not refuse. Production measures **3.50 chars/token**, so
+a "512-token" config could really be 366 tokens: **29% under-filled, ~1.4× the chunks**.
+*Fixed* — see the prerequisite below.
 
 ---
 
 ## Prerequisite, before any run
 
-**Pin the token counter.** For an evaluation or a corpus build, the estimator must be an
-explicit opt-in and a missing tokenizer must **fail**, not fall back. Same rule as #454:
+**Pin the token counter — DONE.** For an evaluation or a corpus build, the estimator must be
+an explicit opt-in and a missing tokenizer must **fail**, not fall back. Same rule as #454:
 make the value required rather than defaulted. Re-running experiments on top of a silent
 40% resize reproduces the confusion at higher resolution.
+
+As of this commit both silent paths refuse. `make_token_counter("hf", …)` raises when the
+tokenizer will not load instead of demoting to the endpoint counter and then to the
+estimator, and `resolve_token_backend` raises for an hf/endpoint backend with no model
+instead of warning and returning `"estimate"`. Nothing new was added to the surface: the
+opt-in is the flag that already existed — `--chunk-token-counter estimate|endpoint` on the
+ingest CLIs, `chunk_token_counter` (`CHUNK_TOKEN_COUNTER`) in settings — and the refusal
+messages name it. `EstimatingTokenCounter` keeps `chars_per_token = 2.5`: it over-counts and
+under-fills, which is recoverable, where the measured 3.50 would risk over-window chunks;
+the measurement is recorded in its docstring so the trade is legible.
+
+Consequence for a run: an eval or ingest that *cannot* count tokens now stops instead of
+producing a differently-chunked index. On the API the refusal is a **boot** refusal (the
+chunker is built in `lifespan`), and only for deployments that turn token sizing on.
 
 ---
 

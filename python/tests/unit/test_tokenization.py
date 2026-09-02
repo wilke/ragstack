@@ -253,7 +253,7 @@ def test_resolve_max_tokens_missing_field_returns_default(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# make_token_counter factory + fallback chain
+# make_token_counter factory — builds what it was asked for, or raises
 # --------------------------------------------------------------------------- #
 def test_make_token_counter_estimate():
     c = make_token_counter("estimate", chars_per_token=5.0)
@@ -281,22 +281,60 @@ def test_make_token_counter_hf_requires_model():
         make_token_counter("hf")
 
 
-def test_make_token_counter_hf_falls_back_to_endpoint(monkeypatch):
-    # Force the HF tokenizer load to fail, with an endpoint available → endpoint.
+def test_make_token_counter_hf_refuses_to_hop_to_the_endpoint(monkeypatch):
+    """An unloadable HF tokenizer raises even when an endpoint IS available.
+
+    This is the narrow half of the refusal. The endpoint counter is *exact*, so
+    substituting it looks harmless — but it is still a backend the caller did not
+    ask for, reached over the network, on a run that believed it was counting
+    locally. Keeping the hop while making the no-endpoint case raise is the
+    narrowest mutation that survives the sibling test below; this is what closes
+    it. Callers who want the endpoint counter say ``endpoint``.
+    """
     def boom(self):
         raise RuntimeError("no transformers")
 
     monkeypatch.setattr(HFTokenCounter, "_tokenizer", boom)
-    c = make_token_counter("hf", model="m", base_url="http://embed.test")
-    assert isinstance(c, EndpointTokenCounter)
+    with pytest.raises(RuntimeError) as excinfo:
+        make_token_counter("hf", model="m", base_url="http://embed.test")
+    assert "no transformers" in str(excinfo.value)  # the cause is reported, not swallowed
+    assert excinfo.value.__cause__ is not None  # ...and chained
 
 
-def test_make_token_counter_hf_falls_back_to_estimate(monkeypatch):
-    # Force the HF load to fail with no endpoint → estimator.
+def test_make_token_counter_hf_refuses_rather_than_estimating(monkeypatch):
+    """No endpoint either → still a refusal, naming both explicit alternatives.
+
+    Before #476's family of fixes this returned an ``EstimatingTokenCounter``
+    with only a ``log.warning``: the same ingest command then chunked the corpus
+    by a chars-per-token heuristic, ~1.4x off the real tokenizer, and nothing in
+    the output said so. The message has to name the escape hatches, because the
+    fix for an operator who genuinely has no tokenizer is to pick one.
+    """
     def boom(self):
         raise RuntimeError("no transformers")
 
     monkeypatch.setattr(HFTokenCounter, "_tokenizer", boom)
-    c = make_token_counter("hf", model="m", base_url=None, chars_per_token=3.0)
+    with pytest.raises(RuntimeError) as excinfo:
+        make_token_counter("hf", model="m", base_url=None, chars_per_token=3.0)
+    msg = str(excinfo.value)
+    assert "--chunk-token-counter estimate" in msg
+    assert "--chunk-token-counter endpoint" in msg
+    assert "chunk_token_counter" in msg  # the API/settings spelling too
+    assert "m" in msg  # names the model whose tokenizer failed
+
+
+def test_make_token_counter_estimate_still_works_when_no_tokenizer_can_load(monkeypatch):
+    """The opt-in the refusal must not swallow.
+
+    Guards the over-reaching mutation ("make the estimator raise as well"): an
+    explicit ``estimate`` request is exactly how an operator without a tokenizer
+    is supposed to proceed, so it keeps working under the same broken-transformers
+    conditions that make the ``hf`` request raise.
+    """
+    def boom(self):  # pragma: no cover - must not be reached
+        raise RuntimeError("no transformers")
+
+    monkeypatch.setattr(HFTokenCounter, "_tokenizer", boom)
+    c = make_token_counter("estimate", model="m", chars_per_token=3.0)
     assert isinstance(c, EstimatingTokenCounter)
     assert c.chars_per_token == 3.0

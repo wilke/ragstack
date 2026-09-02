@@ -9,11 +9,18 @@ the chunkers can size by tokens and hard-cap every unit to the model window.
 Backends, cheapest-import first:
 
 - :class:`EstimatingTokenCounter` — ``ceil(len(text) / chars_per_token)``; zero
-  third-party deps, a rough but safe-ish fallback.
+  third-party deps, and *inexact*: it mis-sizes chunks by tens of percent.
 - :class:`EndpointTokenCounter` — POST ``/tokenize`` to a vLLM endpoint for the
   exact server-side token count (the same tokenizer the embedder uses).
 - :class:`HFTokenCounter` — load the embedding model's ``AutoTokenizer`` once and
   count locally; exact and offline once the tokenizer is cached. **The default.**
+
+**The backend is never substituted silently.** :func:`make_token_counter`
+builds the backend it was asked for or raises: an ``hf`` request whose tokenizer
+will not load is an error, not a quiet demotion to the estimator, because the
+same command then builds a differently-sized index without saying so. Choosing
+an inexact counter is an explicit act — ``--chunk-token-counter estimate`` on
+the ingest CLIs, ``chunk_token_counter`` in settings for the API.
 
 :func:`make_token_counter` is the factory; :func:`resolve_max_tokens` reads the
 endpoint's ``max_model_len`` so the budget is auto-detected from the live model.
@@ -49,14 +56,21 @@ class TokenCounter(Protocol):
 class EstimatingTokenCounter:
     """Estimate tokens as ``ceil(len(text) / chars_per_token)``.
 
-    Zero-dependency fallback used when neither a local tokenizer nor an endpoint
-    is available. ``chars_per_token`` defaults to **2.5** — deliberately
-    conservative: dense scientific text tokenizes around that ratio (plain English
-    runs ~3.7), so a low divisor makes the estimate *over*-count and pack *smaller*
-    chunks rather than let one slip over the embedder window. This is the
-    unreliable last-resort backend (prefer ``hf``/``endpoint`` for an exact count);
-    pair it with the embed-side backstop so a residual over-budget chunk can't
-    abort an ingest.
+    The zero-dependency backend, chosen **explicitly** (``--chunk-token-counter
+    estimate`` / ``chunk_token_counter="estimate"``) — nothing falls back to it,
+    because a silent demotion from an exact counter re-sizes a whole corpus
+    without saying so.
+
+    ``chars_per_token`` stays at **2.5**, deliberately *below* the ratio actually
+    observed: measurement on this corpus put dense scientific text at **3.50**
+    chars/token (plain English runs ~3.7). Keeping the divisor low makes the
+    estimate *over*-count and pack *smaller* chunks; raising it to the measured
+    3.50 would trade that under-fill for a real risk of a chunk slipping over the
+    embedder window. Under-filling is recoverable, an over-window chunk is a
+    rejected embed — so the conservative value stays, and the measured one is
+    recorded here so the trade is visible rather than folklore. Prefer
+    ``hf``/``endpoint`` for an exact count, and pair this one with the embed-side
+    backstop so a residual over-budget chunk can't abort an ingest.
     """
 
     def __init__(self, chars_per_token: float = 2.5) -> None:
@@ -156,17 +170,24 @@ def make_token_counter(
     api_key: str | None = None,
     chars_per_token: float = 2.5,
 ) -> TokenCounter:
-    """Build a :class:`TokenCounter` for ``backend``.
+    """Build a :class:`TokenCounter` for ``backend`` — or raise.
 
-    - ``"hf"`` (default): :class:`HFTokenCounter` for ``model``. If transformers
-      or the tokenizer can't load, fall back to :class:`EndpointTokenCounter`
-      (when ``base_url`` is given) and finally :class:`EstimatingTokenCounter`.
+    - ``"hf"`` (default): :class:`HFTokenCounter` for ``model``, with the
+      tokenizer loaded eagerly. If transformers or the tokenizer can't load this
+      **raises**; it does not substitute another backend.
     - ``"endpoint"``: :class:`EndpointTokenCounter` (requires ``base_url`` +
       ``model``).
     - ``"estimate"``: :class:`EstimatingTokenCounter`.
 
-    The chosen backend is logged so an operator can see when a fallback fired
-    (e.g. transformers missing → endpoint, or no endpoint → estimator).
+    There is no fallback chain. An unavailable HF tokenizer used to demote to the
+    endpoint counter and then to the estimator with only a ``log.warning``, which
+    meant the *same command* could build an index whose chunks were sized by a
+    ~1.4x-off heuristic instead of the real tokenizer — a corpus-wide difference
+    that nothing in the output announced. Picking an inexact counter is now
+    something a caller has to say out loud: ``--chunk-token-counter estimate``
+    (or ``endpoint``) on the ingest CLIs, ``chunk_token_counter`` in settings.
+
+    The chosen backend is logged so an operator can see which one is in use.
     """
     if backend == "estimate":
         _log_backend("estimate", chars_per_token=chars_per_token)
@@ -183,19 +204,22 @@ def make_token_counter(
             raise ValueError("backend='hf' requires model")
         counter = HFTokenCounter(model=model)
         try:
-            # Force the lazy load now so we can fall back deterministically rather
-            # than blowing up mid-ingest on the first chunk.
+            # Force the lazy load now so the failure is deterministic and lands
+            # here, rather than blowing up mid-ingest on the first chunk.
             counter._tokenizer()
-        except Exception as exc:  # noqa: BLE001 - any load failure → fall back
-            log.warning(
-                "HF tokenizer for %r unavailable (%s: %s); falling back.",
-                model, type(exc).__name__, exc,
-            )
-            if base_url:
-                _log_backend("endpoint", base_url=base_url, model=model)
-                return EndpointTokenCounter(base_url=base_url, model=model, api_key=api_key)
-            _log_backend("estimate", chars_per_token=chars_per_token)
-            return EstimatingTokenCounter(chars_per_token=chars_per_token)
+        except Exception as exc:  # noqa: BLE001 - any load failure is fatal
+            raise RuntimeError(
+                f"token counter backend 'hf' could not load the tokenizer for "
+                f"model {model!r} ({type(exc).__name__}: {exc}). Refusing to "
+                f"substitute another counter: a different backend sizes chunks "
+                f"differently, so the same command would silently build a "
+                f"differently-chunked index. Fix the tokenizer (install the "
+                f"'chunking' extra, or make the model available to the HF cache), "
+                f"or choose another backend explicitly: "
+                f"--chunk-token-counter endpoint / --chunk-token-counter estimate "
+                f"on the ingest CLIs, or chunk_token_counter=endpoint|estimate "
+                f"(CHUNK_TOKEN_COUNTER) in settings."
+            ) from exc
         _log_backend("hf", model=model)
         return counter
 

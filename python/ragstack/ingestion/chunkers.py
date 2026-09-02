@@ -733,10 +733,12 @@ class FixedTokenWindowChunker:
         token_counter: TokenCounter | None = None,
     ) -> None:
         # fixed_token needs the HF fast tokenizer's offset mapping. A non-HF counter
-        # (estimate/endpoint) — including one that make_token_counter('hf') silently
-        # fell back to because the tokenizer couldn't load — has no offset map and
-        # would yield ONE whole-doc chunk per document: a silent, corpus-wide
-        # chunking regression. Fail fast at construction instead of degrading.
+        # (estimate/endpoint) has no offset map and would yield ONE whole-doc chunk
+        # per document: a silent, corpus-wide chunking regression. Fail fast at
+        # construction instead of degrading. make_token_counter('hf') no longer
+        # substitutes a counter behind the caller's back, so this now guards only a
+        # caller that passed an inexact counter itself — it stays because that is
+        # still reachable, and this is the last line of defence.
         tok = getattr(token_counter, "_tokenizer", None)
         if not callable(tok):
             raise ValueError(
