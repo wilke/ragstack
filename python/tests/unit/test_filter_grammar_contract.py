@@ -284,6 +284,28 @@ def _key(case: Case) -> str:
     return key
 
 
+def _assert_same_value(where: str, got: Any, expected: Any) -> None:
+    """``got`` must be ``expected`` — same value AND same type, element by
+    element for a list.
+
+    Type-strict on purpose. ``==`` alone would accept two coercions this test
+    exists to catch: ``True == 1`` and ``1 == 1.0`` are both true in Python, so
+    a builder that turned a boolean filter into an integer one, or an integer
+    into a float Qdrant would then refuse, would slip past a plain equality
+    check. The value a builder emits must be the value the caller sent, not
+    something that merely compares equal to it."""
+    assert type(got) is type(expected), (
+        f"{where}: built a {type(got).__name__} ({got!r}) from a "
+        f"{type(expected).__name__} ({expected!r}) — the value was coerced"
+    )
+    if isinstance(expected, list):
+        assert len(got) == len(expected), f"{where}: {got!r} != {expected!r}"
+        for i, (g, e) in enumerate(zip(got, expected, strict=True)):
+            _assert_same_value(f"{where}[{i}]", g, e)
+        return
+    assert got == expected, f"{where}: built {got!r}, expected {expected!r}"
+
+
 # --------------------------------------------------------------------------- #
 # The contract: all four agree, row by row
 # --------------------------------------------------------------------------- #
@@ -382,25 +404,57 @@ def test_accepted_values_build_the_expected_clauses(case: Case) -> None:
     """A list value becomes membership (Qdrant ``MatchAny`` / ES ``terms``), a
     scalar becomes equality (``MatchValue`` / ``term``) — on BOTH builders, for
     the same row. An empty list is a real ``terms``/``MatchAny`` clause, not a
-    dropped constraint."""
+    dropped constraint.
+
+    Both the clause KIND and the VALUE INSIDE IT are asserted, for EVERY key.
+    Kind alone is not enough: a builder that emits the right clause carrying a
+    coerced value — ``{"term": {field: str(value)}}``, which is exactly the
+    Elasticsearch query-time laxness this whole change exists to stop — passes
+    a kind-only check while silently reintroducing the defect one layer down.
+    Values are compared with :func:`_assert_same_value`, which rejects a type
+    change even when ``==`` would not (``True == 1`` in Python)."""
     filters = _filters(case)
-    key = _key(case)
 
     built = _build_filter(filters)
     assert built is not None
     assert built.must is not None
     conditions = {c.key: c for c in built.must}  # type: ignore[union-attr]
     assert set(conditions) == set(filters), "every key must contribute a condition"
-    match = conditions[key].match  # type: ignore[union-attr]
-    kind = "any" if type(match).__name__ == "MatchAny" else "value"
-    assert kind == case.qdrant_match, f"Qdrant built {type(match).__name__} for {filters[key]!r}"
 
     body = _build_query("a query", filters)
     clauses = body["bool"]["filter"]
-    # ES prefixes every caller-facing bare key as `metadata.<key>`.
-    found = [c for c in clauses if f"metadata.{key}" in next(iter(c.values()))]
-    assert len(found) == 1, f"expected exactly one clause for {key!r}, got {clauses!r}"
-    assert next(iter(found[0])) == case.es_clause
+
+    # Every key, not just the case's own: the tenant key rides along on each
+    # row and is the one whose value a coercion bug would leak across.
+    for key, value in filters.items():
+        is_list = isinstance(value, (list, tuple, set))
+
+        match = conditions[key].match  # type: ignore[union-attr]
+        kind = "any" if type(match).__name__ == "MatchAny" else "value"
+        if key == _key(case):
+            assert kind == case.qdrant_match, (
+                f"Qdrant built {type(match).__name__} for {value!r}"
+            )
+        else:
+            assert kind == ("any" if is_list else "value")
+        # MatchAny carries `any`, MatchValue carries `value`.
+        got = match.any if kind == "any" else match.value  # type: ignore[union-attr]
+        _assert_same_value(f"qdrant {kind} for {key!r}", got, list(value) if is_list else value)
+
+        # ES prefixes every caller-facing bare key as `metadata.<key>`.
+        field = f"metadata.{key}"
+        found = [c for c in clauses if field in next(iter(c.values()))]
+        assert len(found) == 1, f"expected exactly one clause for {key!r}, got {clauses!r}"
+        es_kind = next(iter(found[0]))
+        if key == _key(case):
+            assert es_kind == case.es_clause
+        else:
+            assert es_kind == ("terms" if is_list else "term")
+        _assert_same_value(
+            f"es {es_kind} for {key!r}",
+            found[0][es_kind][field],
+            list(value) if is_list else value,
+        )
 
 
 def test_year_is_the_declared_integer_field() -> None:
