@@ -530,9 +530,14 @@ def test_ingest_shard_cli_exits_4_and_prints_the_refusal(tmp_path, capsys):
 
     shard = _jsonl_shard(tmp_path, "b0.jsonl", n_docs=3, words=2)  # 3 chunks (fixed chunker)
     out = tmp_path / "receipt.json"
+    # --chunk-token-counter estimate: this test runs with no embedding model, so
+    # the default 'hf' counter has nothing to load. It used to reach the estimator
+    # via the silent no-model degrade; that is now a refusal, so the (irrelevant,
+    # char-budgeted) counter choice is stated rather than inherited.
     argv = [shard, "--vector-backend", "memory", "--text-backend", "memory",
             "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1",
-            "--chunk-method", "fixed", "--embedding-model", "", "--out", str(out)]
+            "--chunk-method", "fixed", "--embedding-model", "",
+            "--chunk-token-counter", "estimate", "--out", str(out)]
     # The fake embedder stands in for the fleet (no network in a unit test).
     ingest_shard._build_embedder = lambda args, http: _FakeEmbedder()
     rc = ingest_shard.main([*argv, "--max-chunks", "2"])

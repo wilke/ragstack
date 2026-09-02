@@ -342,6 +342,67 @@ def test_chunker_token_sizing_falls_back_to_sidecar_url(monkeypatch):
     assert seen["base_url"] == "http://localhost:50053"
 
 
+def test_chunker_refuses_to_boot_on_an_unloadable_tokenizer(monkeypatch):
+    """The API-side half of the refusal, through the REAL factory.
+
+    ``_build_chunker`` is called from ``lifespan``, so this failure is a **boot
+    refusal**: a deployment with token sizing on and a broken tokenizer does not
+    start, instead of starting and capping every chunk with a heuristic budget
+    that is ~1.4x off. Every other chunker test here stubs ``make_token_counter``
+    out, so none of them would notice a re-added fallback — this one deliberately
+    does not stub it.
+
+    ``chunk_max_tokens`` is set (the gate on the counter being built at all), and
+    is an explicit int, so ``resolve_max_tokens`` returns from the override
+    without probing the endpoint — no network on this path.
+    """
+    from ragstack.ingestion.tokenization import HFTokenCounter
+
+    def boom(self):
+        raise RuntimeError("no transformers")
+
+    monkeypatch.setattr(HFTokenCounter, "_tokenizer", boom)
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", 256)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "hf")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", [])
+    monkeypatch.setattr(deps.settings, "embedding_sidecar_url", "http://127.0.0.1:1")
+    monkeypatch.setattr(deps.settings, "embedding_model", "ragstack-tests/no-such-tokenizer")
+    _capture_make_chunker(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="chunk_token_counter"):
+        deps._build_chunker()
+
+
+def test_chunker_explicit_estimate_setting_still_boots(monkeypatch):
+    """...and the settings-level opt-in still works under the same conditions.
+
+    ``CHUNK_TOKEN_COUNTER=estimate`` is the escape hatch the refusal message
+    names, so it has to work on a host where no tokenizer can load — otherwise
+    the fix leaves such a deployment with no way to run at all. Real factory
+    again: a mutation that made the estimator raise too would pass every stubbed
+    test above and fail here.
+    """
+    from ragstack.ingestion.tokenization import EstimatingTokenCounter, HFTokenCounter
+
+    def boom(self):  # pragma: no cover - must not be reached
+        raise RuntimeError("no transformers")
+
+    monkeypatch.setattr(HFTokenCounter, "_tokenizer", boom)
+    monkeypatch.setattr(deps.settings, "chunk_method", "fixed")
+    monkeypatch.setattr(deps.settings, "chunk_max_tokens", 256)
+    monkeypatch.setattr(deps.settings, "chunk_token_counter", "estimate")
+    monkeypatch.setattr(deps.settings, "embedding_endpoints", [])
+    monkeypatch.setattr(deps.settings, "embedding_sidecar_url", "http://127.0.0.1:1")
+    monkeypatch.setattr(deps.settings, "embedding_model", "ragstack-tests/no-such-tokenizer")
+    captured = _capture_make_chunker(monkeypatch)
+
+    chunker, bridge = deps._build_chunker()
+    assert chunker is not None and bridge is None
+    assert isinstance(captured["token_counter"], EstimatingTokenCounter)
+    assert captured["max_tokens"] == 240  # 256 minus the specials reserve
+
+
 def test_text_index_is_inmemory_but_warns_under_durable(monkeypatch, caplog):
     import logging
 

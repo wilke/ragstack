@@ -64,6 +64,81 @@ async def test_ingest_unknown_collection_is_404(client):
 
 
 @pytest.mark.asyncio
+async def test_ingest_is_503_with_remediation_when_the_tokenizer_cannot_load(
+    client, monkeypatch, tmp_path
+):
+    """A `fixed_token` collection whose tokenizer will not load: 503 + how to fix.
+
+    This is a client-visible consequence of making `make_token_counter` refuse,
+    and it is pinned here because all three plausible answers are wrong in a
+    different way:
+
+    - **400** (what main returned, via the estimator reaching
+      `FixedTokenWindowChunker`'s guard): a lie. The request is well-formed and
+      no change to the payload would fix it.
+    - **A bare 500** (what falling through to `main.py`'s catch-all gives): the
+      right *class*, but `_unhandled` deliberately sends no detail, so the
+      remediation ends up only in the server log behind the request id and the
+      caller gets `{"detail": "Internal Server Error"}`.
+    - **503 with `Retry-After`**: this file's transient 503s carry that header;
+      an unloadable tokenizer is not transient. It stays off, which is how the
+      two nearest precedents in `documents.py` (an unset `INGEST_ROOT`, a
+      missing GoWe backend — both persistent, operator-only misconfigurations
+      that answer 503 *with* an actionable detail) spell the same distinction.
+
+    The last assertion is the one with teeth: the body must NOT carry the
+    tokenizer loader's own error text. That text is uncontrolled and routinely
+    quotes the HF cache location — a filesystem path on the serving host — so
+    `client_detail` exists precisely to keep it out of a response, and a future
+    refactor reaching for `str(e)` has to fail here.
+    """
+    from ragstack.api.collections import CollectionRegistry
+    from ragstack.config import settings
+    from ragstack.ingestion.tokenization import HFTokenCounter
+    from ragstack.stores.memory import InMemoryTextIndex, InMemoryVectorStore
+
+    boom = "cache path /should/never/be/echoed is unreadable"
+
+    def _fail(self):
+        raise OSError(boom)
+
+    monkeypatch.setattr(HFTokenCounter, "_tokenizer", _fail)
+    # The ingest_root gate is a 503 of its own and fires before target
+    # resolution, so it would mask exactly what this test asserts.
+    monkeypatch.setattr(settings, "ingest_root", str(tmp_path))
+    src = tmp_path / "probe.txt"
+    src.write_text("a probe document about marmalade")
+
+    # A NON-shared-surface entry: the shared surface returns the prebuilt
+    # ingestor and never builds a per-collection chunker at all.
+    entry = CollectionEntry(
+        id="tok", label="tok", collection="physical_tok", model="acme/embedder",
+        dim=8, chunk_method="fixed_token", chunk_size=256, chunk_overlap=32,
+        chunk_params={}, is_shared_surface=False, retriever=object(),
+        vector_store=InMemoryVectorStore(), text_index=InMemoryTextIndex(),
+        embedder=object(),
+    )
+    registry = _app.state.collections
+    monkeypatch.setattr(
+        _app.state, "collections",
+        CollectionRegistry([*registry.entries(), entry], default_id=registry.default_id),
+    )
+
+    r = await client.post(
+        "/v1/ingest", json={"source": str(src), "collection": "tok"}
+    )
+    assert r.status_code == 503, r.text
+    assert "retry-after" not in {k.lower() for k in r.headers}, dict(r.headers)
+    detail = r.json()["detail"]
+    # Names the remediation, in both the CLI and the settings spelling.
+    assert "--chunk-token-counter estimate" in detail
+    assert "chunk_token_counter" in detail
+    assert "acme/embedder" in detail  # ...and which model could not be loaded
+    # ...but not the loader's own error text, which carries host paths.
+    assert boom not in r.text and "/should/never/be/echoed" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_ingest_default_collection_passes_through(client):
     # naming the default id uses the prebuilt ingestor (no per-collection build)
     r = await client.post("/v1/ingest", json={"source": "x.txt", "collection": "default"})

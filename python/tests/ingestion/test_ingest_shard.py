@@ -171,7 +171,13 @@ def test_receipt_load_malformed_is_clean_error(tmp_path: Path) -> None:
 # where the #133 fixed_token blocker lived.
 # --------------------------------------------------------------------------- #
 def test_build_chunker_fixed_offline() -> None:
+    # `fixed` is char-budgeted, so the token counter is irrelevant here — but a
+    # counter is still built, and with no --embedding-model the default 'hf'
+    # backend cannot be. This test used to get the estimator by accident, from
+    # the silent no-model degrade; that degrade is now a refusal, so the choice
+    # is stated. Naming it is the point: nothing else about the test changed.
     args = ingest_shard.parse_args(["x.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1", "--chunk-method", "fixed",
+                                    "--chunk-token-counter", "estimate",
                                     "--embedding-model", ""])
     assert ingest_shard._build_chunker(args) is not None  # no crash, no network
 

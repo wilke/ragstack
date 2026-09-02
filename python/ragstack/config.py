@@ -333,6 +333,11 @@ class Settings(BaseSettings):
     # window. chunk_token_counter selects how tokens are counted: "hf" loads the
     # model's HF tokenizer (exact, needs the [chunking] extra), "endpoint" asks the
     # serving endpoint, "estimate" uses a chars-per-token heuristic.
+    #
+    # This setting is the ONLY way to get an inexact counter. "hf" that cannot load
+    # its tokenizer refuses — at boot, since the chunker is built in lifespan —
+    # rather than quietly demoting to "estimate", which sizes chunks ~1.4x off and
+    # would build a differently-chunked index under an unchanged configuration.
     chunk_max_tokens: int | None = None
     chunk_token_counter: str = "hf"          # hf | endpoint | estimate
 
