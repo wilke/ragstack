@@ -50,7 +50,13 @@ WORKER_GROUP="ragstack"
 DEFAULT_WORKERS=24
 
 EMBED_MODEL="${EMBED_MODEL:-Salesforce/SFR-Embedding-Mistral}"
-EMBED_API_KEY="${EMBED_API_KEY:-BRCMistral}"   # bearer key the workflow passes
+# EMBED_API_KEY — bearer key the replicas serve behind and the workflow passes.
+# REQUIRED, and deliberately with NO default: a committed default is a committed
+# credential (this file is public). It is checked at the point of use in
+# start_vllm, not here, so `stop`/`status`/`urls` keep working without it.
+# Required *set*, not required non-empty: a keyless fleet is a real configuration
+# (the coconut replicas are keyless — see docs/diagrams/gowe-embedding-workflow.md)
+# and is expressed by exporting it empty. Unset is the error, not "keyless".
 BASE_PORT="${BASE_PORT:-9001}"                 # replica i -> BASE_PORT + i
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-4096}"         # chunks are 512 tok; 4k is ample
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
@@ -134,6 +140,16 @@ start_workers() {
 
 start_vllm() {
   local gpus; gpus=$(expand_gpus "${1:?usage: vllm <gpus, e.g. 0-7 or 0,3-7>}")
+  # No committed default for the key — set it in the environment, or in the
+  # group's secret file ($WORKER_SECRET_FILE) and source that before running.
+  # `?` not `:?`: unset is the error, EMBED_API_KEY="" is a keyless fleet.
+  : "${EMBED_API_KEY?set EMBED_API_KEY (bearer key the vLLM replicas serve behind, or empty for a keyless fleet); export it, or put it in $WORKER_SECRET_FILE and source that — there is no default}"
+  # vllm_cmd is serialised into a child `bash -c`, which inherits only EXPORTED
+  # vars — unexported ones expand to empty there, so the replica would come up
+  # with an empty model and an empty key. Exported here rather than at the top of
+  # the file so the workers tier's environment is left exactly as it was.
+  export EMBED_API_KEY EMBED_MODEL MAX_MODEL_LEN GPU_MEM_UTIL HF_HOME
+  if [ -n "${VLLM_IMAGE:-}" ]; then export VLLM_IMAGE; fi   # set only on the apptainer path
   local first=1 port urls=()
   echo "Starting vLLM replicas of $EMBED_MODEL on GPUs: $gpus"
   local i=0

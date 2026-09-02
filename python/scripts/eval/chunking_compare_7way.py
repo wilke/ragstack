@@ -51,14 +51,16 @@ Usage::
     . /rag/bin/activate
     python scripts/eval/chunking_compare_7way.py \
         --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
-        --embedding-api-key BRCMistral            # full run + teardown
+        --embedding-api-key "$EMBED_API_KEY"      # full run + teardown
     python scripts/eval/chunking_compare_7way.py --limit 30 --eval-sample 50 \
         --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
-        --no-teardown --embedding-api-key BRCMistral   # quick smoke
+        --no-teardown --embedding-api-key "$EMBED_API_KEY"   # quick smoke
 
 ``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default: this harness
 creates and drops collections, and a defaulted store address is a decision about
 where those writes land made by the file instead of the caller (#407, #454, #476).
+The embedding key comes from the environment for the same reason in reverse — a
+literal here would be a credential committed to a public repo.
 """
 from __future__ import annotations
 

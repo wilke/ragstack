@@ -129,7 +129,9 @@ flowchart TB
 - **Streaming.** Each shard is embedded in document groups and written
   incrementally, so peak memory is bounded — a 500k-doc shard does not OOM.
 - **Embedding fleet.** SFR-Embedding-Mistral (4096-d) on coconut `:9001-9008`
-  (keyless) or lambda13 `:9990-9997` (BV-BRC `BRCMistral` key).
+  (keyless) or lambda13 `:9990-9997` (keyed — the BV-BRC bearer key, supplied at
+  run time via `EMBED_API_KEY` / the workflow's `embedding_api_key` input; there
+  is no default and the value is not committed).
 
 ## References
 

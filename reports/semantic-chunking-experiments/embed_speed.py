@@ -14,7 +14,7 @@ See reports/semantic-chunking-experiments.md. Reproduce:
     /rag/envs/ragstack/bin/python reports/semantic-chunking-experiments/embed_speed.py
 
 Env vars: INPUT, N_BUFFERS (256), SUB (32), REF_MODEL, REF_URLS (comma-sep),
-REF_KEY, CHEAP_URL.
+REF_KEY (REQUIRED, no default — empty for keyless endpoints), CHEAP_URL.
 """
 import asyncio
 import json
@@ -30,7 +30,14 @@ from ragstack.ingestion.chunkers import sentence_spans
 INPUT = os.environ.get("INPUT", "/rag/ingest/inputs/09320c55-a8a7-4f4d-81b3-ae55b7a329fa.jsonl")
 REF_MODEL = os.environ.get("REF_MODEL", "Salesforce/SFR-Embedding-Mistral")
 REF_URLS = os.environ.get("REF_URLS", ",".join(f"http://localhost:900{i}" for i in range(1, 9))).split(",")
-REF_KEY = os.environ.get("REF_KEY", "BRCMistral")
+# REF_KEY is REQUIRED and has NO default — see breakpoint_model_compare.py.
+# Export it empty for the keyless endpoints; unset is an error, not "keyless".
+if "REF_KEY" not in os.environ:
+    raise SystemExit(
+        "REF_KEY is not set and has no default. Export REF_KEY with the bearer key "
+        "for the endpoints in REF_URLS, or REF_KEY='' for keyless endpoints."
+    )
+REF_KEY = os.environ["REF_KEY"]
 CHEAP_URL = os.environ.get("CHEAP_URL", "http://localhost:50053")
 N_BUFFERS = int(os.environ.get("N_BUFFERS", "256"))
 SUB = int(os.environ.get("SUB", "32"))

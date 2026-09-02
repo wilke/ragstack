@@ -16,4 +16,4 @@ configs:
 qdrant_url: http://CHANGE-ME-QDRANT:6333
 es_url: http://CHANGE-ME-ES:9200
 # Bearer token for keyed embedding endpoints (e.g. lambda13); drop for keyless.
-embedding_api_key: BRCMistral
+embedding_api_key: CHANGE-ME-EMBED-API-KEY

@@ -33,15 +33,16 @@ Usage::
 
     cd python
     . /rag/bin/activate
-    python scripts/eval/scifact_chunk_eval.py --embedding-api-key BRCMistral \
+    python scripts/eval/scifact_chunk_eval.py --embedding-api-key "$EMBED_API_KEY" \
         --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT
-    python scripts/eval/scifact_chunk_eval.py --embedding-api-key BRCMistral \
+    python scripts/eval/scifact_chunk_eval.py --embedding-api-key "$EMBED_API_KEY" \
         --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
         --no-teardown --query-limit 50   # quick smoke
 
 ``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default: the harness
 creates and drops collections, and the localhost defaults it used to inherit are
-production on the deployment host (#476). The caller names the stores.
+production on the deployment host (#476). The caller names the stores. The
+embedding key is passed from the environment, never written into the file.
 """
 from __future__ import annotations
 
