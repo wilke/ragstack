@@ -33,9 +33,15 @@ Usage::
 
     cd python
     . /rag/bin/activate
-    python scripts/eval/scifact_chunk_eval.py --embedding-api-key BRCMistral
     python scripts/eval/scifact_chunk_eval.py --embedding-api-key BRCMistral \
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT
+    python scripts/eval/scifact_chunk_eval.py --embedding-api-key BRCMistral \
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
         --no-teardown --query-limit 50   # quick smoke
+
+``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default: the harness
+creates and drops collections, and the localhost defaults it used to inherit are
+production on the deployment host (#476). The caller names the stores.
 """
 from __future__ import annotations
 
@@ -234,11 +240,12 @@ async def ingest_config(cfg, docs: list[Document], client: httpx.AsyncClient) ->
           f"chunk time {chunk_time:.1f}s", flush=True)
 
     collection = _store_name(key)
+    qdrant_url, es_url = c7.store_urls()
     vstore = QdrantVectorStore(
-        url=c7.QDRANT_URL, collection=collection,
+        url=qdrant_url, collection=collection,
         vector_size=c7.VECTOR_SIZE, timeout=120,
     )
-    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=collection)
+    tindex = ElasticsearchTextIndex(url=es_url, index=collection)
     await vstore.ensure_collection()
     await tindex.ensure_index()
 
@@ -313,11 +320,12 @@ async def evaluate_config(
         store if store is not None
         else (_store_name(key), _store_name(key), c7.TENANT)
     )
+    qdrant_url, es_url = c7.store_urls()
     vstore = QdrantVectorStore(
-        url=c7.QDRANT_URL, collection=collection,
+        url=qdrant_url, collection=collection,
         vector_size=c7.VECTOR_SIZE, timeout=120,
     )
-    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=es_index)
+    tindex = ElasticsearchTextIndex(url=es_url, index=es_index)
     embedder = make_embedder(
         api="openai", http=client, base_url=c7.SFR_ENDPOINTS[0], model=c7.SFR_MODEL,
         api_key=c7.EMBED_API_KEY,
@@ -389,7 +397,8 @@ async def teardown(client: httpx.AsyncClient, keys: list[str]) -> bool:
     print("\n[teardown] dropping scifact_m7_* collections and indices ...", flush=True)
     from qdrant_client import AsyncQdrantClient
 
-    qc = AsyncQdrantClient(url=c7.QDRANT_URL, timeout=120)
+    qdrant_url, es_url = c7.store_urls()
+    qc = AsyncQdrantClient(url=qdrant_url, timeout=120)
     for key in keys:
         name = _store_name(key)
         assert name.startswith("scifact_m7"), name  # never touch prod/others
@@ -412,12 +421,12 @@ async def teardown(client: httpx.AsyncClient, keys: list[str]) -> bool:
         name = _store_name(key)
         assert name.startswith("scifact_m7"), name
         try:
-            r = await client.delete(f"{c7.ES_URL}/{name}", timeout=60.0)
+            r = await client.delete(f"{es_url}/{name}", timeout=60.0)
             print(f"[teardown] dropped ES index {name} (HTTP {r.status_code})")
         except Exception as exc:  # noqa: BLE001
             print(f"[teardown] ES {name}: {exc}")
     try:
-        r = await client.get(f"{c7.ES_URL}/_cat/indices/scifact_m7*?h=index",
+        r = await client.get(f"{es_url}/_cat/indices/scifact_m7*?h=index",
                              timeout=30.0)
         remaining_es = [ln for ln in r.text.split() if ln.strip()]
     except Exception:  # noqa: BLE001
@@ -654,6 +663,14 @@ def parse_args(argv=None):
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None,
                    help="Bearer token for keyed endpoints (lambda13); keyless ignore it")
+    p.add_argument("--qdrant-url", required=True,
+                   help="Qdrant base URL the scifact_m7_* collections are built in. "
+                        "REQUIRED, no default: the harness creates and drops "
+                        "collections and the old localhost fallback is production on "
+                        "the deployment host (#476)")
+    p.add_argument("--es-url", required=True,
+                   help="Elasticsearch base URL for the scifact_m7_* indices (same "
+                        "caveat as --qdrant-url)")
     p.add_argument("--hard-cap-tokens", type=int, default=c7.HARD_CAP_TOKENS)
     p.add_argument("--no-teardown", dest="teardown", action="store_false",
                    help="keep scifact_m7_* stores (default: tear down)")
@@ -715,6 +732,10 @@ def main(argv=None) -> int:
             f"--retrieve-pool ({args.retrieve_pool}) must be >= --rerank-pool "
             f"({args.rerank_pool})"
         )
+    # Store targets first, before anything can build a client: an unset c7.QDRANT_URL
+    # is NOT loud (the Qdrant client falls back to localhost:6333) (#476).
+    c7.QDRANT_URL = args.qdrant_url.rstrip("/")
+    c7.ES_URL = args.es_url.rstrip("/")
     c7.HARD_CAP_TOKENS = args.hard_cap_tokens
     c7.EMBED_API_KEY = args.embedding_api_key or os.environ.get("OPENAI_API_KEY")
     if c7.EMBED_API_KEY:

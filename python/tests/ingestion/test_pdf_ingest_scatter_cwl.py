@@ -311,31 +311,81 @@ def test_no_cwl_example_job_names_a_live_store() -> None:
 #: decides where those writes land, so it must take that decision from its
 #: caller. ``embed_shard.py`` is deliberately absent: it produces an embeddings
 #: file and touches no store — ``load_embeddings.py`` is the step that writes it.
-_WRITE_CLIS = ("ingest_shard.py", "load_embeddings.py")
+#:
+#: ``chunk_one.py`` (#476) is the eval harness's scatter step: it ingests a whole
+#: corpus into a Qdrant collection + ES index per config and drops them again, so
+#: it decides where those writes land exactly like the ingest CLIs do.
+_WRITE_CLIS = ("ingest_shard.py", "load_embeddings.py", "chunk_one.py")
 
 
-def _base_commands(node: object) -> list[str]:
-    """Every ``baseCommand`` string anywhere in a parsed CWL document."""
+def _invoked_scripts(node: object) -> list[str]:
+    """Every string a parsed CWL document puts ON a command line.
+
+    ``baseCommand`` entries, plus ``arguments`` (bare strings and the
+    ``valueFrom`` of dict-form arguments). The second channel is not optional
+    polish: ``eval-scifact-chunking.cwl`` runs ``baseCommand: [python]`` with the
+    script at ``arguments[0].valueFrom``, because CWL does not evaluate
+    expressions inside ``baseCommand`` — so the script name CANNOT be moved
+    there, and a ``baseCommand``-only reader is structurally blind to that whole
+    workflow (#476).
+
+    Still no false positives, and not by luck: this walks the PARSED document, so
+    ``pdf-extract.cwl``'s header comment naming ``ingest_shard.py`` (to say what
+    consumes its output) is gone before the walk begins — ``yaml.safe_load``
+    strips comments. The other prose channel, ``doc:``, is never descended into
+    because only ``baseCommand``/``arguments`` values are harvested."""
     found: list[str] = []
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "baseCommand":
                 found.extend(str(v) for v in (value if isinstance(value, list) else [value]))
-            found.extend(_base_commands(value))
+            elif key == "arguments":
+                for arg in (value if isinstance(value, list) else [value]):
+                    if isinstance(arg, str):
+                        found.append(arg)
+                    elif isinstance(arg, dict) and "valueFrom" in arg:
+                        found.append(str(arg["valueFrom"]))
+            found.extend(_invoked_scripts(value))
     elif isinstance(node, list):
         for value in node:
-            found.extend(_base_commands(value))
+            found.extend(_invoked_scripts(value))
     return found
 
 
 def _invokes_a_write_cli(doc: object) -> bool:
     """Does this document actually RUN a write CLI?
 
-    Reads ``baseCommand``, not the file text. A raw substring search also matches
-    prose: ``pdf-extract.cwl``'s header comment names ``ingest_shard.py`` to say
-    what consumes its output, and it writes to no store at all."""
-    cmds = _base_commands(doc)
+    Reads the command line the document builds, not the file text."""
+    cmds = _invoked_scripts(doc)
     return any(cli in cmd for cmd in cmds for cli in _WRITE_CLIS)
+
+
+def test_the_walker_reads_command_lines_and_not_prose() -> None:
+    """Pins both halves of ``_invoked_scripts``' contract.
+
+    A ``valueFrom``-injected script IS seen (the #476 hole: reverting to a
+    ``baseCommand``-only reader makes the eval workflow invisible again), and a
+    write-CLI name that appears only in prose is NOT — ``pdf-extract.cwl`` names
+    ``ingest_shard.py`` in its header comment and writes to no store. The
+    ``doc:`` case is asserted synthetically because the repo currently has no
+    file with a write CLI in a ``doc:`` string, and that is exactly the kind of
+    absence a future edit removes."""
+    eval_wf = yaml.safe_load(
+        (CWL_DIR / "eval-scifact-chunking.cwl").read_text(encoding="utf-8"))
+    assert any("chunk_one.py" in s for s in _invoked_scripts(eval_wf))
+    assert _invokes_a_write_cli(eval_wf)
+
+    extract = yaml.safe_load(PDF_EXTRACT_PATH.read_text(encoding="utf-8"))
+    assert not any("ingest_shard.py" in s for s in _invoked_scripts(extract))
+    assert not _invokes_a_write_cli(extract)
+
+    prose_only = {
+        "class": "CommandLineTool",
+        "doc": "the shard this makes is consumed by ingest_shard.py downstream",
+        "baseCommand": ["python", "pdf_extract.py"],
+        "arguments": [{"prefix": "--out", "valueFrom": "shard.jsonl"}],
+    }
+    assert not _invokes_a_write_cli(prose_only)
 
 
 def test_the_write_cli_sweep_matches_the_workflows_that_write() -> None:
@@ -350,8 +400,9 @@ def test_the_write_cli_sweep_matches_the_workflows_that_write() -> None:
         if _invokes_a_write_cli(yaml.safe_load(p.read_text(encoding="utf-8")))
     }
     assert writers == {
-        "ingest-bulk.cwl", "jats-ingest.cwl", "load-embeddings.cwl",
-        "pdf-ingest.cwl", "pdf-ingest-scatter.cwl", "restore-collection.cwl",
+        "eval-scifact-chunking.cwl", "ingest-bulk.cwl", "jats-ingest.cwl",
+        "load-embeddings.cwl", "pdf-ingest.cwl", "pdf-ingest-scatter.cwl",
+        "restore-collection.cwl",
     }, f"the set of write-path workflows changed: {sorted(writers)}"
 
 
@@ -436,6 +487,36 @@ def test_ingest_shard_refuses_to_run_without_store_targets() -> None:
     assert proc.returncode != 0, (
         "ingest_shard.py ran without --qdrant-url/--es-url; the localhost defaults "
         "are the PRODUCTION stores on the deployment host (#454)"
+    )
+    combined = proc.stdout + proc.stderr
+    for flag in ("--qdrant-url", "--es-url"):
+        assert flag in combined, f"the refusal does not name {flag}: {combined[-400:]}"
+
+
+def test_chunk_one_refuses_to_run_without_store_targets() -> None:
+    """The same backstop for the eval scatter step (#476).
+
+    ``chunk_one.py`` used to inherit ``chunking_compare_7way``'s hardcoded
+    ``localhost`` store constants — production on the deployment host — with no
+    flag to override them, and the CWL sweep above could not see the workflow that
+    runs it because the script arrives via ``arguments``/``valueFrom``.
+
+    ``--endpoints`` is pointed at the dead port deliberately. Without it the run
+    would probe the live embedding fleet; with it, an UNFIXED chunk_one also exits
+    nonzero ("No live embedding endpoints"), so the returncode assertion alone
+    would pass vacuously. The assertion that actually fails without the fix is
+    that the refusal NAMES both store flags."""
+    script = CHECKOUT_ROOT / "scripts" / "eval" / "chunk_one.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--config", "fixed_tok512",
+         "--endpoints", "http://127.0.0.1:1"],
+        capture_output=True, text=True, timeout=300,
+        env=pinned_env({"PATH": os.environ.get("PATH", ""),
+                        "PYTHONPATH": str(CHECKOUT_ROOT)}),
+    )
+    assert proc.returncode != 0, (
+        "chunk_one.py ran without --qdrant-url/--es-url; the store constants it "
+        "inherits resolve to the PRODUCTION stores on the deployment host (#476)"
     )
     combined = proc.stdout + proc.stderr
     for flag in ("--qdrant-url", "--es-url"):

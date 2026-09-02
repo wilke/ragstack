@@ -50,9 +50,15 @@ Usage::
     cd python
     . /rag/bin/activate
     python scripts/eval/chunking_compare_7way.py \
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
         --embedding-api-key BRCMistral            # full run + teardown
     python scripts/eval/chunking_compare_7way.py --limit 30 --eval-sample 50 \
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
         --no-teardown --embedding-api-key BRCMistral   # quick smoke
+
+``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default: this harness
+creates and drops collections, and a defaulted store address is a decision about
+where those writes land made by the file instead of the caller (#407, #454, #476).
 """
 from __future__ import annotations
 
@@ -133,8 +139,17 @@ EMBED_API_KEY: str | None = None
 # Live endpoints, narrowed to the responding subset in main(); used round-robin.
 SFR_ENDPOINTS: list[str] = list(DEFAULT_ENDPOINTS)
 VECTOR_SIZE = 4096
-QDRANT_URL = "http://localhost:6333"
-ES_URL = "http://localhost:9200"
+# Store targets. Deliberately None, NOT a localhost literal: on the deployment
+# host the localhost addresses are the PRODUCTION Qdrant/ES, and this harness
+# ingests and drops collections. main() (and every sibling harness that imports
+# this module) sets them from REQUIRED --qdrant-url/--es-url flags; ``store_urls``
+# below is the guard that turns "nobody set them" into a refusal (#476).
+#
+# None is not self-guarding: ``QdrantClient(url=None)`` falls back to host
+# ``localhost`` / port 6333 — i.e. straight back to production — so every client
+# constructor in this harness family goes through ``store_urls()``.
+QDRANT_URL: str | None = None
+ES_URL: str | None = None
 RERANKER_URL = "http://localhost:50052"
 TENANT = "public"
 
@@ -152,6 +167,25 @@ _PREFIX = DEFAULT_PREFIX
 
 # Token counter shared by every config (built once in main()).
 TOKEN_COUNTER: TokenCounter | None = None
+
+
+def store_urls() -> tuple[str, str]:
+    """``(QDRANT_URL, ES_URL)``, or a refusal naming the flags that set them.
+
+    Every Qdrant/ES client in this harness family is built from this, never from
+    the module globals directly. ``QdrantClient(url=None)`` does not fail — it
+    silently falls back to ``localhost:6333``, production on the deployment host —
+    so an unset target has to be caught HERE, by name, rather than left to the
+    client library to "helpfully" resolve (#476)."""
+    if not QDRANT_URL or not ES_URL:
+        raise SystemExit(
+            "store URLs unset — pass --qdrant-url and --es-url (they are required; "
+            "there is no default, because the default would be production on the "
+            "deployment host). Currently: "
+            f"QDRANT_URL={QDRANT_URL!r} ES_URL={ES_URL!r}"
+        )
+    return QDRANT_URL, ES_URL
+
 
 EMBED_BATCH = 64
 EMBED_CONCURRENCY = 16  # bounded in-flight embed requests across the live pool
@@ -637,10 +671,11 @@ async def ingest_config(
     tok_sizes = [TOKEN_COUNTER.count(c.content) for c in all_chunks]
 
     collection = _store_name(key)
+    qdrant_url, es_url = store_urls()
     vstore = QdrantVectorStore(
-        url=QDRANT_URL, collection=collection, vector_size=VECTOR_SIZE, timeout=120
+        url=qdrant_url, collection=collection, vector_size=VECTOR_SIZE, timeout=120
     )
-    tindex = ElasticsearchTextIndex(url=ES_URL, index=collection)
+    tindex = ElasticsearchTextIndex(url=es_url, index=collection)
     await vstore.ensure_collection()
     await tindex.ensure_index()
 
@@ -700,7 +735,7 @@ def _save_ingest_stats(key: str, stats: dict) -> None:
 async def _collection_count(key: str) -> int:
     from qdrant_client import AsyncQdrantClient
 
-    qc = AsyncQdrantClient(url=QDRANT_URL, timeout=60)
+    qc = AsyncQdrantClient(url=store_urls()[0], timeout=60)
     try:
         info = await qc.get_collection(_store_name(key))
         return int(info.points_count or 0)
@@ -772,10 +807,11 @@ async def evaluate_config(
     key = cfg.key
     print(f"\n[{key}] evaluating {len(docs)} known-item queries ...", flush=True)
     collection = _store_name(key)
+    qdrant_url, es_url = store_urls()
     vstore = QdrantVectorStore(
-        url=QDRANT_URL, collection=collection, vector_size=VECTOR_SIZE, timeout=120
+        url=qdrant_url, collection=collection, vector_size=VECTOR_SIZE, timeout=120
     )
-    tindex = ElasticsearchTextIndex(url=ES_URL, index=collection)
+    tindex = ElasticsearchTextIndex(url=es_url, index=collection)
     embedder = make_embedder(
         api="openai", http=client, base_url=SFR_ENDPOINTS[0], model=SFR_MODEL,
         api_key=EMBED_API_KEY,
@@ -853,7 +889,8 @@ async def teardown(client: httpx.AsyncClient) -> None:
     print("\n[teardown] dropping chunkcmp_m7_* collections and indices ...", flush=True)
     from qdrant_client import AsyncQdrantClient
 
-    qc = AsyncQdrantClient(url=QDRANT_URL, timeout=120)
+    qdrant_url, es_url = store_urls()
+    qc = AsyncQdrantClient(url=qdrant_url, timeout=120)
     for key in CONFIG_KEYS:
         name = _store_name(key)
         assert name.startswith("chunkcmp_m7"), name  # guard: never touch prod/others
@@ -867,7 +904,7 @@ async def teardown(client: httpx.AsyncClient) -> None:
         name = _store_name(key)
         assert name.startswith("chunkcmp_m7"), name
         try:
-            r = await client.delete(f"{ES_URL}/{name}", timeout=60.0)
+            r = await client.delete(f"{es_url}/{name}", timeout=60.0)
             print(f"[teardown] dropped ES index {name} (HTTP {r.status_code})")
         except Exception as exc:  # noqa: BLE001
             print(f"[teardown] ES {name}: {exc}")
@@ -1285,6 +1322,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "$OPENAI_API_KEY. Keyless endpoints ignore it.",
     )
     p.add_argument(
+        "--qdrant-url", required=True,
+        help="Qdrant base URL the chunkcmp_m7_* collections are built in. REQUIRED "
+        "and not defaulted: this harness creates and drops collections, and the "
+        "localhost default it used to carry is production on the deployment host "
+        "(#476). The teardown guard guards NAMES, not hosts.",
+    )
+    p.add_argument(
+        "--es-url", required=True,
+        help="Elasticsearch base URL for the chunkcmp_m7_* indices (same caveat as "
+        "--qdrant-url).",
+    )
+    p.add_argument(
         "--collection-prefix", default=DEFAULT_PREFIX,
         help=f"Qdrant/ES name prefix (default {DEFAULT_PREFIX!r}). Must start with "
         "'chunkcmp_m7' so teardown protects prod and other chunkcmp_* leftovers.",
@@ -1303,7 +1352,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     global _PREFIX, SFR_ENDPOINTS, EMBED_API_KEY, HARD_CAP_TOKENS, TOKEN_COUNTER
+    global QDRANT_URL, ES_URL
     args = parse_args(argv)
+    # Set before ANY store is touched, so nothing in this process can fall through
+    # to a client-library localhost default (#476).
+    QDRANT_URL = args.qdrant_url.rstrip("/")
+    ES_URL = args.es_url.rstrip("/")
     # None -> discover. Resolved here so --help stays fast and a missing corpus
     # fails with a message instead of at import time.
     if args.inputs is None:

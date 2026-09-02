@@ -9,5 +9,11 @@ configs:
   - words_tok512
   - semantic_tokcap
   - semantic_pooled
+# Store targets: PLACEHOLDERS on purpose (#476). Replace with the instances this
+# eval may WRITE to — each scatter task ingests a whole corpus into a store and
+# drops it again. The address chunk_one used to fall through to was the deployment
+# host's PRODUCTION Qdrant/Elasticsearch.
+qdrant_url: http://CHANGE-ME-QDRANT:6333
+es_url: http://CHANGE-ME-ES:9200
 # Bearer token for keyed embedding endpoints (e.g. lambda13); drop for keyless.
 embedding_api_key: BRCMistral
