@@ -1,8 +1,9 @@
 """Shared chunker construction for the bulk ingesters.
 
-Both ``scripts/ingest_jsonl.py`` and ``scripts/ingest_shard.py`` need to turn a
-chunk-method + size/overlap + embedding-model into a ready chunker with its token
-counter and per-chunk token budget resolved. That wiring is subtle — the
+``scripts/ingest_jsonl.py``, ``scripts/ingest_shard.py`` and
+``scripts/embed_shard.py`` all need to turn a chunk-method + size/overlap +
+embedding-model into a ready chunker with its token counter and per-chunk token
+budget resolved. That wiring is subtle — the
 ``fixed_token`` sliding window *requires* the HF offset tokenizer, and an
 hf/endpoint backend without a model cannot be built at all — so it lives here
 once rather than being copied into each tool (the #25 no-fork rule the ADR rests

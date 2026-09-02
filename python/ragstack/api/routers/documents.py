@@ -74,6 +74,7 @@ from ragstack.ingestion.loaders import (
 )
 from ragstack.ingestion.manifest import Manifest, WorkItem, build_manifest
 from ragstack.ingestion.sharded import ShardedIngestor
+from ragstack.ingestion.tokenization import TokenCounterUnavailable
 from ragstack.jobstore import COMPLETED, FAILED, PENDING, RUNNING, UNKNOWN, JobStore
 from ragstack.store_routing import qdrant_url_for
 from ragstack.tenancy import allowed_collection_ids, readable_tenants
@@ -385,6 +386,27 @@ async def _resolve_ingest_target(
         return target, prebuilt
     try:
         run_ingestor = build_ingestor_for(app_state, target)
+    except TokenCounterUnavailable as e:
+        # 503, not 400: the request is well-formed and no change to the payload
+        # would fix it — the tokenizer this collection's chunking depends on
+        # cannot load on this server. Answering 400 would tell the caller to
+        # edit something on their side, which is a lie.
+        #
+        # 503 rather than a bare 500 follows the two nearest precedents in this
+        # file: an unset INGEST_ROOT and a missing GoWe backend are both
+        # persistent, operator-only misconfigurations that leave the rest of the
+        # server serving, and both answer 503 *with* an actionable detail. And
+        # `main.py`'s catch-all 500 deliberately carries no detail at all ("not
+        # to expose internals"), so a 500 here would drop the remediation into
+        # the log and hand the caller an empty body.
+        #
+        # No Retry-After: this file's transient 503s carry one, these
+        # misconfiguration 503s do not — the header is what separates "come back
+        # in five seconds" from "an operator has to act".
+        #
+        # `client_detail`, not `str(e)`: the full message embeds the tokenizer
+        # loader's own error text, which quotes the HF cache path on this host.
+        raise HTTPException(status_code=503, detail=e.client_detail) from None
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
     return target, run_ingestor

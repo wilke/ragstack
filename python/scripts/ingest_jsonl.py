@@ -551,7 +551,9 @@ async def run(
             # cross-tokenizer undercount.
             breakpoint_max_tokens = bp_window if breakpoint_token_counter else int(bp_window * 0.5)
     # Shared factory: resolves the main token counter + budget (fixed_token forces
-    # hf; no-model falls back to estimate) and builds the chunker. Returns the
+    # hf; an hf/endpoint backend with no model REFUSES — it used to fall back to
+    # estimate, which silently re-sized every chunk, so the estimator is now an
+    # explicit --chunk-token-counter choice) and builds the chunker. Returns the
     # counter + budget for reuse below (doc-metrics writer, seg-cache fingerprint).
     chunker, token_counter, max_tokens = build_chunker(
         args.chunk_method,

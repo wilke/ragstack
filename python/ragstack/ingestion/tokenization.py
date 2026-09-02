@@ -41,6 +41,54 @@ log = logging.getLogger(__name__)
 DEFAULT_TOKEN_RESERVE = 16
 
 
+#: The remediation half of the refusal below. Kept separate because it is the
+#: only half safe to put in an HTTP response body: it names flags and settings
+#: and nothing else. The other half embeds ``str(exc)`` from
+#: ``AutoTokenizer.from_pretrained``, which is uncontrolled third-party text and
+#: routinely quotes the HF cache location — a filesystem path on the serving
+#: host. That belongs in the log, behind the request id, not in a client
+#: response.
+TOKEN_COUNTER_REMEDIATION = (
+    "Fix the tokenizer (install the 'chunking' extra, or make the model "
+    "available to the HF cache), or choose another backend explicitly: "
+    "--chunk-token-counter endpoint / --chunk-token-counter estimate on the "
+    "ingest CLIs, or chunk_token_counter=endpoint|estimate "
+    "(CHUNK_TOKEN_COUNTER) in settings."
+)
+
+
+class TokenCounterUnavailable(RuntimeError):
+    """The requested token counter could not be built.
+
+    A ``RuntimeError`` subclass so every caller that already treats this as a
+    fatal runtime failure keeps working; a *named* type so the API layer can
+    tell it from an arbitrary crash and answer with the remediation instead of
+    a bare 500.
+
+    Two messages, deliberately: :attr:`client_detail` is the leak-safe subset
+    (backend, model, remediation) that may cross the API boundary, while
+    ``str(self)`` adds the underlying cause for the operator's log. Splitting
+    them here rather than at the router keeps the judgement about what is safe
+    to disclose next to the text itself.
+    """
+
+    def __init__(self, backend: str, model: str | None, cause: BaseException) -> None:
+        self.backend = backend
+        self.model = model
+        self.client_detail = (
+            f"token counter backend {backend!r} could not load the tokenizer for "
+            f"model {model!r}, so this collection cannot be chunked. "
+            f"{TOKEN_COUNTER_REMEDIATION}"
+        )
+        super().__init__(
+            f"token counter backend {backend!r} could not load the tokenizer for "
+            f"model {model!r} ({type(cause).__name__}: {cause}). Refusing to "
+            f"substitute another counter: a different backend sizes chunks "
+            f"differently, so the same command would silently build a "
+            f"differently-chunked index. {TOKEN_COUNTER_REMEDIATION}"
+        )
+
+
 class TokenCounter(Protocol):
     """Counts tokens in text the way the embedding model would.
 
@@ -208,18 +256,7 @@ def make_token_counter(
             # here, rather than blowing up mid-ingest on the first chunk.
             counter._tokenizer()
         except Exception as exc:  # noqa: BLE001 - any load failure is fatal
-            raise RuntimeError(
-                f"token counter backend 'hf' could not load the tokenizer for "
-                f"model {model!r} ({type(exc).__name__}: {exc}). Refusing to "
-                f"substitute another counter: a different backend sizes chunks "
-                f"differently, so the same command would silently build a "
-                f"differently-chunked index. Fix the tokenizer (install the "
-                f"'chunking' extra, or make the model available to the HF cache), "
-                f"or choose another backend explicitly: "
-                f"--chunk-token-counter endpoint / --chunk-token-counter estimate "
-                f"on the ingest CLIs, or chunk_token_counter=endpoint|estimate "
-                f"(CHUNK_TOKEN_COUNTER) in settings."
-            ) from exc
+            raise TokenCounterUnavailable("hf", model, exc) from exc
         _log_backend("hf", model=model)
         return counter
 
