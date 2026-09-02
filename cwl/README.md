@@ -380,21 +380,20 @@ a hand-driven run, but the API path below assigns them per job.
 inputs of every workflow that writes: name them, or the run refuses. They used to
 carry defaults (`http://localhost:6333`, `http://localhost:9200`,
 `bolt://localhost:7687`) — which on the deployment host are **production**, so a
-run that omitted them wrote to production.
-
-> This sentence was not true when it was written. `ingest-bulk.cwl` declared
-> **no store inputs at all** (#454), so every one of its scattered workers fell
-> through to `ingest_shard.py`'s own `localhost:6333` / `:9200` — on the bulk
-> path, for a whole corpus. #407 removed the *defaults* from the workflows that
-> had the inputs; it could not remove a default from a workflow that had no
-> input. The gap is closed, and
-> `test_every_write_workflow_declares_its_store_targets` now asserts the
-> **presence** of the inputs rather than only the absence of a bad default —
-> which is what the earlier sweeps checked, and why they passed a workflow that
-> declared nothing. That is how a dev-tenant ingest built a
+run that omitted them wrote to production. That is how a dev-tenant ingest built a
 collection and an index on the production instances. The `*.inputs.yml` examples
 now carry `CHANGE-ME` placeholders for the same reason: an example file naming a
 real instance is one hand-run away from writing to it.
+
+> **This section overstated itself until #454.** `ingest-bulk.cwl` declared **no
+> store inputs at all**, so every one of its scattered workers fell through to
+> `ingest_shard.py`'s own `localhost:6333` / `:9200` — on the bulk path, for a
+> whole corpus. #407 removed the *defaults* from the workflows that had the
+> inputs; it could not remove a default from a workflow that had no input, and
+> the sweeps that guarded it were absence-based, so a workflow declaring nothing
+> passed them vacuously. `test_every_write_workflow_declares_its_store_targets`
+> now asserts the **presence** of the inputs and that each is bound to its CLI
+> flag.
 
 They are **not** operator config either. The API seeds them into every ingest
 submission per run from its own `QDRANT_URL` / `ELASTICSEARCH_URL` settings

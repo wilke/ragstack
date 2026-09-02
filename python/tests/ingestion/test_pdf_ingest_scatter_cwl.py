@@ -24,13 +24,19 @@ Offline: parses the YAML, runs nothing. The end-to-end run under cwltool is
 """
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from tests.pinned_env_support import pinned_env
+
 yaml = pytest.importorskip("yaml")
 
+CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
 CWL_PATH = Path(__file__).resolve().parents[3] / "cwl" / "pdf-ingest-scatter.cwl"
 PDF_INGEST_PATH = CWL_PATH.with_name("pdf-ingest.cwl")
 PDF_EXTRACT_PATH = CWL_PATH.with_name("pdf-extract.cwl")
@@ -383,10 +389,54 @@ def test_every_write_workflow_declares_its_store_targets(cwl: Path) -> None:
     ]
     assert threaded, f"{cwl.name}: no step found running a write CLI"
     for name in threaded:
-        step_in = doc["steps"][name].get("in") or {}
-        for key in ("qdrant_url", "es_url"):
+        step = doc["steps"][name]
+        step_in = step.get("in") or {}
+        tool_inputs = (step.get("run") or {}).get("inputs") or {}
+        for key, flag in (("qdrant_url", "--qdrant-url"), ("es_url", "--es-url")):
             assert step_in.get(key) == key, (
                 f"{cwl.name}: step {name!r} runs a write CLI but does not receive "
                 f"{key!r} — declaring the input without threading it is the same "
                 f"hole one level down."
             )
+            # And threading it is still not enough: an input the tool accepts but
+            # never binds to the command line is accepted, dropped, and the worker
+            # falls back to the CLI default. Valid CWL, green suite, production
+            # writes — the mutation that reopened #454 during review.
+            spec = tool_inputs.get(key)
+            assert isinstance(spec, dict), (
+                f"{cwl.name}: step {name!r}'s tool does not declare {key!r}"
+            )
+            binding = spec.get("inputBinding") or {}
+            assert binding.get("prefix") == flag, (
+                f"{cwl.name}: step {name!r} threads {key!r} but does not bind it to "
+                f"{flag} — the value reaches the tool and never reaches the command, "
+                f"so the worker uses the CLI's own default (#454)."
+            )
+
+
+def test_ingest_shard_refuses_to_run_without_store_targets() -> None:
+    """``ingest_shard.py`` must REFUSE when the store URLs are absent.
+
+    The CWL sweep above guards the workflows; this guards the layer beneath them.
+    Reverting ``required=True`` on these two flags — restoring the
+    ``localhost:6333`` / ``:9200`` defaults — left the entire suite green during
+    review, because the nine tests that invoke this CLI all *supply* the flags and
+    pass either way. Nothing asserted the refusal, so the backstop was unpinned.
+
+    Together with the binding assertion above this closes the pair: a workflow can
+    no longer accept-and-drop the URLs, and if one ever does, the CLI still exits
+    rather than writing to whatever ``localhost`` happens to be."""
+    script = CHECKOUT_ROOT / "scripts" / "ingest_shard.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "shard.jsonl", "--collection", "x"],
+        capture_output=True, text=True, timeout=120,
+        env=pinned_env({"PATH": os.environ.get("PATH", ""),
+                        "PYTHONPATH": str(CHECKOUT_ROOT)}),
+    )
+    assert proc.returncode != 0, (
+        "ingest_shard.py ran without --qdrant-url/--es-url; the localhost defaults "
+        "are the PRODUCTION stores on the deployment host (#454)"
+    )
+    combined = proc.stdout + proc.stderr
+    for flag in ("--qdrant-url", "--es-url"):
+        assert flag in combined, f"the refusal does not name {flag}: {combined[-400:]}"
