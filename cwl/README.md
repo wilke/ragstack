@@ -385,6 +385,16 @@ collection and an index on the production instances. The `*.inputs.yml` examples
 now carry `CHANGE-ME` placeholders for the same reason: an example file naming a
 real instance is one hand-run away from writing to it.
 
+> **This section overstated itself until #454.** `ingest-bulk.cwl` declared **no
+> store inputs at all**, so every one of its scattered workers fell through to
+> `ingest_shard.py`'s own `localhost:6333` / `:9200` — on the bulk path, for a
+> whole corpus. #407 removed the *defaults* from the workflows that had the
+> inputs; it could not remove a default from a workflow that had no input, and
+> the sweeps that guarded it were absence-based, so a workflow declaring nothing
+> passed them vacuously. `test_every_write_workflow_declares_its_store_targets`
+> now asserts the **presence** of the inputs and that each is bound to its CLI
+> flag.
+
 They are **not** operator config either. The API seeds them into every ingest
 submission per run from its own `QDRANT_URL` / `ELASTICSEARCH_URL` settings
 (honouring `QDRANT_COLLECTION_ROUTES` for the vector store). Because

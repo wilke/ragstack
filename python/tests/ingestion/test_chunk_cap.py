@@ -531,6 +531,7 @@ def test_ingest_shard_cli_exits_4_and_prints_the_refusal(tmp_path, capsys):
     shard = _jsonl_shard(tmp_path, "b0.jsonl", n_docs=3, words=2)  # 3 chunks (fixed chunker)
     out = tmp_path / "receipt.json"
     argv = [shard, "--vector-backend", "memory", "--text-backend", "memory",
+            "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1",
             "--chunk-method", "fixed", "--embedding-model", "", "--out", str(out)]
     # The fake embedder stands in for the fleet (no network in a unit test).
     ingest_shard._build_embedder = lambda args, http: _FakeEmbedder()

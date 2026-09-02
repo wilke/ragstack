@@ -248,15 +248,21 @@ embedding_url:
   - http://localhost:9003
   - http://localhost:9004
 # embedding_api_key: TOKEN          # only for keyed endpoints; drop for keyless
+# Store targets: REQUIRED, no defaults (#407/#454). These are the ORG's own
+# instances from its provisioning plan — never :6333/:9200, which are production.
+qdrant_url: http://localhost:<acme qdrant port from the plan>
+es_url: http://localhost:<acme es port from the plan>
 EOF
 ```
 
-> **Per-tenant stores (ADR-0005):** `ingest-bulk.cwl` does not yet expose the store
-> URLs as workflow inputs — its `ingest_shard` step falls back to the defaults
-> (`:6333`/`:9200`), i.e. the *shared* stack, not the tenant's own instances.
-> `ingest_shard.py` itself accepts `--qdrant-url`/`--es-url`, so until the CWL grows
-> those inputs, add them to the step's `arguments` (with the ports from the tenant's
-> plan) or use the direct CLI path in §5, which takes them on the command line.
+> **Per-tenant stores (ADR-0005):** `ingest-bulk.cwl` takes `qdrant_url` and `es_url`
+> as **required** workflow inputs with no defaults (#454) — name the org's own
+> instances from its provisioning plan, or the run is refused at submission. It used
+> to declare neither, so every scattered worker fell through to `ingest_shard.py`'s
+> `:6333`/`:9200` and wrote to the *shared production* stack rather than the tenant's
+> own. If you are following an older copy of this page that told you to add them to
+> the step's `arguments`, you no longer need to — and if you did, check where that
+> run wrote.
 
 ### 4.3 Submit to the live GoWe engine
 
