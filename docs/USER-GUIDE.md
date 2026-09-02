@@ -328,7 +328,7 @@ The request fields that matter to a user:
 | `retrieval_mode` | `hybrid` | `hybrid` (dense + BM25, fused), `vector` (dense only — meaning-similar text without shared words), `bm25` (keyword only — fast, rewards exact terms). |
 | `rerank` | `null` | `true`/`false` force the cross-encoder on/off for this request; `null` keeps the deployment's setting. `rerank_candidates` sets the pool it re-scores. |
 | `rewrite_strategies` | `["passthrough"]` | Add `multiquery` or `hyde` to let the LLM expand the question first (ignored without an LLM). |
-| `filters` | `{}` | Metadata equality filters, ANDed — e.g. `{"journal": "mBio"}`. Fields are whatever the ingester stamped; see the metadata on any source. |
+| `filters` | `{}` | Metadata equality filters, ANDed — e.g. `{"journal": "mBio"}`. Fields are whatever the ingester stamped; see the metadata on any source. A value is a string, an integer or a boolean, or a list of strings or a list of integers (an empty list matches nothing). Anything else — a float, `null`, an object such as `{"gte": 2025}` (range operators are not supported), or a string for an integer field like `year` — is a 400; see [API.md](API.md#value-grammar-471). |
 | `use_graph` | `true` | Include the knowledge-graph leg where a deployment has one (most don't — `graph_backend` is `disabled`). |
 | `llm`, `reranker` | `null` | A registered model id from `GET /v1/models/available`, for this request only. |
 

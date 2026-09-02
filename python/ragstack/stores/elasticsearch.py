@@ -29,6 +29,7 @@ from ragstack.stores.errors import (
     KIND_UNREACHABLE,
     StoreUnavailable,
 )
+from ragstack.stores.filters import validate_filter_values
 from ragstack.tenancy import DEFAULT_TENANT
 
 log = logging.getLogger(__name__)
@@ -147,6 +148,13 @@ def _build_query(query: str, filters: dict[str, Any] | None) -> dict[str, Any]:
             "ElasticsearchTextIndex.search requires a non-empty tenant_id filter; "
             "an unscoped search would return chunks across all tenants"
         )
+    # Values are validated BEFORE any clause is built (#471), with the same
+    # typed error the other three interpreters raise. ES would otherwise take
+    # an object into a ``term`` query (a search error) and, worse, silently
+    # COERCE a numeric string on a dynamically-mapped ``long`` field — the
+    # laxness that made {"year": "2025"} return hits here and nothing on the
+    # vector leg. Keep in sync with stores/filters.py.
+    validate_filter_values(filters)
     filter_clauses: list[dict[str, Any]] = []
     for key, value in filters.items():
         field = f"metadata.{key}"

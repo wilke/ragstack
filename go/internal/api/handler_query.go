@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
@@ -9,12 +8,19 @@ import (
 // This stub returns a placeholder response.
 func HandleQuery(w http.ResponseWriter, r *http.Request) {
 	var req QueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r.Body, &req); err != nil {
 		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	if req.Query == nil {
 		writeValidationError(w, r, "field 'query' is required")
+		return
+	}
+	// Schema-level refusal of an unrepresentable filter value (#471). A 400,
+	// not the 422 above: it matches what Python answers, and the conformance
+	// suite asserts one status for both implementations.
+	if reason := validateFilterValues(req.Filters); reason != "" {
+		writeError(w, r, http.StatusBadRequest, reason)
 		return
 	}
 
@@ -29,12 +35,19 @@ func HandleQuery(w http.ResponseWriter, r *http.Request) {
 // HandleRetrieve retrieves relevant chunks without generating an answer.
 func HandleRetrieve(w http.ResponseWriter, r *http.Request) {
 	var req RetrieveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(r.Body, &req); err != nil {
 		writeValidationError(w, r, "invalid request body")
 		return
 	}
 	if req.Query == nil {
 		writeValidationError(w, r, "field 'query' is required")
+		return
+	}
+	// Schema-level refusal of an unrepresentable filter value (#471). A 400,
+	// not the 422 above: it matches what Python answers, and the conformance
+	// suite asserts one status for both implementations.
+	if reason := validateFilterValues(req.Filters); reason != "" {
+		writeError(w, r, http.StatusBadRequest, reason)
 		return
 	}
 
