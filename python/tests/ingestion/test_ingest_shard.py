@@ -171,13 +171,13 @@ def test_receipt_load_malformed_is_clean_error(tmp_path: Path) -> None:
 # where the #133 fixed_token blocker lived.
 # --------------------------------------------------------------------------- #
 def test_build_chunker_fixed_offline() -> None:
-    args = ingest_shard.parse_args(["x.jsonl", "--chunk-method", "fixed",
+    args = ingest_shard.parse_args(["x.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1", "--chunk-method", "fixed",
                                     "--embedding-model", ""])
     assert ingest_shard._build_chunker(args) is not None  # no crash, no network
 
 
 def test_build_chunker_rejects_semantic() -> None:
-    args = ingest_shard.parse_args(["x.jsonl", "--chunk-method", "semantic_pooled"])
+    args = ingest_shard.parse_args(["x.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1", "--chunk-method", "semantic_pooled"])
     with pytest.raises(SystemExit, match="not yet wired"):
         ingest_shard._build_chunker(args)
 
@@ -185,7 +185,7 @@ def test_build_chunker_rejects_semantic() -> None:
 @pytest.mark.asyncio
 async def test_build_pipeline_rejects_mixed_backends() -> None:
     # split-brain guard fires before any I/O, so http can be None
-    args = ingest_shard.parse_args(["x.jsonl", "--vector-backend", "memory",
+    args = ingest_shard.parse_args(["x.jsonl", "--qdrant-url", "http://127.0.0.1:1", "--es-url", "http://127.0.0.1:1", "--vector-backend", "memory",
                                     "--text-backend", "elasticsearch"])
     with pytest.raises(SystemExit, match="consistent"):
         await ingest_shard._build_pipeline(args, None)

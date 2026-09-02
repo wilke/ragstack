@@ -375,7 +375,9 @@ def test_create_then_resolve_reads_the_durable_registry(tmp_path, monkeypatch):
 _SCRIPTS = [
     ("ingest_chunks.py", ["in.json", "--collection", "brand_new"]),
     ("ingest_jsonl.py", ["in.jsonl", "--collection", "brand_new"]),
-    ("ingest_shard.py", ["shard.jsonl", "--collection", "brand_new"]),
+    ("ingest_shard.py", ["shard.jsonl", "--collection", "brand_new",
+                         "--qdrant-url", "http://127.0.0.1:1",
+                         "--es-url", "http://127.0.0.1:1"]),
     ("load_embeddings.py", ["e.jsonl", "--collection", "brand_new"]),
 ]
 

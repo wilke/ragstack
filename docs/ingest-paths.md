@@ -65,7 +65,8 @@ python scripts/ingest_jsonl.py corpus.jsonl --collection-id asm-tok256
 # spec all come from the normal path. $API is YOUR api — never a bare
 # localhost:8000, which is a production API on the deployment host.
 python scripts/ingest_shard.py shard.jsonl \
-    --collection-id new-corpus --create-via-api "$API"
+    --collection-id new-corpus --create-via-api "$API" \
+    --qdrant-url "$QDRANT_URL" --es-url "$ES_URL"   # REQUIRED, no defaults (#454)
 ```
 
 `--collection-id` resolves through the configured collection store
