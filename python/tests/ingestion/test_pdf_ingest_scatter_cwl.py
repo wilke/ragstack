@@ -309,13 +309,17 @@ def test_no_cwl_example_job_names_a_live_store() -> None:
 
 #: CLIs that WRITE to a vector or text store. A workflow invoking one of these
 #: decides where those writes land, so it must take that decision from its
-#: caller. ``embed_shard.py`` is deliberately absent: it produces an embeddings
-#: file and touches no store — ``load_embeddings.py`` is the step that writes it.
+#: caller. ``embed_shard`` is deliberately absent: it produces an embeddings file
+#: and touches no store — ``load_embeddings`` is the step that writes it.
 #:
-#: ``chunk_one.py`` (#476) is the eval harness's scatter step: it ingests a whole
+#: ``chunk_one`` (#476) is the eval harness's scatter step: it ingests a whole
 #: corpus into a Qdrant collection + ES index per config and drops them again, so
 #: it decides where those writes land exactly like the ingest CLIs do.
-_WRITE_CLIS = ("ingest_shard.py", "load_embeddings.py", "chunk_one.py")
+#:
+#: Named WITHOUT the ``.py``: these are normalised script keys, matched against
+#: :func:`_script_key`, not substrings of a command line. See that function for
+#: why the extension cannot be part of the key.
+_WRITE_CLIS = ("ingest_shard", "load_embeddings", "chunk_one")
 
 
 def _invoked_scripts(node: object) -> list[str]:
@@ -352,12 +356,43 @@ def _invoked_scripts(node: object) -> list[str]:
     return found
 
 
+def _script_key(token: str) -> str:
+    """The script a command-line token names, normalised across invocation forms.
+
+    ``/opt/ragstack/scripts/ingest_shard.py``        -> ``ingest_shard``
+    ``$(inputs.evaldir.basename)/chunk_one.py``      -> ``chunk_one``
+    ``ragstack.scripts.eval.chunk_one`` (``-m``)     -> ``chunk_one``
+
+    #476 is filed as "the write-CLI sweep can be evaded by a wrapper
+    baseCommand", and there are TWO ways to do it. Injecting the script through
+    ``arguments``/``valueFrom`` is the one the eval workflow uses; running it as
+    ``baseCommand: [python, -m, ragstack.scripts.eval.chunk_one]`` is the other,
+    and ``docs/adr/examples/eval-7way.cwl`` is written that way today. A match on
+    the ``.py`` basename sees neither the module form nor a console-script name.
+    Normalising every form to one key is what makes the sweep un-evadable rather
+    than evadable-in-one-fewer-way — a half-closed evasion gets rediscovered as a
+    new bug.
+
+    Path form wins over module form deliberately: a ``.py`` basename can itself
+    contain dots (``chunk_one.py`` -> ``py`` if split naively), so the extension
+    is stripped before the dotted-module rule is applied."""
+    name = token.rsplit("/", 1)[-1]
+    if name.endswith(".py"):
+        return name[:-3]
+    return name.rsplit(".", 1)[-1]
+
+
 def _invokes_a_write_cli(doc: object) -> bool:
     """Does this document actually RUN a write CLI?
 
-    Reads the command line the document builds, not the file text."""
-    cmds = _invoked_scripts(doc)
-    return any(cli in cmd for cmd in cmds for cli in _WRITE_CLIS)
+    Reads the command line the document builds, not the file text — and compares
+    normalised script keys rather than substrings, so ``.py``, ``python -m`` and
+    bare-name invocations of the same CLI all count as the same thing."""
+    return any(
+        _script_key(token) in _WRITE_CLIS
+        for command in _invoked_scripts(doc)
+        for token in command.split()
+    )
 
 
 def test_the_walker_reads_command_lines_and_not_prose() -> None:
@@ -386,6 +421,49 @@ def test_the_walker_reads_command_lines_and_not_prose() -> None:
         "arguments": [{"prefix": "--out", "valueFrom": "shard.jsonl"}],
     }
     assert not _invokes_a_write_cli(prose_only)
+
+
+def test_the_walker_sees_a_write_cli_run_as_a_python_module() -> None:
+    """The second evasion of the same sweep (#476), closed with the first.
+
+    ``python -m ragstack.scripts.eval.chunk_one`` puts no ``.py`` name on the
+    command line, so a basename match misses it entirely — a workflow could keep
+    every store decision to itself just by choosing module form. The positive
+    control is a REAL file: ``docs/adr/examples/eval-7way.cwl`` is written that
+    way today. It sits outside ``cwl/``, and so outside the swept set — widening
+    the glob to ``docs/`` is a bigger change than this belongs in — which is
+    exactly why it is asserted here: otherwise nothing in the repo would notice
+    the module form silently ceasing to be detected.
+
+    The negative half matters as much: normalisation must not turn every dotted
+    token into a match. A filename that merely CONTAINS a write CLI's name is not
+    an invocation of it."""
+    adr_example = CWL_DIR.parent / "docs" / "adr" / "examples" / "eval-7way.cwl"
+    if not adr_example.is_file():
+        pytest.skip(f"{adr_example} not present")
+    doc = yaml.safe_load(adr_example.read_text(encoding="utf-8"))
+    assert not any(".py" in s for s in _invoked_scripts(doc)), (
+        "the ADR example no longer uses module form, so this positive control "
+        "proves nothing — point it at another module-form invocation or drop it"
+    )
+    assert _invokes_a_write_cli(doc), (
+        "a write CLI run as `python -m <dotted.path>` went undetected — the sweep "
+        "is still evadable, just by choosing module form (#476)"
+    )
+
+    # The same form synthetically, so the assertion keeps its meaning even if the
+    # ADR example (a superseded record) is ever rewritten.
+    assert _invokes_a_write_cli(
+        {"baseCommand": ["python", "-m", "ragstack.scripts.ingest_shard"]})
+    # baseCommand as ONE string rather than a token list, which CWL also permits.
+    assert _invokes_a_write_cli(
+        {"baseCommand": "python -m ragstack.scripts.load_embeddings"})
+
+    # Not invocations: a filename containing a write CLI's name, and a dotted
+    # token whose last component is something else.
+    assert not _invokes_a_write_cli(
+        {"baseCommand": ["python", "pdf_extract.py"],
+         "arguments": ["chunk_one_metrics.json", "ingest_shard.receipts"]})
 
 
 def test_the_write_cli_sweep_matches_the_workflows_that_write() -> None:
