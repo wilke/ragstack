@@ -24,11 +24,21 @@ _EVAL_DIR = Path(__file__).resolve().parents[2] / "scripts" / "eval"
 sys.path.insert(0, str(_EVAL_DIR))
 
 import _stats  # noqa: E402
+import chunking_compare_7way as c7  # noqa: E402
 import g1_library_sweep as g1  # noqa: E402
 
 from ragstack.models import Chunk, ScoredChunk  # noqa: E402
 from ragstack.retrieval.retriever import HybridRetriever  # noqa: E402
 from ragstack.scoring.scorers import RRFScorer  # noqa: E402
+
+#: ``--qdrant-url``/``--es-url`` are REQUIRED (#476) — they used to default to the
+#: ``chunking_compare_7way`` constants, which were the production addresses by
+#: another name. Every ``parse_args`` call below supplies them, pointed at a dead
+#: port so a test that somehow reaches a store fails loudly. Passed to the
+#: negative cases too, so those keep failing for the reason they assert rather
+#: than for a missing required argument.
+DEAD_STORE = "http://127.0.0.1:1"
+STORE_FLAGS = ("--qdrant-url", DEAD_STORE, "--es-url", DEAD_STORE)
 
 
 # --------------------------------------------------------------------------- #
@@ -778,6 +788,13 @@ class _FakeHttp:
 def _fake_qdrant(monkeypatch):
     import qdrant_client
 
+    # The store target ``main`` would have set from --qdrant-url/--es-url. Without
+    # it ``c7.store_urls()`` refuses (#476) — and since teardown resolves the URL
+    # before it checks the name, every test here would otherwise pass on the wrong
+    # SystemExit, including the one asserting the g1_ name guard.
+    monkeypatch.setattr(c7, "QDRANT_URL", DEAD_STORE, raising=False)
+    monkeypatch.setattr(c7, "ES_URL", DEAD_STORE, raising=False)
+
     holder: dict[str, _FakeQdrantClient] = {}
 
     def _factory(*a, **kw):
@@ -905,7 +922,7 @@ def test_dataset_provenance_digests_content_not_paths():
 
 
 def _manifest(**kw):
-    args = g1.parse_args(["--doc-counts", "50", "--smoke"])
+    args = g1.parse_args([*STORE_FLAGS, "--doc-counts", "50", "--smoke"])
     grid = g1.build_grid([50], ["hybrid"], [60], [10], [False], [50])
     defaults = {
         "run_id": "g1-test",
@@ -1541,7 +1558,7 @@ def test_rbo_is_top_weighted():
 # CLI
 # --------------------------------------------------------------------------- #
 def test_smoke_flag_reduces_to_the_primary_pair():
-    args = g1.parse_args(["--smoke", "--doc-counts", "50"])
+    args = g1.parse_args([*STORE_FLAGS, "--smoke", "--doc-counts", "50"])
     grid = g1.build_grid(args.doc_counts, args.modes, args.rrf_k, args.depths,
                          args.rerank, args.rerank_candidates)
     assert len(grid) == 2
@@ -1549,22 +1566,22 @@ def test_smoke_flag_reduces_to_the_primary_pair():
 
 
 def test_cli_exposes_depths_not_top_k_and_multipliers():
-    args = g1.parse_args(["--depths", "10,20,50"])
+    args = g1.parse_args([*STORE_FLAGS, "--depths", "10,20,50"])
     assert args.depths == [10, 20, 50]
     assert not hasattr(args, "multipliers")
     with pytest.raises(SystemExit):
-        g1.parse_args(["--multipliers", "2,10"])
+        g1.parse_args([*STORE_FLAGS, "--multipliers", "2,10"])
 
 
 def test_cli_defaults_request_the_aa_replicates():
-    args = g1.parse_args([])
+    args = g1.parse_args(list(STORE_FLAGS))
     assert args.aa_replicates == g1.AA_REPLICATES >= 3
     assert args.require_clean is False
 
 
 def test_cli_rejects_an_unknown_mode():
     with pytest.raises(SystemExit):
-        g1.parse_args(["--modes", "sparse"])
+        g1.parse_args([*STORE_FLAGS, "--modes", "sparse"])
 
 
 def test_bool_list_parsing():

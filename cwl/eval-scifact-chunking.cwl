@@ -15,6 +15,10 @@
 # NOTE: `chunk_one` needs the live SFR embedding fleet + Qdrant + ES (it ingests
 # into isolated scifact_m7_<config> stores and tears them down); it is not a CI
 # step. `aggregate_stats` is pure computation over the metric files.
+#
+# `qdrant_url` and `es_url` are REQUIRED inputs with no default, and are bound to
+# chunk_one's own required flags. A run that omits them refuses instead of falling
+# through to a localhost address that is production on the deployment host (#476).
 cwlVersion: v1.2
 class: Workflow
 
@@ -25,6 +29,16 @@ inputs:
   configs:
     type: string[]
     doc: "Chunking configs to compare (chunking_compare_7way.CONFIG_KEYS)."
+  qdrant_url:
+    type: string
+    doc: |
+      Qdrant base URL each scatter task ingests into. REQUIRED, no default:
+      the localhost address chunk_one used to fall through to is the PRODUCTION
+      instance on the deployment host (#476, same class as #407/#454). The
+      isolated-store naming guards NAMES, not hosts — the caller names the host.
+  es_url:
+    type: string
+    doc: "Elasticsearch base URL for the per-config index (same caveat as qdrant_url)."
   embedding_api_key:
     type: string?
     doc: "Bearer token for keyed embedding endpoints; omit for keyless."
@@ -35,6 +49,8 @@ steps:
     scatter: config
     in:
       config: configs
+      qdrant_url: qdrant_url
+      es_url: es_url
       embedding_api_key: embedding_api_key
     out: [metrics]
     run:
@@ -51,12 +67,18 @@ steps:
         config:
           type: string
           inputBinding: {prefix: --config, position: 2}
+        qdrant_url:
+          type: string
+          inputBinding: {prefix: --qdrant-url, position: 3}
+        es_url:
+          type: string
+          inputBinding: {prefix: --es-url, position: 4}
         embedding_api_key:
           type: string?
-          inputBinding: {prefix: --embedding-api-key, position: 3}
+          inputBinding: {prefix: --embedding-api-key, position: 5}
       arguments:
         - {position: 1, valueFrom: $(inputs.evaldir.basename)/chunk_one.py}
-        - {position: 4, prefix: --out, valueFrom: metrics.json}
+        - {position: 6, prefix: --out, valueFrom: metrics.json}
       outputs:
         metrics:
           type: File

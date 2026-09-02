@@ -19,7 +19,14 @@ prefix-guarded teardown mean it never touches a production collection.
 Usage::
 
     python scripts/eval/chunk_one.py --config fixed_tok512 \
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \
         --embedding-api-key BRCMistral --out metrics.json
+
+``--qdrant-url`` / ``--es-url`` are REQUIRED and have no default. This step
+ingests into a store and drops it again; where that happens is the caller's
+decision, and the localhost fallback it used to inherit from the harness is
+production on the deployment host (#476). The CWL workflow threads them from
+required workflow inputs of the same names.
 """
 from __future__ import annotations
 
@@ -119,6 +126,13 @@ def parse_args(argv=None):
                    help="comma-separated SFR base URLs (else the built-in defaults)")
     p.add_argument("--embedding-api-key", default=None,
                    help="Bearer token for keyed endpoints; keyless endpoints ignore it")
+    p.add_argument("--qdrant-url", required=True,
+                   help="Qdrant base URL for this config's isolated store. REQUIRED, "
+                        "no default — an unnamed target resolves to production on the "
+                        "deployment host (#476)")
+    p.add_argument("--es-url", required=True,
+                   help="Elasticsearch base URL for this config's isolated index "
+                        "(same caveat as --qdrant-url)")
     p.add_argument("--hard-cap-tokens", type=int, default=c7.HARD_CAP_TOKENS)
     p.add_argument("--no-teardown", dest="teardown", action="store_false",
                    help="keep the scifact_m7_<config> store (default: tear down)")
@@ -128,6 +142,10 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    # Assigned before any other work: an unset c7.QDRANT_URL is not loud (the Qdrant
+    # client silently falls back to localhost:6333, production here) (#476).
+    c7.QDRANT_URL = args.qdrant_url.rstrip("/")
+    c7.ES_URL = args.es_url.rstrip("/")
     if args.retrieve_pool < args.rerank_pool:
         raise SystemExit(
             f"--retrieve-pool ({args.retrieve_pool}) must be >= --rerank-pool "

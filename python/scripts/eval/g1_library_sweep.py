@@ -197,10 +197,12 @@ Usage::
 
     # smoke (~1 minute): one size, the two pre-registered cells, few queries
     /rag/envs/ragstack/bin/python scripts/eval/g1_library_sweep.py \\
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \\
         --doc-counts 50 --query-limit 8 --smoke
 
     # the full pilot sweep
     /rag/envs/ragstack/bin/python scripts/eval/g1_library_sweep.py \\
+        --qdrant-url http://QDRANT-HOST:PORT --es-url http://ES-HOST:PORT \\
         --doc-counts 50,100,200 \\
         --modes hybrid,vector,bm25 \\
         --rrf-k 1,10,20,60,120,240 \\
@@ -1017,11 +1019,12 @@ async def build_library_index(
         c.embedding = v
 
     all_chunks = list(chunks) + list(extra_chunks or [])
+    qdrant_url, es_url = c7.store_urls()
     vstore = QdrantVectorStore(
-        url=c7.QDRANT_URL, collection=collection,
+        url=qdrant_url, collection=collection,
         vector_size=c7.VECTOR_SIZE, timeout=120,
     )
-    tindex = ElasticsearchTextIndex(url=c7.ES_URL, index=es_index)
+    tindex = ElasticsearchTextIndex(url=es_url, index=es_index)
     await vstore.ensure_collection()
     await tindex.ensure_index()
     for start in range(0, len(all_chunks), 256):
@@ -1100,7 +1103,7 @@ async def measure_matchable(
 
     filters = scope_filters({}, TENANT)
     vstore = QdrantVectorStore(
-        url=c7.QDRANT_URL, collection=index.collection,
+        url=c7.store_urls()[0], collection=index.collection,
         vector_size=c7.VECTOR_SIZE, timeout=120,
     )
     try:
@@ -1198,7 +1201,7 @@ async def teardown(client: httpx.AsyncClient, collections: list[str]) -> bool:
     print(f"\n[teardown] dropping {len(collections)} g1_* store(s) ...", flush=True)
     from qdrant_client import AsyncQdrantClient
 
-    qc = AsyncQdrantClient(url=c7.QDRANT_URL, timeout=120)
+    qc = AsyncQdrantClient(url=c7.store_urls()[0], timeout=120)
     for name in collections:
         guard_scratch(name)
         try:
@@ -1357,11 +1360,12 @@ async def evaluate_cell(
     ``None`` builds the real Qdrant/ES clients."""
     qids = list(index.sample.query_ids)
     if store_factory is None:
+        qdrant_url, es_url = c7.store_urls()
         vstore: Any = QdrantVectorStore(
-            url=c7.QDRANT_URL, collection=index.collection,
+            url=qdrant_url, collection=index.collection,
             vector_size=c7.VECTOR_SIZE, timeout=120,
         )
-        tindex: Any = ElasticsearchTextIndex(url=c7.ES_URL, index=index.es_index)
+        tindex: Any = ElasticsearchTextIndex(url=es_url, index=index.es_index)
     else:
         vstore, tindex = store_factory(index)
     retriever = InstrumentedHybridRetriever(
@@ -3102,12 +3106,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None)
-    p.add_argument("--qdrant-url", default=c7.QDRANT_URL,
-                   help="Qdrant base URL the g1_* scratch collections are built in "
-                        "(default: the chunking_compare_7way constant). guard_scratch "
-                        "guards NAMES, not hosts — point this at a non-production "
-                        "instance.")
-    p.add_argument("--es-url", default=c7.ES_URL,
+    p.add_argument("--qdrant-url", required=True,
+                   help="Qdrant base URL the g1_* scratch collections are built in. "
+                        "REQUIRED, no default: it used to default to the "
+                        "chunking_compare_7way constant, which was the production "
+                        "address by another name (#476). guard_scratch guards NAMES, "
+                        "not hosts — point this at a non-production instance.")
+    p.add_argument("--es-url", required=True,
                    help="Elasticsearch base URL for the g1_* scratch indices "
                         "(same caveat as --qdrant-url)")
     p.add_argument("--hard-cap-tokens", type=int, default=c7.HARD_CAP_TOKENS)
