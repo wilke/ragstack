@@ -13,3 +13,8 @@ embedding_url:
   - http://localhost:9002
 # Bearer token for keyed endpoints (e.g. lambda13); drop for keyless.
 embedding_api_key: BRCMistral
+# Store targets are REQUIRED and have no defaults (#407/#454): a run that omits
+# them is refused at submission rather than falling back to localhost:6333/:9200,
+# which on the deployment host are the PRODUCTION instances.
+qdrant_url: http://CHANGE-ME-QDRANT:6333
+es_url: http://CHANGE-ME-ES:9200

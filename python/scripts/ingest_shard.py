@@ -213,10 +213,15 @@ def parse_args(argv=None):
     p.add_argument("--collection", default=None,
                    help="DEPRECATED — the PHYSICAL store name. Accepted only when "
                         "a registry entry already claims it; prefer --collection-id")
-    p.add_argument("--qdrant-url", default="http://localhost:6333")
+    p.add_argument("--qdrant-url", required=True,
+                   help="Qdrant instance to WRITE to. REQUIRED, no default: the "
+                        "conventional localhost:6333 is the PRODUCTION instance on "
+                        "the deployment host, and this is a write path (#454)")
     p.add_argument("--qdrant-timeout", type=int, default=120)
     p.add_argument("--text-backend", choices=["elasticsearch", "memory"], default="elasticsearch")
-    p.add_argument("--es-url", default="http://localhost:9200")
+    p.add_argument("--es-url", required=True,
+                   help="Elasticsearch instance to WRITE to. REQUIRED, no default — "
+                        "see --qdrant-url (#454)")
     p.add_argument("--es-index", default=None)
     p.add_argument("--embedding-api", choices=["sidecar", "openai"], default="openai")
     p.add_argument("--embedding-url", nargs="+", default=["http://localhost:9001"])
