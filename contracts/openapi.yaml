@@ -60,6 +60,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/QueryResponse"
+        "400":
+          description: >-
+            A `filters` value outside the supported grammar (#471) — an object
+            (`{"gte": 2025}` and friends: range operators are not supported), a
+            float, null, a nested list, a boolean inside a list, a list mixing
+            strings and integers, or a string where the field is an integer
+            (`{"year": "2025"}`). Refused rather than coerced or silently
+            matched against nothing. Also raised when the resolved store
+            rejects a scope filter KEY while `context_window > 0` (#197).
         "404":
           description: >-
             Unknown collection, or one the caller may not read — a read denial is
@@ -152,6 +161,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RetrieveResponse"
+        "400":
+          description: >-
+            A `filters` value outside the supported grammar (#471) — an object
+            (`{"gte": 2025}` and friends: range operators are not supported), a
+            float, null, a nested list, a boolean inside a list, a list mixing
+            strings and integers, or a string where the field is an integer
+            (`{"year": "2025"}`). Refused rather than coerced or silently
+            matched against nothing. Also raised when the resolved store
+            rejects a scope filter KEY while `context_window > 0` (#197).
         "404":
           description: >-
             Unknown collection, or one the caller may not read (a read denial is a
@@ -3033,7 +3051,27 @@ components:
             type: string
           default: ["passthrough"]
         filters:
+          description: >-
+            Metadata equality constraints, ANDed. A value is a string, an
+            integer or a boolean, or a list of strings or a list of integers
+            (membership) — one type per list, booleans only as scalars, and
+            an empty list matches nothing (#196). The bound is what Qdrant's
+            MatchValue / MatchAny can represent: float, null, an object, a
+            nested list, a boolean INSIDE a list and a mixed str/int list are
+            all refused with 400. Range operators such as `{"gte": 2025}` are
+            NOT supported. Values match by type and are never coerced: `year`
+            is an integer field, so `{"year": "2025"}` is a 400 rather than a
+            silent zero-hit read (#471).
           type: object
+          additionalProperties:
+            anyOf:
+              - type: [string, integer, boolean]
+              - type: array
+                items:
+                  type: string
+              - type: array
+                items:
+                  type: integer
           default: {}
         use_graph:
           type: boolean
@@ -3149,7 +3187,27 @@ components:
           type: integer
           default: 5
         filters:
+          description: >-
+            Metadata equality constraints, ANDed. A value is a string, an
+            integer or a boolean, or a list of strings or a list of integers
+            (membership) — one type per list, booleans only as scalars, and
+            an empty list matches nothing (#196). The bound is what Qdrant's
+            MatchValue / MatchAny can represent: float, null, an object, a
+            nested list, a boolean INSIDE a list and a mixed str/int list are
+            all refused with 400. Range operators such as `{"gte": 2025}` are
+            NOT supported. Values match by type and are never coerced: `year`
+            is an integer field, so `{"year": "2025"}` is a 400 rather than a
+            silent zero-hit read (#471).
           type: object
+          additionalProperties:
+            anyOf:
+              - type: [string, integer, boolean]
+              - type: array
+                items:
+                  type: string
+              - type: array
+                items:
+                  type: integer
           default: {}
         use_graph:
           type: boolean

@@ -1436,6 +1436,50 @@ The embedding model used at **query** time must match the model the corpus was
 metadata (Qdrant payload / ES keyword fields), on top of the automatic tenant
 scoping. Example: `{"doc_type": "article", "year": 2021}`.
 
+### Value grammar (#471)
+
+A filter **value** is a string, an integer, or a boolean — or a **list of
+strings** or a **list of integers**, which matches any element
+(`{"doc_type": ["article", "supplement"]}`). One type per list; booleans are
+scalar-only. An **empty list matches nothing**, it is not "unconstrained"
+(#196).
+
+Everything else is a **400** with a message naming the accepted grammar:
+
+| Value | Result |
+|---|---|
+| `{"year": 2021}`, `{"doc_type": "article"}`, `{"is_oa": true}` | OK |
+| `{"doc_type": ["article", "supplement"]}` | OK — matches any element |
+| `{"doc_type": []}` | OK — matches nothing (#196) |
+| `{"year": {"gte": 2025}}` | **400** — range operators are not supported |
+| `{"score": 1.5}` | **400** — no floats (`2025.0` included) |
+| `{"doi": null}` | **400** — no nulls |
+| `{"tags": [["a"]]}` | **400** — no nested lists |
+| `{"is_oa": [true]}` | **400** — booleans are scalar-only |
+| `{"doc_type": ["article", 3]}` | **400** — a list is all strings or all integers |
+| `{"year": "2025"}` | **400** — `year` is an integer field |
+
+The bound is not "any scalar" — it is **what the vector store can represent**,
+measured rather than assumed. Qdrant's `MatchValue` refuses a float and a null
+as hard as it refuses an object, and its `MatchAny` is `list[str] | list[int]`,
+so a boolean element and a mixed list were 500s too.
+
+Two rules are worth stating on their own:
+
+- **Range operators are not supported.** `{"gte": …}` / `{"lte": …}` are a
+  planned feature (`docs/plans/date-filtering.md`), not a silent no-op — and,
+  before #471, `{"year": {"gte": 2025}}` was a 500.
+- **Values are matched by type, never coerced.** `year` is an integer field, so
+  `{"year": "2025"}` is refused instead of doing what it used to do: match on
+  the BM25 leg (Elasticsearch coerces a numeric string at query time) and match
+  nothing on the vector leg (Qdrant compares typed), i.e. a hit count that
+  silently depended on the retrieval mode. Send `{"year": 2025}`.
+
+The grammar is enforced at the API boundary **and** inside all four filter
+interpreters (`_build_filter` / Qdrant, `_build_query` / Elasticsearch,
+`_matches` / in-memory, `payload_matches` / `get_chunks`), so a CLI or a direct
+store caller gets the same refusal rather than a 500 or a silent zero-hit read.
+
 Metadata carried on each chunk depends on the loader. The bulk scholarly-corpus
 loader (`ingest_jsonl.py`) stamps:
 
@@ -1534,7 +1578,7 @@ request produced, and the `Reference:` a user reads off an error screen; see
 | `200` | success — **including** graceful degradation (LLM/rewrite/rerank failure returns sources with a note) |
 | `202` | accepted for background work — ingest upload, collection restore, graph extraction |
 | `204` | deleted: a document, a share, a group, a group member, a service-account state change, an unregistered collection |
-| `400` | a malformed `?cursor=` on `GET /v1/documents` (generic on purpose — the supplied value is never reflected back); a `filters` key `GET /v1/chunks` refuses while `context_window > 0`; an invalid chunk config or a non-embedding model on `POST /v1/collections`; a `permission: owner` share; a group form (`@public`, `@group:`) as an ownership-transfer `subject`; a colon-free subject on `PATCH …/role`; both an API key and an `Authorization` credential in one request; a non-Workspace `source` under `INGEST_BACKEND=gowe`; a restore without a bearer credential |
+| `400` | a `filters` value outside the [supported grammar](#value-grammar-471) on `POST /v1/query` / `POST /v1/retrieve` (an object such as `{"gte": 2025}`, a float, `null`, a nested list, a boolean inside a list, a list mixing strings and integers, or a string for the integer field `year`); a malformed `?cursor=` on `GET /v1/documents` (generic on purpose — the supplied value is never reflected back); a `filters` key `GET /v1/chunks` refuses while `context_window > 0`; an invalid chunk config or a non-embedding model on `POST /v1/collections`; a `permission: owner` share; a group form (`@public`, `@group:`) as an ownership-transfer `subject`; a colon-free subject on `PATCH …/role`; both an API key and an `Authorization` credential in one request; a non-Workspace `source` under `INGEST_BACKEND=gowe`; a restore without a bearer credential |
 | `401` | missing, unknown or invalid credential; a disabled service account's key; or `POST /v1/collections/{id}/graph` reached with an API-key or keyless principal — the submission is made *as the user*, so there is no identity to submit with. Note the deliberate asymmetry with `POST /v1/collections/{id}/restore`, which answers **400** in that same situation: the credential there is valid and authenticated, it merely carries no Workspace token |
 | `403` | authenticated but not permitted — an admin-only route or build-spec override without the role; writing or deleting a collection you don't own (only when you *can* read it; otherwise `404`); or, on an ingest that **omitted `collection`**, `no collection accepts your uploads: name a collection you own explicitly in 'collection', or create your own (POST /v1/collections)` — which names no id |
 | `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed); an unknown share/group/job/model id; or, on any implicit-target route, `no collection is accessible to this caller` — which also names no id, and is the same state as `default: ""` from `GET /v1/collections` |

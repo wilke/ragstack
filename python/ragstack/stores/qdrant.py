@@ -39,7 +39,11 @@ from ragstack.stores.errors import (
     VectorDimMismatch,
 )
 from ragstack.stores.filters import PAYLOAD_RESERVED as _PAYLOAD_RESERVED
-from ragstack.stores.filters import payload_matches, validate_filters
+from ragstack.stores.filters import (
+    payload_matches,
+    validate_filter_values,
+    validate_filters,
+)
 from ragstack.tenancy import DEFAULT_TENANT, OWNER_FIELD, tenant_of
 
 log = logging.getLogger(__name__)
@@ -611,6 +615,7 @@ class QdrantVectorStore:
         an unsupported key must refuse the call outright, not just get silently
         skipped when the (id, tenant) narrowing happens to come back empty."""
         validate_filters(filters)
+        validate_filter_values(filters)
         ids = list(dict.fromkeys(chunk_ids))  # de-dup, keep order
         tenants = (filters or {}).get("tenant_id")
         if not ids or not isinstance(tenants, (list, tuple, set)) or not tenants:
@@ -770,6 +775,12 @@ def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
     instead of needing its own guard."""
     if not filters:
         return None
+    # Values are validated BEFORE any condition is built (#471). Handing an
+    # object/float/None straight to MatchValue raised a bare pydantic
+    # ValidationError that escaped as a 500; this raises the same typed
+    # InvalidFilterValue the other three interpreters raise, so the answer
+    # doesn't depend on which leg ran. Keep in sync with stores/filters.py.
+    validate_filter_values(filters)
     conditions: list[Condition] = []
     for key, value in filters.items():
         if isinstance(value, (list, tuple, set)):

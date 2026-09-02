@@ -13,7 +13,11 @@ from ragstack.documents import (
     encode_cursor,
 )
 from ragstack.models import Chunk, ScoredChunk, Triple
-from ragstack.stores.filters import payload_matches, validate_filters
+from ragstack.stores.filters import (
+    payload_matches,
+    validate_filter_values,
+    validate_filters,
+)
 from ragstack.tenancy import readable_tenants, tenant_of
 
 
@@ -31,7 +35,14 @@ def _matches(chunk: Chunk, filters: dict[str, Any]) -> bool:
     Used by ``search()`` (free-form, client-suppliable filter keys). ``get_chunks``
     uses ``payload_matches`` in stores/filters.py instead — same bare-key
     grammar, plus a refusal for the handful of keys that can never address a
-    real chunk field; see that module's docstring for why."""
+    real chunk field; see that module's docstring for why.
+
+    Values are validated first (#471): answering ``False`` for a value this
+    predicate cannot represent would be indistinguishable from an honest miss,
+    and that is what made the in-memory store disagree with Qdrant (a 500) and
+    with Elasticsearch (an error) on the very same filter. Raises the same
+    typed ``InvalidFilterValue``. Keep in sync with stores/filters.py."""
+    validate_filter_values(filters)
     for key, value in filters.items():
         actual = chunk.metadata.get(key)
         if isinstance(value, (list, tuple, set)):
@@ -138,6 +149,7 @@ class InMemoryVectorStore:
         must reject the call outright, not get silently skipped because there was
         nothing to filter."""
         validate_filters(filters)
+        validate_filter_values(filters)
         ids = list(dict.fromkeys(chunk_ids))
         if not ids:
             return []

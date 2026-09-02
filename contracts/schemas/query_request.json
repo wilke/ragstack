@@ -22,7 +22,23 @@
       "default": ["passthrough"]
     },
     "filters": {
+      "description": "Metadata equality constraints, ANDed. A value is a string, an integer or a boolean, or a list of strings or a list of integers (membership) \u2014 one type per list, booleans only as scalars, and an empty list matches nothing (issue #196). The bound is what Qdrant's MatchValue/MatchAny can represent: float, null, an object, a nested list, a boolean inside a list and a mixed str/int list are all refused with 400. Range operators such as {\"gte\": 2025} are NOT supported. Values are matched by type, never coerced: `year` is an integer field, so {\"year\": \"2025\"} is a 400 rather than a silent zero-hit read (issue #471).",
       "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": ["string", "integer", "boolean"]
+          },
+          {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          {
+            "type": "array",
+            "items": { "type": "integer" }
+          }
+        ]
+      },
       "default": {}
     },
     "use_graph": {

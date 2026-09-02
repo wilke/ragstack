@@ -42,7 +42,11 @@ from ragstack.retrieval.retriever import (
     expand_context,
 )
 from ragstack.scoring.scorers import RRFScorer
-from ragstack.stores.filters import UnknownFilterKey
+from ragstack.stores.filters import (
+    InvalidFilterValue,
+    UnknownFilterKey,
+    validate_filter_values,
+)
 from ragstack.tenancy import allowed_collection_ids, scope_filters
 
 log = logging.getLogger(__name__)
@@ -439,7 +443,7 @@ async def _expand_sources(
         jobs.append((cid, expand_context(store, subset, window, filters)))
     try:
         results = await asyncio.gather(*(job for _, job in jobs))
-    except UnknownFilterKey as e:
+    except (UnknownFilterKey, InvalidFilterValue) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     out: dict[_SourceKey, list[ContextChunk]] = {}
     for (cid, _), found in zip(jobs, results, strict=True):
@@ -595,6 +599,16 @@ async def _resolve_retrieval(
     filters (the wrapper scopes them per leg); the graph leg, when a graph
     store is wired, is one neighbourhood query across the members' physical
     collections."""
+    # The one boundary both /v1/query and /v1/retrieve pass through, and it
+    # runs BEFORE `scope_filters` merges the tenant keys — so what is checked
+    # is exactly what the caller sent (#471). A value outside the grammar used
+    # to reach the stores and become a 500 (Qdrant), a search error (ES) or a
+    # silent zero-hit read (in-memory); it is a 400 here instead. The
+    # interpreters re-check defensively for non-API callers.
+    try:
+        validate_filter_values(filters)
+    except InvalidFilterValue as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if collections is None:
         entry = await _resolve_entry(registry, collection, principal)
         scoped = scope_filters(filters, tenant, await shared_scope(entry, registry, principal))
@@ -735,9 +749,10 @@ async def get_chunks(
         chunks = await store.get_chunks(
             id_list, scope_filters({}, tenant, await shared_scope(entry, registry, principal))
         )
-    except UnknownFilterKey as e:
-        # Refuse rather than silently ignore an unsupported scope key (#197) —
-        # a store's shared predicate rejected it before any filtering happened.
+    except (UnknownFilterKey, InvalidFilterValue) as e:
+        # Refuse rather than silently ignore an unsupported scope key (#197) or
+        # an unrepresentable value (#471) — a store's shared predicate rejected
+        # it before any filtering happened.
         raise HTTPException(status_code=400, detail=str(e)) from e
     return ChunksResponse(
         chunks=[
