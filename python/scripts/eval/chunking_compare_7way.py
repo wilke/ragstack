@@ -341,6 +341,18 @@ def resolve_overlap_tokens(size: int, frac: float) -> int:
     return int(math.floor(size * frac + 0.5))
 
 
+def overlap_chars(overlap_tokens: int) -> int:
+    """Render a token overlap as the char overlap the sentence/words packer takes.
+
+    That packer's overlap argument is in **chars** (see ``_pack_spans_tokens``),
+    so a token intent has to be converted at some chars-per-token. Half-up, for
+    the same reason as :func:`resolve_overlap_tokens`. Every shipping cell's
+    product is whole (``{0,32,64,128,256} x 2.5``), so the rounding is invisible
+    today and is pinned by test for whoever adds a size whose product is not.
+    """
+    return int(math.floor(overlap_tokens * OVERLAP_CHARS_PER_TOKEN + 0.5))
+
+
 def overlap_frac_key(frac: float) -> str:
     """Key fragment naming an overlap fraction, e.g. ``0.125`` → ``ov12_5pct``.
 
@@ -384,7 +396,7 @@ def _stage1_cell(kind: str, size: int, frac: float) -> ChunkConfig:
             label=f"fixed TOKEN window {size}/{overlap} ({pct} of size)",
         )
     if kind in ("sentence", "words"):
-        char_overlap = int(math.floor(overlap * OVERLAP_CHARS_PER_TOKEN + 0.5))
+        char_overlap = overlap_chars(overlap)
         name = "sentence (Punkt)" if kind == "sentence" else "words"
         return ChunkConfig(
             key=key, kind=kind, size=size, overlap=overlap,

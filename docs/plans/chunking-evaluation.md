@@ -284,6 +284,80 @@ silently resize). `Salesforce/SFR-Embedding-Mistral` loads offline from
 `HF_HOME=/rag/cache` in the `/rag/envs/ragstack` environment — verified, and the
 run must use that environment.
 
+**What `OVERLAP_CHARS_PER_TOKEN = 2.5` costs.** The sentence/words packer takes
+its overlap in *chars*, so the token intent is converted at 2.5 chars/token —
+the constant the shipping `sentence_tok512` / `words_tok512` were written with
+(64 tok → the committed 160 chars). It is kept for reproducibility, not because
+it is right: production measures **3.50** chars/token, at which 160 chars is
+≈45.7 tokens. **So the sentence/words rows labelled 12.5% carry ≈8.9% effective
+overlap.** The `token_window` rows are exact — they are sized in tokens
+throughout. Read a sentence-vs-fixed overlap comparison with that gap in mind.
+
+### Nominal size is not realised size
+
+`size` is a budget the packer fills *up to*, and the kinds do not fill it
+equally. Measured on the real scifact corpus (5,183 docs, SFR tokenizer, median
+chunk tokens as a percentage of the nominal budget):
+
+| kind | 256 | 512 | 1024 | 2048 |
+|---|---|---|---|---|
+| `token_window` | 100% | 65% | 35% | 17% |
+| `sentence` | 82% | 64% | 35% | 17% |
+| `words` | **62%** | **56%** | 34% | 17% |
+
+A kind-vs-kind row compared on nominal size alone is therefore comparing
+different effective sizes. This is the same failure the overlap fraction was
+introduced to fix — one number that reads like the quantity of interest but is
+not it — so `scifact_chunk_eval` now records the realised median/p95/max tokens
+and a `fill` column beside the nominal size, in both the report and the CSV.
+Deliberately *measured*, not corrected: making `words` fill its budget would
+change what `words` is.
+
+### This corpus cannot power the top of the ladder
+
+Measured, same run — scifact document lengths in SFR tokens:
+
+| median | p95 | p99 | max | >256 | >512 | >1024 | >2048 |
+|---|---|---|---|---|---|---|---|
+| 354 | 662 | 914 | 2,164 | **79.8%** | **16.9%** | **0.62%** | **0.02%** |
+
+The median document is 354 tokens — *shorter than a 512-token budget*. So:
+
+- At **2048**, 5,182 of 5,183 documents are a single chunk. All three overlap
+  fractions produce 5,184 chunks; they differ in one document out of 5,183.
+- At **1024**, 99.4% are single chunks (5,216 / 5,217 / 5,217 chunks).
+- Overlap therefore never engages at the top of the ladder. Measured inflation
+  vs the 0% cell at the same size:
+
+| size | 12.5% | 25% | plan predicted |
+|---|---|---|---|
+| 256 | 1.036× | 1.085× | 1.143× / 1.333× |
+| 512 | 1.002× | 1.006× | 1.143× / 1.333× |
+| 1024 | 1.000× | 1.000× | 1.143× / 1.333× |
+| 2048 | 1.000× | 1.000× | 1.143× / 1.333× |
+
+**The twelve cells at sizes 1024 and 2048 carry essentially no signal on this
+corpus** — 6 `token_window` + 2 each of `sentence`/`words`/`semantic`. At those
+sizes nearly every document is one chunk, so the cells collapse onto each other
+*and* onto the smaller-size 0% cells: neither the size contrast nor the overlap
+contrast has anything to bite on. Even at 512 the overlap effect is ~0.2–0.6% of
+the index rather than the predicted 14–33%. The cost model in *"Overlap belongs in the grid"* assumes
+documents long enough to be cut repeatedly; scifact abstracts are not, so its
+`1/(1−f)` inflation is an upper bound that this corpus never approaches.
+
+This is a property of **the grid on this corpus**, not a defect in the grid — the
+generation is correct and the same 24 configs would separate cleanly on
+`trec-covid` (full text) or the PMC target. It is a **study-design question**:
+stage 1 as specified prunes on a corpus that cannot exercise its top half. The
+options are to run stage 1 on a longer-document corpus, to drop the 1024/2048
+overlap arms as known-null and spend the budget elsewhere, or to accept the
+grid as a null result at the top of the ladder and say so in the report. That
+decision is the user's; nothing here papers over it in code.
+
+> Measured read-only with the cached corpus and the SFR tokenizer — no stores,
+> no embedding endpoints. `semantic` is absent from the fill table because it
+> needs an `embed_fn`, i.e. a live endpoint.
+
 ### Why staged, beyond the 30×
 
 1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only

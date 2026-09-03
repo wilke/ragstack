@@ -33,6 +33,8 @@ sys.path.insert(0, str(_EVAL_DIR))
 import chunking_compare_7way as c7  # noqa: E402
 import scifact_chunk_eval as sfe  # noqa: E402
 
+from ragstack.models import Chunk  # noqa: E402
+
 #: The 7-way harness's config set as it stood before the grid was added. Pinned
 #: literally rather than derived, so that "do not break the existing configs"
 #: is checked against a written-down list instead of against whatever the code
@@ -135,6 +137,20 @@ def test_resolution_rounds_half_up_not_to_even():
     assert c7.resolve_overlap_tokens(10, 0.25) == 3   # 2.5 -> 3, not 2
     assert c7.resolve_overlap_tokens(30, 0.125) == 4  # 3.75 -> 4
     assert c7.resolve_overlap_tokens(14, 0.25) == 4   # 3.5 -> 4
+
+
+def test_resolution_rounds_half_up_not_up():
+    """The kill-case for ``math.ceil``.
+
+    Every point above has a fractional part >= .5, where ceil and half-up agree,
+    and every product in ``EXPECTED_OVERLAP`` is whole — so ``ceil(size * frac)``
+    would otherwise pass this entire suite. A fraction *below* .5 is what
+    separates them, and rounding a sub-half remainder up would inflate every such
+    overlap by a token.
+    """
+    assert c7.resolve_overlap_tokens(10, 0.12) == 1   # 1.2 -> 1, ceil gives 2
+    assert c7.resolve_overlap_tokens(100, 0.101) == 10  # 10.1 -> 10, ceil gives 11
+    assert c7.resolve_overlap_tokens(1000, 0.0001) == 0  # 0.1 -> 0, ceil gives 1
 
 
 # --------------------------------------------------------------------------- #
@@ -260,6 +276,17 @@ def test_sentence_char_overlap_matches_the_shipping_config():
         c7.STAGE1_CONFIG_BY_KEY[f"sentence_tok{s}_ov12_5pct"].char_overlap
         for s in c7.STAGE1_SIZES
     ] == [80, 160, 320, 640]
+
+
+def test_token_to_char_overlap_also_rounds_half_up():
+    """Every shipping cell's product is whole, so truncation vs half-up is
+    invisible across all 24 configs and would otherwise survive the suite. Pinned
+    at a fractional point so the rule is fixed before someone adds a size whose
+    product is not whole."""
+    assert c7.overlap_chars(64) == 160        # the shipping value, exact
+    assert c7.overlap_chars(5) == 13          # 12.5 -> 13; truncation gives 12
+    assert c7.overlap_chars(1) == 3           # 2.5 -> 3; truncation gives 2
+    assert c7.overlap_chars(0) == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -424,6 +451,41 @@ def test_describe_overlap_shows_both_halves():
     )
     # A config written as a bare absolute has no fraction to show.
     assert c7.describe_overlap(c7.CONFIG_BY_KEY["fixed_char512"]) == "64 char"
+
+
+def test_the_stage1_runner_records_realised_chunk_size(monkeypatch):
+    """Nominal ``size`` is a budget the packer fills *up to*, and the kinds fill
+    it very differently (on scifact, ``words`` reaches ~62% of a 256-token budget
+    where ``sentence`` reaches ~82%). Comparing two kinds on nominal size alone
+    compares different effective sizes, so the runner records what was actually
+    emitted. A word-counting stand-in stands in for the tokenizer — the mandated
+    test interpreter has no ``transformers``.
+    """
+    class _WordCounter:
+        def count(self, text: str) -> int:
+            return len(text.split())
+
+    monkeypatch.setattr(c7, "TOKEN_COUNTER", _WordCounter())
+    chunks = [
+        Chunk(id=str(i), doc_id="d", content=" ".join(["w"] * n),
+              metadata={}, start_char=0, end_char=1)
+        for i, n in enumerate([10, 20, 30, 40, 100])
+    ]
+    stats = sfe.chunk_size_stats(chunks)
+    assert stats["median_tokens"] == 30
+    assert stats["max_tokens_seen"] == 100
+    assert stats["p95_tokens"] == pytest.approx(88.0)
+    assert stats["median_chars"] == 59  # 30 "w" tokens + 29 spaces
+    # A config whose packer under-fills is visible as such, not hidden behind
+    # the nominal size.
+    assert stats["median_tokens"] / 512 < 0.1
+
+
+def test_chunk_size_stats_survives_an_empty_config(monkeypatch):
+    monkeypatch.setattr(c7, "TOKEN_COUNTER", object())
+    stats = sfe.chunk_size_stats([])
+    assert stats["median_tokens"] == 0.0
+    assert stats["max_tokens_seen"] == 0
 
 
 def test_emitted_csv_carries_the_fraction_and_the_resolved_absolute(
