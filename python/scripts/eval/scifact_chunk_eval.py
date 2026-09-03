@@ -50,6 +50,7 @@ import argparse
 import asyncio
 import json
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -203,6 +204,49 @@ def _store_name(key: str) -> str:
     return f"{SCIFACT_PREFIX}_{key}"
 
 
+#: Named groups usable in ``--configs`` in place of spelling out every key.
+CONFIG_GROUPS = {
+    "stage1": lambda: list(c7.STAGE1_CONFIGS),
+    "legacy": lambda: list(c7.CONFIGS),
+}
+
+
+def select_configs(spec: str) -> list[c7.ChunkConfig]:
+    """Resolve a ``--configs`` value to the configs to run, in registry order.
+
+    ``spec`` is a comma-separated list of config keys and/or group names
+    (``stage1`` / ``legacy``). An unrecognised name is a **hard failure**: the
+    alternative is a flag typo silently running some other set of configs, and
+    each of these is a store build measured in GPU-hours, so a wrong set is not
+    something to discover from the report afterwards.
+
+    ``fixed_tok512`` is always included — it is the reference the significance
+    section is computed against, and it is a cell of the stage-1 grid, so adding
+    it to a stage-1 selection is a no-op rather than a 25th build.
+    """
+    want: set[str] = set()
+    unknown: list[str] = []
+    for raw in spec.split(","):
+        name = raw.strip()
+        if not name:
+            continue
+        if name in CONFIG_GROUPS:
+            want.update(c.key for c in CONFIG_GROUPS[name]())
+        elif name in c7.ALL_CONFIG_BY_KEY:
+            want.add(name)
+        else:
+            unknown.append(name)
+    if unknown:
+        raise SystemExit(
+            f"unknown --configs {sorted(unknown)}; valid groups: "
+            f"{sorted(CONFIG_GROUPS)}; valid keys: {c7.ALL_CONFIG_KEYS}"
+        )
+    if not want:
+        raise SystemExit(f"--configs {spec!r} selected nothing; see --help")
+    want.add(c7.STATS_REFERENCE)
+    return [c for c in c7.ALL_CONFIGS if c.key in want]
+
+
 def _write_metrics_json(path, eval_stats, source, n_q, *, collection=None, tenant=None):
     """Persist per-query metric arrays + means as a pinnable regression baseline.
 
@@ -269,9 +313,45 @@ async def ingest_config(cfg, docs: list[Document], client: httpx.AsyncClient) ->
     ingest_time = time.perf_counter() - t1
     return {
         "key": key, "label": cfg.label, "n_chunks": len(all_chunks),
+        # The overlap fraction that was held constant across the size ladder and
+        # the absolute it resolved to at this size. Both, so the grid's rows stay
+        # readable: 64 tokens is 25% at size 256 and 3.1% at size 2048.
+        "overlap_frac": getattr(cfg, "overlap_frac", None),
+        "overlap_tokens": getattr(cfg, "overlap", None),
         "n_capped": n_capped,
         "chunks_per_doc": len(all_chunks) / len(docs) if docs else 0.0,
         "chunk_time_s": chunk_time, "ingest_time_s": ingest_time,
+        **chunk_size_stats(all_chunks),
+    }
+
+
+def chunk_size_stats(chunks) -> dict:
+    """Realised chunk size — what the packer actually emitted, not what it was asked for.
+
+    ``size`` is a budget a chunker fills *up to*, and the kinds do not fill it
+    equally: on scifact, ``words`` reaches ~62% of a 256-token budget and ~56% of
+    a 512-token one where ``sentence`` reaches ~82% and ~64%. A kind-vs-kind row
+    compared on nominal size alone is therefore comparing different effective
+    sizes. Nominal ``size`` without the realised median is the same failure the
+    overlap fraction was introduced to fix — one number that reads like the
+    quantity of interest but is not it — so the runner records both.
+
+    The 7-way harness has always reported these; this is the *stage-1* runner, and
+    it was dropping them. Deliberately measured, not corrected: filling the budget
+    would change what ``words`` is.
+    """
+    assert c7.TOKEN_COUNTER is not None
+    if not chunks:
+        return {"median_chars": 0.0, "p95_chars": 0.0, "median_tokens": 0.0,
+                "p95_tokens": 0.0, "max_tokens_seen": 0}
+    char_sizes = [len(c.content) for c in chunks]
+    tok_sizes = [c7.TOKEN_COUNTER.count(c.content) for c in chunks]
+    return {
+        "median_chars": statistics.median(char_sizes),
+        "p95_chars": c7._percentile(char_sizes, 95),
+        "median_tokens": statistics.median(tok_sizes),
+        "p95_tokens": c7._percentile(tok_sizes, 95),
+        "max_tokens_seen": max(tok_sizes),
     }
 
 
@@ -483,13 +563,23 @@ def write_report(eval_stats, ingest_stats, keys, n_docs, n_q, source, live_eps, 
     struct_rows = ""
     for k in keys:
         s = ingest_stats[k]
+        cfg = c7.ALL_CONFIG_BY_KEY.get(k)
+        overlap = c7.describe_overlap(cfg) if cfg is not None else "n/a"
+        fill = (
+            f"{100.0 * s['median_tokens'] / cfg.size:.0f}%"
+            if cfg is not None and cfg.size and s.get("median_tokens") else "n/a"
+        )
         struct_rows += (
-            f"| `{k}` | {s['n_chunks']} | {s['chunks_per_doc']:.2f} | "
+            f"| `{k}` | {cfg.size if cfg else 'n/a'} | {overlap} | "
+            f"{s.get('median_tokens', 0):.0f} | {s.get('p95_tokens', 0):.0f} | "
+            f"{fill} | {s.get('max_tokens_seen', 0)} | "
+            f"{s['n_chunks']} | {s['chunks_per_doc']:.2f} | "
             f"{s['n_capped']} | {s['chunk_time_s']:.1f} | {s['ingest_time_s']:.1f} |\n"
         )
     struct = (
-        "| config | #chunks | chunks/doc | overflow>cap | chunk s | ingest s |\n"
-        "|" + "---|" * 6 + "\n" + struct_rows
+        "| config | size | overlap | median tok | p95 tok | fill | max tok | "
+        "#chunks | chunks/doc | overflow>cap | chunk s | ingest s |\n"
+        "|" + "---|" * 12 + "\n" + struct_rows
     )
     body = f"""# SciFact (BEIR) passage-level chunking eval
 
@@ -516,6 +606,12 @@ Generated by `scripts/eval/scifact_chunk_eval.py`. Embedding model
 
 ## Chunk structure
 
+`size` is the **nominal** budget; `median tok` / `fill` are what the packer
+actually emitted. They are not the same number and the kinds differ a lot — a
+budget is filled *up to*, so comparing two kinds on nominal size alone compares
+different effective sizes. Read the realised column before reading any
+quality delta between kinds.
+
 {struct}
 ## Retrieval quality (document-level, real qrels)
 
@@ -537,11 +633,29 @@ Generated by `scripts/eval/scifact_chunk_eval.py`. Embedding model
     import csv
     with CSV_PATH.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["config", "n_chunks", "chunks_per_doc", "overflow",
+        # nominal size AND realised median/p95/max tokens: the packers fill their
+        # budget to very different degrees, so a kind-vs-kind comparison on
+        # nominal size alone compares different effective sizes.
+        w.writerow(["config", "kind", "size", "overlap_frac", "overlap_tokens",
+                    "median_tokens", "p95_tokens", "max_tokens_seen", "fill_pct",
+                    "median_chars", "p95_chars",
+                    "n_chunks", "chunks_per_doc", "overflow",
                     "ndcg@10", "recall@10", "recall@20", "recall@100", "map"])
         for k in keys:
             s, m = ingest_stats[k], eval_stats[k]["means"]
-            w.writerow([k, s["n_chunks"], round(s["chunks_per_doc"], 3),
+            cfg = c7.ALL_CONFIG_BY_KEY.get(k)
+            fill = (
+                round(100.0 * s["median_tokens"] / cfg.size, 1)
+                if cfg is not None and cfg.size and s.get("median_tokens") else ""
+            )
+            w.writerow([k, cfg.kind if cfg else "", cfg.size if cfg else "",
+                        s.get("overlap_frac"), s.get("overlap_tokens"),
+                        round(s.get("median_tokens", 0), 1),
+                        round(s.get("p95_tokens", 0), 1),
+                        s.get("max_tokens_seen", 0), fill,
+                        round(s.get("median_chars", 0), 1),
+                        round(s.get("p95_chars", 0), 1),
+                        s["n_chunks"], round(s["chunks_per_doc"], 3),
                         s["n_capped"], round(m["ndcg@10"], 4),
                         round(m["recall@10"], 4), round(m["recall@20"], 4),
                         round(m["recall@100"], 4), round(m["map"], 4)])
@@ -595,16 +709,13 @@ async def amain(args, live_eps) -> int:
               "with a shared baseline.")
         return 0
 
-    # Optional subset (default: all). The stats reference config (fixed_tok512) is
-    # force-included so the significance section still has its baseline.
+    # Optional subset (default: the legacy 7-way set). The stats reference config
+    # (fixed_tok512) is force-included so the significance section still has its
+    # baseline; it is a member of the stage-1 grid too, so selecting the grid does
+    # not smuggle in a 25th build.
     configs = list(c7.CONFIGS)
     if getattr(args, "configs", None):
-        want = {k.strip() for k in args.configs.split(",") if k.strip()}
-        unknown = want - set(c7.CONFIG_KEYS)
-        if unknown:
-            raise SystemExit(f"unknown --configs {sorted(unknown)}; valid: {c7.CONFIG_KEYS}")
-        want.add("fixed_tok512")
-        configs = [c for c in c7.CONFIGS if c.key in want]
+        configs = select_configs(args.configs)
         print(f"[configs] running subset: {[c.key for c in configs]}", flush=True)
     keys = [c.key for c in configs]
     timeout = httpx.Timeout(300.0, connect=30.0)
@@ -657,9 +768,14 @@ def parse_args(argv=None):
     p.add_argument("--query-limit", type=int, default=0,
                    help="cap #test queries (0 = all)")
     p.add_argument("--configs", default=None,
-                   help="comma-separated subset of chunk configs to run (default: all "
-                        "7-way configs). fixed_tok512 (the stats reference) is always "
-                        "included. e.g. semantic_pooled,semantic_tokcap")
+                   help="comma-separated chunk config keys and/or group names to run "
+                        "(default: the legacy 7-way set). Groups: 'stage1' = the "
+                        "24-config size x overlap-fraction grid, 'legacy' = the 7-way "
+                        "set. fixed_tok512 (the stats reference, and a cell of the "
+                        "stage1 grid) is always included. An unknown name is an error, "
+                        "never a silent fall-through to everything. "
+                        "e.g. --configs stage1, or "
+                        "--configs fixed_tok1024_ov0pct,semantic_tok512_ov12_5pct")
     p.add_argument("--endpoints", default=None,
                    help="comma-separated SFR base URLs (else the built-in 16)")
     p.add_argument("--embedding-api-key", default=None,

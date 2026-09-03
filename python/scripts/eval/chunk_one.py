@@ -116,8 +116,11 @@ async def amain(args, cfg) -> int:
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--config", required=True, choices=c7.CONFIG_KEYS,
-                   help="the single chunking config to ingest + score")
+    p.add_argument("--config", required=True, choices=c7.ALL_CONFIG_KEYS,
+                   help="the single chunking config to ingest + score — any legacy "
+                        "7-way key or any stage-1 grid key (e.g. "
+                        "fixed_tok1024_ov0pct). argparse rejects anything else, so a "
+                        "typo cannot silently score a different config.")
     p.add_argument("--out", default="metrics.json",
                    help="output metrics path (default: metrics.json)")
     p.add_argument("--corpus", default=None,
@@ -172,7 +175,7 @@ def main(argv=None) -> int:
     print(f"Using {len(c7.SFR_ENDPOINTS)} live SFR endpoint(s).", flush=True)
     c7.TOKEN_COUNTER = HFTokenCounter(model=c7.SFR_MODEL)
     c7.TOKEN_COUNTER._tokenizer()
-    cfg = c7.CONFIG_BY_KEY[args.config]
+    cfg = c7.ALL_CONFIG_BY_KEY[args.config]
     return asyncio.run(amain(args, cfg))
 
 

@@ -28,7 +28,11 @@ requirements:
 inputs:
   configs:
     type: string[]
-    doc: "Chunking configs to compare (chunking_compare_7way.CONFIG_KEYS)."
+    doc: |
+      Chunking configs to compare. Any key in
+      chunking_compare_7way.ALL_CONFIG_KEYS — the legacy 7-way set plus the
+      24-config stage-1 grid (chunking_compare_7way.STAGE1_CONFIG_KEYS, see
+      docs/plans/chunking-evaluation.md). chunk_one rejects anything else.
   qdrant_url:
     type: string
     doc: |
