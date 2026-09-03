@@ -1,5 +1,8 @@
 # Example inputs for eval-scifact-chunking.cwl.
-# configs must be members of chunking_compare_7way.CONFIG_KEYS.
+# configs must be members of chunking_compare_7way.ALL_CONFIG_KEYS — the legacy
+# 7-way keys below, or any stage-1 grid key (fixed_tok{256,512,1024,2048}_ov{0,
+# 12_5,25}pct and {sentence,words,semantic}_tok{size}_ov12_5pct). For the stage-1
+# run, list the 24 grid keys here instead of these eight.
 configs:
   - fixed_char512
   - fixed_char2048

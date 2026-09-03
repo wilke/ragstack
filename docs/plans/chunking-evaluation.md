@@ -241,6 +241,49 @@ Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9
 | 2 | ~4 surviving configs × 3 rungs = **12 builds**, 4 datasets | **~51 h** |
 | | **total** | **~54 GPU-hours** |
 
+### Stage 1's grid, as implemented
+
+`chunking_compare_7way.STAGE1_CONFIGS` — generated, not hand-listed, by
+`stage1_configs()`. Run it with `scifact_chunk_eval.py --configs stage1`.
+
+Overlap is a **fraction** on the config and is resolved to an absolute token
+count per size (`resolve_overlap_tokens(size, frac)`), which is what makes the
+size ladder readable. Both numbers travel together — in the key, the label, the
+report tables and the CSV (`overlap_frac`, `overlap_tokens`) — because either
+one alone misleads: 64 tokens is 25% at 256 and 3.1% at 2048.
+
+| | |
+|---|---|
+| 12 fixed | `fixed_tok{256,512,1024,2048}_ov{0,12_5,25}pct`, `kind="token_window"` |
+| 12 other | `{sentence,words,semantic}_tok{256,512,1024,2048}_ov12_5pct` |
+
+Three things this document left for the implementation to decide, recorded here
+so the run is reproducible:
+
+- **The other-kinds overlap.** The table above says "12 other kinds×sizes" without
+  naming an overlap. It is **12.5%** (`STAGE1_OTHER_FRAC`) — the shipping
+  default's own fraction, so the other-kind row is directly comparable to
+  `fixed_tok512`. Every such label spells it out.
+- **`fixed_tok512` is a cell of this grid, not a neighbour of one.** 64/512 is
+  exactly 12.5%, so the shipping control falls out of the scheme identically and
+  **keeps its key** — the key is a Qdrant collection and an ES index name, and
+  renaming the one config that must stay comparable across stages would orphan
+  every result already recorded under it. It is literally the same object in
+  `CONFIGS` and in `STAGE1_CONFIGS`. `fixed_tok256`, `sentence_tok512` and
+  `words_tok512` also turn out to be 12.5% cells; they keep uniform grid keys and
+  the equality is asserted in tests rather than relied on.
+- **Semantic has no overlap of its own.** It is adaptive, and `size` is its token
+  *cap*. The fraction reaches only its oversized-doc fixed-token fallback window
+  (threaded via `extra`, so the shipping `semantic_tokcap` / `semantic_pooled`
+  are untouched). The labels say so. `structure_tok512` from the config table
+  above does not exist yet — `words` stands in until the structure-aware packer
+  below is built.
+
+The grid needs a real tokenizer (#477 made the counter refuse rather than
+silently resize). `Salesforce/SFR-Embedding-Mistral` loads offline from
+`HF_HOME=/rag/cache` in the `/rag/envs/ragstack` environment — verified, and the
+run must use that environment.
+
 ### Why staged, beyond the 30×
 
 1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
