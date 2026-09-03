@@ -3,7 +3,7 @@
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
 **Last updated:** 2026-08-27
-**Deployed:** all four tenants on [`v1.5.2`](https://github.com/wilke/ragstack/releases/tag/v1.5.2)
+**Deployed:** all four tenants on [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3)
 (`b0fa27b`) — lucid-next 24000, asm-next 24020, dev 24040, demo 24060, behind the nginx
 gateway on `:9000` at `/ragstack/<tenant>/api/`. Their checkouts are
 `/rag/repos/tenants/<name>` and their data `/rag/data/tenants/<name>` — **note the data
@@ -278,7 +278,7 @@ This host (`coconut`) runs the canonical deployed stack out of `/rag/`. Dev work
 ```
 /rag/
 ├── repos/ragstack/      # FROZEN pre-security checkout (6d6fcf6) — serves no API
-├── repos/tenants/<t>/   # the four SERVING checkouts, all at v1.5.2
+├── repos/tenants/<t>/   # the four SERVING checkouts, all at v1.5.3
 ├── apptainer/images/    # SIFs (qdrant.sif, elasticsearch.sif, neo4j.sif, postgres.sif, redis.sif, python.sif)
 ├── data/                # all service persistence (qdrant/, elasticsearch/, neo4j/, postgres/, redis/, embedding/)
 │   └── tenants/         # per-tenant dedicated stores + manifest.tsv (ADR-0005; provisioned by apptainer/new-tenant.sh)
