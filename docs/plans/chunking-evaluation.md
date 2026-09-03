@@ -339,8 +339,34 @@ concluded "big chunks hurt quality" when the truth was "our reranker cannot see 
 in its own right. The existing harness already emits both column families — this is making
 the contrast explicit, not new instrumentation.
 
-**Still a prerequisite:** measure the sidecar's effective truncation point before the run, so
-the 2048 config's numbers can be interpreted rather than argued about afterwards.
+**Measured 2026-09-02 — DONE, and the 2048 config is clear.** Truncation is at **4096 tokens
+per (query, chunk) pair**, not 2048, so the 2048 config's rerank score measures quality rather
+than truncation. Method: score one padded chunk repeatedly, holding the answer sentence fixed
+and moving it between the start and the end of the padding.
+
+| approx chunk tokens | answer at start | answer at end |
+|---:|---:|---:|
+| 0 | 0.9868 | 0.9868 |
+| 256 | 0.9302 | 0.8325 |
+| 1024 | 0.8804 | 0.8047 |
+| 2048 | 0.8589 | 0.8032 |
+| 4096 | 0.7808 | **0.0025** |
+| 6144 | **0.7808** | 0.0025 |
+
+Two independent signatures of a hard cut at 4096: the start column **plateaus** — 0.7808 at both
+4096 and 6144, because text past the limit is never read, so adding more cannot move the score —
+and the end column **collapses** to 0.0025, the answer having been cut away entirely. A soft
+degradation would show neither.
+
+Two consequences for reading this study's results:
+
+1. **Below 4096 the position effect is real, not an artefact.** At 2048 the same answer scores
+   0.8589 at the front and 0.8032 at the back. Larger chunks genuinely dilute — that is a
+   quality finding to report, not a measurement error to correct for.
+2. **At or above 4096 the rerank score is meaningless for late content**, so no config in this
+   study may exceed it. 2048 is the largest size tested and sits safely under, query included.
+
+Re-measure if the reranker model or its `MAX_LENGTH` changes; the cut is a property of both.
 
 ## Metrics, and reporting cost beside quality
 
