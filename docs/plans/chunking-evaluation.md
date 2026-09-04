@@ -3,6 +3,14 @@
 **Status:** `PROPOSED`. The existing comparison cannot answer the questions we are about to
 spend a corpus on, and the reason is the ground truth rather than the configurations.
 
+**Update 2026-09-04 — the ground truth moved.** A Phase-0 pilot measured the BeIR datasets
+below against a real long-document alternative, and both halves of that measurement change
+this plan: **no planned BeIR dataset can exercise the top of the size ladder** (below), and
+**TREC CDS 2014–16 — human-judged, PMC OA JATS, 90 topics — demonstrably can separate
+chunking configs**, which an intermediate reading had denied. The set, the evidence and the
+reversal live in [long-doc-judged-set.md](long-doc-judged-set.md) § 13; this document keeps
+the grid, the cost model and the decision table, corrected where Phase 0 contradicted them.
+
 ---
 
 ## Why the current numbers cannot carry the decision
@@ -91,7 +99,7 @@ relevant documents per query, no rating effort.
 |---|---|---|
 | `scifact` | biomedical claims | the existing baseline, comparable to G1 |
 | `nfcorpus` | nutrition/medical | different query style, many relevant per query |
-| `trec-covid` | biomedical, full text | closest to the PMC target |
+| `trec-covid` | biomedical, **abstracts as cached** | ~~closest to the PMC target~~ — **corrected 2026-09-04**: the BeIR copy in `HF_HOME` is abstracts-only, median **378** SFR tokens and **max 925**. Full text needs the CORD-19 release itself, which is not JATS |
 | `scidocs` | broader science | the "different scientific area" config |
 
 That covers *"different scientific area"* and *"mixed documents"* with judgments already in
@@ -137,8 +145,8 @@ Three consequences for the design:
   Padding must come from outside, and our PMC corpus is the natural source: an in-domain
   distractor is a harder and more honest one than out-of-domain filler.
 - **`trec-covid` has 50 queries.** Deeply judged (1,327 qrels per query) but thin for
-  confidence intervals. Use it for realism — it is the closest thing to the PMC target — not
-  as the decisive comparison.
+  confidence intervals. Use it for realism — not as the decisive comparison. **And not for
+  document length**: measured 2026-09-04, its longest document is 925 tokens (below).
 - **`scifact` is 5% judged and `nfcorpus` 86%.** scifact is already 95% distractor at ×1, so
   the rung labels are not comparable across datasets. Normalise on distractors-per-judged-doc,
   not on the multiplier.
@@ -206,9 +214,18 @@ quality — and rerank score is the metric this study leans on.
 
 ## Cost: factorial vs staged, on the existing 4-endpoint fleet
 
-**Rate.** ~**80k tokens/s** aggregate, from the live-validation record: 5,915
-`fixed_token 512` chunks embedded in 38.4 s of compute (~3.0M tokens), on 3 of 4 workers.
-Treat as **±2×** — it is one measurement, not a benchmark.
+**Rate.** ~**164k tokens/s** aggregate.
+
+> **Corrected 2026-09-04.** This line read ~**80k tokens/s**, from the live-validation
+> record: 5,915 `fixed_token 512` chunks embedded in 38.4 s of compute (~3.0M tokens), on
+> 3 of 4 workers, flagged **±2×** as one measurement rather than a benchmark. The Phase-0
+> step-3 run is a second measurement on the current six-endpoint fleet (:9001–:9006):
+> **~108M tokens in ~11 minutes with 0 retries ≈ 164k tokens/s**. Every derived figure
+> below is recomputed at the new rate.
+>
+> **Keep the ±2× band.** Two measurements are not a benchmark either, they are on
+> different fleets, and they are themselves ~2× apart — which is the band doing exactly
+> what it was written for. Read the hours as an order of magnitude.
 
 **What actually costs.** Embedding tracks **total tokens**, which is roughly invariant to
 chunk *size* over the same corpus — but overlap adds tokens directly (`1/(1−f)`), and the
@@ -222,24 +239,28 @@ Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9
 > by the rung. That is not the design: the ladder pads around the **judged set**, which is
 > small. The real figures are ~2.5× lower, from the datasets now cached locally.
 
-| rung | distractor docs | tokens | **per index build** |
-|---|---|---|---|
-| ×1 | 64,548 | 54M | 0.19 h |
-| ×10 | 645,480 | 306M | 1.06 h |
-| ×100 | 6,454,800 | 2.8B | **9.8 h** |
-| ×1000 | 64,548,000 | 28B | **97 h** |
+| rung | distractor docs | tokens | **per index build** (164k tok/s) | was (80k tok/s) |
+|---|---|---|---|---|
+| ×1 | 64,548 | 54M | 0.09 h | 0.19 h |
+| ×10 | 645,480 | 306M | 0.52 h | 1.06 h |
+| ×100 | 6,454,800 | 2.8B | **4.7 h** | 9.8 h |
+| ×1000 | 64,548,000 | 28B | **47 h** | 97 h |
 
 ### Full factorial — 48 configs × 4 datasets × 4 rungs
 
-**≈ 1,300 GPU-hours ≈ 54 days** of fleet wall-clock.
+**≈ 650 GPU-hours ≈ 27 days** of fleet wall-clock (was ≈1,300 h ≈ 54 days at 80k tok/s).
 
 ### Staged
 
-| stage | what | cost |
-|---|---|---|
-| 1 | 24 configs — 12 `fixed`×sizes×overlaps, then 12 other kinds×sizes — `scifact`, ×1 | **~2.8 h** |
-| 2 | ~4 surviving configs × 3 rungs = **12 builds**, 4 datasets | **~51 h** |
-| | **total** | **~54 GPU-hours** |
+| stage | what | cost | was |
+|---|---|---|---|
+| 1 | 24 configs — 12 `fixed`×sizes×overlaps, then 12 other kinds×sizes — `scifact`, ×1 | **~1.4 h** | ~2.8 h |
+| 2 | ~4 surviving configs × 3 rungs = **12 builds**, 4 datasets | **~25 h** | ~51 h |
+| | **total** | **~27 GPU-hours** | ~54 |
+
+The 30× argument for staging is unchanged by the rate correction — it halves both sides.
+What *does* change the staged plan is the corpus finding above: stage 1 on `scifact` prunes
+on a corpus that cannot exercise half its own grid, whatever it costs.
 
 ### Stage 1's grid, as implemented
 
@@ -313,7 +334,7 @@ and a `fill` column beside the nominal size, in both the report and the CSV.
 Deliberately *measured*, not corrected: making `words` fill its budget would
 change what `words` is.
 
-### This corpus cannot power the top of the ladder
+### No planned BeIR corpus can power the top of the ladder
 
 Measured, same run — scifact document lengths in SFR tokens:
 
@@ -346,12 +367,28 @@ documents long enough to be cut repeatedly; scifact abstracts are not, so its
 `1/(1−f)` inflation is an upper bound that this corpus never approaches.
 
 This is a property of **the grid on this corpus**, not a defect in the grid — the
-generation is correct and the same 24 configs would separate cleanly on
-`trec-covid` (full text) or the PMC target. It is a **study-design question**:
-stage 1 as specified prunes on a corpus that cannot exercise its top half. The
-options are to run stage 1 on a longer-document corpus, to drop the 1024/2048
-overlap arms as known-null and spend the budget elsewhere, or to accept the
-grid as a null result at the top of the ladder and say so in the report. That
+generation is correct. It is a **study-design question**: stage 1 as specified
+prunes on a corpus that cannot exercise its top half.
+
+> **Corrected 2026-09-04.** The sentence that stood here said the same 24 configs
+> *"would separate cleanly on `trec-covid` (full text) or the PMC target"*. The
+> PMC half is right; the `trec-covid` half is **false for the dataset we have**.
+> Re-measured with the SFR tokenizer: BeIR `trec-covid` is 171,332 documents,
+> median **378** tokens, **max 925** — so **not one document in it could ever
+> split at size 1024**, and neither the size nor the overlap contrast has anything
+> to bite on there either. The same re-measurement puts scifact at median **348**
+> and p95 **649** (the 354 / 662 above is the earlier pass on the same corpus; the
+> few-token drift is unexplained and immaterial to every conclusion here).
+> nfcorpus (~468 mean) and scidocs (~343) were abstract-length to begin with.
+>
+> **So the twelve dead cells are dead on every planned BeIR dataset, not just on
+> scifact**, and "run stage 1 on trec-covid instead" is not an available option.
+
+That leaves three real options: run stage 1 on a genuinely long-document corpus —
+which is what [long-doc-judged-set.md](long-doc-judged-set.md) exists to build, and
+whose Leg A judged documents measure a median **4,097** tokens with **80.2%** over
+2,048 — or drop the 1024/2048 arms as known-null and spend the budget elsewhere, or
+accept the grid as a null at the top of the ladder and say so in the report. That
 decision is the user's; nothing here papers over it in code.
 
 > Measured read-only with the cached corpus and the SFR tokenizer — no stores,
@@ -363,13 +400,16 @@ decision is the user's; nothing here papers over it in code.
 1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
    to find out whether overlap's effect depends on size. If it does not, the grid collapses
    from 12 configs to 4 and the expensive stage shrinks by 3× before it starts.
-2. **The ladder is the expensive axis, so it must carry the fewest configs.** Every config on the
-   ×100 rung costs 25 h. Arms are cheap at ×1 and ruinous at ×100 — which is an argument for
+2. **The ladder is the expensive axis, so it must carry the fewest configs.** Every config on
+   the ×100 rung costs **~4.7 h** at the measured rate. (This line read 25 h, which never
+   matched the ×100 row's own 9.8 h even before the rate correction; both are now computed
+   from the same table.) Arms are ~50× cheaper at ×1 than at ×100 — which is the argument for
    deciding as much as possible at ×1.
 3. **The ×1000 rung is outside the operating range anyway.** It is 64.5M distractor
    documents against a ~500k-article target, which ×100 already brackets. Dropping it removes
-   **97 h per build** for no loss of relevance — now mostly a relevance argument rather than a
-   cost one, since the corrected figure is 2.5× lower than first stated.
+   **~47 h per build** for no loss of relevance — now mostly a relevance argument rather than a
+   cost one, since the figure has come down twice: 2.5× from the judged-set correction and 2×
+   again from the measured rate.
 4. **Failing fast is worth more than completeness.** If the structure-aware config does not beat
    the fixed window on `scifact`, that is known in minutes rather than after a week of
    padding embeddings.
@@ -485,6 +525,29 @@ Two consequences for reading this study's results:
 
 Re-measure if the reranker model or its `MAX_LENGTH` changes; the cut is a property of both.
 
+### The reranker can reverse a first-stage verdict — measured, 2026-09-04
+
+Point 1 above ("it is the last gate before the LLM") stopped being an argument and became a
+measurement during Phase 0, and it is the reason this study reports both families rather
+than one. On the TREC CDS pilot, first-stage dense retrieval says **a lead-only index is
+better than the full one**: tok512-full − lead512 recall@100 = **−0.062, CI
+[−0.084, −0.040]**. Put the reranker behind the same two indexes and it flips —
+tok512_rr − lead512_rr nDCG@10 = **+0.137**, though that estimate's CI is
+**[−0.005, +0.294]** and spans zero at n=10; the CI-clean version of the reversal is grade≥2
+**MRR@10 +0.299, CI [+0.074, +0.542]**.
+
+Two things follow for this plan:
+
+1. **A retrieval-only reading of "does the body text matter" can be exactly backwards.** The
+   reranker is the component that reads passages; an evaluation that omits it is not a
+   cheaper version of the same question, it is a different question. A whole Phase-0 step
+   drew the wrong conclusion from a BM25-only ablation for precisely this reason
+   ([long-doc-judged-set.md](long-doc-judged-set.md) § 13.2).
+2. **Reranked numbers rank arms; they do not grade the product.** On that clinical set
+   `bge-reranker-v2-m3` sometimes lowers absolute nDCG against the SFR dense ordering
+   (0.578 vs 0.600 for the same config). The contrast between arms is the signal; the level
+   is not.
+
 ## Metrics, and reporting cost beside quality
 
 `recall@{1,5,10}`, `nDCG@10`, `MRR@10`, **rerank score**, `chunks/doc`, chunking seconds,
@@ -510,3 +573,13 @@ Without this the output is a table nobody acts on.
 similar chunk counts, because less irrelevant text rides along in each chunk. If only the
 mean score moves and the ranking does not, that is *not* the prediction confirmed — it is the
 same non-result semantic produced.
+
+**Added 2026-09-04 — which corpus may settle which row.** TREC CDS is now measured to
+separate chunk sizes (tok2048 − tok512 nDCG@10 **+0.137**, CI [+0.051, +0.225], 8/10
+topics), so it can speak to the size row. But its measured bias is to reward **coarse,
+aboutness-carrying** configs — the same direction as the cheaper option in that row — so
+**no row above may be settled on a document-level judged leg alone**. The size decision in
+particular needs a leg whose evidence sits deep by construction (Legs B and C of
+[long-doc-judged-set.md](long-doc-judged-set.md)) to contradict it, or it is the bias being
+reported as a finding. Concordance across legs is the standard; a disagreement is a finding
+to investigate, not to average away.
