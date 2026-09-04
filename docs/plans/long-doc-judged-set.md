@@ -463,8 +463,8 @@ band** and read every hour below as an order of magnitude); crossencoder sidecar
 stores = dev tenant only.
 
 **Phase 0 — pilot (the de-risking buy; ~2–3 days wall, <2 GPU-h, one engineer).**
-Items 1–2 **ran 2026-09-04**, plus an unregistered step 3; items 3–6 have not. §13 has the
-results.
+Items 1–2 **ran 2026-09-04**, plus a step 3 this list never planned; items 3–6 have not.
+§13 has the results.
 1. **DONE — CDS coverage check** (CPU + S3, hours): download qrels/topics (verified live),
    fetch judged PMCIDs from `pmc-oa-opendata`, measure fetchable fraction, grade coverage
    per topic, token-length distribution of judged docs. Gate: if <70% of relevant docs per
@@ -474,9 +474,10 @@ results.
    `:24043` only, no GPU): check 3 reads −0.006 recall@100. Its *inference* — that Leg A
    cannot rank chunking configs — was tested directly in step 3 and falsified (§13.2). The
    200-doc Leg B/C prototype was not built.
-2b. **DONE (unregistered) — step 3, the real dense contrast:** 4 chunking configs, real SFR
-   embeddings, real reranker, pre-registered predictions, on the same pilot set. This is
-   the run that reversed the demotion (§13.2).
+2b. **DONE (not on this list, but pre-registered in its own right) — step 3, the real dense
+   contrast:** 4 chunking configs, real SFR embeddings, real reranker, on the same pilot
+   set, with predictions and a falsification bar written down before any embedding call.
+   This is the run that reversed the demotion (§13.2).
 3. **Oracle on a sample** (GPU, well under 1 h): 2,000 sampled (query, relevant-doc)
    pairs through the crossencoder → first position-of-evidence histograms (checks 2, 5).
 4. **50 pilot Leg B queries** end-to-end through the extended `g1_make_queries` protocol
@@ -505,12 +506,12 @@ confirmed against measurements.
 **What stage 1 then costs on this set** (for context, not part of this build): 24 index
 builds over the judged-only rungs. Leg B judged corpus ≈ 1,000 docs × ~10k tokens ≈ 10 M
 tokens → minutes per build. Leg A: the pilot measured judged-doc length at a **median
-4,097 body tokens** (mean is higher — the tail is long), so ~12.3k relevants plus grade-0
-negatives at ~40k docs × ~6k tokens ≈ 240 M tokens → **~0.4 h per build at the measured
-164k tok/s, ~10 GPU-h for the 24-cell grid** (±2×; semantic cells cost roughly double —
-they embed the text again to find boundaries). The step-3 run is the closest thing to a
-calibration: 108 M tokens, four configs, 4,053 docs, ~11 minutes. If that is too dear, run the full grid on Leg B + the 4-config
-short-list on Leg A.
+4,097 body tokens** and a mean of 6,880 — the tail is long — so ~12.3k relevants plus
+grade-0 negatives at ~40k docs × ~6.9k tokens ≈ 275 M tokens → **~0.47 h per build at the
+measured 164k tok/s, ~11 GPU-h for the 24-cell grid** (±2×; semantic cells cost roughly
+double — they embed the text again to find boundaries). The step-3 run is the closest thing
+to a calibration: 108 M tokens, four configs, 4,053 docs, ~11 minutes. If that is too dear,
+run the full grid on Leg B + the 4-config short-list on Leg A.
 
 ## 10. What the resulting study can and cannot claim
 
@@ -692,8 +693,9 @@ which is sufficient:
 negative at first stage: lead-only **beats** the full 512 index, tok512-full − lead512
 recall@100 = **−0.062, CI [−0.084, −0.040]**. After reranking, full recovers: tok512_rr −
 lead512_rr nDCG@10 = **+0.137** — read honestly, that one's CI is **[−0.005, +0.294]** and
-spans zero at 7/10 topics. The CI-clean form of the same reversal is grade≥2 **MRR@10
-+0.299, CI [+0.074, +0.542]**. (Two different +0.137s appear above and it is not a
+**spans zero** (sign consistency 7/10 topics), so it clears the bar on sign but not on the
+interval. The CI-clean form of the same reversal is grade≥2 **MRR@10 +0.299, CI [+0.074,
++0.542]**. (Two different +0.137s appear above and it is not a
 copy-paste error: one is the dense tok2048−tok512 contrast, the other this reranked
 full−lead one. They are unrelated quantities that happen to round the same.)
 
