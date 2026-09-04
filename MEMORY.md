@@ -49,6 +49,7 @@ These bit us once. Don't repeat them.
 
 - **`AsyncQdrantClient.search()` was removed in v1.10+** in favor of `query_points()`. New return shape: `response.points` (list), not a flat list. Param renamed: `query=` not `query_vector=`. The `QdrantVectorStore` adapter uses `query_points()`.
 - **An empty match list matches *nothing*, in both backends.** Verified against the running Qdrant 1.18 (`{"match": {"any": []}}` → count 0 on a populated collection) and Elasticsearch 8.13 (`{"terms": {field: []}}` → count 0). This is what lets the filter builders fail *closed* on an empty scope list (#196) without a special match-nothing condition type — don't "optimise" the empty list away as "no constraint".
+- **`QdrantClient(url=None)` does NOT fail — it resolves to host `localhost`, port 6333.** Verified directly: `url=None` and omitting `url` entirely both produce `host='localhost' port=6333`, which on this host is production. So setting a module-level `QDRANT_URL = None` is **not** self-guarding, and a "fix" that only removes a hardcoded URL can still write to production wherever a caller forgets to assign (#476). Guard explicitly at every client construction — refuse by name when the URL is unset — instead of trusting the client library to fail. Note the asymmetry: an f-string REST call with an unset URL *does* raise (`"None/collections/x"` is not an absolute URL), so only the constructor sites need the guard.
 - **Point IDs must be UUID or int.** Arbitrary string chunk IDs need to be hashed deterministically — we use `uuid.uuid5(NAMESPACE_URL, chunk_id)` so re-ingest overwrites in place, with the original ID preserved in payload as `chunk_id`.
 
 ### Elasticsearch
@@ -65,6 +66,21 @@ These bit us once. Don't repeat them.
 
 - **First request blocks ~90s** while sentence-transformers downloads BGE (~440 MB) and loads the model. Subsequent requests are fast. Bind the HF cache to a host dir (`apptainer/data/embedding/cache/`) so the download persists.
 - **Dependency footprint**: torch + CUDA libs + sentence-transformers = ~5 GB on disk, even on CPU-only hosts. The deps live in `apptainer/data/embedding/deps/` and are installed once by `sidecars-up.sh`.
+
+### Shell / deploy scripts
+
+- **`bash -c "$(declare -f fn); fn ..."` carries the *function*, not the variables.** `declare -f` serialises only the function body; the child shell inherits only **exported** variables. `deploy/start-ragstack-workers.sh` dispatched vLLM this way with `EMBED_API_KEY`, `EMBED_MODEL`, `HF_HOME`, `GPU_MEM_UTIL`, `MAX_MODEL_LEN` and `VLLM_IMAGE` all unexported, so every replica launched with `--api-key ""`, `--model ""` and no image argument (#480). Reproduce with a two-line harness before believing a variable reaches a child. Corollary: a committed credential default can look live while being entirely inert.
+- **Put `${VAR:?}` at the point of use, not in the top-level config block.** That block runs for *every* subcommand under `set -euo pipefail`, so a top-level `:?` breaks `stop`/`status`/`urls` as well as the launch path. And prefer `${VAR?msg}` over `${VAR:?msg}` when empty is a legitimate value — the coconut embedding fleet is keyless, so an empty key must stay expressible.
+
+### Per-tenant state paths
+
+- **The collection registry lives in a different filename per tenant.** `lucid` and `asm` use `state/collections.db`; `dev` and `demo` use `state/ragstack_collections.db`. Both filenames *exist* in some tenants, and querying the wrong one returns `Error: no such table: collections` — which reads like a failed health gate rather than a wrong query, and once nearly caused a rollback of two healthy deploys. Derive the expectation from the tenant's own registry immediately before a restart; never hardcode another tenant's value.
+- **A tenant's boot log line can legitimately disagree with its registry.** `asm`'s last boot line said `4 collections` while its registry held 6 — two were created through the API since that boot, so the line changed 4 → 6 across a restart with nothing wrong. Capture the pre-stop registry state, not the previous boot line.
+
+### Evaluation corpora
+
+- **BEIR corpora cannot test chunk sizes above ~512 tokens.** Measured with the SFR tokenizer: `scifact` 5,183 docs, median **348** tokens, exactly one over 2,048; `BeIR/trec-covid` 171,332 docs, median 378, **max 925** — no document could ever split at 1,024. A size sweep there silently produces near-identical indexes at the large cells and reads as "size doesn't matter". Check the corpus length distribution *before* designing a size experiment, and note the target corpus (PMC OA full text, median ~10.1k tokens) is ~29× longer.
+- **A proxy that predicts an experiment will fail is not a substitute for running it.** A BM25 lead-only-vs-full ablation on TREC CDS measured a null gap and implied chunking configs would not separate; the real run separated them by +0.137 nDCG@10 (CI [+0.051,+0.225]). The proxy tested the *coverage* axis while the decision was about the *granularity* axis, and it was BM25-only where the pipeline is dense + reranking — the reranker is the component that reads passages, and it reversed the finding. State which axis a proxy measures before letting it veto anything.
 
 ## Conda / shared envs
 
