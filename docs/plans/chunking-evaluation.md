@@ -22,8 +22,18 @@ records what it found. Three things change this plan materially:
 | **The staged plan's premise did not survive its own stage 1** | "if overlap's effect doesn't depend on size the grid collapses from 12 configs to 4" — the interaction contrast turned out to be **structurally unanswerable at its own bar**, and a second leg then contradicted Leg A on the size axis. The plan of record is now to *keep* the size axis, at ~6× the stage-2 budget |
 | **Semantic costs ~7× a `token_window` config, not 2×** | it embeds a rolling sentence buffer per sentence. It is also the worst-scoring kind on this leg and builds a 3.4× larger index |
 
+**Update 2026-09-05 — three more runs, and the first one moves the ground under all of the
+above.** The Leg B grid, a small-corpus chunk-granularity re-score and a breadth × k run:
+
+| what | reading |
+|---|---|
+| **Every metric in this plan is a *document* metric** | and at a one-document corpus, where the document metric is 1.0000 by arithmetic, the top chunk hits the gold section only **55–65%** of the time. `Gap@1` **+0.28 to +0.45**, resolved 15/15, ~0 by k=10. This study has been measuring *"found the right paper"* — see § Metrics |
+| **Size must be read budget-matched, and the answer flips** | fixed-`k` favours `tok2048`; at a matched 4,096-token budget **`tok256` wins by 2.2–3.8×**, on two corpora, two query styles and four breadth rungs. The first reading on which the two legs agree — see the end of § Pre-registration |
+| **`words`/`sentence` rows are frozen at a legacy fill** | `55a0fc2` (#488) changed the default, so every such row here is a `budget_mode="summed"` measurement and is not comparable to a future run — see § Nominal size is not realised size. `semantic`'s size knob was never the `size` parameter either |
+
 The run reports are in [`results/`](results/), copied verbatim and indexed in
-[`results/README.md`](results/README.md).
+[`results/README.md`](results/README.md) — which also lists, in one place, the conclusions
+this record later revised.
 
 ---
 
@@ -410,6 +420,45 @@ change what `words` is.
 > 2048 means the ceiling was irrelevant, not that chunks fell short of a target.
 > And the `sentence`/`words` rows labelled 12.5% carry **≈8.9% effective overlap**,
 > for the `OVERLAP_CHARS_PER_TOKEN` reason recorded above.
+
+> **Two mechanisms behind those two labels, and one of them retires every `words`/`sentence`
+> row above. Written 2026-09-05.**
+>
+> **`words`' flat 0.64 is a bug, and it is now fixed — so those rows are frozen.** Every
+> Phase-0 run pins `d225cea`, where `_pack_spans_tokens` packed while the *sum of per-unit
+> token counts* stayed within budget, each unit tokenized **in isolation**. A BPE tokenizer
+> merges the space before a word into that word's token and a lone word cannot show that
+> merge, so per-word sums over-count the joined chunk by a measured **1.497×** (range
+> 1.433–1.629) — multiplicative, hence scale-free, hence 0.64 at every nominal size.
+> `words_tok512` is not "words at 512 tokens", it is words at **328**. `55a0fc2` (#488) made
+> filling to the *joined* budget the default and kept the old path as
+> `budget_mode="summed"`, so **every `words` and `sentence` row in this document and in the
+> stage-1 grids is a `summed` measurement and is not comparable to a run at `55a0fc2` or
+> later.** The legacy mode was kept rather than deleted precisely so those grids stay
+> reproducible.
+>
+> **`sentence` went through the same code path and is not distorted by it.** Its per-sentence
+> over-count ratio is **1.000 on all 12 documents measured** — a sentence's isolated token
+> count already equals its joined count. Its 0.89 → 0.97 rise is whole-unit granularity
+> behaving correctly: a **property**, not the bug. Do not attribute the two kinds' fills to
+> one cause.
+>
+> **`semantic`'s cap is not its size knob.** Its four size cells land at realised medians
+> **255 / 359 / 357 / 343** tokens on Leg A and **255 / 324 / 350 / 351** on Leg B — it emits
+> ~350-token blocks whatever the ceiling says, and the cap binds only at 256. The reason is
+> that `breakpoint_percentile_threshold` is a percentile of *each document's own* distance
+> distribution, so the fraction of gaps cut is fixed at `1 − p/100` by construction and the
+> mean block is ~5 sentences regardless of `size` or document length. **That knob is the size
+> axis for `semantic`, and this grid never touched it** — so "semantic has one natural size"
+> is only true as *"semantic has one natural size at p = 80"*. Report `cap_bind_rate` rather
+> than `fill` for this kind.
+>
+> **Counter-instruction, and it is deliberate: do not silently fix `words` before stage 2.**
+> `words` at 0.64 and `semantic` pinned at ~350 are the only configurations where realised and
+> nominal size come apart, and the study's central exploratory claim is that *realised* tokens
+> explain quality. Repair them and that claim becomes an unfalsifiable restatement of the size
+> axis. Turn each into a declared manipulation — `budget_mode` as a factor, `p` as a factor —
+> instead.
 
 ### No planned BeIR corpus can power the top of the ladder
 
@@ -798,6 +847,30 @@ total ingest seconds, and the resulting vector footprint.
 Cost belongs in the same table as quality. Semantic's headline was 4.4× fewer chunks; its
 unreported figure was **748× the chunking cost** and an **8.33 → 7.11 rerank-score drop**.
 
+> **Added 2026-09-05 — every metric above is a *document* metric, and that is the wrong
+> half.** The small-corpus re-score
+> ([`results/rescore/`](results/rescore/RESULTS-rescore-small-corpora.md); n = 260 queries,
+> one per document, every one written from a deep section, none answerable from an abstract)
+> measured the document metric and the passage metric on the *same query, same document, same
+> embedding*. At a **one-document** corpus, where the document metric is **1.0000 by
+> arithmetic**, the top-ranked chunk lands in the gold section only **55–65%** of the time.
+> `Gap@1 = DH@1 − PH@1` is **+0.28 to +0.45**, **RESOLVED 15 of 15** — `|mean| ≥ 0.05`, CI
+> excludes 0, `δ80 ≤ |mean|` — against a power floor of ≈0.087 that every reading clears by
+> 3–5×.
+>
+> It is a **top-1 phenomenon, not a recall one.** By `k = 10` the gap is gone (+0.019 /
+> +0.023 / −0.012 / −0.015 at N = 100), because with ten chunks in hand you touch the gold
+> section somewhere: `PH@10 ≈ 0.97–0.99`. Two pre-registered predictions aimed at `k = 10`
+> **both failed** and are recorded as failures.
+>
+> So: if the consumer reads ten passages, the document metric is not badly misleading. If the
+> consumer is a person, a citation, a snippet, or an agent acting on the first hit, it
+> **overstates quality by roughly 30–45 points**. Every number in this study before
+> 2026-09-05 — the +0.137 that reversed Leg A's demotion, and the whole stage-1 grid above —
+> measured *"found the right paper"*, not *"found the answering passage"*. **Stage 2 must
+> carry a passage-level metric beside each document metric**, or it is measuring the corpus
+> size. See [long-doc-judged-set.md § 15.1](long-doc-judged-set.md).
+
 ---
 
 ## Pre-registration: what result changes what decision
@@ -857,3 +930,34 @@ target*; cut only on **uncontested axes** — overlap, if Leg B confirms the nul
 Holm, and both are preferable to recording a construction bias as a finding. **Leg C is the
 tiebreak**: human-authored queries, no LLM, a third bias profile, and it has not been run
 against the grid. That is the highest-value unrun measurement in the study.
+
+**Added 2026-09-05 — the size row must be read budget-matched, and the answer flips when it
+is.** At fixed `k`, ten 2048-token chunks is 8× the context of ten 256-token chunks, so a
+fixed-`k` comparison across sizes is not a comparison of chunking. Admitting chunks in rank
+order until a **4,096-token budget** is spent — realised budgets matched to within 9–13% —
+reverses the ordering everywhere it has been measured:
+
+| reading | best | source |
+|---|---|---|
+| raw `PR@1`, Leg A m=1 | `tok2048` 0.087 vs `tok256` 0.058 | [`results/breadth-k/`](results/breadth-k/RESULTS-breadth-k.md) |
+| budget-matched `PR_B@4096`, Leg A m=1 | **`tok256`** 0.291 vs `tok2048` 0.132 — **2.2×** | same |
+| budget-matched `PR_B@4096`, Leg A m=16 | **`tok256`** 0.181 vs `tok2048` 0.047 — **3.8×** | same |
+| budget-matched `H_B@4096`, Leg B N=1…400 | **`tok256`** 0.996 vs `tok2048` 0.815–0.842 | [`results/rescore/`](results/rescore/RESULTS-rescore-small-corpora.md) |
+
+Two corpora, two query styles, four breadth rungs, same direction — and it is the **first
+reading on which the two legs agree**, where the document-level grid had them contradicting
+each other. That is not yet enough to settle the size row: both legs' query constructions
+favour small chunks for stateable reasons (§ above), it is one metric family, and the raw
+`@1` reading still points the other way. The dissent inside the family is recorded too —
+budget-matched *recall* (`R_B@4096`) has `tok1024` in front and **nothing resolves** (extremes
++0.0430 against δ80 0.0714, Holm p 0.37), reported as unresolved rather than as a null.
+
+**What does change now:** any future size comparison in this study must publish the
+budget-matched reading beside the fixed-`k` one, and say which of the two a recommendation
+rests on.
+
+**And `k` is not a free parameter to leave at 10.** On the harder leg — Leg A, oracle-derived
+gold inside topically-judged documents — `k = 20` retrieves only **21–32%** of the gold
+passages and the curve is still climbing (`k*`, the smallest `k` reaching 90% of the `k = 20`
+value, is **20 at every rung**). On the easier leg, `PH@10 ≈ 0.97–0.99` and `k = 20` is free.
+Any `k` quoted in a decision table must name which difficulty regime it was chosen under.

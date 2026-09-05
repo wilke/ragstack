@@ -41,12 +41,17 @@ Read them in that order — most have a "read this first" block that assumes its
 - **Links to `.py`, `.jsonl` and to intermediate `.json` artefacts do not resolve.** Each
   report ends with a file manifest naming the harness that produced it; the harness and its
   intermediates stayed in the run directory. The manifests are kept because they say what was
-  run, not because they are navigable.
-- **`RESULTS-legBC-pilots.md` links to its predecessor as `../stage1/RESULTS-stage1-legA.md`.**
-  That link resolves here, because the layout matches the run directory's.
-- **Links back to the plans are written as `../../../docs/plans/…`** from the run directory.
-  They resolve unchanged from here, because this directory sits at the same depth. Nothing to
-  fix, but do not assume it of a future copy.
+  run, not because they are navigable. This accounts for 26 of the 29 unresolved links in
+  this tree.
+- **Cross-run links between reports do resolve**, because this layout matches the run
+  directory's — `RESULTS-legBC-pilots.md` reaches its predecessor as
+  `../stage1/RESULTS-stage1-legA.md`, and that is where it is.
+- **Links back to the plans are written as `../../../docs/plans/…`, and those are the other
+  three.** They were written from a run directory two levels up from the repo root and
+  resolved from a flat `results/`; from `results/<run>/` they are one `../` short. The files
+  are committed verbatim, so the links are left wrong rather than edited. The three are in
+  `stage1/RESULTS-stage1-legA.md`, `pilots/RESULTS-legBC-pilots.md` and
+  `pilots/RESULTS-legB-rerun.md`; each means [`../../long-doc-judged-set.md`](../long-doc-judged-set.md).
 
 ---
 
@@ -432,10 +437,15 @@ corpus before embedding.
 ## What is not here, and why
 
 - **The raw per-query arrays** (`runs-*.json.gz`, `ranked-*.json.gz` — 16.2 MB compressed,
-  111 MB expanded). Measured both ways against the ~15 MB budget this record was given: the
-  tree packs to **470,871 bytes** without them, **16.7 MB** with them as `.gz`, and **17.7 MB**
-  with them as plain JSON. Both inclusions fail the budget, and plain JSON packed *larger*
-  than pre-compressed — five distinct files give git's delta compression nothing to work with.
+  111 MB expanded). Measured all three ways against the ~15 MB budget this record was given,
+  each as an isolated repo `gc --aggressive`'d so the comparison is like-for-like: the tree
+  packs to **470,871 bytes** without them, **16.7 MB** with them as `.gz`, and **17.7 MB**
+  with them as plain JSON. Both inclusions fail the budget — and note that plain JSON packed
+  *larger* than pre-compressed, because five distinct files give git's delta compression
+  nothing to work against. As committed, this branch's incremental pack over `main` is
+  **~0.52 MiB**, for a 1.90 MiB working tree of 45 files. (The exact byte count is quoted in
+  the PR that landed this; it cannot be stated here without changing itself.)
+
   Every reading in the reports is reproducible from the committed `report-*.json`; only a
   fresh re-analysis at per-query granularity needs the arrays.
 - **The `.npy` similarity matrices and embeddings** — 1.8 GB, and regenerable.

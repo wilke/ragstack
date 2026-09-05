@@ -5,10 +5,13 @@ no qrels file, no index, nothing written under `/rag/`. What *has* run is **all 
 §9 items plus two unplanned ones** — the CDS coverage gate, the BM25 lead-only ablation, a
 real dense-pipeline chunking contrast, the whole 24-config stage-1 grid, the §7a oracle on
 all 90 topics, both leg pilots, an empirical σ_d, and a Leg B re-run against a real LLM —
-all measured 2026-09-04 on this host. **§13 records the first round, including one wrong
-inference that was acted on and then reversed; §14 records the second, including one
-finding that gates the whole study: Legs A and B resolve the same contrast with opposite
-signs.** Acceptance checks 2 and 5 now have numbers. Check 4 passes on two legs.
+all measured 2026-09-04 on this host, **plus three further runs on 2026-09-05**: the Leg B
+stage-1 grid, a small-corpus chunk-granularity re-score, and a breadth × k run. **§13
+records the first round, including one wrong inference that was acted on and then reversed;
+§14 records the second, including one finding that gates the whole study: Legs A and B
+resolve the same contrast with opposite signs; §15 records the third, whose first finding
+is that every metric in §13 and §14 measured "found the right paper" rather than "found the
+answering passage".** Acceptance checks 2 and 5 now have numbers. Check 4 passes on two legs.
 
 The run reports are in [`results/`](results/) — copied verbatim, indexed in
 [`results/README.md`](results/README.md). Every figure below is traceable to one of them.
@@ -32,6 +35,10 @@ everything else is an estimate or an open check and says so.
 | 8 | checks 2 and 5 unmeasured | **check 2 PASS** (55.4% past token 1,024 against a ≥40% bar, on 90 topics); **check 5 PASS** on both legs, with its covariate needing re-registration |
 | 9 | "semantic cells cost roughly double" | **~7×** a `token_window` config — it embeds a rolling sentence buffer per sentence (§14.1) |
 | 7, 14.5 | circularity rule covers chunkers | it does **not** cover a *query construction* grading its own homework, and §14.5 is the evidence that it must |
+| 2, 6, 7, **15.1** | position of evidence is a *property of the set* to be verified | it is **the measurement**. At one document every document metric is 1.0000 by arithmetic while the top chunk hits the gold section 55–65% of the time — `Gap@1` **+0.28 to +0.45**, resolved 15/15. Every metric above measured "found the right paper" |
+| — , **15.2** | "1–100 documents, and 100 fit a 131k window" | full-text OA articles average **9,933 tokens**; 100 of them is ~**1.03M** and **0% fit**. A 131k window holds ~**13**. The regime needing retrieval work is **~13–100** |
+| 14.5, **15.4** | the legs differ in breadth and bias | they differ in **difficulty**, by 15× — Leg B's queries were *written from* their gold passage. "Narrow queries saturate" is a statement about **easy** queries |
+| 14.6 | overlap "not yet tested on Leg B" — cut it only if Leg B confirms | **Leg B confirms.** 12.5% − 0% = −0.0040, δ80 0.0081 below the 0.010 bar; ±0.0000 on recall@100 at ×11.5. The pre-condition is met |
 
 **Recommendation in one paragraph.** Build a **three-legged judged set**: (A) **TREC CDS
 2014–2016** — 90 human-judged topics whose corpus *is* PMC OA JATS full text, the same
@@ -1329,3 +1336,198 @@ with every contrast added to the family, so the same n resolves a larger δ. The
 made is explicit: **more budget and less resolution per contrast, in exchange for not pruning
 the one axis the evidence cannot yet adjudicate.** If that trade is refused, the alternative
 is not "prune anyway" — it is to run Leg C first and let a third bias profile break the tie.
+
+> **Updated 2026-09-05 — the overlap condition is now met.** The Leg B grid ran all 24 cells
+> at ×0 and the 12 `token_window` cells at ×11.5:
+> [`results/stage1-legB/`](results/stage1-legB/RESULTS-stage1-legB.md). **12.5% − 0% =
+> −0.0040**, CI [−0.0098, +0.0015], with δ80 = 0.0081 *below* the X_B = 0.010 bar — a powered
+> null, on a leg whose bias runs opposite to Leg A's. At ×11.5 overlap moves recall@100 by
+> **exactly 0.0000** at every size. The pre-condition written above — *cut overlap if Leg B
+> confirms the null* — is satisfied.
+>
+> Two caveats travel with the cut. The `sentence`/`words` rows labelled 12.5% carry ≈8.9%
+> effective overlap (their packer converts at 2.5 chars/token against a measured 3.50), so
+> only the `token_window` rows tested the fraction exactly. And the weaker ×11.5 nDCG@10
+> replication (−0.0078, CI [−0.0162, −0.0002], δ80 0.0114) is **above** the bar and is a
+> direction, not a result.
+
+---
+
+## 15. Post-#487 findings (measured 2026-09-05)
+
+Three more runs after §14: the **Leg B stage-1 grid**, a **small-corpus re-score** of the
+Leg B ×0 rung at chunk granularity, and a **breadth × k** run. Reports, pre-registrations and
+machine-readable outputs in [`results/`](results/README.md), whose index also lists which
+earlier conclusions each one revised.
+
+Store and fleet discipline unchanged and independently gated in each run: no Qdrant or
+Elasticsearch client is constructed anywhere in the harnesses, `:6333`/`:9200`/`:24041`/`:24043`
+were not contacted at all, and GPUs 6 and 7 sat at 0 MiB before and after. Both later runs
+additionally assert their repo commit, probe the served model live on all six endpoints and
+refuse to run if the six disagree, and hash their corpus before embedding — the gaps
+[`design/ANSWER-provenance-and-repro.md`](results/design/ANSWER-provenance-and-repro.md)
+found in the earlier runs.
+
+### 15.1 The passage/document gap — the study has been measuring the wrong half
+
+`Gap@k = DH@k − PH@k`: the document metric this study already reports, minus the question
+*did any of the top-k chunks actually overlap the gold section*. Measured on the same query,
+the same document and the same embedding, n = 260. The judged set makes it a real passage
+task: **0 of 260** gold sections are the abstract, median gold section **1,233** tokens
+(13.5% of its document), median position **69.3%** of the way through a median **8,778**-token
+article.
+
+| N | `DH@1` | `PH@1`, tok256 / 512 / 1024 / 2048 | **`Gap@1`** | reading |
+|---:|---|---|---|---|
+| **1** | **1.0000** (arithmetic) | 0.5692 / 0.6308 / 0.5500 / 0.6462 | **+0.4308 … +0.3538** | RESOLVED |
+| 10 | 0.9308–0.9846 | 0.5308 … 0.6346 | +0.4115 … +0.2962 | RESOLVED |
+| 100 | 0.9154–0.9769 | 0.5269 … 0.6308 | +0.4154 … +0.2846 | RESOLVED |
+
+**15 of 15 readings RESOLVED** — `|mean| ≥ 0.05`, CI excludes 0, `δ80 ≤ |mean|`, against a
+power floor of ≈0.087 that every effect clears by 3–5×. Read the `N = 1` row twice: **every
+document-level metric is 1.0000 by arithmetic** while the top chunk is wrong 35–45% of the
+time.
+
+**It is a top-1 phenomenon, not a recall one.** At `k = 10` the gap collapses to
++0.019 / +0.023 / −0.012 / −0.015 (N = 100) — with ten chunks in hand you touch the gold
+section somewhere, `PH@10 ≈ 0.97–0.99`. The pre-registration aimed two predictions at `k = 10`
+(P1 `Gap@10 ≥ 0.15`; P2 it grows with chunk size) and **both failed**. They are recorded as
+failures; the `k = 1` reading pre-registered in the same family resolves decisively.
+
+**What this changes here.** Every metric in this study before 2026-09-05 — §13.2's +0.137 and
+all of §14 included — measured *"found the right paper"*, not *"found the answering passage"*.
+For a consumer that reads ten passages the document metric is not badly misleading; for a
+person, a citation, a snippet, or an agent acting on the first hit it **overstates quality by
+roughly 30–45 points**. §6's metric map must carry a passage-level metric beside every
+document metric on every leg, and §7's position-of-evidence measurement stops being a
+qualification on the set and becomes the thing being measured.
+
+**Also measured: chunk size stops mattering at the document level as the corpus shrinks, and
+goes on mattering, undiminished, at the passage level.**
+
+| | N = 1 | N = 10 | N = 100 | N = 400 | N = 5,000 |
+|---|---:|---:|---:|---:|---:|
+| document-level spread (`nDCG@10`) | **0.0000** | 0.0255 | 0.0403 | 0.0408 | 0.0732 |
+| passage-level spread (`H_B@4096`) | **0.1538** | 0.1731 | 0.1808 | 0.1808 | not measured |
+| ratio | ∞ | 6.8× | **4.5×** | 4.4× | — |
+
+*Not resolved, and not converted into a null:* the pre-registered **primary** metric,
+budget-matched character recall of the gold section (`R_B@4096`), does not resolve at any
+size — extremes +0.0430 against δ80 0.0714, Holm p 0.37, per-query discordance 0.83. The size
+conclusion above rests on `H_B@4096` and `F1@10`, which resolve by 2–5× their own floors.
+
+### 15.2 Scale correction — the regime needing retrieval starts at ~13 documents, not 1
+
+The framing this work inherited was "1–100 documents, where the whole corpus fits a
+131,072-token window anyway". Measured against the actual corpus, n = 260 mini-corpora:
+
+| corpus | median tokens | p10 | p90 | max | **fits 131k** |
+|---|---:|---:|---:|---:|---:|
+| N = 1 | 8,778 | 5,629 | 15,294 | 43,587 | **100%** |
+| N = 10 (topical) | **101,412** | 81,376 | 123,915 | 180,878 | **94.6%** |
+| N = 100 (topical) | **1,029,657** | 921,641 | 1,087,426 | 1,199,758 | **0%** |
+| N = 400 (whole ×0) | 3,861,045 | — | — | — | 0% |
+
+Full-text OA articles average **9,933 tokens**, so a 131k window holds about **13** of them,
+not 100 — the premise is wrong by ~8×, and at N = 100 it is not close: the *smallest* observed
+100-document corpus is ~7× the window. (This is consistent with §1's corpus measurement:
+median body ≈10,100 tokens over a 205,679-document sample.)
+
+Three regimes, and only the middle one is this design's problem:
+
+- **N ≈ 1–13 — retrieval is optional.** The corpus fits; the decision is cost and latency. If
+  you do retrieve here, note that `whole4096` — one vector per document — is the **worst** arm
+  on every passage metric: a single truncated vector cannot point *inside* a document, and 69%
+  of answers sit past its truncation point.
+- **N ≈ 10 — a coin flip.** 94.6% of these corpora fit. Stuffing works today and breaks on the
+  first long article.
+- **N ≈ 13–100 — the regime that needs the work.** Too large to stuff, and document-level
+  metrics are saturated at 0.92–0.99 while the top-1 chunk is right only ~56–63% of the time.
+  This is exactly where §15.1's gap bites hardest.
+
+### 15.3 Breadth × k — a null interaction, a structurally-zero residual, one untested axis
+
+Hypothesis: the marginal value of raising `k` grows with topic breadth. Tested by holding
+corpus, corpus size, query text, model, chunker and gold provenance **exactly** fixed and
+varying only `m`, the number of gold (document, passage) pairs per topic, 1 → 16. A licensing
+identity was asserted numerically first: at `m = 1` the recall forms reduce *exactly* to the
+hit forms, to the last digit.
+
+**The interaction is not supported.** The pre-registered primary is **−0.014 to −0.032** across
+the four chunk sizes — two powered nulls at the 0.05 bar, two unresolved — and negative on
+every arm.
+
+**And the residual is *structurally* zero, not empirically null.** With query and embedding
+fixed, the ranking over a given corpus does not depend on `m` at all. `m` can reach the k-curve
+through exactly two channels: the `min(1, k/m)` ceiling, absorbed by the pre-registered
+random-ranking null, and competition between gold documents for the same top-k slots. **There
+is no third channel.** A post-hoc control measures that competition directly at **−0.03 to
+−0.06 at k=1, growing to −0.12 to −0.13 at k=20**, and the one pre-registered contrast that
+resolved (−0.081 and −0.097) is that same competition seen on the gap.
+
+**What this run cannot say, stated as a limitation and not as a null.** The ladder manipulates
+**qrel** breadth, not **query** breadth. A semantically broader *question* — "what are the
+treatment options for X" versus "what dose of Y was used" — would differ in its wording, its
+embedding and therefore its whole ranking. **Semantic question breadth remains untested**, and
+testing it means varying the query text, which reintroduces every confound the design was
+built to exclude: a harder experiment, not a variant of this one. Two further gaps: **Term C**
+(oracle-derived vs recorded gold) is not identified and sits inside the leg term, so *any* part
+of the −0.43 leg difference could be gold provenance rather than difficulty; and `m` tops out
+at 16 against a true CDS breadth of ~109, so nothing here speaks to `m` in the hundreds.
+
+**The k budget is leg-dependent, and on the hard leg 20 is not enough.** On Leg A, `k*` — the
+smallest `k` reaching 90% of the `k = 20` value — is **20 at every rung of the ladder**, and at
+`k = 20` only **21–32%** of gold passages have been retrieved with the gap still widening. On
+Leg B, `PH@10 ≈ 0.97–0.99` and `k = 20` is free. Anything quoting a `k` must name which of
+those two regimes it was chosen in.
+
+**Budget-matched, small chunks win at every rung.** At fixed `k`, ten 2048-token chunks is 8×
+the context of ten 256-token chunks, so a fixed-`k` cross-size comparison is not a comparison
+of chunking. Admitting chunks in rank order until a 4,096-token budget is spent (realised
+budgets matched to within 13%):
+
+| Leg A, topical | tok256 | tok512 | tok1024 | tok2048 |
+|---|---:|---:|---:|---:|
+| raw `PR@1`, m=1 | 0.058 | 0.052 | 0.054 | **0.087** ← best |
+| **budget-matched `PR_B@4096`, m=1** | **0.291** ← best | 0.208 | 0.156 | 0.132 |
+| raw `PR@1`, m=16 | 0.018 | 0.017 | 0.023 | **0.023** ← best |
+| **budget-matched `PR_B@4096`, m=16** | **0.181** ← best | 0.107 | 0.067 | 0.047 |
+
+The fixed-`k` ordering favours the largest chunk; the budget-matched ordering reverses it
+completely and favours the smallest, by **2.2× at m=1 and 3.8× at m=16**. This replicates the
+re-score's finding on a different corpus, a different query type, and now across breadth. So
+**"chunk small" is a budget-matched result and only a budget-matched result** — the raw `@1`
+reading points the other way, and it is the one the document-level grid was tuned on.
+
+### 15.4 "Narrow queries saturate" was wrong — it is easy versus hard
+
+§15.3's hypothesis assumed narrow queries saturate. They do not; **easy** queries do.
+
+| N=100, tok512 | k=1 | k=2 | k=3 | k=5 | k=10 | k=20 |
+|---|---:|---:|---:|---:|---:|---:|
+| Leg B `PH@k` (m=1, n=396) | 0.515 | 0.720 | 0.818 | 0.891 | 0.977 | **1.000** |
+| Leg A `PR@k` (m=1) | 0.052 | 0.096 | 0.125 | 0.166 | 0.237 | **0.320** |
+
+Both rows have **exactly one gold passage per query**. Leg B's queries were *written from*
+their gold section, so the retriever is being asked to invert a generator; Leg A's gold is a
+cross-encoder's best unit inside a document TREC merely judged topically relevant to a clinical
+case narrative. The lumped leg term is **−0.43 to −0.48 on `PH@1`** (Leg A 0.05–0.09 vs Leg B
+0.48–0.56) — roughly **15× any candidate breadth effect**. A naive Leg-A-vs-Leg-B comparison
+would have charged all of it to breadth.
+
+**This sharpens §14.5 rather than replacing it.** The legs disagree on direction *and* differ
+by 15× in difficulty, and the second fact is the one that has been invisible. Leg B is the
+workhorse precisely because its gold is recorded by construction — and that construction is
+what makes it easy. Its absolute numbers (nDCG@10 0.92–0.99; 94–98% of queries putting the gold
+document at rank 1) are an **upper bound on a real user's experience, not an estimate of it**,
+and §10's claims-and-cannot-claims list should say so before any of them is quoted outside this
+document.
+
+**One consequence for §12's decision point.** §14.6 keeps the size axis because the two legs
+contradict each other on it. §15.1 says both legs were answering the wrong question at k=1, and
+§15.3 says that budget-matched — the only size-fair reading — *both* corpora and *all* breadth
+rungs point the same way, at 256 tokens. That is not enough to prune the axis: it is one
+metric family on two legs whose queries were built by two constructions that both favour small
+chunks for stateable reasons. But it is the first reading on which the legs **agree**, and the
+next run that touches size should be the one that tests it against a third bias profile
+(Leg C), not a rerun of the document-level grid.
