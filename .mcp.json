@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ragstack": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/go/bin/ragstack-mcp",
+      "env": {
+        "RAGSTACK_BASE_URL": "http://localhost:8030",
+        "RAGSTACK_COLLECTION": "demo_g1_sfr_tok512"
+      }
+    }
+  }
+}

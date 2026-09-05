@@ -1,0 +1,12 @@
+{
+  "name": "ragstack",
+  "displayName": "RAGStack",
+  "version": "0.1.0",
+  "description": "Query a RAGStack retrieval-augmented-generation knowledge base from Claude Code. Bundles the ragstack-mcp stdio server plus a /ragstack-query command and a skill that teaches Claude when to search vs. answer.",
+  "author": {
+    "name": "Andreas Wilke",
+    "email": "awilke1972@gmail.com"
+  },
+  "keywords": ["rag", "retrieval", "mcp", "knowledge-base", "ragstack"],
+  "mcpServers": "./.mcp.json"
+}

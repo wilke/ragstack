@@ -59,6 +59,44 @@ Start here, in this order:
   [SPEC.md](SPEC.md).
 - **[docs/](docs/)** — deployment, architecture, ADRs, runbooks, glossary.
 
+## Claude Code plugin
+
+This repository ships a **Claude Code plugin** so you can query a RAGStack
+knowledge base directly from Claude Code. The repo root *is* the plugin root, so
+the bundled MCP server binary (`go/bin/ragstack-mcp`) is resolved automatically
+via `${CLAUDE_PLUGIN_ROOT}`.
+
+**Components**
+
+| Path | What it provides |
+|---|---|
+| `.claude-plugin/plugin.json` | Plugin manifest (`name: ragstack`) |
+| `.mcp.json` | Bundles the `ragstack` stdio MCP server (tools: `list_collections`, `search`, `answer`) |
+| `commands/ragstack-query.md` | `/ragstack-query <question>` — grounded, cited answer |
+| `skills/ragstack/SKILL.md` | Teaches Claude when to search vs. answer, and grounding rules |
+
+**Use it for a session**
+
+```bash
+claude --plugin-dir /path/to/ragstack
+```
+
+Then ask a question about your indexed documents, or run
+`/ragstack-query <question>`. To enable it persistently, add
+`"ragstack": true` under `enabledPlugins` in `~/.claude/settings.json`.
+
+**Configuration** (set in `.mcp.json`, overridable via the environment):
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `RAGSTACK_BASE_URL` | `http://localhost:8030` | RAGStack API base URL |
+| `RAGSTACK_COLLECTION` | `demo_g1_sfr_tok512` | Default collection id |
+| `RAGSTACK_API_KEY` | *(unset)* | Optional; sent as the `X-API-Key` header |
+
+The API at `RAGSTACK_BASE_URL` must be running (see **Quick Start** above), or
+the plugin's tools will fail to connect. Build the server binary with
+`make` / your Go toolchain if `go/bin/ragstack-mcp` is missing.
+
 ## Project Layout
 
 ```
