@@ -11,6 +11,20 @@ chunking configs**, which an intermediate reading had denied. The set, the evide
 reversal live in [long-doc-judged-set.md](long-doc-judged-set.md) § 13; this document keeps
 the grid, the cost model and the decision table, corrected where Phase 0 contradicted them.
 
+**Update 2026-09-04 — stage 1 has run.** All 24 configs, on the CDS pilot rather than on
+scifact, against a pre-registration written before any embedding call: **968 M tokens
+embedded in 94 minutes, 0 retries in 186,647 requests.** [§ Stage 1, run](#stage-1-run-what-24-configs-on-a-long-document-corpus-actually-said)
+records what it found. Three things change this plan materially:
+
+| what | reading |
+|---|---|
+| **Overlap buys nothing at any size** | negative on nDCG at all four rungs, \|Δ recall@100\| ≤ 0.0033, at up to **1.32×** the vectors. Adequately powered. The largest actionable result Phase 0 produced |
+| **The staged plan's premise did not survive its own stage 1** | "if overlap's effect doesn't depend on size the grid collapses from 12 configs to 4" — the interaction contrast turned out to be **structurally unanswerable at its own bar**, and a second leg then contradicted Leg A on the size axis. The plan of record is now to *keep* the size axis, at ~6× the stage-2 budget |
+| **Semantic costs ~7× a `token_window` config, not 2×** | it embeds a rolling sentence buffer per sentence. It is also the worst-scoring kind on this leg and builds a 3.4× larger index |
+
+The run reports are in [`results/`](results/), copied verbatim and indexed in
+[`results/README.md`](results/README.md).
+
 ---
 
 ## Why the current numbers cannot carry the decision
@@ -192,6 +206,30 @@ at fp32 4096-dim:
 **Include 0% at every size.** It is the cheapest configuration, so the burden of proof sits
 on overlap.
 
+**Measured 2026-09-04 — overlap does not discharge that burden.** On a corpus long enough for
+overlap to actually engage (the CDS pilot; measured inflation at size 256 is 1.000 / 1.135 /
+1.317 against a theoretical 1.000 / 1.143 / 1.333, so it engages essentially fully), what the
+extra vectors buy is:
+
+| size | nDCG@10, 25% − 0% | recall@100, 25% − 0% |
+|---:|---:|---:|
+| 256 | **−0.0446** | +0.0033 |
+| 512 | **−0.0197** | −0.0030 |
+| 1024 | **−0.0412** | −0.0013 |
+| 2048 | **−0.0037** | +0.0016 |
+
+**Negative at every rung on nDCG@10, and |Δ| ≤ 0.0033 on recall@100 at every rung.** The
+12.5% main effect is **−0.0210, CI [−0.047, +0.007]**, and it is one of only two contrasts in
+the pre-registered family whose 80%-power floor (0.046) sits below the 0.05 bar written for
+it — so this is a measurement, not an absence of one. The interval is consistent with overlap
+*hurting* by up to ~0.047; it is not consistent with it helping much.
+
+**0% overlap is not worse, and it is a `1/(1−f)` saving on every index for the product's
+lifetime.** That is the largest actionable number Phase 0 produced. Two conditions on acting
+on it: it is **one leg**, and overlap has **not been tested on Leg B** — the Leg B σ_d run
+included a `tok512/25%` cell but published no overlap contrast from it. Drop the overlap axis
+when Leg B confirms the null, not before.
+
 ### What the model limits allow
 
 Queried live, not recalled:
@@ -254,13 +292,27 @@ Corpora: `scifact` ~1.8M tokens (cached locally); `nfcorpus` ~1.5M, `scidocs` ~9
 
 | stage | what | cost | was |
 |---|---|---|---|
-| 1 | 24 configs — 12 `fixed`×sizes×overlaps, then 12 other kinds×sizes — `scifact`, ×1 | **~1.4 h** | ~2.8 h |
-| 2 | ~4 surviving configs × 3 rungs = **12 builds**, 4 datasets | **~25 h** | ~51 h |
-| | **total** | **~27 GPU-hours** | ~54 |
+| 1 | 24 configs — 12 `fixed`×sizes×overlaps, then 12 other kinds×sizes — ~~`scifact`, ×1~~ **run on the CDS pilot instead** | **1.57 h measured** (est. ~1.4 h) | ~2.8 h |
+| 2 | ~~~4 surviving configs × 3 rungs = **12 builds**~~ — **see the plan of record below**: the size axis is not being pruned, so this is **24 configs × 3 rungs = 72 builds**, ~6× | ~~**~25 h**~~ **~150 h** at the same per-build rate | ~51 h |
+| | **total** | ~~**~27 GPU-hours**~~ **~150 GPU-hours** unless a leg breaks the size tie | ~54 |
 
 The 30× argument for staging is unchanged by the rate correction — it halves both sides.
 What *does* change the staged plan is the corpus finding above: stage 1 on `scifact` prunes
-on a corpus that cannot exercise half its own grid, whatever it costs.
+on a corpus that cannot exercise half its own grid, whatever it costs. **Stage 1 was
+therefore run on the CDS pilot** and came in at 1.57 h against its 3 h pre-registered ceiling
+(§ Stage 1, run).
+
+**And stage 2's line has moved for a reason that is not a cost correction.** The 12-build
+figure assumed stage 1 would prune the grid to ~4 configs. It did not, and the reason is in
+[long-doc-judged-set.md § 14.5](long-doc-judged-set.md): Legs A and B resolve the chunk-size
+contrast with **opposite signs and non-overlapping intervals**, and each leg's direction is
+predicted by how its own queries were constructed. **Pruning the size axis on either leg would
+be recording a construction bias as a finding.** The plan of record is to keep it, produce
+recommendations conditioned on query target, and cut only where the legs do not disagree —
+overlap (pending Leg B) and semantic (on cost). The 6× is the price of that, and Holm across
+more contrasts costs power on top of it: the same n resolves a larger δ. If the budget is
+refused, the alternative is **not** to prune anyway — it is to run Leg C, whose bias profile
+differs from both, and let a third leg break the tie.
 
 ### Stage 1's grid, as implemented
 
@@ -334,6 +386,31 @@ and a `fill` column beside the nominal size, in both the report and the CSV.
 Deliberately *measured*, not corrected: making `words` fill its budget would
 change what `words` is.
 
+> **The table above does not transfer to a long-document corpus. Measured
+> 2026-09-04.** Re-run on the CDS pilot (median document **4,532** tokens, against
+> scifact's 354):
+>
+> | kind | 256 | 512 | 1024 | 2048 |
+> |---|---|---|---|---|
+> | scifact `sentence` | 82% | 64% | 35% | 17% |
+> | **CDS `sentence`** | **89%** | **94%** | **96%** | **97%** |
+> | scifact `words` | 62% | 56% | 34% | 17% |
+> | **CDS `words`** | **64%** | **64%** | **64%** | **64%** |
+>
+> The scifact decay to 17% is **entirely a document-length artefact** — a
+> 354-token document cannot fill a 2048-token budget — and it vanishes here.
+> `sentence` fill *rises* with size, because its waste is one partial sentence per
+> chunk and that is a shrinking fraction of a growing budget; `words` is flat at
+> 0.64 because its shortfall is proportional. **Fill is a property of corpus ×
+> kind, not of kind.** Do not reuse the scifact numbers to interpret results on a
+> long-document corpus — the direction of the trend reverses.
+>
+> Two further labels, needed before reading any `fill` column: **`semantic`'s fill
+> is not a fill** — its `size` is a *cap* that mostly does not bind, so 0.17 at
+> 2048 means the ceiling was irrelevant, not that chunks fell short of a target.
+> And the `sentence`/`words` rows labelled 12.5% carry **≈8.9% effective overlap**,
+> for the `OVERLAP_CHARS_PER_TOKEN` reason recorded above.
+
 ### No planned BeIR corpus can power the top of the ladder
 
 Measured, same run — scifact document lengths in SFR tokens:
@@ -397,9 +474,22 @@ decision is the user's; nothing here papers over it in code.
 
 ### Why staged, beyond the 30×
 
-1. **The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
+1. ~~**The interaction question is answerable for five minutes of GPU.** Stage 1 exists only
    to find out whether overlap's effect depends on size. If it does not, the grid collapses
-   from 12 configs to 4 and the expensive stage shrinks by 3× before it starts.
+   from 12 configs to 4 and the expensive stage shrinks by 3× before it starts.~~
+   **Falsified as written, 2026-09-04 — and this is the plan's own biggest methodological
+   error.** The interaction *as posed* — a difference-of-differences between the 256 and 2048
+   rungs — has an **80%-power floor of 0.213 nDCG against the 0.05 bar this plan wrote for
+   it**. It could not have returned a positive answer at n = 10 whatever the truth, and that
+   was knowable in advance from its variance structure: a DiD compounds four cells' variance.
+   It is recorded as **structurally unanswerable, not as a null**. The **slope form** of the
+   same question — the overlap effect per size doubling — resolves four times better (floor
+   0.056) and returns a genuinely tight null, **+0.0101, CI [−0.022, +0.044]**; make that the
+   primary interaction contrast in stage 2. The collapse-to-4 conclusion does not follow
+   anyway, for the separate reason in the staging table above.
+   **The transferable rule: compute a contrast's power floor before committing to its
+   threshold.** Every later Phase-0 reading was gated that way, and six of fifteen in the
+   Leg B round failed the check and were written as unresolved rather than as nulls.
 2. **The ladder is the expensive axis, so it must carry the fewest configs.** Every config on
    the ×100 rung costs **~4.7 h** at the measured rate. (This line read 25 h, which never
    matched the ×100 row's own 9.8 h even before the rate correction; both are now computed
@@ -422,6 +512,158 @@ stage 2 as the shipping control regardless of how it places.
 **Caveat on all of it:** embedding cost per token is **super-linear in sequence length**
 (attention), so the 2048 configs cost somewhat more than a token-proportional model predicts.
 The ranking of the options does not change; the absolute hours are a floor.
+
+---
+
+## Stage 1, run: what 24 configs on a long-document corpus actually said
+
+*Run 2026-09-04 against a pre-registration written before any embedding call, on the option
+this plan named above: a genuinely long-document corpus rather than scifact. Corpus = the
+10-topic / 4,053-document TREC CDS pilot. Full report:
+[`results/RESULTS-stage1-legA.md`](results/RESULTS-stage1-legA.md); pre-registration:
+[`results/PREREG-stage1.md`](results/PREREG-stage1.md); generated tables:
+[`results/tables-stage1-legA.md`](results/tables-stage1-legA.md).*
+
+> **This run prunes nothing, and the reason is not caution.** Leg A has a *measured* bias —
+> CDS relevance is document-level and topical, so the leg rewards coarse, aboutness-carrying
+> configs — and a second leg has since contradicted it on the size axis with a non-overlapping
+> interval ([long-doc-judged-set.md § 14.5](long-doc-judged-set.md)). **n = 10 topics**, so
+> the noise floor is ~0.12 nDCG@10 and neighbouring rows of any ranking are not ordered
+> claims. Inference is confined to 9 pre-registered contrasts under Holm; the 276 pairwise
+> contrasts the grid admits were never tested.
+>
+> Three grid cells *are* step-3 configs. Re-chunked and re-embedded from scratch, they produce
+> **byte-identical chunk files** and **max |diff| = 0.0000** across all twelve metric × config
+> values — so the harness reproduces, and the six-endpoint fleet is reproducible enough not to
+> be a confound.
+
+### What resolved
+
+**Overlap has no measurable benefit at any size** — recorded in full under *"Overlap belongs
+in the grid"* above, because that is where the burden of proof was set. Main effect −0.0210
+(power floor 0.046, bar 0.05); recall@100 |Δ| ≤ 0.0033 at every rung; cost up to 1.32× the
+vectors. **This is the run's largest actionable result.**
+
+**The interaction's slope form is a genuinely tight null: +0.0101, CI [−0.022, +0.044]**
+(power floor 0.056) — that is the *overlap effect per size doubling*, not a size main effect.
+So the honest statement is *"we cannot resolve the interaction as posed, but the overlap
+effect is small everywhere and its dependence on size is small"* — and the first half of that
+sentence is the methodological finding recorded under *"Why staged"* above.
+
+**Nothing else in the pre-registered family resolved.** One contrast came close and is flagged
+rather than buried: **`sentence_tok512` beats `fixed_tok512` by +0.0606**, CI [+0.0138,
++0.1072], 7/10 topics — it clears every criterion except Holm across the family of nine
+(adjusted p = 0.097). Treat it as the grid's most promising signal and the obvious thing for
+stage 2 to power properly. It is not an established result.
+
+**The pre-registered predictions, scored.** P3 — that step 3's non-monotone 256-vs-512
+reversal would dissolve into noise once averaged over the overlap axis — **holds exactly**
+(+0.0238, CI [−0.041, +0.090]) and is the one clean pre-registered success. P2, the size
+effect, is **falsified on nDCG@10** (+0.0904, CI spans zero) but **holds on recall@100**
+(+0.0432, CI [+0.0151, +0.0764]). P5 holds: overlap engages on this corpus, which is what
+makes the contrast valid here and would have made it void on scifact.
+
+### What predicts the grid, and it is not what the grid is parameterised by
+
+> **Exploratory — NOT pre-registered**, no Holm protection. These correlations are across 24
+> *config means* that all share the same 10 topics, so they are not independent observations
+> and no inferential claim rests on them. Read it as a description of the grid's shape and a
+> hypothesis for stage 2 to pre-register, held to a lower standard than the section above.
+
+| predictor | corr with nDCG@10 | corr with recall@100 |
+|---|---:|---:|
+| log2 **nominal** size | +0.654 | — |
+| log2 **realised median chunk tokens** | **+0.811** | **+0.891** |
+
+**Once you know how many tokens land in a chunk, the chunking *method* adds almost nothing.**
+Residual by kind against the realised-size fit spans 0.054 — about the noise floor — from
+`sentence` at +0.0251 to `semantic` at −0.0287. `words_tok2048` places well not because word
+packing is clever but because its 0.64 fill makes it a ~1,307-token config; `semantic` places
+badly because it emits ~350-token blocks whatever its cap says.
+
+This is the *"nominal size is not realised size"* section above arriving as a result rather
+than a caveat. Two recommendations follow for stage 2: **parameterise the grid by realised
+tokens, or at minimum report against them**, and read no kind-vs-kind row that has not
+controlled for realised size.
+
+### Reranking reorders the grid
+
+`bge-reranker-v2-m3` over the top-100 of each config, 48,000 pairs. The spread barely shrinks
+(dense 0.224 → reranked 0.205), but **the rank correlation across the 24 configs is only
+r = +0.553.** The configs that gain most are the ones that did worst dense (`fixed_tok512`
++0.088, `fixed_tok256_ov25pct` +0.085); the best lose (`fixed_tok1024_ov0pct` −0.096,
+`words_tok2048` −0.078).
+
+**A config chosen on dense nDCG is not necessarily the config that wins after reranking, and
+the production pipeline reranks.** This is the strongest form yet of the argument in *"The
+reranker: measure with it and without it"* below: it is not a robustness check, it is a
+different ranking. **Anything that will ship behind a reranker must be evaluated behind one.**
+Step 3's label still applies — reranked numbers rank arms, they do not grade the product; the
+cross-encoder often *lowers* absolute nDCG against the SFR dense ordering on this clinical set.
+
+### The cost model held, and one part of it was wrong by ~3.5×
+
+| leg | tokens | wall | achieved | requests | retries |
+|---|---:|---:|---:|---:|---:|
+| chunk embedding, 24 configs | **744 M** | 76.8 min | **161k tok/s** | 130,091 | **0** |
+| semantic breakpoint pass | 225 M actual (**567 M notional**) | 17.7 min | 212k tok/s | 56,556 | **0** |
+| **total fleet** | **968 M actual / 1,311 M notional** | **94.4 min = 1.57 h** | 171k tok/s | 186,647 | **0** |
+
+**The ~164k tok/s model holds**: the chunk-embed leg came in at **161k, 98% of model**, with
+zero retries across 130,091 requests. The other two rates are not comparable to it and should
+not be quoted as confirmations — the breakpoint pass runs on ~272-token buffers and is
+request-bound rather than token-bound, so it is faster per token precisely because its
+sequences are short. Per-config rate also falls with chunk size, as a request becomes
+item-bound rather than token-bound.
+
+**The semantic cost model in this plan was wrong by ~3.5×.** It assumed semantic "embeds the
+text twice — roughly double cost". `semantic` runs `pool_sentences=False`, so breakpoint
+detection embeds **one overlapping seven-sentence buffer per sentence**: ~6× the corpus, *on
+top of* the config's own chunk embedding. **Budget semantic at ~7× a `token_window` config of
+the same nominal size, and project from notional, not actual** — an identical-text cache saved
+60.4% across the four semantic cells only because they ran consecutively and their buffers are
+identical except where the token cap bites (99.6% hit at 1024, 45.6% at 256). A semantic cell
+run alone pays the full 6×.
+
+Combined with the quality reading, semantic holds the worst cost/benefit position in the grid:
+**worst-scoring kind** on this leg (mean 0.4630, ranking 16/18/20/24 of 24), **~7× the
+embedding cost**, and a **3.4× larger index** (14.3 chunks/doc vs `token_window`'s 4.2 at
+2048). It is the first place to cut if GPU budget forces one — and per the read-this-first
+block, still not on Leg A alone.
+
+*(One structural note for anyone re-running it: 12 of 4,053 documents exceeded
+`max_breakpoint_sentences = 3000` and were chunked by the `fixed_token` fallback **inside**
+the semantic arm, so those documents are not semantically chunked in any semantic row.)*
+
+### The uncomfortable observation, and why it is not yet actionable
+
+**The shipping default `fixed_tok512` ranks 21 of 24** on this leg (nDCG@10 0.4631, against
+`sentence_tok2048`'s 0.6289 at the top). That is a real observation and it should not be
+hidden. It is also, on its own, not a reason to change anything:
+
+- **n = 10**, and the noise floor is ~0.12 nDCG@10 — wider than the gap to most of the rows
+  above it.
+- **One leg**, and that leg's measured bias points toward the coarse configs that beat it.
+- **The ranking is descriptive.** Nothing in it survived Holm; the top five span 0.629–0.600.
+- **It gains the most from reranking of any config in the grid** (+0.088), and the production
+  pipeline reranks.
+
+The right response is the one this plan already specifies: carry it into stage 2 as the
+shipping control regardless of where it places, and give `sentence_tok512` — the one contrast
+that nearly resolved — enough power to settle.
+
+### Recommendations this run makes to stage 2
+
+1. **Make the slope form the primary interaction contrast**, not the extremes DiD. Same data,
+   4× the resolution.
+2. **Report against realised tokens**, not nominal size alone.
+3. **Evaluate behind the reranker.** Dense and reranked rankings correlate only +0.55.
+4. **Budget semantic at ~7×.**
+5. **Drop the overlap axis only after Legs B/C.** If they agree, 0% overlap is a free
+   `1/(1−f)` saving on every index for the product's lifetime.
+6. **Power.** At n = 10 the floor is ~0.12 nDCG@10; Leg A at its full 90 topics gives ~0.04,
+   which is where most of these contrasts live. **The full leg is worth running — this pilot
+   was never going to resolve them.**
 
 ---
 
@@ -562,12 +804,12 @@ unreported figure was **748× the chunking cost** and an **8.33 → 7.11 rerank-
 
 Without this the output is a table nobody acts on.
 
-| decision | the config that settles it | what would change it |
-|---|---|---|
-| chunk size for the OA load | `fixed_tok512` vs `fixed_tok1024/0` | if 1024/0 loses ≤0.01 nDCG for ~2× fewer chunks, take it — that is 0.25 TB |
-| build the structure-aware chunker? | `structure_tok512` vs `fixed_tok512` | build it only if **reranked recall/MRR** improves at comparable chunks/doc — mean score alone is a diagnostic, not a result |
-| keep the 64-token overlap? | `fixed_tok512/64` vs `/0` | drop it unless it earns >0.01 recall@5; it costs 12.5% of the index |
-| revisit semantic? | `semantic_tok512_capped` | only if it wins on **reranked** metrics with its cap policy declared. Its current 0.004 reranked gap is inside noise on a proxy that flatters lead chunks — neither a win nor a loss |
+| decision | the config that settles it | what would change it | status 2026-09-04 |
+|---|---|---|---|
+| chunk size for the OA load | `fixed_tok512` vs `fixed_tok1024/0` | if 1024/0 loses ≤0.01 nDCG for ~2× fewer chunks, take it — that is 0.25 TB | **BLOCKED — the two legs disagree** on the size axis with non-overlapping intervals, and each direction is predicted by its own leg's query construction. Also, **the ≤0.01 rule is dead as a hypothesis test**: at the measured σ_d it needs ~4,700–5,700 queries. Re-register as TOST at 0.02 and answer the size question *conditioned on query target* |
+| build the structure-aware chunker? | `structure_tok512` vs `fixed_tok512` | build it only if **reranked recall/MRR** improves at comparable chunks/doc — mean score alone is a diagnostic, not a result | **unchanged — the packer does not exist yet.** `words` still stands in. The nearest evidence is `sentence_tok512` − `fixed_tok512` = **+0.0606**, CI excluding zero, 7/10 topics, but **not surviving Holm** (adj. p = 0.097): promising, unproven, and the obvious thing to power properly |
+| keep the 64-token overlap? | `fixed_tok512/64` vs `/0` | drop it unless it earns >0.01 recall@5; it costs 12.5% of the index | **it does not earn it on Leg A** — negative on nDCG at all four rungs, recall@100 \|Δ\| ≤ 0.0033, adequately powered. **Pending Leg B**, which has not tested overlap. This is the closest thing the study has to a decidable row |
+| revisit semantic? | `semantic_tok512_capped` | only if it wins on **reranked** metrics with its cap policy declared. Its current 0.004 reranked gap is inside noise on a proxy that flatters lead chunks — neither a win nor a loss | **it does not win** — worst-scoring kind on Leg A (ranks 16/18/20/24), **~7×** the embedding cost, **3.4×** the index. Cut it on cost-effectiveness if budget forces a cut; per the circularity discipline, not on Leg A's quality reading alone |
 
 **Prediction on record:** structure-aware chunking improves **reranked** recall/MRR at
 similar chunk counts, because less irrelevant text rides along in each chunk. If only the
@@ -583,3 +825,35 @@ particular needs a leg whose evidence sits deep by construction (Legs B and C of
 [long-doc-judged-set.md](long-doc-judged-set.md)) to contradict it, or it is the bias being
 reported as a finding. Concordance across legs is the standard; a disagreement is a finding
 to investigate, not to average away.
+
+**Amended the same day — the leg that was supposed to contradict it did, and that is now the
+study's gating problem, not its resolution.** Leg B ran at n = 260, and on recall@100 — the
+one contrast where *both* legs resolve — the signs are opposite and the intervals do not
+overlap: **Leg A +0.043 [+0.015, +0.076] for coarse, Leg B −0.035 (t = −3.05) for fine.**
+
+Read the two carefully before quoting them. On nDCG@10 only Leg B resolves (−0.041,
+t = −3.63); Leg A's point estimate there is the *larger* one (+0.090) and simply cannot
+exclude zero at 10 topics — **that row is a Leg B result and a Leg A non-result, not a
+head-to-head.** And Leg A's recall@100 figure is the *overlap-averaged* size main effect from
+the stage-1 family rather than the literal `/0` pair Leg B measured; the literal `/0` cells
+read **+0.0442** as a point estimate in the same direction, with no published CI.
+
+**Neither direction is clean.** Leg A's judgments are document-level and topical, so aboutness
+is declared in title+abstract and coarse configs are favoured. Leg B anchors a rare entity in
+one deep section and scores by max-rollup over chunks, so a small chunk carrying that entity is
+exactly what the scoring rewards. **Each leg is constructed to favour the direction it
+reports**, which means:
+
+> **No config may be pruned on either leg's direction** until the study declares which query
+> population it optimises for. The circularity rule in
+> [long-doc-judged-set.md § 7](long-doc-judged-set.md) stops a *chunker* grading its own
+> homework; it had no clause for a *query construction* doing the same, and that clause has
+> now been written into it on the strength of this disagreement.
+
+**The plan of record, in consequence** (§ *Staged* above carries the cost): do **not** prune to
+~4 configs. Keep the **size** axis intact and report recommendations *conditioned on query
+target*; cut only on **uncontested axes** — overlap, if Leg B confirms the null — and on
+**cost-effectiveness** — semantic. That is ~6× the stage-2 budget and it costs power under
+Holm, and both are preferable to recording a construction bias as a finding. **Leg C is the
+tiebreak**: human-authored queries, no LLM, a third bias profile, and it has not been run
+against the grid. That is the highest-value unrun measurement in the study.
