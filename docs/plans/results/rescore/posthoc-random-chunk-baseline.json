@@ -1,0 +1,119 @@
+{
+ "fixed_tok256_ov0pct": {
+  "random_chunk_PH@1": 0.16332024261443806,
+  "random_chunk_cov": 0.031105443132636572,
+  "mean_chunk_tokens": 251.95181259615651,
+  "chunks_per_gold_doc": 39.41538461538462,
+  "observed_PH@1_N1": 0.5692307692307692,
+  "lift_over_random": 0.40591052661633115,
+  "lift_ratio": 3.4853656847338486
+ },
+ "fixed_tok512_ov0pct": {
+  "random_chunk_PH@1": 0.1891036883345999,
+  "random_chunk_cov": 0.06131404950764101,
+  "mean_chunk_tokens": 496.9599956334668,
+  "chunks_per_gold_doc": 19.91923076923077,
+  "observed_PH@1_N1": 0.6307692307692307,
+  "lift_over_random": 0.44166554243463085,
+  "lift_ratio": 3.3355733900501625
+ },
+ "fixed_tok1024_ov0pct": {
+  "random_chunk_PH@1": 0.2413245922611293,
+  "random_chunk_cov": 0.11817221599625231,
+  "mean_chunk_tokens": 966.451053393121,
+  "chunks_per_gold_doc": 10.196153846153846,
+  "observed_PH@1_N1": 0.55,
+  "lift_over_random": 0.30867540773887076,
+  "lift_ratio": 2.2790880732323515
+ },
+ "fixed_tok2048_ov0pct": {
+  "random_chunk_PH@1": 0.3486345454445002,
+  "random_chunk_cov": 0.22264928070923545,
+  "mean_chunk_tokens": 1832.886993538136,
+  "chunks_per_gold_doc": 5.357692307692307,
+  "observed_PH@1_N1": 0.6461538461538462,
+  "lift_over_random": 0.297519300709346,
+  "lift_ratio": 1.8533844525648382
+ },
+ "fixed_tok256_ov12_5pct": {
+  "random_chunk_PH@1": 0.16384902779260083,
+  "random_chunk_cov": 0.031243798664283663,
+  "mean_chunk_tokens": 252.7581122155556,
+  "chunks_per_gold_doc": 44.86538461538461,
+  "observed_PH@1_N1": 0.6153846153846154,
+  "lift_over_random": 0.4515355875920146,
+  "lift_ratio": 3.755802665875844
+ },
+ "fixed_tok256_ov25pct": {
+  "random_chunk_PH@1": 0.16378956816175427,
+  "random_chunk_cov": 0.03153693675615578,
+  "mean_chunk_tokens": 253.7931223231675,
+  "chunks_per_gold_doc": 52.09230769230769,
+  "observed_PH@1_N1": 0.6115384615384616,
+  "lift_over_random": 0.4477488933767073,
+  "lift_ratio": 3.733683826155047
+ },
+ "fixed_tok512": {
+  "random_chunk_PH@1": 0.19219422413426782,
+  "random_chunk_cov": 0.061703531431783205,
+  "mean_chunk_tokens": 499.8139943131086,
+  "chunks_per_gold_doc": 22.546153846153846,
+  "observed_PH@1_N1": 0.5615384615384615,
+  "lift_over_random": 0.36934423740419375,
+  "lift_ratio": 2.9217239179163266
+ },
+ "fixed_tok512_ov25pct": {
+  "random_chunk_PH@1": 0.1930379802562187,
+  "random_chunk_cov": 0.06324603676918228,
+  "mean_chunk_tokens": 503.27385660578943,
+  "chunks_per_gold_doc": 26.057692307692307,
+  "observed_PH@1_N1": 0.5884615384615385,
+  "lift_over_random": 0.39542355820531977,
+  "lift_ratio": 3.0484236194373526
+ },
+ "fixed_tok1024_ov12_5pct": {
+  "random_chunk_PH@1": 0.2417231396885751,
+  "random_chunk_cov": 0.11962985473658269,
+  "mean_chunk_tokens": 978.4469880589143,
+  "chunks_per_gold_doc": 11.423076923076923,
+  "observed_PH@1_N1": 0.55,
+  "lift_over_random": 0.308276860311425,
+  "lift_ratio": 2.275330366420834
+ },
+ "fixed_tok1024_ov25pct": {
+  "random_chunk_PH@1": 0.2453806881803774,
+  "random_chunk_cov": 0.12318822341046076,
+  "mean_chunk_tokens": 988.0011331336102,
+  "chunks_per_gold_doc": 13.115384615384615,
+  "observed_PH@1_N1": 0.5807692307692308,
+  "lift_over_random": 0.3353885425888534,
+  "lift_ratio": 2.3668090389505796
+ },
+ "fixed_tok2048_ov12_5pct": {
+  "random_chunk_PH@1": 0.34960608043309155,
+  "random_chunk_cov": 0.23181566794447042,
+  "mean_chunk_tokens": 1876.411430950516,
+  "chunks_per_gold_doc": 5.892307692307693,
+  "observed_PH@1_N1": 0.6423076923076924,
+  "lift_over_random": 0.2927016118746008,
+  "lift_ratio": 1.837232611950005
+ },
+ "fixed_tok2048_ov25pct": {
+  "random_chunk_PH@1": 0.3624427717738882,
+  "random_chunk_cov": 0.24211278258613103,
+  "mean_chunk_tokens": 1905.0416700420938,
+  "chunks_per_gold_doc": 6.665384615384616,
+  "observed_PH@1_N1": 0.5961538461538461,
+  "lift_over_random": 0.23371107437995797,
+  "lift_ratio": 1.644822003860405
+ },
+ "whole4096": {
+  "random_chunk_PH@1": 0.4307692307692308,
+  "random_chunk_cov": 0.36074657717783504,
+  "mean_chunk_tokens": 4031.4846153846156,
+  "chunks_per_gold_doc": 1.0,
+  "observed_PH@1_N1": 0.4307692307692308,
+  "lift_over_random": 0.0,
+  "lift_ratio": 1.0
+ }
+}
