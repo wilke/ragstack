@@ -520,9 +520,9 @@ The ranking of the options does not change; the absolute hours are a floor.
 *Run 2026-09-04 against a pre-registration written before any embedding call, on the option
 this plan named above: a genuinely long-document corpus rather than scifact. Corpus = the
 10-topic / 4,053-document TREC CDS pilot. Full report:
-[`results/RESULTS-stage1-legA.md`](results/RESULTS-stage1-legA.md); pre-registration:
-[`results/PREREG-stage1.md`](results/PREREG-stage1.md); generated tables:
-[`results/tables-stage1-legA.md`](results/tables-stage1-legA.md).*
+[`results/stage1/RESULTS-stage1-legA.md`](results/stage1/RESULTS-stage1-legA.md);
+pre-registration: [`results/stage1/PREREG-stage1.md`](results/stage1/PREREG-stage1.md);
+generated tables: [`results/stage1/tables.md`](results/stage1/tables.md).*
 
 > **This run prunes nothing, and the reason is not caution.** Leg A has a *measured* bias —
 > CDS relevance is document-level and topical, so the leg rewards coarse, aboutness-carrying
