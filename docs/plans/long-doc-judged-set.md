@@ -742,6 +742,12 @@ Items 1–4 stand; item 5 is partly discharged and two new ones join it.
    table).
 8. **THE GATING ONE — declare which query population the study optimises for**, or accept
    that the chunk-size axis produces two conditional recommendations rather than one answer.
+   **Declared 2026-09-06** — pointed, evidence-seeking questions from research agents; see
+   [`results/design/SPEC-confirmation-run-r3.md`](results/design/SPEC-confirmation-run-r3.md) §1.
+   That closes *this* item — the declaration. It does **not** by itself close §14.5's
+   prune-gate: the confirmation run's queries are still Leg A's clinical narratives, and the
+   "pointed" property is carried by its evidence-containment endpoint as a stated proxy
+   (r3 §1.1). Pruning on the size axis waits on r3 §10 item 1.
    Legs A and B contradict each other on it with non-overlapping intervals and both
    directions are construction-predicted (§14.5). Everything downstream of "which configs
    survive to stage 2" waits on this. The current plan of record — keep the size axis intact,

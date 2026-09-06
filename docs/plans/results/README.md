@@ -269,7 +269,13 @@ one ships **its full harness** (`stage0/s0_*.py`, `run_0b.sh`) and every artifac
 are quoted from. The pre-registration it was run against is
 [`design/SPEC-confirmation-run.md`](design/SPEC-confirmation-run.md) and the labeling rubric
 is [`design/RUBRIC-evidence.md`](design/RUBRIC-evidence.md), frozen and hashed before the
-first labeling call.
+first labeling call. **The response to Stage 0's verdict is
+[`design/SPEC-confirmation-run-r3.md`](design/SPEC-confirmation-run-r3.md)** (2026-09-06):
+it records the query-population decision, splits the endpoint into reach and containment,
+raises the budget to 16k, makes the harness hybrid with the three retrieval modes
+separable, adds neighbour-delivery arms, and changes the labeling protocol. Its §5 step 2 ran the same day and stopped —
+neither judge passed the machine gates (`stage0/RESULTS-stage0b-relabel.md`, #501); the
+next steps are r3 §10's decisions, then the human read, then Stage 0b′.
 
 Everything above this line measured chunking with *document* metrics on judged sets. The
 **confirmation run** was the pre-registered study built to replace them: 90 TREC CDS topics
