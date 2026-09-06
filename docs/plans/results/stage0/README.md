@@ -95,6 +95,16 @@ repository**: the rubric's sha256 is `2e11f368…c747363b` as stated, and the co
 `b15f059f…4666a8cbf` recomputes from the 32,663 `(pmcid, sha256)` pairs in
 `artifacts/manifest.json` under the convention that file records.
 
+The four prose documents were also confirmed **byte-identical to the run's own copies**, which
+is the convention [`../README.md`](../README.md) states for this whole tree:
+
+| file | sha256 |
+|---|---|
+| `RESULTS-stage0-calibration.md` | `d41c62d53a6d8321…` |
+| `TABLE-8.5.7.md` | `a1cc38135c4d3665…` |
+| `../design/SPEC-confirmation-run.md` | `b2a7cb30b7c66bc3…` |
+| `../design/RUBRIC-evidence.md` | `2e11f3688de916da…` |
+
 ### Where the write-up's own paths point
 
 `RESULTS-stage0-calibration.md` is committed **verbatim**, so its § 7 reproduction table names
