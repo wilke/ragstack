@@ -25,6 +25,9 @@ writes.*
 
 ## 1. Answers, in one place
 
+*Every row below is measured on **n = 10 topics** (the CDS pilot, 4,053 judged documents).
+The 90-topic figure belongs to the §7a oracle run in `../pilots/`, not to this grid.*
+
 | question | answer |
 |---|---|
 | **Does overlap's effect depend on chunk size?** | **No detectable interaction.** `I = E(256) − E(2048) = −0.0409`, CI [−0.173, +0.079], 5/5 signs, Holm p = 1.00. The slope form is a tighter null: **+0.0101 per doubling**, CI [−0.022, +0.044]. |
@@ -101,7 +104,7 @@ of the rows above it — see §6 before doing anything with it.
 
 ## 4. The primary question: no interaction, and the instrument could not have found one
 
-### 4.1 The size × overlap panel (`token_window`, nDCG@10)
+### 4.1 The size × overlap panel (`token_window`, nDCG@10, means over 10 topics)
 
 | size | 0% | 12.5% | 25% | `E(s)` = 25% − 0% | recall@100 `E(s)` |
 |---:|---:|---:|---:|---:|---:|
@@ -112,7 +115,7 @@ of the rows above it — see §6 before doing anything with it.
 
 ### 4.2 The pre-registered family, Holm-corrected
 
-nDCG@10, grade ≥ 1, summary, dense. Bar X: |mean| ≥ 0.05 **and** CI excludes 0 **and** ≥ 7/10
+nDCG@10, grade ≥ 1, summary, dense, **n = 10 topics**. Bar X: |mean| ≥ 0.05 **and** CI excludes 0 **and** ≥ 7/10
 signs **and** survives Holm across these 9.
 
 | contrast | mean | 95% CI | w/l | p | Holm p | resolved? |

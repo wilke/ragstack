@@ -12,7 +12,8 @@ reversal live in [long-doc-judged-set.md](long-doc-judged-set.md) § 13; this do
 the grid, the cost model and the decision table, corrected where Phase 0 contradicted them.
 
 **Update 2026-09-04 — stage 1 has run.** All 24 configs, on the CDS pilot rather than on
-scifact, against a pre-registration written before any embedding call: **968 M tokens
+scifact — **n = 10 topics**, 4,053 judged documents; not the 90-topic set the §7a oracle
+ran over — against a pre-registration written before any embedding call: **968 M tokens
 embedded in 94 minutes, 0 retries in 186,647 requests.** [§ Stage 1, run](#stage-1-run-what-24-configs-on-a-long-document-corpus-actually-said)
 records what it found. Three things change this plan materially:
 
@@ -902,7 +903,8 @@ to investigate, not to average away.
 **Amended the same day — the leg that was supposed to contradict it did, and that is now the
 study's gating problem, not its resolution.** Leg B ran at n = 260, and on recall@100 — the
 one contrast where *both* legs resolve — the signs are opposite and the intervals do not
-overlap: **Leg A +0.043 [+0.015, +0.076] for coarse, Leg B −0.035 (t = −3.05) for fine.**
+overlap: **Leg A +0.043 [+0.015, +0.076] for coarse, Leg B −0.035 (t = −3.05) for fine**
+(Leg A: n = 10 topics; Leg B: n = 260 queries).
 
 Read the two carefully before quoting them. On nDCG@10 only Leg B resolves (−0.041,
 t = −3.63); Leg A's point estimate there is the *larger* one (+0.090) and simply cannot
@@ -956,8 +958,9 @@ budget-matched *recall* (`R_B@4096`) has `tok1024` in front and **nothing resolv
 budget-matched reading beside the fixed-`k` one, and say which of the two a recommendation
 rests on.
 
-**And `k` is not a free parameter to leave at 10.** On the harder leg — Leg A, oracle-derived
-gold inside topically-judged documents — `k = 20` retrieves only **21–32%** of the gold
+**And `k` is not a free parameter to leave at 10.** On the harder leg — Leg A, gold derived by the
+§7a oracle (which is the production reranker, `bge-reranker-v2-m3`) inside topically-judged
+documents — `k = 20` retrieves only **21–32%** of the gold
 passages and the curve is still climbing (`k*`, the smallest `k` reaching 90% of the `k = 20`
 value, is **20 at every rung**). On the easier leg, `PH@10 ≈ 0.97–0.99` and `k = 20` is free.
 Any `k` quoted in a decision table must name which difficulty regime it was chosen under.

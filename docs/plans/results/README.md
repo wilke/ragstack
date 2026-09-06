@@ -115,7 +115,9 @@ whole-document control; and reranked numbers rank arms, they do not grade the pr
 known — it is where the power-floor arithmetic was first stated),
 [`report1.json`](stage1/report1.json).
 
-968M tokens, 94 minutes, 0 retries, 0 store writes.
+968M tokens, 94 minutes, 0 retries, 0 store writes. **n = 10 topics** — the CDS pilot
+(4,053 judged documents), not the 90-topic set the §7a oracle ran over. Every number in this
+section is a mean over those ten.
 
 **Overlap buys nothing at any size.** 12.5% − 0% = **−0.0210**, CI [−0.047, +0.007], with
 δ80 = 0.046 below the 0.05 bar — a powered null. On recall@100 the effect is ≤0.0033 in
@@ -166,7 +168,9 @@ under a rule tightened *after* seeing the data — in the conservative direction
 **Check 2 finally has a number, on all 90 CDS topics, and it passes with room.** **55.4%** of
 judged pairs have their best-supporting section starting past token 1,024 (bar ≥40%,
 topic-clustered CI 53.0–58.4); **11.9%** in abstract+intro (bar ≤35%). 2,161 pairs, 2,095
-documents.
+documents. **The oracle is `bge-reranker-v2-m3`, the same cross-encoder the production
+pipeline reranks with** — so this is a statement about what that model can find, not an
+independent ground truth, and it is not independent of the reranked arms in stage 1.
 
 **Leg C's resolvability expectation is falsified.** Resolving via pmid + pmcid + doi gives
 **11.86%** — the union over all three keys is 6,767 pairs against pmid alone at 6,759. Eight

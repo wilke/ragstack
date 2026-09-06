@@ -1,3 +1,6 @@
+*Hand-added preamble, 2026-09-06: every table in this file is computed over **n = 10 topics**
+(the CDS pilot). Only Table 1's caption says so; the others inherit it.*
+
 ### Table 1 — the 24-config grid (summary queries, grade >= 1, dense, means over 10 topics)
 
 `fill` = median realised tokens / nominal size. `c/doc` = chunks per document. Ordered by nDCG@10. **Descriptive: neighbouring rows differ by less than the noise floor and are not ordered claims.**

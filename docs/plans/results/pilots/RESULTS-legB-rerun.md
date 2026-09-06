@@ -369,7 +369,10 @@ by the relative-depth rule. The absolute rule removes that failure mode entirely
 
 ### 5.2 The construction cross-check (crossencoder oracle vs the recorded source section)
 
-396 (query, source-document) pairs, 3,248 window-pairs, 50 s. If the construction is sound
+396 (query, source-document) pairs, 3,248 window-pairs, 50 s. The oracle is
+`bge-reranker-v2-m3` on `:50052` — the same cross-encoder the production pipeline reranks
+with — so "argmax" below means where *that model* finds the best support, and the check is
+not independent of any reranked retrieval result. If the construction is sound
 the argmax should land on the section the query was generated from.
 
 | set | n | argmax **==** source | within ±1 | argmax past tok 1,024 | argmax = lead unit |
@@ -539,7 +542,7 @@ the distance it must travel is a **non-result**, and is written as one.
 | # | statement | measured | bar / comparator | δ80 | distance | reachable? |
 |---|---|---:|---:|---:|---:|---|
 | 1 | Leg B yield vs a nominal 50% floor | **65.0%** (260/400) | 50% | 6.7% | 15.0% | **YES** |
-| 2 | accepted: oracle argmax past tok 1,024 (check 2) | **87.7%** (228/260) | ≥40% | 5.7% | 47.7% | **YES** |
+| 2 | accepted: oracle (= production reranker) argmax past tok 1,024 (check 2) | **87.7%** (228/260) | ≥40% | 5.7% | 47.7% | **YES** |
 | 3 | accepted: oracle argmax in abstract+intro (check 2) | **11.5%** (30/260) | ≤35% | 5.6% | 23.5% | **YES** |
 | 4 | median query length, round 1 → round 2 | 30.8 → **12.1 words** | — | 2.65 w | 18.7 w | **YES** |
 | 5 | compound queries among accepted, round 1 → 2 | 64.3% → **0.0%** | — | 20.7% | 64.3% | **YES** |
