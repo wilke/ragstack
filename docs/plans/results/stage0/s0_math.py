@@ -255,6 +255,77 @@ def wilson(k: int, n: int, conf: float = 0.95, one_sided: bool = False):
     return (max(0.0, c - h), min(1.0, c + h))
 
 
+# ------------------------------------------------------------- Cohen's kappa
+def kappa_from_confusion(cm) -> float:
+    """Cohen's kappa from a square confusion matrix (rater A rows, rater B cols).
+
+    kappa = (po - pe) / (1 - pe) with pe the product of the two raters' MARGINALS --
+    the chance correction is the whole point of the statistic: on skewed marginals a
+    raw agreement of 0.90 can be a kappa near 0, and SS6.6.4 gates on the corrected
+    number. ``test_s0_rdev_score.py`` proves that substituting ``po`` for kappa is
+    caught by the suite.
+
+    Degenerate resamples (every pair in one cell => pe == 1) are defined as kappa 1.0
+    when agreement is perfect, which it necessarily is in that case; the convention is
+    recorded rather than silently dropped.
+    """
+    cm = np.asarray(cm, dtype=float)
+    n = float(cm.sum())
+    if n <= 0:
+        return float("nan")
+    po = float(np.trace(cm)) / n
+    ra = cm.sum(axis=1) / n
+    rb = cm.sum(axis=0) / n
+    pe = float((ra * rb).sum())
+    if 1.0 - pe <= 1e-12:
+        return 1.0 if po >= 1.0 - 1e-12 else 0.0
+    return (po - pe) / (1.0 - pe)
+
+
+def confusion(a, b, k: int):
+    """k x k confusion matrix of two equal-length integer-coded label sequences."""
+    a = np.asarray(a, dtype=np.int64)
+    b = np.asarray(b, dtype=np.int64)
+    if a.shape != b.shape:
+        raise ValueError((a.shape, b.shape))
+    return np.bincount(a * k + b, minlength=k * k).reshape(k, k)
+
+
+def cohen_kappa(a, b, k: int) -> tuple[float, float, float]:
+    """(kappa, observed agreement po, expected agreement pe) for integer-coded labels."""
+    cm = confusion(a, b, k)
+    n = float(cm.sum())
+    if n <= 0:
+        return (float("nan"), float("nan"), float("nan"))
+    po = float(np.trace(cm)) / n
+    ra, rb = cm.sum(axis=1) / n, cm.sum(axis=0) / n
+    pe = float((ra * rb).sum())
+    return (kappa_from_confusion(cm), po, pe)
+
+
+def boot_kappa_ci(a, b, k: int, n_boot: int = 10000, seed: int = 20260917,
+                  conf: float = 0.95):
+    """Percentile bootstrap CI for Cohen's kappa, resampling PAIRS with replacement.
+
+    Pairs are the independent unit here (one verdict per reader per pair), so the
+    resample is over pairs and both readers' verdicts travel together.
+    """
+    a = np.asarray(a, dtype=np.int64)
+    b = np.asarray(b, dtype=np.int64)
+    n = a.size
+    if n == 0:
+        return (float("nan"), float("nan"), [])
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    ks = np.empty(n_boot, dtype=float)
+    for i in range(n_boot):
+        j = idx[i]
+        ks[i] = kappa_from_confusion(confusion(a[j], b[j], k))
+    lo = float(np.quantile(ks, (1 - conf) / 2))
+    hi = float(np.quantile(ks, 1 - (1 - conf) / 2))
+    return (lo, hi, ks)
+
+
 # -------------------------------------------------------------------- selftest
 def selftest() -> dict:
     out = {}
@@ -279,6 +350,19 @@ def selftest() -> dict:
     out["sigma_req_normal_approx"] = round(0.05 * math.sqrt(80) / 2.802, 4)
     out["sigma_req_exact_df79"] = round(sigma_for_power(80, 0.05), 4)
     assert abs(out["sigma_req_exact_df79"] - 0.158) < 0.0015, out["sigma_req_exact_df79"]
+    # Cohen (1960): confusion [[20,5],[10,15]] -> po=0.70, pe=0.50, kappa=0.40 exactly.
+    k40 = kappa_from_confusion([[20, 5], [10, 15]])
+    assert abs(k40 - 0.40) < 1e-12, k40
+    out["kappa_cohen_worked_example"] = round(k40, 6)
+    # the chance correction bites: 90% raw agreement on skewed marginals is NOT kappa 0.9
+    kskew = kappa_from_confusion([[90, 5], [5, 0]])
+    pe_skew = 0.95 * 0.95 + 0.05 * 0.05          # = 0.905
+    assert abs(kskew - (0.90 - pe_skew) / (1 - pe_skew)) < 1e-12, kskew
+    assert kskew < 0.0, kskew
+    out["kappa_skewed_marginals_po_0.90"] = round(kskew, 6)
+    # identical raters are kappa 1 whatever the marginals; all-one-cell is the degenerate 1.0
+    assert kappa_from_confusion([[97, 0], [0, 3]]) == 1.0
+    assert kappa_from_confusion([[100, 0], [0, 0]]) == 1.0
     out["ok"] = True
     return out
 
