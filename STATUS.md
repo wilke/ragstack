@@ -2,14 +2,26 @@
 
 Persistent status across sessions and machines. Read this first to pick up where the project left off.
 
-**Last updated:** 2026-08-27
+**Last updated:** 2026-09-06
 **Deployed:** all four tenants on [`v1.5.3`](https://github.com/wilke/ragstack/releases/tag/v1.5.3)
-(`b0fa27b`) — lucid-next 24000, asm-next 24020, dev 24040, demo 24060, behind the nginx
-gateway on `:9000` at `/ragstack/<tenant>/api/`. Their checkouts are
+(**`652be18`**) — lucid-next 24000, asm-next 24020, dev 24040, demo 24060, behind the nginx
+gateway on `:9000` at `/ragstack/<tenant>/api/`. All four verified `200` on `/health`,
+directly and through the gateway, on 2026-09-06. Their checkouts are
 `/rag/repos/tenants/<name>` and their data `/rag/data/tenants/<name>` — **note the data
 dirs drop the `-next` suffix**. `/rag/repos/ragstack` is a **frozen** pre-security
 checkout (`6d6fcf6`) that serves nothing; do not restart anything from it.
-**`main @ 31ad073`.**
+**`main @ 55a0fc2`, six commits ahead of the deployed tag** — of which only
+[#488](https://github.com/wilke/ragstack/pull/488) changes runtime behaviour (the
+word/sentence chunker fill default).
+
+> Two facts in this header were wrong until 2026-09-06: `v1.5.3` was recorded as `b0fa27b`
+> (it is `652be18`) and `main` as `31ad073`. Distrust either value if you see it quoted
+> elsewhere.
+
+📋 **Picking this up cold? Start with [HANDOFF-2026-09-06.md](HANDOFF-2026-09-06.md)** — the
+current-state snapshot: the open PR stack, the chunking study's stopped confirmation run, the
+one human task that is blocking, live infrastructure, and the failures this line of work
+already made. This file remains the long-form project history.
 
 <details><summary>Historical header (v0.15.0 era, kept for the release narrative below)</summary>
 
@@ -56,7 +68,8 @@ Each unit: multi-agent build (map→implement→adversarial verify→fix) + an i
 | [SPEC.md](SPEC.md) | Architectural north star — data models, milestones (M1–M8), planned endpoints. Authoritative for *intent*. |
 | [ROADMAP.md](ROADMAP.md) | **Unified plan** — milestones → workstreams → issues → **dependency graph** + recommended next sequence. Read when deciding *what to build next*. |
 | [docs/API.md](docs/API.md) | HTTP API reference — endpoints, auth/tenancy, the retrieval pipeline, metadata filtering, config. Grounded in `contracts/openapi.yaml`. |
-| [STATUS.md](STATUS.md) | **This file.** Current state, open TODOs, checkpoints, how to pick up. |
+| [HANDOFF-2026-09-06.md](HANDOFF-2026-09-06.md) | **Current-state snapshot.** Open PR stack, the chunking study's stopped confirmation run, blocking human task, verified live infrastructure, failures not to repeat. Read before this file when picking up cold. |
+| [STATUS.md](STATUS.md) | **This file.** Project history by milestone, open TODOs, checkpoints, how to pick up. |
 | [MEMORY.md](MEMORY.md) | Project rules, conventions, failures-and-fixes. Read before coding. |
 | [CLAUDE.md](CLAUDE.md) | Operating instructions for Claude Code in this repo (commands, layout, working notes). |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Current single-node deployment (what is actually provisioned today). |
