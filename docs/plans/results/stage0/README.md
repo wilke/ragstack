@@ -101,6 +101,8 @@ behaved. Two preconditions fail before power is reachable.
 | [`RESULTS-stage0b-relabel.md`](RESULTS-stage0b-relabel.md) | the **revision-3 relabel** — quote-primary protocol, two judges, the three machine gates per judge, the cross-judge agreement, the stop |
 | `s0_label_r3.py`, `s0_labelgates_r3.py` | the r3 harness. `s0_label_r3.py --selftest` checks the locator offline (in-unit snap, cross-unit split, hallucination, `<think>` stripping) and contacts no endpoint |
 | [`artifacts/r3/`](artifacts/r3/) | both judges' labels, the run manifest, `gates-r3.json` and the rendered gate table |
+| [`RESULTS-stage0b-pointed-gen.md`](RESULTS-stage0b-pointed-gen.md) | the **pointed-question population** (r3 §11, Stage 0b′) — 177 queries on the development topics with construction gold, at 44.2 % yield against the Leg B re-run's 65 %; generation and screens only, no retrieval |
+| `s0_pointed_gen.py`, [`artifacts/pointed/`](artifacts/pointed/) | that harness and its artifacts — the accepted and rejected sets, every raw generator response, and the run manifest |
 | [`../design/SPEC-confirmation-run.md`](../design/SPEC-confirmation-run.md) | the pre-registration Stage 0 was run against (rev. 2; § 14 is its change log) |
 | [`../design/RUBRIC-evidence.md`](../design/RUBRIC-evidence.md) | the labeling rubric, frozen and hashed before the first labeling call |
 
