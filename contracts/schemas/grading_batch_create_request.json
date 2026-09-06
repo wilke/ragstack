@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_batch_create_request.json",
+  "title": "GradingBatchCreateRequest",
+  "description": "Create a read with its tasks in one request (POST /v1/grading/batches; admin). The body carries the tasks inline — for the R-dev read, the importer (grading-ui.md phase 2) builds it from the committed package (`rdev_sample.json` + the labels file); the API does not read files. Everything is validated before anything is stored: a batch is created whole or not at all.\n\n`readers` take the share-grantee vocabulary MINUS the group forms: a value containing `:` is a full `issuer:subject` string kept verbatim; `@service:<subject>` names an API-key principal and keeps its subject colon-free (the form to use for a keyed reader — a bare name would be qualified to `bvbrc:<name>`, an identity the key never authenticates as, and the reader would 404 on their own batch); a bare BV-BRC username is prefixed to `bvbrc:<username>`. `@public` / `@group:<id>` are rejected (422): a read is assigned to people, and label order is a list of people. The resolved subjects are echoed back as `GradingBatch.readers` in the same order, so a typo is visible before a reader is told there is nothing to read.",
+  "type": "object",
+  "required": ["name", "kind", "rubric_sha256", "order_seed", "readers", "tasks"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["evidence-read", "pointed-read", "citation-feedback"]
+    },
+    "rubric_sha256": {
+      "description": "sha256 of the frozen rubric (64 lowercase hex).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "order_seed": {
+      "description": "Seed for the per-reader orders (see `GradingBatch`). Required, never defaulted: the study records its seeds before any pair is read.",
+      "type": "integer"
+    },
+    "readers": {
+      "description": "The readers in LABEL order (first = `A`). At least one; two for the SPEC §6.6.2 protocol. Duplicates after resolution are a 422.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 26,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "tasks": {
+      "description": "The tasks in BATCH order — the draw's order, which is the order the export's CSV rows use. `pair_id` MUST be unique within the batch (422).",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "grading_task_create.json" }
+    }
+  },
+  "additionalProperties": false
+}

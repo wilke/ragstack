@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_adjudication.json",
+  "title": "GradingAdjudication",
+  "description": "The joint-read verdict for one task (SPEC-confirmation-run.md §6.6.3): the verdict the study USES, recorded by an admin after the readers' independent rows are frozen. The readers' own rows are never modified by it — the pre-adjudication κ is the one reported, and it needs the originals. One current row per task; a re-save bumps `version`.",
+  "type": "object",
+  "required": [
+    "task_id",
+    "verdict",
+    "span_judgements",
+    "notes",
+    "adjudicated_by",
+    "version",
+    "saved_at"
+  ],
+  "properties": {
+    "task_id": { "type": "string" },
+    "verdict": {
+      "description": "The adjudicated pair-level verdict, same vocabulary as a reader's.",
+      "type": "string",
+      "enum": [
+        "correct",
+        "wrong-location",
+        "non-minimal",
+        "missed-evidence",
+        "correctly-none",
+        "ambiguous"
+      ]
+    },
+    "span_judgements": {
+      "description": "Adjudicated per-span judgements, same addressing as a reader's. Empty when not recorded.",
+      "type": "array",
+      "items": { "$ref": "grading_verdict.json#/$defs/GradingSpanJudgement" }
+    },
+    "notes": {
+      "description": "How the disagreement was resolved. Exported verbatim as the `_ADJ.csv` `notes` column.",
+      "type": "string"
+    },
+    "adjudicated_by": {
+      "description": "Subject of the admin who saved this version.",
+      "type": "string"
+    },
+    "version": {
+      "description": "1 on the first save for this task; +1 on every re-save.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "saved_at": {
+      "description": "ISO-8601 UTC timestamp of this version.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_adjudication_put_request.json",
+  "title": "GradingAdjudicationPutRequest",
+  "description": "Save or overwrite a task's joint-read verdict (PUT /v1/grading/tasks/{task_id}/adjudication; admin; the batch must be `adjudicating`). Whole-row replace.",
+  "type": "object",
+  "required": ["verdict"],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "correct",
+        "wrong-location",
+        "non-minimal",
+        "missed-evidence",
+        "correctly-none",
+        "ambiguous"
+      ]
+    },
+    "span_judgements": {
+      "description": "Every (`set`, `span`) MUST exist on the task (422). Default empty.",
+      "type": "array",
+      "items": { "$ref": "grading_verdict.json#/$defs/GradingSpanJudgement" }
+    },
+    "notes": {
+      "description": "Default empty string.",
+      "type": "string",
+      "maxLength": 10000
+    }
+  },
+  "additionalProperties": false
+}

@@ -22,3 +22,6 @@ asyncio_mode = "auto"
 # pytest-asyncio >=0.23 "Event loop is closed" crash from a session-scoped client.
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["."]
+markers = [
+    "grading: the grading resources (docs/plans/grading-ui.md); select alone with -k grading or -m grading",
+]

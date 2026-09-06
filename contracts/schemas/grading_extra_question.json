@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_extra_question.json",
+  "title": "GradingExtraQuestion",
+  "description": "An additional per-task question the reader answers beside the verdict — SPEC-confirmation-run-r3.md §11 guard 2's *does a delivered passage other than the construction passage answer the question?* on the pointed read. The answer travels in `GradingVerdict.extra_answers` keyed by `id`.",
+  "type": "object",
+  "required": ["id", "text", "answer_type"],
+  "properties": {
+    "id": {
+      "description": "Stable key for the answer; unique within the task.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "text": {
+      "description": "The question as shown to the reader.",
+      "type": "string",
+      "minLength": 1
+    },
+    "answer_type": {
+      "description": "`yes-no`: the answer MUST be the string `yes` or `no`. `text`: any string.",
+      "type": "string",
+      "enum": ["yes-no", "text"]
+    }
+  },
+  "additionalProperties": false
+}

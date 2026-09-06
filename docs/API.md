@@ -140,7 +140,7 @@ keys are configured.
 
 ## Endpoints
 
-All **49** operations in the contract. "Gate" is the authorization the route
+All **60** operations in the contract. "Gate" is the authorization the route
 applies on top of authentication; *authenticated* means any valid credential of
 either kind. Rows without a link are covered in [Operations &
 admin](#operations--admin).
@@ -166,6 +166,17 @@ admin](#operations--admin).
 | DELETE | [`/v1/groups/{id}`](#groups) | owner-or-admin (`public` not deletable) | Delete a group |
 | POST | [`/v1/groups/{id}/members`](#groups) | owner-or-admin | Add a member |
 | DELETE | [`/v1/groups/{id}/members/{subject}`](#groups) | owner-or-admin | Remove a member |
+| GET | [`/v1/grading/batches`](#grading) | authenticated (admin: all; else the batches naming the caller) | List grading batches — also the probe for whether grading is implemented |
+| POST | [`/v1/grading/batches`](#grading) | **admin** | Create a read with its tasks inline |
+| GET | [`/v1/grading/batches/{id}`](#grading) | admin-or-reader (else 404) | Batch status + per-reader progress counts (never verdicts) |
+| DELETE | [`/v1/grading/batches/{id}`](#grading) | **admin** (reader 403, else 404) | Delete a batch and everything under it |
+| GET | [`/v1/grading/batches/{id}/tasks`](#grading) | admin-or-reader (else 404) | The tasks in **the caller's own seeded order**, with the caller's own verdicts |
+| POST | [`/v1/grading/batches/{id}/adjudicate`](#grading) | **admin** (reader 403, else 404) | Freeze the readers' rows; open adjudication |
+| GET | [`/v1/grading/batches/{id}/export`](#grading) | **admin** (reader 403, else 404); batch not `open` | The scorer's CSVs + JSON, in one envelope |
+| GET | [`/v1/grading/tasks/{id}`](#grading) | admin-or-reader (else 404) | One task, with the caller's own verdict |
+| PUT | [`/v1/grading/tasks/{id}/verdict`](#grading) | reader (admin non-reader 403, else 404); batch `open` | Save/overwrite the caller's own verdict |
+| GET | [`/v1/grading/tasks/{id}/verdicts/{reader}`](#grading) | own row; any row for an admin once not `open`; else 404 | One reader's verdict row |
+| PUT | [`/v1/grading/tasks/{id}/adjudication`](#grading) | **admin** (reader 403, else 404); batch `adjudicating` | Save/overwrite the joint-read verdict |
 | POST | [`/v1/ingest`](#post-v1ingest) | authenticated; owner-or-admin on a named collection; **bearer** under `INGEST_BACKEND=gowe` | Ingest a path or Workspace reference (async job) |
 | POST | [`/v1/ingest/upload`](#post-v1ingestupload) | same as `/v1/ingest` | Upload files for ingestion (multipart, async job) |
 | GET | [`/v1/ingest/{job_id}`](#get-v1ingestjob_id) | authenticated | Poll ingest job status |
@@ -813,6 +824,107 @@ An outage of the authorization store is **503** (fail closed) on every route.
 Schemas: `contracts/schemas/group_record.json`, `group_member_record.json`,
 `group_create_request.json`, `group_member_add_request.json`,
 `groups_response.json`, `group_detail_response.json`.
+
+### Grading
+
+`/v1/grading/*` serves the study's **two-independent-reader label validation**
+(SPEC-confirmation-run.md §6.6; [docs/plans/grading-ui.md](plans/grading-ui.md))
+from RAGStack instead of a session artifact, so that reader independence is
+enforced by the server rather than by the honour system. **Contract only as of
+phase 1** — no implementation mounts these paths yet, and `conformance/
+test_grading.py` skips with *grading not implemented on this server* when
+`GET /v1/grading/batches` is a 404.
+
+Three resources. A **batch** is one read (the R-dev pilot, R-dev, R-conf, a
+pointed read): its `kind`, the frozen rubric's `rubric_sha256`, the `readers` in
+label order (index 0 is reader **A**), the `order_seed`, and a `status`
+(`open` → `adjudicating`; `closed` is reserved). A **task** is one (question,
+document, claimed evidence) triple: the question with its need `type`, the
+document **denormalised** as numbered units and sentences (so a read is
+reproducible against exactly what the reader saw), the `claims` — every
+labeler's evidence sets, unioned, each tagged by `sources`, addressed as
+(`set_index`, 1-based span position) — and any `extra_questions` (r3 §11's
+*does another passage answer it?*). A **verdict** is one reader's answer to one
+task: the six-way `verdict` (`correct` | `wrong-location` | `non-minimal` |
+`missed-evidence` | `correctly-none` | `ambiguous`, byte-for-byte what
+`s0_rdev_score.py` accepts), per-span `span_judgements` (`located` | `wrong` |
+`non-minimal`), `extra_answers`, `notes`, a monotonic `version` and `saved_at`.
+An **adjudication** is the joint-read verdict per task, saved by an admin once
+the readers' rows are frozen; the readers' rows are never modified by it.
+
+**Who is who.** *Admin* is the `admin` **role** — the principal `/v1/config` and
+`/v1/admin/*` admit. A batch has no owner: every admin administers every batch
+(`created_by` is audit, not authority). *Readers* are subjects; on create they
+take the share-grantee vocabulary minus the group forms (`issuer:subject`
+verbatim, `@service:<subject>` for a keyed principal, a bare name →
+`bvbrc:<name>`) and are echoed back resolved.
+
+**Independence, on the wire.**
+
+- A reader's task listing is in **that reader's own seeded order** — CPython's
+  `random.Random(order_seed + k + 1).shuffle` of batch order for the reader at
+  index `k`, the rule `s0_rdev.py` builds its read sheets with, so a read begun
+  on those sheets continues in the UI at the same position. Two readers get two
+  orders.
+- Every task carries the caller's **own** verdict or `null`, never another
+  reader's. `GET …/verdicts/{reader}` naming another reader is a **404** — the
+  same 404 as naming a subject who is not a reader — for readers always, and
+  for admins while the batch is `open`.
+- `PUT …/verdict` writes the **caller's** row only (the body has no reader
+  field); a re-save bumps `version`. After `POST …/adjudicate` the rows are
+  frozen (**409**), become visible to admins through `reader_verdicts` on the
+  task and `GET …/verdicts/{reader}`, and the adjudication and export unlock.
+- A batch the caller may not see — neither admin nor reader — is a **404**
+  everywhere under it, never a 403 (ADR-0003 §2). **403** is used only where the
+  caller can see the batch and lacks the role (a reader adjudicating, exporting
+  or deleting) or where there is nothing to hide (a non-admin creating).
+  Authorization is decided before state, so a reader's adjudicate is 403
+  whatever the status. **409** is always a *state* conflict.
+
+```bash
+# admin: create a read with its tasks inline (the importer builds the body from
+# the committed study package; the API reads no files)
+curl -s -X POST "$BASE"/v1/grading/batches -H 'X-API-Key: <admin>' \
+  -H 'Content-Type: application/json' \
+  -d @contracts/fixtures/grading/grading_batch_create_request.json   # -> 201 GradingBatch
+# reader: my tasks, in my order, with my verdicts
+curl -s "$BASE"/v1/grading/batches/<batch_id>/tasks -H 'X-API-Key: <reader-a>'
+curl -s -X PUT "$BASE"/v1/grading/tasks/<task_id>/verdict -H 'X-API-Key: <reader-a>' \
+  -H 'Content-Type: application/json' \
+  -d '{"verdict":"non-minimal","span_judgements":[{"set":1,"span":1,"judgement":"non-minimal"}],"notes":"…"}'
+# admin: freeze, adjudicate, export
+curl -s -X POST "$BASE"/v1/grading/batches/<batch_id>/adjudicate -H 'X-API-Key: <admin>'
+curl -s -X PUT "$BASE"/v1/grading/tasks/<task_id>/adjudication -H 'X-API-Key: <admin>' \
+  -H 'Content-Type: application/json' -d '{"verdict":"non-minimal","notes":"joint read"}'
+curl -s "$BASE"/v1/grading/batches/<batch_id>/export -H 'X-API-Key: <admin>' \
+  | python3 -c 'import json,sys; [open(c["filename"],"w").write(c["content"]) for c in json.load(sys.stdin)["csv"]]'
+python3 docs/plans/results/stage0/s0_rdev_score.py --a rdev_verdicts_A.csv --b rdev_verdicts_B.csv \
+  --adjudicated rdev_verdicts_ADJ.csv
+```
+
+**Export** (`GradingExportResponse`) is a JSON envelope — the contract has no
+file-download convention — carrying one `rdev_verdicts_<label>.csv` text per
+reader plus `rdev_verdicts_ADJ.csv`, each with the header `pair_id,verdict,notes`
+and **one row per task in batch order** (an unread task is a blank `verdict`
+cell, which the scorer reads as *not yet read*), plus the same rows as JSON with
+the span judgements and extra answers the CSV cannot carry. Refused with
+**409** while the batch is `open`. `DELETE /v1/grading/batches/{id}` (admin)
+removes a batch and everything under it — it exists so a harness can clean up
+and verify by listing, not as part of the read's protocol.
+
+Schemas: `contracts/schemas/grading_batch.json`,
+`grading_batch_create_request.json`, `grading_batches_response.json`,
+`grading_task.json`, `grading_task_create.json`, `grading_tasks_response.json`,
+`grading_question.json`, `grading_document.json`, `grading_evidence_set.json`,
+`grading_extra_question.json`, `grading_verdict.json`,
+`grading_verdict_put_request.json`, `grading_adjudication.json`,
+`grading_adjudication_put_request.json`, `grading_export_response.json`.
+Fixtures (a two-task batch — one positive with two evidence sets from two
+labelers, one *none* task — two readers, both verdicts, an adjudication and an
+export the scorer accepts): `contracts/fixtures/grading/`, validated by
+`conformance/test_grading_fixtures.py`, which also pins the OpenAPI components
+to the JSON schemas.
+
 
 ### Service accounts
 
@@ -1577,12 +1689,12 @@ request produced, and the `Reference:` a user reads off an error screen; see
 |---|---|
 | `200` | success — **including** graceful degradation (LLM/rewrite/rerank failure returns sources with a note) |
 | `202` | accepted for background work — ingest upload, collection restore, graph extraction |
-| `204` | deleted: a document, a share, a group, a group member, a service-account state change, an unregistered collection |
+| `204` | deleted: a document, a share, a group, a group member, a service-account state change, an unregistered collection, a grading batch |
 | `400` | a `filters` value outside the [supported grammar](#value-grammar-471) on `POST /v1/query` / `POST /v1/retrieve` (an object such as `{"gte": 2025}`, a float, `null`, a nested list, a boolean inside a list, a list mixing strings and integers, or a string for the integer field `year`); a malformed `?cursor=` on `GET /v1/documents` (generic on purpose — the supplied value is never reflected back); a `filters` key `GET /v1/chunks` refuses while `context_window > 0`; an invalid chunk config or a non-embedding model on `POST /v1/collections`; a `permission: owner` share; a group form (`@public`, `@group:`) as an ownership-transfer `subject`; a colon-free subject on `PATCH …/role`; both an API key and an `Authorization` credential in one request; a non-Workspace `source` under `INGEST_BACKEND=gowe`; a restore without a bearer credential |
 | `401` | missing, unknown or invalid credential; a disabled service account's key; or `POST /v1/collections/{id}/graph` reached with an API-key or keyless principal — the submission is made *as the user*, so there is no identity to submit with. Note the deliberate asymmetry with `POST /v1/collections/{id}/restore`, which answers **400** in that same situation: the credential there is valid and authenticated, it merely carries no Workspace token |
 | `403` | authenticated but not permitted — an admin-only route or build-spec override without the role; writing or deleting a collection you don't own (only when you *can* read it; otherwise `404`); or, on an ingest that **omitted `collection`**, `no collection accepts your uploads: name a collection you own explicitly in 'collection', or create your own (POST /v1/collections)` — which names no id |
 | `404` | collection not found **or** not readable by the caller (the two are deliberately indistinguishable, so access can't be probed); an unknown share/group/job/model id; or, on any implicit-target route, `no collection is accessible to this caller` — which also names no id, and is the same state as `default: ""` from `GET /v1/collections` |
-| `409` | one of the busiest codes here, and always a **state** conflict, never a permission one: a duplicate active share grant, or one to the current owner; an ownership transfer replayed (it is not idempotent) or one with no active owner row; a `lost` collection; a colliding collection spec, the reserved id `default`, or residual ACL state under the id; the owner quota (`MAX_COLLECTIONS_PER_OWNER`) — the one **object** `detail`; a service-account subject that already exists as a **human** account; revoking the last stored admin of a deployment with no other admin source; deleting the built-in `public` group or revoking an active owner row; the graph/purge/unregister lifecycle guards |
+| `409` | one of the busiest codes here, and always a **state** conflict, never a permission one: a duplicate active share grant, or one to the current owner; an ownership transfer replayed (it is not idempotent) or one with no active owner row; a `lost` collection; a colliding collection spec, the reserved id `default`, or residual ACL state under the id; the owner quota (`MAX_COLLECTIONS_PER_OWNER`) — the one **object** `detail`; a service-account subject that already exists as a **human** account; revoking the last stored admin of a deployment with no other admin source; deleting the built-in `public` group or revoking an active owner row; the graph/purge/unregister lifecycle guards; a grading batch's status refusing a write (a verdict after adjudication, an adjudication or export while `open`, a replayed adjudicate) |
 | `413` | the JSON body exceeds `max_json_body_bytes` (default 1 MB) on `POST /v1/ingest`, `POST /v1/collections` or `POST /v1/collections/{id}/shares`; or `POST /v1/ingest/upload` breaks a bound — a file over `max_document_bytes`, more than `max_upload_files` files, or files totalling more than `max_upload_bytes_per_request` (#202) |
 | `411` | `POST /v1/ingest/upload` without a `Content-Length` (chunked transfer) — an upload must declare its length so it can be refused before the body is read (#202) |
 | `415` | an uploaded file's content type is not in `upload_content_types`, or a declared PDF has no `%PDF` header (#202) |

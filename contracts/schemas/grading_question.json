@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_question.json",
+  "title": "GradingQuestion",
+  "description": "The information need a grading task is read against — a TREC-CDS-style topic for an `evidence-read`, the generated pointed question for a `pointed-read`, the user's query for `citation-feedback`. Shown to the reader labeled as the question, with `type` explained as *what the clinician has to decide*, never as a synthesis (docs/plans/grading-ui.md §3.4).",
+  "type": "object",
+  "required": ["type", "summary", "description"],
+  "properties": {
+    "id": {
+      "description": "The study's identifier for the topic or query (e.g. the TREC CDS topic id `2016_1`). Informational; the task is keyed by `pair_id`.",
+      "type": "string"
+    },
+    "type": {
+      "description": "The need type — what the reader is judging evidence *for* (TREC CDS: `diagnosis` | `treatment` | `test`; a pointed read records `pointed`). Free string so a new study does not need a contract change; the UI explains it, it never branches on it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "summary": {
+      "description": "One-line case summary (TREC CDS `summary`), or the pointed question itself.",
+      "type": "string"
+    },
+    "description": {
+      "description": "The full case narrative (TREC CDS `description`). May equal `summary` when the question has no longer form.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

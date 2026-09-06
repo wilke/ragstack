@@ -1,0 +1,21 @@
+{
+  "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+  "reader": "bvbrc:breader",
+  "verdict": "correct",
+  "span_judgements": [
+    {
+      "set": 1,
+      "span": 1,
+      "judgement": "located"
+    },
+    {
+      "set": 2,
+      "span": 1,
+      "judgement": "located"
+    }
+  ],
+  "extra_answers": [],
+  "notes": "Both sets locate the chronic-bleeding definition; kept as read.",
+  "version": 1,
+  "saved_at": "2026-09-06T16:02:11Z"
+}

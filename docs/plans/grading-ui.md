@@ -1,6 +1,6 @@
 # Grading in the RAGStack UI — plan
 
-*2026-09-06. Status: `PROPOSED`. Owner decision: the two-reader label validation has to reach
+*2026-09-06. Status: `PROPOSED`; phase 1 (contract) landed as #505. Owner decision: the two-reader label validation has to reach
 its readers through RAGStack itself in the near term, not through a session artifact. This is
 the plan for that, sized so the study is not blocked on it.*
 
@@ -113,7 +113,7 @@ Query, ingest, collections, authz semantics. The study's protocol and scorer. Th
 | phase | work | unblocks | size |
 |---|---|---|---|
 | **0** | Move the pilot sheet's HTML source into the repo (`docs/plans/results/stage0/artifacts/rdev-pilot-read/`) so the design reference is durable | nothing; hygiene | 1 h |
-| **1** | Contract: schemas + OpenAPI for the three resources; fixtures; conformance tests (keyed boot, two reader principals, independence checks) | Python and Go can start | 1 day, strongest model — external contract |
+| **1** | Contract: schemas + OpenAPI for the three resources; fixtures; conformance tests (keyed boot, two reader principals, independence checks) — **done, #505** (`contracts/schemas/grading_*.json`, eleven `/v1/grading/*` operations, `contracts/fixtures/grading/`, `conformance/test_grading.py` + `test_grading_fixtures.py`; the module skips as *not implemented* until phase 2 mounts the paths) | Python and Go can start | 1 day, strongest model — external contract |
 | **2** | Python: stores (memory/sqlite/postgres), router, export; an importer that turns the committed R-dev package (`rdev_sample.json` + a labels file or the r3 union) into a batch | the read can run on the dev tenant | 2 days |
 | **3** | Frontend: Grading view, pair view, adjudication, export | readers use RAGStack, not the artifact | 2–3 days |
 | **4** | Go: handlers to contract; conformance green on both | parity rule satisfied | 1–2 days |

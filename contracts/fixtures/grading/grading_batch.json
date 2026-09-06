@@ -1,0 +1,28 @@
+{
+  "id": "5b1f0c7e2a9d4e8f9c3b6a1d0e7f2c44",
+  "name": "R-dev pilot r3 (fixture)",
+  "kind": "evidence-read",
+  "status": "adjudicating",
+  "rubric_sha256": "2e11f3688de916da8bfc8b5b0a788050bf9d077960d616d33490c6ecf747363b",
+  "order_seed": 4242,
+  "readers": [
+    "bvbrc:areader",
+    "bvbrc:breader"
+  ],
+  "task_count": 2,
+  "progress": [
+    {
+      "reader": "bvbrc:areader",
+      "label": "A",
+      "saved": 2
+    },
+    {
+      "reader": "bvbrc:breader",
+      "label": "B",
+      "saved": 2
+    }
+  ],
+  "created_at": "2026-09-06T14:00:00Z",
+  "created_by": "bvbrc:study-admin",
+  "adjudicating_at": "2026-09-06T17:30:00Z"
+}

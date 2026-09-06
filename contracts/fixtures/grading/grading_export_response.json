@@ -1,0 +1,149 @@
+{
+  "batch_id": "5b1f0c7e2a9d4e8f9c3b6a1d0e7f2c44",
+  "name": "R-dev pilot r3 (fixture)",
+  "kind": "evidence-read",
+  "status": "adjudicating",
+  "rubric_sha256": "2e11f3688de916da8bfc8b5b0a788050bf9d077960d616d33490c6ecf747363b",
+  "order_seed": 4242,
+  "exported_at": "2026-09-06T17:45:00Z",
+  "readers": [
+    {
+      "subject": "bvbrc:areader",
+      "label": "A"
+    },
+    {
+      "subject": "bvbrc:breader",
+      "label": "B"
+    }
+  ],
+  "csv": [
+    {
+      "filename": "rdev_verdicts_A.csv",
+      "reader": "bvbrc:areader",
+      "label": "A",
+      "content": "\"pair_id\",\"verdict\",\"notes\"\n\"2016_1__3797929\",\"non-minimal\",\"Set 1 carries the definition sentences; sentence 4 alone supports the melena finding.\"\n\"2016_13__3844363\",\"correctly-none\",\"\"\n"
+    },
+    {
+      "filename": "rdev_verdicts_B.csv",
+      "reader": "bvbrc:breader",
+      "label": "B",
+      "content": "\"pair_id\",\"verdict\",\"notes\"\n\"2016_1__3797929\",\"correct\",\"Both sets locate the chronic-bleeding definition; kept as read.\"\n\"2016_13__3844363\",\"missed-evidence\",\"Abstract sentence 3 names the finding.\"\n"
+    },
+    {
+      "filename": "rdev_verdicts_ADJ.csv",
+      "reader": null,
+      "label": "ADJ",
+      "content": "\"pair_id\",\"verdict\",\"notes\"\n\"2016_1__3797929\",\"non-minimal\",\"Joint read: sentence 4 alone suffices; set 1's sentences 3 and 5-7 are background.\"\n\"2016_13__3844363\",\"\",\"\"\n"
+    }
+  ],
+  "verdicts": [
+    {
+      "pair_id": "2016_1__3797929",
+      "stratum": "model_positive",
+      "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+      "reader": "bvbrc:areader",
+      "label": "A",
+      "verdict": "non-minimal",
+      "span_judgements": [
+        {
+          "set": 1,
+          "span": 1,
+          "judgement": "non-minimal"
+        },
+        {
+          "set": 2,
+          "span": 1,
+          "judgement": "located"
+        }
+      ],
+      "extra_answers": [],
+      "notes": "Set 1 carries the definition sentences; sentence 4 alone supports the melena finding.",
+      "version": 2,
+      "saved_at": "2026-09-06T15:12:40Z"
+    },
+    {
+      "pair_id": "2016_1__3797929",
+      "stratum": "model_positive",
+      "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+      "reader": "bvbrc:breader",
+      "label": "B",
+      "verdict": "correct",
+      "span_judgements": [
+        {
+          "set": 1,
+          "span": 1,
+          "judgement": "located"
+        },
+        {
+          "set": 2,
+          "span": 1,
+          "judgement": "located"
+        }
+      ],
+      "extra_answers": [],
+      "notes": "Both sets locate the chronic-bleeding definition; kept as read.",
+      "version": 1,
+      "saved_at": "2026-09-06T16:02:11Z"
+    },
+    {
+      "pair_id": "2016_13__3844363",
+      "stratum": "model_negative",
+      "task_id": "c8d2f4a6b1e34c5d9a7b8c0d1e2f3a72",
+      "reader": "bvbrc:areader",
+      "label": "A",
+      "verdict": "correctly-none",
+      "span_judgements": [],
+      "extra_answers": [
+        {
+          "id": "other_passage",
+          "answer": "no"
+        }
+      ],
+      "notes": "",
+      "version": 1,
+      "saved_at": "2026-09-06T15:20:05Z"
+    },
+    {
+      "pair_id": "2016_13__3844363",
+      "stratum": "model_negative",
+      "task_id": "c8d2f4a6b1e34c5d9a7b8c0d1e2f3a72",
+      "reader": "bvbrc:breader",
+      "label": "B",
+      "verdict": "missed-evidence",
+      "span_judgements": [],
+      "extra_answers": [
+        {
+          "id": "other_passage",
+          "answer": "yes"
+        }
+      ],
+      "notes": "Abstract sentence 3 names the finding.",
+      "version": 1,
+      "saved_at": "2026-09-06T16:09:47Z"
+    }
+  ],
+  "adjudications": [
+    {
+      "pair_id": "2016_1__3797929",
+      "stratum": "model_positive",
+      "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+      "verdict": "non-minimal",
+      "span_judgements": [
+        {
+          "set": 1,
+          "span": 1,
+          "judgement": "non-minimal"
+        },
+        {
+          "set": 2,
+          "span": 1,
+          "judgement": "located"
+        }
+      ],
+      "notes": "Joint read: sentence 4 alone suffices; set 1's sentences 3 and 5-7 are background.",
+      "adjudicated_by": "bvbrc:study-admin",
+      "version": 1,
+      "saved_at": "2026-09-06T17:41:00Z"
+    }
+  ]
+}

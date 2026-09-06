@@ -1,0 +1,17 @@
+{
+  "verdict": "non-minimal",
+  "span_judgements": [
+    {
+      "set": 1,
+      "span": 1,
+      "judgement": "non-minimal"
+    },
+    {
+      "set": 2,
+      "span": 1,
+      "judgement": "located"
+    }
+  ],
+  "extra_answers": [],
+  "notes": "Set 1 carries the definition sentences; sentence 4 alone supports the melena finding."
+}

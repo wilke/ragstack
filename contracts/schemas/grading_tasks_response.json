@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_tasks_response.json",
+  "title": "GradingTasksResponse",
+  "description": "A batch's tasks for the calling reader (GET /v1/grading/batches/{batch_id}/tasks), in THE CALLER'S seeded order (see `GradingBatch`), each carrying the caller's own verdict or null and never another reader's. An admin who is not a reader gets the tasks in batch order with `reader: null` and `verdict: null` on every task (plus `reader_verdicts`/`adjudication` once the batch is not `open`). Unpaginated: a read is ≤ a few hundred tasks and the UI wants the whole order.",
+  "type": "object",
+  "required": ["batch_id", "reader", "tasks"],
+  "properties": {
+    "batch_id": { "type": "string" },
+    "reader": {
+      "description": "The calling reader's resolved subject — the order is theirs — or null for an admin who is not a reader (batch order).",
+      "type": ["string", "null"]
+    },
+    "tasks": {
+      "type": "array",
+      "items": { "$ref": "grading_task.json" }
+    }
+  },
+  "additionalProperties": false
+}

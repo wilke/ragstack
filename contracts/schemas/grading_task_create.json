@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_task_create.json",
+  "title": "GradingTaskCreate",
+  "description": "One task as authored inside `GradingBatchCreateRequest.tasks` — the study's (question, document, claimed evidence) triple with nothing the server assigns. `pair_id` is the study's own key for the pair (`<topic>__<doc>` in the R-dev draw) and is the first column of every exported CSV, so it MUST be unique within the batch (422 otherwise). An EMPTY `claims` is a legal task, not a gap: it is the labeler's 'no localizable evidence' verdict (SPEC-confirmation-run.md §6.6.1), which the reader confirms with `correctly-none` or overturns with `missed-evidence`.",
+  "type": "object",
+  "required": ["pair_id", "question", "document", "claims"],
+  "properties": {
+    "pair_id": {
+      "description": "The study's identifier for this (question, document) pair; unique within the batch; the `pair_id` column of the export. Opaque to the server.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "stratum": {
+      "description": "The sampling stratum the pair was drawn in (`model_positive`, `model_negative`, `deep_section`, `long_document`, …), recorded before any pair is read (SPEC §6.6.2). Carried through to the export's JSON so per-stratum κ needs no join.",
+      "type": "string"
+    },
+    "question": { "$ref": "grading_question.json" },
+    "document": { "$ref": "grading_document.json" },
+    "claims": {
+      "description": "The claimed answer: every labeler's evidence sets, unioned, each tagged by source. `set_index` values MUST be unique and every span MUST lie inside `document` (422 otherwise). Empty for a model-negative pair.",
+      "type": "array",
+      "items": { "$ref": "grading_evidence_set.json" }
+    },
+    "extra_questions": {
+      "description": "Additional per-task questions (r3 §11 guard 2). Ids MUST be unique within the task. Default: none.",
+      "type": "array",
+      "items": { "$ref": "grading_extra_question.json" }
+    }
+  },
+  "additionalProperties": false
+}
