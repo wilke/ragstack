@@ -521,3 +521,23 @@ Plan (fits the roadmap, doesn't invent a parallel track):
 4. **Regression tests — yes.** Once a corpus + benchmark pair has a recorded baseline score, the harness doubles as a **retrieval-quality regression gate**: pin the baseline (JSON of metric + CI), re-run on PRs that touch chunking/retrieval/RRF/rerank, and **fail if nDCG@10 drops below `baseline_lower_CI − ε`**. Distinguish two tiers: (a) fast **deterministic** gates (chunk counts, token-overflow==0, id determinism, index-parity Qdrant⇄ES) run every CI; (b) slower **quality** gates (SciFact/BioASQ nDCG) run nightly or on retrieval-path labels, since they need the GPU embed fleet. This is the natural home for the ablation-harness output: baseline once, then guard against silent regressions.
 
 Action: file one issue "external-store eval mode + wire 3-corpus A/B into #122; add BioASQ/NFCorpus; promote to nightly regression gate" and link it under M7/eval in ROADMAP.md.
+
+---
+
+## 2026-09-06 — where the September work is recorded
+
+From late August through 2026-09-06, the chunking-study line of work did not record
+itself here. It recorded itself in two places instead:
+
+- `docs/plans/results/` — per-run PREREG/RESULTS files, one pair per experiment,
+  landing in PRs #491 and #492.
+- `HANDOFF-2026-09-06.md` — the handoff summary for that work, at the repo root.
+
+The platform side moved in parallel: all four tenants are deployed at `v1.5.3`
+(see the STATUS.md header for the exact commit and verification date).
+
+A reader picking this repo up cold should read, in order: `CLAUDE.md`, then
+`MEMORY.md`, then `HANDOFF-2026-09-06.md`.
+
+This file (`scratchpad.md`) remains the per-session change log for work that
+does not have a results tree of its own.

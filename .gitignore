@@ -47,8 +47,10 @@ apptainer/data/
 apptainer/images/
 *.sif
 
-# Stray runtime artifacts (e.g. redis dumps when run from repo root)
+# Stray runtime artifacts (e.g. redis dumps when run from repo root, or pid files
+# left behind by scratch server/process launches)
 *.rdb
+*.pid
 
 # OS
 .DS_Store
