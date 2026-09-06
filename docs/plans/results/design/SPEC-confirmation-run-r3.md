@@ -408,7 +408,7 @@ is now known:
    spans were the `last_words` anchor**, hand-verified as genuinely absent (a plural, a
    dropped hyphen, a trimmed parenthetical). The closing anchor is replaced by **one
    verbatim anchor plus a sentence count**, or by quoting the whole final sentence — the
-   next run states which. Located quotes are snapped outward to whole-sentence boundaries
+   next run states which — **decided: whole-sentence quotes (§10 item 3)**. Located quotes are snapped outward to whole-sentence boundaries
    within one unit (D1); a quote crossing a unit boundary becomes a multi-span set (a
    change from Stage 0, which dropped 14 such spans as unresolvable; recorded in #501 §4).
 2. **Two judges, and no primary yet.** `mango:8003` (Llama-4-Scout) copies imperfectly and
@@ -604,8 +604,13 @@ Recorded here so the next session does not have to reconstruct them.
    saturate"; (b) answers "can any labeler pass the gates as written" and breaks the
    two-judge tie on *where*. Neither substitutes for the human read; both are scored
    against it.
-3. **The anchor fix (§3.7 item 1):** one anchor plus a sentence count, or whole-sentence
-   quotes.
+3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
+   labeler quotes the first and last sentence of each span in full (one sentence when the
+   span is one sentence); each quote is located by exact-then-normalised match of its first
+   and last eight words, both required to land in the same sentence; a quote that does not
+   locate is a hallucinated span. Owner's stated ground: evidence that is cited must not
+   *appear* hallucinated either — a correct span discarded for a bad receipt is a
+   correctness failure of the pipeline, not a cost to be tolerated.
 
 ---
 
