@@ -151,6 +151,23 @@ A second deviation is recorded with it: §6.6.1 requires both readers to sign of
 before any labeling call, and no human did. A reader-forced rubric revision would require a
 development relabel under §6.6.4.
 
+**The scoring half is now written and waiting.** [`s0_rdev_score.py`](s0_rdev_score.py)
+consumes the two filled-in verdict sheets and produces κ(A–B) on the 6-category verdict with a
+bootstrap CI, the binary collapse, per-stratum κ, the label-error / missed-evidence /
+correctly-none / ambiguous rates with Wilson uppers, κ(labeler–human) with positive-class
+agreement in both directions, and the §6.6.4 acceptance table evaluated row by row. It reads
+verdicts; it never reads a pair. Pointed at the blank sheets that ship in `artifacts/` it exits
+non-zero with *"fewer than 10 scored pairs"* and emits no κ — which is the current state:
+
+```
+python3 s0_rdev_score.py --a artifacts/rdev_verdicts_A.csv --b artifacts/rdev_verdicts_B.csv \
+    --sample artifacts/rdev_sample.json --labels artifacts/labels-dev.jsonl \
+    [--adjudicated artifacts/rdev_verdicts_ADJ.csv] [--extra NAME=PATH] \
+    --out artifacts/rdev_score.json --md RESULTS-rdev.md
+```
+
+Tests: `python3 -m pytest test_s0_rdev_score.py -q` (synthetic verdicts only).
+
 ---
 
 ## Cost
