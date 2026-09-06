@@ -17,6 +17,17 @@ stop per r3 §5 step 2.`** The new document-level whether-agreement gate passed 
 are under [`artifacts/r3/`](artifacts/r3/). Stage 0's own `s0_label.py` and
 `artifacts/labels-dev.jsonl` are untouched, so the original labels stay reproducible.
 
+**Stage 0b′ then ran a second time under r3 §10's two decisions, and its write-up is
+[`RESULTS-stage0b-relabel-r31.md`](RESULTS-stage0b-relabel-r31.md)** — whole-sentence anchors and
+**five seeded presentations of every pair** at temperature 0, harness `s0_label_r31.py` +
+`s0_labelgates_r31.py`, artifacts under [`artifacts/r31/`](artifacts/r31/). The anchor fix worked
+and **both** judges now pass hallucinated-span (Scout 0.082 → **0.025**, Qwen 0.025 → **0.003**;
+Scout's closing-anchor failures fell from 54 of 58 to 6 of 22); self-consistency did not follow
+(Scout 0.645 → **0.383**, Qwen 0.419 → **0.562**, against ≥ 0.90) and the **union of plausible
+locations does not saturate** — the marginal gain at the fifth presentation is still ~10 % of the
+union size against a 5 % bar. **`NEITHER JUDGE PASSES — the stop stands.`** #501's harness and
+artifacts are untouched, so both relabels stay reproducible side by side.
+
 ---
 
 ## What the confirmation run was, and what Stage 0 was for
@@ -103,6 +114,9 @@ behaved. Two preconditions fail before power is reachable.
 | [`artifacts/r3/`](artifacts/r3/) | both judges' labels, the run manifest, `gates-r3.json` and the rendered gate table |
 | [`RESULTS-stage0b-pointed-gen.md`](RESULTS-stage0b-pointed-gen.md) | the **pointed-question population** (r3 §11, Stage 0b′) — 177 queries on the development topics with construction gold, at 44.2 % yield against the Leg B re-run's 65 %; generation and screens only, no retrieval |
 | `s0_pointed_gen.py`, [`artifacts/pointed/`](artifacts/pointed/) | that harness and its artifacts — the accepted and rejected sets, every raw generator response, and the run manifest |
+| [`RESULTS-stage0b-relabel-r31.md`](RESULTS-stage0b-relabel-r31.md) | the **r3.1 relabel** — whole-sentence anchors, five presentations per pair, the gate table per judge, the union-saturation curves, the enumeration proxy and the proposed rubric §6 amendment |
+| `s0_label_r31.py`, `s0_labelgates_r31.py` | the r3.1 harness. `s0_label_r31.py --selftest` checks the whole-sentence locator offline — including that the eight-word fallback rescues a mangled middle but **refuses** a quote whose two halves straddle a sentence boundary — and contacts no endpoint |
+| [`artifacts/r31/`](artifacts/r31/) | both judges' 1,540 records each (308 pairs × 5 presentations), the merged manifest, `gates-r31.json` and the rendered gate table |
 | [`../design/SPEC-confirmation-run.md`](../design/SPEC-confirmation-run.md) | the pre-registration Stage 0 was run against (rev. 2; § 14 is its change log) |
 | [`../design/RUBRIC-evidence.md`](../design/RUBRIC-evidence.md) | the labeling rubric, frozen and hashed before the first labeling call |
 
