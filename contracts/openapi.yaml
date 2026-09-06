@@ -2664,6 +2664,475 @@ paths:
         "403":
           description: Authenticated but insufficient role (admin required)
 
+  # ------------------------------------------------------------------------ #
+  # Grading — the two-independent-reader label validation, served by RAGStack
+  # (docs/plans/grading-ui.md). Contract only in phase 1: no implementation
+  # serves these paths yet, and conformance/test_grading.py detects that
+  # (GET /v1/grading/batches → 404) and skips as "grading not implemented".
+  #
+  # Vocabulary used throughout this block:
+  #   admin   the `admin` ROLE — the principal `/v1/config` and `/v1/admin/*`
+  #           admit: an API key mapped to `admin`, or a bearer identity an
+  #           admin source names (ADR-0003, bearer-admins amendment). A batch
+  #           has no owner in v1: every admin administers every batch, and
+  #           `created_by` is audit, not authority.
+  #   reader  a subject named in the batch's `readers`. Readers are people
+  #           (or keyed principals), never groups.
+  #   404     a batch, task or verdict the caller may not see answers 404,
+  #           never 403 — a 403 would be an existence oracle (ADR-0003 §2).
+  #           403 is used only where the caller CAN see the resource and
+  #           lacks the role for the operation (a reader adjudicating), or
+  #           where there is no resource to hide (a non-admin creating).
+  #   409     a STATE conflict, never a permission one: a write that the
+  #           batch's status forbids. Authorization is decided before state,
+  #           so a caller who may not perform an operation is told 403/404
+  #           whatever the status.
+  # ------------------------------------------------------------------------ #
+  /v1/grading/batches:
+    get:
+      operationId: listGradingBatches
+      summary: List the grading batches the caller may see
+      description: >-
+        Every batch for an admin; for anyone else, exactly the batches that
+        name the caller in `readers`. Newest first, unpaginated. Progress
+        counts per reader, never verdicts. This is also the endpoint a client
+        probes to learn whether a server implements grading at all: an
+        implementation without it answers 404.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      responses:
+        "200":
+          description: The batches the caller may see (possibly none)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingBatchesResponse"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+    post:
+      operationId: createGradingBatch
+      summary: Create a grading batch with its tasks (admin only)
+      description: >-
+        Create a read: name, kind, the frozen rubric's sha256, the order seed,
+        the readers in label order, and every task inline (see
+        `GradingBatchCreateRequest` — the importer builds the body from the
+        committed study package; the API reads no files). Validated whole and
+        stored whole: a duplicate `pair_id`, a span outside its document, a
+        duplicate `set_index`, a malformed or group-form reader, or a duplicate
+        reader after resolution is a 422 and nothing is created. Readers are
+        resolved with the share-grantee vocabulary minus the group forms and
+        echoed back resolved (`@service:<subject>` for a keyed principal; a
+        bare name is qualified to `bvbrc:<name>`). The batch opens in status
+        `open`; each reader's order is fixed at this moment by
+        (`order_seed`, position in `readers`).
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GradingBatchCreateRequest"
+      responses:
+        "201":
+          description: The batch was created; the record (resolved readers, zero progress) is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingBatch"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: Authenticated but insufficient role (admin required)
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
+        "422":
+          description: >-
+            Validation error — an empty `tasks`, a duplicate `pair_id`, a span
+            naming a unit or sentence the task's document does not have, a
+            duplicate `set_index` or `extra_questions[].id` within a task, a
+            `rubric_sha256` that is not 64 lowercase hex, an empty or
+            group-form (`@public`, `@group:`) reader, or two readers that
+            resolve to one subject.
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/batches/{batch_id}:
+    get:
+      operationId: getGradingBatch
+      summary: One batch, with per-reader progress counts (admin or reader)
+      description: >-
+        The batch record: status, rubric hash, seed, readers, and how many
+        tasks each reader has saved a verdict on. The same record for an
+        admin and for a reader — counts are the only thing one reader learns
+        about the other, and no verdict ever travels here.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The batch record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingBatch"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "404":
+          description: >-
+            Unknown batch id, or one the caller may not see — neither an admin
+            nor one of its readers (unseen == unknown, so a read's existence
+            and its reader list are not leaked)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+    delete:
+      operationId: deleteGradingBatch
+      summary: Delete a batch and everything under it (admin only)
+      description: >-
+        Hard-deletes the batch, its tasks, every reader's verdict rows and the
+        adjudications. Exists so a harness that created a batch on a real
+        server can remove it and verify by listing — the conformance suite
+        does exactly that — and so a mis-imported batch can be replaced
+        before anyone reads it. It is not part of the read's protocol: a
+        completed read is exported, not deleted. Returns 204 with no body.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: The batch and everything under it was deleted
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: The caller can see the batch (is one of its readers) but is not an admin
+        "404":
+          description: Unknown batch id, or one the caller may not see (existence not leaked)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/batches/{batch_id}/tasks:
+    get:
+      operationId: listGradingTasks
+      summary: The batch's tasks in the caller's own seeded order (reader; admin)
+      description: >-
+        For a reader: every task of the batch, in THAT READER'S order (see
+        `GradingBatch` for the rule), each carrying the caller's own verdict
+        or null — never another reader's, whatever the batch status. For an
+        admin who is not a reader: the tasks in batch order, `reader: null`,
+        `verdict: null`; once the batch is not `open`, each task also carries
+        `reader_verdicts` and `adjudication` (the adjudication view). An admin
+        who IS a reader gets their reader view, plus those two fields once the
+        batch is not `open`. Unpaginated.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The tasks, ordered for the caller
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingTasksResponse"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "404":
+          description: Unknown batch id, or one the caller may not see (existence not leaked)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/batches/{batch_id}/adjudicate:
+    post:
+      operationId: adjudicateGradingBatch
+      summary: Freeze the readers' verdicts and open adjudication (admin only)
+      description: >-
+        Moves the batch from `open` to `adjudicating`. From this moment every
+        reader's verdict rows are frozen (a PUT …/verdict is 409), become
+        visible to admins — and to admins only — through the task endpoints
+        and `GET …/verdicts/{reader}`, and the joint-read verdict can be
+        saved per task. Not idempotent: replaying it on a batch that is no
+        longer `open` is a 409, like an ownership transfer, so an accidental
+        second click is not silently a no-op that hides a state the UI did
+        not expect. No body.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The batch, now `adjudicating`, with `adjudicating_at` set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingBatch"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: The caller can see the batch (is one of its readers) but is not an admin
+        "404":
+          description: Unknown batch id, or one the caller may not see (existence not leaked)
+        "409":
+          description: The batch is not `open` (already adjudicating or closed)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/batches/{batch_id}/export:
+    get:
+      operationId: exportGradingBatch
+      summary: The read's results in the scorer's shape (admin only)
+      description: >-
+        A JSON envelope carrying one `rdev_verdicts_<label>.csv` text per
+        reader plus `rdev_verdicts_ADJ.csv`, byte-for-byte what
+        `docs/plans/results/stage0/s0_rdev_score.py` reads, and the same
+        rows as JSON with the per-span judgements and extra answers the CSV
+        cannot carry (see `GradingExportResponse` for the exact CSV form).
+        Refused with 409 while the batch is `open`: exporting mid-read would
+        show an admin the readers' rows before independence ends, which is
+        what POST …/adjudicate is for.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The export envelope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingExportResponse"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: The caller can see the batch (is one of its readers) but is not an admin
+        "404":
+          description: Unknown batch id, or one the caller may not see (existence not leaked)
+        "409":
+          description: The batch is still `open` — adjudicate first
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/tasks/{task_id}:
+    get:
+      operationId: getGradingTask
+      summary: One task, with the caller's own verdict (reader; admin)
+      description: >-
+        The task record with the caller's own verdict or null. For an admin,
+        `reader_verdicts` and `adjudication` are present once the batch is not
+        `open`; a reader never receives either field. A task on a batch the
+        caller may not see is a 404.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingTask"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "404":
+          description: Unknown task id, or one on a batch the caller may not see (existence not leaked)
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/tasks/{task_id}/verdict:
+    put:
+      operationId: putGradingVerdict
+      summary: Save or overwrite the caller's own verdict on a task (reader)
+      description: >-
+        The one write a reader has. The row is keyed by (task, the
+        authenticated subject): the body has no field naming a reader, so a
+        caller can only ever write their own row. Whole-row replace; the first
+        save is `version` 1 and every re-save increments it. Always 200 (not
+        201) — a client does not care whether this was the first save, and
+        `version` says so anyway. Validated against the task: a span
+        judgement naming a (set, span) the task does not have, an extra
+        answer for an unknown question id, or a non-`yes`/`no` answer to a
+        `yes-no` question is a 422. An admin who is not one of the batch's
+        readers may see the task but has no row to write: 403.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GradingVerdictPutRequest"
+      responses:
+        "200":
+          description: The saved row, with its new `version` and `saved_at`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingVerdict"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: The caller can see the task (is an admin) but is not one of the batch's readers
+        "404":
+          description: Unknown task id, or one on a batch the caller may not see (existence not leaked)
+        "409":
+          description: The batch is not `open` — the readers' rows are frozen for adjudication
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
+        "422":
+          description: >-
+            Validation error — a verdict outside the vocabulary, a span
+            judgement naming a span the task does not have, an unknown extra
+            question id, or a `yes-no` answer that is not `yes`/`no`.
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/tasks/{task_id}/verdicts/{reader}:
+    get:
+      operationId: getGradingVerdict
+      summary: One reader's verdict on a task — the caller's own, or any reader's for an adjudicating admin
+      description: >-
+        `reader` is a resolved subject as `GradingBatch.readers` spells it
+        (URL-encode it; a `:` in a path segment is legal but some clients
+        escape it). The caller's own subject returns the caller's row, 404 if
+        none is saved yet. ANY OTHER reader's subject is a 404 — the row's
+        existence is not leaked — unless the caller is an admin and the
+        batch is not `open`, in which case it is the adjudicator's per-reader
+        fetch. This is the endpoint the independence test probes: reader B
+        naming reader A gets the same 404 as naming a subject that is not a
+        reader at all.
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: reader
+          in: path
+          required: true
+          description: A resolved reader subject, URL-encoded.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The current verdict row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingVerdict"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "404":
+          description: >-
+            Unknown task, a task on a batch the caller may not see, a reader
+            who has not saved a row, or another reader's row while the caller
+            may not see it (a reader, or an admin while the batch is `open`) —
+            all indistinguishable, on purpose
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
+  /v1/grading/tasks/{task_id}/adjudication:
+    put:
+      operationId: putGradingAdjudication
+      summary: Save or overwrite a task's joint-read verdict (admin only)
+      description: >-
+        The verdict the study uses (SPEC §6.6.3), recorded after the readers'
+        rows are frozen; the readers' rows are never modified. Whole-row
+        replace, `version` increments on re-save, always 200. Requires the
+        batch to be `adjudicating` (409 while `open`).
+      tags: [Grading]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GradingAdjudicationPutRequest"
+      responses:
+        "200":
+          description: The saved adjudication row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GradingAdjudication"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+        "403":
+          description: The caller can see the task (is one of the batch's readers) but is not an admin
+        "404":
+          description: Unknown task id, or one on a batch the caller may not see (existence not leaked)
+        "409":
+          description: The batch is `open` — adjudicate it first
+        "413":
+          description: The JSON request body exceeds max_json_body_bytes (default 1 MB).
+        "422":
+          description: Validation error — a verdict outside the vocabulary, or a span judgement naming a span the task does not have.
+        "503":
+          description: Authorization store or grading store unavailable — refused (fail closed).
+
 components:
   headers:
     XRequestId:
@@ -4714,4 +5183,777 @@ components:
       properties:
         embedding: { $ref: "#/components/schemas/BenchResult" }
         llm: { $ref: "#/components/schemas/BenchResult" }
+      additionalProperties: false
+
+    # ---------------------------------------------------------------------- #
+    # Grading (docs/plans/grading-ui.md). Each component is kept in step with
+    # the JSON schema of the same title under contracts/schemas/grading_*.json
+    # (including their `$defs`); conformance/test_grading_fixtures.py asserts
+    # the two agree on `required`, property names, enums and
+    # `additionalProperties`. The JSON files carry the long-form rationale.
+    # ---------------------------------------------------------------------- #
+    GradingQuestion:
+      type: object
+      description: >-
+        The information need a task is read against — a TREC-CDS-style topic
+        for an `evidence-read`, the generated question for a `pointed-read`.
+        Shown labeled as the question; `type` is explained as what the
+        clinician has to decide, never rendered as a synthesis.
+      required: [type, summary, description]
+      properties:
+        id:
+          description: The study's topic/query id (e.g. `2016_1`). Informational.
+          type: string
+        type:
+          description: The need type (`diagnosis` | `treatment` | `test`; `pointed` for a pointed read). Free string.
+          type: string
+          minLength: 1
+        summary:
+          description: One-line case summary, or the pointed question itself.
+          type: string
+        description:
+          description: The full case narrative; may equal `summary`.
+          type: string
+      additionalProperties: false
+
+    GradingSentence:
+      type: object
+      required: [i, text]
+      properties:
+        i:
+          description: 0-based sentence index within its unit; equals its position in `sentences`.
+          type: integer
+          minimum: 0
+        text:
+          type: string
+      additionalProperties: false
+
+    GradingUnit:
+      type: object
+      required: [index, title, sentences]
+      properties:
+        index:
+          description: 0-based unit index; equals its position in `units`.
+          type: integer
+          minimum: 0
+        title:
+          description: The unit's heading; empty string when none.
+          type: string
+        sentences:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSentence"
+      additionalProperties: false
+
+    GradingDocument:
+      type: object
+      description: >-
+        The segmented document, stored DENORMALISED on every task so a read
+        is reproducible against exactly what the reader saw, independent of
+        any later re-ingest. Spans address (unit, first_sentence,
+        last_sentence). Sentences are rendered as text nodes, never as HTML.
+      required: [doc_id, title, units]
+      properties:
+        doc_id:
+          description: The corpus document id (e.g. a PMC id). Nothing is fetched by it.
+          type: string
+          minLength: 1
+        title:
+          type: string
+        units:
+          description: Structural units in reading order; `index` equals array position.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingUnit"
+      additionalProperties: false
+
+    GradingSpan:
+      type: object
+      description: >-
+        A contiguous run of sentences inside one unit. Must lie inside the
+        task's document (a create request pointing outside it is a 422).
+      required: [unit, first_sentence, last_sentence, text]
+      properties:
+        unit:
+          description: 0-based index into `GradingDocument.units`.
+          type: integer
+          minimum: 0
+        first_sentence:
+          type: integer
+          minimum: 0
+        last_sentence:
+          description: Inclusive; ≥ `first_sentence`.
+          type: integer
+          minimum: 0
+        text:
+          description: The span as the labeler quoted it; the UI highlights by the sentence range, not by this text.
+          type: string
+      additionalProperties: false
+
+    GradingEvidenceSet:
+      type: object
+      description: >-
+        One claimed evidence set — a labeler's assertion that these spans,
+        together, suffice (SPEC D3). A task's `claims` is the union of every
+        labeler's sets, each tagged by `sources`. A span is addressed by a
+        reader as (`set_index`, 1-based position in `spans`).
+      required: [set_index, spans, sources]
+      properties:
+        set_index:
+          description: 1-based, unique per task; the `set` half of a span judgement.
+          type: integer
+          minimum: 1
+        spans:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/GradingSpan"
+        sources:
+          description: Which labelers supplied this set (`scout`, `qwen`, `construction`, `human`, …).
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+      additionalProperties: false
+
+    GradingExtraQuestion:
+      type: object
+      description: >-
+        An additional per-task question answered beside the verdict — r3 §11
+        guard 2's *does a delivered passage other than the construction
+        passage answer the question?* on the pointed read.
+      required: [id, text, answer_type]
+      properties:
+        id:
+          description: Stable key for the answer; unique within the task.
+          type: string
+          pattern: "^[A-Za-z0-9_.-]{1,64}$"
+        text:
+          type: string
+          minLength: 1
+        answer_type:
+          description: "`yes-no`: the answer must be `yes` or `no`. `text`: any string."
+          type: string
+          enum: [yes-no, text]
+      additionalProperties: false
+
+    GradingTaskCreate:
+      type: object
+      description: >-
+        One task as authored inside `GradingBatchCreateRequest.tasks`.
+        `pair_id` is the study's key for the pair and the first CSV column of
+        the export — unique within the batch (422). An EMPTY `claims` is a
+        legal task: the labeler's 'no localizable evidence' verdict, which the
+        reader confirms with `correctly-none` or overturns with
+        `missed-evidence`.
+      required: [pair_id, question, document, claims]
+      properties:
+        pair_id:
+          type: string
+          minLength: 1
+          maxLength: 200
+        stratum:
+          description: The sampling stratum the pair was drawn in (`model_positive`, `model_negative`, `deep_section`, `long_document`, …).
+          type: string
+        question:
+          $ref: "#/components/schemas/GradingQuestion"
+        document:
+          $ref: "#/components/schemas/GradingDocument"
+        claims:
+          description: Every labeler's evidence sets, unioned; empty for a model-negative pair.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingEvidenceSet"
+        extra_questions:
+          description: Default none. Ids unique within the task.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExtraQuestion"
+      additionalProperties: false
+
+    GradingTask:
+      type: object
+      description: >-
+        One thing to grade, as surfaced: the authored triple plus what the
+        server assigned, and the CALLER'S OWN verdict or null — never another
+        reader's. `reader_verdicts` and `adjudication` are present ONLY for an
+        admin and ONLY once the batch is not `open`; a reader never receives
+        either. A task the caller may not see is a 404 (ADR-0003 §2).
+      required:
+        - id
+        - batch_id
+        - kind
+        - pair_id
+        - question
+        - document
+        - claims
+        - extra_questions
+        - readers
+        - created_at
+        - created_by
+        - verdict
+      properties:
+        id:
+          description: Opaque server-assigned id (a uuid4 hex).
+          type: string
+        batch_id:
+          type: string
+        kind:
+          description: Inherited from the batch.
+          type: string
+          enum: [evidence-read, pointed-read, citation-feedback]
+        pair_id:
+          type: string
+        stratum:
+          type: string
+        question:
+          $ref: "#/components/schemas/GradingQuestion"
+        document:
+          $ref: "#/components/schemas/GradingDocument"
+        claims:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingEvidenceSet"
+        extra_questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExtraQuestion"
+        readers:
+          description: The batch's resolved reader subjects in label order (index 0 is reader A).
+          type: array
+          items:
+            type: string
+        created_at:
+          description: ISO-8601 UTC timestamp.
+          type: string
+        created_by:
+          description: Subject of the admin who created the batch.
+          type: string
+        verdict:
+          description: The caller's own row, or null.
+          oneOf:
+            - $ref: "#/components/schemas/GradingVerdict"
+            - type: "null"
+        reader_verdicts:
+          description: Every reader's current row, label order. Admin only, batch not `open`; absent otherwise.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingVerdict"
+        adjudication:
+          description: The joint-read row or null. Admin only, batch not `open`; absent otherwise.
+          oneOf:
+            - $ref: "#/components/schemas/GradingAdjudication"
+            - type: "null"
+      additionalProperties: false
+
+    GradingSpanJudgement:
+      type: object
+      required: [set, span, judgement]
+      properties:
+        set:
+          description: An evidence set's `set_index` on the task (1-based).
+          type: integer
+          minimum: 1
+        span:
+          description: 1-based position of the span within that set's `spans`.
+          type: integer
+          minimum: 1
+        judgement:
+          description: "`located`: correctly located and minimal. `wrong`: wrong location. `non-minimal`: not minimal."
+          type: string
+          enum: [located, wrong, non-minimal]
+      additionalProperties: false
+
+    GradingExtraAnswer:
+      type: object
+      required: [id, answer]
+      properties:
+        id:
+          description: A `GradingExtraQuestion.id` of the task.
+          type: string
+        answer:
+          description: "`yes` or `no` for a `yes-no` question; any string for a `text` question."
+          type: string
+      additionalProperties: false
+
+    GradingVerdict:
+      type: object
+      description: >-
+        One reader's answer to one task — one CURRENT row per (task, reader);
+        a re-save replaces it and bumps `version`. The six-verdict vocabulary
+        is SPEC §6.6.2's, byte-for-byte what `s0_rdev_score.py` accepts.
+      required:
+        - task_id
+        - reader
+        - verdict
+        - span_judgements
+        - extra_answers
+        - notes
+        - version
+        - saved_at
+      properties:
+        task_id:
+          type: string
+        reader:
+          description: The resolved subject of the reader who saved this row — always the caller on a PUT.
+          type: string
+        verdict:
+          description: >-
+            `correct`: every supplied span is correctly located and minimal
+            and nothing material was missed. `wrong-location`: a span's quote
+            is real but that location does not justify relevance.
+            `non-minimal`: a set contains a span that could be deleted without
+            losing sufficiency. `missed-evidence`: evidence in the document the
+            labeler did not supply (positives and negatives alike).
+            `correctly-none`: the labeler supplied nothing and the reader
+            agrees. `ambiguous`: cannot decide; adjudicated later.
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          description: Question (a) per span; a judgement naming a span the task lacks is a 422. Empty when the task has no claims.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        extra_answers:
+          description: Answers to the task's `extra_questions`; an unknown id or a non-yes/no answer to a `yes-no` question is a 422.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExtraAnswer"
+        notes:
+          description: Free text, exported verbatim as the CSV `notes` column. Empty string when none.
+          type: string
+        version:
+          description: 1 on first save, +1 per re-save; strictly monotonic.
+          type: integer
+          minimum: 1
+        saved_at:
+          description: ISO-8601 UTC timestamp of this version.
+          type: string
+      additionalProperties: false
+
+    GradingVerdictPutRequest:
+      type: object
+      description: >-
+        Save or overwrite the CALLER'S verdict. No field names a reader — the
+        row is keyed by the authenticated subject. Whole-row replace: an
+        omitted list or `notes` clears it.
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        extra_answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExtraAnswer"
+        notes:
+          type: string
+          maxLength: 10000
+      additionalProperties: false
+
+    GradingAdjudication:
+      type: object
+      description: >-
+        The joint-read verdict for one task (SPEC §6.6.3) — the verdict the
+        study USES. The readers' rows are never modified by it; the
+        pre-adjudication κ needs the originals.
+      required:
+        - task_id
+        - verdict
+        - span_judgements
+        - notes
+        - adjudicated_by
+        - version
+        - saved_at
+      properties:
+        task_id:
+          type: string
+        verdict:
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        notes:
+          description: How the disagreement was resolved; exported verbatim to `rdev_verdicts_ADJ.csv`.
+          type: string
+        adjudicated_by:
+          description: Subject of the admin who saved this version.
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        saved_at:
+          type: string
+      additionalProperties: false
+
+    GradingAdjudicationPutRequest:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        notes:
+          type: string
+          maxLength: 10000
+      additionalProperties: false
+
+    GradingReaderProgress:
+      type: object
+      required: [reader, label, saved]
+      properties:
+        reader:
+          description: The reader's resolved subject.
+          type: string
+        label:
+          description: "`A`, `B`, … by position in `readers`."
+          type: string
+          pattern: "^[A-Z]$"
+        saved:
+          description: Tasks on which this reader has a current verdict.
+          type: integer
+          minimum: 0
+      additionalProperties: false
+
+    GradingBatch:
+      type: object
+      description: >-
+        A read: the rubric, the readers, the order seed and the status. The
+        same record for an admin and a reader — progress counts, never
+        verdicts. A batch the caller may not see is a 404.
+
+
+        **Status.** `open`: readers save; nobody, admin included, reads
+        another reader's row. `adjudicating` (after POST …/adjudicate):
+        reader rows frozen (PUT is 409) and visible to admins only; the
+        joint-read verdict can be saved; the export is available. `closed` is
+        reserved (grading-ui.md §3.1); no v1 operation produces it.
+
+
+        **Reader order.** Reader at index k of `readers` (label A for 0, B
+        for 1, …) sees the tasks in batch order permuted by CPython's
+        `random.Random(order_seed + k + 1).shuffle(list(range(task_count)))`
+        — `s0_rdev.py`'s rule (seed+1 for A, seed+2 for B), so a read begun on
+        its `RDEV-readsheet-A/B.html` sheets continues in the UI at the same
+        position. Normative for every implementation (MT19937 seeded with the
+        integer; Python ≥ 3.2's `shuffle`).
+      required:
+        - id
+        - name
+        - kind
+        - status
+        - rubric_sha256
+        - order_seed
+        - readers
+        - task_count
+        - progress
+        - created_at
+        - created_by
+        - adjudicating_at
+      properties:
+        id:
+          description: Opaque server-assigned id (a uuid4 hex).
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [evidence-read, pointed-read, citation-feedback]
+        status:
+          type: string
+          enum: [open, adjudicating, closed]
+        rubric_sha256:
+          description: sha256 (64 lowercase hex) of the frozen rubric the readers signed off on.
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        order_seed:
+          type: integer
+        readers:
+          description: Resolved reader subjects in LABEL order (index 0 is `A`).
+          type: array
+          minItems: 1
+          maxItems: 26
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+        task_count:
+          type: integer
+          minimum: 0
+        progress:
+          description: One entry per reader in label order — counts, never verdicts.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingReaderProgress"
+        created_at:
+          description: ISO-8601 UTC timestamp.
+          type: string
+        created_by:
+          description: Subject of the creating admin. Audit, not authority — every admin administers every batch.
+          type: string
+        adjudicating_at:
+          description: ISO-8601 UTC timestamp of the adjudicate call; empty string while `open`.
+          type: string
+      additionalProperties: false
+
+    GradingBatchCreateRequest:
+      type: object
+      description: >-
+        Create a read with its tasks inline; validated whole, stored whole.
+        `readers` take the share-grantee vocabulary MINUS the group forms
+        (`issuer:subject` verbatim; `@service:<subject>` for a keyed principal,
+        kept colon-free; a bare name → `bvbrc:<name>`; `@public`/`@group:` are
+        422) and are echoed back resolved, in the same order, as
+        `GradingBatch.readers`.
+      required: [name, kind, rubric_sha256, order_seed, readers, tasks]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        kind:
+          type: string
+          enum: [evidence-read, pointed-read, citation-feedback]
+        rubric_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        order_seed:
+          description: Required, never defaulted — the study records its seeds before any pair is read.
+          type: integer
+        readers:
+          description: Readers in LABEL order (first = `A`). Duplicates after resolution are a 422.
+          type: array
+          minItems: 1
+          maxItems: 26
+          items:
+            type: string
+            minLength: 1
+        tasks:
+          description: In BATCH order — the draw's order, which the export's CSV rows use. `pair_id` unique (422).
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/GradingTaskCreate"
+      additionalProperties: false
+
+    GradingBatchesResponse:
+      type: object
+      description: Every batch for an admin; the batches naming the caller as a reader otherwise. Newest first, unpaginated.
+      required: [batches]
+      properties:
+        batches:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingBatch"
+      additionalProperties: false
+
+    GradingTasksResponse:
+      type: object
+      description: >-
+        A batch's tasks in THE CALLER'S seeded order, each with the caller's
+        own verdict or null. An admin who is not a reader gets batch order,
+        `reader: null`, `verdict: null` (plus `reader_verdicts`/`adjudication`
+        once not `open`). Unpaginated.
+      required: [batch_id, reader, tasks]
+      properties:
+        batch_id:
+          type: string
+        reader:
+          description: The calling reader's resolved subject, or null for an admin who is not a reader.
+          type: [string, "null"]
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingTask"
+      additionalProperties: false
+
+    GradingReaderLabel:
+      type: object
+      required: [subject, label]
+      properties:
+        subject:
+          type: string
+        label:
+          type: string
+          pattern: "^[A-Z]$"
+      additionalProperties: false
+
+    GradingExportCsv:
+      type: object
+      required: [filename, reader, label, content]
+      properties:
+        filename:
+          description: "`rdev_verdicts_<label>.csv` for a reader, `rdev_verdicts_ADJ.csv` for the adjudicated sheet."
+          type: string
+          pattern: "^rdev_verdicts_(?:[A-Z]|ADJ)\\.csv$"
+        reader:
+          description: The reader's resolved subject; null for the adjudicated sheet.
+          type: [string, "null"]
+        label:
+          type: string
+          pattern: "^(?:[A-Z]|ADJ)$"
+        content:
+          description: The CSV text.
+          type: string
+      additionalProperties: false
+
+    GradingExportVerdictRow:
+      type: object
+      description: A `GradingVerdict` joined with the task's `pair_id`/`stratum` and the reader's label.
+      required:
+        - pair_id
+        - task_id
+        - reader
+        - label
+        - verdict
+        - span_judgements
+        - extra_answers
+        - notes
+        - version
+        - saved_at
+      properties:
+        pair_id:
+          type: string
+        stratum:
+          type: string
+        task_id:
+          type: string
+        reader:
+          type: string
+        label:
+          type: string
+          pattern: "^[A-Z]$"
+        verdict:
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        extra_answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExtraAnswer"
+        notes:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        saved_at:
+          type: string
+      additionalProperties: false
+
+    GradingExportAdjudicationRow:
+      type: object
+      description: A `GradingAdjudication` joined with the task's `pair_id`/`stratum`.
+      required:
+        - pair_id
+        - task_id
+        - verdict
+        - span_judgements
+        - notes
+        - adjudicated_by
+        - version
+        - saved_at
+      properties:
+        pair_id:
+          type: string
+        stratum:
+          type: string
+        task_id:
+          type: string
+        verdict:
+          type: string
+          enum: [correct, wrong-location, non-minimal, missed-evidence, correctly-none, ambiguous]
+        span_judgements:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingSpanJudgement"
+        notes:
+          type: string
+        adjudicated_by:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        saved_at:
+          type: string
+      additionalProperties: false
+
+    GradingExportResponse:
+      type: object
+      description: >-
+        The read's results in the scorer's shape — a JSON envelope carrying
+        the CSV TEXTS (the contract has no file-download convention). One
+        `rdev_verdicts_<label>.csv` per reader in label order, then
+        `rdev_verdicts_ADJ.csv`: RFC 4180, every field double-quoted, UTF-8,
+        `\n` line endings, trailing newline, header exactly
+        `pair_id,verdict,notes`, then ONE ROW PER TASK IN BATCH ORDER — a
+        task without a verdict has an empty `verdict` cell (the scorer's *not
+        yet read*) and empty `notes`. `notes` is the row's notes verbatim;
+        span judgements and extra answers live in `verdicts`, not in the
+        notes column. Exactly what `s0_rdev_score.py --a … --b …
+        --adjudicated …` reads.
+      required:
+        - batch_id
+        - name
+        - kind
+        - status
+        - rubric_sha256
+        - order_seed
+        - exported_at
+        - readers
+        - csv
+        - verdicts
+        - adjudications
+      properties:
+        batch_id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [evidence-read, pointed-read, citation-feedback]
+        status:
+          type: string
+          enum: [open, adjudicating, closed]
+        rubric_sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        order_seed:
+          type: integer
+        exported_at:
+          type: string
+        readers:
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingReaderLabel"
+        csv:
+          description: The reader CSVs in label order, then the adjudicated one.
+          type: array
+          minItems: 2
+          items:
+            $ref: "#/components/schemas/GradingExportCsv"
+        verdicts:
+          description: Every reader's current row, by task in batch order then by label.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExportVerdictRow"
+        adjudications:
+          description: Every task's current joint-read row, batch order.
+          type: array
+          items:
+            $ref: "#/components/schemas/GradingExportAdjudicationRow"
       additionalProperties: false

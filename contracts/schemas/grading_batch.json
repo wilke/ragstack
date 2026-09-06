@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_batch.json",
+  "title": "GradingBatch",
+  "description": "A read — the R-dev pilot, R-dev, R-conf, a pointed read: the unit that fixes the rubric, the readers, the per-reader order seed and the status of the read. The same record is returned to an admin and to a reader; it carries per-reader PROGRESS COUNTS and never a verdict. A batch the caller may not see — neither an admin nor one of its `readers` — is a 404, indistinguishable from an unknown id (ADR-0003 §2).\n\n**Status.** `open`: readers save verdicts; nobody, including an admin, can read another reader's row. `adjudicating` (after POST …/adjudicate): reader rows are frozen (a PUT is 409), visible to admins only, and the joint-read verdict can be saved. `closed` is reserved by docs/plans/grading-ui.md §3.1 for a later phase — no v1 operation produces it, and nothing in v1 requires it (the export is available from `adjudicating` on).\n\n**Reader order.** Each reader sees the batch's tasks in a private, deterministic permutation computed from (`order_seed`, the reader's position in `readers`): reader at index k (label A for 0, B for 1, …) sees the tasks in batch order permuted by CPython's `random.Random(order_seed + k + 1).shuffle(list(range(task_count)))` — the exact rule `docs/plans/results/stage0/s0_rdev.py` uses to build the `RDEV-readsheet-A/B.html` sheets (seed+1 for A, seed+2 for B), so a read begun on those sheets continues in the UI at the same position. The rule is normative for every implementation (MT19937 seeded with the integer; Python ≥ 3.2's `shuffle`), which is what makes two implementations show one reader one order.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "kind",
+    "status",
+    "rubric_sha256",
+    "order_seed",
+    "readers",
+    "task_count",
+    "progress",
+    "created_at",
+    "created_by",
+    "adjudicating_at"
+  ],
+  "properties": {
+    "id": {
+      "description": "Opaque server-assigned batch id (a uuid4 hex).",
+      "type": "string"
+    },
+    "name": {
+      "description": "Human-readable name of the read (`R-dev pilot r3`, `R-dev`, …).",
+      "type": "string"
+    },
+    "kind": {
+      "description": "The protocol every task of this batch follows; see `GradingTask.kind`.",
+      "type": "string",
+      "enum": ["evidence-read", "pointed-read", "citation-feedback"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "adjudicating", "closed"]
+    },
+    "rubric_sha256": {
+      "description": "sha256 (64 lowercase hex) of the frozen rubric the readers signed off on (SPEC §6.6.1: `design/RUBRIC-evidence.md`). Shown in the grading view; recorded so a verdict can never be attributed to a rubric other than the one it was read under.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "order_seed": {
+      "description": "The integer seed the per-reader orders derive from (see the schema description). The study's `SEED_RDEV` for the R-dev read.",
+      "type": "integer"
+    },
+    "readers": {
+      "description": "Resolved subjects of the readers, in LABEL order: index 0 is reader `A`, 1 is `B`, … The label is what the export's CSV filenames carry (`rdev_verdicts_A.csv`) and what `s0_rdev_score.py --a/--b` means.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 26,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "task_count": {
+      "description": "Number of tasks in the batch.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "progress": {
+      "description": "One entry per reader in label order: how many of the batch's tasks that reader has saved a verdict on. Counts, never verdicts — this is what a reader sees of the other reader, and all of it.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingReaderProgress" }
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp.",
+      "type": "string"
+    },
+    "created_by": {
+      "description": "Subject of the admin who created the batch. Recorded for audit; it confers nothing — every admin may administer every batch.",
+      "type": "string"
+    },
+    "adjudicating_at": {
+      "description": "ISO-8601 UTC timestamp of the POST …/adjudicate that froze the readers' rows; empty string while `open` (the same empty-string-while-not-yet convention as `ShareRecord.revoked_at`).",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "GradingReaderProgress": {
+      "title": "GradingReaderProgress",
+      "type": "object",
+      "required": ["reader", "label", "saved"],
+      "properties": {
+        "reader": {
+          "description": "The reader's resolved subject.",
+          "type": "string"
+        },
+        "label": {
+          "description": "The reader's letter label (`A`, `B`, …), by position in `readers`.",
+          "type": "string",
+          "pattern": "^[A-Z]$"
+        },
+        "saved": {
+          "description": "Tasks on which this reader has a current verdict (0 ≤ saved ≤ task_count).",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

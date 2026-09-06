@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_verdict_put_request.json",
+  "title": "GradingVerdictPutRequest",
+  "description": "Save or overwrite the CALLER'S verdict on a task (PUT /v1/grading/tasks/{task_id}/verdict). The reader is the authenticated subject — there is no field to name another reader, so a row can only ever be written by its owner. Whole-row replace: an omitted `span_judgements`/`extra_answers`/`notes` clears it, it does not keep the previous value.",
+  "type": "object",
+  "required": ["verdict"],
+  "properties": {
+    "verdict": {
+      "description": "The pair-level verdict (see `GradingVerdict.verdict`).",
+      "type": "string",
+      "enum": [
+        "correct",
+        "wrong-location",
+        "non-minimal",
+        "missed-evidence",
+        "correctly-none",
+        "ambiguous"
+      ]
+    },
+    "span_judgements": {
+      "description": "Per-span judgements; every (`set`, `span`) MUST exist on the task (422). Default empty.",
+      "type": "array",
+      "items": { "$ref": "grading_verdict.json#/$defs/GradingSpanJudgement" }
+    },
+    "extra_answers": {
+      "description": "Answers to the task's extra questions; every `id` MUST exist on the task (422). Default empty.",
+      "type": "array",
+      "items": { "$ref": "grading_verdict.json#/$defs/GradingExtraAnswer" }
+    },
+    "notes": {
+      "description": "Free text. Default empty string.",
+      "type": "string",
+      "maxLength": 10000
+    }
+  },
+  "additionalProperties": false
+}

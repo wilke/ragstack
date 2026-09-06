@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_document.json",
+  "title": "GradingDocument",
+  "description": "The segmented document a task is read against, stored DENORMALISED on every task: a read must be reproducible against exactly what the reader saw, independent of any later re-ingest of the corpus (docs/plans/grading-ui.md §3.1). Units are the structural units the labels are anchored to (abstract, sections); sentences are numbered within a unit so a span can be addressed as (unit, first, last) and highlighted by sentence. The UI renders every sentence as a text node — never as HTML.",
+  "type": "object",
+  "required": ["doc_id", "title", "units"],
+  "properties": {
+    "doc_id": {
+      "description": "The corpus document id (e.g. a PMC id). Informational: nothing is fetched by it.",
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "description": "Document title, shown above the units.",
+      "type": "string"
+    },
+    "units": {
+      "description": "Structural units in reading order. `index` is the value a span's `unit` refers to; it is the position in this array and MUST equal it.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingUnit" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "GradingUnit": {
+      "title": "GradingUnit",
+      "type": "object",
+      "required": ["index", "title", "sentences"],
+      "properties": {
+        "index": {
+          "description": "0-based unit index; equals the unit's position in `units`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "description": "The unit's heading (`Abstract`, `Methods`, …). Empty string when the unit has none.",
+          "type": "string"
+        },
+        "sentences": {
+          "description": "The unit's sentences in order. `i` is the value a span's `first_sentence`/`last_sentence` refer to; it is the position in this array and MUST equal it.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/GradingSentence" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "GradingSentence": {
+      "title": "GradingSentence",
+      "type": "object",
+      "required": ["i", "text"],
+      "properties": {
+        "i": {
+          "description": "0-based sentence index within its unit; equals the position in `sentences`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "description": "The sentence text, verbatim from the segmenter.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

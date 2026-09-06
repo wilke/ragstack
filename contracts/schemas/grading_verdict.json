@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_verdict.json",
+  "title": "GradingVerdict",
+  "description": "One reader's answer to one task — exactly one CURRENT row per (task, reader). A re-save replaces the row and bumps `version` (previous versions are retained server-side for audit and are not surfaced in v1). The six-verdict vocabulary is SPEC-confirmation-run.md §6.6.2's, byte-for-byte what `s0_rdev_score.py` accepts; the per-span judgements are the pilot sheet's question (a) — *is each supplied span correctly located and minimal?* — and the pair-level `verdict` is the reader's answer to (a) and (b) together.",
+  "type": "object",
+  "required": [
+    "task_id",
+    "reader",
+    "verdict",
+    "span_judgements",
+    "extra_answers",
+    "notes",
+    "version",
+    "saved_at"
+  ],
+  "properties": {
+    "task_id": { "type": "string" },
+    "reader": {
+      "description": "The resolved subject of the reader who saved this row — always the caller on a PUT.",
+      "type": "string"
+    },
+    "verdict": {
+      "description": "`correct`: every supplied span is correctly located and minimal, and nothing material was missed. `wrong-location`: a supplied span's quote is real but that location does not justify relevance (incl. the deep-section trap). `non-minimal`: a supplied set contains a span that could be deleted without losing sufficiency. `missed-evidence`: there is evidence in this document the labeler did not supply (applies to positives and negatives alike). `correctly-none`: the labeler supplied nothing and the reader agrees. `ambiguous`: the reader cannot decide whether this is one unit or two, or whether a span is sufficient — neutral, adjudicated later.",
+      "type": "string",
+      "enum": [
+        "correct",
+        "wrong-location",
+        "non-minimal",
+        "missed-evidence",
+        "correctly-none",
+        "ambiguous"
+      ]
+    },
+    "span_judgements": {
+      "description": "Question (a), per span. Each entry names a span of the task by (`set`, `span`) — `set` is an evidence set's `set_index`, `span` the 1-based position in that set's `spans`; the pilot sheet's `<set>.<span>` key split in two. A judgement naming a span the task does not have is a 422. Empty when the task has no claims.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingSpanJudgement" }
+    },
+    "extra_answers": {
+      "description": "Answers to the task's `extra_questions`, keyed by their `id`. An unknown id, or a non-`yes`/`no` answer to a `yes-no` question, is a 422. Empty when the task has none.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingExtraAnswer" }
+    },
+    "notes": {
+      "description": "Free text: what the reader looked at, what was missing, why ambiguous. Exported verbatim as the CSV `notes` column. Empty string when none.",
+      "type": "string"
+    },
+    "version": {
+      "description": "1 on the first save for this (task, reader); +1 on every re-save. Strictly monotonic; a client that shows `Recorded …, change it and save again` can compare versions to detect a stale view.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "saved_at": {
+      "description": "ISO-8601 UTC timestamp of this version.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "GradingSpanJudgement": {
+      "title": "GradingSpanJudgement",
+      "type": "object",
+      "required": ["set", "span", "judgement"],
+      "properties": {
+        "set": {
+          "description": "An evidence set's `set_index` on the task (1-based).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "span": {
+          "description": "1-based position of the span within that set's `spans`.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "judgement": {
+          "description": "`located`: correctly located and minimal. `wrong`: wrong location. `non-minimal`: not minimal.",
+          "type": "string",
+          "enum": ["located", "wrong", "non-minimal"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "GradingExtraAnswer": {
+      "title": "GradingExtraAnswer",
+      "type": "object",
+      "required": ["id", "answer"],
+      "properties": {
+        "id": {
+          "description": "A `GradingExtraQuestion.id` of the task.",
+          "type": "string"
+        },
+        "answer": {
+          "description": "`yes` or `no` for a `yes-no` question; any string for a `text` question.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

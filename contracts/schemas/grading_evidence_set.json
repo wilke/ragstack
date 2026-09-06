@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_evidence_set.json",
+  "title": "GradingEvidenceSet",
+  "description": "One claimed evidence set — a labeler's assertion that these spans, together, are sufficient support for the document's relevance to the question (SPEC-confirmation-run.md D3). A task's `claims` is the UNION of every labeler's sets, each tagged with the labelers (`sources`) that produced it, exactly as the pilot sheet shows them. A reader judges every span of every set (`GradingVerdict.span_judgements`), addressing a span as (`set_index`, 1-based position in `spans`).",
+  "type": "object",
+  "required": ["set_index", "spans", "sources"],
+  "properties": {
+    "set_index": {
+      "description": "1-based index of the set within the task, unique per task; the `set` half of a span judgement. 1-based to match the pilot sheet's `<set>.<span>` keys and the reading guide's wording (\"set 1, span 2\").",
+      "type": "integer",
+      "minimum": 1
+    },
+    "spans": {
+      "description": "The set's spans in reading order. A span's position in this array, 1-based, is the `span` half of a span judgement.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/GradingSpan" }
+    },
+    "sources": {
+      "description": "Which labelers supplied this set — `scout`, `qwen`, `construction` (a pointed read's generation passage), `human`, … Shown as the set's tag; never empty.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "GradingSpan": {
+      "title": "GradingSpan",
+      "description": "A contiguous run of sentences inside one unit of the task's document. `unit` MUST name an existing unit index and `first_sentence` ≤ `last_sentence` MUST both exist in it — a create request that points outside the document is a 422, never a silently unrenderable span.",
+      "type": "object",
+      "required": ["unit", "first_sentence", "last_sentence", "text"],
+      "properties": {
+        "unit": {
+          "description": "0-based index into `GradingDocument.units`.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "first_sentence": {
+          "description": "0-based index of the first sentence of the span within the unit.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_sentence": {
+          "description": "0-based index of the last sentence of the span within the unit (inclusive; ≥ `first_sentence`).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "text": {
+          "description": "The span's text as the labeler quoted it, kept so the claimed answer can be shown even if it disagrees with the sentence segmentation. The UI highlights by the sentence range, not by this text.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

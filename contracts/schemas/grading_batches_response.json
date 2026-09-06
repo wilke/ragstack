@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_batches_response.json",
+  "title": "GradingBatchesResponse",
+  "description": "The batches the caller may see (GET /v1/grading/batches): every batch for an admin; for anyone else, exactly the batches that name the caller in `readers`. Newest first. Unpaginated — a deployment runs a handful of reads, not thousands.",
+  "type": "object",
+  "required": ["batches"],
+  "properties": {
+    "batches": {
+      "type": "array",
+      "items": { "$ref": "grading_batch.json" }
+    }
+  },
+  "additionalProperties": false
+}

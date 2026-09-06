@@ -1,0 +1,20 @@
+{
+  "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+  "verdict": "non-minimal",
+  "span_judgements": [
+    {
+      "set": 1,
+      "span": 1,
+      "judgement": "non-minimal"
+    },
+    {
+      "set": 2,
+      "span": 1,
+      "judgement": "located"
+    }
+  ],
+  "notes": "Joint read: sentence 4 alone suffices; set 1's sentences 3 and 5-7 are background.",
+  "adjudicated_by": "bvbrc:study-admin",
+  "version": 1,
+  "saved_at": "2026-09-06T17:41:00Z"
+}

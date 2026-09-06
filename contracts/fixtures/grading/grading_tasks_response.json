@@ -1,0 +1,183 @@
+{
+  "batch_id": "5b1f0c7e2a9d4e8f9c3b6a1d0e7f2c44",
+  "reader": "bvbrc:areader",
+  "tasks": [
+    {
+      "id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+      "batch_id": "5b1f0c7e2a9d4e8f9c3b6a1d0e7f2c44",
+      "kind": "evidence-read",
+      "pair_id": "2016_1__3797929",
+      "stratum": "model_positive",
+      "question": {
+        "id": "2016_1",
+        "type": "diagnosis",
+        "summary": "A 78 year old male presents with frequent stools and melena.",
+        "description": "78 M transferred to nursing home for rehab after CABG. Reportedly readmitted with a small NQWMI. Yesterday, he was noted to have a melanotic stool and then today he had approximately 9 loose BM w/ some melena and some frank blood just prior to transfer, unclear quantity."
+      },
+      "document": {
+        "doc_id": "3797929",
+        "title": "Lower Gastrointestinal Bleeding: Is Urgent Colonoscopy Necessary for All Hematochezia?",
+        "units": [
+          {
+            "index": 0,
+            "title": "Abstract",
+            "sentences": [
+              {
+                "i": 0,
+                "text": "Lower Gastrointestinal Bleeding: Is Urgent Colonoscopy Necessary for All Hematochezia?"
+              },
+              {
+                "i": 1,
+                "text": "Lower gastrointestinal bleeding (LGIB) is defined as acute or chronic abnormal blood loss distal to the ligament of Treitz."
+              },
+              {
+                "i": 2,
+                "text": "The incidence of LGIB is only one fifth of that of the upper gastrointestinal tract and is estimated to be 21 to 27 cases per 100,000 adults per year."
+              },
+              {
+                "i": 3,
+                "text": "Acute bleeding is arbitrarily defined as bleeding of <3 days' duration resulting in instability of vital signs, anemia, and/or need for blood transfusion."
+              },
+              {
+                "i": 4,
+                "text": "Chronic bleeding is defined as slow blood loss over a period of several days or longer presenting with symptoms of occult fecal blood, intermittent melena, or scant hematochezia."
+              },
+              {
+                "i": 5,
+                "text": "Bleeding means that the amounts of blood in the feces are too small to be seen but detectable by chemical tests."
+              },
+              {
+                "i": 6,
+                "text": "LGIB is usually chronic and stops spontaneously."
+              },
+              {
+                "i": 7,
+                "text": "Bleeding stop (80%), but male gender and older patients suffer from more severe LGIB."
+              },
+              {
+                "i": 8,
+                "text": "The optimal timing of colonoscopic intervention for LGIB remains uncertain."
+              }
+            ]
+          }
+        ]
+      },
+      "claims": [
+        {
+          "set_index": 1,
+          "spans": [
+            {
+              "unit": 0,
+              "first_sentence": 3,
+              "last_sentence": 7,
+              "text": "Acute bleeding is arbitrarily defined as bleeding of <3 days' duration resulting in instability of vital signs, anemia, and/or need for blood transfusion. Chronic bleeding is defined as slow blood loss over a period of several days or longer presenting with symptoms of occult fecal blood, intermittent melena, or scant hematochezia. Bleeding means that the amounts of blood in the feces are too small to be seen but detectable by chemical tests. LGIB is usually chronic and stops spontaneously. Bleeding stop (80%), but male gender and older patients suffer from more severe LGIB."
+            }
+          ],
+          "sources": [
+            "scout"
+          ]
+        },
+        {
+          "set_index": 2,
+          "spans": [
+            {
+              "unit": 0,
+              "first_sentence": 4,
+              "last_sentence": 4,
+              "text": "Chronic bleeding is defined as slow blood loss over a period of several days or longer presenting with symptoms of occult fecal blood, intermittent melena, or scant hematochezia."
+            }
+          ],
+          "sources": [
+            "qwen"
+          ]
+        }
+      ],
+      "extra_questions": [],
+      "readers": [
+        "bvbrc:areader",
+        "bvbrc:breader"
+      ],
+      "created_at": "2026-09-06T14:00:00Z",
+      "created_by": "bvbrc:study-admin",
+      "verdict": {
+        "task_id": "a3e9c1d57f2b4a6e8d0c1b2a3f4e5d61",
+        "reader": "bvbrc:areader",
+        "verdict": "non-minimal",
+        "span_judgements": [
+          {
+            "set": 1,
+            "span": 1,
+            "judgement": "non-minimal"
+          },
+          {
+            "set": 2,
+            "span": 1,
+            "judgement": "located"
+          }
+        ],
+        "extra_answers": [],
+        "notes": "Set 1 carries the definition sentences; sentence 4 alone supports the melena finding.",
+        "version": 2,
+        "saved_at": "2026-09-06T15:12:40Z"
+      }
+    },
+    {
+      "id": "c8d2f4a6b1e34c5d9a7b8c0d1e2f3a72",
+      "batch_id": "5b1f0c7e2a9d4e8f9c3b6a1d0e7f2c44",
+      "kind": "evidence-read",
+      "pair_id": "2016_13__3844363",
+      "stratum": "model_negative",
+      "question": {
+        "id": "2016_13",
+        "type": "test",
+        "summary": "A 43 year old woman with history of transverse myelitis leading to paraplegia, depression, frequent pressure ulcers, presenting with chills, agitation, rigors, and back pain.  Patient has stage IV decubitus ulcers on coccyx and buttocks, heels.  Admission labs significant for thrombocytosis, elevated lactate, and prolonged PT.",
+        "description": "A 43 year old woman with history of transverse myelitis leading to paraplegia, depression, frequent pressure ulcers, presenting with chills and reporting she felt \"as if dying\". Upon presentation, she denied any shortness of breath, nausea, vomiting, but did report diarrhea with two loose bowel movements per day. Patient reported that she had a fallout with her VNA and has not had any professional wound care.  Patient is agitated, with rigors, complaining of feeling cold and back pain. Patient rolled and found to have a stage IV decubitus ulcer on coccyx and buttocks, heels. Admission labs significant for thrombocytosis,  elevated lactate, and prolonged PT."
+      },
+      "document": {
+        "doc_id": "3844363",
+        "title": "Prevention of pressure ulcers at orthopaedic patients begins on the accident and emergency department",
+        "units": [
+          {
+            "index": 0,
+            "title": "Abstract",
+            "sentences": [
+              {
+                "i": 0,
+                "text": "Prevention of pressure ulcers at orthopaedic patients begins on the accident and emergency department"
+              }
+            ]
+          }
+        ]
+      },
+      "claims": [],
+      "extra_questions": [
+        {
+          "id": "other_passage",
+          "text": "Does a passage in this document, other than any claimed above, answer the question?",
+          "answer_type": "yes-no"
+        }
+      ],
+      "readers": [
+        "bvbrc:areader",
+        "bvbrc:breader"
+      ],
+      "created_at": "2026-09-06T14:00:00Z",
+      "created_by": "bvbrc:study-admin",
+      "verdict": {
+        "task_id": "c8d2f4a6b1e34c5d9a7b8c0d1e2f3a72",
+        "reader": "bvbrc:areader",
+        "verdict": "correctly-none",
+        "span_judgements": [],
+        "extra_answers": [
+          {
+            "id": "other_passage",
+            "answer": "no"
+          }
+        ],
+        "notes": "",
+        "version": 1,
+        "saved_at": "2026-09-06T15:20:05Z"
+      }
+    }
+  ]
+}

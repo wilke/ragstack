@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_task.json",
+  "title": "GradingTask",
+  "description": "One thing to grade, as the API surfaces it: the authored triple (`GradingTaskCreate`) plus what the server assigned, and — the part that enforces reader independence — the CALLER'S OWN verdict and nothing else. `verdict` is the calling reader's row or null; it is null for an admin who is not a reader. `reader_verdicts` and `adjudication` are present ONLY for an admin and ONLY once the batch has left `open` (POST …/adjudicate): a reader never receives either field, whatever the batch status, and an admin never receives them while the read is still independent. A task the caller may not see — not a reader on its batch and not an admin — is a 404, indistinguishable from an unknown id (ADR-0003 §2).",
+  "type": "object",
+  "required": [
+    "id",
+    "batch_id",
+    "kind",
+    "pair_id",
+    "question",
+    "document",
+    "claims",
+    "extra_questions",
+    "readers",
+    "created_at",
+    "created_by",
+    "verdict"
+  ],
+  "properties": {
+    "id": {
+      "description": "Opaque server-assigned task id (a uuid4 hex).",
+      "type": "string"
+    },
+    "batch_id": {
+      "description": "The batch (read) this task belongs to.",
+      "type": "string"
+    },
+    "kind": {
+      "description": "Inherited from the batch. `evidence-read`: the R-dev / R-conf protocol (SPEC §6.6). `pointed-read`: r3 §11's pointed-question population, one extra question per pair. `citation-feedback`: a production user's judgement of an answer's citations (grading-ui.md phase 5; no batch of this kind is created in phase 1).",
+      "type": "string",
+      "enum": ["evidence-read", "pointed-read", "citation-feedback"]
+    },
+    "pair_id": {
+      "description": "The study's identifier for the pair, as authored; the export's `pair_id` column.",
+      "type": "string"
+    },
+    "stratum": {
+      "description": "The sampling stratum, as authored. Absent when none was given.",
+      "type": "string"
+    },
+    "question": { "$ref": "grading_question.json" },
+    "document": { "$ref": "grading_document.json" },
+    "claims": {
+      "description": "The claimed evidence sets, as authored (empty for a model-negative pair).",
+      "type": "array",
+      "items": { "$ref": "grading_evidence_set.json" }
+    },
+    "extra_questions": {
+      "description": "As authored; empty when none.",
+      "type": "array",
+      "items": { "$ref": "grading_extra_question.json" }
+    },
+    "readers": {
+      "description": "The resolved subjects who may grade this task — the batch's `readers`, denormalised, in label order (index 0 is reader A).",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "created_at": {
+      "description": "ISO-8601 UTC timestamp.",
+      "type": "string"
+    },
+    "created_by": {
+      "description": "Subject of the admin who created the batch.",
+      "type": "string"
+    },
+    "verdict": {
+      "description": "The CALLER'S OWN verdict row, or null when the caller has not saved one (or is not a reader). Never another reader's.",
+      "oneOf": [{ "$ref": "grading_verdict.json" }, { "type": "null" }]
+    },
+    "reader_verdicts": {
+      "description": "Every reader's current verdict row, in label order, omitting readers who have not saved one. Present ONLY for an admin caller on a batch whose status is not `open`; absent otherwise.",
+      "type": "array",
+      "items": { "$ref": "grading_verdict.json" }
+    },
+    "adjudication": {
+      "description": "The joint-read verdict, or null when none has been saved. Present ONLY for an admin caller on a batch whose status is not `open`; absent otherwise.",
+      "oneOf": [{ "$ref": "grading_adjudication.json" }, { "type": "null" }]
+    }
+  },
+  "additionalProperties": false
+}

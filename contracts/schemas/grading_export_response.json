@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "grading_export_response.json",
+  "title": "GradingExportResponse",
+  "description": "The read's results in the scorer's shape (GET /v1/grading/batches/{batch_id}/export; admin; batch not `open`). A JSON envelope carrying the CSV TEXTS — the contract has no file-download convention, and one envelope is what a client saves as files and what the conformance suite can assert on.\n\n**CSVs.** One `rdev_verdicts_<label>.csv` per reader in label order, then `rdev_verdicts_ADJ.csv` — exactly the files `docs/plans/results/stage0/s0_rdev_score.py --a … --b … --adjudicated …` consume, unchanged. Each is RFC 4180 (every field double-quoted, `\"` doubled), UTF-8, `\\n` line endings, a trailing newline, header exactly `pair_id,verdict,notes`, then ONE ROW PER TASK IN BATCH ORDER whether or not a verdict exists: a task without one has an EMPTY `verdict` cell (the scorer's *not yet read*, never a verdict) and an empty `notes`. `verdict` is the vocabulary string verbatim; `notes` is the row's `notes` verbatim — span judgements and extra answers are NOT folded into the notes column (the pilot artifact did that for want of a second file); they are in `verdicts` below.\n\n**JSON.** `verdicts` is every reader's current row with the task's `pair_id` and the reader's label joined on, and `adjudications` every joint-read row — so per-span κ and the r3 §11 extra-answer rate need no second call.",
+  "type": "object",
+  "required": [
+    "batch_id",
+    "name",
+    "kind",
+    "status",
+    "rubric_sha256",
+    "order_seed",
+    "exported_at",
+    "readers",
+    "csv",
+    "verdicts",
+    "adjudications"
+  ],
+  "properties": {
+    "batch_id": { "type": "string" },
+    "name": { "type": "string" },
+    "kind": {
+      "type": "string",
+      "enum": ["evidence-read", "pointed-read", "citation-feedback"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "adjudicating", "closed"]
+    },
+    "rubric_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "order_seed": { "type": "integer" },
+    "exported_at": {
+      "description": "ISO-8601 UTC timestamp of this export.",
+      "type": "string"
+    },
+    "readers": {
+      "description": "Subject ↔ label, in label order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingReaderLabel" }
+    },
+    "csv": {
+      "description": "The reader CSVs in label order, then the adjudicated one.",
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/GradingExportCsv" }
+    },
+    "verdicts": {
+      "description": "Every reader's current verdict row (readers who have not saved one contribute nothing), ordered by task in batch order, then by label.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingExportVerdictRow" }
+    },
+    "adjudications": {
+      "description": "Every task's current joint-read row, in batch order; tasks without one contribute nothing.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/GradingExportAdjudicationRow" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "GradingReaderLabel": {
+      "title": "GradingReaderLabel",
+      "type": "object",
+      "required": ["subject", "label"],
+      "properties": {
+        "subject": { "type": "string" },
+        "label": { "type": "string", "pattern": "^[A-Z]$" }
+      },
+      "additionalProperties": false
+    },
+    "GradingExportCsv": {
+      "title": "GradingExportCsv",
+      "type": "object",
+      "required": ["filename", "reader", "label", "content"],
+      "properties": {
+        "filename": {
+          "description": "`rdev_verdicts_<label>.csv` for a reader, `rdev_verdicts_ADJ.csv` for the adjudicated sheet.",
+          "type": "string",
+          "pattern": "^rdev_verdicts_(?:[A-Z]|ADJ)\\.csv$"
+        },
+        "reader": {
+          "description": "The reader's resolved subject; null for the adjudicated sheet.",
+          "type": ["string", "null"]
+        },
+        "label": {
+          "description": "`A`, `B`, … for a reader; `ADJ` for the adjudicated sheet.",
+          "type": "string",
+          "pattern": "^(?:[A-Z]|ADJ)$"
+        },
+        "content": {
+          "description": "The CSV text (see the schema description for its exact form).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GradingExportVerdictRow": {
+      "title": "GradingExportVerdictRow",
+      "description": "A `GradingVerdict` joined with the task's `pair_id`/`stratum` and the reader's label.",
+      "type": "object",
+      "required": [
+        "pair_id",
+        "task_id",
+        "reader",
+        "label",
+        "verdict",
+        "span_judgements",
+        "extra_answers",
+        "notes",
+        "version",
+        "saved_at"
+      ],
+      "properties": {
+        "pair_id": { "type": "string" },
+        "stratum": { "type": "string" },
+        "task_id": { "type": "string" },
+        "reader": { "type": "string" },
+        "label": { "type": "string", "pattern": "^[A-Z]$" },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "correct",
+            "wrong-location",
+            "non-minimal",
+            "missed-evidence",
+            "correctly-none",
+            "ambiguous"
+          ]
+        },
+        "span_judgements": {
+          "type": "array",
+          "items": { "$ref": "grading_verdict.json#/$defs/GradingSpanJudgement" }
+        },
+        "extra_answers": {
+          "type": "array",
+          "items": { "$ref": "grading_verdict.json#/$defs/GradingExtraAnswer" }
+        },
+        "notes": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 },
+        "saved_at": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "GradingExportAdjudicationRow": {
+      "title": "GradingExportAdjudicationRow",
+      "description": "A `GradingAdjudication` joined with the task's `pair_id`/`stratum`.",
+      "type": "object",
+      "required": [
+        "pair_id",
+        "task_id",
+        "verdict",
+        "span_judgements",
+        "notes",
+        "adjudicated_by",
+        "version",
+        "saved_at"
+      ],
+      "properties": {
+        "pair_id": { "type": "string" },
+        "stratum": { "type": "string" },
+        "task_id": { "type": "string" },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "correct",
+            "wrong-location",
+            "non-minimal",
+            "missed-evidence",
+            "correctly-none",
+            "ambiguous"
+          ]
+        },
+        "span_judgements": {
+          "type": "array",
+          "items": { "$ref": "grading_verdict.json#/$defs/GradingSpanJudgement" }
+        },
+        "notes": { "type": "string" },
+        "adjudicated_by": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 },
+        "saved_at": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
