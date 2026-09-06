@@ -555,7 +555,7 @@ Two consequences a reader should hold onto:
 **Stage 0 extends that habit by one step, and the step matters.** A power floor tells you
 whether an effect of a given size *could* be seen. It says nothing about whether the
 instrument is measuring the thing at all. Stage 0's σ_d values were the best in the record —
-0.000 to 0.062 against a 0.158 requirement — and every one of them was the standard deviation
+0.000 to 0.081 against a 0.158 requirement — and every one of them was the standard deviation
 of a quantity pinned at 1.7–6.9 % coverage. The pre-registration caught it because §7.6
 requires the *manipulation checks* to be read before any contrast is, so a floored endpoint
 disqualifies its own variance estimate instead of flattering it.

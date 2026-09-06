@@ -61,7 +61,8 @@ n = 80 on any contrast.
 ### The trap this directory exists to document
 
 Applied mechanically, §8.5.5's power rule reads **"passes" on all five contrasts** —
-σ_d 0.060 / 0.000 / 0.060 / 0.026 / 0.062 against a 0.1577 requirement. That reading is wrong
+σ_d **0.070 / 0.000 / 0.081 / 0.029 / 0.064** against a 0.1577 requirement (the governing
+model-based values of row 2; the direct row-1 estimates are lower still). That reading is wrong
 and [`RESULTS-stage0-calibration.md`](RESULTS-stage0-calibration.md) § 4 refuses it. `N2` is
 the proof: σ_d = **0.0000** with `p_flip` = **0.0000** means the shipping arm and the 0 %-overlap
 arm covered *identical* unit sets on all ten topics — **at 1.7 % coverage**. That is not two
