@@ -96,6 +96,7 @@ The scripts honour `RAG_DATA` and `RAG_IMAGES` env vars (defaulting to `$HERE/da
 
 ### How work gets done here
 
+- **When work can be decomposed, delegate bounded implementation and test tasks to Sonnet or Opus subagents. Use Fable for planning, integration, and review.**
 - **Delegate implementation to subagents**, one task per worktree under `~/Development/worktrees/`. Match the model to the task: a mechanical, well-specified change is fine on a smaller model; a new external contract, a durable on-disk format, or anything touching authorization or data loss gets the strongest one.
 - **Use Fable to plan and to review.** Every PR gets a Fable review before merge, and any operation that touches live infrastructure gets a Fable plan before it starts. The reviewer *verifies independently* — runs the suite, reproduces the claim, probes the failure mode — rather than reading the diff and agreeing. Reviews in this repo have caught what green tests could not: fakes encoding a wrong engine contract, a vacuous test that passed with the guard removed, a 1.7 GB memory regression, three separate test paths defaulting to production.
 - **Never stop a service by process-name pattern.** `pkill -f "uvicorn …"` once took down every API on the host — production runs the same command line as every scratch server (#402). Stop by the pid recorded at launch (`… & echo $! > "$scratch/api.pid"`), or resolve by port and verify `/proc/<pid>/cwd` first. Scratch servers bind an ephemeral high port. `pgrep` returning nothing is a fleet-wide alarm, not proof your cleanup worked.
