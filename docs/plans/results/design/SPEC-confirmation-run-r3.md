@@ -591,10 +591,9 @@ unit-level sensitivity and overlap-tolerant variant restated; NEGATIVE control m
 
 Recorded here so the next session does not have to reconstruct them.
 
-1. **A pointed-question query population (§1.1).** Whether to add Leg B-style generated
-   queries or Leg C citances as a confirmatory population before any size decision is
-   called final, or to accept the endpoint-as-proxy argument with its stated limitation.
-   Cost of adding: a second labeling pass and a second human read on a smaller set.
+1. ~~A pointed-question query population (§1.1).~~ **Decided 2026-09-06: add one.** Design
+   in §11. Stage 0b′ proceeds under the proxy meanwhile; the confirmation run requires the
+   coarse arm to pass on both populations, subject to §11's power clause.
 2. **How to build the union gold (§3.7 item 6).** Proposed: (a) sample each local judge
    five times per pair under the whole-sentence-anchor protocol (Scout ≈ 1.3 s per pair,
    Qwen ≈ 9 s; ≈ 3 fleet-hours total, no API cost) and measure whether the union
@@ -607,3 +606,70 @@ Recorded here so the next session does not have to reconstruct them.
    against it.
 3. **The anchor fix (§3.7 item 1):** one anchor plus a sentence count, or whole-sentence
    quotes.
+
+---
+
+## 11. The pointed-question population — decided 2026-09-06
+
+**What.** A second query population of the declared shape — short, specific, one finding
+or number or method, answered by one passage — generated on the **same 32,663-document
+Stage 0 corpus** so that both populations retrieve against one index per arm. Construction
+follows the Leg B re-run (`../pilots/RESULTS-legB-rerun.md`, `legb2_gen.py`): a query is
+written *from* a deep section of a source article, must name a rare entity that occurs in
+that section, is held to ≈ 12 words and one clause, and is screened for leakage — IDF
+overlap against the title + abstract below the 0.80 `title_answerable` bar, and the entity
+absent from the front matter.
+
+**Why it was added, and the four reasons it might not have been.** The declared
+population is pointed questions; the run's queries are Leg A's clinical narratives; the
+reach endpoint is driven by the query the retriever sees, and narratives are the easier
+test for coarse chunks (§1.1). Against adding it: (i) generated queries can be too easy
+to separate arms — Phase 0 measured Leg B at ~15× easier than CDS, `PH@10` ≈ 0.97–0.99;
+(ii) the construction passage is one location, and D4 counts any complete set, so an arm
+delivering a *different* valid passage is scored as missing; (iii) two populations × two
+endpoints is a four-way conjunction and the pointed set may be underpowered — the Leg B
+pilot's σ_d of 0.152 on document nDCG implied ~1,500 queries for δ = 0.02; (iv) it delays
+the confirmation run by a generation pass, a labeling pass and a ~50-pair human read.
+Each has a guard below.
+
+**Guards, pre-registered.**
+
+1. **Discrimination gate before it counts.** On the development topics' share of the set,
+   the pointed population must pass the same check the CDS set passed (top-10 document sets
+   differ between the size extremes for ≥ 25 % of queries) **and** its confirmatory
+   `EPACK@16k` must sit inside [0.15, 0.90] for every arm. A population every arm passes
+   is not a gate; if it fails discrimination it is reported as a descriptive population,
+   labeled so, and the CDS population alone carries the decision under §1.1's limitation.
+2. **Gold = construction passage ∪ labeler-found alternatives.** The section the query was
+   written from is the primary evidence set, recorded at generation (no labeler needed for
+   it). Once a labeler passes §3.7's gates, its found sets on the same (query, document)
+   pairs are unioned in under D3 rules 1–3. The human read on this population (≈ 50 pairs,
+   two readers, §6.6.2 protocol) asks one extra question per pair: *does a delivered passage
+   other than the construction passage answer the question?* Its rate bounds how much
+   construction-only gold under-counts.
+3. **Sized from its own spread, not from a guess.** Stage 0b′ generates **≥ 150** queries on
+   the dev topics' documents and measures σ_d on both endpoints per contrast. The
+   confirmation-run count is set from that measurement at the same 80 % power and α as
+   the CDS population, with the joint power of the four-way conjunction printed. If the
+   count exceeds what the budget allows (**cap: 600 queries**), the pointed population is
+   re-declared a **reported secondary** *before* freeze, with its projected power stated,
+   and the decision reverts to the CDS population under §1.1's limitation. It is never a
+   silent fourth gate.
+4. **Overlap with the labeler work, not after it.** Generation and the construction-gold
+   half need no labeler and run now; the union and the human read wait for §3.7.
+
+**Decision rule, amended (§3.6).** A candidate index arm is adopted only if it is
+non-inferior at ε on both endpoints on **both** populations (four one-sided tests, each at
+α = 0.025; the family's size is bounded by the per-component α as before; joint power
+per guard 3). The superiority family (§3.5) is read on the CDS population as registered,
+with the pointed population's reading reported beside it as descriptive.
+
+**Cost.** Generation: ~150 queries at Stage 0b′, up to 600 for the confirmation run, on
+`mango:8003` at the Leg B re-run's measured 43 min per 400 — under two hours. No new
+embeddings. Human read: ≈ 50 pairs × 2 readers ≈ 10–15 person-hours. Labeling of the
+union: one pass over ≤ 600 pairs once a labeler passes.
+
+**Toward the real population.** Production hashes query text by design. A config flag to
+log query text on the **dev and demo tenants only**, with a notice to their users, is
+filed as an issue so that a set of real agent queries accumulates and can replace the
+generated one; it is not part of this run.
