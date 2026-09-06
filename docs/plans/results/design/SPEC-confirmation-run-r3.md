@@ -7,10 +7,22 @@ this document wins. Stage 0's verdict on revision 2 is in
 [`../stage0/RESULTS-stage0-calibration.md`](../stage0/RESULTS-stage0-calibration.md); this
 revision is the response its §6 asked for, "stated so the next revision is not a guess."*
 
-> **Status, 2026-09-06.** §5 step 2 — relabel the development set under §3.7 — **has been
-> executed** ([`../stage0/RESULTS-stage0b-relabel.md`](../stage0/RESULTS-stage0b-relabel.md),
-> PR #501). **Neither judge passed the machine gates.** The run is stopped at step 2 pending
-> the labeling-protocol changes in §3.7 (items 1, 5, 6) and the owner decisions in §10.
+> **Status, 2026-09-06 (second update).** §5 step 2 has now run **twice**. First under §3.7
+> as drafted ([`../stage0/RESULTS-stage0b-relabel.md`](../stage0/RESULTS-stage0b-relabel.md),
+> #501): neither judge passed. Then as **r3.1** — whole-sentence anchors (decision C), five
+> presentations per pair, union saturation
+> ([`../stage0/RESULTS-stage0b-relabel-r31.md`](../stage0/RESULTS-stage0b-relabel-r31.md),
+> #507): **the copy gate now passes for both judges** (hallucinated 0.025 / 0.003; the
+> closing-anchor failure went from 54 of 58 to 6 of 22), **the whether-gate passes for both**
+> (0.92 / 0.98), and **self-consistency fails for both** (0.38 / 0.56), with the union of
+> locations **not saturating** at five presentations (+10 % per presentation). The reviewer's
+> check on the committed labels: a sentence-level majority core is no more stable (split-half
+> overlap 0.46–0.49); graded per-sentence support is moderately stable (split-half r ≈ 0.59).
+> **Reading:** on CDS topical relevance, *where* the evidence is is intrinsically diffuse — a
+> relevant document has many sentences that justify relevance and the judges sample among
+> them. No labeler protocol will make a single canonical span set stable at ≥ 0.90. The
+> pointed population (§11, #506: 177 queries with construction gold) has a well-defined
+> *where* by construction. The run remains stopped at step 2 pending **§10 item 4**.
 > Steps 3–7 have not run. Prediction Q1 is scored **FAIL** (§7).
 
 ---
@@ -604,6 +616,20 @@ Recorded here so the next session does not have to reconstruct them.
    saturate"; (b) answers "can any labeler pass the gates as written" and breaks the
    two-judge tie on *where*. Neither substitutes for the human read; both are scored
    against it.
+4. **What "where" means on the CDS population — the decision r3.1 forces.** Three options,
+   each measured on the committed r3.1 labels:
+   (a) **Graded support gold on CDS.** Per sentence, the fraction of the ten readings (two
+   judges × five presentations) that include it; `EPACK` becomes the fraction of a
+   document's support mass that the delivered text contains. Stability of the weights is
+   moderate (split-half r ≈ 0.59, top-3 overlap 0.60), stated as the instrument's reliability
+   rather than gated at 0.90. The human read validates the top-supported sentences.
+   (b) **Move the containment primary to the pointed population**, where gold is the
+   construction passage and the labeler is not needed for it; CDS carries the reach endpoint
+   (`ERET`, which needs only *whether*, at 0.92–0.98 agreement) and a descriptive graded
+   `EPACK`. This is the cleanest reading of what the data say and of §1's declaration.
+   (c) **Keep chasing a canonical span set** — a third-family judge, more presentations. The
+   saturation curve argues against it: the union grows, it does not converge.
+   Recommendation: **(b), with (a) as CDS's descriptive containment.** Neither changes ε.
 3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
    labeler quotes the first and last sentence of each span in full (one sentence when the
    span is one sentence); each quote is located by exact-then-normalised match of its first
