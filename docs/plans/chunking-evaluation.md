@@ -32,6 +32,27 @@ above.** The Leg B grid, a small-corpus chunk-granularity re-score and a breadth
 | **Size must be read budget-matched, and the answer flips** | fixed-`k` favours `tok2048`; at a matched 4,096-token budget **`tok256` wins by 2.2–3.8×**, on two corpora, two query styles and four breadth rungs. The first reading on which the two legs agree — see the end of § Pre-registration |
 | **`words`/`sentence` rows are frozen at a legacy fill** | `55a0fc2` (#488) changed the default, so every such row here is a `budget_mode="summed"` measurement and is not comparable to a future run — see § Nominal size is not realised size. `semantic`'s size knob was never the `size` parameter either |
 
+**Update 2026-09-05 (later) — the confirmation run built to settle the size question was
+stopped by its own calibration.** Everything above measures chunking with *document* metrics.
+The **confirmation run** ([`results/design/SPEC-confirmation-run.md`](results/design/SPEC-confirmation-run.md))
+was the pre-registered study built to replace them: 90 TREC CDS topics split 10 development /
+80 confirmation, six index arms over one shared 32.7k-document corpus, five contrasts, and a
+passage-level primary endpoint — `EUC@4096`, the fraction of a topic's located evidence units
+surviving into a 4,096-generator-token context. **Stage 0**, the development-set calibration
+that gates its power arithmetic, ran and returned
+**`GATE-NOT-EVALUABLE — row 9 precondition failed`** on all five contrasts:
+
+| what | reading |
+|---|---|
+| **The gold is not reproducible — a study stop** | re-shown the same document, the labeling model's span self-consistency is **0.323** against a ≥ 0.90 gate, on all three readings of the rule. It agrees about *whether* a document holds evidence (0.871) and disagrees about *where* (0.32). No n rescues an unstable denominator |
+| **The endpoint is on a floor** | development `EUC@4096` **0.017–0.069** against a required [0.15, 0.90]. At B = 4,096 the packed context holds 1.1 of a topic's 10.1 unit-bearing documents; packing the whole frozen D = 50 pool at unlimited budget still leaves the shipping arm at 0.025. **The cause is a mismatch inside the specification**, between its pooling rule, its unit-capping rule and its budget |
+| **`ES-Hit@4096` resolves negatively** | per-topic discordance **0.10–0.40** where ≤ 0.025 is needed — not resolvable at n = 80 on any contrast |
+
+The literal power arithmetic reads *"passes"* on all five, and that reading is empty: `N2`'s
+σ_d = 0.0000 with `p_flip` = 0.0000 means two arms covered **identical** unit sets on all ten
+topics — at 1.7 % coverage. **The failure is not n = 80.** The run, its full harness and the
+stop are in [`results/stage0/`](results/stage0/README.md).
+
 The run reports are in [`results/`](results/), copied verbatim and indexed in
 [`results/README.md`](results/README.md) — which also lists, in one place, the conclusions
 this record later revised.
@@ -964,3 +985,53 @@ documents — `k = 20` retrieves only **21–32%** of the gold
 passages and the curve is still climbing (`k*`, the smallest `k` reaching 90% of the `k = 20`
 value, is **20 at every rung**). On the easier leg, `PH@10 ≈ 0.97–0.99` and `k = 20` is free.
 Any `k` quoted in a decision table must name which difficulty regime it was chosen under.
+
+**Added 2026-09-05 — the confirmation run's decision table, and why none of its rows moved.**
+The passage-level study designed to settle the top three rows above ran its development-set
+calibration ([`results/stage0/`](results/stage0/README.md)) and stopped there. Its five
+pre-registered contrasts map onto this table as follows:
+
+| contrast | the row it was built to settle | Stage 0 |
+|---|---|---|
+| **N1** `fixed_tok512` − `fixed_tok1024_ov0pct`, non-inferiority | chunk size for the OA load — the 2.157× storage lever, measured on this corpus at 423,386 → 196,247 vectors | not evaluable |
+| **N2** `fixed_tok512` − `fixed_tok512_ov0pct`, non-inferiority | keep the 64-token overlap? | not evaluable |
+| **R1** `fixed_tok256_ov0pct` − `fixed_tok2048_ov0pct`, superiority | the size axis at its extremes, budget-matched | not evaluable, **and confounded** — see below |
+| **R2** `header512` − `fixed_tok512_ov0pct`, superiority | build the structure-aware chunker? | not evaluable |
+| **R3** `parent256` − `fixed_tok512`, superiority | small-chunk retrieval with coarse delivery | not evaluable |
+
+**No row above may be updated from this run in either direction.** In particular the overlap
+row still rests on the bounded-interval evidence from Legs A and B; `N2`'s σ_d = 0.0000 is a
+floored measurement, not a confirmation of it.
+
+**A confound in the confirmation run's own design, worth stating because a version of it
+shadows every budget-matched reading above.** The confirmation run counts budgets in the
+*generator's* tokenizer and chunk sizes in the *embedder's*. On this corpus a 2,048-token
+chunk under the embedding tokenizer is ≈ 1,630 under the generator's, so at a 4,096-token
+budget the `tok2048` arm stops at ~80 % of the budget (mean 3,269 realised tokens) while
+`tok256` fills to 97 % (3,994) — a **18 % under-supply of the coarse arm** in the primary
+contrast R1, in the direction that flatters fine chunks.
+
+The earlier budget-matched runs do **not** carry this: `results/rescore/` and
+`results/breadth-k/` count the budget in the same tokenizer they chunk in, and disclose
+realised budgets of 3,696–4,054 and 3,518–4,054 — matched to within 9 % and 13 %. What remains
+there is the unavoidable discretisation shortfall, which is roughly half the size and already
+on the record. So the `tok256`-beats-`tok2048` result above stands as measured; what changes
+is that **any future budget-matched comparison must publish its realised budgets per arm and
+name the tokenizer each side was counted in**, because when the two tokenizers differ the
+shortfall doubles and runs in the direction of the conclusion already drawn.
+
+**What the next revision has to change, from the measurement rather than from taste** (none of
+these is a decision this plan takes):
+
+1. **Tie the evidence denominator to the budget.** The unit-capping rule spreads a topic's
+   units across up to 12 documents while a 4,096-token context admits 5–10. Either the cap
+   follows what a realistic context can hold, or the endpoint is redefined per *document*
+   rather than per topic.
+2. **Fix the labeler or the protocol, not the sample size.** An index-primary, quote-verified
+   protocol asks a non-reasoning model to track sentence numbers across units with dozens of
+   sentences, and it misplaces 35 % of them. A quote-primary protocol — the relocation the run
+   had to implement anyway — or a reasoning judge would both be defensible. A second judge was
+   provisioned and never needed: the first failed against *itself*.
+3. **Count budgets and chunk sizes in the same tokenizer**, or state that the coarse arms are
+   under-supplied and bound the effect.
+4. **ε does not move.** Nothing measured licenses widening the equivalence margin.

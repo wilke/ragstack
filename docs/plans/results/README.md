@@ -32,7 +32,8 @@ pre-registration it was written against (where one exists), and the machine-read
 | [`pilots/`](pilots/) | the §7a oracle, the Leg B and Leg C pilots, the Leg B re-run | 2026-09-04/05 |
 | [`rescore/`](rescore/) | small-corpus chunk-granularity re-score | 2026-09-05 |
 | [`breadth-k/`](breadth-k/) | breadth × k | 2026-09-05 |
-| [`design/`](design/) | four analyses written across the whole record, plus five figures | 2026-09-05 |
+| [`stage0/`](stage0/) | the confirmation run's development-set calibration — **and the stop it returned** | 2026-09-05 |
+| [`design/`](design/) | four analyses written across the whole record, plus five figures; the confirmation run's pre-registration and labeling rubric | 2026-09-05 |
 
 Read them in that order — most have a "read this first" block that assumes its predecessors.
 
@@ -46,6 +47,9 @@ Read them in that order — most have a "read this first" block that assumes its
 - **Cross-run links between reports do resolve**, because this layout matches the run
   directory's — `RESULTS-legBC-pilots.md` reaches its predecessor as
   `../stage1/RESULTS-stage1-legA.md`, and that is where it is.
+- **[`stage0/`](stage0/) is the exception to the first bullet.** It ships its harness and its
+  artifacts, so most of its links do resolve; the handful that do not are mapped in
+  [`stage0/README.md`](stage0/README.md) § *Where the write-up's own paths point*.
 - **Links back to the plans are written as `../../../docs/plans/…`, and those are the other
   three.** They were written from a run directory two levels up from the repo root and
   resolved from a flat `results/`; from `results/<run>/` they are one `../` short. The files
@@ -256,6 +260,64 @@ is `tok2048`, best `PR_B@4096` is `tok256`, by **2.2× at m=1 and 3.8× at m=16*
 
 ---
 
+### [`stage0/`](stage0/) — the calibration that stopped the confirmation run
+
+[`stage0/README.md`](stage0/README.md) is the guide; the write-up is
+[`RESULTS-stage0-calibration.md`](stage0/RESULTS-stage0-calibration.md) and the rendered
+gate table is [`TABLE-8.5.7.md`](stage0/TABLE-8.5.7.md). Unlike every other run here, this
+one ships **its full harness** (`stage0/s0_*.py`, `run_0b.sh`) and every artifact its numbers
+are quoted from. The pre-registration it was run against is
+[`design/SPEC-confirmation-run.md`](design/SPEC-confirmation-run.md) and the labeling rubric
+is [`design/RUBRIC-evidence.md`](design/RUBRIC-evidence.md), frozen and hashed before the
+first labeling call.
+
+Everything above this line measured chunking with *document* metrics on judged sets. The
+**confirmation run** was the pre-registered study built to replace them: 90 TREC CDS topics
+split 10 development / 80 confirmation, six index arms over one 32.7k-document corpus, five
+contrasts, and a passage-level primary endpoint — `EUC@4096`, the fraction of a topic's
+located evidence units that survive into a 4,096-generator-token context. **Stage 0 is the
+development-set run that has to clear before the other 80 topics are touched.**
+
+**Verdict: `GATE-NOT-EVALUABLE — row 9 precondition failed`, on all five contrasts.** Three
+findings, in descending order of consequence:
+
+- **The gold is not reproducible — a study stop.** Re-shown the same document, the labeling
+  model's span self-consistency is **0.323** against a ≥ 0.90 gate (0.387 under both
+  alternative readings, so it is checker-independent). It agrees with itself about *whether* a
+  document contains evidence (0.871) and disagrees about *where* (0.32); only **64.5 %** of
+  verified spans sat at the indices it claimed.
+- **The endpoint is on a floor.** Development `EUC@4096` is **0.017–0.069** against a required
+  **[0.15, 0.90]**. At B = 4,096 the packed context holds **1.1 of a topic's 10.1**
+  unit-bearing documents, and packing the *entire* frozen D = 50 pool at unlimited budget
+  still leaves the shipping arm at 0.025. The cause is a mismatch inside the specification —
+  its pooling rule, its unit-capping rule and its budget pull in different directions.
+- **The binary secondary resolves cleanly, negatively.** `ES-Hit@4096` discordance is
+  **0.10–0.40** where ≤ 0.025 is needed: not resolvable at n = 80 on any contrast.
+
+**Read the σ_d row only with row 9 attached.** Applied mechanically the power rule reads
+"passes" on all five contrasts — and `N2`'s σ_d = 0.0000 with `p_flip` = 0.0000 is the proof
+that the reading is empty: the shipping arm and the 0 %-overlap arm covered *identical* unit
+sets on all ten topics, at 1.7 % coverage. Two configurations both covering almost nothing is
+not two configurations shown to be equivalent. **The failure is not n = 80** — at n = 80 the
+design would have ample power if the endpoint behaved.
+
+This does not touch the overlap conclusion recorded elsewhere in this tree. That rests on the
+bounded-interval evidence from Leg A and Leg B; Stage 0's `N2` zero neither supports nor
+undermines it, because a floored endpoint cannot speak either way.
+
+Cost: 1.13 B embedding tokens over six arms in **1.93 fleet-hours**, 0 retries in 168,134
+requests; 972 labeling requests. The 80 confirmation topics were never embedded, ranked,
+packed, labeled or inspected, and no store was contacted at any point.
+
+**Item 8 is `PENDING-HUMAN`.** The ≥ 100-pair two-independent-reader label validation was not
+performed and **no agent read was substituted** — no κ(human–human) appears anywhere in the
+write-up. The draw is complete and the sheets are rendered; the read is 32–48 person-hours.
+The draw itself already found something: the deep-section stratum wanted 20 pairs and **only 3
+existed** across all 308 development pairs, which is the labeler's abstract bias measured
+directly.
+
+---
+
 ## The design analyses
 
 Four written across the whole record rather than against one run. They contain some of the
@@ -275,6 +337,12 @@ sharpest corrections in the set, and several of their findings are not in any ru
 Five SVGs in [`design/figures/`](design/figures/). Hand-written through a ~150-line
 dependency-free plotting layer — `matplotlib` is not installed in any interpreter on the host
 and nothing was installed to make them.
+
+A sixth lives with its run rather than here:
+[`stage0/figures/fig-stage0-euc-floor.svg`](stage0/figures/fig-stage0-euc-floor.svg), which
+shows why the confirmation run's endpoint never left the floor and why no budget lifts it off.
+It is the only figure in the tree committed together with the script that draws it
+(`stage0/fig_stage0.py`), because Stage 0's whole harness is committed.
 
 | file | the claim it carries |
 |---|---|
@@ -455,9 +523,12 @@ corpus before embedding.
 - **The `.npy` similarity matrices and embeddings** — 1.8 GB, and regenerable.
 - **`chunks_*.jsonl` and the fetched JATS** — hundreds of megabytes, regenerable from the
   corpus and the recorded config.
-- **The harnesses themselves.** ~7,178 lines of run code across the nine runs. Each report's
-  file manifest names what ran; the code is not in the repo. The provenance analysis names
-  this as the record's largest remaining gap.
+- **The harnesses themselves,** for the nine runs above the Stage 0 line. ~7,178 lines of run
+  code. Each report's file manifest names what ran; the code is not in the repo. The
+  provenance analysis names this as the record's largest remaining gap — **`stage0/` is the
+  first run to close it**, and ships every line that produced its numbers.
+- **Stage 0's two R-dev readsheets** (15 MB each) and its 37 GB of embeddings, pools and
+  packed contexts. The 100-pair draw itself is committed, so the sheets regenerate.
 
 ---
 
@@ -480,3 +551,15 @@ Two consequences a reader should hold onto:
   looked and found nothing" and "we could not have seen anything" are not the same sentence.
 - **An unresolved reading is never written up as a null**, even when it would tidy the story.
   The `rescore` run's own pre-registered primary metric does not resolve, and says so.
+
+**Stage 0 extends that habit by one step, and the step matters.** A power floor tells you
+whether an effect of a given size *could* be seen. It says nothing about whether the
+instrument is measuring the thing at all. Stage 0's σ_d values were the best in the record —
+0.000 to 0.062 against a 0.158 requirement — and every one of them was the standard deviation
+of a quantity pinned at 1.7–6.9 % coverage. The pre-registration caught it because §7.6
+requires the *manipulation checks* to be read before any contrast is, so a floored endpoint
+disqualifies its own variance estimate instead of flattering it.
+
+- **A third claim joins the two above: "not evaluable".** Not a pass, not a null, not
+  unresolved. `GATE-NOT-EVALUABLE` says the instrument failed its own precondition, so its
+  output carries no information about the question — including the reassuring-looking output.
