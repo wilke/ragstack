@@ -742,6 +742,10 @@ Items 1–4 stand; item 5 is partly discharged and two new ones join it.
    table).
 8. **THE GATING ONE — declare which query population the study optimises for**, or accept
    that the chunk-size axis produces two conditional recommendations rather than one answer.
+   **Declared 2026-09-06** — pointed, evidence-seeking questions from research agents; see
+   [`results/design/SPEC-confirmation-run-r3.md`](results/design/SPEC-confirmation-run-r3.md) §1.
+   Pruning on the size axis is now permitted by that run's contrasts, still not by either
+   leg's direction.
    Legs A and B contradict each other on it with non-overlapping intervals and both
    directions are construction-predicted (§14.5). Everything downstream of "which configs
    survive to stage 2" waits on this. The current plan of record — keep the size axis intact,
