@@ -24,6 +24,19 @@ revision is the response its §6 asked for, "stated so the next revision is not 
 > pointed population (§11, #506: 177 queries with construction gold) has a well-defined
 > *where* by construction. The run remains stopped at step 2 pending **§10 item 4**.
 > Steps 3–7 have not run. Prediction Q1 is scored **FAIL** (§7).
+>
+> **Third update, 2026-09-07 — the §10 item 4 measurements are in.** The r3.1 *extension*
+> ([`../stage0/RESULTS-stage0b-relabel-r31ext.md`](../stage0/RESULTS-stage0b-relabel-r31ext.md),
+> #512: Scout ×20, Qwen ×10) finds **graded per-sentence support reliable at 0.92 with 30 pooled
+> readings** (0.71 at 10, 0.86 at 20; three pre-registered predictions passed), while the union
+> of locations is still growing at k = 20 and the span gates still fail on every reading. The
+> **Claude judge family** ([`../stage0/RESULTS-stage0b-claude-judges.md`](../stage0/RESULTS-stage0b-claude-judges.md),
+> #514: Sonnet 5, Opus 5, Fable 5.1 at 251/308, one reading each via the CLI) passes the copy
+> gate outright (≤ 0.002) and picks sentences carrying 3–4× the local judges' pooled support,
+> so the graded gold is **not a single-family artefact**; Opus and Fable overlap at Jaccard 0.50.
+> Reliable is not valid: cross-judge support correlation is 0.30 and only the human read can
+> say which "where" is right. Option (a) is measured usable at 30 readings/pair; option (c)
+> does not converge; option (b) is untouched. The stop at step 2 stands pending the human read.
 
 ---
 
@@ -630,6 +643,12 @@ Recorded here so the next session does not have to reconstruct them.
    (c) **Keep chasing a canonical span set** — a third-family judge, more presentations. The
    saturation curve argues against it: the union grows, it does not converge.
    Recommendation: **(b), with (a) as CDS's descriptive containment.** Neither changes ε.
+   **Measured 2026-09-07 (owner chose to pursue all three):** (a) reliability 0.92 at 30
+   readings — usable, cost 3.5 fleet-hours per 308 pairs (#512); (c) the union does not converge
+   by k = 20 (#512); a third family agrees with the pooled support at 3–4× baseline (#514).
+   Validity of (a) is the human read's to establish; the pilot sheet and the Grading view are
+   ready for it. Decision still open: whether (a) becomes *confirmatory* on CDS after the read,
+   or stays descriptive under (b).
 3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
    labeler quotes the first and last sentence of each span in full (one sentence when the
    span is one sentence); each quote is located by exact-then-normalised match of its first
