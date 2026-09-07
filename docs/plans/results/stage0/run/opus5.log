@@ -1,0 +1,33 @@
+judge=opus5 model=claude-opus-5 pairs=308 to_run=308 already_done=0
+isolation OK: 4812 context tokens ({'input_tokens': 2, 'cache_creation_input_tokens': 4810, 'cache_read_input_tokens': 0}) for 13295 chars (budget 7597, ratio 1.267)
+  10/308  43s  4.34s/pair  $0.80 recorded (counter $0.80)  proj $25
+  20/308  92s  4.58s/pair  $1.85 recorded (counter $1.85)  proj $29
+  30/308  138s  4.59s/pair  $3.03 recorded (counter $3.03)  proj $31
+  40/308  185s  4.62s/pair  $4.97 recorded (counter $4.97)  proj $38
+  50/308  242s  4.84s/pair  $7.00 recorded (counter $7.00)  proj $43
+  60/308  287s  4.78s/pair  $8.37 recorded (counter $8.37)  proj $43
+  70/308  350s  5.00s/pair  $10.17 recorded (counter $10.17)  proj $45
+  80/308  397s  4.96s/pair  $11.60 recorded (counter $11.60)  proj $45
+  90/308  457s  5.08s/pair  $13.45 recorded (counter $13.45)  proj $46
+  100/308  512s  5.12s/pair  $14.77 recorded (counter $14.77)  proj $45
+  110/308  554s  5.03s/pair  $15.78 recorded (counter $15.78)  proj $44
+  120/308  593s  4.94s/pair  $16.84 recorded (counter $16.84)  proj $43
+  130/308  635s  4.88s/pair  $17.96 recorded (counter $17.96)  proj $43
+  140/308  703s  5.02s/pair  $19.05 recorded (counter $20.03)  proj $42
+  150/308  808s  5.39s/pair  $19.92 recorded (counter $31.68)  proj $41
+  160/308  932s  5.83s/pair  $21.37 recorded (counter $44.83)  proj $41
+  170/308  1050s  6.18s/pair  $22.58 recorded (counter $56.76)  proj $41
+  180/308  1184s  6.58s/pair  $23.89 recorded (counter $69.95)  proj $41
+  190/308  1264s  6.65s/pair  $51.09 recorded (counter $76.69)  proj $83
+  200/308  1306s  6.53s/pair  $78.68 recorded (counter $78.68)  proj $121
+  210/308  1339s  6.38s/pair  $80.50 recorded (counter $80.50)  proj $118
+  220/308  1384s  6.29s/pair  $81.69 recorded (counter $81.69)  proj $114
+  230/308  1423s  6.19s/pair  $82.62 recorded (counter $82.62)  proj $111
+  240/308  1465s  6.10s/pair  $84.31 recorded (counter $84.31)  proj $108
+  250/308  1519s  6.08s/pair  $86.07 recorded (counter $86.07)  proj $106
+  260/308  1560s  6.00s/pair  $87.22 recorded (counter $87.22)  proj $103
+  270/308  1601s  5.93s/pair  $88.31 recorded (counter $88.31)  proj $101
+  280/308  1643s  5.87s/pair  $89.60 recorded (counter $89.60)  proj $99
+  290/308  1694s  5.84s/pair  $90.93 recorded (counter $90.93)  proj $97
+  300/308  1739s  5.80s/pair  $92.14 recorded (counter $92.14)  proj $95
+labels written: /rag/tmp/stage0-conf/work/claude/labels-claude-opus5.jsonl (308 records)  wall=1771.1s recorded=$93.12 counter=$93.12 {"judge": "opus5", "transport": "claude CLI (headless, -p)", "model": "claude-opus-5", "served_model_rows": ["claude-opus-5"], "requests": 362, "retries": 0, "failures": 0, "input_tokens": 724, "output_tokens": 445755, "cache_creation_input_tokens": 7637850, "cache_read_input_tokens": 12838, "cost_usd": 93.1172, "cli_seconds": 4830.2, "concurrency": 3, "call_timeout_s": 300, "temperature": "not exposed by the CLI \u2014 the local judges ran at 0.0; this is a recorded deviation", "seed": "not exposed by the CLI"}
