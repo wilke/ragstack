@@ -117,6 +117,8 @@ behaved. Two preconditions fail before power is reachable.
 | [`RESULTS-stage0b-relabel-r31.md`](RESULTS-stage0b-relabel-r31.md) | the **r3.1 relabel** — whole-sentence anchors, five presentations per pair, the gate table per judge, the union-saturation curves, the enumeration proxy and the proposed rubric §6 amendment |
 | `s0_label_r31.py`, `s0_labelgates_r31.py` | the r3.1 harness. `s0_label_r31.py --selftest` checks the whole-sentence locator offline — including that the eight-word fallback rescues a mangled middle but **refuses** a quote whose two halves straddle a sentence boundary — and contacts no endpoint |
 | [`artifacts/r31/`](artifacts/r31/) | both judges' 1,540 records each (308 pairs × 5 presentations), the merged manifest, `gates-r31.json` and the rendered gate table |
+| [`RESULTS-stage0b-relabel-r31ext.md`](RESULTS-stage0b-relabel-r31ext.md) | the **r3.1 extension** — Scout ×20, Qwen ×10 readings: graded-support reliability 0.92 at 30 pooled readings (P-ext-1 PASS), the union still growing at k = 20, cross-judge support correlation 0.30 (reliable is not valid), and a locator blow-up found and recorded |
+| `s0_labelgates_r31ext.py`, [`artifacts/r31ext/`](artifacts/r31ext/) | that analysis, the pre-registration (`PREDICTIONS.md`), both judges' full label files and manifests, `gates-r31ext.json` |
 | [`../design/SPEC-confirmation-run.md`](../design/SPEC-confirmation-run.md) | the pre-registration Stage 0 was run against (rev. 2; § 14 is its change log) |
 | [`../design/RUBRIC-evidence.md`](../design/RUBRIC-evidence.md) | the labeling rubric, frozen and hashed before the first labeling call |
 
