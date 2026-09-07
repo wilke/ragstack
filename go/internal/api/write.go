@@ -53,6 +53,13 @@ func writeValidationError(w http.ResponseWriter, r *http.Request, msg string) {
 	})
 }
 
+// writeUnauthorized is the 401 the auth middleware emits. It lives here rather
+// than in internal/auth so the body keeps this package's `{detail, request_id}`
+// shape without that package importing this one.
+func writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, http.StatusUnauthorized, "missing or invalid API key")
+}
+
 func writeError(w http.ResponseWriter, r *http.Request, status int, detail string) {
 	writeJSON(w, status, errorBody{
 		Detail:    detail,
