@@ -7,7 +7,7 @@ import {
   getStoredCredential,
   setStoredCredential,
 } from "./api/config";
-import { apiFailure, getIdentity } from "./api/client";
+import { apiFailure, getIdentity, listGradingBatches } from "./api/client";
 import {
   identityNeedsExplanation,
   identityView,
@@ -21,6 +21,7 @@ import { CompareView } from "./components/CompareView";
 import { EvidenceView } from "./components/EvidenceView";
 import { ExploreView } from "./components/ExploreView";
 import { CollectionView } from "./components/CollectionView";
+import { GradingView } from "./components/GradingView";
 import { OpsDashboard } from "./components/OpsDashboard";
 import type { RunRecord } from "./lib/run";
 import { applyVisionMode } from "./lib/vision";
@@ -39,15 +40,29 @@ import { applyVisionMode } from "./lib/vision";
 // `login` and `account` are reachable from the header's user menu rather than
 // the tab bar: they are about WHO you are, not what you are working on, and
 // putting them in the tab strip would imply they are a sixth workspace.
-type View = "explore" | "collection" | "compare" | "evidence" | "ops" | "login" | "account";
+type View =
+  | "explore"
+  | "collection"
+  | "compare"
+  | "evidence"
+  | "grading"
+  | "ops"
+  | "login"
+  | "account";
 
-const TABS: { id: View; label: string }[] = [
+// Grading is CONDITIONAL: it appears only for a caller who has at least one
+// read (GET /v1/grading/batches non-empty), which is also how the app learns
+// the server implements grading at all — an older one answers 404 and the tab
+// simply never appears. Everyone else must not see a workspace they have
+// nothing in.
+const BASE_TABS: { id: View; label: string }[] = [
   { id: "explore", label: "Explore" },
   { id: "collection", label: "Collections" },
   { id: "compare", label: "Compare" },
   { id: "evidence", label: "Evidence" },
-  { id: "ops", label: "Ops" },
 ];
+const GRADING_TAB: { id: View; label: string } = { id: "grading", label: "Grading" };
+const OPS_TAB: { id: View; label: string } = { id: "ops", label: "Ops" };
 
 export function App({
   // Which screen to mount on. `main.tsx` passes nothing, so the app always opens
@@ -196,6 +211,28 @@ export function App({
     identityFailure,
   );
 
+  // GRADING PRESENCE. The same query GradingView itself runs (same key, so
+  // react-query serves both from one request): the tab appears only when this
+  // caller has at least one read. `retry: false` and NO error surfacing — a
+  // server without the grading paths answers 404, and that is the intended
+  // "no tab", not a failure anyone should be told about here.
+  const gradingBatches = useQuery({
+    queryKey: ["grading-batches", apiKey],
+    queryFn: () => listGradingBatches(apiKey || undefined),
+    retry: false,
+  });
+  const hasGrading = (gradingBatches.data?.batches.length ?? 0) > 0;
+  // Admin-only operations inside Grading (adjudication, export) are gated on
+  // the role the whoami call already resolved — there is no /v1/me, and every
+  // one of them is enforced server-side anyway (403/409). This only decides
+  // whether the controls are drawn.
+  const isAdmin = identity?.role === "admin";
+  const tabs = [...BASE_TABS, ...(hasGrading ? [GRADING_TAB] : []), OPS_TAB];
+  // A tab can disappear under the user: another tab signs out, or the read is
+  // deleted. Falling back to Explore beats rendering a view the caller can no
+  // longer be shown.
+  const activeView: View = view === "grading" && !hasGrading ? "explore" : view;
+
   // A credential change must invalidate everything: one principal's cached
   // collection list must never be shown to another.
   const applyCredential = (c: Credential) => {
@@ -237,14 +274,19 @@ export function App({
   }, [awaitingVerdict, view, verdictResolved, verdictNeedsReading]);
 
   // Compare and Evidence need width for side-by-side columns; Explore needs it
-  // for its 660px column + 300px run rail (it caps itself at 1004px). The rest
-  // read best on a narrow measure.
-  const wide = view === "compare" || view === "evidence" || view === "explore";
+  // for its 660px column + 300px run rail (it caps itself at 1004px); Grading
+  // needs it for the task rail beside the pair. The rest read best on a narrow
+  // measure.
+  const wide =
+    activeView === "compare" ||
+    activeView === "evidence" ||
+    activeView === "explore" ||
+    activeView === "grading";
   // Ops is full-bleed: its navy status band runs edge-to-edge flush under the
   // header, so the view owns all of its padding.
-  const bleed = view === "ops";
+  const bleed = activeView === "ops";
   // Evidence is the one dark screen: page #071b2f, dark header chrome (5b).
-  const dark = view === "evidence";
+  const dark = activeView === "evidence";
 
   return (
     <div className={`min-h-screen ${dark ? "bg-ink-700" : "bg-white"}`}>
@@ -265,8 +307,8 @@ export function App({
         </div>
 
         <nav className="flex h-full items-center gap-6 self-stretch" aria-label="Modules">
-          {TABS.map((t) => {
-            const active = view === t.id;
+          {tabs.map((t) => {
+            const active = activeView === t.id;
             return (
               <button
                 key={t.id}
@@ -327,7 +369,7 @@ export function App({
           bleed ? "" : wide ? "px-[34px] pb-11 pt-[30px]" : "mx-auto max-w-3xl px-4 py-8"
         }
       >
-        {view === "login" ? (
+        {activeView === "login" ? (
           // Explore, not Account: people sign in to ask the corpus something.
           // Landing on Account put a backend picker and (until the whoami answer
           // arrived) a Sign in button in front of someone who had just signed in,
@@ -341,7 +383,7 @@ export function App({
               setView("explore");
             }}
           />
-        ) : view === "account" ? (
+        ) : activeView === "account" ? (
           <AccountView
             credential={credential}
             identity={identity}
@@ -355,7 +397,7 @@ export function App({
             onCredentialChange={setCredential}
             onBaseChange={setApiBaseState}
           />
-        ) : view === "explore" ? (
+        ) : activeView === "explore" ? (
           <ExploreView
             apiKey={apiKey}
             setApiKey={setApiKey}
@@ -364,17 +406,19 @@ export function App({
             onOpenEvidence={openEvidence}
             onSendToCompare={sendToCompare}
           />
-        ) : view === "collection" ? (
+        ) : activeView === "collection" ? (
           <CollectionView apiKey={apiKey} setApiKey={setApiKey} />
-        ) : view === "compare" ? (
+        ) : activeView === "compare" ? (
           <CompareView apiKey={apiKey} setApiKey={setApiKey} seedQuery={compareSeed} />
-        ) : view === "evidence" ? (
+        ) : activeView === "evidence" ? (
           <EvidenceView
             run={run}
             apiKey={apiKey}
             initialSourceIndex={evidenceSource}
             onSendToCompare={sendToCompare}
           />
+        ) : activeView === "grading" ? (
+          <GradingView apiKey={apiKey} isAdmin={isAdmin} />
         ) : (
           <OpsDashboard apiKey={apiKey} />
         )}
