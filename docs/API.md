@@ -830,10 +830,10 @@ Schemas: `contracts/schemas/group_record.json`, `group_member_record.json`,
 `/v1/grading/*` serves the study's **two-independent-reader label validation**
 (SPEC-confirmation-run.md §6.6; [docs/plans/grading-ui.md](plans/grading-ui.md))
 from RAGStack instead of a session artifact, so that reader independence is
-enforced by the server rather than by the honour system. **Contract only as of
-phase 1** — no implementation mounts these paths yet, and `conformance/
-test_grading.py` skips with *grading not implemented on this server* when
-`GET /v1/grading/batches` is a 404.
+enforced by the server rather than by the honour system. **Implemented in
+Python** (grading-ui.md phase 2); the Go scaffold does not mount these paths yet,
+so `conformance/test_grading.py` skips against it with *grading not implemented
+on this server* — the 404 from `GET /v1/grading/batches` is the probe.
 
 Three resources. A **batch** is one read (the R-dev pilot, R-dev, R-conf, a
 pointed read): its `kind`, the frozen rubric's `rubric_sha256`, the `readers` in
@@ -924,6 +924,46 @@ labelers, one *none* task — two readers, both verdicts, an adjudication and an
 export the scorer accepts): `contracts/fixtures/grading/`, validated by
 `conformance/test_grading_fixtures.py`, which also pins the OpenAPI components
 to the JSON schemas.
+
+**Storage.** Batches, tasks, verdicts and adjudications live in their own store,
+on the same backend switch as the job store. Verdict and adjudication rows are
+**append-only by `version`**: a re-save writes a new row and the current one is
+the highest version, so the pre-adjudication κ — the number the study reports —
+survives a reader changing their mind. Nothing is swept at startup: a
+half-finished read is exactly the state a restart must preserve.
+
+| key | default | meaning |
+|---|---|---|
+| `GRADING_STORE_BACKEND` | `memory` | `memory` \| `sqlite` \| `postgres`. `memory` is process-local (dev and the keyed conformance boot); a real read needs one of the other two. An unknown value falls back to `memory` with a warning rather than refusing to boot an API that also serves query and ingest. |
+| `GRADING_STORE_PATH` | `ragstack_grading.db` | sqlite only; make it absolute per ADR-0005 (`/rag/data/tenants/<name>/state/grading.db`). |
+| `POSTGRES_DSN` | — | used by the `postgres` backend, shared with the job and collection stores. |
+
+**Building a batch body.** `python/scripts/grading_import.py` turns a committed
+study package into a `GradingBatchCreateRequest` JSON file; posting it is the
+admin's `POST /v1/grading/batches` (the API reads no files). It stamps
+`rubric_sha256` from `docs/plans/results/design/RUBRIC-evidence.md` and defaults
+`order_seed` to `SEED_RDEV` (20260915), so the per-reader orders the UI computes
+are the orders `RDEV-readsheet-A/B.html` already show.
+
+```bash
+# the ten-pair R-dev pilot (self-contained; no lookups)
+python python/scripts/grading_import.py pilot \
+  --readers @service:reader-a @service:reader-b \
+  --name 'R-dev pilot r3' -o pilot-batch.json
+
+# the full R-dev draw: 100 pairs x both judges' r3.1 labels x the segmented corpus
+python python/scripts/grading_import.py rdev \
+  --topics <path>/cds/topics_merged.json \
+  --docs /rag/tmp/stage0-conf/work/docs.jsonl \
+  --units /rag/tmp/stage0-conf/work/units.jsonl \
+  --readers @service:reader-a @service:reader-b -o rdev-batch.json
+```
+
+The `rdev` claims are the **union** of both judges' evidence sets, deduplicated
+by `SPEC-confirmation-run.md` D3 rule 1 (character-span union Jaccard ≥ 0.5, the
+smaller set retained as canonical), with `sources` naming every judge that
+produced the merged set. `--presentation N` picks one presentation (default 0);
+`--all-presentations` takes every one and lets the same dedup collapse them.
 
 
 ### Service accounts
@@ -1637,6 +1677,7 @@ Key environment variables (see `python/ragstack/config.py` for the full set):
 | `ADMIN_ROLE_CACHE_TTL_SECONDS` | how long the bearer path memoizes the stored `users.role` (default **30**, capped at **300**, `0` disables). **This TTL is the demotion lag** — a revoked admin keeps admin for that long per worker; the granting process flushes its own cache. The lookup **fails closed** (a store outage withholds elevation) |
 | `COLLECTION_STORE_BACKEND`, `COLLECTION_STORE_PATH` | collection registry (`memory` \| `json` \| `sqlite` \| `postgres`). **There is no `*_SQLITE_PATH` variant** — a wrong name silently falls back to a *relative* default that resolves against the working directory, so two servers in one checkout share one registry. `REQUIRE_DURABLE_BACKENDS=true` refuses a relative path |
 | `JOB_STORE_BACKEND`, `JOB_STORE_PATH` | ingest job store; same relative-path rule |
+| `GRADING_STORE_BACKEND`, `GRADING_STORE_PATH` | the grading batches/tasks/verdicts store (`memory` \| `sqlite` \| `postgres`); same relative-path rule. Default `memory` — process-local, so a half-finished read dies with the process; a tenant running a real read sets `sqlite` or `postgres`. An unknown backend falls back to `memory` with a warning rather than refusing to boot an API that also serves query and ingest |
 | `USER_STORE_BACKEND`, `USER_STORE_PATH`/`USER_STORE_DSN` | the tenant's **ACL database** — user profiles *and* collection ownership/shares (`memory` \| `sqlite` \| `postgres`), per tenant like every stateful store (ADR-0005). `REQUIRE_DURABLE_BACKENDS=true` forbids `memory` here |
 | `ACL_BACKFILL_OWNER` | subject that inherits ownership of pre-existing (creator-less) collections at first startup after the ACL rollout (default `legacy:admin`); those collections also get a `public` read grant so they stay world-readable exactly as before |
 | `WORKSPACE_URL`, `WORKSPACE_TIMEOUT` | the BV-BRC Workspace JSON-RPC endpoint the API writes a user's collection folder (`/<user>/home/.ragstack/collections/<id>/`) and uploaded sources to, and the per-request bound in seconds (default **60**). Every call carries the **caller's** token — there is no service identity — and bytes go to Shock at the upload-node URL the Workspace returns, so no Shock endpoint is configured (#356) |

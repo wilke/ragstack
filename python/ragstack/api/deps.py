@@ -36,6 +36,7 @@ from ragstack.collection_store import (
 from ragstack.config import settings
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import BatchingEmbedder, make_embedder
+from ragstack.grading.store import make_grading_store
 from ragstack.graph.extractor import LLMKGExtractor
 from ragstack.ingestion.backends import IngestBackend, make_ingest_backend
 from ragstack.ingestion.boilerplate import BoilerplateFilter, config_from_json
@@ -1622,6 +1623,15 @@ async def lifespan(app: FastAPI):
     job_store = make_job_store(
         settings.job_store_backend, settings.job_store_path, settings.postgres_dsn
     )
+    # The grading store (docs/plans/grading-ui.md phase 2) — same backend switch,
+    # built here so the router never constructs one per request. Nothing sweeps
+    # it at startup: a batch has no in-flight worker to reap, and a half-finished
+    # read is exactly the state a restart must preserve.
+    grading_store = make_grading_store(
+        settings.grading_store_backend,
+        settings.grading_store_path,
+        settings.postgres_dsn,
+    )
     # Ingestion runs as in-process background tasks, so any job left non-terminal
     # in a durable store belongs to a worker that died with the previous process.
     # Mark them failed at startup rather than leaving them stuck "running" forever.
@@ -1679,6 +1689,7 @@ async def lifespan(app: FastAPI):
     collection_embed_bridges: dict[str, SyncEmbedBridge] = {}
     app.state.collection_embed_bridges = collection_embed_bridges
     app.state.job_store = job_store
+    app.state.grading_store = grading_store
     app.state.ingestor = ingestor
     # The distribution backend by itself (#203): the user ingest path under
     # ingest_backend=gowe drives GoWeBackend.run_submission directly (per-job
@@ -1886,6 +1897,8 @@ async def lifespan(app: FastAPI):
         # Release the job store's resources (PostgresJobStore's asyncpg pool;
         # a no-op for the in-memory / sqlite stores).
         await job_store.close()
+        # Same for the grading store (only the postgres backend holds a pool).
+        await grading_store.close()
         # Same for the collection store (only the postgres backend holds a pool).
         await collection_store.close()
         # And the ACL/user store (one object) — but FIRST drain any in-flight
@@ -2018,6 +2031,13 @@ def get_reranker(request: Request):
 
 def get_job_store(request: Request):
     return request.app.state.job_store
+
+
+def get_grading_store(request: Request):
+    """The grading store, or ``None`` when the app was assembled without a
+    lifespan (some unit tests do). The router answers 503 in that case rather
+    than building a second, process-local store nobody else can see."""
+    return getattr(request.app.state, "grading_store", None)
 
 
 def get_graph_extract_runner(request: Request):

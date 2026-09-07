@@ -517,6 +517,15 @@ class Settings(BaseSettings):
     job_store_backend: str = "memory"       # memory | sqlite | postgres
     job_store_path: str = "ragstack_jobs.db"
 
+    # Grading (docs/plans/grading-ui.md): the study's two-independent-reader
+    # evidence read. Same switch as the job store — "memory" is process-local
+    # (the keyed conformance boot and local dev), "sqlite" is durable
+    # single-process, "postgres" is the multi-process store a tenant runs and
+    # uses `postgres_dsn`. Default "memory": a deployment that never creates a
+    # batch pays nothing, and a read that matters is configured deliberately.
+    grading_store_backend: str = "memory"   # memory | sqlite | postgres
+    grading_store_path: str = "ragstack_grading.db"
+
     # Text index (BM25). "memory" is the dev Jaccard placeholder; "elasticsearch"
     # is the real durable BM25 backend used for hybrid retrieval.
     text_backend: str = "memory"            # memory | elasticsearch
