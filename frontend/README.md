@@ -23,6 +23,36 @@ context (needs a `GET /v1/chunks/{id}` endpoint), the AI-eng debug toggle
 rendered as React children (auto-escaped). `dangerouslySetInnerHTML` is banned —
 `npm run guard:xss` fails the build if it reappears.
 
+## Grading (`/v1/grading`, docs/plans/grading-ui.md phase 3)
+
+The **Grading** tab is the study's two-independent-reader evidence read
+(`GradingView.tsx` + `components/grading/`, logic in `lib/grading.ts`). It
+appears only when `GET /v1/grading/batches` returns at least one batch — which
+is also how the app learns whether the server implements grading at all (an
+older one answers 404 and the tab never appears).
+
+Two rules the screens keep, and neither is cosmetic:
+
+* **The order is the server's.** `GET …/batches/{id}/tasks` returns the caller's
+  own seeded permutation — the one `s0_rdev.py` built the paper readsheets with
+  — so the UI renders, indexes and advances through `tasks` exactly as it
+  arrived. Nothing sorts, filters or reverses it, or a read begun on those
+  sheets would silently resume at the wrong pair.
+* **Only the caller's own verdict is displayed.** The reader path renders
+  `task.verdict`; `GET …/verdicts/{reader}` is never called for anybody and has
+  no client helper. `reader_verdicts` reaches the adjudication screen only, and
+  only because the server sends it to an admin on a frozen batch.
+
+![The pair view](docs/grading-view.png)
+
+Adjudication (admin, once `POST …/adjudicate` has frozen the readers' rows) puts
+both rows side by side per task and records the joint verdict; **Export**
+downloads each `rdev_verdicts_<label>.csv` from the export envelope as a file,
+under the name the envelope gives it — `s0_rdev_score.py --a/--b/--adjudicated`
+reads them by name.
+
+![Adjudication](docs/grading-adjudication.png)
+
 ## Prerequisites
 - Node 20+ and npm.
 - A running RAGStack API on `http://localhost:8000` (`make run-python`), or set

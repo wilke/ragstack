@@ -266,6 +266,18 @@ async function del(path: string, apiKey?: CredentialInput): Promise<void> {
   if (!res.ok) await throwForResponse(res);
 }
 
+// PUT with a JSON body and a JSON reply. Same error handling as `post`; the
+// grading surface's two writes are both whole-row replaces, which is a PUT.
+async function put<T>(path: string, body: unknown, apiKey?: CredentialInput): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...authHeaders(apiKey),
+  };
+  const res = await fetch(apiUrl(path), { method: "PUT", headers, body: JSON.stringify(body) });
+  if (!res.ok) await throwForResponse(res);
+  return (await res.json()) as T;
+}
+
 // DELETE that answers 200 + a body (the collection purge report). Same error
 // handling as `del`; separate so the 204 callers keep a `Promise<void>`.
 async function delJson<T>(path: string, apiKey?: CredentialInput): Promise<T> {
@@ -879,4 +891,301 @@ export function fetchChunks(
   const params = new URLSearchParams({ ids: ids.join(",") });
   if (collection) params.set("collection", collection);
   return get<ChunksResponse>(`/v1/chunks?${params.toString()}`, apiKey);
+}
+
+// --- Grading: the study's two-reader evidence read (#505 contract, #509 server) --
+//
+// TYPE PROVENANCE. Every shape below is transcribed from `npm run gen:api`'s
+// output for `contracts/openapi.yaml` (tag Grading) — the same field names,
+// optionality and enum members openapi-typescript emits for
+// `components["schemas"]["Grading*"]`. They are hand-written rather than
+// imported because `src/api/schema.d.ts` is GITIGNORED (frontend/.gitignore):
+// importing it would make `npm run build` fail in any checkout that has not run
+// `gen:api` first. Regenerate and diff against this block when the contract
+// moves; the contract is authoritative, this is a mirror.
+//
+// The one rule these calls exist to keep: a reader reads and writes only their
+// OWN verdict. `GET …/verdicts/{reader}` is deliberately NOT wrapped here —
+// there is no caller for it in this UI, and a helper for it is an invitation to
+// fetch someone else's row (the server answers 404, but the UI must not ask).
+
+export type GradingVerdictValue =
+  | "correct"
+  | "wrong-location"
+  | "non-minimal"
+  | "missed-evidence"
+  | "correctly-none"
+  | "ambiguous";
+
+export type GradingJudgement = "located" | "wrong" | "non-minimal";
+export type GradingKind = "evidence-read" | "pointed-read" | "citation-feedback";
+export type GradingStatus = "open" | "adjudicating" | "closed";
+
+export interface GradingSpanJudgement {
+  set: number; // an evidence set's set_index (1-based)
+  span: number; // 1-based position within that set's spans
+  judgement: GradingJudgement;
+}
+
+export interface GradingExtraAnswer {
+  id: string;
+  answer: string;
+}
+
+export interface GradingQuestion {
+  id?: string;
+  type: string; // need type: diagnosis | treatment | test | pointed | …
+  summary: string;
+  description: string;
+}
+
+export interface GradingSentence {
+  i: number;
+  text: string;
+}
+
+export interface GradingUnit {
+  index: number;
+  title: string;
+  sentences: GradingSentence[];
+}
+
+export interface GradingDocument {
+  doc_id: string;
+  title: string;
+  units: GradingUnit[];
+}
+
+export interface GradingSpan {
+  unit: number;
+  first_sentence: number;
+  last_sentence: number;
+  text: string;
+}
+
+export interface GradingEvidenceSet {
+  set_index: number;
+  spans: GradingSpan[];
+  sources: string[];
+}
+
+export interface GradingExtraQuestion {
+  id: string;
+  text: string;
+  answer_type: "yes-no" | "text";
+}
+
+export interface GradingVerdict {
+  task_id: string;
+  reader: string;
+  verdict: GradingVerdictValue;
+  span_judgements: GradingSpanJudgement[];
+  extra_answers: GradingExtraAnswer[];
+  notes: string;
+  version: number;
+  saved_at: string;
+}
+
+export interface GradingAdjudication {
+  task_id: string;
+  verdict: GradingVerdictValue;
+  span_judgements: GradingSpanJudgement[];
+  notes: string;
+  adjudicated_by: string;
+  version: number;
+  saved_at: string;
+}
+
+export interface GradingTask {
+  id: string;
+  batch_id: string;
+  kind: GradingKind;
+  pair_id: string;
+  stratum?: string;
+  question: GradingQuestion;
+  document: GradingDocument;
+  claims: GradingEvidenceSet[];
+  extra_questions: GradingExtraQuestion[];
+  readers: string[];
+  created_at: string;
+  created_by: string;
+  // The CALLER'S OWN row, or null. Never another reader's.
+  verdict: GradingVerdict | null;
+  // Admin only, and only once the batch has left `open` — the adjudication view.
+  reader_verdicts?: GradingVerdict[];
+  adjudication?: GradingAdjudication | null;
+}
+
+export interface GradingReaderProgress {
+  reader: string;
+  label: string;
+  saved: number;
+}
+
+export interface GradingBatch {
+  id: string;
+  name: string;
+  kind: GradingKind;
+  status: GradingStatus;
+  rubric_sha256: string;
+  order_seed: number;
+  readers: string[];
+  task_count: number;
+  progress: GradingReaderProgress[];
+  created_at: string;
+  created_by: string;
+  adjudicating_at: string;
+}
+
+export interface GradingBatchesResponse {
+  batches: GradingBatch[];
+}
+
+export interface GradingTasksResponse {
+  batch_id: string;
+  // The calling reader's resolved subject, or null for an admin who is not one.
+  reader: string | null;
+  // In the CALLER'S OWN seeded order. Never re-sorted client-side.
+  tasks: GradingTask[];
+}
+
+export interface GradingVerdictPutRequest {
+  verdict: GradingVerdictValue;
+  span_judgements?: GradingSpanJudgement[];
+  extra_answers?: GradingExtraAnswer[];
+  notes?: string;
+}
+
+export interface GradingAdjudicationPutRequest {
+  verdict: GradingVerdictValue;
+  span_judgements?: GradingSpanJudgement[];
+  notes?: string;
+}
+
+export interface GradingReaderLabel {
+  subject: string;
+  label: string;
+}
+
+export interface GradingExportCsv {
+  filename: string; // rdev_verdicts_<label>.csv | rdev_verdicts_ADJ.csv
+  reader: string | null;
+  label: string;
+  content: string;
+}
+
+export interface GradingExportVerdictRow {
+  pair_id: string;
+  stratum?: string;
+  task_id: string;
+  reader: string;
+  label: string;
+  verdict: GradingVerdictValue;
+  span_judgements: GradingSpanJudgement[];
+  extra_answers: GradingExtraAnswer[];
+  notes: string;
+  version: number;
+  saved_at: string;
+}
+
+export interface GradingExportAdjudicationRow {
+  pair_id: string;
+  stratum?: string;
+  task_id: string;
+  verdict: GradingVerdictValue;
+  span_judgements: GradingSpanJudgement[];
+  notes: string;
+  adjudicated_by: string;
+  version: number;
+  saved_at: string;
+}
+
+export interface GradingExportResponse {
+  batch_id: string;
+  name: string;
+  kind: GradingKind;
+  status: GradingStatus;
+  rubric_sha256: string;
+  order_seed: number;
+  exported_at: string;
+  readers: GradingReaderLabel[];
+  csv: GradingExportCsv[];
+  verdicts: GradingExportVerdictRow[];
+  adjudications: GradingExportAdjudicationRow[];
+}
+
+// Every batch for an admin; the batches naming the caller as a reader otherwise.
+// This is ALSO the "does this server implement grading at all" probe — an older
+// server answers 404, which the caller reads as "no batches", never as an error
+// worth showing.
+export function listGradingBatches(apiKey?: CredentialInput): Promise<GradingBatchesResponse> {
+  return get<GradingBatchesResponse>("/v1/grading/batches", apiKey);
+}
+
+// The batch's tasks IN THE SERVER'S ORDER for this caller. The order is the
+// study's per-reader permutation; the UI renders `tasks` as it arrives and never
+// sorts, filters or reverses it.
+export function listGradingTasks(
+  batchId: string,
+  apiKey?: CredentialInput,
+): Promise<GradingTasksResponse> {
+  return get<GradingTasksResponse>(
+    `/v1/grading/batches/${encodeURIComponent(batchId)}/tasks`,
+    apiKey,
+  );
+}
+
+// Save or overwrite the CALLER'S verdict. The body has no field naming a reader
+// — the row is keyed by the authenticated subject. 409 = the batch has left
+// `open` and the readers' rows are frozen for adjudication.
+export function putGradingVerdict(
+  taskId: string,
+  body: GradingVerdictPutRequest,
+  apiKey?: CredentialInput,
+): Promise<GradingVerdict> {
+  return put<GradingVerdict>(
+    `/v1/grading/tasks/${encodeURIComponent(taskId)}/verdict`,
+    body,
+    apiKey,
+  );
+}
+
+// The joint-read verdict (admin; the batch must be `adjudicating`).
+export function putGradingAdjudication(
+  taskId: string,
+  body: GradingAdjudicationPutRequest,
+  apiKey?: CredentialInput,
+): Promise<GradingAdjudication> {
+  return put<GradingAdjudication>(
+    `/v1/grading/tasks/${encodeURIComponent(taskId)}/adjudication`,
+    body,
+    apiKey,
+  );
+}
+
+// Freeze the readers' rows and open adjudication (admin). Not idempotent: a
+// replay on a batch that is no longer `open` is a 409, deliberately, so a second
+// click is not a silent no-op.
+export function adjudicateGradingBatch(
+  batchId: string,
+  apiKey?: CredentialInput,
+): Promise<GradingBatch> {
+  return post<GradingBatch>(
+    `/v1/grading/batches/${encodeURIComponent(batchId)}/adjudicate`,
+    {},
+    apiKey,
+  );
+}
+
+// The export envelope (admin; 409 while the batch is still `open`). It carries
+// CSV TEXTS, not files — the contract has no download convention, so the caller
+// turns each `csv[]` entry into a Blob.
+export function exportGradingBatch(
+  batchId: string,
+  apiKey?: CredentialInput,
+): Promise<GradingExportResponse> {
+  return get<GradingExportResponse>(
+    `/v1/grading/batches/${encodeURIComponent(batchId)}/export`,
+    apiKey,
+  );
 }
