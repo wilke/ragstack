@@ -60,11 +60,15 @@ from s0_labelgates_r31 import (ANCHOR_EMPTY, ANCHOR_FIRST,     # noqa: E402
 HERE = pathlib.Path(__file__).resolve().parent
 CLW = C.WORK / "claude"
 R31 = C.WORK / "r31"
+R31X = C.WORK / "r31ext"          # the extended re-read: scout 20 readings, qwen 10
 ART = HERE / "artifacts" / "claude"
 
 CLAUDE = ["sonnet5", "opus5", "fable51"]
 LOCAL = ["scout", "qwen"]
 N_PRES_LOCAL = 5
+# The extended pool, if `work/r31ext/` is on disk. Same prompt (revision 3.1, same
+# sha256), same locator, same 308 pairs — asserted in `load_local_ext`, not assumed.
+EXT_PRES = {"scout": 20, "qwen": 10}
 GATE_HALL = G.GATE_HALL
 
 
@@ -85,6 +89,37 @@ def load_claude(judge: str, tag: str = "") -> dict[tuple[str, str], dict]:
 
 def load_local(judge: str) -> dict[tuple[str, str], dict[int, dict]]:
     return G.load(judge)
+
+
+def load_local_ext(judge: str, prompt_sha: str) -> dict[tuple[str, str], dict[int, dict]]:
+    """The extended r3.1 re-read from ``work/r31ext/`` — scout k = 0…19, qwen k = 0…9.
+
+    Written by a different run than ``work/r31/``. It is only usable as *more readings of
+    the same protocol* if the prompt is byte-identical, so that is asserted against the
+    Claude family's own prompt hash rather than trusted. Returns ``{}`` when the directory
+    is absent, and the caller then reports the pooled statistic as absent.
+    """
+    p = R31X / f"labels-r31-{judge}.jsonl"
+    if not p.exists():
+        return {}
+    man = R31X / f"label-manifest-r31-{judge}.json"
+    if man.exists():
+        m = json.loads(man.read_text())
+        assert m.get("prompt_sha256") == prompt_sha, (
+            f"{man} is not r3.1's prompt: {m.get('prompt_sha256')} != {prompt_sha}")
+        assert m.get("n_presentations") == EXT_PRES[judge], (
+            f"{man} has {m.get('n_presentations')} presentations, "
+            f"expected {EXT_PRES[judge]}")
+    by: dict[tuple[str, str], dict[int, dict]] = {}
+    for line in p.read_text().splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        assert r["prompt_sha256"] == prompt_sha, f"{p}: a record is not r3.1's prompt"
+        by.setdefault((r["topic"], r["docno"]), {})[r["presentation"]] = r
+    bad = {t for t, _d in by} - set(C.DEV_TOPICS)
+    assert not bad, f"{p} contains non-development topics: {sorted(bad)}"
+    return by
 
 
 def sentences_of(rec) -> set[tuple[int, int]]:
@@ -115,8 +150,89 @@ def _median(x):
     return round(statistics.median(x), 4) if x else None
 
 
+def raw_accounting(judge: str, model: str, tag: str = "") -> dict:
+    """Read ``raw-<judge>.jsonl`` and account for **every model the CLI actually billed**.
+
+    Two facts only this file can settle, and both were assumptions before it was written:
+
+    1. **Which model served each call.** The flag asks for one; ``modelUsage`` records what
+       answered. A call served by a different model is a served-model *mismatch* and is
+       counted, listed and reported, not averaged away.
+    2. **What the ancillary `claude-haiku-4-5` call costs and sees.** `s0_label_claude.py`
+       described it as a fixed ~900-token call "unchanged by the size of our prompt". That
+       is measured here rather than asserted, because it is inside `total_cost_usd` and
+       therefore inside every dollar figure this study quotes.
+    """
+    p = CLW / f"raw-{judge}{('-' + tag) if tag else ''}.jsonl"
+    if not p.exists():
+        return {"ABSENT": f"{p} not on disk"}
+    calls = 0
+    by_model: dict[str, dict] = {}
+    mismatch: list[dict] = []
+    total = 0.0
+    hin: list[int] = []
+    for line in p.read_text().splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        for i, c in enumerate(r["calls"]):
+            calls += 1
+            total += float(c.get("total_cost_usd") or 0.0)
+            mu = c.get("modelUsage") or {}
+            served = [v.get("canonicalModel") or k for k, v in mu.items()
+                      if (v.get("canonicalModel") or k) != "claude-haiku-4-5"]
+            if model not in served:
+                mismatch.append({"topic": r["topic"], "docno": r["docno"], "call": i,
+                                 "served": sorted(served)})
+            for k, v in mu.items():
+                cm = v.get("canonicalModel") or k
+                d = by_model.setdefault(cm, {"calls": 0, "cost_usd": 0.0,
+                                             "input_tokens": 0, "output_tokens": 0,
+                                             "cache_creation_input_tokens": 0,
+                                             "cache_read_input_tokens": 0})
+                d["calls"] += 1
+                d["cost_usd"] += float(v.get("costUSD") or 0.0)
+                d["input_tokens"] += int(v.get("inputTokens") or 0)
+                d["output_tokens"] += int(v.get("outputTokens") or 0)
+                d["cache_creation_input_tokens"] += int(v.get("cacheCreationInputTokens")
+                                                        or 0)
+                d["cache_read_input_tokens"] += int(v.get("cacheReadInputTokens") or 0)
+                if cm == "claude-haiku-4-5":
+                    hin.append(int(v.get("inputTokens") or 0))
+    for d in by_model.values():
+        d["cost_usd"] = round(d["cost_usd"], 4)
+    hk = by_model.get("claude-haiku-4-5") or {}
+    return {
+        "raw_path": str(p), "cli_calls": calls,
+        "total_cost_usd": round(total, 4),
+        "cost_by_served_model": by_model,
+        "served_model_mismatches": {
+            "n": len(mismatch), "denominator": calls,
+            "rate": round(len(mismatch) / calls, 5) if calls else None,
+            "calls": mismatch[:20],
+            "meaning": f"calls where `--model {model}` was asked for and no "
+                       f"`{model}` row appears in modelUsage — the CLI served the call "
+                       "from another model. Their labels are in the file and are NOT "
+                       "removed; they are named here."},
+        "ancillary_haiku_call": {
+            "n_calls": hk.get("calls", 0),
+            "cost_usd": hk.get("cost_usd", 0.0),
+            "share_of_total_cost": (round(hk.get("cost_usd", 0.0) / total, 4)
+                                    if total else None),
+            "input_tokens_min": min(hin) if hin else None,
+            "input_tokens_median": _median(hin),
+            "input_tokens_max": max(hin) if hin else None,
+            "MEASURED_NOT_FIXED":
+                "the ancillary `claude-haiku-4-5` call the CLI makes alongside each of "
+                "our calls is NOT a fixed ~900-token probe: its input scales with the "
+                "prompt we send. It is harness overhead — it is not the judge, its "
+                "output is not parsed, and it is outside every agreement number — but it "
+                "is inside `total_cost_usd`, so the $/pair figures include it."},
+    }
+
+
 # ---------------------------------------------------------------------- per judge
-def per_judge(judge: str, by, manifest) -> dict:
+def per_judge(judge: str, by, manifest, raw: dict | None = None) -> dict:
     keys = sorted(by)
     V: dict[str, int] = {}
     anchor: dict[str, int] = {}
@@ -234,6 +350,7 @@ def per_judge(judge: str, by, manifest) -> dict:
             "cache_read_input_tokens": st.get("cache_read_input_tokens"),
             "requests": st.get("requests"), "retries": st.get("retries"),
             "failures": st.get("failures")},
+        "raw_accounting": raw,
         "GATE_PASS_hallucinated_span": hl_pass,
         "GATES_NOT_MEASURABLE": ["self_consistency", "whether_agreement",
                                  "union_saturation"],
@@ -271,22 +388,29 @@ def cross_pair(A: dict, B: dict, a_name: str, b_name: str) -> dict:
 
 
 # --------------------------------------------------------------- sentence support
-def support_map(local: dict[str, dict], keys) -> dict[tuple[str, str], dict]:
-    """Per pair: {(unit, sentence): how many of the TEN local readings touched it}.
+def support_map(local: dict[str, dict], keys,
+                pres: dict[str, int] | None = None) -> dict[tuple[str, str], dict]:
+    """Per pair: {(unit, sentence): how many local readings touched it}.
 
-    Ten readings = scout presentations 0..4 plus qwen presentations 0..4. A reading
-    contributes at most 1 to a sentence however many of its evidence sets cover it, so the
-    support of a sentence is a count of *readers*, in 0..10, not a count of spans.
+    ``pres`` gives the number of presentations to pool per local judge; it defaults to
+    r3.1's five each, i.e. **ten** readings (scout k = 0…4, qwen k = 0…4). With
+    ``work/r31ext/`` on disk it is scout k = 0…19 plus qwen k = 0…9, i.e. **thirty**.
+
+    A reading contributes at most 1 to a sentence however many of its evidence sets cover
+    it, so the support of a sentence is a count of *readers*, not a count of spans. The
+    per-pair ``n_readings`` is the realised denominator (a pair a judge never returned
+    contributes nothing), which is why every downstream number carries it.
     """
+    pres = pres or {j: N_PRES_LOCAL for j in LOCAL}
     out = {}
     for k in keys:
         sup: dict[tuple[int, int], int] = {}
         n_readings = 0
-        for j in LOCAL:
-            byj = local[j]
+        for j, npres in pres.items():
+            byj = local.get(j) or {}
             if k not in byj:
                 continue
-            for p in range(N_PRES_LOCAL):
+            for p in range(npres):
                 if p not in byj[k]:
                     continue
                 n_readings += 1
@@ -296,10 +420,89 @@ def support_map(local: dict[str, dict], keys) -> dict[tuple[str, str], dict]:
     return out
 
 
-def support_agreement(judge: str, by, sup) -> dict:
+def _ranks(xs: list[float]) -> list[float]:
+    """Average ranks, ties shared. numpy only — scipy is not installed on this host."""
+    import numpy as np
+    a = np.asarray(xs, dtype=float)
+    order = a.argsort(kind="mergesort")
+    r = np.empty(len(a), dtype=float)
+    r[order] = np.arange(1, len(a) + 1, dtype=float)
+    # average the ranks inside each run of equal values
+    s = a[order]
+    i = 0
+    while i < len(s):
+        j = i
+        while j + 1 < len(s) and s[j + 1] == s[i]:
+            j += 1
+        if j > i:
+            r[order[i:j + 1]] = (i + j + 2) / 2.0
+        i = j + 1
+    return r.tolist()
+
+
+def _pearson(x: list[float], y: list[float]) -> float | None:
+    import numpy as np
+    if len(x) < 3:
+        return None
+    a, b = np.asarray(x, float), np.asarray(y, float)
+    if a.std() == 0 or b.std() == 0:
+        return None
+    return round(float(np.corrcoef(a, b)[0, 1]), 4)
+
+
+def sentence_correlation(judge: str, by, sup) -> dict:
+    """Sentence-level correlation between "this judge picked it" and its local support.
+
+    The sentence universe of a pair is every sentence **either** side touched: the local
+    pool's supported sentences plus the judge's own picks (which may have support 0). On
+    that universe, ``picked`` is 0/1 and ``support`` is 0…N_readings. Point-biserial is
+    the Pearson correlation of those two vectors; Spearman is the same on average ranks,
+    which is the honest one because support is an ordinal count with a heavy mass at 1.
+
+    Two denominators are reported and they answer different questions. The **pooled**
+    figure treats every sentence of every pair as one observation, so long documents
+    dominate. The **per-pair mean** gives each pair one vote and is reported with the
+    number of pairs on which the correlation is defined at all (a pair where the judge
+    picked everything, or nothing, has no variance and is excluded, and that count is
+    stated rather than silently dropped).
+    """
+    px, sx = [], []
+    per_pair, undefined = [], 0
+    for k in sorted(by):
+        if k not in sup or not sup[k]["support"]:
+            continue
+        s_map = sup[k]["support"]
+        mine = sentences_of(by[k])
+        universe = sorted(set(s_map) | mine)
+        pick = [1.0 if s in mine else 0.0 for s in universe]
+        supp = [float(s_map.get(s, 0)) for s in universe]
+        px += pick
+        sx += supp
+        r = _pearson(_ranks(pick), _ranks(supp))
+        if r is None:
+            undefined += 1
+        else:
+            per_pair.append(r)
+    return {
+        "judge": judge,
+        "n_sentences_pooled": len(px),
+        "pooled_point_biserial_r": _pearson(px, sx),
+        "pooled_spearman_rho": _pearson(_ranks(px), _ranks(sx)),
+        "per_pair_mean_spearman_rho": _mean(per_pair),
+        "per_pair_median_spearman_rho": _median(per_pair),
+        "n_pairs_with_defined_rho": len(per_pair),
+        "n_pairs_rho_undefined_no_variance": undefined,
+        "universe": "per pair, every sentence the local pool supported (support >= 1) "
+                    "UNION every sentence this judge picked; `picked` is 0/1 and "
+                    "`support` is the pooled reader count.",
+    }
+
+
+def support_agreement(judge: str, by, sup, max_possible: int = 10,
+                      readings: str = "scout k=0..4, qwen k=0..4") -> dict:
     """Mean local support of the sentences this Claude judge picked, vs the baseline.
 
-    Baseline = the mean support of every sentence the local ten-reading pool touched at
+    Baseline = the mean support of every sentence the local pool touched at
     all (support >= 1) on the same pairs. A model that picks the sentences the local pool
     converged on scores above the baseline; a model that picks sentences the pool touched
     once scores below it; a model that picks sentences the pool never touched contributes
@@ -332,7 +535,8 @@ def support_agreement(judge: str, by, sup) -> dict:
         "judge": judge,
         "n_pairs_with_local_support": pairs_used,
         "n_sentences_picked": n_picked_sentences,
-        "max_possible_support": 10,
+        "max_possible_support": max_possible,
+        "readings_pooled": readings,
         "max_observed_support": max_sup,
         "mean_support_of_picked_sentences": _mean(picked_sup),
         "median_support_of_picked_sentences": _median(picked_sup),
@@ -348,8 +552,9 @@ def support_agreement(judge: str, by, sup) -> dict:
         "frac_picked_with_support_0": (round(zero / n_picked_sentences, 4)
                                        if n_picked_sentences else None),
         "mean_support_excluding_support_0": _mean(nz),
-        "definition": "support of a sentence = how many of the local judges' TEN readings "
-                      "(scout k=0..4, qwen k=0..4) placed evidence on it. The baseline is "
+        "definition": f"support of a sentence = how many of the local judges' "
+                      f"{max_possible} readings ({readings}) placed evidence on it. "
+                      "The baseline is "
                       "the mean over every sentence with support >= 1 on the same pairs; "
                       "sentences no local reading touched have support 0 and are inside "
                       "the picked mean but outside the baseline by construction.",
@@ -392,6 +597,10 @@ def markdown(out: dict) -> str:
     row("  — quotes located byte-exact (first anchor)", "descriptive",
         lambda d: (f"{d['locate_ladder']['first_anchor']['exact']}/"
                    f"{d['hallucinated_span_rate']['attempted_spans']}"))
+    row("served-model mismatches (a call `modelUsage` says another model answered)",
+        "0",
+        lambda d: (f"**{(d['raw_accounting'] or {}).get('served_model_mismatches', {}).get('n')}**"
+                   f"/{(d['raw_accounting'] or {}).get('cli_calls')} calls"))
     row("**self-consistency**", "≥ 0.90",
         lambda d: "**ABSENT** — one reading per pair")
     row("**whether-agreement across presentations**", "≥ 0.90",
@@ -443,39 +652,72 @@ def markdown(out: dict) -> str:
               "isolation and agreement number below."]
 
     # --- support
-    sa = out.get("sentence_support") or {}
-    if sa.get("per_judge"):
-        L += ["", "## Per-sentence support under the local judges' ten-reading pool", "",
-              "Support of a sentence = how many of the **ten** local readings "
-              "(scout k = 0…4, qwen k = 0…4) placed evidence on it, 0…10. The baseline "
-              "is the mean support of every sentence the local pool touched at all "
-              "(support ≥ 1) on the same pairs.", "",
-              "| model | sentences picked | mean support of picked | baseline (all "
-              "locally touched) | lift | picked with support 0 | mean support excl. 0 |",
-              "|---|---|---|---|---|---|---|"]
+    def support_block(sa, heading):
+        if not sa:
+            return
+        if sa.get("ABSENT"):
+            L.extend(["", f"## {heading}", "", f"**ABSENT** — {sa['ABSENT']}"])
+            return
+        if not sa.get("per_judge"):
+            return
+        n = sa["n_readings_pooled"]
+        L.extend(["", f"## {heading}", "",
+              f"Support of a sentence = how many of the **{n}** local readings "
+              f"({sa['readings']}) placed evidence on it, 0…{n}. The baseline is the "
+              "mean support of every sentence the local pool touched at all "
+              "(support ≥ 1) on the same pairs. Source: `" + sa["source"] + "`.", "",
+              "| model | pairs | sentences picked | mean support of picked | baseline "
+              "(all locally touched) | lift | picked with support 0 | mean support "
+              "excl. 0 |", "|---|---|---|---|---|---|---|---|"])
         for j in js:
             s = sa["per_judge"].get(j)
             if not s:
                 continue
-            L.append(f"| `{out['judges'][j]['model']}` | {s['n_sentences_picked']} | "
+            L.append(f"| `{out['judges'][j]['model']}` | "
+                     f"{s['n_pairs_with_local_support']} | {s['n_sentences_picked']} | "
                      f"**{s['mean_support_of_picked_sentences']}** | "
                      f"{s['mean_support_of_all_locally_touched_sentences']} | "
                      f"**{s['lift_over_baseline']:+}** | "
                      f"{s['picked_sentences_with_support_0']} "
                      f"({s['frac_picked_with_support_0']}) | "
                      f"{s['mean_support_excluding_support_0']} |")
+        co = sa.get("correlation") or {}
+        if co:
+            L.extend(["", "Sentence-level correlation between *this judge picked the "
+                      "sentence* (0/1) and the sentence's pooled local support, over the "
+                      "union of the locally-supported sentences and the judge's own "
+                      "picks:", "",
+                  "| model | sentences | pooled ρ (Spearman) | pooled r "
+                  "(point-biserial) | per-pair mean ρ | pairs with a defined ρ |",
+                  "|---|---|---|---|---|---|"])
+            for j in js:
+                c = co.get(j)
+                if not c:
+                    continue
+                L.append(f"| `{out['judges'][j]['model']}` | "
+                         f"{c['n_sentences_pooled']} | "
+                         f"**{c['pooled_spearman_rho']}** | "
+                         f"{c['pooled_point_biserial_r']} | "
+                         f"{c['per_pair_mean_spearman_rho']} | "
+                         f"{c['n_pairs_with_defined_rho']} "
+                         f"(+{c['n_pairs_rho_undefined_no_variance']} with no variance) |")
         if sa.get("local_self_reference"):
-            L += ["", "For scale, the same statistic computed on the local judges' own "
-                      "k = 0 readings (each of which is one of the ten readings that "
+            L.extend(["", "For scale, the same statistic computed on the local judges' own "
+                      f"k = 0 readings (each of which is one of the {n} readings that "
                       "*builds* the support map, so these are self-referential upper "
                       "anchors, not comparables):", "",
                   "| local judge (k = 0) | sentences picked | mean support of picked | "
-                  "baseline | lift |", "|---|---|---|---|---|"]
+                  "baseline | lift |", "|---|---|---|---|---|"])
             for j, s in sa["local_self_reference"].items():
                 L.append(f"| {j} | {s['n_sentences_picked']} | "
                          f"{s['mean_support_of_picked_sentences']} | "
                          f"{s['mean_support_of_all_locally_touched_sentences']} | "
                          f"{s['lift_over_baseline']:+} |")
+
+    support_block(out.get("sentence_support_pooled30"),
+                  "Per-sentence support under the local judges' pooled 30-reading map")
+    support_block(out.get("sentence_support"),
+                  "Per-sentence support under r3.1's own ten-reading pool")
 
     # --- cross family
     cf = out.get("cross_family") or {}
@@ -534,7 +776,8 @@ def main() -> None:
         loaded[j] = by
         mp = CLW / f"label-manifest-claude-{j}{('-' + args.tag) if args.tag else ''}.json"
         man = json.loads(mp.read_text()) if mp.exists() else None
-        judges[j] = per_judge(j, by, man)
+        raw = raw_accounting(j, (man or {}).get("model") or "", args.tag)
+        judges[j] = per_judge(j, by, man, raw)
 
     if not judges:
         raise SystemExit("no Claude label files found — nothing to gate")
@@ -578,17 +821,21 @@ def main() -> None:
             B = {k: union_of(loaded[y][k]["sets"]) for k in loaded[y]}
             within[f"{x} vs {y}"] = cross_pair(A, B, x, y)
 
-    # --- sentence support
+    # --- sentence support: r3.1's ten readings, and the extended pool if it exists
+    keys = sorted(set().union(*[set(v) for v in loaded.values()]))
+    prompt_sha = next(iter(judges.values()))["prompt_sha256"]
     support: dict = {}
     if local:
-        keys = sorted(set().union(*[set(v) for v in loaded.values()]))
-        sup = support_map(local, keys)
+        sup10 = support_map(local, keys)
         support = {
-            "per_judge": {j: support_agreement(j, loaded[j], sup) for j in loaded},
+            "per_judge": {j: support_agreement(j, loaded[j], sup10) for j in loaded},
+            "correlation": {j: sentence_correlation(j, loaded[j], sup10) for j in loaded},
             "n_readings_pooled": 10,
             "readings": "scout k=0..4 + qwen k=0..4",
+            "source": str(R31),
             "local_self_reference": {
-                lj: support_agreement(lj, {k: v[0] for k, v in lby.items() if 0 in v}, sup)
+                lj: support_agreement(lj, {k: v[0] for k, v in lby.items() if 0 in v},
+                                      sup10)
                 for lj, lby in local.items()},
             "local_self_reference_note":
                 "SELF-REFERENTIAL: each local judge's k = 0 reading is one of the ten "
@@ -596,6 +843,44 @@ def main() -> None:
                 "support >= 1 by construction. Read as an upper anchor for the scale, "
                 "never as a comparable to the Claude rows.",
         }
+
+    # The extended pool (`work/r31ext/`) is a *separate* run of the same protocol: scout
+    # k = 0…19 and qwen k = 0…9, thirty readings. It is the pool the brief asks the support
+    # question against. If the directory is absent the block is absent, and the write-up
+    # says absent rather than falling back silently onto the ten.
+    ext = {j: load_local_ext(j, prompt_sha) for j in LOCAL}
+    ext = {j: v for j, v in ext.items() if v}
+    support30: dict = {}
+    if ext:
+        pres = {j: EXT_PRES[j] for j in ext}
+        n_pool = sum(pres.values())
+        rd = " + ".join(f"{j} k=0..{pres[j] - 1}" for j in sorted(pres))
+        sup30 = support_map(ext, keys, pres)
+        support30 = {
+            "per_judge": {j: support_agreement(j, loaded[j], sup30, n_pool, rd)
+                          for j in loaded},
+            "correlation": {j: sentence_correlation(j, loaded[j], sup30) for j in loaded},
+            "n_readings_pooled": n_pool,
+            "readings": rd,
+            "source": str(R31X),
+            "prompt_sha256_asserted_equal": prompt_sha,
+            "realised_readings_per_pair": {
+                "min": min(v["n_readings"] for v in sup30.values()),
+                "max": max(v["n_readings"] for v in sup30.values()),
+                "n_pairs": len(sup30)},
+            "local_self_reference": {
+                lj: support_agreement(lj, {k: v[0] for k, v in lby.items() if 0 in v},
+                                      sup30, n_pool, rd)
+                for lj, lby in ext.items()},
+            "local_self_reference_note":
+                "SELF-REFERENTIAL: each local judge's k = 0 reading is one of the "
+                f"{n_pool} readings that builds this support map. Upper anchor for the "
+                "scale, not a comparable to the Claude rows.",
+        }
+    else:
+        support30 = {"ABSENT": f"{R31X} is not on disk — the extended 30-reading pool "
+                               "was not available when this file was written. The "
+                               "ten-reading pool above is what exists."}
 
     out = {
         "protocol": ("SPEC-confirmation-run-r3.md §10 item 4 — third judge family "
@@ -609,7 +894,9 @@ def main() -> None:
         "cross_family": cross_family,
         "within_family": within,
         "sentence_support": support,
+        "sentence_support_pooled30": support30,
         "local_judges_read": sorted(local),
+        "local_judges_read_ext": sorted(ext),
         "ABSENT": ("**Self-consistency, five-presentation whether-agreement and union "
                    "saturation are ABSENT for this family, not zero and not null.** They "
                    "each need more than one reading of a pair and this run bought one. "
