@@ -16,6 +16,7 @@ from ragstack.api.routers import (
     admin_users,
     collections,
     documents,
+    grading,
     graph,
     groups,
     health,
@@ -214,6 +215,15 @@ app.include_router(
 # unioned into read authorization through the ONE seam (grants_for_subject).
 app.include_router(
     groups.router, prefix="/v1", tags=["Query"], dependencies=[Depends(resolve_principal)]
+)
+# Grading (docs/plans/grading-ui.md phase 2): the study's two-independent-reader
+# evidence read. Any authenticated caller may reach it; the router itself decides
+# admin-vs-reader per route, because a reader-only gate would make GET
+# /v1/grading/batches — the endpoint a client probes to learn whether a server
+# implements grading at all — answer 403 instead of an empty list, and a
+# router-level admin gate would lock the readers out of their own read.
+app.include_router(
+    grading.router, prefix="/v1", tags=["Grading"], dependencies=[Depends(resolve_principal)]
 )
 # Admin surface: gated at the router level by the ``admin`` role (require_role also
 # performs auth), so every route under it is admin-only by construction. /v1/health/deep
