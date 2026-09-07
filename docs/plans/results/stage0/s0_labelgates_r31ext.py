@@ -267,15 +267,18 @@ def sentence_saturation(per_pair_readings: dict, n: int, label: str) -> dict:
 def set_saturation(by, keys, n: int, label: str) -> dict:
     """D3-distinct SETS, accumulated incrementally (the r3.1 rule, one reading at a time)."""
     accs = {k: [] for k in keys}
-    means, gains = [], [None]
+    lens = {k: [] for k in keys}
     for m in range(n):
         for k in keys:
             for s in by[k][m]["sets"]:
                 iv = G.spans_of(s)
                 if all(jaccard(iv, a) < C.JACCARD_MERGE for a in accs[k]):
                     accs[k].append(iv)
-        pos = [k for k in keys if accs[k]]
-        means.append(round(statistics.fmean([len(accs[k]) for k in pos]), 4) if pos else None)
+            lens[k].append(len(accs[k]))
+    pos = [k for k in keys if lens[k][-1]]          # positive somewhere in the n readings,
+    means, gains = [], [None]                       # FIXED across k, as r3.1's curve was
+    for m in range(n):
+        means.append(round(statistics.fmean([lens[k][m] for k in pos]), 4) if pos else None)
         if m:
             gains.append(round((means[m] - means[m - 1]) / means[m], 4) if means[m] else None)
     fit = mm_fit(list(range(1, n + 1)), means)
@@ -287,8 +290,10 @@ def set_saturation(by, keys, n: int, label: str) -> dict:
             "mm_fit_projection": {str(k): round(mm_at(fit, k), 4) for k in (n, 30, 100)},
             "distinct_rule": f"D3 rule 1 -- two sets merge iff span-union Jaccard >= "
                              f"{C.JACCARD_MERGE}; accumulated in reading order",
-            "denominator": "pairs positive somewhere in the first k readings (it grows "
-                           "with k, as r3.1's own curve did)"}
+            "n_pairs_positive_somewhere": len(pos),
+            "denominator": "pairs positive somewhere in the n readings, fixed across k — "
+                           "the denominator r3.1's own curve used, so k = 1..5 reproduces "
+                           "artifacts/r31/gates-r31.json exactly"}
 
 
 # ------------------------------------------------------------------ pre-registration
@@ -373,7 +378,14 @@ def main() -> None:
     ap.add_argument("--scout", type=int, default=N_SCOUT)
     ap.add_argument("--qwen", type=int, default=N_QWEN)
     ap.add_argument("--outdir", default=str(ART))
+    ap.add_argument("--workdir", default="r31ext",
+                    help="directory holding the label files: a subdirectory of "
+                         "$STAGE0_BIG/work, or an absolute path (used for offline dry runs "
+                         "so that nothing under $STAGE0_BIG outside work/r31ext is touched)")
     args = ap.parse_args()
+    global EXT
+    EXT = (pathlib.Path(args.workdir) if os.path.isabs(args.workdir)
+           else C.WORK / args.workdir)
 
     if args.prefit:
         print(json.dumps(prefit(), indent=1))
@@ -505,9 +517,10 @@ def main() -> None:
     p3 = {"prediction": "P-ext-3: hallucinated-span rate at the NEW presentations <= 0.05 "
                         "for both judges",
           "threshold": G.GATE_HALL, "scout": p3s, "qwen": p3q,
-          "SCORED": ("PASS" if (p3s["rate"] is not None and p3s["rate"] <= G.GATE_HALL
-                                and p3q["rate"] is not None and p3q["rate"] <= G.GATE_HALL)
-                     else "FAIL")}
+          "SCORED": ("ABSENT — one judge produced no new presentation"
+                     if p3s["rate"] is None or p3q["rate"] is None else
+                     ("PASS" if p3s["rate"] <= G.GATE_HALL and p3q["rate"] <= G.GATE_HALL
+                      else "FAIL"))}
 
     out = {
         "protocol": ("SPEC-confirmation-run-r3.md SS3.7 item 6 / SS10 item 4, extended: "
@@ -542,8 +555,9 @@ def main() -> None:
     out["DECISION_GRADED_SUPPORT"] = (
         f"Graded per-sentence support at {n_pool} pooled readings has Spearman-Brown "
         f"reliability {p1_val}, against the >= {GATE_RELIABILITY} bar r3 sets for a labeler: "
-        + ("**MEETS IT**." if p1_val is not None and p1_val >= GATE_RELIABILITY
-           else "**does NOT meet it**.")
+        + ("ABSENT — 30 readings were not produced."
+           if p1_val is None else
+           "**MEETS IT**." if p1_val >= GATE_RELIABILITY else "**does NOT meet it**.")
         + " This is a measurement of the instrument SS10 item 4 (a) proposes, not a decision "
           "about it; the decision is the owner's and needs the human read besides.")
     out["HUMAN_HALF"] = ("PENDING-HUMAN — no human read was performed, no kappa against a "
@@ -614,8 +628,27 @@ def markdown(out: dict) -> str:
                  f"the union is {out['judges'][j]['sentence_saturation']['frac_of_asymptote_at_n']}"
                  f" of the asymptote")
     f = out["pooled"]["sentence_saturation"]["mm_fit"]
-    L.append(f"* **pooled** Vmax {f['Vmax']}, Km {f['Km']}, r² {f['r2']}")
-    L += ["", "## Reliability of graded per-sentence support (pooled readings)", "",
+    L.append(f"* **pooled** Vmax {f['Vmax']}, Km {f['Km']}, r² {f['r2']} — the pooled curve "
+             f"is a staircase (a scout reading adds many sentences, the qwen reading after "
+             f"it adds few), so its fit is the worst of the three")
+    L += ["", "Marginal gain at the last reading, and the same curve in D3-**distinct "
+          "sets** rather than sentences:", ""]
+    for j in js:
+        d = out["judges"][j]
+        ss_, sv = d["sentence_saturation"], d["set_saturation_incremental"]
+        L.append(f"* **{j}** sentences +{ss_['marginal_gain_at_n']} of the union at "
+                 f"k = {d['presentations']}; distinct sets "
+                 f"{sv['mean_distinct_sets_at_k']['1']} → "
+                 f"{sv['mean_distinct_sets_at_k'][str(d['presentations'])]} "
+                 f"(+{sv['marginal_gain_at_n']} at the last reading), MM Vmax "
+                 f"{sv['mm_fit']['Vmax']}")
+    sh = out["pooled"]["support_shape"][-1]
+    L += ["", f"Where the support mass sits at {sh['n_readings']} readings: the union holds "
+          f"**{sh['mean_union_sentences']}** sentences per pair (median "
+          f"{sh['median_union_sentences']}), the top 3 carry **{sh['share_of_votes_on_top3']}** "
+          f"of all votes, and the best-supported sentence is in "
+          f"**{sh['mean_max_support']}** of readings.",
+          "", "## Reliability of graded per-sentence support (pooled readings)", "",
           "| n readings | split-half r | Spearman–Brown full-n | top-3 overlap |",
           "|---|---|---|---|"]
     for x in out["pooled"]["support_reliability"]:
