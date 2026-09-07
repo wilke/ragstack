@@ -409,6 +409,24 @@ def order_for(k: int, pair_index: int, n_units: int) -> tuple[list[int], int, st
     return o, seed, "seeded_shuffle"
 
 
+def presentation_range(spec: str) -> tuple[int, int]:
+    """``"N"`` -> (0, N); ``"START:END"`` -> (START, END). Half-open, as Python ranges are.
+
+    The second form exists so that the r3.1 EXTENSION (scout k = 5..19, qwen k = 5..9) can
+    be generated into a file that already holds #507's k = 0..4 records without touching
+    them: the resume check keys on ``(topic, docno, presentation)``, so an overlapping range
+    is a no-op, but naming the range explicitly makes the manifest say what was run.
+    """
+    if ":" in spec:
+        a, b = spec.split(":", 1)
+        start, end = int(a), int(b)
+    else:
+        start, end = 0, int(spec)
+    if start < 0 or end <= start:
+        raise SystemExit(f"--presentations {spec!r}: need 0 <= START < END")
+    return start, end
+
+
 def selftest() -> dict:
     """Offline checks of the whole-sentence locator. Contacts no endpoint.
 
@@ -570,6 +588,9 @@ def merge_manifest() -> pathlib.Path:
         "reprompt_sha256": C.sha256_text(REPROMPT),
         "rubric_sha256": C.sha256_file(RUBRIC), "rubric_path": str(RUBRIC),
         "n_presentations": N_PRESENTATIONS,
+        "n_presentations_per_judge": {j: m.get("n_presentations") for j, m in per.items()},
+        "presentations_run_per_judge": {j: m.get("presentations_run")
+                                        for j, m in per.items()},
         "presentation_seed": "SEED_LABELDUP + 100*k + pair_index; k=0 is the natural order",
         "temperature": TEMPERATURE, "concurrency_per_endpoint": CONC,
         "window_tokens": WINDOW_TOKENS, "dev_topics": C.DEV_TOPICS,
@@ -604,10 +625,20 @@ def main() -> None:
     ap.add_argument("--merge-manifest", action="store_true")
     ap.add_argument("--judge", choices=sorted(JUDGES))
     ap.add_argument("--limit", type=int, default=0, help="smoke: first N pairs only")
-    ap.add_argument("--presentations", type=int, default=N_PRESENTATIONS)
+    ap.add_argument("--presentations", default=str(N_PRESENTATIONS),
+                    help="'N' (presentations 0..N-1 — the default, #507's behaviour) or "
+                         "'START:END' (presentations START..END-1, so an existing label "
+                         "file can be EXTENDED without regenerating what it already has)")
     ap.add_argument("--tag", default="", help="output suffix, e.g. 'smoke'")
     ap.add_argument("--conc", type=int, default=CONC)
+    ap.add_argument("--workdir", default="r31",
+                    help="subdirectory of $STAGE0_BIG/work to read and write; the r3.1 "
+                         "extension uses 'r31ext' so #507's own outputs are never touched")
     args = ap.parse_args()
+    global R31
+    R31 = C.WORK / args.workdir
+    R31.mkdir(parents=True, exist_ok=True)
+    p_start, p_end = presentation_range(args.presentations)
     if args.selftest:
         print(json.dumps(selftest(), indent=1))
         return
@@ -634,7 +665,7 @@ def main() -> None:
         idx = idx[:args.limit]
     # presentation-major: a run stopped early still has COMPLETE presentations 0..j-1 for
     # every pair, which is what the saturation curve needs.
-    todo = [(i, k) for k in range(args.presentations) for i in idx]
+    todo = [(i, k) for k in range(p_start, p_end) for i in idx]
 
     suffix = f"-{args.tag}" if args.tag else ""
     out_path = R31 / f"labels-r31-{args.judge}{suffix}.jsonl"
@@ -649,8 +680,8 @@ def main() -> None:
                 done.add((r["topic"], r["docno"], r["presentation"]))
     todo = [(i, k) for i, k in todo
             if (pairs[i][0], pairs[i][1], k) not in done]
-    print(f"judge={args.judge} pairs={len(idx)} presentations={args.presentations} "
-          f"records_to_run={len(todo)} already_done={len(done)}", flush=True)
+    print(f"judge={args.judge} pairs={len(idx)} presentations={p_start}..{p_end - 1} "
+          f"workdir={R31} records_to_run={len(todo)} already_done={len(done)}", flush=True)
 
     docs, units = {}, {}
     for line in open(C.WORK / "docs.jsonl"):
@@ -764,7 +795,10 @@ def main() -> None:
         "system_sha256": C.sha256_text(SYSTEM),
         "reprompt_sha256": C.sha256_text(REPROMPT),
         "stats": judge.stats(), "n_pairs_total": len(idx),
-        "n_presentations": args.presentations,
+        "n_presentations": p_end,
+        "presentations_run": [p_start, p_end],
+        "presentations_preexisting_in_file": sorted({k for _t, _d, k in done}),
+        "workdir": str(R31),
         "n_records_total": n_recs, "n_records_run": len(todo),
         "n_records_preexisting": len(done),
         "presentation_seed_formula": "SEED_LABELDUP + 100*k + pair_index",

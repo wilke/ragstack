@@ -1,0 +1,28 @@
+{
+ "written_before": "the first new label was generated; see PREDICTIONS.md and the commit it landed in",
+ "source_of_the_projections": "artifacts/r31/labels-r31-{scout,qwen}.jsonl (#507), read by `s0_labelgates_r31ext.py --prefit`",
+ "P_ext_1": {
+  "statement": "the split-half reliability of graded per-sentence support (fraction of readings that include a sentence, both judges pooled), Spearman-Brown-corrected to the full instrument, is >= 0.85 at 30 readings",
+  "threshold": 0.85,
+  "projected": 0.8826,
+  "basis": "reviewer's split-half r = 0.556 at n = 10 => Spearman-Brown full-10 reliability 0.714 => 3x length => 0.883. This module reproduces the reviewer's measurement at r = 0.5444 / SB 0.7050 (20 seeded draws), which projects to 0.877 at 30.",
+  "estimator": "per pair, over the union of the n readings' sentences, Pearson r between the two halves' support fractions, averaged over pairs; 20 random half-splits, seeded"
+ },
+ "P_ext_2": {
+  "statement": "the scout-only union of distinct evidence SENTENCES at k = 20 is within 10 % of the asymptote of a Michaelis-Menten fit to scout's k = 1..5 curve",
+  "Vmax_prereg": 72.3277,
+  "Km_prereg": 4.6179,
+  "r2_prereg": 0.994174,
+  "curve_prereg": {"1": 12.4678, "2": 22.7424, "3": 27.5051, "4": 34.1559, "5": 37.4441},
+  "projected_U20": 58.7603,
+  "projected_U20_as_fraction_of_Vmax": 0.8124,
+  "threshold_U20": 65.0949,
+  "note": "the fit's own arithmetic already says k = 20 reaches only 81.2 % of Vmax, so the prediction AS STATED is expected to FAIL unless the curve flattens faster than Michaelis-Menten. It is pre-registered as stated and scored as stated. The informative secondary is the projection's accuracy: |U(20)_observed - 58.7603| / 58.7603 <= 0.10.",
+  "secondary_threshold_relative_error": 0.10
+ },
+ "P_ext_3": {
+  "statement": "the hallucinated-span rate at the NEW presentations (scout k = 5..19, qwen k = 5..9) stays <= 0.05 for both judges",
+  "threshold": 0.05,
+  "basis": "r3.1 measured 0.01957 (scout) and 0.00888 (qwen) over its five presentations; decision C is expected to hold under reshuffled unit orders"
+ }
+}
