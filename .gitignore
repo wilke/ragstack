@@ -85,3 +85,6 @@ docs/*.html
 # three days behind the markdown, and the stale copy still carried the `pkill -f`
 # cleanup step that had already been removed from the source (#402, #460).
 docs/*.html
+
+# Stage-0 judge run logs and pid files — per-run scratch, not source.
+docs/plans/results/stage0/run/

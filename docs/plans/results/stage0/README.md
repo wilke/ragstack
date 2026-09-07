@@ -119,6 +119,8 @@ behaved. Two preconditions fail before power is reachable.
 | [`artifacts/r31/`](artifacts/r31/) | both judges' 1,540 records each (308 pairs × 5 presentations), the merged manifest, `gates-r31.json` and the rendered gate table |
 | [`RESULTS-stage0b-relabel-r31ext.md`](RESULTS-stage0b-relabel-r31ext.md) | the **r3.1 extension** — Scout ×20, Qwen ×10 readings: graded-support reliability 0.92 at 30 pooled readings (P-ext-1 PASS), the union still growing at k = 20, cross-judge support correlation 0.30 (reliable is not valid), and a locator blow-up found and recorded |
 | `s0_labelgates_r31ext.py`, [`artifacts/r31ext/`](artifacts/r31ext/) | that analysis, the pre-registration (`PREDICTIONS.md`), both judges' full label files and manifests, `gates-r31ext.json` |
+| [`RESULTS-stage0b-claude-judges.md`](RESULTS-stage0b-claude-judges.md) | **Claude judges via the CLI** — Sonnet 5, Opus 5, Fable 5.1 (251/308), one reading each: hallucinated-span ≤ 0.002 for all three, their picks carry 3–4× the local judges' pooled support, Opus and Fable overlap at Jaccard 0.50; self-consistency absent (one reading); $195 |
+| `s0_label_claude.py`, `s0_gates_claude.py`, [`artifacts/claude/`](artifacts/claude/) | that harness (headless `claude -p` under isolation flags), the gates, the three label files and manifests |
 | [`../design/SPEC-confirmation-run.md`](../design/SPEC-confirmation-run.md) | the pre-registration Stage 0 was run against (rev. 2; § 14 is its change log) |
 | [`../design/RUBRIC-evidence.md`](../design/RUBRIC-evidence.md) | the labeling rubric, frozen and hashed before the first labeling call |
 
