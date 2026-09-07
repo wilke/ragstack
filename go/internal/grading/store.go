@@ -2,18 +2,16 @@ package grading
 
 import (
 	"context"
-	"errors"
 	"sort"
 	"sync"
 )
 
-// ErrNotFound is returned by nothing here on purpose: a missing batch, task,
-// verdict or adjudication comes back as a nil record with a nil error, because
-// every caller in the handler layer turns "absent" into the contract's 404 and
-// must not be able to tell a store outage from an absence by accident. A real
-// store FAILURE is a non-nil error, which the handlers turn into the 503.
-var ErrNotFound = errors.New("grading: not found")
-
+// ABSENCE IS NOT AN ERROR. A missing batch, task, verdict or adjudication comes
+// back as a nil record with a nil error; a store FAILURE is a non-nil error.
+// The handler layer turns the first into the contract's 404 and the second into
+// its 503, and conflating them would make an outage read as "no such batch" —
+// on this surface, a read that does not exist.
+//
 // Store is the persistence seam for the grading resources.
 //
 // Four collections — batches, tasks, verdicts, adjudications. Verdict and
@@ -81,7 +79,7 @@ type MemoryStore struct {
 	mu       sync.RWMutex
 	batches  map[string]*Batch
 	tasks    map[string]*Task
-	verdicts []*Verdict     // append-only, every version
+	verdicts []*Verdict      // append-only, every version
 	adjs     []*Adjudication // append-only, every version
 }
 
