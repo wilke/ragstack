@@ -1,0 +1,32 @@
+queries: 197 (20 cds, 177 pointed)
+query vectors: reusing /rag/tmp/stage0-conf/work/stage0b-prime/query_vectors.npy
+docs loaded: 32663
+corpus tokenized: 109496847 tokens, 621826 types, 40.8s
+query vocabulary: 1296
+[fixed_tok256_ov0pct] dense 7s
+[fixed_tok256_ov0pct] bm25 index 12.5s postings=29947103 avgdl=148.4
+  [fixed_tok256_ov0pct] 50/197 pooled 34s
+  [fixed_tok256_ov0pct] 100/197 pooled 43s
+  [fixed_tok256_ov0pct] 150/197 pooled 53s
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+[fixed_tok256_ov0pct] done 63s
+[fixed_tok512_ov0pct] dense 4s
+[fixed_tok512_ov0pct] bm25 index 7.7s postings=23546491 avgdl=290.8
+  [fixed_tok512_ov0pct] 50/197 pooled 29s
+  [fixed_tok512_ov0pct] 100/197 pooled 42s
+  [fixed_tok512_ov0pct] 150/197 pooled 55s
+[fixed_tok512_ov0pct] done 67s
+[fixed_tok1024_ov0pct] dense 2s
+[fixed_tok1024_ov0pct] bm25 index 4.9s postings=18112199 avgdl=558.0
+  [fixed_tok1024_ov0pct] 50/197 pooled 34s
+  [fixed_tok1024_ov0pct] 100/197 pooled 56s
+  [fixed_tok1024_ov0pct] 150/197 pooled 77s
+[fixed_tok1024_ov0pct] done 98s
+skip (done): fixed_tok2048_ov0pct
+[fixed_tok512] dense 4s
+[fixed_tok512] bm25 index 8.6s postings=26729653 avgdl=293.7
+  [fixed_tok512] 50/197 pooled 28s
+  [fixed_tok512] 100/197 pooled 41s
+  [fixed_tok512] 150/197 pooled 54s
+[fixed_tok512] done 66s
+[header512] dense 4s

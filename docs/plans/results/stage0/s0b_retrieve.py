@@ -30,8 +30,8 @@ import time
 
 import numpy as np
 
+import s0b_common as K            # noqa: I001  -- must precede s0_common (sys.path shim)
 import s0_common as C
-import s0b_common as K
 from s0b_bm25 import ArmBM25, CorpusTokens
 
 sys.path.insert(0, str(C.STAGE1))

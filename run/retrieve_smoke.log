@@ -1,0 +1,13 @@
+queries: 197 (20 cds, 177 pointed)
+query vectors: (197, 4096) {"n_queries": 197, "seconds": 0.4, "requests": 13, "retries": 0, "actual_items": 197, "actual_tokens": 8514, "endpoints": "http://localhost:9001..9006, <= 2 in flight each", "cds_query_vector_agreement_min_cosine": 1.0, "cds_query_vectors_compared": 20}
+docs loaded: 32663
+corpus tokenized: 109496847 tokens, 621826 types, 40.9s
+query vocabulary: 1296
+[fixed_tok2048_ov0pct] dense 1s
+[fixed_tok2048_ov0pct] bm25 index 3.3s postings=13662957 avgdl=1029.6
+  [fixed_tok2048_ov0pct] 50/197 pooled 52s
+  [fixed_tok2048_ov0pct] 100/197 pooled 95s
+  [fixed_tok2048_ov0pct] 150/197 pooled 138s
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+[fixed_tok2048_ov0pct] done 179s
+retrieval done

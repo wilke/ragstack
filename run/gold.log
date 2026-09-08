@@ -1,0 +1,33 @@
+{
+ "pairs": 308,
+ "evidence_bearing_docs_per_topic": {
+  "2014_11": 8,
+  "2014_29": 30,
+  "2014_5": 18,
+  "2015_18": 9,
+  "2015_23": 18,
+  "2015_8": 34,
+  "2016_1": 36,
+  "2016_13": 13,
+  "2016_26": 7,
+  "2016_9": 35
+ },
+ "pooled_pairs_per_topic": {
+  "2014_11": 8,
+  "2014_29": 30,
+  "2014_5": 18,
+  "2015_18": 9,
+  "2015_23": 18,
+  "2015_8": 34,
+  "2016_1": 36,
+  "2016_13": 13,
+  "2016_26": 7,
+  "2016_9": 35
+ },
+ "dropped_readings": 1,
+ "long_documents": 3,
+ "unit_cap_per_document": 4,
+ "unit_cap_seed": 20260918
+}
+dropped readings: [{"judge": "scout", "topic": "2016_1", "docno": "4212306", "presentation": 11, "spans_seen": 22, "spans_emitted": 986}]
+pointed queries: 177
