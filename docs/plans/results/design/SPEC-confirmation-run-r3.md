@@ -685,6 +685,26 @@ Recorded here so the next session does not have to reconstruct them.
    allows, and build the harder pointed set as the powered population, since the served path's
    flattening of the size contrast (hybrid) already says the product decision is lower-stakes on
    quality than the dense-only reading implied.
+   **Decided 2026-09-08: (a) and (b) started; (c) planned as the fallback.** (c) in full:
+   *Idea* — P.7's re-scope adaptation: before freeze, keep as confirmatory only the contrasts
+   Stage 0b′ showed to be powered at n = 80 (R2, headers, joint power 0.95) and re-declare the
+   rest (N1, N3, R1, R3, R4) as pre-registered **descriptive** readings with δ80 printed, α
+   redistributed within the surviving family. *Problem it solves* — a confirmatory family that
+   cannot resolve produces five UNRESOLVED verdicts and one real one; readers then quote the
+   point estimates anyway, which is the failure mode §6 of Stage 0 exists to prevent. *How* —
+   a dated amendment to §3.5/§3.6 and P.7 listing the surviving family, made before any
+   confirmation label is read; the descriptive contrasts keep their CIs and δ80 and are reported
+   in the same tables, labeled. *Pros* — honest about what n = 80 can carry; the one decision it
+   can settle (contextual headers) gets a clean verdict; zero extra cost; compatible with (a) and
+   (b) — if (b) makes the pointed population discriminative, the size contrasts return to
+   confirmatory status *on that population*. *Cons* — the study's headline question (chunk size)
+   is not answered confirmatorily on CDS at all; a reader may take "descriptive" as "settled";
+   re-scoping after seeing the calibration numbers is legitimate only because the rule for it
+   was pre-registered (P.7) and the calibration set is disjoint from the confirmation set.
+   *How it serves the goal* — the product decision (how coarse and cheap the index can be for
+   pointed questions) then rests on the pointed population at scale, which is the population §1
+   declared, while CDS contributes the reach story and the headers verdict; nothing is claimed
+   that the instrument cannot support.
 3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
    labeler quotes the first and last sentence of each span in full (one sentence when the
    span is one sentence); each quote is located by exact-then-normalised match of its first
