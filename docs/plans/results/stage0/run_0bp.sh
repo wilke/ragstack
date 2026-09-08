@@ -12,7 +12,8 @@ export PYTHONPATH=${PYTHONPATH:-/home/wilke/Development/ragstack/python}
 export STAGE0_HELPERS=${STAGE0_HELPERS:-/home/wilke/Development/worktrees/phase0-rescue/phase0}
 PY=${PY:-/rag/envs/ragstack/bin/python3}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUN=${RUN:-"$HERE/../../../../run"}
+RUN=${RUN:-"$HERE/../../../../run"}   # untracked scratch at the worktree root; logs are copied
+                                     # into artifacts/stage0b-prime/logs/ for the record
 mkdir -p "$RUN"
 cd "$HERE"
 
