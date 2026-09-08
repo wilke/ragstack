@@ -13,8 +13,7 @@ that consumes their packed contexts.*
 
 ## 1. Why, and why now
 
-The decision ledger in the study report shows two empty columns: answer quality and generation
-cost. Every configuration decision so far is justified by evidence delivery, on the assumption
+The decision ledger — section 09 of the published study report (artifact `e5b3169b-4897-48f7-b350-2de7276caff0`; source at `~/Development/worktrees/phase0-rescue/artifact/`, not in this repository) — shows two empty metric columns: answer quality and generation cost. Every configuration decision so far is justified by evidence delivery, on the assumption
 that delivered evidence becomes a correct, cited answer. That assumption is testable now,
 cheaply, because the **pointed-question population** (r3 §11, #506) carries a **gold sentence by
 construction**: each query was written from a paraphrase of a deep section, and the sentence(s)
