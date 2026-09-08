@@ -31,6 +31,7 @@ CONFRUN=${CONFRUN:-/rag/tmp/stage0-conf/work/conf/run}
 MAX_ATTEMPTS=${MAX_ATTEMPTS:-2000}
 BACKOFF=${BACKOFF:-60}
 HEARTBEAT_SECS=${HEARTBEAT_SECS:-900}
+POLL_SECS=${POLL_SECS:-15}
 
 supervise () {                       # runs detached; one judge
   local judge=$1
@@ -46,14 +47,21 @@ supervise () {                       # runs detached; one judge
     ( cd "$HERE" && exec "$PY" s0c_label.py --judge "$judge" ) >> "$log" 2>&1 &
     local child=$!
     echo "$child" > "$pidf"
-    # heartbeat while the child runs: counts and timestamps only, never label content
+    # Heartbeat while the child runs: counts and timestamps only, never label content.
+    # Liveness is polled every POLL_SECS so a crash is noticed within seconds; the
+    # heartbeat file is rewritten every HEARTBEAT_SECS.
+    local waited=$HEARTBEAT_SECS
     while kill -0 "$child" 2>/dev/null; do
-      local n
-      n=$(wc -l < "$LABELS/labels-conf-$judge.jsonl" 2>/dev/null || echo 0)
-      printf '{"judge":"%s","attempt":%d,"pid":%d,"records":%s,"utc":"%s","state":"running"}\n' \
-        "$judge" "$attempt" "$child" "$n" "$(date -u +%FT%TZ)" > "$hb"
-      sleep "$HEARTBEAT_SECS" &
+      if [ "$waited" -ge "$HEARTBEAT_SECS" ]; then
+        local n
+        n=$(wc -l < "$LABELS/labels-conf-$judge.jsonl" 2>/dev/null || echo 0)
+        printf '{"judge":"%s","attempt":%d,"pid":%d,"records":%s,"utc":"%s","state":"running"}\n' \
+          "$judge" "$attempt" "$child" "$n" "$(date -u +%FT%TZ)" > "$hb"
+        waited=0
+      fi
+      sleep "$POLL_SECS" &
       wait $! 2>/dev/null
+      waited=$((waited + POLL_SECS))
     done
     wait "$child"
     local rc=$?

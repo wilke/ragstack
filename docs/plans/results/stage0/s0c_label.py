@@ -122,10 +122,11 @@ def prepare_tokens() -> dict:
     t0 = time.time()
     pairs, _lset = build_pairs()
     docnos = sorted({d for _t, d, _k in pairs})
+    want = set(docnos)
     docs, units = {}, {}
     for line in open(C.WORK / "docs.jsonl"):
         r = json.loads(line)
-        if r["docno"] in set(docnos):
+        if r["docno"] in want:
             docs[r["docno"]] = r["text"]
     for line in open(C.WORK / "units.jsonl"):
         r = json.loads(line)
