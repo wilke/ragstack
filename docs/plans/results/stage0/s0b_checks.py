@@ -206,45 +206,68 @@ def manipulation(cds, pointed) -> dict:
 
 
 def discrimination_and_bind() -> dict:
-    """Top-10 document sets between the size extremes, and whether the budget binds."""
+    """Top-10 *retrieved* document sets between the size extremes, and the budget bind.
+
+    Discrimination is read off the **ranked pool**, not the packed context -- Stage 0's
+    ``s0_checks.check3`` reading, kept so the two runs are comparable and so the check does
+    not become a statement about the budget (at 16k the 2048 arm admits ~9 chunks, which
+    would make "the top-10 documents" a budget artefact).
+    """
     top10: dict = {}
+    for arm in ("fixed_tok256_ov0pct", "fixed_tok2048_ov0pct"):
+        p = K.OUT / f"pool_{arm}.jsonl"
+        if not p.exists():
+            continue
+        for line in open(p):
+            r = json.loads(line)
+            for mode in K.MODES:
+                order = sorted((int(j) for j in r["pools"][mode]),
+                               key=lambda j: -r["chunks"][str(j)]["ce"])
+                seen, docs10 = set(), []
+                for j in order:
+                    d = r["chunks"][str(j)]["docno"]
+                    if d not in seen:
+                        seen.add(d)
+                        docs10.append(d)
+                    if len(docs10) == 10:
+                        break
+                top10.setdefault((r["population"], mode, r["qid"]), {})[arm] = docs10
+    disc: dict = {}
+    for (pop, mode, _q), v in top10.items():
+        if len(v) < 2:
+            continue
+        disc.setdefault((pop, mode), []).append(
+            0.0 if set(v["fixed_tok256_ov0pct"]) == set(v["fixed_tok2048_ov0pct"]) else 1.0)
+    out = {"discrimination_top10_doc_sets_differ": {
+        f"{p}/{m}": {"rate": round(st.mean(v), 4), "n_queries": len(v),
+                     "bar": ">= 0.25 (r3 SS11 guard 1 / Stage 0 check 3)",
+                     "source": "the reranked pool, not the packed context"}
+        for (p, m), v in sorted(disc.items())}}
+
     bind: dict = {}
     for pop in ("cds", "pointed"):
-        src = K.CTX / f"packed-{pop}.jsonl.gz"
-        with gzip.open(src, "rt") as f:
+        with gzip.open(K.CTX / f"packed-{pop}.jsonl.gz", "rt") as f:
             for line in f:
                 r = json.loads(line)
                 if r["rerank"] != "on":
                     continue
                 pk = r["budgets"][str(K.PRIMARY_BUDGET)]
-                if r["arm"] in ("fixed_tok256_ov0pct", "fixed_tok2048_ov0pct"):
-                    seen, docs10 = set(), []
-                    for d, _s, _e, _n in pk["items"]:
-                        if d not in seen:
-                            seen.add(d)
-                            docs10.append(d)
-                        if len(docs10) == 10:
-                            break
-                    top10.setdefault((pop, r["mode"], r["qid"]), {})[r["arm"]] = docs10
                 bind.setdefault((pop, r["arm"], r["mode"]), []).append(
                     (pk["n_sources"], pk["sfr_tokens"]))
-    disc: dict = {}
-    for (pop, mode, _q), v in top10.items():
-        if len(v) < 2:
-            continue
-        a = set(v["fixed_tok256_ov0pct"])
-        b = set(v["fixed_tok2048_ov0pct"])
-        disc.setdefault((pop, mode), []).append(0.0 if a == b else 1.0)
-    out = {"discrimination_top10_doc_sets_differ": {
-        f"{p}/{m}": {"rate": round(st.mean(v), 4), "n_queries": len(v),
-                     "bar": ">= 0.25 (r3 SS11 guard 1)"}
-        for (p, m), v in sorted(disc.items())}}
     out["budget_bind_at_primary"] = {
-        f"{p}/{a}/{m}": {"mean_sources_admitted": round(st.mean(x[0] for x in v), 2),
-                         "mean_sfr_realised": round(st.mean(x[1] for x in v)),
-                         "binds_rate": round(st.mean(1.0 if x[0] < K.DEPTH else 0.0
-                                                     for x in v), 4)}
+        f"{p}/{a}/{m}": {
+            "mean_sources_admitted": round(st.mean(x[0] for x in v), 2),
+            "mean_sfr_realised": round(st.mean(x[1] for x in v)),
+            "pool_exhausted_rate": round(st.mean(1.0 if x[0] >= K.DEPTH else 0.0
+                                                 for x in v), 4),
+            "in_band_rate": round(st.mean(
+                1.0 if 0.85 * K.PRIMARY_BUDGET <= x[1] <= K.PRIMARY_BUDGET else 0.0
+                for x in v), 4)}
         for (p, a, m), v in sorted(bind.items())}
+    out["budget_bind_reading"] = (
+        "the budget BINDS when the walk stops on a non-fit rather than on an exhausted "
+        "pool: pool_exhausted_rate near 1.0 means the whole D = 50 pool fitted and the "
+        "budget did NOT bind for that arm")
     return out
 
 

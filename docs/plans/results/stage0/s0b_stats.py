@@ -174,6 +174,62 @@ def joint_power(pairs: list[tuple[float, float]], n: int, deltas=(0.0, 0.01, 0.0
     return out
 
 
+def pointed_joint_power(a: dict, b: dict, n: int, deltas=(0.0, 0.01, 0.02),
+                        eps: float = K.EPS, alpha: float = 0.025, draws: int = N_BOOT,
+                        seed: int = K.SEED_BOOT) -> dict:
+    """Joint power on the pointed population, resampling **queries** (the cluster).
+
+    Both endpoints must be resampled from the same draw of queries, but they do not have
+    the same denominator: ``ERET`` is over every query, and the confirmatory ``EPACK`` is
+    over the queries **both** arms reached (r3 SS3.1's drop-from-both rule, applied inside
+    each draw). Resampling only the both-reached queries would be wrong in a way that is
+    easy to miss: on this population ``ERET`` is binary per query, so on that subset the
+    ``ERET`` difference is identically zero and its sigma_d collapses to 0.
+    """
+    qids = sorted(set(a) & set(b))
+    if len(qids) < 3:
+        return {"status": "UNDERPOWERED", "clusters": len(qids)}
+    ea = np.asarray([a[q]["ERET"] for q in qids], float)
+    eb = np.asarray([b[q]["ERET"] for q in qids], float)
+    pa = np.asarray([a[q]["EPACK"] for q in qids], float)
+    pb = np.asarray([b[q]["EPACK"] for q in qids], float)
+    both = (ea > 0) & (eb > 0)
+    d_e_all = ea - eb
+    d_p_both = (pa - pb)[both]
+    mu_e = float(d_e_all.mean())
+    mu_p = float(d_p_both.mean()) if both.sum() else 0.0
+    rng = np.random.default_rng(seed)
+    tcrit = M.t_ppf(1 - alpha, n - 1)
+    out = {"n": n, "draws": draws, "clusters_available": len(qids),
+           "both_reached": int(both.sum()), "eps": eps, "seed": seed,
+           "alpha_per_endpoint": alpha, "by_delta": {}}
+    idx = rng.integers(0, len(qids), size=(draws, n))
+    de = d_e_all[idx]
+    bm = both[idx]
+    dp_raw = (pa - pb)[idx]
+    for dlt in deltas:
+        e = de - mu_e + dlt
+        ue = e.mean(axis=1) + tcrit * e.std(axis=1, ddof=1) / math.sqrt(n)
+        ra = ue < eps
+        rb = np.zeros(draws, bool)
+        for i in range(draws):
+            m = bm[i]
+            k = int(m.sum())
+            if k < 2:
+                continue
+            v = dp_raw[i][m] - mu_p + dlt
+            s = v.std(ddof=1)
+            tc = M.t_ppf(1 - alpha, k - 1)
+            rb[i] = (v.mean() + tc * s / math.sqrt(k)) < eps
+        out["by_delta"][str(dlt)] = {
+            "power_ERET": round(float(ra.mean()), 4),
+            "power_EPACK": round(float(rb.mean()), 4),
+            "joint_power": round(float((ra & rb).mean()), 4),
+            "mean_n_EPACK_per_draw": round(float(bm.sum(axis=1).mean()), 1),
+            "meets_80pct": bool((ra & rb).mean() >= 0.80)}
+    return out
+
+
 # ------------------------------------------------------------------ CDS endpoints
 def cds_levels(by: dict, budget: int, variant: str = PRIMARY_VARIANT) -> dict:
     out: dict = {}
@@ -355,11 +411,8 @@ def pointed_contrast(by, cid, ctrl, cand, mode, rr, budget) -> dict:
                 "n_dropped": len(qids) - len(both)},
             "EPACK_zero_imputation_sensitivity": {"ci": boot_ci(d_zero),
                                                   "sigma": sigma_block(d_zero)},
-            "joint_power_at_177": joint_power(
-                [(a[q]["ERET"] - b[q]["ERET"], a[q]["EPACK"] - b[q]["EPACK"])
-                 for q in both], len(both) or 2),
-            "_pairs": [(a[q]["ERET"] - b[q]["ERET"], a[q]["EPACK"] - b[q]["EPACK"])
-                       for q in both]}
+            "joint_power_at_n_dev": pointed_joint_power(a, b, len(qids)),
+            "_ab": (a, b)}
 
 
 # ------------------------------------------------------------------ tables
@@ -377,6 +430,7 @@ def mode_x_size(by_cds, by_pt, budget: int) -> dict:
                     "n_retained_EPACK": c["EPACK_confirmatory_intersection"]["n_retained"],
                     "n_dropped": c["EPACK_confirmatory_intersection"]["n_dropped"]}
                 p = pointed_contrast(by_pt, cid, ctrl, cand, mode, rr, budget)
+                p.pop("_ab", None)
                 if p.get("status") != "ABSENT":
                     out["pointed"][f"{cid}|{mode}|rerank_{rr}"] = {
                         "d_ERET": p["ERET"]["ci"],
@@ -423,7 +477,7 @@ def main() -> None:
                             PRIMARY_VARIANT, r)["EPACK_confirmatory_intersection"]["ci"]
             for r in EPACK_READINGS}
         p = pointed_contrast(by_pt, cid, ctrl, cand, "hybrid", "on", B)
-        pairs = p.pop("_pairs", [])
+        p.pop("_ab", None)
         p["family"] = fam
         out["contrasts"]["pointed"][cid] = p
 
@@ -454,7 +508,7 @@ def main() -> None:
         p = pointed_contrast(by_pt, cid, ctrl, cand, "hybrid", "on", B)
         if p.get("status") == "ABSENT":
             continue
-        pairs = p.pop("_pairs")
+        aa, bb = p.pop("_ab")
         se = p["ERET"]["sigma"]["governing_bound_80"]
         sp = p["EPACK_confirmatory_intersection"]["sigma"]["governing_bound_80"]
         row = {"sigma_d_ERET_bound80": se, "sigma_d_EPACK_bound80": sp,
@@ -464,12 +518,12 @@ def main() -> None:
             [x for x in (row["n_for_80pct_ERET"], row["n_for_80pct_EPACK"])
              if x is not None] or [0]) or None
         for n in (177, 300, 600):
-            row[f"joint_power_at_{n}"] = joint_power(pairs, n)["by_delta"]
-        # smallest n whose JOINT power at Delta = 0 reaches 0.80, searched on the cap
+            row[f"joint_power_at_{n}"] = pointed_joint_power(aa, bb, n)["by_delta"]
+        # smallest n whose JOINT power at Delta = 0 reaches 0.80, searched up to 2x the cap
         need = None
-        for n in range(20, 1201, 10):
-            if joint_power(pairs, n, deltas=(0.0,), draws=2000)["by_delta"]["0.0"][
-                    "joint_power"] >= 0.80:
+        for n in range(20, 1201, 20):
+            if pointed_joint_power(aa, bb, n, deltas=(0.0,), draws=2000)["by_delta"][
+                    "0.0"]["joint_power"] >= 0.80:
                 need = n
                 break
         row["n_for_80pct_JOINT_delta0"] = need

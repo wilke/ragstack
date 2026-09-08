@@ -1,0 +1,37 @@
+dev-tenant Elasticsearch: http://localhost:24043; index chkconf_20260907210115_tok512
+index created
+  indexed 100000/423386 13s
+  indexed 200000/423386 25s
+  indexed 300000/423386 37s
+  indexed 400000/423386 50s
+indexed 423386 chunks in 53.4s
+in-process BM25 rebuilt (8.6s)
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+{
+ "status": "PASS",
+ "summary": {
+  "queries": 197,
+  "mean_overlap_at_50": 0.9469,
+  "median_overlap_at_50": 0.96,
+  "min_overlap_at_50": 0.22,
+  "mean_spearman_on_intersection": 0.9657,
+  "same_rank1_rate": 0.9594,
+  "by_population": {
+   "cds": {
+    "queries": 20,
+    "mean_overlap_at_50": 0.934
+   },
+   "pointed": {
+    "queries": 177,
+    "mean_overlap_at_50": 0.9484
+   }
+  },
+  "PASS": true
+ },
+ "verifying_listing": {
+  "index_gone": true,
+  "chkconf_indices_remaining": [],
+  "n_indices_in_cluster": 2
+ },
+ "seconds": 111.6
+}
