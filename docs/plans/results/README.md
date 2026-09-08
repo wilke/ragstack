@@ -276,6 +276,11 @@ raises the budget to 16k, makes the harness hybrid with the three retrieval mode
 separable, adds neighbour-delivery arms, and changes the labeling protocol. Its §5 step 2 ran the same day and stopped —
 neither judge passed the machine gates (`stage0/RESULTS-stage0b-relabel.md`, #501); the
 next steps are r3 §10's decisions, then the human read, then Stage 0b′.
+**The stage after it is [`design/SPEC-synthesis-stage.md`](design/SPEC-synthesis-stage.md)**
+(2026-09-07, proposed): measure the answer, not only the evidence — correctness on the
+pointed set where gold is known by construction, faithfulness, citation precision, abstention,
+and generation cost per configuration and generator, with a human-calibrated judge through
+the Grading view.
 
 Everything above this line measured chunking with *document* metrics on judged sets. The
 **confirmation run** was the pre-registered study built to replace them: 90 TREC CDS topics
