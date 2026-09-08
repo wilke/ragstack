@@ -30,3 +30,9 @@ skip (done): fixed_tok2048_ov0pct
   [fixed_tok512] 150/197 pooled 54s
 [fixed_tok512] done 66s
 [header512] dense 4s
+[header512] bm25 index 10.8s postings=24291926 avgdl=306.6
+  [header512] 50/197 pooled 31s
+  [header512] 100/197 pooled 45s
+  [header512] 150/197 pooled 58s
+[header512] done 71s
+retrieval done
