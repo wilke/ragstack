@@ -705,6 +705,27 @@ Recorded here so the next session does not have to reconstruct them.
    pointed questions) then rests on the pointed population at scale, which is the population §1
    declared, while CDS contributes the reach story and the headers verdict; nothing is claimed
    that the instrument cannot support.
+   **(b) measured 2026-09-08 (#524): corpus size is not the fix.** Reach falls only 0.98 → 0.94
+   from 4k to 32.7k documents (slope −0.03 to −0.05 per decade) and projects to 0.89–0.93 at
+   500k; between-arm spread grows slower than the paired variance, so a larger corpus buys a
+   noisier population, not a discriminative one. **161 of 177 queries are reached by every arm at
+   every size.** The Leg B construction's rare-entity anchor makes retrieval trivial by design.
+   The 5× embedding was correctly not run.
+6. **A hard pointed set — the lever is query hardness, not corpus size.** Proposed construction,
+   for the owner: keep the pointed form (one finding, one passage, ≈ 12 words) but (i) drop the
+   rare-entity requirement and instead require the anchoring entity to occur in **≥ 20 corpus
+   documents**, so the entity alone cannot identify the source; (ii) keep the leakage screens
+   against the source's front matter; (iii) generate ≥ 600 candidates and **stratify by measured
+   difficulty** — pooled reach across all arms and modes, an arm-symmetric statistic — keeping
+   the strata so that the population's reach sits in [0.3, 0.8] at the current corpus size;
+   (iv) pre-register that selection rule before generation so it cannot be tuned to an arm.
+   Cost: one generation pass (≈ 30 min on Scout) and one Stage 0b′ retrieval pass (≈ 30 min),
+   no embeddings. Risk: difficulty-stratified selection is outcome-dependent; it is admissible
+   only because it is symmetric across arms and declared in advance, and the write-up must say
+   so. If this population clears guard 1, the size contrasts return to confirmatory status on
+   it (§10 item 5(c)); if it does not, the study reports that pointed questions of this shape
+   are insensitive to chunk size in this range — itself a product finding in favour of the
+   cheapest index.
 3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
    labeler quotes the first and last sentence of each span in full (one sentence when the
    span is one sentence); each quote is located by exact-then-normalised match of its first
