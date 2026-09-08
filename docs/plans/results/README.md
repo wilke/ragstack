@@ -276,6 +276,12 @@ raises the budget to 16k, makes the harness hybrid with the three retrieval mode
 separable, adds neighbour-delivery arms, and changes the labeling protocol. Its §5 step 2 ran the same day and stopped —
 neither judge passed the machine gates (`stage0/RESULTS-stage0b-relabel.md`, #501); the
 next steps are r3 §10's decisions, then the human read, then Stage 0b′.
+**Stage 0b′ has now run: [`stage0/RESULTS-stage0b-prime.md`](stage0/RESULTS-stage0b-prime.md)**
+(2026-09-07) re-measures the split endpoints on the existing indexes — 16,384 SFR tokens, three
+retrieval modes, both populations, zero new embeddings — and fails the gate **on power, not on
+levels**: the confirmation run's planned 80 topics buy **37–56 % joint power** on five of six
+contrasts, and the pointed population sits at its ceiling (`ERET` 0.90–0.96 for every arm), so
+guard 1 makes it `DESCRIPTIVE` rather than a fourth gate.
 **The stage after it is [`design/SPEC-synthesis-stage.md`](design/SPEC-synthesis-stage.md)**
 (2026-09-07, proposed): measure the answer, not only the evidence — correctness on the
 pointed set where gold is known by construction, faithfulness, citation precision, abstention,

@@ -28,6 +28,21 @@ locations does not saturate** — the marginal gain at the fifth presentation is
 union size against a 5 % bar. **`NEITHER JUDGE PASSES — the stop stands.`** #501's harness and
 artifacts are untouched, so both relabels stay reproducible side by side.
 
+**The calibration itself has now been re-run under revision 3, and its write-up is
+[`RESULTS-stage0b-prime.md`](RESULTS-stage0b-prime.md)** — r3 §5 step 4, on the existing
+indexes with **zero new embeddings**: the split endpoints (`ERET` / `EPACK`) at 4,096 /
+**16,384** / 32,768 **SFR** tokens, three separable retrieval modes at the served shape, the
+neighbour and section delivery arms, and **both** populations. Harness `s0b_*.py` +
+`run_0bp.sh`, artifacts under [`artifacts/stage0b-prime/`](artifacts/stage0b-prime/).
+Splitting the endpoint worked — `EPACK` is inside [0.15, 0.90] for every arm and the size
+trade is visible at last (reach 0.277 → 0.112 against containment 0.188 → 0.696 from 256 to
+2048 tokens) — but **the gate fails on power**: σ_d on the confirmatory `EPACK` is 0.148–0.379
+against a 0.158 requirement, and the **joint** bootstrap power at the planned 80 topics is
+**0.369–0.560** on five of six contrasts. The pointed population (r3 §11) discriminates
+perfectly and sits at its **ceiling** on both endpoints, so guard 1 makes it `DESCRIPTIVE`.
+The §3.4 BM25 concordance check against the dev tenant's Elasticsearch **passes** at
+overlap@50 **0.9469**.
+
 ---
 
 ## What the confirmation run was, and what Stage 0 was for

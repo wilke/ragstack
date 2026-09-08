@@ -1,0 +1,23 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+pools loaded: 6 arms x 197 queries 4s
+  packed 20/197 17s
+  packed 40/197 41s
+  packed 60/197 65s
+  packed 80/197 85s
+  packed 100/197 107s
+  packed 120/197 130s
+  packed 140/197 156s
+  packed 160/197 176s
+  packed 180/197 199s
+{
+ "records": {
+  "cds": 1240,
+  "pointed": 10974
+ },
+ "tokenizer_calls": 147655,
+ "seconds": 218.0,
+ "sha256": {
+  "cds": "3e740e4e747e7ba65389c09938f4a03387aca3307411fb7be984859f91829f2a",
+  "pointed": "da5dc144afaf788a424acafcc679769ba79307b41d6c072926218e55f7430621"
+ }
+}

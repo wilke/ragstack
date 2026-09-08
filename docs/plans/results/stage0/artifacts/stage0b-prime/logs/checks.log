@@ -1,0 +1,104 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+{
+ "plumbing_B_scoring_identity_on_stage0_unions": {
+  "fixed_tok1024_ov0pct": {
+   "recomputed": 0.0818,
+   "stage0": 0.0818,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "fixed_tok2048_ov0pct": {
+   "recomputed": 0.0455,
+   "stage0": 0.0455,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "fixed_tok256_ov0pct": {
+   "recomputed": 0.2091,
+   "stage0": 0.2091,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "fixed_tok512": {
+   "recomputed": 0.1,
+   "stage0": 0.1,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "fixed_tok512_ov0pct": {
+   "recomputed": 0.0909,
+   "stage0": 0.0909,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "header512": {
+   "recomputed": 0.1455,
+   "stage0": 0.1455,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "parent256": {
+   "recomputed": 0.0636,
+   "stage0": 0.0636,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "_max_abs_diff": 0.0
+ },
+ "plumbing_C_end_to_end_reach": {
+  "fixed_tok256_ov0pct": {
+   "reach_at_5145_sfr": 0.2,
+   "stage0_at_4096_gen": 0.2091,
+   "abs_diff": 0.0091,
+   "units": 110
+  },
+  "fixed_tok512_ov0pct": {
+   "reach_at_5145_sfr": 0.1,
+   "stage0_at_4096_gen": 0.0909,
+   "abs_diff": 0.0091,
+   "units": 110
+  },
+  "fixed_tok1024_ov0pct": {
+   "reach_at_5145_sfr": 0.1,
+   "stage0_at_4096_gen": 0.0818,
+   "abs_diff": 0.0182,
+   "units": 110
+  },
+  "fixed_tok2048_ov0pct": {
+   "reach_at_5145_sfr": 0.0455,
+   "stage0_at_4096_gen": 0.0455,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "fixed_tok512": {
+   "reach_at_5145_sfr": 0.1091,
+   "stage0_at_4096_gen": 0.1,
+   "abs_diff": 0.0091,
+   "units": 110
+  },
+  "header512": {
+   "reach_at_5145_sfr": 0.1455,
+   "stage0_at_4096_gen": 0.1455,
+   "abs_diff": 0.0,
+   "units": 110
+  },
+  "parent256": {
+   "reach_at_5145_sfr": 0.0727,
+   "stage0_at_4096_gen": 0.0636,
+   "abs_diff": 0.0091,
+   "units": 110
+  },
+  "_max_abs_diff": 0.0182,
+  "_budget": {
+   "sfr": 5146,
+   "equivalent_generator_tokens": 4096,
+   "ratio": 1.2564
+  }
+ },
+ "VERDICT": {
+  "scoring_identity_max_abs_diff": 0.0,
+  "end_to_end_max_abs_diff": 0.0182,
+  "gate": "target +- 0.01, STOP above 0.02 (brief)",
+  "status": "MARGINAL"
+ }
+}
