@@ -147,6 +147,25 @@ def main() -> None:
                  + " | ".join(f(bd[str(x)]["joint_power"]) for x in (0.0, 0.01, 0.02))
                  + f" | {f(bd['0.0']['power_ERET'])} / {f(bd['0.0']['power_EPACK'])} |")
 
+    # ---- CDS sizing ------------------------------------------------------------
+    if "cds_sizing" in S:
+        L.append("\n### CDS sizing — what the confirmation run's 80 topics buy "
+                 "(α = 0.025 one-sided per endpoint, ε = 0.05)\n")
+        L.append("| id | σ_d(ERET) bound₈₀ | σ_d(EPACK∩) bound₈₀ | ≤ 0.158? | "
+                 "n for 80 % ERET | n for 80 % EPACK | **n for 80 % JOINT** | "
+                 "joint power at the planned 80 | meets 80 % |")
+        L.append("|---|---|---|---|---|---|---|---|---|")
+        for cid, r in S["cds_sizing"]["by_contrast"].items():
+            L.append(
+                f"| **{cid}** | {f(r['sigma_d_ERET_bound80'])} | "
+                f"{f(r['sigma_d_EPACK_bound80'])} | "
+                f"ERET {f(r['sigma_requirement_0.158_ERET'])}, "
+                f"EPACK {f(r['sigma_requirement_0.158_EPACK'])} | "
+                f"{f(r['n_for_80pct_ERET'])} | {f(r['n_for_80pct_EPACK'])} | "
+                f"**{f(r['n_for_80pct_JOINT_delta0'])}** | "
+                f"{f(r['joint_power_at_planned_n'])} | "
+                f"{f(r['meets_80pct_at_planned_n'])} |")
+
     # ---- mode x size -----------------------------------------------------------
     for pop in ("cds", "pointed"):
         L.append(f"\n### Mode × size — {pop}, B = 16,384 SFR, reranker **on**\n")

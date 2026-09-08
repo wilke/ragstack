@@ -1,0 +1,7 @@
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+{
+ "window_demotions": 22,
+ "guard1": "FAIL (discrimination ok; EPACK window outside for some arm)",
+ "guard3": "PASS",
+ "seconds": 40.7
+}

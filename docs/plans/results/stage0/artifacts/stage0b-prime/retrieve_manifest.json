@@ -1,1 +1,123 @@
-{"arms": {"fixed_tok256_ov0pct": {"chunks": 737698, "sha256": "c0c30cd0e8a67b6a370ff9a0d660c4168272b3f6575422f51d9d826e3caa8492", "dense_seconds": 6.9, "bm25_index_seconds": 12.5, "bm25_postings": 29947103, "bm25_avgdl": 148.43, "seconds": 61.8}, "fixed_tok512_ov0pct": {"chunks": 376516, "sha256": "9559c5abf4e1a4d6c74f78d1fb1d5accbd0aa611427879504033183de92fbda1", "dense_seconds": 4.1, "bm25_index_seconds": 7.7, "bm25_postings": 23546491, "bm25_avgdl": 290.82, "seconds": 67.0}, "fixed_tok1024_ov0pct": {"chunks": 196247, "sha256": "ba132b84b91d36af8cb984ade9d12bbca8f96be2bcfd3cbe56db87729abcb900", "dense_seconds": 2.2, "bm25_index_seconds": 4.9, "bm25_postings": 18112199, "bm25_avgdl": 557.95, "seconds": 97.4}, "fixed_tok512": {"chunks": 423386, "sha256": "bb4be05560caefe6b59c20ea3badf450bae94a02946e94d0e8b03e1a46c072a9", "dense_seconds": 4.4, "bm25_index_seconds": 8.6, "bm25_postings": 26729653, "bm25_avgdl": 293.72, "seconds": 66.1}, "header512": {"chunks": 376516, "sha256": "2889ad79a3179c158619ca2fa1a3120226e380223c368c78863719d735e6cea6", "dense_seconds": 4.3, "bm25_index_seconds": 10.8, "bm25_postings": 24291926, "bm25_avgdl": 306.58, "seconds": 70.4}}, "queries": 197, "query_vocab": 1296, "corpus_tokens": 109496847, "corpus_types": 621829, "corpus_tokenize_seconds": 40.8, "ce": {"pairs": 89668, "requests": 4134, "retries": 0, "ce_seconds": 270.0}, "provenance": {"repo_head": "c27ecfd048b4659a24c6befad6c3832a5aaf786f", "stage0_pinned_commit": "55a0fc2f6bf64e592c2c65d8825524216c423e2b", "worktree_head": "7d3e0c7e9ca305492cf162275938e2ceb980a54b", "segmenter_diff_vs_stage0_pin": "EMPTY (identical)", "git_status_porcelain": [], "interpreter": "/rag/envs/ragstack/bin/python3", "python": "3.12.13", "HF_HOME": "/rag/cache", "numpy": "2.5.0", "packages": {"numpy": "2.5.0", "httpx": "0.28.1", "transformers": "5.12.1", "tokenizers": "0.22.2", "scipy": "ABSENT"}, "tokenizer_for_budgets": "Salesforce/SFR-Embedding-Mistral", "generator_tokenizer": "ABSENT: RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic is not in /rag/cache, and the harness rules for this run forbid contacting mango:8003/tokenize. Generator-token columns are the ESTIMATE gen = sfr / 1.2564 (r3 SS3.3's own ratio 2048/1630, measured at Stage 0 check 4), reported as descriptive and never used as a budget.", "budgets_sfr_tokens": [4096, 16384, 32768], "primary_budget_sfr": 16384, "modes": ["vector", "bm25", "hybrid"], "leg_depth": 100, "depth": 50, "rrf_k": 60, "bm25": {"k1": 1.2, "b": 0.75, "tokenizer": "lowercase; Unicode word boundaries via Python re '\\w+' (re.UNICODE); no stemming; no stopwords", "idf": "Lucene BM25: ln(1 + (N - df + 0.5)/(df + 0.5))", "query_semantics": "plain OR over query token OCCURRENCES (a repeated query token scores twice, as a Lucene BooleanQuery with duplicate SHOULD clauses does)", "avgdl": "exact mean chunk length in tokens over the arm's chunks", "known_departures_from_ES_standard": ["decimals: UAX#29 keeps '0.05' as one token; '\\w+' splits it into '0' and '05'", "apostrophes: UAX#29 keeps \"patient's\" as one token; '\\w+' splits it", "hyphens: both split, but UAX#29's handling of intra-word '-' differs on letter-digit boundaries", "length norm: Lucene stores a LOSSY 1-byte encoded norm; this BM25 uses the exact chunk length", "no character folding: ES 'standard' does not fold either, so this matches"]}, "seeds": {"bootstrap": 20260913, "unit_cap_per_doc": 20260918}}}
+{
+ "arms": {
+  "fixed_tok256_ov0pct": {
+   "chunks": 737698,
+   "sha256": "c0c30cd0e8a67b6a370ff9a0d660c4168272b3f6575422f51d9d826e3caa8492",
+   "dense_seconds": 6.9,
+   "bm25_index_seconds": 12.5,
+   "bm25_postings": 29947103,
+   "bm25_avgdl": 148.43,
+   "seconds": 61.8
+  },
+  "fixed_tok512_ov0pct": {
+   "chunks": 376516,
+   "sha256": "9559c5abf4e1a4d6c74f78d1fb1d5accbd0aa611427879504033183de92fbda1",
+   "dense_seconds": 4.1,
+   "bm25_index_seconds": 7.7,
+   "bm25_postings": 23546491,
+   "bm25_avgdl": 290.82,
+   "seconds": 67.0
+  },
+  "fixed_tok1024_ov0pct": {
+   "chunks": 196247,
+   "sha256": "ba132b84b91d36af8cb984ade9d12bbca8f96be2bcfd3cbe56db87729abcb900",
+   "dense_seconds": 2.2,
+   "bm25_index_seconds": 4.9,
+   "bm25_postings": 18112199,
+   "bm25_avgdl": 557.95,
+   "seconds": 97.4
+  },
+  "fixed_tok512": {
+   "chunks": 423386,
+   "sha256": "bb4be05560caefe6b59c20ea3badf450bae94a02946e94d0e8b03e1a46c072a9",
+   "dense_seconds": 4.4,
+   "bm25_index_seconds": 8.6,
+   "bm25_postings": 26729653,
+   "bm25_avgdl": 293.72,
+   "seconds": 66.1
+  },
+  "header512": {
+   "chunks": 376516,
+   "sha256": "2889ad79a3179c158619ca2fa1a3120226e380223c368c78863719d735e6cea6",
+   "dense_seconds": 4.3,
+   "bm25_index_seconds": 10.8,
+   "bm25_postings": 24291926,
+   "bm25_avgdl": 306.58,
+   "seconds": 70.4
+  },
+  "fixed_tok2048_ov0pct": {
+   "chunks": 106353,
+   "sha256": "e74cb5b51f9ab7e97a4ddd523d0bc84d25ec21b824354fb4fe8aaaeac09475d8",
+   "dense_seconds": 1.0,
+   "bm25_index_seconds": 3.3,
+   "bm25_postings": 13662957,
+   "bm25_avgdl": 1029.6,
+   "seconds": 179.0,
+   "note": "built in the smoke pass; the full pass skipped it as done, so this row is restored here (deviation D9)"
+  }
+ },
+ "queries": 197,
+ "query_vocab": 1296,
+ "corpus_tokens": 109496847,
+ "corpus_types": 621829,
+ "corpus_tokenize_seconds": 40.8,
+ "ce": {
+  "pairs": 89668,
+  "requests": 4134,
+  "retries": 0,
+  "ce_seconds": 270.0
+ },
+ "provenance": {
+  "repo_head": "c27ecfd048b4659a24c6befad6c3832a5aaf786f",
+  "stage0_pinned_commit": "55a0fc2f6bf64e592c2c65d8825524216c423e2b",
+  "worktree_head": "7d3e0c7e9ca305492cf162275938e2ceb980a54b",
+  "segmenter_diff_vs_stage0_pin": "EMPTY (identical)",
+  "git_status_porcelain": [],
+  "interpreter": "/rag/envs/ragstack/bin/python3",
+  "python": "3.12.13",
+  "HF_HOME": "/rag/cache",
+  "numpy": "2.5.0",
+  "packages": {
+   "numpy": "2.5.0",
+   "httpx": "0.28.1",
+   "transformers": "5.12.1",
+   "tokenizers": "0.22.2",
+   "scipy": "ABSENT"
+  },
+  "tokenizer_for_budgets": "Salesforce/SFR-Embedding-Mistral",
+  "generator_tokenizer": "ABSENT: RedHatAI/Llama-4-Scout-17B-16E-Instruct-FP8-dynamic is not in /rag/cache, and the harness rules for this run forbid contacting mango:8003/tokenize. Generator-token columns are the ESTIMATE gen = sfr / 1.2564 (r3 SS3.3's own ratio 2048/1630, measured at Stage 0 check 4), reported as descriptive and never used as a budget.",
+  "budgets_sfr_tokens": [
+   4096,
+   16384,
+   32768
+  ],
+  "primary_budget_sfr": 16384,
+  "modes": [
+   "vector",
+   "bm25",
+   "hybrid"
+  ],
+  "leg_depth": 100,
+  "depth": 50,
+  "rrf_k": 60,
+  "bm25": {
+   "k1": 1.2,
+   "b": 0.75,
+   "tokenizer": "lowercase; Unicode word boundaries via Python re '\\w+' (re.UNICODE); no stemming; no stopwords",
+   "idf": "Lucene BM25: ln(1 + (N - df + 0.5)/(df + 0.5))",
+   "query_semantics": "plain OR over query token OCCURRENCES (a repeated query token scores twice, as a Lucene BooleanQuery with duplicate SHOULD clauses does)",
+   "avgdl": "exact mean chunk length in tokens over the arm's chunks",
+   "known_departures_from_ES_standard": [
+    "decimals: UAX#29 keeps '0.05' as one token; '\\w+' splits it into '0' and '05'",
+    "apostrophes: UAX#29 keeps \"patient's\" as one token; '\\w+' splits it",
+    "hyphens: both split, but UAX#29's handling of intra-word '-' differs on letter-digit boundaries",
+    "length norm: Lucene stores a LOSSY 1-byte encoded norm; this BM25 uses the exact chunk length",
+    "no character folding: ES 'standard' does not fold either, so this matches"
+   ]
+  },
+  "seeds": {
+   "bootstrap": 20260913,
+   "unit_cap_per_doc": 20260918
+  }
+ }
+}

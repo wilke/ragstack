@@ -50,6 +50,20 @@ N_CONF_TOPICS = 80
 N_BOOT = 10_000
 PRIMARY_VARIANT = "summary"
 
+_TCRIT: dict = {}
+
+
+def tcrit(alpha: float, df: int) -> float:
+    """``t_ppf`` is a 300-step bisection over an incomplete beta; cache it by df.
+
+    The bootstrap power loops evaluate the critical value hundreds of thousands of times
+    at a handful of distinct degrees of freedom.
+    """
+    k = (alpha, df)
+    if k not in _TCRIT:
+        _TCRIT[k] = M.t_ppf(1.0 - alpha, df)
+    return _TCRIT[k]
+
 
 # ------------------------------------------------------------------ loading
 def load_cds() -> dict:
@@ -113,8 +127,7 @@ def ni_verdict(d: list[float], eps: float = K.EPS) -> dict:
         return {"n": n, "verdict": "UNDERPOWERED (n < 2)"}
     m, s = st.mean(d), st.stdev(d)
     se = s / math.sqrt(n)
-    tcrit = M.t_ppf(0.975, n - 1)
-    upper = m + tcrit * se
+    upper = m + tcrit(0.025, n - 1) * se
     return {"n": n, "mean_diff": round(m, 6), "sd": round(s, 6),
             "ci95_upper_one_sided": round(upper, 6), "eps": eps,
             "non_inferior": bool(upper < eps)}
@@ -153,7 +166,7 @@ def joint_power(pairs: list[tuple[float, float]], n: int, deltas=(0.0, 0.01, 0.0
     Bv = np.asarray([p[1] for p in pairs], float)
     rng = np.random.default_rng(seed)
     idx = rng.integers(0, len(A), size=(draws, n))
-    tcrit = M.t_ppf(1 - alpha, n - 1)
+    tc = tcrit(alpha, n - 1)
     out = {"n": n, "draws": draws, "clusters_available": len(A), "eps": eps,
            "alpha_per_endpoint": alpha, "seed": seed, "by_delta": {}}
     for dlt in deltas:
@@ -162,8 +175,8 @@ def joint_power(pairs: list[tuple[float, float]], n: int, deltas=(0.0, 0.01, 0.0
         sa = a.std(axis=1, ddof=1)
         sb = b.std(axis=1, ddof=1)
         with np.errstate(divide="ignore", invalid="ignore"):
-            ua = a.mean(axis=1) + tcrit * sa / math.sqrt(n)
-            ub = b.mean(axis=1) + tcrit * sb / math.sqrt(n)
+            ua = a.mean(axis=1) + tc * sa / math.sqrt(n)
+            ub = b.mean(axis=1) + tc * sb / math.sqrt(n)
         ra = ua < eps
         rb = ub < eps
         out["by_delta"][str(dlt)] = {
@@ -199,7 +212,7 @@ def pointed_joint_power(a: dict, b: dict, n: int, deltas=(0.0, 0.01, 0.02),
     mu_e = float(d_e_all.mean())
     mu_p = float(d_p_both.mean()) if both.sum() else 0.0
     rng = np.random.default_rng(seed)
-    tcrit = M.t_ppf(1 - alpha, n - 1)
+    tc = tcrit(alpha, n - 1)
     out = {"n": n, "draws": draws, "clusters_available": len(qids),
            "both_reached": int(both.sum()), "eps": eps, "seed": seed,
            "alpha_per_endpoint": alpha, "by_delta": {}}
@@ -209,7 +222,7 @@ def pointed_joint_power(a: dict, b: dict, n: int, deltas=(0.0, 0.01, 0.02),
     dp_raw = (pa - pb)[idx]
     for dlt in deltas:
         e = de - mu_e + dlt
-        ue = e.mean(axis=1) + tcrit * e.std(axis=1, ddof=1) / math.sqrt(n)
+        ue = e.mean(axis=1) + tc * e.std(axis=1, ddof=1) / math.sqrt(n)
         ra = ue < eps
         rb = np.zeros(draws, bool)
         for i in range(draws):
@@ -218,9 +231,8 @@ def pointed_joint_power(a: dict, b: dict, n: int, deltas=(0.0, 0.01, 0.02),
             if k < 2:
                 continue
             v = dp_raw[i][m] - mu_p + dlt
-            s = v.std(ddof=1)
-            tc = M.t_ppf(1 - alpha, k - 1)
-            rb[i] = (v.mean() + tc * s / math.sqrt(k)) < eps
+            rb[i] = (v.mean() + tcrit(alpha, k - 1) * v.std(ddof=1)
+                     / math.sqrt(k)) < eps
         out["by_delta"][str(dlt)] = {
             "power_ERET": round(float(ra.mean()), 4),
             "power_EPACK": round(float(rb.mean()), 4),
@@ -480,6 +492,42 @@ def main() -> None:
         p.pop("_ab", None)
         p["family"] = fam
         out["contrasts"]["pointed"][cid] = p
+
+    # ---------------------------------------------- CDS sizing (r3 SS5 step 5)
+    cds_sizing = {}
+    for cid, fam, ctrl, cand in CONTRASTS:
+        pairs = _pair_up(by_cds, ctrl, cand, "hybrid", "on", B, PRIMARY_VARIANT, "a")
+        c = out["contrasts"]["cds"][cid]
+        se = c["ERET"]["sigma"]["governing_bound_80"]
+        sp = c["EPACK_confirmatory_intersection"]["sigma"]["governing_bound_80"]
+        need = None
+        for n in range(20, 2001, 20):
+            if joint_power(pairs, n, deltas=(0.0,), draws=4000)["by_delta"]["0.0"][
+                    "joint_power"] >= 0.80:
+                need = n
+                break
+        cds_sizing[cid] = {
+            "sigma_d_ERET_bound80": se, "sigma_d_EPACK_bound80": sp,
+            "sigma_requirement_0.158_ERET": (se is not None and se <= 0.158),
+            "sigma_requirement_0.158_EPACK": (sp is not None and sp <= 0.158),
+            "n_for_80pct_ERET": n_for_power(se) if se else None,
+            "n_for_80pct_EPACK": n_for_power(sp) if sp else None,
+            "n_for_80pct_JOINT_delta0": need,
+            "planned_n_topics": N_CONF_TOPICS,
+            "joint_power_at_planned_n": c["joint_power"]["by_delta"]["0.0"]["joint_power"],
+            "meets_80pct_at_planned_n":
+                c["joint_power"]["by_delta"]["0.0"]["joint_power"] >= 0.80,
+            "retention_rate_EPACK_on_dev": round(
+                c["EPACK_confirmatory_intersection"]["n_retained"] / 10.0, 3)}
+    out["cds_sizing"] = {
+        "rule": "alpha = 0.025 one-sided per endpoint, eps = 0.05, 80 % power, cluster = "
+                "topic; the JOINT figure is the gate (r3 SS3.6), the marginals are printed "
+                "beside it. n is a TOPIC count for the confirmation run, whose planned "
+                "size is 80.",
+        "by_contrast": cds_sizing,
+        "status": ("PASS" if all(v["meets_80pct_at_planned_n"] for v in cds_sizing.values())
+                   else "FAIL -- the planned 80 topics do not reach 80 % JOINT power on "
+                        "every contrast")}
 
     # ------------------------------------------------------------- guard 1
     disc = (checks.get("discrimination_and_budget_bind", {})
