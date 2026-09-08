@@ -25,6 +25,24 @@ revision is the response its §6 asked for, "stated so the next revision is not 
 > *where* by construction. The run remains stopped at step 2 pending **§10 item 4**.
 > Steps 3–7 have not run. Prediction Q1 is scored **FAIL** (§7).
 >
+> **Fourth update, 2026-09-07 — §5 step 4 (Stage 0b′) has run**
+> ([`../stage0/RESULTS-stage0b-prime.md`](../stage0/RESULTS-stage0b-prime.md), #520; 25 min,
+> zero new embeddings). The split endpoint works: `EPACK` is inside the window for every arm on
+> all three readings (Q2 PASS), and reach falls 0.28 → 0.11 as containment rises 0.19 → 0.70 from
+> 256 to 2048 — chunk size moves evidence between the two factors. The 2048 arm and the
+> neighbour arms sit **below the 0.15 reach floor at 16k** (Q3 FAIL; demoted to descriptive on
+> `ERET`); the 1024 arm stays in window. **The gate fails on power, not on levels**: joint power
+> at the planned n = 80 is 0.37–0.56 on five of six contrasts (R2 0.95); the σ-bound sizing is
+> 286–453 topics and the bootstrap sizing 140–220 — **TREC CDS has 90 topics in total**. The
+> pointed population is at its ceiling (reach 0.90–0.96, containment 0.87–1.00) and becomes
+> `DESCRIPTIVE` under §11 guard 1 as pre-registered; its sizing (100–400) is within the cap, so
+> the ceiling, not the count, is what disqualifies it. Hybrid flattens the size contrast relative
+> to either leg; BM25 favours coarse chunks (Q8 supported); rerank-off flips two signs (Q9
+> supported). In-process BM25 vs the dev tenant's Elasticsearch: overlap@50 0.947 against the
+> 0.90 bar. **Step 5's reading is therefore "fails even at the point estimate" for five
+> contrasts, and P.7's ladder applies: adaptations, re-scope, or run under the frozen procedure
+> with projected power stated — a decision recorded in §10 item 5.** Steps 6–7 have not run.
+>
 > **Third update, 2026-09-07 — the §10 item 4 measurements are in.** The r3.1 *extension*
 > ([`../stage0/RESULTS-stage0b-relabel-r31ext.md`](../stage0/RESULTS-stage0b-relabel-r31ext.md),
 > #512: Scout ×20, Qwen ×10) finds **graded per-sentence support reliable at 0.92 with 30 pooled
@@ -649,6 +667,24 @@ Recorded here so the next session does not have to reconstruct them.
    Validity of (a) is the human read's to establish; the pilot sheet and the Grading view are
    ready for it. Decision still open: whether (a) becomes *confirmatory* on CDS after the read,
    or stays descriptive under (b).
+5. **What to do about power (from Stage 0b′, #520).** n = 80 CDS topics gives joint power of
+   0.37–0.56 on five of six contrasts; the corpus offers 90 topics in total, so more CDS topics
+   is not available. Options, none of which moves ε:
+   (a) **Run the confirmation on all 80 under the frozen procedure with the projected power
+   printed** (P.7's closing clause) — honest, cheap (no new embeddings), and likely UNRESOLVED
+   on N1/N3/R1/R3/R4; R2 (headers) would resolve.
+   (b) **Raise the pointed population's difficulty so it can carry the size contrasts**: it has
+   the sizing (100–400 queries) but sits at the ceiling on a 32k-document corpus with the gold
+   document guaranteed present. Scale the corpus toward the ~500k-article target (the production
+   condition), or draw queries whose gold is deep and whose front matter is silent, and re-read
+   guard 1. This is the population §1 declared; making it discriminative is the study's
+   remaining design problem.
+   (c) **Re-scope the confirmatory family** to the contrasts that are powered (R2) and read the
+   rest as descriptive — P.7's re-scope adaptation.
+   Recommendation: **(a) and (b) together** — run the CDS confirmation as the frozen procedure
+   allows, and build the harder pointed set as the powered population, since the served path's
+   flattening of the size contrast (hybrid) already says the product decision is lower-stakes on
+   quality than the dense-only reading implied.
 3. ~~The anchor fix (§3.7 item 1)~~ **Decided 2026-09-06: whole-sentence quotes.** The
    labeler quotes the first and last sentence of each span in full (one sentence when the
    span is one sentence); each quote is located by exact-then-normalised match of its first
