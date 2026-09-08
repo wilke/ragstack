@@ -99,6 +99,7 @@ def main() -> None:
         arms = [a for a in K.INDEX_KEYS if not only or a in only]
         outdir = SC.OUT
     print("subsets:", [(s["key"], s["size"]) for s in subs], flush=True)
+    lock = SC.RunLock("s0s_retrieve", outdir).__enter__()
 
     Q = frozen_query_vectors(qs)
     print("query vectors (frozen, Stage 0b'):", Q.shape, flush=True)
@@ -219,6 +220,7 @@ def main() -> None:
 
     SC.atomic_json(outdir / "retrieve_manifest.json",
                    {**manifest, "provenance": SC.provenance()})
+    lock.__exit__(None, None, None)
     print("retrieval done", flush=True)
 
 

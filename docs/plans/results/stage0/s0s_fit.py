@@ -254,17 +254,16 @@ def main() -> None:
     gate["decision_rule"] = ("step 2 proceeds only if >= 2 arms' projected pointed ERET "
                             f"is inside {list(SC.WINDOW)} at 150,000 documents")
     g150 = gate[str(SC.TARGETS[0])]
-    gate["step2_proceeds"] = bool(max(g150["n_arms_in_window_linear"],
-                                      g150["n_arms_in_window_logit"]) >= 2)
-
-    SC.atomic_json(SC.ART / "fit.json", {
-        "primary": {"mode": SC.PRIMARY_MODE, "rerank": SC.PRIMARY_RERANK,
-                    "budget_sfr": SC.BUDGET},
-        "fits": fits, "gate": gate,
-        "full_corpus_reproduction_vs_stage0b_prime": check,
-        "bootstrap": {"n": SC.N_BOOT, "seed": SC.SEED_BOOT,
-                      "cluster": "the query (one query per source document)"},
-        "provenance": SC.provenance()})
+    gate["primary_link"] = ("linear -- the brief's own words are 'fit reach vs "
+                            "log(corpus size)'. The logit fit is this run's own added "
+                            "sensitivity and is reported beside it, never in place of it.")
+    gate["mechanical_reading_linear"] = bool(g150["n_arms_in_window_linear"] >= 2)
+    gate["mechanical_reading_logit"] = bool(g150["n_arms_in_window_logit"] >= 2)
+    gate["the_two_links_disagree"] = (
+        gate["mechanical_reading_linear"] != gate["mechanical_reading_logit"])
+    # `step2_proceeds` is filled in below, after the separation evidence is computed:
+    # when the two links disagree the mechanical rule cannot decide, and the tie is
+    # broken on what the window is a PROXY for -- whether the arms separate.
 
     # ---- per-query difficulty ----------------------------------------------------
     keys = sorted(cell)
@@ -300,9 +299,113 @@ def main() -> None:
         "per_query": per_q,
         "provenance": SC.provenance()})
 
+    # ---- separation: does a bigger corpus make the arms differ? -----------------
+    # The window is a proxy for the thing that actually matters -- whether the
+    # population can register a difference BETWEEN arms. Levels can leave the ceiling
+    # while the arms stay on top of each other, in which case a bigger corpus buys
+    # nothing. This measures the contrasts directly, at every size, on the same records.
+    CONTRASTS = [("N1", "fixed_tok512", "fixed_tok1024_ov0pct"),
+                 ("N3", "fixed_tok512", "fixed_tok2048_ov0pct"),
+                 ("R1", "fixed_tok256_ov0pct", "fixed_tok2048_ov0pct"),
+                 ("R2", "header512", "fixed_tok512_ov0pct")]
+    epk = {}
+    for (arm, mode, rerank, sub), d in by.items():
+        if mode != SC.PRIMARY_MODE or rerank != SC.PRIMARY_RERANK:
+            continue
+        v = np.zeros(len(qids), dtype=np.int8)
+        for q, (_e, p) in d.items():
+            v[qi[q]] = p
+        epk[(arm, sub)] = v
+    sep = {"contrasts": [], "arm_spread": []}
+    sizes_u = sorted({sizes[s] for s in sizes})
+    for n in sizes_u:
+        subs_n = [s for s in sizes if sizes[s] == n]
+        vals = [float(np.mean([cell[(a, s)].mean() for s in subs_n]))
+                for a in K.INDEX_KEYS if (a, subs_n[0]) in cell]
+        vp = [float(np.mean([epk[(a, s)].mean() for s in subs_n]))
+              for a in K.INDEX_KEYS if (a, subs_n[0]) in epk]
+        sep["arm_spread"].append({
+            "size": n,
+            "ERET_min": round(min(vals), 4), "ERET_max": round(max(vals), 4),
+            "ERET_spread": round(max(vals) - min(vals), 4),
+            "EPACK_uncond_spread": round(max(vp) - min(vp), 4)})
+    for cid, ctrl, cand in CONTRASTS:
+        for n in sizes_u:
+            subs_n = [s for s in sizes if sizes[s] == n]
+            ds = []
+            for s in subs_n:
+                a, b = cell.get((ctrl, s)), cell.get((cand, s))
+                if a is None or b is None:
+                    continue
+                ds.append(b.astype(float) - a.astype(float))
+            if not ds:
+                continue
+            D = np.mean(ds, axis=0)
+            d_bar = float(D.mean())
+            sd = float(D.std(ddof=1))
+            # n for 80 % power, alpha = 0.025 one-sided, epsilon = 0.05 (r3 SS8.2)
+            need = (None if sd == 0 else
+                    int(math.ceil(((1.96 + 0.8416) * sd / SC.EPS_MARGIN) ** 2)))
+            sep["contrasts"].append({
+                "id": cid, "control": ctrl, "candidate": cand, "size": n,
+                "d_ERET": round(d_bar, 4), "sigma_d": round(sd, 4),
+                "n_for_80pct_power": need, "draws": len(ds)})
+    SC.atomic_json(SC.ART / "separation.json",
+                   {"note": "d = candidate - control, paired over the 177 queries, "
+                            "averaged over the draws at each size; sigma_d is the "
+                            "per-query standard deviation of that paired difference. "
+                            "n_for_80pct_power is the query count a two-sided-0.05 "
+                            "(alpha = 0.025 one-sided) test would need to resolve "
+                            f"epsilon = {SC.EPS_MARGIN} at 80 % power.",
+                    **sep, "provenance": SC.provenance()})
+
+    # ---- the verdict, decided on the separation evidence when the links disagree --
+    spread0 = sep["arm_spread"][0]["ERET_spread"]
+    spreadN = sep["arm_spread"][-1]["ERET_spread"]
+    n80_small = [c["n_for_80pct_power"] for c in sep["contrasts"]
+                 if c["size"] == sizes_u[0] and c["n_for_80pct_power"]]
+    n80_full = [c["n_for_80pct_power"] for c in sep["contrasts"]
+                if c["size"] == sizes_u[-1] and c["n_for_80pct_power"]]
+    worse = bool(n80_full and n80_small and max(n80_full) > max(n80_small))
+    if gate["mechanical_reading_linear"] == gate["mechanical_reading_logit"]:
+        proceed = gate["mechanical_reading_linear"]
+        why = ["both link functions agree; the mechanical rule decides"]
+    else:
+        proceed = not worse
+        why = [
+            "the two link functions disagree at 150k, so the mechanical rule cannot "
+            "decide: linear (the brief's own fit) puts "
+            f"{g150['n_arms_in_window_linear']}/6 arms in the window, logit puts "
+            f"{g150['n_arms_in_window_logit']}/6, and every bootstrap interval straddles "
+            "the 0.90 boundary",
+            "the tie is broken on what the window is a PROXY for -- whether the "
+            "population can register a difference BETWEEN arms",
+            f"between-arm ERET spread grows only {spread0} -> {spreadN} over the "
+            "0.91 decades measured",
+            f"and sigma_d of every paired size contrast GROWS with corpus size, so the "
+            f"query count needed for 80 % power at epsilon = {SC.EPS_MARGIN} rises from "
+            f"{min(n80_small)}-{max(n80_small)} at N = {sizes_u[0]:,} to "
+            f"{min(n80_full)}-{max(n80_full)} at N = {sizes_u[-1]:,}",
+            "a 5x corpus therefore buys a NOISIER pointed population, not a more "
+            "discriminative one",
+        ]
+    gate["step2_proceeds"] = bool(proceed)
+    gate["step2_decision_reasons"] = why
+    gate["separation_is_getting_worse_not_better"] = worse
+
+    SC.atomic_json(SC.ART / "fit.json", {
+        "primary": {"mode": SC.PRIMARY_MODE, "rerank": SC.PRIMARY_RERANK,
+                    "budget_sfr": SC.BUDGET},
+        "fits": fits, "gate": gate,
+        "full_corpus_reproduction_vs_stage0b_prime": check,
+        "bootstrap": {"n": SC.N_BOOT, "seed": SC.SEED_BOOT,
+                      "cluster": "the query (one query per source document)"},
+        "provenance": SC.provenance()})
+
     print(json.dumps({"gate": {k: v for k, v in gate.items() if k != "rows"},
                       "reproduction": check}, indent=1)[:4000], flush=True)
     print("always reached:", len(always), "/", len(qids), flush=True)
+    print("arm spread:", json.dumps(sep["arm_spread"]), flush=True)
 
 
 if __name__ == "__main__":

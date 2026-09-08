@@ -19,8 +19,8 @@ ARM_ORDER = ["fixed_tok256_ov0pct", "fixed_tok512_ov0pct", "fixed_tok512", "head
 
 
 def fence(title: str, lines: list[str]) -> str:
-    return (f"<!-- TABLE: {title} -->\n\n**{title}**\n\n" + "\n".join(lines)
-            + "\n\n<!-- /TABLE -->\n")
+    """One ``### <title>`` block, the shape ``s0s_writeup.py`` splices."""
+    return f"### {title}\n\n" + "\n".join(lines) + "\n"
 
 
 def fmt(v, nd=3):
@@ -148,6 +148,40 @@ def main() -> None:
                 f"**{g['n_arms_in_window_logit']}/6** | |")
     out.append(fence("The step-2 gate — ≥ 2 arms inside [0.15, 0.90] at 150,000 documents",
                      [head, sep] + body))
+
+    # -- 5b. separation: what the window is a proxy for ------------------------
+    sep = json.loads((SC.ART / "separation.json").read_text())
+    head = ("| N | lowest arm's ERET | highest arm's ERET | between-arm spread | "
+            "between-arm spread, EPACK unconditional |")
+    sep_ = "|---|---|---|---|---|"
+    body = [f"| {r['size']:,} | {r['ERET_min']:.3f} | {r['ERET_max']:.3f} | "
+            f"**{r['ERET_spread']:.3f}** | {r['EPACK_uncond_spread']:.3f} |"
+            for r in sep["arm_spread"]]
+    out.append(fence("Do the arms separate? — between-arm spread at each corpus size",
+                     [head, sep_] + body))
+
+    ids = []
+    for c in sep["contrasts"]:
+        if c["id"] not in ids:
+            ids.append(c["id"])
+    ssizes = sorted({c["size"] for c in sep["contrasts"]})
+    head = ("| contrast | " + " | ".join(f"N = {s:,}" for s in ssizes) + " |")
+    sep_ = "|---|" + "---|" * len(ssizes)
+    body = []
+    for cid in ids:
+        row = {c["size"]: c for c in sep["contrasts"] if c["id"] == cid}
+        c0 = next(iter(row.values()))
+        cells = []
+        for s in ssizes:
+            c = row.get(s)
+            cells.append("—" if not c else
+                         f"d {c['d_ERET']:+.4f}<br>σ_d {c['sigma_d']:.3f}<br>"
+                         f"n₈₀ {c['n_for_80pct_power'] or '—'}")
+        body.append(f"| **{cid}** `{c0['control']}` → `{c0['candidate']}` | "
+                    + " | ".join(cells) + " |")
+    out.append(fence("The paired size contrasts at each corpus size — d, σ_d, and the "
+                     "query count 80 % power at ε = 0.05 would need",
+                     [head, sep_] + body))
 
     # -- 6. difficulty ---------------------------------------------------------
     head = "| N | queries reached by every arm and every draw | fraction |"

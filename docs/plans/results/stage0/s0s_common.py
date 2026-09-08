@@ -74,6 +74,7 @@ PRIMARY_RERANK = "on"
 MODES = K.MODES
 INDEX_KEYS = K.INDEX_KEYS
 WINDOW = K.WINDOW                          # (0.15, 0.90) -- r3 SS11 guard 1
+EPS_MARGIN = K.EPS                         # 0.05 -- r3 SS8.2's margin, never moves
 
 # Extrapolation targets (r3 SS1 / PLAN-C: the owner's corpus is ~500k PMC OA articles).
 TARGETS = (150_000, 500_000)
@@ -111,6 +112,52 @@ def subsets(all_docnos: list[str], gold: set[str], sizes=SIZES, draws=DRAWS,
                 key = f"n{n}_d{d}"
             out.append({"key": key, "size": len(docs), "draw": d, "docnos": docs})
     return out
+
+
+class RunLock:
+    """A single-writer lock on this study's output directory.
+
+    Every stage writes one shared set of files under ``OUT``. Two copies of a stage
+    running at once do not conflict *visibly* -- both compute the same content and one
+    silently overwrites the other's bytes -- which is exactly what makes it dangerous:
+    the surviving file can look perfect and still be a mixture. (It happened once in this
+    study; see the write-up's deviations.) A stale lock whose pid is dead is taken over
+    and said so; a live one aborts.
+    """
+
+    def __init__(self, name: str, outdir: pathlib.Path | None = None) -> None:
+        self.path = (outdir or OUT) / f".{name}.lock"
+
+    def __enter__(self):
+        if self.path.exists():
+            try:
+                old = int(self.path.read_text().split()[0])
+            except Exception:  # noqa: BLE001
+                old = -1
+            alive = False
+            if old > 0:
+                try:
+                    os.kill(old, 0)
+                    alive = True
+                except OSError:
+                    alive = False
+            if alive:
+                raise SystemExit(
+                    f"REFUSING TO START: pid {old} already holds {self.path}. "
+                    "Two writers on one output directory produce a file that looks "
+                    "correct and is a mixture. Stop that pid (by pid, never by name) "
+                    "or delete the lock if you are certain it is stale.")
+            print(f"taking over a stale lock from dead pid {old}", flush=True)
+        self.path.write_text(f"{os.getpid()} {sys.argv}\n")
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if self.path.exists() and self.path.read_text().split()[0] == str(os.getpid()):
+                self.path.unlink()
+        except Exception:  # noqa: BLE001
+            pass
+        return False
 
 
 def load_pointed() -> list[dict]:
