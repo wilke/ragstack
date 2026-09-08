@@ -34,6 +34,10 @@ step checks    s0b_checks.py       # plumbing reproduction + the SS7.6 manipulat
 step stats     s0b_stats.py        # gates, sigma_d, joint power, mode x size, guards
 step contexts  s0b_contexts.py     # the packed contexts the synthesis stage consumes
 step es        s0b_es.py           # SS3.4 concordance, dev tenant only, index deleted
+step report    s0b_report.py       # renders artifacts/stage0b-prime/TABLES.md from the JSON
+step writeup   s0b_writeup.py      # splices those tables into RESULTS-stage0b-prime.md
+
+cp "$RUN"/*.log "$HERE/artifacts/stage0b-prime/logs/" 2>/dev/null || true
 
 echo "== artifacts =="
 ls -la "$HERE/artifacts/stage0b-prime/"
