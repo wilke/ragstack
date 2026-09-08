@@ -44,7 +44,8 @@ IS A DESCRIPTIVE POPULATION, NOT A FOURTH GATE.`**
 * **The pointed population fails guard 1 at the ceiling.** Discrimination passes emphatically
   (top-10 document sets differ for **100 %** of queries at every mode), but `ERET` is
   **0.904–0.955** for every arm and confirmatory `EPACK` is **0.870–1.000**, so the window
-  holds for **1 arm of 11**. This is r3 §11's pre-registered risk (i) — generated queries too
+  holds for **one arm of the ten scored under `hybrid`** (`multi256+1024` is vector-only and
+  is outside it too). This is r3 §11's pre-registered risk (i) — generated queries too
   easy to separate arms — measured rather than argued. Per guard 1 the pointed set is
   **reported as a descriptive population** and the CDS population alone carries the decision
   under §1.1's limitation. §6.
@@ -181,6 +182,24 @@ asymmetry r3 §3.2 predicted and called "the real trade-off", not a confound.
 
 <!-- TABLE: CDS development topics -->
 
+**CDS development topics — B = 16,384 SFR, `hybrid`, reranker on, `summary` queries**
+
+| arm | ERET | EPACK (a) support | EPACK (b) core | EPACK (c) unit | ERET×EPACK(a) | SFR realised | gen est | docs packed | window |
+|---|---|---|---|---|---|---|---|---|---|
+| `fixed_tok256_ov0pct` | 0.277 | 0.188 | 0.228 | 0.124 | 0.046 | 12747 | 10145 | 43.3 | ERET IN, EPACK(a) IN |
+| `fixed_tok512_ov0pct` | 0.217 | 0.395 | 0.514 | 0.335 | 0.080 | 16304 | 12976 | 27 | ERET IN, EPACK(a) IN |
+| `fixed_tok512` | 0.217 | 0.371 | 0.502 | 0.372 | 0.076 | 16282 | 12959 | 25.7 | ERET IN, EPACK(a) IN |
+| `header512` | 0.258 | 0.403 | 0.501 | 0.364 | 0.096 | 16210 | 12902 | 23.3 | ERET IN, EPACK(a) IN |
+| `fixed_tok1024_ov0pct` | 0.166 | 0.527 | 0.700 | 0.600 | 0.088 | 16077 | 12796 | 14.5 | ERET IN, EPACK(a) IN |
+| `fixed_tok2048_ov0pct` | 0.112 | 0.696 | 0.825 | 0.714 | 0.082 | 15959 | 12702 | 7.8 | ERET OUT, EPACK(a) IN |
+| `parent256` | 0.186 | 0.405 | 0.451 | 0.356 | 0.070 | 15924 | 12674 | 22.1 | ERET IN, EPACK(a) IN |
+| `nbr1_512` | 0.101 | 0.604 | 0.591 | 0.598 | 0.059 | 15811 | 12584 | 10.2 | ERET OUT, EPACK(a) IN |
+| `nbr1_256` | 0.186 | 0.465 | 0.560 | 0.458 | 0.082 | 16114 | 12825 | 19.8 | ERET IN, EPACK(a) IN |
+| `nbr2_512` | 0.086 | 0.662 | 0.615 | 0.661 | 0.055 | 15130 | 12042 | 7 | ERET OUT, EPACK(a) IN |
+| `multi256+1024` *(vector only)* | 0.320 | 0.327 | 0.393 | 0.354 | 0.100 | 16134 | 12841 | 19.5 | ERET IN, EPACK(a) IN |
+
+<!-- /TABLE -->
+
 **Read the first two columns together.** From 256 to 2048 tokens `ERET` falls **0.277 →
 0.112** and `EPACK` rises **0.188 → 0.696**; the product never leaves 0.046–0.100. That is the
 picture r3 §3.1 split the endpoint to see, and it is the first time the study has seen it:
@@ -202,6 +221,24 @@ creating or destroying it.**
   (0.465 vs 0.405).
 
 <!-- TABLE: Pointed development set -->
+
+**Pointed development set (177 queries) — same configuration**
+
+| arm | ERET | ERET Wilson 95 % | EPACK given reach | EPACK Wilson 95 % | EPACK unconditional | SFR realised | docs packed | window |
+|---|---|---|---|---|---|---|---|---|
+| `fixed_tok256_ov0pct` | 0.955 | [0.913, 0.977] | 0.870 | [0.811, 0.912] | 0.831 | 12601 | 26.54 | ERET OUT, EPACK IN |
+| `fixed_tok512_ov0pct` | 0.955 | [0.913, 0.977] | 0.923 | [0.873, 0.955] | 0.881 | 16223 | 18.4 | ERET OUT, EPACK OUT |
+| `fixed_tok512` | 0.938 | [0.892, 0.965] | 0.952 | [0.908, 0.975] | 0.893 | 16197 | 17.35 | ERET OUT, EPACK OUT |
+| `header512` | 0.955 | [0.913, 0.977] | 0.935 | [0.887, 0.963] | 0.893 | 16113 | 15.56 | ERET OUT, EPACK OUT |
+| `fixed_tok1024_ov0pct` | 0.938 | [0.892, 0.965] | 0.982 | [0.948, 0.994] | 0.921 | 16061 | 10.72 | ERET OUT, EPACK OUT |
+| `fixed_tok2048_ov0pct` | 0.944 | [0.899, 0.969] | 0.988 | [0.957, 0.997] | 0.932 | 15705 | 6.36 | ERET OUT, EPACK OUT |
+| `parent256` | 0.944 | [0.899, 0.969] | 0.928 | [0.879, 0.958] | 0.876 | 15896 | 12.19 | ERET OUT, EPACK OUT |
+| `nbr1_512` | 0.915 | [0.865, 0.948] | 0.994 | [0.966, 0.999] | 0.910 | 15749 | 7.96 | ERET OUT, EPACK OUT |
+| `nbr1_256` | 0.949 | [0.906, 0.973] | 0.958 | [0.916, 0.980] | 0.910 | 16028 | 14.53 | ERET OUT, EPACK OUT |
+| `nbr2_512` | 0.904 | [0.852, 0.939] | 1 | [0.977, 1.000] | 0.904 | 15324 | 5.51 | ERET OUT, EPACK OUT |
+| `multi256+1024` *(vector only)* | 0.910 | [0.858, 0.944] | 0.975 | [0.938, 0.990] | 0.887 | 16182 | 11.35 | ERET OUT, EPACK OUT |
+
+<!-- /TABLE -->
 
 **Every arm is at the ceiling.** `ERET` 0.904–0.955 and `EPACK | reach` 0.870–1.000 put ten of
 eleven arms **outside** the [0.15, 0.90] window on at least one endpoint, and `nbr2_512`
@@ -290,6 +327,19 @@ identical at 16k and 32k because its whole D = 50 pool already fits.
 
 <!-- TABLE: Estimand agreement -->
 
+**Estimand agreement and the `EPACK := 0` sensitivity (CDS)**
+
+| id | confirmatory ∩ | reached-set | `EPACK := 0` | agreement |
+|---|---|---|---|---|
+| **N1** | -0.024 [-0.175, +0.115] | -0.156 [-0.248, -0.075] | -0.124 [-0.210, -0.052] | agree |
+| **N3** | -0.120 [-0.313, +0.052] | -0.325 [-0.506, -0.156] | -0.260 [-0.435, -0.109] | agree |
+| **R1** | -0.468 [-0.616, -0.317] | -0.493 [-0.699, -0.286] | -0.387 [-0.604, -0.185] | agree |
+| **R2** | +0.027 [-0.039, +0.096] | +0.008 [-0.080, +0.106] | +0.007 [-0.072, +0.095] | agree |
+| **R3** | -0.112 [-0.283, +0.017] | -0.014 [-0.067, +0.037] | +0.067 [-0.046, +0.240] | agree |
+| **R4** | +0.065 [-0.090, +0.231] | +0.215 [+0.041, +0.390] | +0.126 [-0.019, +0.282] | agree |
+
+<!-- /TABLE -->
+
 **What the six contrasts say, descriptively — none of them is a decision, because §5's power
 gate fails.**
 
@@ -353,6 +403,19 @@ where r3 §3.1 says it belongs.
 <!-- /TABLE -->
 
 <!-- TABLE: CDS sizing -->
+
+**CDS sizing — what the confirmation run's 80 topics buy (α = 0.025 one-sided per endpoint, ε = 0.05)**
+
+| id | σ_d(ERET) bound₈₀ | σ_d(EPACK∩) bound₈₀ | ≤ 0.158? | n for 80 % ERET | n for 80 % EPACK | **n for 80 % JOINT** | joint power at the planned 80 | meets 80 % |
+|---|---|---|---|---|---|---|---|---|
+| **N1** | 0.152 | 0.301 | ERET yes, EPACK no | 75 | 286 | **140** | 0.560 | no |
+| **N3** | 0.152 | 0.379 | ERET yes, EPACK no | 75 | 453 | **220** | 0.369 | no |
+| **R1** | 0.167 | 0.312 | ERET no, EPACK no | 90 | 308 | **160** | 0.513 | no |
+| **R2** | 0.149 | 0.148 | ERET yes, EPACK yes | 72 | 71 | **60** | 0.948 | yes |
+| **R3** | 0.112 | 0.324 | ERET yes, EPACK no | 42 | 332 | **160** | 0.495 | no |
+| **R4** | 0.162 | 0.328 | ERET no, EPACK no | 85 | 339 | **160** | 0.529 | no |
+
+<!-- /TABLE -->
 
 **σ_d on the confirmatory `EPACK` is 0.148–0.379 against r2 §8.5.7's 0.158 requirement, and
 only R2 is inside it.** The `ERET` side is comfortable (0.112–0.167, inside for four of six).
@@ -439,6 +502,19 @@ is what a population at its ceiling looks like, and is why guard 1 exists.
 
 <!-- TABLE: Mode × size — pointed, reranker **off** -->
 
+**Mode × size — pointed, reranker **off** (same frozen pools)**
+
+| id | vector: d ERET / d EPACK∩ | bm25: d ERET / d EPACK∩ | hybrid: d ERET / d EPACK∩ |
+|---|---|---|---|
+| **N1** | +0.062 [+0.017, +0.107] / +0.021 [-0.028, +0.071] | -0.017 [-0.045, +0.006] / -0.025 [-0.074, +0.025] | +0.017 [-0.006, +0.045] / -0.013 [-0.056, +0.031] |
+| **N3** | +0.169 [+0.119, +0.226] / +0.048 [-0.008, +0.104] | +0.011 [-0.017, +0.040] / -0.063 [-0.113, -0.013] | +0.096 [+0.051, +0.141] / -0.027 [-0.068, +0.007] |
+| **R1** | +0.198 [+0.141, +0.260] / -0.016 [-0.080, +0.048] | +0.011 [-0.023, +0.045] / -0.204 [-0.274, -0.140] | +0.124 [+0.079, +0.175] / -0.088 [-0.136, -0.048] |
+| **R2** | -0.028 [-0.056, -0.006] / +0.013 [-0.020, +0.047] | +0.006 [+0.000, +0.017] / +0.012 [-0.012, +0.036] | -0.006 [-0.028, +0.011] / +0.006 [-0.018, +0.030] |
+| **R3** | -0.006 [-0.051, +0.040] / -0.014 [-0.068, +0.041] | -0.023 [-0.051, +0.000] / -0.063 [-0.120, -0.006] | -0.017 [-0.051, +0.017] / -0.044 [-0.095, +0.006] |
+| **R4** | -0.051 [-0.085, -0.023] / -0.007 [-0.055, +0.041] | -0.045 [-0.079, -0.017] / +0.039 [+0.000, +0.077] | -0.040 [-0.068, -0.011] / +0.019 [-0.019, +0.057] |
+
+<!-- /TABLE -->
+
 **Q8 is supported.** BM25 gives the coarser arm a *larger* containment advantage than dense
 does on every size contrast: N1 −0.196 under `bm25` against −0.120 under `vector` and −0.024
 under `hybrid`; N3 −0.378 / −0.323 / −0.120; R1 −0.543 / −0.390 / −0.468. Term coverage grows
@@ -466,12 +542,23 @@ made `hybrid` confirmatory rather than reading the legs.
 
 <!-- TABLE: Pointed guard 1 -->
 
+**Pointed guard 1 — discrimination and the window**
+
+| check | value | bar | verdict |
+|---|---|---|---|
+| top-10 document sets differ, pointed/bm25 | 1.000 (177 queries) | ≥ 0.25 | PASS |
+| top-10 document sets differ, pointed/hybrid | 1.000 (177 queries) | ≥ 0.25 | PASS |
+| top-10 document sets differ, pointed/vector | 1.000 (177 queries) | ≥ 0.25 | PASS |
+| confirmatory `EPACK` inside [0.15, 0.90] for every arm | 1/10 arms IN | all arms | FAIL (discrimination ok; EPACK window outside for some arm) |
+
+<!-- /TABLE -->
+
 **Guard 1 fails on its second half.** Discrimination is emphatic — the top-10 *retrieved*
 document sets differ between the size extremes for **100 %** of the 177 queries under every
 mode (Stage 0's `check3` reading, taken off the ranked pool rather than the packed context, so
 it is not a budget artefact). But confirmatory `EPACK@16k` sits inside [0.15, 0.90] for **one
-arm of eleven**: every other arm is **above** the ceiling, and `ERET` is above it for all
-eleven. r3 §11 guard 1's own instruction is then unambiguous — *"if it fails discrimination it
+of the ten arms scored under `hybrid`** — `fixed_tok256_ov0pct` at 0.870 — and every other arm
+is **above** the ceiling; `ERET` is above it for all eleven, `multi256+1024` included. r3 §11 guard 1's own instruction is then unambiguous — *"if it fails discrimination it
 is reported as a descriptive population, labeled so, and the CDS population alone carries the
 decision under §1.1's limitation"* — and although it is the **window** half rather than the
 discrimination half that failed, the consequence is the one the guard was written to produce:
@@ -486,6 +573,19 @@ gold location, and where a ceiling on evidence delivery is a feature: it isolate
 generator's contribution from the retriever's.
 
 <!-- TABLE: Pointed guard 3 -->
+
+**Pointed guard 3 — sizing from the measured σ_d (α = 0.025 one-sided, ε = 0.05, 80 % power)**
+
+| id | σ_d(ERET) | σ_d(EPACK∩) | n for 80 % ERET | n for 80 % EPACK | **n for 80 % JOINT** | joint power @177 | @600 | within the 600 cap |
+|---|---|---|---|---|---|---|---|---|
+| **N1** | 0.213 | 0.260 | 145 | 215 | **200** | 0.769 | 1.000 | yes |
+| **N3** | 0.226 | 0.261 | 163 | 215 | **200** | 0.754 | 1.000 | yes |
+| **R1** | 0.213 | 0.367 | 145 | 424 | **400** | 0.416 | 0.948 | yes |
+| **R2** | 0.130 | 0.219 | 56 | 152 | **140** | 0.891 | 1.000 | yes |
+| **R3** | 0.199 | 0.311 | 126 | 306 | **280** | 0.604 | 0.988 | yes |
+| **R4** | 0.181 | 0.189 | 106 | 115 | **100** | 0.919 | 1.000 | yes |
+
+<!-- /TABLE -->
 
 **Guard 3's sizing is computed anyway, because it is cheap and because guard 1's verdict could
 be revisited if the population were regenerated harder.** At α = 0.025 one-sided per endpoint,
