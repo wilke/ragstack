@@ -15,12 +15,12 @@ and the one reading under which the owner should overrule me.
 ---
 
 **Verdict: `THE POINTED POPULATION DOES NOT BECOME DISCRIMINATIVE BY GROWING THE CORPUS.
-REACH FALLS 0.032–0.046 PER DECADE; THE ARMS SEPARATE BY 0.017 AT 32,663 DOCUMENTS AND THE
+REACH FALLS 0.031–0.046 PER DECADE; THE ARMS SEPARATE BY 0.017 AT 32,663 DOCUMENTS AND THE
 SEPARATION GROWS SLOWER THAN THE NOISE. STEP 2 IS NOT WORTH ITS 10 GPU-HOURS.`**
 
 * **Reach falls, slowly, and the fall is real.** Over the 0.91 decades this study can
   measure — 4,000 to 32,663 documents — pointed `ERET` falls from 0.974–0.983 to
-  0.938–0.955, a slope of **−0.032 to −0.046 per decade** with every arm's bootstrap
+  0.938–0.955, a slope of **−0.031 to −0.046 per decade** with every arm's bootstrap
   interval excluding zero. §3.
 * **Projected to the owner's targets it stays at the ceiling.** The brief's own fit (linear
   in log₁₀ N) puts every arm at **0.909–0.932 at 150k** and **0.885–0.915 at 500k** — above
@@ -202,7 +202,7 @@ place in this study where corpus size moves the arms *apart* (§5's second colum
 
 **The mode table says the ceiling is `hybrid`'s doing.** `vector` alone falls much faster —
 `fixed_tok2048_ov0pct` goes 0.945 → 0.842 over the measured range, a −0.11 slope per decade,
-nearly three times the fused arm's — and `bm25` alone sits between the two. The served shape
+more than three times the fused arm's — and `bm25` alone sits between the two. The served shape
 fuses two rankings that fail on different queries, and the union of their successes is what
 holds reach at 0.94 when the dense leg alone would be at 0.84. **This is the same finding
 Stage 0b′ §5 stated for chunk size — "`hybrid` is not the average of its legs" — restated on
@@ -227,6 +227,12 @@ you now have to defeat *both* legs.
 | `fixed_tok2048_ov0pct` | -0.0343 | [-0.0673, -0.0086] | 0.894 | 0.921 [0.865, 0.969] | 0.894 [0.737, 0.961] | 0.903 [0.831, 0.962] | 0.838 [0.481, 0.951] |
 
 <!-- /TABLE -->
+
+![reach against corpus size](figures/fig-pointed-reach-vs-scale.svg)
+
+*[`figures/fig-pointed-reach-vs-scale.svg`](figures/fig-pointed-reach-vs-scale.svg) — the
+measured points, the linear fit solid over the measured range and dashed beyond it, the
+logit fit dotted, and the 0.90 ceiling the population never comes down to.*
 
 **Read the two link functions as the width of the projection, not as two answers.** The
 brief's own words are *"fit reach vs log(corpus size)"*, so the **linear** fit is primary
@@ -474,7 +480,7 @@ corpus — the direction the whole study exists to measure, seen before scaling.
 
 ## 11. What this hands the next step
 
-1. **Corpus size is not the fix for the pointed population.** Reach falls 0.032–0.046 per
+1. **Corpus size is not the fix for the pointed population.** Reach falls 0.031–0.046 per
    decade; the arms separate by 0.017 at 32,663 documents and the noise grows faster than
    the separation. The population's ceiling is a property of its **construction** — a rare
    entity, named once, in a corpus where nothing else names it — not of the corpus's size.
@@ -483,15 +489,15 @@ corpus — the direction the whole study exists to measure, seen before scaling.
 2. **If the owner wants the pointed set as a gate anyway, 500k is the size to buy, not
    150k.** 150k is inside the window on one of two equally-well-fitting link functions and
    outside it on the other; 500k is the first size where the pessimistic fit puts every arm
-   plausibly inside. The cost scales from step 2's ≈ 10 GPU-hours to roughly **50** and from
-   +130 GB to roughly **+520 GB**, and `/rag` currently has 1,358 GB free, so it is
+   plausibly inside. The cost scales from step 2's ≈ 10 GPU-hours to roughly **40** and from
+   +130 GB to roughly **+510 GB**, and `/rag` currently has 1,358 GB free, so it is
    affordable — but §5's separation table says the arms still will not separate, and that
    argument does not depend on the level at all.
 3. **The one number that would change this conclusion is a construction, not a corpus.** A
    pointed set whose 60-cell reach histogram is not 91 % at the maximum would be
    discriminative at 32,663 documents today, for free. The histogram in §6 is the
    acceptance criterion to write into that regeneration.
-4. **`hybrid` holds the ceiling up.** `vector` alone loses reach nearly three times as fast
+4. **`hybrid` holds the ceiling up.** `vector` alone loses reach more than three times as fast
    with corpus size (2048 arm: −0.11 per decade against −0.034 fused). Any future reading of
    this population on a single leg will see a much steeper size dependence than the served
    path does — which is Stage 0b′ §5's "the served shape is the shape in which chunk size

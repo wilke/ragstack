@@ -32,7 +32,7 @@ artifacts are untouched, so both relabels stay reproducible side by side.
 a 32,663-document corpus — is answered in
 [`RESULTS-pointed-at-scale.md`](RESULTS-pointed-at-scale.md), and the answer is no.** Reach
 was measured over nested seeded subsamples at 4k / 8k / 16k / 32.7k documents (harness
-`s0s_*.py`, **zero** new embeddings) and fitted against log₁₀(N): it falls **0.032–0.046 per
+`s0s_*.py`, **zero** new embeddings) and fitted against log₁₀(N): it falls **0.031–0.046 per
 decade**, which projects to 0.909–0.932 at the owner's 150k target and 0.885–0.915 at 500k —
 still above r3 §11's [0.15, 0.90] window. More decisively, the thing the window is a proxy
 for moves the *wrong* way: between-arm spread grows 0.009 → 0.017 while σ_d of every paired
@@ -151,6 +151,7 @@ behaved. Two preconditions fail before power is reachable.
 | [`RESULTS-confirmation-run-a-setup.md`](RESULTS-confirmation-run-a-setup.md) | the **confirmation run, option (a) — its quarantined setup**: the 160 confirmation queries retrieved at the served shape, eleven arms packed and persisted, the labeling set pooled (**counts only**), the #513 locator fix verified on the development labels, and the 30-reading labeling pass launched detached. No confirmation-topic metric is computed, printed or committed anywhere in it |
 | `s0c_*.py`, `s0c_supervise.sh`, [`artifacts/conf-a/`](artifacts/conf-a/) | that harness. `s0c_common.py` holds the quarantine guard — `ERET`/`EPACK`/`EUC` **raise** — and `s0c_span_filter.py --selftest` / `--verify-dev` run offline. The confirmation-topic outputs themselves are **not committed**: they live under `/rag/tmp/stage0-conf/work/conf/` behind that directory's `QUARANTINE.md` |
 | [`RESULTS-pointed-at-scale.md`](RESULTS-pointed-at-scale.md) | **the pointed population at corpus scale** (r3 §10 item 5 (b)) — reach measured over nested subsamples at 4k/8k/16k/32.7k documents, fitted against log₁₀(N) and projected to 150k and 500k: reach falls only **0.032–0.046 per decade**, the arms separate by 0.017 while σ_d grows faster, and **step 2 (the 5× corpus) was not run** |
+| [`RESULTS-pointed-at-scale.md`](RESULTS-pointed-at-scale.md) | **the pointed population at corpus scale** (r3 §10 item 5 (b)) — reach measured over nested subsamples at 4k/8k/16k/32.7k documents, fitted against log₁₀(N) and projected to 150k and 500k: reach falls only **0.031–0.046 per decade**, the arms separate by 0.017 while σ_d grows faster, and **step 2 (the 5× corpus) was not run** |
 | `s0s_*.py`, `run_s0s.sh`, [`artifacts/pointed-scale/`](artifacts/pointed-scale/) | that harness — zero embedding calls, `emb/` opened read-only — and its artifacts: levels, the fit and its cluster bootstrap, the separation table that decided the gate, and the per-query difficulty histogram (161 of 177 queries reached in all 60 cells) |
 | [`../design/SPEC-confirmation-run.md`](../design/SPEC-confirmation-run.md) | the pre-registration Stage 0 was run against (rev. 2; § 14 is its change log) |
 | [`../design/RUBRIC-evidence.md`](../design/RUBRIC-evidence.md) | the labeling rubric, frozen and hashed before the first labeling call |
