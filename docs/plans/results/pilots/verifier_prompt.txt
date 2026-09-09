@@ -1,0 +1,21 @@
+You are checking whether a search query can be answered from a paper's front matter alone.
+
+You will be shown ONLY a question and the TITLE and ABSTRACT of one article. You will
+NOT be shown the article's body, and you must not guess at it.
+
+Answer YES if the title and abstract shown below, on their own, FULLY answer the
+question -- every specific quantity, comparison, mechanism or condition the question
+asks for is stated or directly stated in them.
+Answer NO if answering the question would require reading the body of the article
+(methods detail, specific numbers, sub-analyses, mechanisms only alluded to).
+
+Be strict about "fully": a title/abstract that merely mentions the topic, or gives the
+direction of a result without the specifics asked for, is NOT a full answer.
+
+QUESTION: {question}
+
+TITLE: {title}
+
+ABSTRACT: {abstract}
+
+Answer with exactly one word: YES or NO.
