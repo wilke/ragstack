@@ -25,7 +25,7 @@
 # Run snapshot.sh FIRST so verify.sh has a baseline to compare against after the restore.
 set -uo pipefail
 DRY=0; ALL=0
-for a in "$@"; do case $a in --dry-run) DRY=1 ;; --all) ALL=1 ;; -h|--help) sed -n '2,24p' "$0"; exit 0 ;; *) echo "unknown arg $a" >&2; exit 2 ;; esac; done
+for a in "$@"; do case $a in --dry-run) DRY=1 ;; --all) ALL=1 ;; -h|--help) sed -n '2,/^set -/p' "$0" | sed '$d'; exit 0 ;; *) echo "unknown arg $a" >&2; exit 2 ;; esac; done
 ts() { date -u +%FT%TZ; }
 say() { echo "$(ts) $*"; }
 port_pid() { ss -ltnpH 2>/dev/null | awk -v p="$1" '$4 ~ "[:.]"p"$"' | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2; }
@@ -52,8 +52,11 @@ stop_port() {                 # stop_port PORT label expected-cmd-substring [exp
 }
 stop_instance() {
   apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" || { say "  [$1] no such instance"; return 0; }
-  if (( DRY )); then say "  [dry-run] apptainer instance stop $1"; return 0; fi
-  say "  [$1] apptainer instance stop"; apptainer instance stop "$1" >/dev/null 2>&1 || say "    (stop returned non-zero)"
+  if (( DRY )); then say "  [dry-run] apptainer instance stop -s SIGTERM -t 120 $1"; return 0; fi
+  # SIGTERM with a real grace period: the default is a SIGKILL after 10 s, which is inside an ES/Postgres flush
+  say "  [$1] apptainer instance stop -s SIGTERM -t 120"; apptainer instance stop -s SIGTERM -t 120 "$1" >/dev/null 2>&1 || say "    (stop returned non-zero)"
+  local i=0; while apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" && (( i < 130 )); do sleep 2; i=$((i+2)); done
+  apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | grep -qx "$1" && say "    ✗ [$1] still listed after ${i}s" || say "    ✓ [$1] gone"
 }
 
 say "== 1. labelers"
@@ -111,9 +114,10 @@ if (( ! DRY )); then
 fi
 
 say "== not stopped (personal / other-account; the reboot takes them):"
-for spec in "3000 p3-web" "5174 VaxpipeApp-vite" "5173 legacy-ui-asm" "5175 legacy-ui-lucid" "8899 docs-http.server" "9000 nginx(svcbvbrc)"; do
+for spec in "3000 p3-web" "5174 VaxpipeApp-vite" "5173 legacy-ui-asm" "5175 legacy-ui-lucid" "8899 docs-http.server"; do
   set -- $spec; p=$(port_pid "$1"); [[ -n $p ]] && say "  :$1 $2 pid $p $(cwd_of "$p")" || true
 done
+ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE '[:.]9000$' && say "  :9000 gateway nginx (svcbvbrc — another account; cannot and need not be stopped from here)" || true
 if (( ALL )); then
   say "== --all: stopping the personal dev processes too"
   stop_port 3000 p3-web p3-web; stop_port 5174 VaxpipeApp vite; stop_port 5173 legacy-ui-asm vite; stop_port 5175 legacy-ui-lucid vite; stop_port 8899 docs http.server

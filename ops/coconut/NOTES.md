@@ -42,14 +42,17 @@ reboot the host comes up with the system daemons only. Every service below is re
   at dead backends (`:5175` at `:8020`, which is also gone). They are not restored by default.
 - **Live launch parameters differ from the scripts in `apptainer/`**: the shared Elasticsearch runs
   with a 1 GB heap (script says 512 MB), the shared Qdrant with `OPTIMIZER_CPU_BUDGET=12` and
-  `MAX_OPTIMIZATION_THREADS=1` (the #140 cap) plus a `/rag/cache/load3corpus` bind, `qdrant2` on
+  `MAX_OPTIMIZATION_THREADS=1` (the #140 cap) plus a `/rag/cache/load3corpus` bind (an artefact of the
+  directory it was launched from, reproduced anyway), `qdrant2` on
   6343/6344 has no script at all, and `neo4j-dev` was started by hand from a runbook. `restore.sh`
   reproduces the live parameters. The `demo` tenant's `up.sh` would start a `qdrant-demo` /
   `elasticsearch-demo` pair that is **not** in use (demo reads the production stores) — do not run it.
 - **`/scout/wf/gowe/server.log` is 8 GB** with no rotation. Not a reboot problem; worth a logrotate.
 - The GoWe pid files under `/scout/wf/gowe/pids/` are from June and stale; 19 of the 21 workers
   were started by hand and have no pid file. `pre-reboot.sh` resolves them from `/proc` with a cwd
-  check instead.
+  check instead. `restore.sh` records pids under `/rag/backups/reboot-2026-09-10/pids/` by resolving
+  the port owner (or the `--name` on the cmdline) after the health check — an independent review
+  caught that `$!` of a detached launch is the wrapper shell, not the service.
 
 ## What the reboot loses even with a perfect restore
 
@@ -59,17 +62,25 @@ reboot the host comes up with the system daemons only. Every service below is re
 - The docs server on `:8899` serves from `/tmp`, which is cleared. Rebuild if wanted.
 - Anything under `/tmp` and `/dev/shm`. The study's working data is under `/rag/tmp` (a real disk).
 - GPU placement: `restore.sh` pins SFR `:900N` to GPU `N-1` and the crossencoder to GPU 0, as
-  today. GPUs 6 and 7 stay free by convention.
+  today. GPUs 6 and 7 stay free by convention. **Known tight spot:** GPU 0 has 1.3 GB free today with
+  the warm crossencoder at 12.4 GB; a freshly started crossencoder holds less, so vLLM's 0.9
+  utilisation will size a larger cache and the crossencoder can OOM as it warms. If that happens,
+  restart the crossencoder on GPU 6 (`CROSSENCODER_GPU=6 sidecars-up.sh`) — a placement decision
+  for the owner, not made here.
 
 ## Order of operations tomorrow
 
-1. Before the window: `ops/coconut/snapshot.sh` (baseline), then `ops/coconut/pre-reboot.sh`
-   (graceful stop, stores last so their WALs flush). `--dry-run` first.
+1. Before the window: re-take the baseline **immediately before** stopping anything —
+   `FORCE=1 ops/coconut/snapshot.sh /rag/backups/reboot-2026-09-10` (the script refuses to overwrite
+   a baseline without `FORCE=1`, so a stray run after the reboot cannot destroy it) — then
+   `ops/coconut/pre-reboot.sh` (SIGTERM with a 120 s grace per instance, stores last). `--dry-run` first.
 2. Admin patches and reboots both hosts; applies items 1–2 above (and 4 on mango).
-3. After boot, as `wilke`: `ops/coconut/restore.sh` — it refuses to continue past preflight if
-   `/rag` or `/scout` is not mounted or `vm.max_map_count` is wrong. Then `ops/coconut/verify.sh`,
-   which diffs health, instances, store collection counts, GPU placement and mango against the
-   baseline and exits non-zero on any regression.
+3. After boot, as `wilke`, **from a login shell** (`bash -l`; node/npx live under `$HOME`, so a bare
+   `ssh coconut cmd` has no `npx` and the UIs fail): `ops/coconut/restore.sh` — it refuses to continue
+   past preflight if `/rag` or `/scout` is not mounted or `vm.max_map_count` is wrong, and it does
+   **not** start the labelers until `mango:8004` answers (`restore.sh --only labelers` later). Then
+   `ops/coconut/verify.sh`, which diffs health, instances, store collection counts, GPU placement and
+   mango against the baseline and exits non-zero on any regression.
 4. Copies of all five scripts and the baseline are in `/rag/backups/reboot-2026-09-10/` in case
    `/home` (NFS, autofs) is slow to come back.
 

@@ -10,6 +10,11 @@
 # variable names, plus a whitelist of operational settings (ports, heap, budgets).
 set -euo pipefail
 OUT=${1:-/rag/backups/reboot-$(date +%F)}
+# A baseline is precious: refuse to overwrite one unless FORCE=1 (verify.sh always writes to a fresh dir).
+if [[ -f $OUT/snapshot.json && ${FORCE:-0} != 1 ]]; then
+  echo "snapshot: $OUT/snapshot.json exists (recorded $(python3 -c "import json;print(json.load(open('$OUT/snapshot.json'))['recorded_utc'])" 2>/dev/null)) — pass FORCE=1 to overwrite, or give another dir" >&2
+  exit 3
+fi
 mkdir -p "$OUT"
 export OUT
 python3 - <<'PY'

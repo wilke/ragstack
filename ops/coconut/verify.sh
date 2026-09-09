@@ -53,14 +53,14 @@ for k, v in b["mango"].items():
     if w.get("cache_config") != v["cache_config"]:
         print(f"      cache_config changed: {v['cache_config']} → {w.get('cache_config')}")
 
-print("\nGPU placement (gpu → used memory per pid, baseline vs now)")
+print("\nGPU placement (processes per GPU must match; memory shown for information — a fresh crossencoder holds less than a warm one)")
 def gm(s):
     d = {}
     for a in s["gpu_apps"]: d.setdefault(a["gpu"], []).append(a["used"])
     return {k: sorted(v) for k, v in d.items()}
 bg, ng = gm(b), gm(n)
 for g in sorted(set(bg) | set(ng), key=lambda x: int(x) if str(x).isdigit() else 99):
-    row(g in ng or g not in bg, f"gpu {g}", bg.get(g, "-"), ng.get(g, "MISSING"))
+    row(len(ng.get(g, [])) == len(bg.get(g, [])), f"gpu {g}", f"{len(bg.get(g, []))} proc {bg.get(g, '-')}", f"{len(ng.get(g, []))} proc {ng.get(g, 'MISSING')}")
 
 print("\nsystem")
 for k in ("vm.max_map_count", "coconut-proxy.service installed", "max_map_count_persisted", "uptime"):
