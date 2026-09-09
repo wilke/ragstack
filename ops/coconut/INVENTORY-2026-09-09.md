@@ -81,7 +81,7 @@ server, `:5173`/`:5175` legacy UIs (`restore.sh --only legacy-ui` brings the las
 
 ---
 
-# Generated from the live system — 2026-09-09T08:39:36Z by wilke on coconut
+# Generated from the live system — 2026-09-09T09:12:04Z by wilke on coconut
 
 ## System
 
@@ -177,9 +177,7 @@ server, `:5173`/`:5175` legacy UIs (`restore.sh --only legacy-ui` brings the las
 | 2088191 | Sep 4 03:58: | GoWe worker | `./bin/gowe-worker --server http://localhost:8091 --name worker-2 --workdir /scout/wf/gowe/workdir/worker-2 --gpu --gpu-id 2 --runtime apptainer --stag…` |
 | 2088189 | Sep 4 03:58: | GoWe worker | `./bin/gowe-worker --server http://localhost:8091 --runtime none --name ragstack-cpu-1 --group ragstack-cpu --workdir /scout/wf/data/ragstack_gowe_smok…` |
 | 1987098 | Sep 8 06:07: | labeler | `/rag/envs/ragstack/bin/python3 s0c_label.py --judge qwen --conc 5` |
-| 1717175 | Sep 8 02:23: | labeler | `/rag/envs/ragstack/bin/python3 s0c_label.py --judge scout` |
 | 1987088 | Sep 8 06:07: | labeler supervisor | `bash /home/wilke/Development/worktrees/confirmation-run/docs/plans/results/stage0/s0c_supervise.sh __supervise qwen` |
-| 1717167 | Sep 8 02:23: | labeler supervisor | `bash /home/wilke/Development/worktrees/confirmation-run/docs/plans/results/stage0/s0c_supervise.sh __supervise scout` |
 
 ## Apptainer instances and their writable binds (from /proc/<pid>/mountinfo)
 
@@ -308,7 +306,7 @@ server, `:5173`/`:5175` legacy UIs (`restore.sh --only legacy-ui` brings the las
 |---|---|
 | `/rag/repos/ragstack` | 6d6fcf6 |
 | `/rag/repos/GoWe` | 92706d7 |
-| `/home/wilke/Development/ragstack` | 0ebb245 |
+| `/home/wilke/Development/ragstack` | 66ed03f |
 | `/home/wilke/Development/worktrees/confirmation-run` | e9a0f5c |
 | `/rag/repos/tenants/asm-next` | 652be18 |
 | `/rag/repos/tenants/demo` | 652be18 |
@@ -341,5 +339,5 @@ server, `:5173`/`:5175` legacy UIs (`restore.sh --only legacy-ui` brings the las
 
 ## Labelers (quarantined confirmation run)
 
-- heartbeat-scout.json: `{"judge": "scout", "attempt": 1, "pid": 1717175, "records": 73863, "utc": "2026-09-09T08:38:54Z", "state": "running"}`
-- heartbeat-qwen.json: `{"judge": "qwen", "attempt": 1, "pid": 1987098, "records": 15336, "utc": "2026-09-09T08:37:45Z", "state": "running"}`
+- heartbeat-scout.json: `{"judge": "scout", "attempt": 1, "records": 74760, "utc": "2026-09-09T08:58:54Z", "state": "finished"}`
+- heartbeat-qwen.json: `{"judge": "qwen", "attempt": 1, "pid": 1987098, "records": 15684, "utc": "2026-09-09T09:07:46Z", "state": "running"}`
