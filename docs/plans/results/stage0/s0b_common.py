@@ -40,7 +40,7 @@ if str(HERE) not in sys.path:
 # live beside the working copy of the analysis tree, not in the repo (the same shim
 # ``s0_label_r31.py`` uses).
 HELPERS = pathlib.Path(os.environ.get(
-    "STAGE0_HELPERS", "/home/wilke/Development/worktrees/phase0-rescue/phase0"))
+    "STAGE0_HELPERS", str(pathlib.Path(__file__).resolve().parent.parent)))  # in-repo since 2026-09-09; was the unversioned phase0-rescue tree
 for _p in (HELPERS / "stage1", HELPERS / "pilots"):
     if str(_p) not in sys.path:
         sys.path.append(str(_p))
