@@ -66,7 +66,7 @@ from concurrent.futures import ThreadPoolExecutor
 # first two at module load, and the Leg B re-run's rule module is imported from the same
 # tree so the three §2.6 fixes are the SAME CODE, not a copy of it.
 _HELPERS = pathlib.Path(os.environ.get(
-    "STAGE0_HELPERS", "/home/wilke/Development/worktrees/phase0-rescue/phase0"))
+    "STAGE0_HELPERS", str(pathlib.Path(__file__).resolve().parent.parent)))  # in-repo since 2026-09-09; was the unversioned phase0-rescue tree
 for _p in (_HELPERS / "stage1", _HELPERS / "pilots"):
     if str(_p) not in sys.path:
         sys.path.append(str(_p))
