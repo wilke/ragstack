@@ -372,11 +372,14 @@ def run_judge(judge: str, p_start: int, p_end: int, limit: int, tag: str,
                "presentation": k, "unit_order_seed": seed, "unit_order": order_kind,
                "population": "cds_conf"}
         with lock:
-            fout.write(json.dumps(rec) + "\n")
-            fout.flush()
+            # raw FIRST, then the label: a stop between the two then leaves a duplicate raw entry
+            # (harmless, keyed) rather than a label whose raw is missing forever (the resume skips
+            # records already in `done`, so it would never be re-fetched).
             fraw.write(json.dumps({"topic": t, "docno": d, "presentation": k,
                                    "raws": rawfull}) + "\n")
             fraw.flush()
+            fout.write(json.dumps(rec) + "\n")
+            fout.flush()
             n_done[0] += 1
             if n_done[0] % PROGRESS_EVERY == 0:
                 el = time.time() - t0
