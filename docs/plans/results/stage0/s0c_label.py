@@ -60,6 +60,21 @@ from s0_label import segment
 from s0_label_r3 import CONC, JUDGES, SYSTEM, TEMPERATURE, WINDOW_TOKENS, Judge, render_r3
 import s0_label_r31 as R31M
 
+# Per-judge in-flight cap. §6.4 rule 5's "≤ 4 per endpoint" is a shared-host courtesy, not a
+# server limit: mango:8004's own metrics on 2026-09-08 (12,006 requests) showed 4 running /
+# 0 waiting / KV cache 1 % used (5,333 blocks × 2,096 tokens) and 11 requests per minute —
+# this labeler alone — with 15.5 of every 16 s spent decoding ~2,400 thinking tokens per
+# request at ~140 tok/s per stream. Batch decode would scale near-linearly there — but a
+# restart at 16 in flight (2026-09-08 11:02Z) showed the SERVER admits exactly 4 sequences
+# (`num_requests_running` pinned at 4.0, `num_requests_waiting` 12.0 for minutes; vLLM's
+# `--max-num-seqs`). Above ~5 the surplus only queues server-side, in front of any tenant
+# request, and buys nothing: 13.5 vs 11 requests/min. So Qwen runs at 5 (batch full, queue
+# depth ≤ 1) until mango's admin raises `max-num-seqs`; the cap here is what the labeler
+# would be allowed once that happens. Scout stays at 4 (mango:8003 was not measured).
+# Concurrency is not part of the pre-registered instrument (prompt, rubric, temperature 0,
+# seed) and is recorded in the manifest. Owner's decision 2026-09-08.
+CONC_MAX = {"scout": CONC, "qwen": 16}
+
 PROMPT = R31M.PROMPT
 REPROMPT = R31M.REPROMPT
 FAIL_PROBLEMS = R31M.FAIL_PROBLEMS
@@ -224,13 +239,32 @@ def write_progress(judge: str, tag: str, done: int, total: int, t0: float,
         **(extra or {})})
 
 
+def _truncate_partial_last_line(pth) -> None:
+    """A stop (SIGTERM from the supervisor) can land between a record's write and its
+    newline. The writer appends, so a partial last line would be completed by the NEXT
+    record and corrupt two of them. Drop the partial line before resuming; the record it
+    belonged to is simply re-run (it is not in `done`)."""
+    if not pth.exists() or pth.stat().st_size == 0:
+        return
+    blob = pth.read_bytes()
+    if blob.endswith(b"\n"):
+        return
+    cut = blob.rfind(b"\n") + 1
+    with open(pth, "rb+") as f:
+        f.seek(cut)
+        f.truncate()
+    print(f"resume: dropped a partial last line from {pth.name} ({len(blob) - cut} bytes)",
+          flush=True)
+
+
 def run_judge(judge: str, p_start: int, p_end: int, limit: int, tag: str,
               conc: int) -> dict:
     inst = assert_instrument()
     print(f"instrument asserted: prompt {inst['prompt_sha256'][:16]}… "
           f"rubric {inst['rubric_sha256'][:16]}…", flush=True)
-    if conc > CONC:
-        raise SystemExit(f"concurrency {conc} > {CONC} — mango is a shared host")
+    cap = CONC_MAX.get(judge, CONC)
+    if conc > cap:
+        raise SystemExit(f"concurrency {conc} > {cap} for {judge} — mango is a shared host")
     assert TOKENS.exists(), "run --prepare-tokens first"
     cache = json.loads(TOKENS.read_text())
 
@@ -248,6 +282,8 @@ def run_judge(judge: str, p_start: int, p_end: int, limit: int, tag: str,
     man_path = Q.LABELS / f"label-manifest-conf-{judge}{suffix}.json"
 
     done: set[tuple[str, str, int]] = set()
+    for pth in (out_path, raw_path):
+        _truncate_partial_last_line(pth)
     if out_path.exists():
         with open(out_path) as f:
             for line in f:
@@ -336,11 +372,14 @@ def run_judge(judge: str, p_start: int, p_end: int, limit: int, tag: str,
                "presentation": k, "unit_order_seed": seed, "unit_order": order_kind,
                "population": "cds_conf"}
         with lock:
-            fout.write(json.dumps(rec) + "\n")
-            fout.flush()
+            # raw FIRST, then the label: a stop between the two then leaves a duplicate raw entry
+            # (harmless, keyed) rather than a label whose raw is missing forever (the resume skips
+            # records already in `done`, so it would never be re-fetched).
             fraw.write(json.dumps({"topic": t, "docno": d, "presentation": k,
                                    "raws": rawfull}) + "\n")
             fraw.flush()
+            fout.write(json.dumps(rec) + "\n")
+            fout.flush()
             n_done[0] += 1
             if n_done[0] % PROGRESS_EVERY == 0:
                 el = time.time() - t0
@@ -364,6 +403,7 @@ def run_judge(judge: str, p_start: int, p_end: int, limit: int, tag: str,
                      "readings"),
         "instrument": assert_instrument(),
         "stats": jd.stats(), "n_pairs_total": len(idx),
+        "concurrency": conc, "concurrency_cap": CONC_MAX.get(judge, CONC),
         "presentations_run": [p_start, p_end],
         "n_records_target": total, "n_records_total": n_recs,
         "n_records_run": len(todo), "n_records_preexisting": len(done),

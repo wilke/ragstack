@@ -13,7 +13,8 @@
 # the pid this script wrote, verifies /proc/<pid>/cwd is this worktree's stage0 directory,
 # and only then signals it.
 #
-# Endpoints: mango:8003 (scout) and mango:8004 (qwen), <= 4 in flight each. Nothing else.
+# Endpoints: mango:8003 (scout, <= 4 in flight) and mango:8004 (qwen, 5 in flight by default —
+# the server admits 4 at a time, CONC_QWEN overrides up to s0c_label.py's CONC_MAX). Nothing else.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,8 +44,13 @@ supervise () {                       # runs detached; one judge
   echo "$(date -u +%FT%TZ) supervisor up for $judge" >> "$suplog"
   while [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
     attempt=$((attempt + 1))
-    echo "$(date -u +%FT%TZ) attempt $attempt: $PY s0c_label.py --judge $judge" >> "$suplog"
-    ( cd "$HERE" && exec "$PY" s0c_label.py --judge "$judge" ) >> "$log" 2>&1 &
+    local conc
+    case "$judge" in
+      qwen) conc=${CONC_QWEN:-5} ;;       # server admits 4 (max-num-seqs); 5 keeps the batch full — see s0c_label.py CONC_MAX
+      *)    conc=${CONC_SCOUT:-4} ;;
+    esac
+    echo "$(date -u +%FT%TZ) attempt $attempt: $PY s0c_label.py --judge $judge --conc $conc" >> "$suplog"
+    ( cd "$HERE" && exec "$PY" s0c_label.py --judge "$judge" --conc "$conc" ) >> "$log" 2>&1 &
     local child=$!
     echo "$child" > "$pidf"
     # Heartbeat while the child runs: counts and timestamps only, never label content.
