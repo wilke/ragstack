@@ -12,7 +12,7 @@
 #   sfr         six SFR-Embedding-Mistral vLLM endpoints :9001–:9006 on GPUs 0–5
 #   apis        the four tenant APIs :24000 lucid-next, :24020 asm-next, :24040 dev, :24060 demo
 #   uis         the four base-aware Vite dev servers :5210 demo, :5211 lucid-next, :5212 asm-next, :8090 dev
-#   gowe        gowe-server :8091 + 21 workers, prometheus :9090, grafana :3001
+#   gowe        gowe-server :8091 + 21 workers via /scout/wf/gowe/start-gowe.sh, then prometheus :9090, grafana :3001
 #   labelers    the quarantined confirmation-run labelers (Scout/Qwen) via their supervisor
 #   proxy       nginx :9000 — only reports unless --proxy (see below)
 #   legacy-ui   :5173 and :5175 (skipped by default; their APIs :8000/:8010 were already down)
@@ -38,8 +38,8 @@
 # snapshot.json → listeners_by_process / apptainer_instances), not what the older
 # scripts in apptainer/ would do: heap sizes, the optimizer budget and one extra
 # bind differ from those scripts. Where a canonical launcher exists and matches
-# the live state (sidecars-up.sh, ui-dev.sh, start-monitoring.sh, s0c_supervise.sh)
-# it is called instead of re-typed.
+# the live state (sidecars-up.sh, ui-dev.sh, start-gowe.sh, start-monitoring.sh,
+# s0c_supervise.sh) it is called instead of re-typed.
 set -uo pipefail
 
 RUN=${RUN:-/rag/backups/reboot-2026-09-10}
@@ -299,43 +299,28 @@ fi
 
 # ---------------------------------------------------------------- gowe
 if want gowe; then
-  say "== GoWe (server, 21 workers, monitoring) — /scout/Experiments/GoWe == /rag/repos/GoWe"
+  say "== GoWe (server :8091 + 21 workers, then monitoring) — via the fleet's own launcher"
+  # GoWe was redeployed to v0.19.0 on 2026-09-09 (base path, worker keys). Its operator notes
+  # (/scout/wf/gowe/README.md) define the post-reboot procedure and ship an idempotent launcher
+  # that reads the worker key from its 0600 file; this script defers to it rather than carrying a
+  # second copy of 22 command lines that would drift on the next release swap.
   G=/scout/Experiments/GoWe; W=/scout/wf/gowe
-  if port_up 8091; then say "  [gowe-server] already listening — skipping"; else
-    launch gowe-server "$G" "$W/server.log" -- ./bin/gowe-server --addr :8091 --db "$W/gowe.db" --default-executor worker \
-      --scheduler-poll 1s --upload-backend local --upload-local-dir "$W/uploads" \
-      --upload-download-dirs "$W/uploads,/scout/wf/data,$W/workdir/worker-1,$W/workdir/worker-2" \
-      --log-level info --admins awilke,awilke@bvbrc,olson,olson@bvbrc --workspace-staging server \
-      --token-key-file "$W/token.key" --redeliver-source-dirs /scout/wf/data --metrics-addr localhost:9091 --grafana-url http://localhost:3001
-    wait_http http://127.0.0.1:8091/api/v1/health 60 "gowe-server :8091" && { (( DRY )) || record_pid_by_port gowe-server 8091; } || fail=1
+  if [[ -x $W/start-gowe.sh ]]; then
+    if (( DRY )); then echo "  [dry-run] $W/start-gowe.sh"; else
+      [[ $(ss -ltnH 2>/dev/null | awk '{print $4}' | grep -cE '[:.]8091$') -eq 0 ]] && STARTED[gowe-server]=1
+      "$W/start-gowe.sh" 2>&1 | sed 's/^/  /'
+    fi
+  else say "  ✗ $W/start-gowe.sh missing — GoWe not started (see $W/README.md)"; fail=1; fi
+  wait_if_started gowe-server http://127.0.0.1:8091/api/v1/health 60 "gowe-server :8091" && { (( DRY )) || record_pid_by_port gowe-server 8091; } || fail=1
+  if (( ! DRY )); then
+    sleep 3; n=0
+    # one /proc pass: count the workers and record each one's pid under its --name
+    for pr in /proc/[0-9]*; do
+      c=$({ tr '\0' ' ' < "$pr/cmdline"; } 2>/dev/null); [[ $c == ./bin/gowe-worker* ]] || continue
+      n=$((n+1)); wn=$(echo "$c" | grep -o -- '--name [^ ]*' | cut -d' ' -f2); [[ -n $wn ]] && echo "${pr#/proc/}" > "$PIDS/$wn.pid"
+    done
+    say "    $n gowe-worker processes running (expected 21); pids recorded under $PIDS"; (( n == 21 )) || fail=1
   fi
-  # one /proc scan, not one per worker
-  running_workers=$(for p in /proc/[0-9]*; do { tr '\0' ' ' < "$p/cmdline"; } 2>/dev/null | grep -o 'gowe-worker .*--name [^ ]*' | grep -o -- '--name [^ ]*$'; echo; done | awk '{print $2}' | sort -u | tr '\n' ' ')
-  worker_running() { [[ " $running_workers " == *" $1 "* ]]; }
-  common=(--server http://localhost:8091 --runtime apptainer --stage-out file:///scout/wf/data --poll 500ms --log-level info
-          --image-dir /scout/containers --pre-stage-dir /local_databases --extra-bind /scout/data
-          --secret-file "$W/secrets.env" --env-file "$W/worker-env.env" --workspace-stager)
-  for n in $(seq 1 14); do
-    worker_running "cpu-worker-$n" && { say "  [cpu-worker-$n] running"; continue; }
-    launch "cpu-worker-$n" "$G" "$W/logs/cpu-worker-$n.log" -- ./bin/gowe-worker --name "cpu-worker-$n" --workdir "$W/workdir/cpu-worker-$n" "${common[@]}"
-  done
-  for n in 1 2; do
-    worker_running "worker-$n" && { say "  [worker-$n] running"; continue; }
-    launch "worker-$n" "$G" "$W/logs/worker-$n.log" -- ./bin/gowe-worker --name "worker-$n" --workdir "$W/workdir/worker-$n" --gpu --gpu-id "$n" "${common[@]}"
-  done
-  for n in 1 2 3 4; do
-    worker_running "ragstack-oa-$n" && { say "  [ragstack-oa-$n] running"; continue; }
-    launch "ragstack-oa-$n" "$G" "$W/logs/ragstack-oa-$n.log" -- ./bin/gowe-worker --server http://localhost:8091 --name "ragstack-oa-$n" --group ragstack \
-      --runtime apptainer --image-dir /scout/containers --extra-bind /rag --stage-out file:///scout/wf/data --poll 500ms --log-level info \
-      --env-file "$W/ragstack-worker-env.env" --secret-file "$W/ragstack-worker-secrets.env" --workdir "$W/workdir/ragstack-oa-$n"
-  done
-  if worker_running ragstack-cpu-1; then say "  [ragstack-cpu-1] running"; else
-    # --runtime none runs tools on the host: needs the ragstack env on PATH and a shared HF_HOME (MEMORY: reference_gowe_deployment)
-    launch ragstack-cpu-1 "$G" "$W/logs/ragstack-cpu-1.log" -- env PATH=/rag/envs/ragstack/bin:$PATH HF_HOME=/rag/cache \
-      ./bin/gowe-worker --server http://localhost:8091 --runtime none --name ragstack-cpu-1 --group ragstack-cpu \
-      --workdir /scout/wf/data/ragstack_gowe_smoke/workdir --stage-out file:///scout/wf/data
-  fi
-  if (( ! DRY )); then sleep 3; for n in "${!STARTED[@]}"; do case $n in cpu-worker-*|worker-*|ragstack-*) record_pid_by_cmd "$n" "./bin/gowe-worker" "--name $n " || true ;; esac; done; fi
   if (( DRY )); then echo "  [dry-run] $W/start-monitoring.sh"; else "$W/start-monitoring.sh" 2>&1 | sed 's/^/  /'; fi
   wait_http http://127.0.0.1:9090/-/ready 120 "prometheus :9090" || say "    (monitoring only)"
   wait_http http://127.0.0.1:3001/api/health 120 "grafana :3001" || say "    (monitoring only)"
