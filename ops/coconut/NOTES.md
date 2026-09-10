@@ -48,8 +48,10 @@ reboot the host comes up with the system daemons only. Every service below is re
   reproduces the live parameters. The `demo` tenant's `up.sh` would start a `qdrant-demo` /
   `elasticsearch-demo` pair that is **not** in use (demo reads the production stores) — do not run it.
 - **`/scout/wf/gowe/server.log` is 8 GB** with no rotation. Not a reboot problem; worth a logrotate.
-- The GoWe pid files under `/scout/wf/gowe/pids/` are from June and stale; 19 of the 21 workers
-  were started by hand and have no pid file. `pre-reboot.sh` resolves them from `/proc` with a cwd
+- **GoWe was redeployed to v0.19.0 on 2026-09-09 15:00 local** (base path, worker keys, Grafana
+  link) — after the first baseline. Its own operator notes and idempotent launcher now exist
+  (`/scout/wf/gowe/README.md`, `start-gowe.sh`); `restore.sh` defers to them. The old pid files under
+  `/scout/wf/gowe/pids/` are stale; 19 of the 21 workers have none. `pre-reboot.sh` resolves them from `/proc` with a cwd
   check instead. `restore.sh` records pids under `/rag/backups/reboot-2026-09-10/pids/` by resolving
   the port owner (or the `--name` on the cmdline) after the health check — an independent review
   caught that `$!` of a detached launch is the wrapper shell, not the service.
