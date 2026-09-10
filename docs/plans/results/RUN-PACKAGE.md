@@ -71,7 +71,7 @@ Wall times and hardware are as recorded in each RESULTS document's Provenance / 
 | figures | SVG, dependency-free | `fig_stage0.py`, `figlib.py`, `s0s_fig.py` | `floor_diagnostic.json`, `levels.json`, `fit.json` | `stage0/figures/*.svg`, `design/figures/*.svg` | none | seconds | `README.md` § *The figures* | **done** — never rasterised; open in a browser first |
 | report | tables spliced into the write-ups | `s0_report.py`, `s0b_report.py` / `s0b_writeup.py`, `s0s_report.py` / `s0s_writeup.py` | the committed JSON | `TABLE-8.5.7.md`, `TABLES.md`, the RESULTS files | none | seconds | — | **done** |
 | — | **two-reader human read (item 8)** | `s0_rdev.py` (draw), `s0_rdev_score.py` (κ) | `artifacts/rdev_sample.json` — 100 pairs, seed `20260915` | κ(A–B), the §6.6.4 acceptance table | none | **32–48 person-hours** | `RESULTS-stage0-calibration.md` row 8 | **NOT STARTED — `PENDING-HUMAN`, and it blocks everything downstream** |
-| — | hard pointed set | `s0h_single_source.py` (proposed, does not exist) | 74 existing rejected candidates; `docs.jsonl` | a df-screened, difficulty-stratified pointed set | `mango:8003` ≤ 4, SFR ≤ 2, `:50052` ≤ 4 | see §6 | `design/PLAN-hard-pointed-set.md` (**PR #526, not on `main`**) | **NOT STARTED — awaiting owner** |
+| — | hard pointed set | `s0h_single_source.py` (proposed, does not exist) | 74 existing rejected candidates; `docs.jsonl` | a df-screened, difficulty-stratified pointed set | `mango:8003` ≤ 4, SFR ≤ 2, `:50052` ≤ 4 | see §6 | `design/PLAN-hard-pointed-set.md` (PR #526) | **NOT STARTED — awaiting owner** |
 | — | confirmation run proper (steps 5–7) | — | frozen labels + κ | the five contrasts | — | not recorded | r3 §5 | **NOT STARTED — blocked on the human read** |
 
 ---
@@ -340,8 +340,7 @@ pointed population, or (c) re-scope the confirmatory family to R2.
 [`design/RUBRIC-evidence.md`](design/RUBRIC-evidence.md) (frozen, sha256 `2e11f368…c747363b`) ·
 [`design/SPEC-synthesis-stage.md`](design/SPEC-synthesis-stage.md) ·
 [`design/REVIEW-synthesis-stage.md`](design/REVIEW-synthesis-stage.md) ·
-`design/PLAN-hard-pointed-set.md` — **not on `main`**; it is commit `38f5ff9` on branch
-`plan/hard-pointed-set`, open as **PR #526** (`git show plan/hard-pointed-set:docs/plans/results/design/PLAN-hard-pointed-set.md`).
+[`design/PLAN-hard-pointed-set.md`](design/PLAN-hard-pointed-set.md) (PR #526, merged 2026-09-10).
 
 **Design analyses** — [`design/ANSWER-completeness-and-subsets.md`](design/ANSWER-completeness-and-subsets.md) ·
 [`design/ANSWER-sufficiency-and-judges.md`](design/ANSWER-sufficiency-and-judges.md) ·
@@ -393,8 +392,10 @@ Plans: [`../chunking-evaluation.md`](../chunking-evaluation.md) · [`../long-doc
 | 523 | feat(stage0): confirmation run (a) — quarantined retrieval, pooling, and the 30-reading labeling launched |
 | 524 | feat(stage0): the pointed population at corpus scale — reach vs size, and the 5× pilot |
 | 525 | docs(plans): r3 §10 — (b) measured; item 6: a hard pointed set |
-| **526** | **OPEN** — docs(plans): the hard pointed set — explanation and plan (r3 §10 item 6) |
-| **527** | **OPEN** — stage0(conf): Qwen labeler concurrency — server admits 4, run at 5; resume-safe truncation |
+| 526 | docs(plans): the hard pointed set — explanation and plan (r3 §10 item 6) — merged 2026-09-10 |
+| 527 | stage0(conf): Qwen labeler concurrency — server admits 4, run at 5; resume-safe truncation — merged 2026-09-10 |
+| 528 | ops(coconut): reboot snapshot, pre-reboot stop, restore and verify scripts + inventory — merged 2026-09-10 |
+| 529 | docs: handoff 2026-09-09 + run package + in-repo helper modules and TREC CDS data — this document |
 
 (#502, #510, #513, #515, #516, #519 exist but are not stage-0 study PRs; #513 is the locator bug
 this package's span filter fixes.)
