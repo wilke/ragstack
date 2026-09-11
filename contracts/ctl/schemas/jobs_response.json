@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "jobs_response.json",
+  "title": "CtlJobsResponse",
+  "description": "`GET /v1/jobs?tenant=&state=&limit=`: newest first (ULIDs sort by creation time). Each entry is the full `job.json` shape, viewer-reduced for a viewer.",
+  "type": "object",
+  "required": ["jobs", "limit", "truncated"],
+  "properties": {
+    "jobs": { "type": "array", "items": { "$ref": "job.json" } },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+    "truncated": { "description": "More jobs matched than `limit`.", "type": "boolean" }
+  },
+  "additionalProperties": false
+}

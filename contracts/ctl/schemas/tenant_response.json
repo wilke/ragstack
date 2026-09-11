@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tenant_response.json",
+  "title": "CtlTenantResponse",
+  "description": "One tenant as `GET /v1/tenants/{name}` returns it: the dashboard summary row (`summary`, the same shape as a fleet row), the live `status` and `units`, the drift computed NOW (registry vs `/proc`, `/proc/net/tcp`, unit state, gateway generation), and — for OPERATORS ONLY — the full registry row under `registry`. A viewer receives `registry: null`: the row carries `secret_refs`, key fingerprints, pidfile/log paths and the rollback descriptor, which are the operator's business. The split into two members (rather than one row with optional fields) is what lets both `registry.json` and this file stay `additionalProperties: false` with honest `required` lists.",
+  "type": "object",
+  "required": ["summary", "registry", "status", "units", "drift"],
+  "properties": {
+    "summary": { "$ref": "fleet_response.json#/$defs/FleetRow" },
+    "registry": {
+      "oneOf": [
+        { "$ref": "registry.json#/$defs/Tenant" },
+        { "type": "null" }
+      ]
+    },
+    "status": { "$ref": "#/$defs/LiveStatus" },
+    "units": { "$ref": "#/$defs/Units" },
+    "drift": {
+      "description": "Computed at request time, as opposed to `registry.drift`, which is what the last `adopt`/`doctor` RECORDED.",
+      "type": "array",
+      "items": { "$ref": "registry.json#/$defs/DriftRow" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "LiveStatus": {
+      "type": "object",
+      "required": ["observed_at", "api_pid", "api_pid_owner", "listening", "restart_pending", "running_jobs"],
+      "properties": {
+        "observed_at": { "type": "string" },
+        "api_pid": { "type": ["integer", "null"], "minimum": 1 },
+        "api_pid_owner": { "description": "The uid's username of the API process, or null when not running.", "type": ["string", "null"] },
+        "listening": {
+          "description": "Which of the tenant's allocated ports have a listener in `/proc/net/tcp`.",
+          "type": "object",
+          "required": ["api", "qdrant_http", "es_http", "ui"],
+          "properties": {
+            "api": { "type": "boolean" },
+            "qdrant_http": { "type": "boolean" },
+            "es_http": { "type": "boolean" },
+            "ui": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "restart_pending": { "type": "boolean" },
+        "running_jobs": {
+          "description": "Ctl job ids currently holding this tenant's lock.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Units": {
+      "type": "object",
+      "required": ["supervisor", "target", "services"],
+      "properties": {
+        "supervisor": { "type": "string", "enum": ["systemd", "manual"] },
+        "target": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["name", "active_state", "enabled"],
+              "properties": {
+                "name": { "type": "string", "pattern": "^ragstack-[a-z][a-z0-9-]{0,31}\\.target$" },
+                "active_state": { "$ref": "fleet_response.json#/$defs/UnitState" },
+                "enabled": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "name", "active_state", "sub_state", "main_pid", "since"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["api", "ui", "qdrant", "es"] },
+              "name": { "description": "Unit name, or `manual:<kind>` for a hand-started process.", "type": "string" },
+              "active_state": { "$ref": "fleet_response.json#/$defs/UnitState" },
+              "sub_state": { "type": ["string", "null"] },
+              "main_pid": { "type": ["integer", "null"], "minimum": 1 },
+              "since": { "type": ["string", "null"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

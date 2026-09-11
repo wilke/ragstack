@@ -1,0 +1,1 @@
+{"service":"coconut-proxy","routes":{"health":"/health","ragstack":"/ragstack/","tenants":"/ragstack/tenants","ragstack_api":"/ragstack/<tenant>/api/v1/...","ragstack_ui":"/ragstack/<tenant>/ui/"},"tenants":["dev","demo","lucid-next","asm-next"]}

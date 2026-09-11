@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "me_response.json",
+  "title": "CtlMeResponse",
+  "description": "Who the server thinks the caller is, and how it decided. This is the ONLY place a client learns its role: the credential carries no role claim, and a subject that verifies but is not on the principal list gets a 403 from this endpoint like from every other (there is no `viewer`-by-default). `auth_method` names the credential that won: `api_key` (X-API-Key ctl key), `bearer` (BV-BRC token), `session` (opaque session id), `local` (`--direct` CLI after the OS identity check — never seen over HTTP, listed so the same schema serves the CLI's `--json` output).",
+  "type": "object",
+  "required": ["principal", "role", "auth_method", "expires_at", "sudo_user"],
+  "properties": {
+    "principal": {
+      "description": "Stable principal id: `bvbrc:<user>` for a bearer identity, `key:<label>` for a ctl API key, `local:<uid>` for `--direct`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "role": { "type": "string", "enum": ["viewer", "operator"] },
+    "auth_method": { "type": "string", "enum": ["api_key", "bearer", "session", "local"] },
+    "expires_at": {
+      "description": "RFC 3339 expiry of the credential that authenticated this request (token `expiry`, session end); null for a ctl key, which does not expire (it is revoked).",
+      "type": ["string", "null"]
+    },
+    "sudo_user": {
+      "description": "`SUDO_USER` observed by the CLI in `--direct` mode, recorded in audit; null over HTTP.",
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": false
+}

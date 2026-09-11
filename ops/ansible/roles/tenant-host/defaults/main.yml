@@ -1,0 +1,6 @@
+---
+tenant_host_images:
+  qdrant: "docker://qdrant/qdrant:latest"
+  elasticsearch: "docker://elasticsearch:8.13.4"
+conda_env_python: "{{ rag_root }}/envs/ragstack/bin/python"
+apptainer_pull_cachedir: "{{ rag_root }}/data/ctl/apptainer/cache"

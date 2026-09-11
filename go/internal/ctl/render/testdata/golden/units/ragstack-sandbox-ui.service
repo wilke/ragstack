@@ -1,0 +1,21 @@
+[Unit]
+Description=ragstack tenant sandbox — vite dev ui (:5300)
+PartOf=ragstack-sandbox.target
+After=ragstack-sandbox-api.service
+ConditionPathIsMountPoint=/rag
+ConditionPathIsDirectory=/rag/repos/tenants/sandbox/frontend/node_modules
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+UMask=0002
+WorkingDirectory=/rag/repos/tenants/sandbox/frontend
+Environment=VITE_API_TARGET=http://127.0.0.1:24080
+ExecStart=/rag/repos/tenants/sandbox/frontend/node_modules/.bin/vite --host 127.0.0.1 --port 5300 --strictPort --base /ragstack/sandbox/ui/
+KillMode=mixed
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/rag/data/tenants/sandbox/logs/ui-sandbox.log
+StandardError=append:/rag/data/tenants/sandbox/logs/ui-sandbox.log

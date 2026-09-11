@@ -61,6 +61,78 @@ from personas import P2_COLLECTION_PREFIX, PersonaFacts, assert_persona_precondi
 CREDENTIAL_SKIP = "RAGSTACK_CREDENTIAL_SKIP:"
 
 
+# --------------------------------------------------------------------------- #
+# Two suites in one directory: the tenant API's, and the control plane's
+# --------------------------------------------------------------------------- #
+#: ``conformance/ctl`` tests a DIFFERENT server (``ragstack-ctl serve``) with
+#: different credentials, and its ``ctl_url`` fixture raises ``UsageError`` when
+#: ``RAGSTACK_CTL_URL`` is unset — deliberately, because the conventional bind on
+#: the deployment host is the LIVE control plane and a default there would be the
+#: #363/#432 class of bug all over again.
+#:
+#: But ``pytest conformance/`` — what ``test-conformance-python``,
+#: ``test-conformance-go`` and ``test-conformance-keyed`` run — walks into that
+#: directory too, so the day the ctl suite landed, a healthy tenant API produced
+#: ~96 collection ERRORS and a red run. Neither behaviour may be given up: the
+#: hard error stays for anyone who ASKS for the ctl suite, and a tenant run that
+#: merely sweeps the tree skips it, saying so.
+CTL_SUITE = Path(__file__).resolve().parent / "ctl"
+
+_CTL_IGNORED_NOTE = (
+    f"{CTL_SUITE.name}/ not collected: RAGSTACK_CTL_URL is unset, and this "
+    "invocation did not name the control-plane suite. It tests `ragstack-ctl "
+    "serve`, not the tenant API — run `make test-conformance-ctl` (self-boots a "
+    "--fake-drivers daemon) or `pytest conformance/ctl` with RAGSTACK_CTL_URL set."
+)
+
+
+def _names_ctl_suite(config: pytest.Config) -> bool:
+    """Whether the invocation NAMES ``conformance/ctl`` (or something inside
+    it). ``pytest conformance/`` names the parent and does not count — that is
+    the sweep this guard exists for."""
+    invocation_dir = Path(str(config.invocation_params.dir))
+    for raw in config.invocation_params.args:
+        arg = str(raw).split("::", 1)[0]
+        if not arg or arg.startswith("-"):
+            continue
+        try:
+            target = Path(arg)
+            target = target if target.is_absolute() else invocation_dir / target
+            target = target.resolve()
+        except OSError:  # pragma: no cover - unresolvable path, treat as unnamed
+            continue
+        if target == CTL_SUITE or CTL_SUITE in target.parents:
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config):
+    """Keep the control-plane suite out of a tenant-API run.
+
+    Lives in the ROOT conftest on purpose: it is loaded for every invocation
+    under ``conformance/``, before the ctl package's own conftest (and its
+    imports) is reached at all.
+    """
+    path = Path(str(collection_path))
+    if path != CTL_SUITE and CTL_SUITE not in path.parents:
+        return None
+    if os.environ.get("RAGSTACK_CTL_URL"):
+        return None  # pointed at a control plane: collect it
+    if _names_ctl_suite(config):
+        return None  # asked for explicitly: let the UsageError fire, loudly
+    config.stash[_ctl_ignored] = True
+    return True
+
+
+_ctl_ignored = pytest.StashKey[bool]()
+
+
+def pytest_report_collectionfinish(config: pytest.Config) -> list[str]:
+    """Say so — a suite that silently vanishes is how a run reports green while
+    proving nothing (#88/#405)."""
+    return [_CTL_IGNORED_NOTE] if config.stash.get(_ctl_ignored, False) else []
+
+
 def skip_no_credential(reason: str) -> NoReturn:
     """Skip because the principal this assertion needs is absent or too weak.
 

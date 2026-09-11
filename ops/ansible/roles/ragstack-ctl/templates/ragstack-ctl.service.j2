@@ -1,0 +1,23 @@
+# {{ ansible_managed }} — user unit for the {{ ctl_user }} manager, loaded via
+# SYSTEMD_UNIT_PATH={{ rag_root }}/config/ctl/units (root drop-in, coconut-host role).
+[Unit]
+Description=ragstack-ctl tenant control plane ({{ ctl_version | default('unversioned', true) }})
+Documentation=file:{{ rag_root }}/repos/ragstack.git
+ConditionPathIsMountPoint={{ rag_root }}
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile={{ rag_root }}/config/ctl/ctl.env
+EnvironmentFile=-{{ rag_root }}/config/ctl/ctl-secrets.env
+Environment=HOME={{ rag_root }}/data/ctl/home
+WorkingDirectory={{ rag_root }}/data/ctl
+ExecStart={{ rag_root }}/bin/ragstack-ctl serve
+Restart=always
+RestartSec=5s
+UMask=0002
+StandardOutput=append:{{ rag_root }}/data/ctl/ctl.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

@@ -2581,6 +2581,34 @@ paths:
         "403":
           description: Authenticated but insufficient role (admin required)
 
+  /v1/version:
+    get:
+      operationId: versionInfo
+      summary: Which code this process runs (any credential)
+      description: >-
+        Package version, git tag/SHA, process start time and runtime of the
+        server that answered. Any authenticated caller — a credential is
+        required when keys are configured (401 without one) but no role is:
+        these fields are not backend detail. The control plane (ADR-0007)
+        reads this with a tenant's own key to show configured-vs-running on the
+        fleet view. `git_tag`/`git_sha` come from `RAGSTACK_GIT_TAG`/`_SHA`
+        when the supervisor sets them, else from `git describe`/`rev-parse` in
+        the checkout, else null. Python-only in v1 (ADR-0006 decision 4); the
+        Go scaffold does not implement it.
+      tags: [Health]
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      responses:
+        "200":
+          description: Version identity of the answering process
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VersionResponse"
+        "401":
+          description: Missing or invalid credential (API key or bearer identity)
+
   /v1/jobs:
     get:
       operationId: listJobs
@@ -3496,6 +3524,40 @@ components:
               detail: { type: [string, "null"] }
               latency_ms: { type: [number, "null"] }
             additionalProperties: false
+      additionalProperties: false
+
+    VersionResponse:
+      type: object
+      description: >-
+        Which code the answering process runs (any credential; Python-only in
+        v1, ADR-0006 decision 4). `git_tag`/`git_sha` are null when neither the
+        supervisor's `RAGSTACK_GIT_TAG`/`_SHA` nor a git checkout is available.
+      required: [version, git_tag, git_sha, started_at, python, impl]
+      properties:
+        version:
+          type: string
+          description: Package version (importlib.metadata; `0.1.0` when not installed).
+        git_tag:
+          type: [string, "null"]
+          description: >-
+            `RAGSTACK_GIT_TAG` when set (the artifact the supervisor launched),
+            else `git describe --tags --always --dirty` in the checkout, else null.
+        git_sha:
+          type: [string, "null"]
+          description: >-
+            `RAGSTACK_GIT_SHA` when set, else `git rev-parse --short HEAD`, else null.
+        started_at:
+          type: string
+          description: >-
+            RFC 3339 UTC wall-clock time this process started, captured once at
+            import, with a trailing `Z` (e.g. `2026-09-11T04:12:00Z`).
+        python:
+          type: string
+          description: Interpreter version (`platform.python_version()`).
+        impl:
+          type: string
+          enum: [python, go]
+          description: Which implementation answered.
       additionalProperties: false
 
     HealthResponse:

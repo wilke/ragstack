@@ -1,0 +1,7 @@
+# roles/coconut-host/defaults — overridden by group_vars/all.yml; kept so the
+# role is self-describing when imported from tenant-host.yml.
+---
+proxy_unit_install: true
+proxy_switch_now: false
+ctl_manager_restart: true
+sysctl_file: /etc/sysctl.d/90-ragstack.conf

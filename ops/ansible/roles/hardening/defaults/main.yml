@@ -1,0 +1,4 @@
+---
+hardening_enabled: false
+hardening_confirmed: false
+rag_root_owner: p3

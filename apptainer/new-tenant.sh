@@ -109,9 +109,12 @@ done
 # strings are 'issuer:sub'), no uppercase, no leading '-'.
 [[ "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || \
     die "invalid tenant name '$NAME' — must match ^[a-z][a-z0-9-]{0,31}\$"
+# Keep in sync with go/internal/ctl/paths.Reserved (the Go parity test reads
+# this arm). admin/services/health/ragstack/api/ui are gateway routes; gowe,
+# vaxpipe, grafana, sfr and ctl are neighbours on the same host.
 case "$NAME" in
-    qdrant|elasticsearch|neo4j|postgres|redis|embedding|crossencoder|faiss|tenants|manifest|default|public)
-        die "tenant name '$NAME' is reserved (collides with a shared instance or built-in)" ;;
+    qdrant|elasticsearch|neo4j|postgres|redis|embedding|crossencoder|faiss|tenants|manifest|default|public|admin|services|health|ragstack|api|ui|gowe|vaxpipe|grafana|sfr|ctl)
+        die "tenant name '$NAME' is reserved (collides with a shared instance, a gateway route or a built-in)" ;;
 esac
 
 # --------------------------------------------------------------------------
@@ -126,6 +129,31 @@ esac
 PORT_BASE="${TENANT_PORT_BASE:-24000}"
 PORT_STRIDE="${TENANT_PORT_STRIDE:-20}"
 MANIFEST="$DATA/tenants/manifest.tsv"
+
+# Once ragstack-ctl owns the fleet the manifest is a PROJECTION of its
+# registry: a row appended here would be overwritten by the next projection
+# and the block it named could be re-allocated. A real run is therefore
+# refused outright.
+#
+# A --dry-run is NOT, and that is deliberate. --dry-run writes nothing at all,
+# and `ragstack-ctl tenant create` does not exist yet (it lands in PR-D), so
+# refusing it left an operator on an adopt-managed host with no way to even
+# SEE what a tenant would look like — for every invocation of this script,
+# including the ones that were only ever going to print. It prints a warning
+# instead: the plan it shows is a projection of a manifest this script no
+# longer owns, so the ports in it are a guess, not an allocation.
+if [[ -f "$DATA/tenants/registry.json" ]]; then
+    if (( DRY_RUN )); then
+        echo "WARNING: $DATA/tenants/registry.json exists — this host is managed by" >&2
+        echo "WARNING: ragstack-ctl, and manifest.tsv is a PROJECTION of its registry." >&2
+        echo "WARNING: The ports below are derived from that projection, NOT allocated:" >&2
+        echo "WARNING: the registry's allocator may hand this block to someone else." >&2
+        echo "WARNING: Provision with 'ragstack-ctl tenant create' (PR-D); until then," >&2
+        echo "WARNING: adopt-managed hosts must not provision by script." >&2
+    else
+        die "tenant registry $DATA/tenants/registry.json exists — this host is managed by ragstack-ctl; use 'ragstack-ctl tenant create' (PR-D) — until then, adopt-managed hosts must not provision by script"
+    fi
+fi
 
 (( PORT_BASE >= 10000 )) || die "TENANT_PORT_BASE=$PORT_BASE too low — must be >= 10000 to clear host services"
 (( PORT_STRIDE >= 6 )) || die "TENANT_PORT_STRIDE=$PORT_STRIDE too small — need at least 6 ports per tenant"

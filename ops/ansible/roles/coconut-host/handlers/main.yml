@@ -1,0 +1,21 @@
+# Handlers run in the order listed here (not notification order).
+---
+- name: systemd daemon-reload
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: apply sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+
+- name: restart ctl user manager
+  # Only PID 1 re-reads the user@<uid> drop-in (SYSTEMD_UNIT_PATH is process
+  # environment), and new supplementary groups reach the manager only on a
+  # fresh start. With linger and no interactive sessions this is safe; login
+  # sessions live in session scopes, not under user@.service.
+  ansible.builtin.systemd_service:
+    name: "user@{{ ctl_uid }}.service"
+    state: restarted
+  when:
+    - ctl_manager_restart | bool
+    - user_manager_active.rc | default(1) == 0

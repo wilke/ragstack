@@ -1,0 +1,254 @@
+{
+  "schema_version": 1,
+  "description": "BV-BRC signed-token verifier replay vectors. Signed with the TEST-ONLY key in test-signing-key.pem; public_key.json is what the key server at signing_subject_url answers. Regenerate with python/scripts/gen_bvbrc_vectors.py.",
+  "signing_subject_url": "https://user.patricbrc.org/public_key",
+  "allowlist": [
+    "https://user.patricbrc.org/public_key",
+    "https://user.bv-brc.org/public_key",
+    "https://user.alpha.patricbrc.org/public_key",
+    "https://user.beta.patricbrc.org/public_key"
+  ],
+  "now": 1757548800,
+  "vectors": [
+    {
+      "name": "valid",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313",
+      "expect": {
+        "ok": true,
+        "subject": "alice@patricbrc.org",
+        "token_id": "11111111-2222-3333-4444-555555555555",
+        "expires_at": 4102444800
+      }
+    },
+    {
+      "name": "valid_other_allowlisted_subject",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.bv-brc.org/public_key|sig=8280a1c9b9a3d481412a6aaed6225706ad9ca3e61491b30a01f1d513d6c9c59c8f03a4ddcee7e750687d714e19c7a9a3e1f70a0d548336f814f429f3b35b635d82f73191e2feabb1f5bb08b0a5d26a3332dd50c4eba797c1c1430f0f9b2f1286f8a7a203edb6ee13c6f91bd119d9a3c5191125d0b4e601c96a64d81b160aeaed",
+      "expect": {
+        "ok": true,
+        "subject": "alice@patricbrc.org",
+        "token_id": "11111111-2222-3333-4444-555555555555",
+        "expires_at": 4102444800
+      }
+    },
+    {
+      "name": "expired",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=1700000000|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=1726a62c2eed4ada07e97e8cbbc78ff11c4c721bd8d1e518a06bc90ce053a2ff27fbd62bdfb8c80bba52818bff415f6e5670bcfdd0559102849f59185320b1f0d1ef8aba7fc7d677a8b9022cd9716fc3681c9dedc9d2015f3ec3dd62df23518a34c2abcc699f50fbf67eef6df16d9a1963193d92f63d6b46e5973e2453ba7469",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "expired"
+      }
+    },
+    {
+      "name": "expires_exactly_now_is_expired",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=1757548800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=70a3c69827a6200ab4e2bf24b7418734236504a9b8f29aba31be19372ee8b18a405bac481eb27d393bd1bbd9d10833feb51509cc8e513896b88eac7e2bbff8527021e5c765ef59449356fa2aacb65a8c181db55a1c478757db0061fb7d17cdd03c4b587d17035e74ce70e9681ea427b731bef65c15652100be12f079bfc70384",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "expired"
+      }
+    },
+    {
+      "name": "expires_one_second_from_now_is_valid",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=1757548801|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=16590721da929459d22c2b45dcee726c668db0d84f7e2fcf69683c1f9111adaaaf25d0970efcc3f93517e46af1e42edd2543ae7949bf6c090846dedc192ce61da224c0a1b63606745748bbf11cb20c1f1591b36121cb7b6e78b7a4ae9cf7d74a9f2451e7124d8ca0b19c562209f173c71b0c2194f327c50a67b92a5b8d34865a",
+      "expect": {
+        "ok": true,
+        "subject": "alice@patricbrc.org",
+        "token_id": "11111111-2222-3333-4444-555555555555",
+        "expires_at": 1757548801
+      }
+    },
+    {
+      "name": "now_override_after_expiry",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313",
+      "now": 4102444801,
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "expired"
+      }
+    },
+    {
+      "name": "no_expiry",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=41cac9ecbd974dce48a038bab91ec47e5c4fe46521dfed4c4df30d6ad67a4f4ec34c67c4ed9cf22718eae4840185f599fe37b7b0643dba08779092c3f0e8823dc80328d82c2cf26b5e4a3c089a8c1bcc3e5ce9ed9fc310476949043c9c4daf9d8b9ab977272d5d6a4725149e75d016ce13a97307573d570ad8b30ec302526201",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "no expiry"
+      }
+    },
+    {
+      "name": "non_numeric_expiry",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=never|SigningSubject=https://user.patricbrc.org/public_key|sig=1c389140edeab4e30c5474ea5a4140f07b21562aec4826f78a6dcbecf087ce650807f389812649052da1c1f52eebf5292342765da28d5fb97ebdbe6543711375c7aca624e1d372fb319f87a640d79baa5f63f9210bbe6e18c0a74d1a4d2646477a65e6217dabeb935270cc8e12da5ffb071ebe32dd396a91dfdad99c1cfb0fd2",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "not a number"
+      }
+    },
+    {
+      "name": "tampered_un_after_signing",
+      "token": "un=eve@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "does not verify"
+      }
+    },
+    {
+      "name": "signed_by_another_key",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=6466e8c4de0e015621cfdb27de1721426abf72ea027c5c535c29757427c3d4290e472f3e9bdadf9853a5fb2214238b49a4d7edce31b3fe8cf1c0a1a69239f1e31c62b21de34a6a887bc995d548ccd482cd5a57d9634e01c9e3b6ddc3420483dd1fcd56ceb357762ffb3304d892cc5584692aee25f9f091498c744ca31993d22d",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "does not verify"
+      }
+    },
+    {
+      "name": "garbage_hex_signature",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=zz-not-hex",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "not hex"
+      }
+    },
+    {
+      "name": "empty_signature",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "empty signature"
+      }
+    },
+    {
+      "name": "no_signature_separator",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "no signature"
+      }
+    },
+    {
+      "name": "empty_payload",
+      "token": "|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "no signature"
+      }
+    },
+    {
+      "name": "signing_subject_not_in_allowlist",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://evil.example.org/public_key|sig=2d97eb51ef2b4c2492ef45d871288770cc3f1aae80b8c0434d29f22768c5fe566ddacc33b46c5d606b25ee96484980bfa34e451019c91478dadc743a7d664fd39b23c6bfb3dc32f0ef8952694a2238e2acd90317c3192cd88dce2359cf0015628c1964048299091f61bad3a13fdc0ab8898452f78dec086f6d0d71afeba090de",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "not an allowed issuer"
+      }
+    },
+    {
+      "name": "allowlist_override_excludes_subject",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313",
+      "allowlist": [
+        "https://user.bv-brc.org/public_key"
+      ],
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "not an allowed issuer"
+      }
+    },
+    {
+      "name": "missing_signing_subject",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|sig=522a67a657edc8f024259aa60a942315209e8260c85dc3fd11eb6fc9bcef891945c4de970428a36c202d83f484588fc4f32a6777c943c6b6729bb420167879966d91763d0ccf4fff42525e9824056c28f8fcf66c797773dd45080c2df117be9f82ba46e3ec22d00600d2c61bb6bed0e5c9d7b75a766623acac79e74455531d72",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "not an allowed issuer"
+      }
+    },
+    {
+      "name": "fields_after_sig_are_ignored",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=52c292cfbe500eba0aac523b46baa0e472e02909e78495739257d56a17cff2c34fb5fda0948c111a43ff60f1a26590663b1a41bb3a1f8a1517cd7e852886963e1b079888d60ba0d3c1bcfee53cad28d72c3b772b751f36b142bf79496ba7416f9ed35892085dac14aa3ee7fc6e7e42737d93d8deabfec4df1a1d4e9e187fc313|un=eve@patricbrc.org",
+      "expect": {
+        "ok": true,
+        "subject": "alice@patricbrc.org",
+        "token_id": "11111111-2222-3333-4444-555555555555",
+        "expires_at": 4102444800
+      }
+    },
+    {
+      "name": "duplicate_field_first_wins",
+      "token": "un=alice@patricbrc.org|tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|client_id=alice@patricbrc.org|token_type=Bearer|realm=patricbrc.org|un=eve@patricbrc.org|SigningSubject=https://user.patricbrc.org/public_key|sig=29d3cd6cce26ba5185e854bba9ceee4b921551db6645410e071522a779ed711198b0af6f33922663352428ccfe428639d6ded1f2fec86f87530dce150451f132c3022f5e95dfd4de6bed8330f024491f47d5e8349cf4a6607a61ce7a020c547994e58fc5f83ceaa1048643b522e670668a63558683298884eddb87e804336c21",
+      "expect": {
+        "ok": true,
+        "subject": "alice@patricbrc.org",
+        "token_id": "11111111-2222-3333-4444-555555555555",
+        "expires_at": 4102444800
+      }
+    },
+    {
+      "name": "verified_but_no_un",
+      "token": "tokenid=11111111-2222-3333-4444-555555555555|expiry=4102444800|SigningSubject=https://user.patricbrc.org/public_key|sig=26082b3c9c211fd2ca0f5c03a3be9bd2e9ad99e01297d4b9f813b091d6b4a878dac92949f95696832ab488301c6d6431bf3347d433553ab4aa67dd8d19ac54bf85eec7116f76df47d7a14dc4306cde5afad2a270275c003e362a1b016fd5f9970bfeabdbd23b85ccb08c7648fdd73ae3f600037fb84aed637ca51a8e13abcbbb",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "no un="
+      }
+    },
+    {
+      "name": "verified_but_no_tokenid",
+      "token": "un=alice@patricbrc.org|expiry=4102444800|SigningSubject=https://user.patricbrc.org/public_key|sig=993594e011cb61030949838c0e6b6fa39f4e16b5dae781da0f01ec467e69aef9ddd03b7fc068b9c873200b0a6130ea5e4892c01f44eaf2e37f211db5eef702ee9af4acb1d02671b358e82bf5a0c617b8c0ed91166c604b846f05e3eccc34044cc2ae146a4bab2ad4caf58449a2f3de0d8d73e73bb9b24292c2bad6c046411db7",
+      "expect": {
+        "ok": false,
+        "error_kind": "invalid",
+        "reason_substring": "no tokenid"
+      }
+    }
+  ],
+  "key_server_variants": [
+    {
+      "name": "json_pubkey",
+      "body": "{\"pubkey\": \"-----BEGIN PUBLIC KEY-----\\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\\nBMCN6FuANuAv4q2hQQIDAQAB\\n-----END PUBLIC KEY-----\\n\"}",
+      "expect_parse_ok": true
+    },
+    {
+      "name": "json_pubkey_escaped_newlines",
+      "body": "{\"pubkey\": \"-----BEGIN PUBLIC KEY-----\\\\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\\\\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\\\\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\\\\nBMCN6FuANuAv4q2hQQIDAQAB\\\\n-----END PUBLIC KEY-----\\\\n\"}",
+      "expect_parse_ok": true
+    },
+    {
+      "name": "json_public_key_field",
+      "body": "{\"public_key\": \"-----BEGIN PUBLIC KEY-----\\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\\nBMCN6FuANuAv4q2hQQIDAQAB\\n-----END PUBLIC KEY-----\\n\"}",
+      "expect_parse_ok": true
+    },
+    {
+      "name": "raw_pem",
+      "body": "-----BEGIN PUBLIC KEY-----\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\nBMCN6FuANuAv4q2hQQIDAQAB\n-----END PUBLIC KEY-----\n",
+      "expect_parse_ok": true
+    },
+    {
+      "name": "raw_pem_escaped_newlines",
+      "body": "-----BEGIN PUBLIC KEY-----\\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\\nBMCN6FuANuAv4q2hQQIDAQAB\\n-----END PUBLIC KEY-----\\n",
+      "expect_parse_ok": true
+    },
+    {
+      "name": "json_without_pubkey",
+      "body": "{\"key\": \"-----BEGIN PUBLIC KEY-----\\nMIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC9KV8ejHTK7wDUzCXh40e9wtnn\\nqE8KDaPEKwCVYZ2WXD7VIq+wTeZ33xagVEoWSOIu8zffRIFIybw2tK9XVUcxaZYR\\nzaIKkxh+4HvjMP4RWsI0CE4eB1hBnO/tXGOQJxiNRsUQikEq7kQG2hAjI7FnPNGZ\\nBMCN6FuANuAv4q2hQQIDAQAB\\n-----END PUBLIC KEY-----\\n\"}",
+      "expect_parse_ok": false
+    },
+    {
+      "name": "json_empty_pubkey",
+      "body": "{\"pubkey\": \"\"}",
+      "expect_parse_ok": false
+    },
+    {
+      "name": "not_a_key",
+      "body": "hello, not a PEM",
+      "expect_parse_ok": false
+    }
+  ]
+}

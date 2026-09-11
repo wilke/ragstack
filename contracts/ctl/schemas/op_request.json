@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "op_request.json",
+  "title": "CtlOpRequest",
+  "description": "The body of EVERY mutating call (`POST /v1/tenants/{name}/ops/{verb}`, `POST /v1/gateway/apply`, `POST /v1/jobs/{id}/{resume|continue|cancel}`, `PUT /v1/settings`) — `POST /v1/tenants` uses the same envelope with typed args (`create_request.json`).\n\n`dry_run: true` → 200 `plan.json`, nothing is locked or written. `dry_run: false` → 202 `job.json`, or one of the 409/428 refusals. `idempotency_key` is chosen by the client and PERSISTED with `(principal, op, tenant, normalized args, plan digest)`: a retry with the same key and the same request returns the ORIGINAL job (202, same `id`); the same key with a different request is 409 `duplicate`. `confirm` must equal the plan's `confirm_value` when the plan said `requires_confirm` (428 `confirm_required` otherwise). `ctl_api_key` is how a BROWSER authorizes a mutation: a session authenticates reads only, so the UI prompts for the key per request and sends it here, never storing it; when the request already carries `X-API-Key`, `ctl_api_key` may be omitted and, if present, must be the same key (else 400 `both_credentials`). `args` is the verb's typed argument object (documented per verb in `openapi.yaml`'s `x-ctl-op-args`); `{}` for verbs without arguments.",
+  "type": "object",
+  "required": ["dry_run", "idempotency_key", "args"],
+  "properties": {
+    "dry_run": { "type": "boolean" },
+    "idempotency_key": {
+      "description": "Client-generated, unique per intended mutation — a UUID or ULID is the expected shape.",
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]{8,128}$"
+    },
+    "confirm": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "ctl_api_key": { "type": "string", "minLength": 16, "maxLength": 256 },
+    "force_with_doctor_diff": {
+      "description": "Quote the `doctor.hash` of a YELLOW plan to proceed past its warnings — the CLI's `--force-with-doctor-diff HASH`. Never bypasses a red status, authorization, containment, ownership or fencing.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "args": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "session_response.json",
+  "title": "CtlSessionResponse",
+  "description": "The result of `POST /v1/session`: a verified credential exchanged for an opaque, server-side, subject-bound session (32 random bytes, hex) that lives 8 hours and is presented as `Authorization: Session <session_id>`. A session authenticates READS ONLY — every mutation must re-present a ctl API key in its body (`ctl_api_key`), because the browser keeps the session in `sessionStorage` and must never keep a key. `reads_only` is a constant so a client that ignores the docs still sees it.",
+  "type": "object",
+  "required": ["session_id", "principal", "role", "expires_at", "reads_only"],
+  "properties": {
+    "session_id": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "principal": { "type": "string", "minLength": 1 },
+    "role": { "type": "string", "enum": ["viewer", "operator"] },
+    "expires_at": { "description": "RFC 3339.", "type": "string" },
+    "reads_only": { "type": "boolean", "const": true }
+  },
+  "additionalProperties": false
+}

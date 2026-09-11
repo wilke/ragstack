@@ -1,0 +1,506 @@
+# roles/ragstack-ctl — wilke items (plan v3 "wilke items"): ctl dirs, node
+# tarball, bare mirror, ragops group pass, binary + env + user unit, doctor.
+# Runs as {{ operator_user }}; ctl-owned files use become_user {{ ctl_user }}
+# (sudoers `({{ ctl_user }}) NOPASSWD: ALL`; requiretty still applies — README).
+# Tag `wilke` marks the subset that needs no become at all.
+---
+- name: Assert we run as {{ operator_user }}
+  ansible.builtin.assert:
+    that: ansible_facts.user_id == operator_user
+    fail_msg: "tag ctl runs as {{ operator_user }} (no -K); current user is {{ ansible_facts.user_id }}"
+
+- name: Group {{ ragops_group }} exists (root tag ran)
+  ansible.builtin.getent:
+    database: group
+    key: "{{ ragops_group }}"
+    fail_key: false
+
+- name: Fail unless {{ ragops_group }} exists
+  ansible.builtin.assert:
+    that: ansible_facts.getent_group[ragops_group] is not none
+    fail_msg: "group {{ ragops_group }} missing — run `--tags root -K` first"
+  when: not ansible_check_mode
+
+- name: Check mode without {{ ragops_group }} — nothing more can be previewed
+  ansible.builtin.debug:
+    msg: "group {{ ragops_group }} does not exist yet: run `--tags root -K` (check first), then re-run this preview"
+  when: ansible_check_mode and ansible_facts.getent_group[ragops_group] is none
+
+- name: End the preview for this host until the root tag has run
+  ansible.builtin.meta: end_host
+  when: ansible_check_mode and ansible_facts.getent_group[ragops_group] is none
+
+- name: Supplementary groups of the current session
+  ansible.builtin.command: id -Gn
+  register: session_groups
+  changed_when: false
+  check_mode: false
+
+- name: Fail unless the session has {{ ragops_group }} (set at login)
+  ansible.builtin.assert:
+    that: ragops_group in session_groups.stdout.split()
+    fail_msg: "{{ operator_user }}'s session lacks {{ ragops_group }} — log out and back in after `--tags root` (supplementary groups are set at login), then re-run"
+  when: not ansible_check_mode
+
+- name: Session group note (check mode)
+  ansible.builtin.debug:
+    msg: "{{ operator_user }}'s session lacks {{ ragops_group }} — a real run needs a fresh login first"
+  when: ansible_check_mode and ragops_group not in session_groups.stdout.split()
+
+- name: Environment for `systemctl --user` as {{ ctl_user }}
+  ansible.builtin.set_fact:
+    ctl_user_env:
+      XDG_RUNTIME_DIR: "/run/user/{{ ctl_uid }}"
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ctl_uid }}/bus"
+
+# ---- 1. ctl directories (svcbvbrc:ragops) ------------------------------------
+- name: "{{ rag_root }}/data/ctl (2770) and subdirs"
+  ansible.builtin.file:
+    path: "{{ rag_root }}/data/ctl/{{ item }}"
+    state: directory
+    owner: "{{ ctl_user }}"
+    group: "{{ ragops_group }}"
+    mode: "2770"
+  loop: ["", "locks", "jobs", "gateway", "artifacts", "ui", "home", "apptainer", "apptainer/cache", "apptainer/config"]
+  loop_control:
+    label: "{{ rag_root }}/data/ctl/{{ item }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  tags: [ctl]
+
+- name: "{{ rag_root }}/config/ctl (2750) and subdirs"
+  ansible.builtin.file:
+    path: "{{ rag_root }}/config/ctl/{{ item }}"
+    state: directory
+    owner: "{{ ctl_user }}"
+    group: "{{ ragops_group }}"
+    mode: "2750"
+  loop: ["", "units", "templates"]
+  loop_control:
+    label: "{{ rag_root }}/config/ctl/{{ item }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  tags: [ctl]
+
+- name: backup-recipients.txt exists (empty until age recipients are configured)
+  ansible.builtin.copy:
+    content: ""
+    dest: "{{ rag_root }}/config/ctl/backup-recipients.txt"
+    force: false
+    owner: "{{ ctl_user }}"
+    group: "{{ ragops_group }}"
+    mode: "0640"
+  become: true
+  become_user: "{{ ctl_user }}"
+  tags: [ctl]
+
+# ---- 2. node toolchain (wilke:ragops) ----------------------------------------
+- name: Node toolchain
+  when: node_install | bool
+  tags: [wilke]
+  block:
+    - name: "{{ rag_root }}/tools tree"
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        group: "{{ ragops_group }}"
+        mode: "2775"
+      loop:
+        - "{{ rag_root }}/tools"
+        - "{{ rag_root }}/tools/node"
+        - "{{ rag_root }}/tools/node/{{ node_version }}"
+
+    - name: Is node {{ node_version }} already unpacked?
+      ansible.builtin.stat:
+        path: "{{ rag_root }}/tools/node/{{ node_version }}/bin/node"
+      register: node_bin
+
+    - name: Checksum is a real sha256 (not the placeholder)
+      ansible.builtin.set_fact:
+        node_checksum_ok: "{{ node_tarball_sha256 is match('^[0-9a-f]{64}$') }}"
+
+    - name: Refuse to download without a real checksum
+      ansible.builtin.assert:
+        that: node_checksum_ok | bool
+        fail_msg: "node_tarball_sha256 is not a sha256 — take it from https://nodejs.org/dist/v{{ node_version }}/SHASUMS256.txt (group_vars/all.yml)"
+      when: not node_bin.stat.exists and not ansible_check_mode
+
+    - name: Node download would be refused (check mode)
+      ansible.builtin.debug:
+        msg: "node_tarball_sha256 is not a sha256 — a real run stops here until group_vars/all.yml has the value from SHASUMS256.txt"
+      when: not node_bin.stat.exists and ansible_check_mode and not (node_checksum_ok | bool)
+
+    - name: Node would be downloaded and unpacked (check mode)
+      ansible.builtin.debug:
+        msg: "would fetch {{ node_tarball_url }} (sha256 {{ node_tarball_sha256[:12] }}…) into {{ rag_root }}/tools/node/{{ node_version }}"
+      when: not node_bin.stat.exists and ansible_check_mode and (node_checksum_ok | bool)
+
+    # get_url/unarchive cannot preview into a directory that only exists after
+    # a real run, so both are real-run only; the debug above stands in.
+    - name: Download node tarball (checksum verified)
+      ansible.builtin.get_url:
+        url: "{{ node_tarball_url }}"
+        dest: "{{ rag_root }}/tools/node/{{ node_tarball_url | basename }}"
+        checksum: "sha256:{{ node_tarball_sha256 }}"
+        mode: "0644"
+      when: not node_bin.stat.exists and (node_checksum_ok | bool) and not ansible_check_mode
+
+    - name: Unpack into {{ rag_root }}/tools/node/{{ node_version }}
+      ansible.builtin.unarchive:
+        src: "{{ rag_root }}/tools/node/{{ node_tarball_url | basename }}"
+        remote_src: true
+        dest: "{{ rag_root }}/tools/node/{{ node_version }}"
+        extra_opts: ["--strip-components=1"]
+        creates: "{{ rag_root }}/tools/node/{{ node_version }}/bin/node"
+      when: (node_checksum_ok | bool) and not ansible_check_mode
+
+    - name: current -> {{ node_version }}
+      ansible.builtin.file:
+        src: "{{ node_version }}"
+        dest: "{{ rag_root }}/tools/node/current"
+        state: link
+      when: node_bin.stat.exists or not ansible_check_mode   # parent missing in a preview
+
+# ---- 3. bare mirror (wilke:ragops 2775, core.sharedRepository=group) -----------
+- name: Bare mirror
+  tags: [wilke]
+  block:
+    - name: Is the mirror present?
+      ansible.builtin.stat:
+        path: "{{ rag_root }}/repos/ragstack.git/HEAD"
+      register: mirror_head
+
+    - name: git clone --bare --mirror {{ ctl_mirror_src }}
+      ansible.builtin.command:
+        cmd: git clone --bare --mirror {{ ctl_mirror_src | quote }} {{ rag_root }}/repos/ragstack.git
+        creates: "{{ rag_root }}/repos/ragstack.git/HEAD"
+      when: not mirror_head.stat.exists
+
+    - name: core.sharedRepository (current)
+      ansible.builtin.command: git -C {{ rag_root }}/repos/ragstack.git config --get core.sharedRepository
+      register: mirror_shared
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: mirror_head.stat.exists or not ansible_check_mode
+
+    - name: core.sharedRepository=group
+      ansible.builtin.command: git -C {{ rag_root }}/repos/ragstack.git config core.sharedRepository group
+      when: (mirror_shared.stdout | default('')) != 'group'
+      changed_when: true
+
+# ---- 4. ragops group pass (chgrp + g+rwX + setgid dirs; secrets.env 0640) -----
+- name: Group pass targets
+  ansible.builtin.set_fact:
+    ragops_group_pass:
+      - { path: "{{ rag_root }}/data/tenants", owner: "{{ operator_user }}" }
+      - { path: "{{ rag_root }}/repos/tenants", owner: "{{ operator_user }}" }
+      - { path: "{{ rag_root }}/backups", owner: "{{ operator_user }}" }
+      - { path: "{{ rag_root }}/repos/ragstack.git", owner: "{{ operator_user }}" }
+      - { path: "{{ rag_root }}/tools", owner: "{{ operator_user }}" }
+      - { path: "{{ rag_root }}/data/ctl", owner: "{{ ctl_user }}" }
+      - { path: "{{ rag_root }}/config/ctl", owner: "{{ ctl_user }}" }
+  tags: [wilke, ctl]
+
+- name: Group pass — existing targets
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop: "{{ ragops_group_pass }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: group_pass_stat
+  tags: [wilke, ctl]
+
+- name: Group pass — required paths present
+  ansible.builtin.assert:
+    that: item.stat.exists or not (ctl_group_pass_require_paths | bool) or ansible_check_mode
+    fail_msg: "{{ item.item.path }} missing (set ctl_group_pass_require_paths=false on a fresh host)"
+    quiet: true
+  loop: "{{ group_pass_stat.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  tags: [wilke, ctl]
+
+- name: Group pass — pre-check (first entry not {{ ragops_group }} / dir not g+rwxs / file not g+rw)
+  ansible.builtin.command: >-
+    find {{ item.item.path | quote }}
+    \( \( ! -group {{ ragops_group }} \)
+    -o \( -type d ! -perm -g=rwxs \)
+    -o \( -type f ! -name '*secrets*.env' ! -perm -g=rw \) \)
+    -print -quit
+  loop: "{{ group_pass_stat.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  when: item.stat.exists
+  become: "{{ item.item.owner != ansible_facts.user_id }}"
+  become_user: "{{ item.item.owner }}"
+  register: group_pass_check
+  changed_when: false
+  check_mode: false
+  tags: [wilke, ctl]
+
+- name: Group pass — would change (check mode)
+  ansible.builtin.debug:
+    msg: "{{ item.item.item.path }}: chgrp -Rh {{ ragops_group }} + chmod -R g+rwX + setgid dirs (first offender: {{ item.stdout }})"
+  loop: "{{ group_pass_check.results }}"
+  loop_control:
+    label: "{{ item.item.item.path }}"
+  when:
+    - ansible_check_mode
+    - item.stdout | default('') | length > 0
+  tags: [wilke, ctl]
+
+- name: Group pass — chgrp -Rh {{ ragops_group }}, chmod -R g+rwX, setgid on dirs
+  ansible.builtin.shell: |
+    set -e
+    p={{ item.item.item.path | quote }}
+    chgrp -Rh {{ ragops_group }} "$p"
+    chmod -R g+rwX "$p"
+    find "$p" -type d ! -perm -g=s -exec chmod g+s {} +
+  loop: "{{ group_pass_check.results }}"
+  loop_control:
+    label: "{{ item.item.item.path }}"
+  when: item.stdout | default('') | length > 0
+  become: "{{ item.item.item.owner != ansible_facts.user_id }}"
+  become_user: "{{ item.item.item.owner }}"
+  changed_when: true
+  tags: [wilke, ctl]
+
+- name: Group pass — secrets.env files not 0640 (pre-check)
+  ansible.builtin.command: find {{ rag_root }}/data/tenants -type f -name secrets.env ! -perm 0640 -print -quit
+  register: secrets_mode_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [wilke, ctl]
+
+- name: Group pass — secrets.env to 0640
+  ansible.builtin.command: find {{ rag_root }}/data/tenants -type f -name secrets.env ! -perm 0640 -exec chmod 0640 {} +
+  when: secrets_mode_check.stdout | default('') | length > 0
+  changed_when: true
+  tags: [wilke, ctl]
+
+# ---- 5. binary --------------------------------------------------------------
+- name: "Binary install (skipped: ctl_bin_src undefined)"
+  ansible.builtin.debug:
+    msg: "ctl_bin_src not set — binary, unit enable and doctor are skipped (make build-ctl, then -e ctl_bin_src=… -e ctl_version=…)"
+  when: ctl_bin_src is not defined or (ctl_bin_src | length == 0)
+  tags: [ctl]
+
+- name: Binary install
+  when: ctl_bin_src is defined and (ctl_bin_src | length > 0)
+  tags: [ctl]
+  block:
+    - name: ctl_version is set alongside ctl_bin_src
+      ansible.builtin.assert:
+        that: ctl_version | length > 0
+        fail_msg: "ctl_version is required with ctl_bin_src (output of `ragstack-ctl version`)"
+
+    - name: "{{ rag_root }}/bin/ragstack-ctl-{{ ctl_version }} (0755 {{ ctl_bin_owner }}:{{ ragops_group }})"
+      ansible.builtin.copy:
+        src: "{{ ctl_bin_src }}"
+        dest: "{{ rag_root }}/bin/ragstack-ctl-{{ ctl_version }}"
+        owner: "{{ ctl_bin_owner }}"
+        group: "{{ ragops_group }}"
+        mode: "0755"
+      # Installed by the operator ({{ operator_user }}) directly — never as
+      # ctl_user ({{ ctl_user }}/svcbvbrc); no become here (README).
+      register: ctl_binary
+
+    - name: "{{ rag_root }}/bin/ragstack-ctl -> ragstack-ctl-{{ ctl_version }}"
+      ansible.builtin.file:
+        src: "ragstack-ctl-{{ ctl_version }}"
+        dest: "{{ rag_root }}/bin/ragstack-ctl"
+        state: link
+      # Same operator-owned symlink — see note above; no become here.
+
+# ---- 6. ctl.env / ctl-secrets.env / unit --------------------------------------
+# A preview on a host where /rag/config/ctl does not exist yet cannot diff
+# into it (template/copy refuse a missing parent even in check mode), so the
+# rendered content is printed instead and the file tasks are skipped.
+- name: Does {{ rag_root }}/config/ctl/units exist?
+  ansible.builtin.stat:
+    path: "{{ rag_root }}/config/ctl/units"
+  register: ctl_units_dir
+  tags: [ctl]
+
+- name: Files that would be written (check mode, {{ rag_root }}/config/ctl absent)
+  ansible.builtin.debug:
+    msg:
+      - "--- {{ rag_root }}/config/ctl/ctl.env (0640 {{ ctl_user }}:{{ ragops_group }}) ---"
+      - "{{ lookup('template', 'ctl.env.j2') }}"
+      - "--- {{ rag_root }}/config/ctl/units/ragstack-ctl.service (0640) ---"
+      - "{{ lookup('template', 'ragstack-ctl.service.j2') }}"
+      - "--- {{ rag_root }}/config/ctl/ctl-secrets.env (0600, from vault, not shown) ---"
+  when: ansible_check_mode and not ctl_units_dir.stat.exists
+  tags: [ctl]
+
+- name: ctl.env (0640 {{ ctl_user }}:{{ ragops_group }})
+  ansible.builtin.template:
+    src: ctl.env.j2
+    dest: "{{ rag_root }}/config/ctl/ctl.env"
+    owner: "{{ ctl_user }}"
+    group: "{{ ragops_group }}"
+    mode: "0640"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_env
+  when: ctl_units_dir.stat.exists or not ansible_check_mode
+  tags: [ctl]
+
+- name: "ctl-secrets.env (skipped: vault vars not supplied)"
+  ansible.builtin.debug:
+    msg: "ctl_api_keys/ctl_api_key_roles/ctl_admin_subjects undefined — pass -e @vault.yml --ask-vault-pass (see vault.example.yml); ctl-secrets.env left untouched"
+  when: ctl_api_keys is not defined or ctl_api_key_roles is not defined or ctl_admin_subjects is not defined
+  tags: [ctl]
+
+- name: ctl-secrets.env from vault
+  when:
+    - ctl_api_keys is defined and ctl_api_key_roles is defined and ctl_admin_subjects is defined
+    - ctl_units_dir.stat.exists or not ansible_check_mode
+  tags: [ctl]
+  block:
+    - name: Vault values fit the envfile grammar (single-quoted literal, no ')
+      ansible.builtin.assert:
+        that:
+          - "\"'\" not in ctl_api_keys"
+          - "\"'\" not in ctl_api_key_roles"
+          - "\"'\" not in ctl_admin_subjects"
+        fail_msg: "a vault value contains a single quote, which KEY='…' cannot carry"
+        quiet: true
+      no_log: true
+
+    - name: ctl-secrets.env (0600 {{ ctl_user }})
+      ansible.builtin.template:
+        src: ctl-secrets.env.j2
+        dest: "{{ rag_root }}/config/ctl/ctl-secrets.env"
+        owner: "{{ ctl_user }}"
+        group: "{{ ragops_group }}"
+        mode: "0600"
+      become: true
+      become_user: "{{ ctl_user }}"
+      no_log: true
+      register: ctl_secrets
+
+- name: User unit {{ rag_root }}/config/ctl/units/ragstack-ctl.service
+  ansible.builtin.template:
+    src: ragstack-ctl.service.j2
+    dest: "{{ rag_root }}/config/ctl/units/ragstack-ctl.service"
+    owner: "{{ ctl_user }}"
+    group: "{{ ragops_group }}"
+    mode: "0640"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_unit
+  when: ctl_units_dir.stat.exists or not ansible_check_mode
+  tags: [ctl]
+
+# ---- 7. user manager: reexec, unit path check, enable --now -------------------
+- name: Is the binary installed?
+  ansible.builtin.stat:
+    path: "{{ rag_root }}/bin/ragstack-ctl"
+    follow: true
+  register: ctl_bin_installed
+  tags: [ctl]
+
+- name: "{{ ctl_user }} user manager state"
+  ansible.builtin.command: systemctl --user is-system-running
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_manager_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [ctl]
+
+- name: "{{ ctl_user }} user manager is up (linger from --tags root)"
+  ansible.builtin.assert:
+    that: ctl_manager_state.stdout | default('') in ['running', 'degraded']
+    fail_msg: "user@{{ ctl_uid }} not running ({{ ctl_manager_state.stdout | default(ctl_manager_state.stderr | default('')) }}) — run `--tags root -K` (linger + drop-in) first"
+  when: not ansible_check_mode
+  tags: [ctl]
+
+- name: systemctl --user daemon-reexec after unit/env changes
+  # daemon-reexec picks up new unit files; it does NOT refresh the manager's
+  # environment or groups — that needs user@{{ ctl_uid }} restarted (root tag
+  # handler) and, for {{ operator_user }}'s own shell, a full re-login.
+  ansible.builtin.command: systemctl --user daemon-reexec
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  when:
+    - ctl_manager_state.stdout | default('') in ['running', 'degraded']
+    - ctl_unit is changed or ctl_env is changed
+  changed_when: true
+  tags: [ctl]
+
+- name: Unit search path of the {{ ctl_user }} manager
+  ansible.builtin.command: systemctl --user show -p UnitPath --value
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_unit_path
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [ctl]
+
+- name: Root drop-in is effective (SYSTEMD_UNIT_PATH reaches the manager)
+  ansible.builtin.assert:
+    that: (rag_root ~ '/config/ctl/units') in (ctl_unit_path.stdout | default(''))
+    fail_msg: "{{ rag_root }}/config/ctl/units not in the {{ ctl_user }} manager's UnitPath — the user@{{ ctl_uid }} drop-in is not active; run `--tags root -K` (handler restarts user@{{ ctl_uid }}) or reboot"
+  when: not ansible_check_mode and ctl_bin_installed.stat.exists
+  tags: [ctl]
+
+- name: ragstack-ctl.service enabled/active?
+  ansible.builtin.command: systemctl --user is-enabled ragstack-ctl.service
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_service_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: ctl_bin_installed.stat.exists
+  tags: [ctl]
+
+- name: systemctl --user enable --now ragstack-ctl.service
+  ansible.builtin.command: systemctl --user enable --now ragstack-ctl.service
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  when:
+    - ctl_bin_installed.stat.exists
+    - (ctl_service_enabled.stdout | default('')) != 'enabled'
+  changed_when: true
+  tags: [ctl]
+
+- name: systemctl --user restart ragstack-ctl.service (unit, env, secrets or binary changed)
+  ansible.builtin.command: systemctl --user restart ragstack-ctl.service
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  when:
+    - ctl_bin_installed.stat.exists
+    - (ctl_service_enabled.stdout | default('')) == 'enabled'
+    - ctl_unit is changed or ctl_env is changed or (ctl_secrets is defined and ctl_secrets is changed) or (ctl_binary is defined and ctl_binary is changed)
+  changed_when: true
+  tags: [ctl]
+
+- name: Re-login note
+  ansible.builtin.debug:
+    msg: "If {{ ragops_group }} was added this session: {{ operator_user }} needs a fresh login before the ctl sees the group; {{ ctl_user }}'s manager was restarted by the root tag (ctl_manager_restart)."
+  tags: [ctl]
+
+# ---- 8. doctor ---------------------------------------------------------------
+- name: ragstack-ctl doctor --json (fails on red)
+  ansible.builtin.command: "{{ rag_root }}/bin/ragstack-ctl doctor --json"
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: doctor
+  changed_when: false
+  failed_when: "'\"status\": \"red\"' in doctor.stdout"
+  when: ctl_bin_installed.stat.exists and not ansible_check_mode
+  tags: [ctl]

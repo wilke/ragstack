@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bundle_manifest.json",
+  "title": "CtlBundleManifest",
+  "description": "`manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`); a bundle is refused, not written, when no recipient is configured. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
+    "best_effort", "tenant", "artifact", "python_env", "images", "paths_relative_to", "inventory",
+    "stores", "sqlite", "files", "external", "secrets", "units", "registry_row", "migrate_md",
+    "consistent", "verified", "warnings", "sha256sums"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "enum": ["backup", "pre-update", "recovery"] },
+    "bundle_id": { "description": "`<ts>-<kind>`, the directory basename.", "type": "string", "pattern": "^[0-9]{8}T[0-9]{6}Z-(backup|pre-update|recovery)$" },
+    "created_at": { "type": "string" },
+    "created_by": { "type": "string", "minLength": 1 },
+    "ctl_version": { "type": "string", "minLength": 1 },
+    "fenced": { "type": "boolean" },
+    "best_effort": { "type": "boolean" },
+    "tenant": {
+      "type": "object",
+      "required": ["name", "manifest_name", "ports"],
+      "properties": {
+        "name": { "$ref": "registry.json#/$defs/TenantName" },
+        "manifest_name": { "$ref": "registry.json#/$defs/TenantName" },
+        "ports": { "$ref": "registry.json#/$defs/Ports" }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["id", "sha", "tag"],
+      "properties": {
+        "id": { "oneOf": [ { "$ref": "registry.json#/$defs/ArtifactId" }, { "type": "null" } ] },
+        "sha": { "oneOf": [ { "$ref": "registry.json#/$defs/GitSha" }, { "type": "null" } ] },
+        "tag": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "python_env": {
+      "type": "object",
+      "required": ["path_rel", "lockhash"],
+      "properties": {
+        "path_rel": { "$ref": "#/$defs/RelPath" },
+        "lockhash": { "description": "sha256 of the env's `requirements.lock` (or `pip freeze` output when there is none), for a restore to detect an incompatible env.", "$ref": "registry.json#/$defs/Sha256Hex" }
+      },
+      "additionalProperties": false
+    },
+    "images": {
+      "type": "object",
+      "required": ["qdrant", "elasticsearch"],
+      "properties": {
+        "qdrant": { "$ref": "#/$defs/ImageRef" },
+        "elasticsearch": { "$ref": "#/$defs/ImageRef" }
+      },
+      "additionalProperties": false
+    },
+    "paths_relative_to": { "type": "string", "const": "RAG_ROOT" },
+    "inventory": {
+      "description": "What EXISTED at fence time — the explicit list every store section is checked against, so a collection that appeared mid-backup is a `consistent: false`, not a silent gap.",
+      "type": "object",
+      "required": ["collections", "indices", "aliases", "sqlite"],
+      "properties": {
+        "collections": { "type": "array", "items": { "type": "string" } },
+        "indices": { "type": "array", "items": { "type": "string" } },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "sqlite": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "stores": {
+      "type": "object",
+      "required": ["qdrant", "elasticsearch", "neo4j"],
+      "properties": {
+        "qdrant": {
+          "type": "object",
+          "required": ["ownership", "url", "collections"],
+          "properties": {
+            "ownership": { "type": "string", "enum": ["exclusive", "shared", "unknown"] },
+            "url": { "$ref": "registry.json#/$defs/LoopbackUrl" },
+            "collections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "points_before", "points_after", "included", "file", "sha256"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "points_before": { "type": "integer", "minimum": 0 },
+                  "points_after": { "type": "integer", "minimum": 0 },
+                  "included": { "type": "boolean" },
+                  "file": { "oneOf": [ { "$ref": "#/$defs/RelPath" }, { "type": "null" } ] },
+                  "sha256": { "oneOf": [ { "$ref": "registry.json#/$defs/Sha256Hex" }, { "type": "null" } ] }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "elasticsearch": {
+          "type": "object",
+          "required": ["ownership", "repo_type", "repo", "snapshot", "indices", "complete", "files"],
+          "properties": {
+            "ownership": { "type": "string", "enum": ["exclusive", "shared", "unknown"] },
+            "repo_type": { "type": "string", "const": "fs" },
+            "repo": { "description": "The per-bundle repository name, `ctl-<ts>`; null when the store was excluded.", "type": ["string", "null"], "pattern": "^ctl-[0-9]{8}T[0-9]{6}Z$" },
+            "snapshot": { "type": ["string", "null"] },
+            "indices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "docs_before", "docs_after", "included"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "docs_before": { "type": "integer", "minimum": 0 },
+                  "docs_after": { "type": "integer", "minimum": 0 },
+                  "included": { "type": "boolean" }
+                },
+                "additionalProperties": false
+              }
+            },
+            "complete": { "description": "The snapshot reported no failed shards and its `_restore` dry-run from the COPIED repo succeeded.", "type": "boolean" },
+            "files": { "type": "array", "items": { "$ref": "#/$defs/RelPath" } }
+          },
+          "additionalProperties": false
+        },
+        "neo4j": {
+          "type": "object",
+          "required": ["ownership", "included"],
+          "properties": {
+            "ownership": { "type": "string", "const": "external" },
+            "included": { "type": "boolean", "const": false }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "sqlite": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["env_key", "path_rel", "file", "bytes", "sha256", "integrity_check"],
+        "properties": {
+          "env_key": { "description": "The tenant.env key that names this database (e.g. `AUTHZ_DB`, `GRADING_DB`), from the classification table.", "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+          "path_rel": { "$ref": "#/$defs/RelPath" },
+          "file": { "$ref": "#/$defs/RelPath" },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "$ref": "registry.json#/$defs/Sha256Hex" },
+          "integrity_check": { "description": "The single row `PRAGMA integrity_check` returned on the VACUUMed copy; must be `ok` for `verified`.", "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "files": {
+      "description": "Public config and state files copied verbatim (from the backup allowlist).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/FileEntry" }
+    },
+    "external": {
+      "description": "Resources referenced but NOT contained: shared stores, external refs, `neo4j-dev`.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref", "reason"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["store", "file", "service"] },
+          "ref": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "enum": ["shared", "external", "excluded"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["encrypted", "file", "recipients_file", "key_fingerprints"],
+      "properties": {
+        "encrypted": { "type": "boolean", "const": true },
+        "file": { "$ref": "#/$defs/RelPath" },
+        "recipients_file": { "$ref": "#/$defs/RelPath" },
+        "key_fingerprints": { "description": "Fingerprints of the tenant API keys whose values are inside the payload — for reconciling against the revocation ledger at restore.", "type": "array", "items": { "$ref": "registry.json#/$defs/Fingerprint" } }
+      },
+      "additionalProperties": false
+    },
+    "units": { "type": "array", "items": { "$ref": "#/$defs/FileEntry" } },
+    "registry_row": { "$ref": "registry.json#/$defs/Tenant" },
+    "migrate_md": { "description": "Relative path of the generated `MIGRATE.md` runbook.", "$ref": "#/$defs/RelPath" },
+    "consistent": { "description": "Every inventory entry is accounted for and every `_before`/`_after` pair agrees — only possible when fenced.", "type": "boolean" },
+    "verified": { "description": "Set by the isolated restore verification (`restore --as` into a scratch tenant, counts + fixture query) or by `backup verify`.", "type": "boolean" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "sha256sums": { "description": "sha256 of the bundle's `SHA256SUMS` file, which lists every other file.", "$ref": "registry.json#/$defs/Sha256Hex" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "RelPath": {
+      "description": "Relative, no leading `/`, no `..` segment (the extraction code re-checks; this pattern refuses the obvious).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._/-]*$"
+    },
+    "ImageRef": {
+      "type": "object",
+      "required": ["version", "digest"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "FileEntry": {
+      "type": "object",
+      "required": ["file", "path_rel", "bytes", "sha256"],
+      "properties": {
+        "file": { "description": "Location inside the bundle.", "$ref": "#/$defs/RelPath" },
+        "path_rel": { "description": "Where it came from, relative to RAG_ROOT.", "$ref": "#/$defs/RelPath" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "registry.json#/$defs/Sha256Hex" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -77,12 +77,47 @@ def test_shellcheck_clean():
 @pytest.mark.parametrize(
     "bad",
     ["Acme", "a:b", "-acme", "a_b", "acme!", "1acme", "qdrant", "elasticsearch",
-     "postgres", "tenants", "public", "a" * 40],
+     "postgres", "tenants", "public",
+     # gateway routes and host neighbours (ragstack-ctl PR-A; mirrored in
+     # go/internal/ctl/paths.Reserved)
+     "admin", "services", "health", "ragstack", "api", "ui", "gowe", "ctl",
+     "a" * 40],
 )
 def test_invalid_name_rejected(tmp_path, bad):
     proc = run_script([bad, "--dry-run"], tmp_path)
     assert proc.returncode != 0
     assert "ERROR" in proc.stderr
+
+
+def test_registry_present_refuses_real_run_but_warns_on_dry_run(tmp_path):
+    """Once ragstack-ctl's registry.json exists the manifest is a PROJECTION
+    of its registry, so a row appended here would be overwritten and the block
+    it named re-allocated: a real run is refused.
+
+    A --dry-run is not. It writes nothing, and `ragstack-ctl tenant create`
+    does not exist yet (PR-D), so refusing it left an operator on an
+    adopt-managed host unable even to SEE what a tenant would look like. It
+    prints instead, behind a warning that the ports shown are a projection
+    rather than an allocation.
+    """
+    (tmp_path / "tenants").mkdir()
+    (tmp_path / "tenants" / "registry.json").write_text("{}\n")
+
+    proc = run_script(["acme", "--dry-run"], tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "WARNING" in proc.stderr
+    assert "managed by" in proc.stderr
+    assert "PROJECTION" in proc.stderr
+    assert "ragstack-ctl tenant create" in proc.stderr
+    # It is still a dry run: nothing was written, manifest included.
+    assert not (tmp_path / "tenants" / "manifest.tsv").exists()
+    assert "== new-tenant plan: acme ==" in proc.stdout
+
+    proc = run_script(["acme"], tmp_path)
+    assert proc.returncode != 0
+    assert "managed by ragstack-ctl" in proc.stderr
+    assert "must not provision by script" in proc.stderr
+    assert not (tmp_path / "tenants" / "manifest.tsv").exists()
 
 
 def test_missing_name_rejected(tmp_path):

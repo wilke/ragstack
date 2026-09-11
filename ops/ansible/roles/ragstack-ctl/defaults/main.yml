@@ -1,0 +1,26 @@
+---
+ctl_version: ""
+# ctl_bin_owner is defined once, in group_vars/all.yml (defaults to
+# operator_user/wilke — see README).
+ctl_manager_restart: true
+ctl_group_pass_require_paths: true   # tenant-host.yml sets false (fresh host has no tenants)
+ctl_external_store_ports: "6333,6343,9200"
+ctl_port_base: 24000
+ctl_port_stride: 20
+node_install: true
+
+# ctl.env / ctl-secrets.env keys from go/internal/ctl/api/env.go (PR-A
+# reconciliation). ctl_admin_subjects, ctl_api_keys and ctl_api_key_roles have
+# no default here — they are required, deployment-specific values supplied
+# via vault/host_vars (check.sh stubs them for template-render validation).
+# The rest are genuinely optional or have a documented default in env.go, so
+# defaulting them here is correct.
+ctl_viewer_subjects: ""                    # comma or JSON list; empty = no viewer bearer subjects
+ctl_identity_issuer_allowlist: ""          # empty = auth.DefaultSigningSubjects (BV-BRC P3AuthConstants.pm four URLs)
+ctl_api_key_names: ""                      # optional key->label map; empty = fingerprint stands in
+ctl_api_key_principals: ""                 # optional key->"issuer:subject" map; empty = no key is bound to an identity
+ctl_log_level: info                        # debug|info|warn|error
+ctl_log_format: json                       # text|json
+ctl_rate_limit_per_credential: 20          # ratelimit.DefaultPerCredential
+ctl_rate_limit_tarpit_at: 20               # ratelimit.DefaultTarpitAt
+ctl_rate_limit_tarpit_delay: 2s            # ratelimit.DefaultTarpitDelay; capped at ratelimit.MaxTarpitDelay (5s)

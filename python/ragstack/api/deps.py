@@ -7,6 +7,7 @@ fallback keeps unit tests and demo runs functional without infra.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -1540,6 +1541,18 @@ async def lifespan(app: FastAPI):
     from ragstack.user_store import validate_user_store_settings
 
     validate_user_store_settings()
+    # Warm the build-identity cache (`GET /v1/version`, ADR-0007) OFF the event
+    # loop: it shells out to `git` once per process, and the control plane polls
+    # that endpoint right after a restart — exactly when the cache is cold. In a
+    # thread so the bounded subprocesses do not serialise the rest of startup,
+    # and best-effort: version_info() swallows its own failures, but a warm-up
+    # must not be able to keep the API down even if that changes.
+    from ragstack.version import version_info
+
+    try:
+        await asyncio.to_thread(version_info)
+    except Exception:  # pragma: no cover — defensive; version_info never raises
+        log.debug("version cache warm-up failed", exc_info=True)
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()

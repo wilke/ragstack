@@ -1,0 +1,6 @@
+# {{ ansible_managed }} — ops/ansible/roles/coconut-host/templates/sysctl.conf.j2
+# vm.max_map_count: Elasticsearch refuses to start below 262144 (host default 65530).
+# vm.overcommit_memory: silences Redis's background-save warning.
+{% for key, value in sysctl_settings.items() %}
+{{ key }} = {{ value }}
+{% endfor %}

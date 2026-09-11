@@ -1,0 +1,1418 @@
+openapi: "3.1.0"
+info:
+  title: RAGStack Control Plane API
+  description: >-
+    The HTTP surface of `ragstack-ctl`, the tenant control plane (plan v3.1,
+    ADR-0007). It manages the fleet of ragstack tenants on one host — registry,
+    supervision, backups, credentials, gateway generation — and never answers a
+    tenant's own data questions: those stay on each tenant's API.
+
+
+    **Where it listens.** The daemon binds `127.0.0.1:23990` only. The gateway
+    mounts it at `/ragstack/admin/api/` and overwrites `X-Forwarded-Prefix` and
+    `Host` on the way in; the daemon uses that prefix as `servers[0].url` in the
+    schema it serves, so paths in this file are relative to the mount, exactly
+    as in the tenant contract. By decision the mount is internet-reachable for
+    test/dev (production will be internal): the surface that holds every
+    tenant's admin key is public, and the controls in this document are the only
+    boundary. Authentication and authorization never depend on the source
+    address.
+
+
+    **Two credentials, never both.** Either `Authorization: Bearer <bvbrc token>`
+    (a BV-BRC identity, verified against a pinned issuer allowlist, expiry
+    checked before signature) or `X-API-Key: <ctl key>` (a control-plane key
+    bound to `{principal, role, revocation_id}`). A request carrying both is
+    **400 `both_credentials`** — which credential authenticated must never be
+    ambiguous. No credential, a malformed one, an unknown key, a bad signature,
+    an expired token: **401 `auth_required`**. A credential that verifies but
+    whose subject is not on the control plane's principal list: **403
+    `forbidden`** — there is no default role, and this is a distinct case from
+    401 that the conformance suite tests separately. Roles are `viewer` (the
+    summary allowlist) and `operator` (everything). The role is looked up
+    server-side from the principal; nothing in a credential is an input to it.
+
+
+    **Sessions, for reads only.** A browser exchanges its credential once
+    (`POST /v1/session`) for an opaque 32-byte, server-side, subject-bound
+    session (8 h) kept in `sessionStorage` and sent as
+    `Authorization: Session <id>`. A session can read whatever its role can
+    read and can do nothing else.
+
+
+    **Every mutation re-presents a ctl API key.** The body of every mutating
+    call (`op_request.json` / `create_request.json`) has a `ctl_api_key`
+    member. Over a session that member is REQUIRED — it is how a browser
+    authorizes a mutation without ever persisting the key (the UI prompts per
+    request). A CLI or script that already sends `X-API-Key` may omit it; if it
+    sends both they must be the same key (else 400 `both_credentials`). The
+    key's principal is the job's principal; when a session or bearer identity
+    accompanies the key, the key must be bound to that same subject (else 403).
+    `dry_run: true` returns a 200 Plan and writes nothing; `dry_run: false`
+    returns a 202 Job. Idempotency keys are persisted; plans are re-validated
+    after the locks are taken; a stale plan, a held lock, a red doctor or a
+    missing confirmation are 409/428 refusals, never a best effort.
+
+
+    **Authorization precedes lookup.** The role gate runs before any path
+    parameter is resolved, so a viewer probing an operator-only route gets 403
+    whether or not the tenant or job exists — the conformance matrix relies on
+    this, and it means the existence of a tenant is not leaked to a role that
+    may not see it.
+
+
+    **The authorization matrix** is the top-level `x-ctl-authorization-matrix`
+    extension: one row per operation with its minimum role, whether a session
+    may call it, and — for reads a viewer may make — which fields a viewer
+    receives. Every operation also carries `x-ctl-role`; a static conformance
+    test asserts the two agree and that every operation has one. The Go
+    `authz` package is deny-by-default and generated from the same table.
+
+
+    **Errors.** Every non-2xx body is `schemas/error.json`: `{detail, code,
+    request_id, extra?}` with `code` one of `auth_required forbidden
+    both_credentials not_found validation locked plan_stale duplicate
+    doctor_red confirm_required refused rate_limited internal` and a fixed
+    status per code (400/401/403/404/409/422/428/429/500 — see the schema).
+    Every response, success or error, carries `X-Request-Id`
+    (`components/headers/XRequestId`); it is referenced on every operation
+    here because every operation is asserted on.
+
+
+    **Redaction is a property of the daemon, not of an endpoint.** Registry
+    rows carry secret NAMES and fingerprints, never values; logs are redacted
+    before they leave; the single response that carries a secret value
+    (`GET /v1/jobs/{id}/secrets`) is delivered once, then 410, with
+    `Cache-Control: no-store`. A conformance test walks every read response
+    and refuses any field name matching `(?i)(api_key|password|secret|token|dsn)`
+    outside the documented allowlist (`secret_refs`, `secrets_file_sha256`).
+  version: "0.1.0"
+
+tags:
+  - name: Health
+  - name: Identity
+  - name: Fleet
+  - name: Tenants
+  - name: Operations
+  - name: Doctor
+  - name: Gateway
+  - name: Jobs
+  - name: Audit
+  - name: Settings
+
+# ---------------------------------------------------------------------------
+# Authorization matrix — the single table the Go authz package and the
+# conformance suite (test_authz_matrix.py) are both generated from.
+#   role:            minimum role; `anonymous` = no credential needed.
+#   session:         whether `Authorization: Session <id>` may call it.
+#                    Sessions are read-only; a mutation over a session needs
+#                    `ctl_api_key` in the body (see `op_request.json`).
+#   viewer_fields:   for `viewer` reads, what a viewer receives. "all" means
+#                    the response is the summary shape by construction.
+# ---------------------------------------------------------------------------
+x-ctl-authorization-matrix:
+  - { operationId: ctlHealth,          method: GET,    path: /health,                            role: anonymous, session: true,  viewer_fields: all }
+  - { operationId: ctlVersion,         method: GET,    path: /v1/version,                        role: viewer,    session: true,  viewer_fields: all }
+  - { operationId: ctlMe,              method: GET,    path: /v1/me,                             role: viewer,    session: true,  viewer_fields: all }
+  - { operationId: ctlSessionCreate,   method: POST,   path: /v1/session,                        role: viewer,    session: false, viewer_fields: all }
+  - { operationId: ctlSessionRevoke,   method: DELETE, path: /v1/session,                        role: viewer,    session: true,  viewer_fields: n/a }
+  - { operationId: ctlFleet,           method: GET,    path: /v1/fleet,                          role: viewer,    session: true,  viewer_fields: all }
+  - { operationId: ctlTenantsList,     method: GET,    path: /v1/tenants,                        role: viewer,    session: true,  viewer_fields: "tenants[].{summary, status, units, drift}; tenants[].registry is null" }
+  - { operationId: ctlTenantCreate,    method: POST,   path: /v1/tenants,                        role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlTenantShow,      method: GET,    path: "/v1/tenants/{name}",                 role: viewer,    session: true,  viewer_fields: "summary, status, units, drift; registry is null" }
+  - { operationId: ctlTenantEnv,       method: GET,    path: "/v1/tenants/{name}/env",             role: viewer,    session: true,  viewer_fields: "keys[] with class == public only" }
+  - { operationId: ctlTenantLogs,      method: GET,    path: "/v1/tenants/{name}/logs",            role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlTenantOp,        method: POST,   path: "/v1/tenants/{name}/ops/{verb}",      role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlDoctor,          method: GET,    path: /v1/doctor,                         role: viewer,    session: true,  viewer_fields: "all; findings[].detail is path-redacted for a viewer" }
+  - { operationId: ctlGatewayStatus,   method: GET,    path: /v1/gateway,                        role: viewer,    session: true,  viewer_fields: all }
+  - { operationId: ctlGatewayRender,   method: POST,   path: /v1/gateway/render,                 role: viewer,    session: true,  viewer_fields: all }
+  - { operationId: ctlGatewayApply,    method: POST,   path: /v1/gateway/apply,                  role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlAudit,           method: GET,    path: /v1/audit,                          role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlJobsList,        method: GET,    path: /v1/jobs,                           role: viewer,    session: true,  viewer_fields: "jobs[] with worker, lock null; reservations, steps[].external_ids empty; steps[].log null" }
+  - { operationId: ctlJobShow,         method: GET,    path: "/v1/jobs/{id}",                      role: viewer,    session: true,  viewer_fields: "as ctlJobsList" }
+  - { operationId: ctlJobStepLog,      method: GET,    path: "/v1/jobs/{id}/steps/{n}/log",        role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlJobSecrets,      method: GET,    path: "/v1/jobs/{id}/secrets",              role: operator,  session: false, viewer_fields: n/a }
+  - { operationId: ctlJobResume,       method: POST,   path: "/v1/jobs/{id}/resume",               role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlJobContinue,     method: POST,   path: "/v1/jobs/{id}/continue",             role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlJobCancel,       method: POST,   path: "/v1/jobs/{id}/cancel",               role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlSettingsGet,     method: GET,    path: /v1/settings,                       role: viewer,    session: true,  viewer_fields: "all except recipients.fingerprints (empty for a viewer)" }
+  - { operationId: ctlSettingsPut,     method: PUT,    path: /v1/settings,                       role: operator,  session: true,  viewer_fields: n/a }
+
+# ---------------------------------------------------------------------------
+# Typed `args` per verb of POST /v1/tenants/{name}/ops/{verb}. Each value is
+# a JSON Schema (draft 2020-12) the daemon validates `args` against BEFORE
+# planning; a miss is 422 `validation`. Paths, code refs, images and
+# toolchains are deliberately absent — those are CLI-only (`--direct`)
+# trusted-operator inputs; over HTTP an operation consumes IDs.
+# ---------------------------------------------------------------------------
+x-ctl-op-args:
+  start:
+    type: object
+    properties:
+      only: { type: array, items: { type: string, enum: [api, ui, qdrant, es] }, uniqueItems: true }
+      force: { type: boolean, default: false }
+    additionalProperties: false
+  stop:
+    type: object
+    properties:
+      only: { type: array, items: { type: string, enum: [api, ui, qdrant, es] }, uniqueItems: true }
+      keep_enabled: { description: "Leave `desired_boot` as it is; by default stop sets it to `disabled`.", type: boolean, default: false }
+      force: { description: "Stop even over running ingest jobs (refused otherwise).", type: boolean, default: false }
+    additionalProperties: false
+  restart:
+    type: object
+    properties:
+      only: { type: array, items: { type: string, enum: [api, ui, qdrant, es] }, uniqueItems: true }
+      force: { type: boolean, default: false }
+    additionalProperties: false
+  backup:
+    type: object
+    properties:
+      fence: { description: "Fenced backup: gateway read-only + API stopped + no running jobs. Only fenced bundles can be verified and count toward prerequisites.", type: boolean, default: false }
+      tar: { type: boolean, default: false }
+    additionalProperties: false
+  restore:
+    type: object
+    required: [from, as]
+    properties:
+      from: { description: "Bundle id (`<ts>-<kind>`) under the source tenant's backup dir — an id, never a path.", type: string, pattern: "^[0-9]{8}T[0-9]{6}Z-(backup|pre-update|recovery)$" }
+      as: { description: "The FRESH tenant to restore into (v1 restores into an isolated new tenant only).", type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+    additionalProperties: false
+  handover:
+    type: object
+    required: [phase]
+    properties:
+      phase: { description: "`execute` runs to `awaiting_cutover`; `commit` and `rollback` are continuations of that job.", type: string, enum: [execute, commit, rollback] }
+    additionalProperties: false
+  migrate-local:
+    type: object
+    required: [phase]
+    properties:
+      phase: { type: string, enum: [execute, commit, rollback] }
+    additionalProperties: false
+  decommission:
+    type: object
+    properties: {}
+    additionalProperties: false
+  key-mint:
+    type: object
+    required: [label, role]
+    properties:
+      label: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" }
+      role: { type: string, enum: [admin, user] }
+      restart: { type: boolean, default: false }
+    additionalProperties: false
+  key-revoke:
+    type: object
+    required: [id]
+    properties:
+      id: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,63}$" }
+      restart: { type: boolean, default: false }
+    additionalProperties: false
+  admin-add:
+    type: object
+    required: [subject]
+    properties:
+      subject: { type: string, pattern: "^[a-z][a-z0-9]*:[^:\\s]{1,128}$" }
+    additionalProperties: false
+  admin-remove:
+    type: object
+    required: [subject]
+    properties:
+      subject: { type: string, pattern: "^[a-z][a-z0-9]*:[^:\\s]{1,128}$" }
+    additionalProperties: false
+  sa-create:
+    type: object
+    required: [subject, role]
+    properties:
+      subject: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+      role: { type: string, enum: [admin, user] }
+      purpose: { type: string, maxLength: 256 }
+    additionalProperties: false
+  sa-disable:
+    type: object
+    required: [subject]
+    properties:
+      subject: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+    additionalProperties: false
+  sa-enable:
+    type: object
+    required: [subject]
+    properties:
+      subject: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" }
+    additionalProperties: false
+  env-set:
+    type: object
+    required: [key, value]
+    properties:
+      key: { description: "A PUBLIC-class key from the typed allowlist; secret and executable-surface keys are 409 `refused`.", type: string, pattern: "^[A-Z][A-Z0-9_]{0,127}$" }
+      value: { type: string, maxLength: 4096 }
+    additionalProperties: false
+  env-unset:
+    type: object
+    required: [key]
+    properties:
+      key: { type: string, pattern: "^[A-Z][A-Z0-9_]{0,127}$" }
+    additionalProperties: false
+  env-normalize:
+    type: object
+    properties: {}
+    additionalProperties: false
+  render-units:
+    type: object
+    properties:
+      apply: { description: "Write the rendered units and `daemon-reload`; false = render + diff only.", type: boolean, default: false }
+    additionalProperties: false
+  update-code:
+    type: object
+    required: [artifact_id]
+    properties:
+      artifact_id: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+      restart: { type: boolean, default: true }
+    additionalProperties: false
+
+paths:
+  /health:
+    get:
+      operationId: ctlHealth
+      summary: Daemon liveness
+      description: >-
+        Anonymous. Liveness of the control-plane daemon itself, not of any
+        tenant. The only unauthenticated operation; nothing in it is sensitive.
+      tags: [Health]
+      x-ctl-role: anonymous
+      security: []
+      responses:
+        "200":
+          description: The daemon is up
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/version:
+    get:
+      operationId: ctlVersion
+      summary: Build identity of the running daemon
+      tags: [Health]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Version, commit, build time, toolchain, registry schema version
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VersionResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/me:
+    get:
+      operationId: ctlMe
+      summary: Who am I, and how was that decided
+      description: >-
+        The principal, role and authentication method of the caller. This is
+        the only place a client learns its role — the credential carries none.
+        A verified-but-unlisted subject gets 403 here like everywhere else.
+      tags: [Identity]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: The caller's identity
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/session:
+    post:
+      operationId: ctlSessionCreate
+      summary: Exchange a credential for a read-only session
+      description: >-
+        Takes the request's `X-API-Key` or `Authorization: Bearer` credential
+        (never an existing session — a session cannot mint a session) and
+        answers with an opaque, server-side, subject-bound session id valid
+        for 8 hours, presented afterwards as `Authorization: Session <id>`.
+        Sessions authenticate reads only. No request body.
+      tags: [Identity]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      responses:
+        "201":
+          description: Session created
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control:
+              description: Always `no-store`.
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401":
+          description: >-
+            No usable credential — including a `Session` credential, which is
+            not accepted here.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    delete:
+      operationId: ctlSessionRevoke
+      summary: Revoke the calling session
+      description: >-
+        Revokes the session named by `Authorization: Session <id>`. With a key
+        or bearer credential instead, revokes EVERY session of that subject
+        (the "log me out everywhere" path). Idempotent: an unknown or already
+        revoked session is still 204.
+      tags: [Identity]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "204":
+          description: Revoked (or already gone)
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/fleet:
+    get:
+      operationId: ctlFleet
+      summary: Fleet dashboard view
+      description: >-
+        Host facts plus one summary row per tenant — the dashboard's 15 s poll.
+        The summary shape is the viewer shape by construction, so viewers and
+        operators get the same body.
+      tags: [Fleet]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Fleet view
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FleetResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/tenants:
+    get:
+      operationId: ctlTenantsList
+      summary: List tenants
+      description: >-
+        Every registry tenant in `display_order`, each in the
+        `tenant_response.json` shape. A viewer's rows have `registry: null`.
+      tags: [Tenants]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Tenant list
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    post:
+      operationId: ctlTenantCreate
+      summary: Create a tenant from a prepared artifact
+      description: >-
+        OPERATOR. The mutation envelope with typed `args`
+        (`create_request.json`). `dry_run: true` answers the Plan; otherwise a
+        Job that allocates the port block, writes dirs and env files, checks
+        out the artifact, renders and enables units, starts (readiness-gated),
+        registers service accounts, publishes a gateway generation and
+        post-checks. Minted key values are delivered through
+        `GET /v1/jobs/{id}/secrets`, once. Plan `requires_confirm` is false for
+        create (nothing pre-existing is touched).
+      tags: [Tenants, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/tenants/{name}:
+    get:
+      operationId: ctlTenantShow
+      summary: Show one tenant
+      description: >-
+        Summary row, live status, units and computed drift for everyone; the
+        full registry row (`registry`) for operators, `null` for viewers.
+      tags: [Tenants]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+      responses:
+        "200":
+          description: The tenant
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/tenants/{name}/env:
+    get:
+      operationId: ctlTenantEnv
+      summary: Configuration keys by class
+      description: >-
+        Every key in the tenant's env files with its class; values only for
+        `public` keys, the literal `<redacted>` for everything else. A viewer
+        receives `public` rows only and cannot enumerate which secrets exist.
+      tags: [Tenants]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+      responses:
+        "200":
+          description: Classified keys
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnvResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/tenants/{name}/logs:
+    get:
+      operationId: ctlTenantLogs
+      summary: Tail of one tenant log, redacted and bounded
+      description: >-
+        OPERATOR. Raw log lines can carry anything a process printed, so this
+        is operator-only even though every line is passed through the
+        redactors. `lines` is capped at 5000; the on-disk path is not returned.
+      tags: [Tenants]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+        - name: file
+          in: query
+          required: true
+          schema: { type: string, enum: [api, qdrant, es, ui] }
+        - $ref: "#/components/parameters/Lines"
+      responses:
+        "200":
+          description: Redacted tail
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LogsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: >-
+            Unknown tenant, or a `file` the tenant does not have (a `ui` log
+            for a static-UI tenant, a store log for a shared store).
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/tenants/{name}/ops/{verb}:
+    post:
+      operationId: ctlTenantOp
+      summary: Plan or run a tenant operation
+      description: >-
+        OPERATOR. The one mutation entry point for tenant lifecycle,
+        credentials and configuration. `verb` selects the operation; `args` is
+        validated against `x-ctl-op-args[verb]` before planning. `dry_run:
+        true` → 200 Plan (nothing locked, nothing written). `dry_run: false` →
+        202 Job, after: the persisted idempotency key is checked (same request
+        → the original job; different request under the same key → 409
+        `duplicate`), the locks are taken in the fleet lock order, the plan is
+        recomputed and compared (409 `plan_stale`), the op-scoped doctor is
+        consulted (409 `doctor_red`; a yellow needs `force_with_doctor_diff`),
+        and `confirm` is checked against the plan's `confirm_value` (428
+        `confirm_required`). A held lock is 409 `locked` with the holder in
+        `extra`. A capability, fencing, ownership or containment refusal is
+        409 `refused`. `update-code` is v1.1 and answers 409 `refused` until
+        then, with `detail` saying so.
+      tags: [Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantName"
+        - $ref: "#/components/parameters/Verb"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/doctor:
+    get:
+      operationId: ctlDoctor
+      summary: Diagnose the host, a tenant, or a tenant against one operation
+      description: >-
+        Registry vs manifest vs gateway generation vs units vs `/proc`; env
+        grammar; worktree gitdir; writable-path check; linger and drop-in; ES
+        heap sum; `vm.max_map_count`; disk and reserve. With `op`, the
+        op-specific preconditions and accepted transitional states are added.
+        `hash` is what a plan pins and what `force_with_doctor_diff` quotes.
+        For a viewer, `findings[].detail` has absolute paths replaced by their
+        registry role (`<data_dir>`, `<worktree>`).
+      tags: [Doctor]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantFilter"
+        - name: op
+          in: query
+          required: false
+          description: >-
+            An operation verb (the `verb` enum) or one of `create`, `adopt`,
+            `gateway-apply`, `settings-put`; scopes the run to that
+            operation's preconditions.
+          schema:
+            type: string
+            enum:
+              - start
+              - stop
+              - restart
+              - backup
+              - restore
+              - handover
+              - migrate-local
+              - decommission
+              - key-mint
+              - key-revoke
+              - admin-add
+              - admin-remove
+              - sa-create
+              - sa-disable
+              - sa-enable
+              - env-set
+              - env-unset
+              - env-normalize
+              - render-units
+              - update-code
+              - create
+              - adopt
+              - gateway-apply
+              - settings-put
+      responses:
+        "200":
+          description: Findings
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DoctorResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/gateway:
+    get:
+      operationId: ctlGatewayStatus
+      summary: Published gateway generation and whether it is stale
+      tags: [Gateway]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Gateway status
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayStatus" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/gateway/render:
+    post:
+      operationId: ctlGatewayRender
+      summary: Render the next gateway generation and diff it
+      description: >-
+        A READ despite the verb: renders from the current registry into a
+        scratch directory and diffs against the published generation. Nothing
+        is published, no lock is taken, a viewer may call it, no body is
+        required. The response `sha256` is what `gateway/apply` pins.
+      tags: [Gateway]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Rendered diff
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayRenderResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/gateway/apply:
+    post:
+      operationId: ctlGatewayApply
+      summary: Publish a gateway generation
+      description: >-
+        OPERATOR. `args` is `{expect_sha256?: string}` — when given, the plan
+        is refused (409 `plan_stale`) if the fresh render's `sha256` differs,
+        so what gets published is what was previewed. The job: gateway lock →
+        render to staging → staged `nginx -t` → symlink switch + `txn.json` →
+        verify the master's identity → `HUP` → probes from desired state →
+        revert on failure. `requires_confirm` is true (confirm value
+        `gateway`).
+      tags: [Gateway, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/audit:
+    get:
+      operationId: ctlAudit
+      summary: Audit rows, newest first
+      description: >-
+        OPERATOR. Intent and result rows of every mutation, with redacted
+        arguments. A read never produces an audit row.
+      tags: [Audit]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantFilter"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+      responses:
+        "200":
+          description: Audit rows
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs:
+    get:
+      operationId: ctlJobsList
+      summary: Jobs, newest first
+      tags: [Jobs]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantFilter"
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [queued, running, awaiting_cutover, succeeded, failed, rolled_back, interrupted, cancelled]
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+      responses:
+        "200":
+          description: Jobs
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}:
+    get:
+      operationId: ctlJobShow
+      summary: One job
+      tags: [Jobs]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The job
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}/steps/{n}/log:
+    get:
+      operationId: ctlJobStepLog
+      summary: Tail of one step's log
+      description: OPERATOR. Redacted like tenant logs; same `lines` bound.
+      tags: [Jobs]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - $ref: "#/components/parameters/StepN"
+        - $ref: "#/components/parameters/Lines"
+      responses:
+        "200":
+          description: Redacted step log tail
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StepLogResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}/secrets:
+    get:
+      operationId: ctlJobSecrets
+      summary: Collect minted secrets — once
+      description: >-
+        OPERATOR, and NOT over a session: the caller must present the ctl key
+        itself. The only response in this API that carries a secret value. The
+        first successful read destroys the envelope; every later read is 410.
+        The envelope is bound to the principal and op that minted it (another
+        operator's key is 403), expires 15 minutes after the mint, and is
+        never in the job, the audit log or a step log. Sent with
+        `Cache-Control: no-store`.
+      tags: [Jobs]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: The secrets, delivered once
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+            Cache-Control:
+              description: Always `no-store`.
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: >-
+            Not an operator, called over a session, or an operator other than
+            the one who minted the envelope.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown job, or a job that minted nothing.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: >-
+            Already delivered, or expired. Code `not_found`; `detail` says
+            which and when. The remedy is a new, audited mint.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}/resume:
+    post:
+      operationId: ctlJobResume
+      summary: Resume an interrupted job
+      description: >-
+        OPERATOR, re-authorized. Only a job in `interrupted` may be resumed;
+        the daemon reconciles every recorded `external_ids` (does the
+        snapshot exist? is the unit active?) before re-running from the last
+        checkpoint. Any other state is 409 `refused`. Same envelope as an
+        operation; `args` is `{}`.
+      tags: [Jobs, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}/continue:
+    post:
+      operationId: ctlJobContinue
+      summary: Continue a job parked at a cutover
+      description: >-
+        OPERATOR, re-authorized. For a job in `awaiting_cutover` (handover,
+        migrate-local): `args.phase` is `commit` or `rollback`. Commit is the
+        explicit step that writes the released state (`owner`, paths, ports);
+        rollback restores the recorded gateway generation and restarts only
+        that tenant from its rollback descriptor. Any other state is 409
+        `refused`. `requires_confirm` is true for commit.
+      tags: [Jobs, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/jobs/{id}/cancel:
+    post:
+      operationId: ctlJobCancel
+      summary: Cancel a queued, running or parked job
+      description: >-
+        OPERATOR, re-authorized. `queued` → `cancelled` immediately. `running`
+        → the worker stops at the next step boundary and rolls back what the
+        op's rollback covers (`rollback` on the job says how far). A parked
+        `awaiting_cutover` job is cancelled by its rollback path. A finished
+        job is 409 `refused`. `requires_confirm` is true when a rollback would
+        run.
+      tags: [Jobs, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/settings:
+    get:
+      operationId: ctlSettingsGet
+      summary: Fleet-level settings
+      description: >-
+        Retention, default images, default Python env, the ctl block, and the
+        backup recipients (read-only). A viewer receives
+        `recipients.fingerprints` as an empty list.
+      tags: [Settings]
+      x-ctl-role: viewer
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      responses:
+        "200":
+          description: Settings
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SettingsResponse" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    put:
+      operationId: ctlSettingsPut
+      summary: Change fleet-level settings
+      description: >-
+        OPERATOR. The mutation envelope; `args` is a PARTIAL
+        `settings_response.json` — only `retention`, `images` (choosing among
+        SIFs already on disk, by digest) and `ctl` may appear; `recipients`,
+        `python_env_default` and `registry_generation` in `args` are 409
+        `refused` (CLI-only). Applied as a job under the registry lock so the
+        generation moves and every pending plan goes stale, on purpose.
+      tags: [Settings, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+components:
+  headers:
+    XRequestId:
+      description: >-
+        The server-generated correlation id for this request (16 lowercase hex
+        characters), on every log line and audit row the request produced, and
+        repeated as `request_id` in every error body. Present on EVERY
+        response of every operation, success and error alike. Always generated
+        by the daemon; an inbound `X-Request-Id` is recorded as `upstream_rid`
+        when it matches `^[A-Za-z0-9._-]{1,64}$` and dropped otherwise, never
+        echoed — the same rule as the tenant contract.
+      required: true
+      schema:
+        type: string
+        pattern: "^[0-9a-f]{16}$"
+
+  parameters:
+    TenantName:
+      name: name
+      in: path
+      required: true
+      description: Registry key of the tenant.
+      schema: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+    TenantFilter:
+      name: tenant
+      in: query
+      required: false
+      description: Restrict to one tenant.
+      schema: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+    JobId:
+      name: id
+      in: path
+      required: true
+      description: Job ULID.
+      schema: { type: string, pattern: "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+    StepN:
+      name: n
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Lines:
+      name: lines
+      in: query
+      required: false
+      description: How many lines from the end. Capped at 5000.
+      schema: { type: integer, minimum: 1, maximum: 5000, default: 200 }
+    Verb:
+      name: verb
+      in: path
+      required: true
+      description: >-
+        The operation. `update-code` is v1.1 and is refused with 409 until
+        then; every other verb is planned and executed by the job engine.
+      schema:
+        type: string
+        enum:
+          - start
+          - stop
+          - restart
+          - backup
+          - restore
+          - handover
+          - migrate-local
+          - decommission
+          - key-mint
+          - key-revoke
+          - admin-add
+          - admin-remove
+          - sa-create
+          - sa-disable
+          - sa-enable
+          - env-set
+          - env-unset
+          - env-normalize
+          - render-units
+          - update-code
+
+  responses:
+    PlanResponse:
+      description: >-
+        `dry_run: true` — the plan. Nothing was locked or written. The
+        `plan_hash` and, when `requires_confirm`, the `confirm_value` are what
+        the execute call must reproduce.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Plan" }
+    JobAccepted:
+      description: >-
+        `dry_run: false` — the job was persisted and (unless queued behind a
+        lock) started. Poll `GET /v1/jobs/{id}`. A retry under the same
+        idempotency key with the same request returns THIS job again with the
+        same `id`.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Location:
+          description: "`/v1/jobs/{id}` of the accepted job."
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Job" }
+    BothCredentials:
+      description: >-
+        Code `both_credentials`. `X-API-Key` and `Authorization` were both
+        present, or the body's `ctl_api_key` differs from the header key.
+        Which credential authenticated must never be ambiguous, so the request
+        is refused before either is verified.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: >-
+        Code `auth_required`. No credential; a malformed `Authorization`
+        value; an unknown or revoked key; a BV-BRC token whose expiry has
+        passed or whose signature does not verify against the pinned issuer
+        allowlist; an unknown or expired session. The body does not say which.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: >-
+        Code `forbidden`. The credential VERIFIED, and either its subject is
+        not on the control plane's principal list (there is no default role —
+        a valid BV-BRC user who is not an enrolled viewer or operator lands
+        here, not on 401 and not on a read-only default) or its role is below
+        the operation's minimum (`x-ctl-role`). Evaluated before any path
+        parameter is resolved.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Code `not_found`. Unknown tenant, job or step.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Validation:
+      description: >-
+        Code `validation`. A path or query parameter outside its schema, a body
+        that does not match the envelope, or `args` that do not match
+        `x-ctl-op-args[verb]`. `extra.fields` lists the offending members.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: >-
+        One of the 409 codes; `extra` carries the specifics. `locked`: another
+        job holds a needed lock (`extra.job_id`, `extra.since`). `plan_stale`:
+        the plan recomputed after locking differs (`extra.plan_hash`,
+        `extra.registry_generation`). `duplicate`: the idempotency key was
+        used with a different request (`extra.job_id` of the original).
+        `doctor_red`: a red finding on the op's scope (`extra.doctor_hash`).
+        `refused`: a capability, fencing, ownership, containment or
+        state-machine refusal — the tenant is not in a state the op accepts, a
+        store has `capabilities.<x>: false`, the job is not in a state the
+        continuation accepts, the verb is not yet implemented.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ConfirmRequired:
+      description: >-
+        Code `confirm_required`. The plan is destructive (`requires_confirm`)
+        and the request's `confirm` is absent or differs from
+        `extra.confirm_value`. Re-send with `confirm` set to that value.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: >-
+        Code `rate_limited`. Per `sha256(credential)` and a global tarpit (all
+        public traffic shares one `$remote_addr`, so the address is useless as
+        a key). `Retry-After` in seconds; also in `extra.retry_after`.
+      headers:
+        X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+        Retry-After:
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >-
+        A control-plane key, minted on the CLI (`ragstack-ctl key mint` on the
+        ctl itself, distinct from tenant keys) and bound server-side to
+        `{principal, role, revocation_id}`. Never carries a role claim. The
+        credential a CLI or script uses for everything, and the credential a
+        browser re-presents in a mutation body (`ctl_api_key`) without ever
+        storing it. Presenting it together with `Authorization` is a 400.
+    BearerIdentity:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >-
+        `Authorization: Bearer <BV-BRC token>` (the `Bearer ` prefix is
+        optional, as in the tenant contract, because the token wire format
+        carries no scheme). Verified against a PINNED issuer allowlist before
+        any fetch, expiry before signature, 60 s minimum refetch. The subject
+        is `bvbrc:<un>`; its role is looked up from the ctl's principal list
+        and a subject not on that list is 403 — never a default role. The
+        credential a browser holds after the BV-BRC login (exchanged for a
+        session via `POST /v1/session`) and the credential of a human on the
+        CLI without a key. Presenting it together with `X-API-Key` is a 400.
+    SessionAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: >-
+        `Authorization: Session <id>` — the opaque 64-hex session id from
+        `POST /v1/session`, kept in `sessionStorage` by the admin UI. Reads
+        only: every operation that mutates requires `ctl_api_key` in its body
+        when authenticated this way, and `GET /v1/jobs/{id}/secrets` does not
+        accept a session at all. Expires 8 h after creation; revoked by
+        `DELETE /v1/session`.
+
+  schemas:
+    Error: { $ref: "./schemas/error.json" }
+    HealthResponse: { $ref: "./schemas/health_response.json" }
+    VersionResponse: { $ref: "./schemas/version_response.json" }
+    MeResponse: { $ref: "./schemas/me_response.json" }
+    SessionResponse: { $ref: "./schemas/session_response.json" }
+    FleetResponse: { $ref: "./schemas/fleet_response.json" }
+    Registry: { $ref: "./schemas/registry.json" }
+    TenantResponse: { $ref: "./schemas/tenant_response.json" }
+    TenantsResponse: { $ref: "./schemas/tenants_response.json" }
+    EnvResponse: { $ref: "./schemas/env_response.json" }
+    LogsResponse: { $ref: "./schemas/logs_response.json" }
+    DoctorResponse: { $ref: "./schemas/doctor_response.json" }
+    Plan: { $ref: "./schemas/plan.json" }
+    Job: { $ref: "./schemas/job.json" }
+    JobsResponse: { $ref: "./schemas/jobs_response.json" }
+    AuditResponse: { $ref: "./schemas/audit_response.json" }
+    SecretsResponse: { $ref: "./schemas/secrets_response.json" }
+    GatewayStatus: { $ref: "./schemas/gateway_status.json" }
+    GatewayRenderResponse: { $ref: "./schemas/gateway_render_response.json" }
+    SettingsResponse: { $ref: "./schemas/settings_response.json" }
+    OpRequest: { $ref: "./schemas/op_request.json" }
+    CreateRequest: { $ref: "./schemas/create_request.json" }
+    BundleManifest: { $ref: "./schemas/bundle_manifest.json" }
+    StepLogResponse:
+      description: >-
+        Tail of one step log. Same bound and redaction as `LogsResponse`; the
+        only inline schema in this file because it is a trivial projection of
+        that one keyed by job and step instead of tenant and file.
+      type: object
+      required: [job_id, step, lines, requested, returned, truncated, redacted]
+      properties:
+        job_id: { type: string, pattern: "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" }
+        step: { type: integer, minimum: 1 }
+        lines: { type: array, items: { type: string } }
+        requested: { type: integer, minimum: 1, maximum: 5000 }
+        returned: { type: integer, minimum: 0 }
+        truncated: { type: boolean }
+        redacted: { type: boolean, const: true }
+      additionalProperties: false

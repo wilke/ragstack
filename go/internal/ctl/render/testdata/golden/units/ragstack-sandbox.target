@@ -1,0 +1,7 @@
+[Unit]
+Description=ragstack tenant sandbox
+Wants=ragstack-sandbox-qdrant.service ragstack-sandbox-es.service ragstack-sandbox-api.service
+ConditionPathIsMountPoint=/rag
+
+[Install]
+WantedBy=default.target

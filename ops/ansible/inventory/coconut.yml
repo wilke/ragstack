@@ -1,0 +1,11 @@
+# Inventory for the production host. Run on the box itself (control node =
+# a venv on coconut): ansible_connection=local. For a laptop control node,
+# replace with ansible_host=coconut and ansible_user=<you>.
+all:
+  hosts:
+    coconut:
+      ansible_connection: local
+      # Modules that become svcbvbrc must run a python that account can read:
+      # the system interpreter, not the control-node venv (ansible-core needs
+      # only the stdlib on the target side).
+      ansible_python_interpreter: /usr/bin/python3

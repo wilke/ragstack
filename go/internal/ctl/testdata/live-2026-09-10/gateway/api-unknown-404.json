@@ -1,0 +1,1 @@
+{"error":"unknown tenant","tenant":"nope","tenants":["dev","demo","lucid-next","asm-next"],"hint":"GET /ragstack/tenants"}

@@ -1,0 +1,78 @@
+# roles/hardening — remove group-write from binaries, config, images and the
+# conda env (plan v3 "Group + hardening", OPEN DECISION: gated by
+# hardening_enabled). Run --check --diff first; a real run additionally needs
+# -e hardening_confirmed=true.
+---
+- name: Hardening disabled
+  ansible.builtin.debug:
+    msg: "hardening_enabled=false — nothing to do (open decision; set hardening_enabled=true to apply)"
+  when: not (hardening_enabled | bool)
+
+- name: Hardening
+  when: hardening_enabled | bool
+  block:
+    - name: Real runs need explicit confirmation (check mode never does)
+      ansible.builtin.assert:
+        that: ansible_check_mode or (hardening_confirmed | bool)
+        fail_msg: "hardening changes live permissions: run with --check --diff first, then add -e hardening_confirmed=true"
+
+    # ---- non-recursive g-w -------------------------------------------------
+    - name: Existing hardening paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ hardening_paths }}"
+      register: hardening_stat
+
+    - name: chmod g-w on {{ hardening_paths | join(', ') }}
+      ansible.builtin.file:
+        path: "{{ item.item }}"
+        mode: g-w
+      loop: "{{ hardening_stat.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.stat.exists
+
+    # ---- globs (proxy *.sh, images *.sif) -----------------------------------
+    - name: Find glob targets
+      ansible.builtin.find:
+        paths: "{{ item.path }}"
+        patterns: "{{ item.pattern }}"
+        file_type: file
+        recurse: false
+      loop: "{{ hardening_globs }}"
+      loop_control:
+        label: "{{ item.path }}/{{ item.pattern }}"
+      register: hardening_find
+
+    - name: chmod g-w on glob matches
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        mode: g-w
+      loop: "{{ hardening_find.results | map(attribute='files') | flatten }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+    # ---- recursive g-w,o-w on the conda env ----------------------------------
+    - name: Pre-check for group/other-writable entries (first offender only)
+      ansible.builtin.command: >-
+        find {{ item | quote }} \( -perm -g=w -o -perm -o=w \) -print -quit
+      loop: "{{ hardening_recursive_paths }}"
+      register: hardening_recursive_check
+      changed_when: false
+      check_mode: false
+
+    - name: chmod -R g-w,o-w on the conda envs
+      ansible.builtin.command: chmod -R g-w,o-w {{ item.item | quote }}
+      loop: "{{ hardening_recursive_check.results }}"
+      loop_control:
+        label: "{{ item.item }} (first offender: {{ item.stdout | default('') }})"
+      when: item.stdout | default('') | length > 0
+      changed_when: true
+
+    # ---- /rag itself: 0755, owned by p3 --------------------------------------
+    - name: "{{ rag_root }} to 0755 (as {{ rag_root_owner }} — the operator is in seed-admins-{{ rag_root_owner }})"
+      ansible.builtin.file:
+        path: "{{ rag_root }}"
+        mode: "0755"
+      become: true
+      become_user: "{{ rag_root_owner }}"
