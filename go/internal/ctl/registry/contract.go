@@ -7,7 +7,7 @@ package registry
 // validates on every Load, including the load that answers `GET /v1/fleet`, and
 // it must not need a Python interpreter (or a schema file on disk) at runtime —
 // the binary is static and the registry is read on hosts where contracts/ is not
-// installed. The contract stays authoritative: TestValidateContractMirrorsSchema
+// installed. The contract stays authoritative: TestValidateContractAgreesWithTheSchema
 // and TestFixtureValidatesAgainstContract replay the same documents through the
 // real JSON schema, so a rule that drifts from the schema is a test failure, not
 // a silent divergence.
@@ -392,6 +392,24 @@ func (c *contractCheck) code(ptr string, code Code) {
 	c.minLen1(ptr+"/tag", code.Tag)
 	c.nullable(ptr+"/sha", code.SHA, reGitSHA)
 	c.nullable(ptr+"/previous_artifact_id", code.PreviousArtifactID, reArtifactID)
+}
+
+// Owners returns the contract's `owner` enum. It is exported because adopt
+// has to ask the question BEFORE it builds a row: the owner it records is the
+// account it observed on the API port, and an account outside this enum
+// produces a registry that Save now refuses and Load could never read back.
+// Asking here turns that into a finding naming the account, instead of a
+// contract error naming a JSON pointer.
+func Owners() []string { return append([]string(nil), enumOwner...) }
+
+// KnownOwner reports whether owner is in the contract's enum.
+func KnownOwner(owner string) bool {
+	for _, o := range enumOwner {
+		if o == owner {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedTenantKeys(m map[string]*Tenant) []string {

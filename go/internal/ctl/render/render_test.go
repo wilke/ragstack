@@ -490,3 +490,147 @@ func TestNginxSkipsUIlessExternalTenant(t *testing.T) {
 		t.Errorf("the API route was dropped too:\n%s", s)
 	}
 }
+
+// TestUnitsDeriveEveryPathFromTheDataDir is item 3 of the PR-A review.
+//
+// Units built its paths with TenantPaths(root, name, t.ManifestName) over
+// Dir(t.DataDir) — i.e. <parent of data_dir>/<manifest_name>, which is
+// t.DataDir only when the two already agree. adopt records a data dir that
+// does NOT agree as data_dir_off_layout, so the case is real, and for such a
+// tenant the ES unit bound a directory the tenant does not use while the log
+// lines still named the tenant it does: a unit describing two tenants at once.
+//
+// Now every path comes from t.DataDir itself, and the disagreement is refused
+// unless the caller names it.
+func TestUnitsDeriveEveryPathFromTheDataDir(t *testing.T) {
+	// The live pair whose name and directory differ: lucid-next lives in
+	// .../tenants/lucid. Its units must be about .../tenants/lucid.
+	f := registry.LiveFixture()
+	tn := f.Tenants["lucid-next"]
+	tn.API.Bind = "127.0.0.1"
+	units, err := Units(tn, UnitConfig{RagRoot: "/rag"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := string(units["ragstack-lucid-next-es.service"])
+	for _, want := range []string{
+		"--bind /rag/data/tenants/lucid/elasticsearch/data:",
+		"--bind /rag/data/tenants/lucid/elasticsearch/snapshots:",
+		"append:/rag/data/tenants/lucid/logs/es-lucid.log",
+	} {
+		if !strings.Contains(es, want) {
+			t.Errorf("es unit lacks %q:\n%s", want, es)
+		}
+	}
+	api := string(units["ragstack-lucid-next-api.service"])
+	if !strings.Contains(api, "EnvironmentFile=/rag/data/tenants/lucid/config/tenant.env") {
+		t.Errorf("api unit reads the wrong env file:\n%s", api)
+	}
+
+	// An off-layout data dir is refused rather than half-rendered…
+	off := registry.LiveFixture().Tenants["lucid-next"]
+	off.API.Bind = "127.0.0.1"
+	off.DataDir = "/rag/data/tenants/elsewhere"
+	if _, err := Units(off, UnitConfig{RagRoot: "/rag"}); err == nil {
+		t.Fatal("an off-layout data dir was rendered without an opt-in")
+	} else if !strings.Contains(err.Error(), "elsewhere") || !strings.Contains(err.Error(), "lucid") {
+		t.Errorf("the refusal must name both sides: %v", err)
+	}
+	// …and when an operator names it, every path follows the data dir, not
+	// the manifest name.
+	units, err = Units(off, UnitConfig{RagRoot: "/rag", AllowOffLayoutDataDir: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es = string(units["ragstack-lucid-next-es.service"])
+	if !strings.Contains(es, "--bind /rag/data/tenants/elsewhere/elasticsearch/data:") {
+		t.Errorf("the opted-in render must follow the data dir:\n%s", es)
+	}
+	if strings.Contains(es, "/rag/data/tenants/lucid/") {
+		t.Errorf("a path was still derived from manifest_name:\n%s", es)
+	}
+	// The script renderers interpolate the data dir verbatim and derive
+	// nothing from it, so they render an off-layout tenant without the flag.
+	if _, err := UpSh(off, StoreOptions{Images: "/rag/apptainer/images"}); err != nil {
+		t.Errorf("up.sh refused an off-layout data dir it only interpolates: %v", err)
+	}
+}
+
+// TestESUnitSeedsItsConfigBindAndChecksMaxMapCount is item 4 of the review.
+//
+// The unit binds the tenant's elasticsearch/config over the image's own copy.
+// bin/up.sh seeded that directory from the image first (seed_if_empty) and
+// warned when vm.max_map_count was below 262144; the unit did neither, so a
+// tenant whose stores had only ever been started by systemd handed ES an
+// empty config directory — no jvm.options, no log4j2.properties — and it
+// exited before logging anything an operator could act on.
+func TestESUnitSeedsItsConfigBindAndChecksMaxMapCount(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	units, err := Units(tn, UnitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := string(units["ragstack-sandbox-es.service"])
+	want := "ExecStartPre=/rag/bin/ragstack-ctl es-seed-config sandbox --rag-root /rag"
+	if !strings.Contains(es, want) {
+		t.Errorf("es unit lacks %q:\n%s", want, es)
+	}
+	// It must run BEFORE the ExecStart it is a precondition of.
+	if pre, start := strings.Index(es, "\nExecStartPre="), strings.Index(es, "\nExecStart="); pre < 0 || start < 0 || pre > start {
+		t.Errorf("ExecStartPre (%d) is not before ExecStart (%d):\n%s", pre, start, es)
+	}
+	// A non-default root and ctl binary reach the line.
+	units, err = Units(tn, UnitConfig{RagRoot: "/rag", CtlBin: "/rag/bin/ragstack-ctl-next"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(units["ragstack-sandbox-es.service"]), "ExecStartPre=/rag/bin/ragstack-ctl-next es-seed-config sandbox") {
+		t.Errorf("the configured ctl binary is not used:\n%s", units["ragstack-sandbox-es.service"])
+	}
+}
+
+// TestRetiredLegacyRouteDoesNotReserveItsName is item 13 of the review.
+//
+// addName ran before the `retired` continue, so a retired row still claimed
+// its name in the duplicate check — and retiring the legacy `lucid` route in
+// favour of a registry tenant called `lucid` made the WHOLE gateway file fail
+// to render, for every tenant, over a row that produces no output at all.
+func TestRetiredLegacyRouteDoesNotReserveItsName(t *testing.T) {
+	f := registry.LiveFixture()
+	// Retire the legacy `lucid` row and add a registry tenant of that name:
+	// the ordinary end state of migrating a legacy route into the registry.
+	for i := range f.LegacyRoutes {
+		if f.LegacyRoutes[i].Name == "lucid" {
+			f.LegacyRoutes[i].Status = "retired"
+		}
+	}
+	tn := registry.NewTenant("lucid", "lucid2")
+	tp := paths.TenantPaths(paths.NewRoots("/rag", paths.Overrides{}), "lucid", "lucid2")
+	tn.DataDir, tn.Worktree, tn.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
+	tn.Ports = paths.Block(9)
+	tn.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/lucid/ui/"}
+	tn.Supervisor, tn.Owner, tn.State, tn.DesiredBoot, tn.EnvLayout = "manual", "wilke", "active", "disabled", "legacy"
+	f.Tenants["lucid"] = tn
+	f.DisplayOrder = append(f.DisplayOrder, "lucid")
+
+	out, err := NginxTenants(f, NginxConfig{})
+	if err != nil {
+		t.Fatalf("a retired legacy route must not reserve its name: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `lucid       "127.0.0.1:24180"`) {
+		t.Errorf("the tenant that took the name has no route:\n%s", s)
+	}
+	if strings.Contains(s, "127.0.0.1:8010") {
+		t.Errorf("the retired route is still in the output:\n%s", s)
+	}
+	// An ACTIVE duplicate is still a refusal — that one really is ambiguous.
+	for i := range f.LegacyRoutes {
+		if f.LegacyRoutes[i].Name == "lucid" {
+			f.LegacyRoutes[i].Status = "active"
+		}
+	}
+	if _, err := NginxTenants(f, NginxConfig{}); err == nil {
+		t.Error("an active legacy route and a tenant sharing a name must be refused")
+	}
+}

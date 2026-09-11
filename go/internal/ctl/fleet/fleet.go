@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
@@ -90,8 +91,33 @@ func Build(ctx context.Context, roots paths.Roots, f *registry.Fleet, p Probes) 
 		Tenants:            []model.FleetRow{},
 	}
 	listeners := listenerPorts(p.Host)
-	for _, t := range Order(f) {
-		resp.Tenants = append(resp.Tenants, row(ctx, t, p, listeners))
+
+	// One goroutine per tenant. Every leg of a row is a bounded, read-only
+	// probe — a GET with a 2 s timeout, a `systemctl --user show`, a cached
+	// `du` — and they were run strictly in series, so the dashboard's 15 s
+	// poll cost the SUM of every tenant's timeouts: four tenants with a store
+	// that does not answer took four consecutive 2 s stalls per store, and
+	// the poll went out of date while it was still being built. Fanning out
+	// makes the wall clock one tenant's, not the fleet's.
+	//
+	// Nothing is shared but the read-only inputs: each goroutine writes only
+	// its own slot in a pre-sized slice, so the order is still display order
+	// and no lock is needed. The probes themselves are concurrency-safe
+	// (CachedDU single-flights per path; the HTTP prober and the systemd
+	// reader hold no mutable state).
+	order := Order(f)
+	rows := make([]model.FleetRow, len(order))
+	var wg sync.WaitGroup
+	for i, t := range order {
+		wg.Add(1)
+		go func(i int, t *registry.Tenant) {
+			defer wg.Done()
+			rows[i] = row(ctx, t, p, listeners)
+		}(i, t)
+	}
+	wg.Wait()
+	if len(rows) > 0 {
+		resp.Tenants = rows
 	}
 	return resp
 }

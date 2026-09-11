@@ -181,10 +181,17 @@ func TenantPaths(root Roots, name, manifestName string) Tenant {
 
 // ProvisionDirs are the directories new-tenant.sh creates (its TENANT_DIRS
 // array, same order) — every writable path an instance touches.
+//
+// ESSnapshots is one of them because the rendered ES unit BINDS it
+// (`--bind …/elasticsearch/snapshots:<path.repo>`) and apptainer refuses a
+// bind whose source does not exist. Nothing else ever created that directory,
+// so a tenant provisioned by the script got a unit that could not start: the
+// list of directories provisioning makes and the list of directories the unit
+// requires have to be the same list.
 func (t Tenant) ProvisionDirs() []string {
 	return []string{
 		t.QdrantStorage, t.QdrantSnapshots,
-		t.ESData, t.ESLogs, t.ESConfig,
+		t.ESData, t.ESLogs, t.ESConfig, t.ESSnapshots,
 		t.StateDir, t.ManifestsDir, t.IngestDir, t.ConfigDir, t.BinDir,
 	}
 }

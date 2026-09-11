@@ -122,9 +122,50 @@ def test_no_schema_property_name_looks_like_a_secret(validator) -> None:
     assert offenders == [], offenders
 
 
+def _guard(validator, fname: str) -> dict:
+    d = validator.load_schemas()[fname]["$defs"]["PublicSettingKey"]
+    return {k: v for k, v in d.items() if k != "description"}
+
+
 def test_settings_guard_is_one_pattern(validator) -> None:
+    """The two copies are the SAME guard, compared whole.
+
+    Naming the members (``pattern``, ``not``) is how this went vacuous once
+    before: the exceptions moved into an ``anyOf`` and ``a["not"] == b["not"]``
+    quietly became ``None == None``. Compare everything but the description.
+    """
+    a, b = _guard(validator, "registry.json"), _guard(validator, "create_request.json")
+    assert a == b
+    assert a["pattern"] and a["anyOf"], a
+
+
+def test_settings_guard_mirrors_the_go_classifier(validator) -> None:
+    """The contract must forbid at least what ``settings.go`` calls secret.
+
+    The pre-#531 pattern was anchored
+    (``^(API_KEYS|…|NEO4J_AUTH)$|(_DSN|PASSWORD|TOKEN|_API_KEY)$``), so a
+    secret-shaped substring in the MIDDLE of a name passed:
+    ``TENANT_API_KEY_USER``, ``AWS_SECRET_ACCESS_KEY`` and ``SSH_PRIVATE_KEY``
+    were all storable in the registry as public settings, while the daemon's own
+    classifier called them secrets and its redactors stripped their values.
+    """
+    import jsonschema
+    from referencing import Registry, Resource
+
+    guard = _guard(validator, "registry.json")
+    forbidden = next(b["not"]["pattern"] for b in guard["anyOf"] if "not" in b)
+    allow = next(b["enum"] for b in guard["anyOf"] if "enum" in b)
+    assert forbidden == validator.GO_SECRET_PATTERN, "not settings.go's secretPattern"
+    assert allow == validator.GO_PUBLIC_DESPITE_PATTERN, "not settings.go's publicDespitePattern"
+
     schemas = validator.load_schemas()
-    a = schemas["registry.json"]["$defs"]["PublicSettingKey"]
-    b = schemas["create_request.json"]["$defs"]["PublicSettingKey"]
-    assert a["pattern"] == b["pattern"]
-    assert a["not"] == b["not"]
+    registry = Registry().with_resource(
+        "registry.json", Resource.from_contents(schemas["registry.json"])
+    )
+    v = jsonschema.Draft202012Validator(
+        {"$ref": "registry.json#/$defs/PublicSettings"}, registry=registry
+    )
+    accepted = [n for n in validator.FORBIDDEN_SETTING_NAMES if v.is_valid({n: "x"})]
+    assert accepted == [], f"PublicSettings accepted secret-class names: {accepted}"
+    rejected = [n for n in validator.PUBLIC_SETTING_NAMES if not v.is_valid({n: "x"})]
+    assert rejected == [], f"PublicSettings rejected public names: {rejected}"

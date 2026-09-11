@@ -715,3 +715,115 @@ func TestRollbackArgvIsRedactedWithTheTenantsOwnSecrets(t *testing.T) {
 		t.Errorf("a URL credential reached the rollback descriptor: %s", blob)
 	}
 }
+
+// TestOwnerOutsideTheEnumIsRefusedNotRewritten is items 2 and 14 of the PR-A
+// review.
+//
+// adopt copies the account it observed on the API port into `owner`, whose
+// contract enum is svcbvbrc|wilke. An account outside it produced a row that
+// registry.Load refuses — so the commit "succeeded" and the fleet was
+// unreadable at the next daemon restart.
+//
+// The fix is not to substitute a legal-looking value: that would put a lie in
+// the registry no later doctor run could catch. The row keeps what is true,
+// an error finding refuses the commit, and registry.Save refuses the write
+// even if an operator forces past the finding.
+func TestOwnerOutsideTheEnumIsRefusedNotRewritten(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	for i, l := range h.Ports {
+		if l.Port == 24040 {
+			h.Ports[i].User = "nobody" // not svcbvbrc, not wilke
+		}
+	}
+	tenant, findings, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIPort:   8090, Host: h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.Owner != "nobody" {
+		t.Errorf("owner = %q: adopt records the account it observed, it does not invent one", tenant.Owner)
+	}
+	var found *model.Finding
+	for i := range findings {
+		if findings[i].Code == doctor.OwnerNotInEnum {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no %s finding among %v", doctor.OwnerNotInEnum, codes(findings))
+	}
+	if found.Level != model.LevelError {
+		t.Errorf("level = %s, want error: the commit must be refused", found.Level)
+	}
+	if !strings.Contains(found.Detail, "nobody") {
+		t.Errorf("the finding must name the account: %s", found.Detail)
+	}
+	// The last line of defence: even --force cannot write a row Load rejects.
+	regPath := filepath.Join(t.TempDir(), "registry.json")
+	if err := Commit(regPath, tenant, CommitOptions{Roots: roots, UpdatedBy: "local:test"}); err == nil {
+		t.Fatal("Commit wrote a registry that Load would refuse")
+	} else if !strings.Contains(err.Error(), "owner") {
+		t.Errorf("the refusal must name the field: %v", err)
+	}
+
+	// A known account is recorded with no finding at all.
+	for i, l := range h.Ports {
+		if l.Port == 24040 {
+			h.Ports[i].User = "svcbvbrc"
+		}
+	}
+	tenant, findings, err = Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIPort:   8090, Host: h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.Owner != "svcbvbrc" || countCode(findings, doctor.OwnerNotInEnum) != 0 {
+		t.Errorf("owner = %q with %d findings, want svcbvbrc and none", tenant.Owner, countCode(findings, doctor.OwnerNotInEnum))
+	}
+}
+
+// TestMissingESSnapshotsDirIsReported is the adopt half of item 1: the ES unit
+// binds <data_dir>/elasticsearch/snapshots as path.repo and apptainer refuses
+// a bind whose source is missing, so a tenant provisioned before that
+// directory joined paths.ProvisionDirs cannot start under its own unit. The
+// preview says so at the moment the row is written, not at the first start.
+func TestMissingESSnapshotsDirIsReported(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	snaps := filepath.Join(roots.DataDir, "dev", "elasticsearch", "snapshots")
+	if err := os.RemoveAll(snaps); err != nil {
+		t.Fatal(err)
+	}
+	_, findings, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIPort:   8090, Host: h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if countCode(findings, doctor.ESSnapshotsDirMissing) != 1 {
+		t.Errorf("findings %v lack one %s", codes(findings), doctor.ESSnapshotsDirMissing)
+	}
+	if err := os.MkdirAll(snaps, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, findings, err = Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIPort:   8090, Host: h,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := countCode(findings, doctor.ESSnapshotsDirMissing); n != 0 {
+		t.Errorf("%d findings for a directory that exists", n)
+	}
+}

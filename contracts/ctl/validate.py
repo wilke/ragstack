@@ -23,7 +23,11 @@ What it proves:
 * The ``verb`` path parameter's enum is exactly the plan's verb list, and
   every verb has an ``x-ctl-op-args`` schema that is itself valid.
 * The forbidden-settings-name guard is byte-identical between
-  ``registry.json`` and ``create_request.json``.
+  ``registry.json`` and ``create_request.json``, its pattern is
+  ``settings.go``'s ``secretPattern`` and its allowlist that file's
+  ``publicDespitePattern``, and it actually refuses the forbidden names and
+  accepts the public ones (:data:`FORBIDDEN_SETTING_NAMES` /
+  :data:`PUBLIC_SETTING_NAMES`).
 * Every object schema is closed: ``additionalProperties: false``, or a map
   with ``propertyNames`` and a typed ``additionalProperties``.
 
@@ -345,30 +349,93 @@ def check_verbs(spec: dict) -> Iterator[str]:
                 yield "doctor `op` enum must start with the verb list in order"
 
 
+#: ``go/internal/ctl/settings/settings.go``'s ``secretPattern``, byte for byte.
+#: The daemon's classifier is what decides where a key may live and what the
+#: redactors strip; a contract that forbids LESS than the classifier lets the
+#: registry store exactly the names the daemon calls secret. The pre-#531
+#: spelling (``^(API_KEYS|API_KEY_TENANTS|API_KEY_ROLES|NEO4J_AUTH)$|(_DSN|
+#: PASSWORD|TOKEN|_API_KEY)$``) did that: its anchors meant the secret-shaped
+#: part had to sit at one END of the name, so ``TENANT_API_KEY_USER``,
+#: ``AWS_SECRET_ACCESS_KEY`` and ``SSH_PRIVATE_KEY`` all passed.
+GO_SECRET_PATTERN = r"(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)"
+
+#: ``settings.go``'s ``publicDespitePattern``: the six ragstack settings whose
+#: NAME trips the pattern but whose value is a number or an identifier, never a
+#: credential. Mirrored here so drift in either direction is a finding.
+GO_PUBLIC_DESPITE_PATTERN = [
+    "CHUNK_MAX_TOKENS",
+    "CHUNK_TOKEN_COUNTER",
+    "EMBEDDING_MAX_BATCH_TOKENS",
+    "EMBEDDING_CHARS_PER_TOKEN",
+    "GOWE_RECEIPTS_OUTPUT_KEY",
+    "GOWE_SHARDS_INPUT_KEY",
+]
+
+#: Names the guard must REFUSE. The last three are the ones the anchored
+#: pattern let through.
+FORBIDDEN_SETTING_NAMES = [
+    "API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES", "POSTGRES_DSN",
+    "NEO4J_PASSWORD", "GOWE_TOKEN", "OPENAI_API_KEY", "NEO4J_AUTH",
+    "TENANT_API_KEY_USER", "AWS_SECRET_ACCESS_KEY", "SSH_PRIVATE_KEY",
+]
+
+#: Names the guard must ACCEPT: ordinary public settings, plus the six reviewed
+#: exceptions that the pattern alone would refuse.
+PUBLIC_SETTING_NAMES = [
+    "LOG_LEVEL", "MAX_COLLECTIONS_PER_OWNER", "GRAPH_BACKEND", "ES_JAVA_OPTS",
+    *GO_PUBLIC_DESPITE_PATTERN,
+]
+
+
 def check_settings_guard(schemas: dict[str, dict]) -> Iterator[str]:
     reg = (schemas.get("registry.json") or {}).get("$defs", {}).get("PublicSettingKey")
     cre = (schemas.get("create_request.json") or {}).get("$defs", {}).get("PublicSettingKey")
     if reg is None or cre is None:
         yield "PublicSettingKey is missing from registry.json or create_request.json"
         return
-    for key in ("pattern", "not"):
-        if reg.get(key) != cre.get(key):
-            yield f"PublicSettingKey.{key} differs between registry.json and create_request.json"
-    forbidden = (reg.get("not") or {}).get("pattern", "")
-    for must in ("API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES", "_DSN", "PASSWORD", "TOKEN"):
-        if must not in forbidden:
-            yield f"PublicSettingKey forbidden pattern does not mention {must}"
-    if "(?" in forbidden or "(?" in reg.get("pattern", ""):
+    # Everything but the human-facing `description` must be identical — not the
+    # two members this used to name by hand. The exceptions now live in an
+    # `anyOf`, and a comparison that enumerates members goes vacuous the next
+    # time the shape changes (`reg.get("not")` was already `None == None` here).
+    reg_body = {k: v for k, v in reg.items() if k != "description"}
+    cre_body = {k: v for k, v in cre.items() if k != "description"}
+    if reg_body != cre_body:
+        yield (
+            "PublicSettingKey differs between registry.json and create_request.json: "
+            f"{json.dumps(reg_body, sort_keys=True)} != {json.dumps(cre_body, sort_keys=True)}"
+        )
+
+    # The guard is `pattern` (shape) AND `anyOf: [allowlist, not(secretPattern)]`.
+    branches = reg.get("anyOf") or []
+    allow = next((b.get("enum") for b in branches if isinstance(b, dict) and "enum" in b), None)
+    forbidden = next(
+        (b["not"].get("pattern") for b in branches if isinstance(b, dict) and isinstance(b.get("not"), dict)),
+        None,
+    )
+    if forbidden is None:
+        yield "PublicSettingKey has no anyOf branch forbidding the secret-name pattern"
+    elif forbidden != GO_SECRET_PATTERN:
+        yield (
+            "PublicSettingKey's forbidden pattern is not settings.go's secretPattern "
+            f"byte for byte: {forbidden!r} != {GO_SECRET_PATTERN!r}"
+        )
+    if allow != GO_PUBLIC_DESPITE_PATTERN:
+        yield (
+            "PublicSettingKey's allowlist is not settings.go's publicDespitePattern: "
+            f"{allow!r} != {GO_PUBLIC_DESPITE_PATTERN!r}"
+        )
+    if "(?" in (forbidden or "") or "(?" in reg.get("pattern", ""):
         yield "PublicSettingKey patterns must be RE2-compatible (no lookaround)"
+
     # Prove the guard behaves, not just that it is spelled.
     from referencing import Registry, Resource
 
     registry = Registry().with_resource("registry.json", Resource.from_contents(schemas["registry.json"]))
     v = jsonschema.Draft202012Validator({"$ref": "registry.json#/$defs/PublicSettings"}, registry=registry)
-    for bad in ("API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES", "POSTGRES_DSN", "NEO4J_PASSWORD", "GOWE_TOKEN", "OPENAI_API_KEY", "NEO4J_AUTH"):
+    for bad in FORBIDDEN_SETTING_NAMES:
         if v.is_valid({bad: "x"}):
             yield f"PublicSettings accepted forbidden key {bad}"
-    for good in ("LOG_LEVEL", "MAX_COLLECTIONS_PER_OWNER", "GRAPH_BACKEND", "ES_JAVA_OPTS"):
+    for good in PUBLIC_SETTING_NAMES:
         if not v.is_valid({good: "x"}):
             yield f"PublicSettings rejected public key {good}"
 

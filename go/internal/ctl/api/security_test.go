@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -400,6 +401,11 @@ func TestGuardHandsTheParsedBodyToTheHandler(t *testing.T) {
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/dev/ops/start",
 		strings.NewReader(`{"dry_run":true,"idempotency_key":"01ARZ3NDEKTSV4RR","confirm":"yes","args":{}}`))
+	// The header this principal was resolved from. A body without
+	// `ctl_api_key` is exempt only for a caller presenting X-API-Key, so a
+	// MethodAPIKey principal with no header is a request the router cannot
+	// produce — and the guard now says so before the handler is reached.
+	req.Header.Set(auth.HeaderAPIKey, opKey)
 	req = req.WithContext(auth.WithPrincipal(req.Context(), auth.Principal{
 		Subject: "key:ops", Role: auth.RoleOperator, AuthMethod: auth.MethodAPIKey,
 	}))
@@ -611,19 +617,19 @@ func TestAnonymousRowsHaveNoPathParameters(t *testing.T) {
 // as. env.go has documented the refusal since PR-A; now it happens.
 func TestIssuerAllowlistSetButBlankIsRefused(t *testing.T) {
 	t.Setenv(EnvIdentityIssuerAllowlist, "")
-	if _, err := newVerifier(true); err == nil {
+	if _, err := newVerifier(true, nil); err == nil {
 		t.Fatal("a set-but-blank issuer allowlist started the daemon")
 	} else if !strings.Contains(err.Error(), EnvIdentityIssuerAllowlist) {
 		t.Fatalf("the refusal does not name the variable: %v", err)
 	}
 
 	t.Setenv(EnvIdentityIssuerAllowlist, "   ")
-	if _, err := newVerifier(true); err == nil {
+	if _, err := newVerifier(true, nil); err == nil {
 		t.Fatal("a whitespace-only issuer allowlist started the daemon")
 	}
 
 	t.Setenv(EnvIdentityIssuerAllowlist, "https://user.bv-brc.org/public_key")
-	v, err := newVerifier(true)
+	v, err := newVerifier(true, nil)
 	if err != nil {
 		t.Fatalf("a narrowed allowlist was refused: %v", err)
 	}
@@ -638,7 +644,7 @@ func TestUnsetIssuerAllowlistTakesTheDefaults(t *testing.T) {
 	if err := os.Unsetenv(EnvIdentityIssuerAllowlist); err != nil {
 		t.Fatal(err)
 	}
-	v, err := newVerifier(true)
+	v, err := newVerifier(true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,10 +658,10 @@ func TestUnsetIssuerAllowlistTakesTheDefaults(t *testing.T) {
 // chooses who may authenticate as anyone.
 func TestKeyFetchFileRequiresFakeDrivers(t *testing.T) {
 	t.Setenv(EnvIdentityKeyFetchFile, filepath.Join(t.TempDir(), "public_key.json"))
-	if _, err := newVerifier(false); err == nil {
+	if _, err := newVerifier(false, nil); err == nil {
 		t.Fatal("the test-only key-fetch override was accepted without --fake-drivers")
 	}
-	if _, err := newVerifier(true); err != nil {
+	if _, err := newVerifier(true, nil); err != nil {
 		t.Fatalf("the override was refused WITH --fake-drivers: %v", err)
 	}
 }
@@ -879,5 +885,239 @@ func TestLiveBackendNeverRepairsOnLoad(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatalf("building the backend rewrote %s:\nbefore %q\nafter  %q", manifest, before, after)
+	}
+}
+
+// --------------------------------------------------------------------------
+// One source for "which operations exist"
+// --------------------------------------------------------------------------
+
+// ctlContractPath is the contract these tests read; same relative root the
+// authz matrix-drift test uses.
+const ctlContractPath = "../../../../contracts/ctl/openapi.yaml"
+
+// contractOps returns every operation name the CONTRACT knows: the `verb` path
+// enum of POST /v1/tenants/{name}/ops/{verb} plus the `op` query enum of
+// GET /v1/doctor (which is the verb enum plus create/adopt/gateway-apply/
+// settings-put). Skips when no interpreter with PyYAML is available, the same
+// way the authz generator's drift test does.
+func contractOps(t *testing.T) []string {
+	t.Helper()
+	python := ""
+	for _, c := range []string{"/rag/envs/ragstack/bin/python", "python3"} {
+		path, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		if err := exec.Command(path, "-c", "import yaml").Run(); err == nil {
+			python = path
+			break
+		}
+	}
+	if python == "" {
+		t.Skip("no interpreter with PyYAML found (tried /rag/envs/ragstack/bin/python, python3); reading the contract's enums needs one")
+	}
+	const script = `
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+ops = set()
+for p in d['paths']['/v1/doctor']['get']['parameters']:
+    if isinstance(p, dict) and p.get('name') == 'op':
+        ops |= set(p['schema']['enum'])
+ops |= set(d['components']['parameters']['Verb']['schema']['enum'])
+if not ops:
+    sys.exit('neither enum was found; the contract moved')
+print('\n'.join(sorted(ops)))
+`
+	out, err := exec.Command(python, "-c", script, ctlContractPath).Output()
+	if err != nil {
+		t.Fatalf("reading the contract's op enums: %v", err)
+	}
+	ops := strings.Fields(string(out))
+	if len(ops) == 0 {
+		t.Fatal("the contract listed no operations")
+	}
+	return ops
+}
+
+// TestEveryContractOpIsKnownToDoctor.
+//
+// The router's `op` validator and doctor's precondition table were two copies
+// of one set, and they had drifted: the contract (and the router) listed 24
+// ops, doctor had rows for 22. The two the router accepted and doctor did not
+// know — `adopt` and `settings-put` — got RedCodes() == nil, which is not "no
+// preconditions", it is the precondition gate switched off. The validator
+// reads doctor's table now; this is the assertion that the table still covers
+// what the contract offers.
+func TestEveryContractOpIsKnownToDoctor(t *testing.T) {
+	var missing []string
+	for _, op := range contractOps(t) {
+		if !doctor.KnownOp(op) {
+			missing = append(missing, op)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the contract offers %v, which doctor has no precondition row for: "+
+			"GET /v1/doctor?op=<one of them> would validate and then raise nothing, "+
+			"and the mutation it scopes would run with its gate off. Add the rows to "+
+			"internal/ctl/doctor/preconditions.go", missing)
+	}
+	// The other direction is not an error (doctor may know an internal op the
+	// contract does not expose), but every op the ROUTER accepts must be one
+	// the contract named.
+	known := map[string]bool{}
+	for _, op := range contractOps(t) {
+		known[op] = true
+	}
+	for _, op := range doctor.Ops() {
+		if !known[op] {
+			t.Logf("doctor knows %q, which the contract's enums do not list", op)
+		}
+	}
+}
+
+// TestDoctorOpValidationMatchesDoctor is the router half: an op doctor knows
+// is accepted, one it does not is the contract's 422.
+func TestDoctorOpValidationMatchesDoctor(t *testing.T) {
+	h := newTestServer(t)
+	for _, op := range doctor.Ops() {
+		if w := asOperator(t, h, http.MethodGet, "/v1/doctor?op="+op); w.Code != http.StatusOK {
+			t.Errorf("op=%s answered %d; doctor knows it", op, w.Code)
+		}
+	}
+	assertError(t, asOperator(t, h, http.MethodGet, "/v1/doctor?op=not-an-op"), 422, "validation")
+}
+
+// --------------------------------------------------------------------------
+// `ctl_api_key` is required unless the caller sent X-API-Key
+// --------------------------------------------------------------------------
+
+// TestBearerMutationWithoutABodyKeyIsRefused.
+//
+// op_request.json exempts exactly one caller from `ctl_api_key`: the one whose
+// request already carries `X-API-Key`. Only the SESSION case was refused, so a
+// bearer token — a credential a browser holds for hours and one the ctl does
+// not issue — mutated the fleet with no ctl key in the request at all.
+func TestBearerMutationWithoutABodyKeyIsRefused(t *testing.T) {
+	token, allowlist, now, keyBody := bvbrcFixture(t)
+	verifier, err := auth.New(auth.Options{
+		Allowlist: allowlist,
+		Now:       func() time.Time { return now },
+		Fetch:     func(context.Context, string) ([]byte, error) { return keyBody, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const subject = "bvbrc:alice@patricbrc.org"
+	h, _ := serverWith(t, map[string]string{
+		auth.EnvAPIKeys:          `["` + opKey + `"]`,
+		auth.EnvAPIKeyRoles:      `{"` + opKey + `":"operator"}`,
+		auth.EnvAPIKeyNames:      `{"` + opKey + `":"alices-key"}`,
+		auth.EnvAPIKeyPrincipals: `{"` + opKey + `":"` + subject + `"}`,
+		auth.EnvAdminSubjects:    subject,
+	}, ratelimit.New(ratelimit.Config{PerCredential: -1, TarpitAt: -1}), verifier)
+
+	bearer := map[string]string{auth.HeaderAuthorization: "Bearer " + token}
+	const op = "/v1/tenants/dev/ops/start"
+
+	body := assertError(t, do(t, h, http.MethodPost, op, bearer, `{"dry_run":false,"args":{}}`), 403, "forbidden")
+	if d, _ := body["detail"].(string); !strings.Contains(d, "ctl_api_key") {
+		t.Fatalf("detail %q does not say what is missing", d)
+	}
+	// An empty member is not a present one.
+	assertError(t, do(t, h, http.MethodPost, op, bearer, `{"dry_run":false,"ctl_api_key":""}`), 403, "forbidden")
+
+	// With the key it IS accepted, and only then refused for PR-A reasons —
+	// so the 403 above is about the missing key, not about bearer callers.
+	assertError(t, do(t, h, http.MethodPost, op, bearer,
+		`{"dry_run":false,"ctl_api_key":"`+opKey+`"}`), 409, "refused")
+
+	// The one exemption still stands: the header itself.
+	assertError(t, do(t, h, http.MethodPost, op,
+		map[string]string{auth.HeaderAPIKey: opKey}, `{"dry_run":false}`), 409, "refused")
+}
+
+// --------------------------------------------------------------------------
+// The fake must hash findings exactly as the live doctor does
+// --------------------------------------------------------------------------
+
+// TestFakeDoctorHashesLikeTheLiveDoctor.
+//
+// The fake had its own hash — sha256 over the JSON of the findings, levels and
+// field order included — while the live backend used doctor.Hash, sha256 over
+// the sorted `code|tenant|detail` lines. Two different digests for the same
+// findings, from the two backends the conformance suite runs against: a plan
+// pinned under --fake-drivers could never be confirmed against a real host,
+// and the suite could not have caught it, because it only ever sees one of the
+// two at a time.
+func TestFakeDoctorHashesLikeTheLiveDoctor(t *testing.T) {
+	b := NewFakeBackend()
+	resp, err := b.Doctor(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Findings) == 0 {
+		t.Fatal("the fixture produced no findings; the test would assert nothing")
+	}
+	if want := doctor.Hash(resp.Findings); resp.Hash != want {
+		t.Fatalf("the fake hashed its findings as %s; doctor.Hash says %s", resp.Hash, want)
+	}
+	// The two properties doctor.Hash has and a JSON digest does not: the
+	// LEVEL is not part of it (an op scope changes levels, and an operator
+	// who has seen the findings has seen them whatever the op), and the order
+	// is not either.
+	shuffled := make([]model.Finding, len(resp.Findings))
+	for i, f := range resp.Findings {
+		shuffled[len(resp.Findings)-1-i] = f
+	}
+	if got := doctor.Hash(shuffled); got != resp.Hash {
+		t.Fatalf("reordering the findings changed the hash: %s != %s", got, resp.Hash)
+	}
+	raised := append([]model.Finding(nil), resp.Findings...)
+	raised[0].Level = model.LevelError
+	if got := doctor.Hash(raised); got != resp.Hash {
+		t.Fatalf("raising a level changed the hash: %s != %s", got, resp.Hash)
+	}
+	// A scoped run is still self-consistent.
+	scoped, err := b.Doctor(context.Background(), "dev", "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := doctor.Hash(scoped.Findings); scoped.Hash != want {
+		t.Fatalf("scoped run: %s != %s", scoped.Hash, want)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Every mutating row is registered
+// --------------------------------------------------------------------------
+
+// TestEveryMutatingRowIsRegistered: the refused-mutation routes are derived
+// from the matrix's `Mutating` rows rather than hand-listed. A mutation
+// missing from a hand list is not a missing feature, it is a 404 where the
+// contract promises a 409 — and the guard's rules about `ctl_api_key`, which
+// key off the same flag, never run for it.
+//
+// (What a session may and may not do with those routes is
+// TestEveryMutatingRowRefusesASessionWithoutABodyKey above; this one is about
+// the route existing at all.)
+func TestEveryMutatingRowIsRegistered(t *testing.T) {
+	h := newTestServer(t)
+	mutating := 0
+	for _, row := range authz.Matrix {
+		if !row.Mutating {
+			continue
+		}
+		mutating++
+		path := concretePath(row.Path)
+		w := do(t, h, row.Method, path, map[string]string{auth.HeaderAPIKey: opKey}, `{"dry_run":true,"args":{}}`)
+		if w.Code == http.StatusNotFound || w.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s (%s) is not registered: %d", row.Method, path, row.OperationID, w.Code)
+			continue
+		}
+		assertError(t, w, http.StatusConflict, "refused")
+	}
+	if mutating == 0 {
+		t.Fatal("the matrix has no mutating rows; the test asserted nothing")
 	}
 }

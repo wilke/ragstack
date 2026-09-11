@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import httpx
 import jsonschema
@@ -80,11 +80,26 @@ def find_secret_values(tree: Any) -> list[str]:
     return hits
 
 
-def forbidden_setting_pattern(schemas: dict[str, dict]) -> re.Pattern[str]:
-    """The registry's own forbidden-settings-name pattern, compiled — so the
-    runtime check enforces exactly what the contract says, not a copy."""
-    guard = schemas["registry"]["$defs"]["PublicSettingKey"]["not"]["pattern"]
-    return re.compile(guard)
+def forbidden_setting_name(schemas: dict[str, dict]) -> Callable[[str], bool]:
+    """"Is this env key secret-class *by the registry's own guard*?"
+
+    Read out of the contract rather than copied, so the runtime check enforces
+    exactly what the schema enforces. The guard is
+
+    ``anyOf: [{enum: <allowlist>}, {not: {pattern: <secretPattern>}}]``
+
+    — a name is forbidden when it matches the pattern AND is not on the
+    allowlist. Reading the ``not`` branch alone would flag the six reviewed
+    ``publicDespitePattern`` exceptions (``CHUNK_MAX_TOKENS`` and friends) that
+    the schema itself accepts, making the runtime check STRICTER than the
+    contract it claims to be reading.
+    """
+    guard = schemas["registry"]["$defs"]["PublicSettingKey"]
+    branches = guard.get("anyOf") or [guard]
+    pattern = next(b["not"]["pattern"] for b in branches if isinstance(b.get("not"), dict))
+    allow = frozenset(next((b["enum"] for b in branches if "enum" in b), ()))
+    rx = re.compile(pattern)
+    return lambda name: bool(rx.search(name)) and name not in allow
 
 
 def _registry(schemas: dict[str, dict]) -> Registry:

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -385,14 +386,26 @@ func TestTenantsViewIsOrderedAndCounted(t *testing.T) {
 // recordingProber answers every probe 200 and remembers what it was asked to
 // dial, so a test can assert that a refused URL was never requested at all —
 // "it returned down" is not the same guarantee as "no packet left the host".
+// It is mutex-guarded because Build probes the tenants concurrently: the
+// recorder is the only mutable thing a fleet build touches.
 type recordingProber struct {
 	hostfacts.Prober
+	mu    sync.Mutex
 	asked []string
 }
 
 func (p *recordingProber) Probe(_ context.Context, url string) (int, error) {
+	p.mu.Lock()
 	p.asked = append(p.asked, url)
+	p.mu.Unlock()
 	return 200, nil
+}
+
+// Asked returns a copy of the URLs this prober was handed.
+func (p *recordingProber) Asked() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.asked...)
 }
 
 // TestHealthNeverProbesADisallowedURL is S10. `stores.*.url` is a registry
@@ -426,7 +439,7 @@ func TestHealthNeverProbesADisallowedURL(t *testing.T) {
 				t.Errorf("qdrant health = %q, want %q (nothing was asked, so nothing is known)",
 					row.Health.Qdrant, model.HealthUnknown)
 			}
-			for _, asked := range rec.asked {
+			for _, asked := range rec.Asked() {
 				if strings.Contains(asked, "169.254.169.254") || strings.Contains(asked, "u:p@") ||
 					strings.HasPrefix(asked, "https://") || strings.Contains(asked, ":24061") {
 					t.Errorf("a refused URL was dialled anyway: %q", asked)
@@ -452,13 +465,99 @@ func TestHealthStillProbesAllowedURLs(t *testing.T) {
 	}
 	for _, w := range want {
 		found := false
-		for _, asked := range rec.asked {
+		for _, asked := range rec.Asked() {
 			if asked == w {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("%s was never probed; asked: %v", w, rec.asked)
+			t.Errorf("%s was never probed; asked: %v", w, rec.Asked())
 		}
+	}
+}
+
+// slowProber answers every probe after a fixed delay and counts how many were
+// in flight at once.
+type slowProber struct {
+	delay time.Duration
+	mu    sync.Mutex
+	cur   int
+	max   int
+}
+
+func (s *slowProber) Probe(ctx context.Context, url string) (int, error) {
+	s.mu.Lock()
+	s.cur++
+	if s.cur > s.max {
+		s.max = s.cur
+	}
+	s.mu.Unlock()
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+	}
+	s.mu.Lock()
+	s.cur--
+	s.mu.Unlock()
+	return 200, nil
+}
+
+// The listing legs are not part of the fleet view; they exist only to satisfy
+// the interface.
+func (s *slowProber) QdrantCollections(context.Context, string) (hostfacts.StoreListing, error) {
+	return hostfacts.StoreListing{}, nil
+}
+
+func (s *slowProber) ESIndices(context.Context, string) (hostfacts.StoreListing, error) {
+	return hostfacts.StoreListing{}, nil
+}
+
+// TestBuildProbesTenantsConcurrently is item 12 of the PR-A review.
+//
+// Every leg of a row is a bounded, read-only probe, and they ran strictly in
+// series — so the dashboard's 15 s poll cost the SUM over the fleet, and four
+// tenants with an unreachable store meant four consecutive timeouts before
+// the first row was complete. The probes hold no shared mutable state, so the
+// fan-out is free; what it must not change is the ORDER, which is display
+// order and is what /v1/tenants returns.
+func TestBuildProbesTenantsConcurrently(t *testing.T) {
+	const delay = 120 * time.Millisecond
+	p := probes(t)
+	sp := &slowProber{delay: delay}
+	p.Prober = sp
+
+	// Every store shared, so each tenant costs exactly one probe (its API):
+	// four in series is 4×delay, four at once is one.
+	f := registry.LiveFixture()
+	for _, tn := range f.Tenants {
+		tn.Stores.Qdrant.Ownership = registry.OwnershipShared
+		tn.Stores.Elasticsearch.Ownership = registry.OwnershipShared
+	}
+	start := time.Now()
+	resp := Build(context.Background(), paths.NewRoots("/rag", paths.Overrides{}), f, p)
+	elapsed := time.Since(start)
+
+	if len(resp.Tenants) != 4 {
+		t.Fatalf("%d rows, want the fixture's 4", len(resp.Tenants))
+	}
+	if elapsed >= 3*delay {
+		t.Errorf("Build took %v for 4 tenants at %v a probe each — the fan-out is not happening", elapsed, delay)
+	}
+	if sp.max < 2 {
+		t.Errorf("max concurrent probes = %d: the tenants were probed in series", sp.max)
+	}
+	// Display order survives the fan-out (the rows are written into their own
+	// slots, not appended by whichever goroutine finishes first).
+	var got []string
+	for _, r := range resp.Tenants {
+		got = append(got, r.Name)
+	}
+	if strings.Join(got, ",") != strings.Join(f.DisplayOrder, ",") {
+		t.Errorf("order = %v, want display order %v", got, f.DisplayOrder)
+	}
+	// An empty fleet still renders as [] rather than null.
+	empty := Build(context.Background(), paths.NewRoots("/rag", paths.Overrides{}), registry.NewFleet("/rag"), probes(t))
+	if empty.Tenants == nil {
+		t.Error("an empty fleet must marshal as [], not null")
 	}
 }

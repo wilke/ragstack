@@ -216,7 +216,25 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	if api.Port != 0 {
 		t.State = string(model.StateActive)
 		if api.User != "" {
+			// The observed account is recorded VERBATIM, including when it is
+			// outside the contract's owner enum — adopt's whole job is to
+			// write down what is true, and substituting a legal-looking value
+			// for the one on the host would put a lie in the registry that no
+			// later doctor run could catch.
+			//
+			// So the row is built honestly and the run says it cannot be
+			// committed: an error finding refuses the commit (and if an
+			// operator forces past it, registry.Save's contract check refuses
+			// the write itself, because a row like this is one Load can never
+			// read back). The fix is a real one — hand the tenant over to an
+			// account the contract knows, or extend the enum in
+			// contracts/ctl/schemas/registry.json first.
 			t.Owner = api.User
+			if !registry.KnownOwner(api.User) {
+				p.err(doctor.OwnerNotInEnum, fmt.Sprintf(
+					"the process on API port %d runs as %q, which is not one of the contract's owners (%s); a row recording it cannot be loaded back — hand the tenant over to a known account, or extend the enum in contracts/ctl/schemas/registry.json",
+					p.ports.API, api.User, strings.Join(registry.Owners(), "|")))
+			}
 		}
 	} else {
 		p.warn(doctor.PortNotListening, fmt.Sprintf("no listener on the API port %d", p.ports.API))
@@ -395,6 +413,18 @@ func (p *previewer) stores(drift *[]registry.Drift) registry.Stores {
 		Qdrant:        p.qdrant(),
 		Elasticsearch: p.elasticsearch(drift),
 		Neo4j:         p.neo4j(),
+	}
+	// A tenant whose ES it owns will be started from a unit that binds
+	// <data_dir>/elasticsearch/snapshots as path.repo, and apptainer refuses
+	// a bind whose SOURCE is missing. Nothing created that directory before
+	// it joined paths.ProvisionDirs, so every tenant adopted from the older
+	// script is missing it — and the operator finds out when the unit fails
+	// to start, not when the row is written.
+	if st.Elasticsearch.Ownership == registry.OwnershipExclusive {
+		if snaps := filepath.Join(p.dataDir, "elasticsearch", "snapshots"); !isDir(snaps) {
+			p.warn(doctor.ESSnapshotsDirMissing, fmt.Sprintf(
+				"%s is absent; the es unit binds it as path.repo and apptainer refuses a bind whose source is missing — create it before starting", snaps))
+		}
 	}
 	st.DormantProvisionedDirs = p.dormant(st)
 	if st.DormantProvisionedDirs {

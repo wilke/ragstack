@@ -97,11 +97,16 @@ func NginxTenants(f *registry.Fleet, cfg NginxConfig) ([]byte, error) {
 		return nil
 	}
 	for _, l := range f.LegacyRoutes {
-		if err := addName(l.Name, true); err != nil {
-			return nil, fmt.Errorf("legacy route: %w", err)
-		}
+		// A retired row is not in the output, so it must not reserve its name
+		// either. addName ran first, so `lucid`, retired the day the tenant
+		// `lucid` was created, made the whole gateway file fail to render
+		// with "duplicate gateway name" — the registry could not express the
+		// ordinary sequence of retiring a legacy route and keeping its name.
 		if l.Status == "retired" {
 			continue
+		}
+		if err := addName(l.Name, true); err != nil {
+			return nil, fmt.Errorf("legacy route: %w", err)
 		}
 		if l.API != 0 {
 			if !validPort(l.API) {

@@ -117,7 +117,7 @@ for line in lines:
             if "<REDACTED:k" not in v and v.strip() not in ("", "''", '""', "'[]'", "'{}'"):
                 sys.exit("[capture] ERROR: %s: %s was not rewritten (regex missed?)" % (src, k))
         elif SECRET.search(k) and k not in PUBLIC_DESPITE and v.strip():
-            line = f"{k}=<REDACTED>"
+            line = f"{k}='<REDACTED>'"
         elif k == "ADMIN_SUBJECTS":
             body = v.split("#", 1)[0]
             n = len([e for e in body.split(",") if e.strip()])
@@ -136,7 +136,11 @@ for t in lucid asm dev demo; do
     mkdir -p "$OUT/tenants/$t/config" "$OUT/tenants/$t/bin"
     redact_tenant_env "$tdir/config/tenant.env" "$OUT/tenants/$t/config/tenant.env" "$t"
     if [[ -f "$tdir/config/secrets.env" ]]; then
-        sed -E 's/^([A-Za-z_][A-Za-z0-9_]*=).*$/\1<REDACTED>/' "$tdir/config/secrets.env" \
+        # The placeholder is SINGLE-QUOTED: `KEY=<REDACTED>` is not an env
+        # file the shell reads the way systemd does — `<` is a redirection,
+        # so sh assigns an empty value and opens a file called REDACTED> —
+        # and the fixture is supposed to be a file both readers agree on.
+        sed -E "s/^([A-Za-z_][A-Za-z0-9_]*=).*$/\1'<REDACTED>'/" "$tdir/config/secrets.env" \
             > "$OUT/tenants/$t/config/secrets.env"
     fi
     [[ -f "$tdir/config/provision.env" ]] && cp "$tdir/config/provision.env" "$OUT/tenants/$t/config/provision.env"

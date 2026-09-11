@@ -23,6 +23,15 @@ type UnitConfig struct {
 	// in a unit publishes a tenant API — which authenticates with an API key
 	// carried in a header — to the whole internet. See the bind check below.
 	AllowNonLoopbackBind bool
+	// AllowOffLayoutDataDir lets Units render a tenant whose data dir is not
+	// named by its manifest_name (`<…>/tenants/<manifest_name>`). Every other
+	// path in the unit — the store binds, the log files — is derived from the
+	// data dir, and the instance and log names are derived from manifest_name;
+	// when the two disagree the unit half-describes one tenant and half
+	// another. adopt records the disagreement as data_dir_off_layout, so the
+	// renderer refuses by default and an operator who really has such a tenant
+	// names it here.
+	AllowOffLayoutDataDir bool
 }
 
 func (c UnitConfig) withDefaults() UnitConfig {
@@ -85,7 +94,7 @@ func UnitNames(name string) (target, qdrant, es, api, ui string) {
 // only) the ui service. Keys are file names. Shared/external stores get no
 // unit — the ctl never supervises what it does not own.
 func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
-	if err := checkTenant(t); err != nil {
+	if err := checkTenant(t, checkOptions{AllowOffLayoutDataDir: cfg.AllowOffLayoutDataDir}); err != nil {
 		return nil, err
 	}
 	cfg = cfg.withDefaults()
@@ -105,7 +114,17 @@ func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
 			return nil, fmt.Errorf("tenant %s: unsafe unit value %q", t.Name, s)
 		}
 	}
-	tp := paths.TenantPaths(paths.NewRoots(cfg.RagRoot, paths.Overrides{DataDir: filepath.Dir(t.DataDir)}), t.Name, t.ManifestName)
+	// Every path in the units is derived from t.DataDir ITSELF — its parent as
+	// the tenants root and its basename as the directory name — not from
+	// <parent>/<manifest_name>. TenantPaths joins the root with the manifest
+	// name, so feeding it t.ManifestName rebuilt a path that only equals
+	// t.DataDir when the two already agree: for the adopted pairs whose row
+	// name and directory differ, the ES unit bound a data dir the tenant does
+	// not use. checkTenant above refuses the disagreement outright unless the
+	// caller opted in, and this derivation follows the data dir either way.
+	tp := paths.TenantPaths(
+		paths.NewRoots(cfg.RagRoot, paths.Overrides{DataDir: filepath.Dir(t.DataDir)}),
+		t.Name, filepath.Base(t.DataDir))
 	target, qdrantU, esU, apiU, uiU := UnitNames(t.Name)
 	out := map[string][]byte{}
 	var stores []string
@@ -169,6 +188,17 @@ StandardError=append:%[11]s/qdrant-%[12]s.log
 			return nil, err
 		}
 		stores = append(stores, esU)
+		// ExecStartPre=es-seed-config is the unit's port of bin/up.sh's
+		// seed_if_empty plus its vm.max_map_count preflight, and both halves
+		// are load-bearing. The config bind shadows the image's
+		// /usr/share/elasticsearch/config, so an EMPTY host directory hands
+		// Elasticsearch no jvm.options, no log4j2.properties and no
+		// elasticsearch.yml and it exits before it logs anything useful; the
+		// script seeded it from the image and the unit did not, so a tenant
+		// that had only ever been started by systemd never booted. The
+		// max_map_count check is a warning on the same command because
+		// 65530 (this host's default) is an ES that dies at startup with a
+		// bootstrap check an operator has to go read the log to see.
 		out[esU] = []byte(fmt.Sprintf(`[Unit]
 Description=ragstack tenant %[1]s — elasticsearch (:%[2]d)
 PartOf=%[3]s
@@ -182,6 +212,7 @@ Type=simple
 UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
+ExecStartPre=%[17]s es-seed-config %[1]s --rag-root %[4]s
 ExecStart=%[7]s run --no-home --bind %[5]s:/usr/share/elasticsearch/data --bind %[8]s:/usr/share/elasticsearch/logs --bind %[9]s:/usr/share/elasticsearch/config --bind %[10]s:%[11]s --env "ES_JAVA_OPTS=-Xms%[12]s -Xmx%[12]s" %[13]s /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=%[2]d -Etransport.port=%[14]d -Epath.repo=%[11]s
 KillMode=mixed
 TimeoutStopSec=120
@@ -190,7 +221,8 @@ RestartSec=5
 StandardOutput=append:%[15]s/es-%[16]s.log
 StandardError=append:%[15]s/es-%[16]s.log
 `, t.Name, t.Ports.ESHTTP, target, cfg.RagRoot, tp.ESData, cfg.CtlStateDir, cfg.ApptainerBin,
-			tp.ESLogs, tp.ESConfig, tp.ESSnapshots, repo, heap, sif, t.Ports.ESTransport, tp.LogsDir, t.ManifestName))
+			tp.ESLogs, tp.ESConfig, tp.ESSnapshots, repo, heap, sif, t.Ports.ESTransport, tp.LogsDir, t.ManifestName,
+			cfg.CtlBin))
 	}
 
 	bind, err := apiBind(t, cfg)

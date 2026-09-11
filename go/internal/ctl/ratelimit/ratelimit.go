@@ -30,6 +30,14 @@
 //   - A hard cap with oldest-touch eviction is the last resort when an
 //     attacker fails faster than the window rolls. Eviction trims a batch in
 //     one pass so its cost amortises to O(1) per failure.
+//
+// # The tarpit is bounded too
+//
+// A held response occupies a request goroutine and a connection for the whole
+// delay, and the attacker picks the failure rate that decides how many are
+// held at once — so the tarpit runs under a semaphore (DefaultMaxTarpits).
+// When it is full the failure is answered immediately and undelayed: the
+// defence must never be the thing that exhausts the daemon's connections.
 package ratelimit
 
 import (
@@ -61,6 +69,14 @@ const (
 	// at once. Beyond it the oldest-touched entries are evicted: losing an
 	// attacker's counters is acceptable, unbounded memory is not.
 	DefaultMaxCredentials = 50000
+	// DefaultMaxTarpits bounds how many responses may be held in a tarpit at
+	// the SAME time. Each held response occupies a request goroutine and a
+	// connection for the whole delay, so an unbounded tarpit is a lever the
+	// attacker — who picks the failure rate — points at the daemon's own
+	// connection budget: the defence would take the daemon down before the
+	// guessing did. Past the bound a failure is answered immediately. The
+	// tarpit is a throttle, never a reason to run out of sockets.
+	DefaultMaxTarpits = 256
 	// evictToTenths is how far below the cap one eviction pass trims (in
 	// tenths), so the pass runs once per (cap/10) failures, not once per one.
 	evictToTenths = 9
@@ -77,6 +93,9 @@ type Config struct {
 	Window        time.Duration
 	// MaxCredentials bounds the failure map; 0 ⇒ DefaultMaxCredentials.
 	MaxCredentials int
+	// MaxTarpits bounds concurrently held tarpit responses;
+	// 0 ⇒ DefaultMaxTarpits. A negative value disables the bound.
+	MaxTarpits int
 	// Now is the clock; nil ⇒ time.Now.
 	Now func() time.Time
 	// Sleep is how a tarpit delay is served; nil ⇒ a wait that also returns
@@ -101,6 +120,12 @@ type Limiter struct {
 	maxCredentials int
 	now            func() time.Time
 	sleep          func(ctx context.Context, d time.Duration)
+	// tarpits is the concurrency semaphore: one slot per response that may be
+	// held at a time. nil when the bound is disabled. A channel rather than a
+	// counter so "is there room" and "take the room" are one operation, and a
+	// full one is answered with `default` instead of blocking — a tarpit that
+	// queued would be the resource sink it exists to prevent.
+	tarpits chan struct{}
 
 	mu sync.Mutex
 	// failures[key] is that credential's failures inside the window; global is
@@ -142,6 +167,13 @@ func New(cfg Config) *Limiter {
 	}
 	if l.maxCredentials <= 0 {
 		l.maxCredentials = DefaultMaxCredentials
+	}
+	switch {
+	case cfg.MaxTarpits < 0: // explicitly unbounded
+	case cfg.MaxTarpits == 0:
+		l.tarpits = make(chan struct{}, DefaultMaxTarpits)
+	default:
+		l.tarpits = make(chan struct{}, cfg.MaxTarpits)
 	}
 	if l.now == nil {
 		l.now = time.Now
@@ -253,12 +285,39 @@ func (l *Limiter) TarpitDelay() time.Duration {
 // outlive a SIGTERM's shutdown grace, which is how a stop turned into a
 // non-zero exit. The returned duration is what was ASKED for, not what was
 // waited: the caller writes the same response either way.
+//
+// Concurrency is bounded (DefaultMaxTarpits). Every held response occupies a
+// goroutine and a connection for its whole delay, and the failure rate that
+// decides how many there are is the ATTACKER's to choose — so an unbounded
+// tarpit hands them the daemon's connection budget as a target. When every
+// slot is taken the failure is answered at once, undelayed: throttling is
+// worth doing until it costs more than the attack.
 func (l *Limiter) Tarpit(ctx context.Context) time.Duration {
 	d := l.TarpitDelay()
-	if d > 0 {
+	if d <= 0 {
+		return 0
+	}
+	if l.tarpits == nil {
 		l.sleep(ctx, d)
+		return d
+	}
+	select {
+	case l.tarpits <- struct{}{}:
+		defer func() { <-l.tarpits }()
+		l.sleep(ctx, d)
+	default:
+		// Saturated: answer now rather than add one more held connection.
 	}
 	return d
+}
+
+// TarpitsHeld reports how many responses are being held right now. For tests
+// and for doctor.
+func (l *Limiter) TarpitsHeld() int {
+	if l.tarpits == nil {
+		return 0
+	}
+	return len(l.tarpits)
 }
 
 // contextSleep waits d, or until ctx is done, whichever comes first.

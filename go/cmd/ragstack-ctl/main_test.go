@@ -115,13 +115,14 @@ func TestRenderFromRegistry(t *testing.T) {
 	if rc, _, _ := capture(t, "render", "units", "nope", "--registry", reg); rc != exitError {
 		t.Errorf("unknown tenant rc %d", rc)
 	}
-	// A tenant with no desired_boot value is refused rather than guessed.
+	// A tenant with no desired_boot value never reaches the renderer at all
+	// any more: Save validates against the contract before writing, and Load
+	// against the same contract on the way back in, so the unpinned row
+	// cannot exist on disk. (render.Units still refuses it directly —
+	// render.TestUnitsGoldens covers that — for a Tenant built in memory.)
 	f.Tenants["dev"].DesiredBoot = ""
-	if err := registry.Save(reg, f, "test"); err != nil {
-		t.Fatal(err)
-	}
-	if rc, _, _ := capture(t, "render", "units", "dev", "--registry", reg, "--allow-non-loopback-bind"); rc != exitError {
-		t.Errorf("unpinned tenant rc %d", rc)
+	if err := registry.Save(reg, f, "test"); err == nil {
+		t.Error("Save wrote a row whose desired_boot is outside the contract enum")
 	}
 }
 
@@ -325,5 +326,168 @@ func TestRegistryRepairIsAVerbNotASideEffect(t *testing.T) {
 	}
 	if rc, _, _ := capture(t, "registry"); rc != exitUsage {
 		t.Error("`registry` with no verb should be a usage error")
+	}
+}
+
+// TestRenderScriptsUseTheRegistryRow is item 5 of the PR-A review.
+//
+// `render tenant-env|up-sh|down-sh` ignored the registry entirely and built a
+// throwaway tenant at index 0 with a 512m heap. For a tenant that EXISTS that
+// is not a rehearsal, it is a wrong answer: the printed up.sh starts that
+// tenant's stores on ports 24001-24004, which belong to whoever holds index 0.
+// The registry is the allocator; --index and --es-heap are for a name it does
+// not know yet.
+func TestRenderScriptsUseTheRegistryRow(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	f := registry.LiveFixture()
+	if err := registry.Save(reg, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	// lucid-next is index 0 with a 2g heap and a data dir named `lucid`.
+	rc, up, errs := capture(t, "render", "up-sh", "lucid-next", "--registry", reg)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	for _, want := range []string{
+		`TDIR="/rag/data/tenants/lucid"`, "-Xms2g -Xmx2g",
+		"http :24001, grpc :24002",
+	} {
+		if !strings.Contains(up, want) {
+			t.Errorf("up.sh lacks %q:\n%s", want, up)
+		}
+	}
+	// asm-next is index 1: its env file must carry ITS ports, not 24000's.
+	rc, env, errs := capture(t, "render", "tenant-env", "asm-next", "--registry", reg)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(env, "PORT=24020") || !strings.Contains(env, "QDRANT_URL=http://localhost:24021") {
+		t.Errorf("tenant-env used the flag default instead of the row:\n%s", env)
+	}
+	if !strings.Contains(env, "USER_STORE_PATH=/rag/data/tenants/asm/state/") {
+		t.Errorf("tenant-env used the derived data dir, not the row's:\n%s", env)
+	}
+	// Quoting an allocator flag at an existing tenant is refused, not ignored.
+	for _, args := range [][]string{
+		{"render", "up-sh", "lucid-next", "--registry", reg, "--index", "7"},
+		{"render", "up-sh", "lucid-next", "--registry", reg, "--es-heap", "8g"},
+	} {
+		rc, _, errs := capture(t, args...)
+		if rc != exitError || !strings.Contains(errs, "does not exist yet") {
+			t.Errorf("%v: rc %d err %q", args, rc, errs)
+		}
+	}
+	// A name the registry does not know is still greenfield, flags and all.
+	rc, up, errs = capture(t, "render", "up-sh", "acme", "--registry", reg, "--index", "3", "--es-heap", "4g")
+	if rc != exitOK || !strings.Contains(up, "-Xms4g -Xmx4g") || !strings.Contains(up, "http :24061") {
+		t.Errorf("greenfield render: rc %d %s %s", rc, up, errs)
+	}
+	// And so is every name when there is no registry at all.
+	rc, up, errs = capture(t, "render", "up-sh", "acme", "--registry", filepath.Join(dir, "nope.json"))
+	if rc != exitOK || !strings.Contains(up, "http :24001") {
+		t.Errorf("no registry must not fail a greenfield render: rc %d %s %s", rc, up, errs)
+	}
+}
+
+// TestRenderHonoursTheGlobalRagRoot is item 6: `render`'s own --rag-root
+// defaulted to the literal "/rag" instead of the global flag's value, so
+// `ragstack-ctl --rag-root /tmp/x render up-sh acme` silently rendered /rag
+// paths — and the operator rehearsing against a scratch root got a script
+// pointed at the live deployment.
+func TestRenderHonoursTheGlobalRagRoot(t *testing.T) {
+	rc, up, errs := capture(t, "--rag-root", "/srv/rag", "render", "up-sh", "acme")
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(up, `TDIR="/srv/rag/data/tenants/acme"`) || !strings.Contains(up, `IMG="/srv/rag/apptainer/images"`) {
+		t.Errorf("the global --rag-root was ignored:\n%s", up)
+	}
+	// The subcommand flag still wins when it is given explicitly.
+	rc, up, _ = capture(t, "--rag-root", "/srv/rag", "render", "up-sh", "acme", "--rag-root", "/opt/rag")
+	if rc != exitOK || !strings.Contains(up, `TDIR="/opt/rag/data/tenants/acme"`) {
+		t.Errorf("the explicit --rag-root must win:\n%s", up)
+	}
+}
+
+// TestESSeedConfig is item 4: the ES unit's ExecStartPre. The unit binds the
+// tenant's elasticsearch/config over the image's own copy, so an EMPTY host
+// directory hands Elasticsearch no jvm.options and no log4j2.properties and
+// it exits before logging anything useful. bin/up.sh seeded it (seed_if_empty)
+// and the unit did not.
+func TestESSeedConfig(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	f := registry.LiveFixture()
+	dev := f.Tenants["dev"]
+	dev.DataDir = filepath.Join(dir, "data", "tenants", "dev")
+	dev.Stores.Elasticsearch.SIF = registry.NullString(filepath.Join(dir, "elasticsearch.sif"))
+	if err := registry.Save(reg, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Join(dev.DataDir, "elasticsearch", "config")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var argv []string
+	real := esSeedConfig
+	esSeedConfig = func(bin string, args ...string) error {
+		argv = append([]string{bin}, args...)
+		return os.WriteFile(filepath.Join(cfgDir, "jvm.options"), []byte("-Xss1m\n"), 0o644)
+	}
+	realMMC := esSeedMaxMapCount
+	esSeedMaxMapCount = func(paths.Roots) (int, error) { return 65530, nil }
+	defer func() { esSeedConfig, esSeedMaxMapCount = real, realMMC }()
+
+	rc, out, errs := capture(t, "es-seed-config", "dev", "--registry", reg)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(out, "seeding "+cfgDir) {
+		t.Errorf("out = %q", out)
+	}
+	// The command is argv-only: no shell, nothing a tenant's own config could
+	// reach, and the bind source is the tenant's own config directory.
+	wantArgv := []string{
+		"/usr/bin/apptainer", "exec", "--bind", cfgDir + ":/__seed",
+		string(dev.Stores.Elasticsearch.SIF),
+		"cp", "-R", "/usr/share/elasticsearch/config/.", "/__seed/",
+	}
+	if strings.Join(argv, "\x00") != strings.Join(wantArgv, "\x00") {
+		t.Errorf("argv  = %v\nwant = %v", argv, wantArgv)
+	}
+	// The max_map_count preflight warns (and does not refuse: the sysctl is
+	// the host admin's, and refusing here takes the store down on a reboot
+	// that lost it).
+	if !strings.Contains(errs, "vm.max_map_count=65530") || !strings.Contains(errs, "262144") {
+		t.Errorf("no max_map_count warning: %q", errs)
+	}
+
+	// A populated directory is left strictly alone — an operator's own
+	// elasticsearch.yml is never overwritten.
+	argv = nil
+	rc, out, _ = capture(t, "es-seed-config", "dev", "--registry", reg)
+	if rc != exitOK || argv != nil || !strings.Contains(out, "already populated") {
+		t.Errorf("a populated config dir was re-seeded: rc %d argv %v out %q", rc, argv, out)
+	}
+	// A shared store is not the ctl's to seed.
+	rc, out, _ = capture(t, "es-seed-config", "asm-next", "--registry", reg)
+	if rc != exitOK || !strings.Contains(out, "not exclusively owned") {
+		t.Errorf("shared ES: rc %d out %q", rc, out)
+	}
+	// Usage and unknown-tenant behave like every other verb.
+	if rc, _, _ := capture(t, "es-seed-config", "--registry", reg); rc != exitUsage {
+		t.Error("no tenant should be a usage error")
+	}
+	if rc, _, _ := capture(t, "es-seed-config", "nope", "--registry", reg); rc != exitError {
+		t.Error("an unknown tenant should be an error")
+	}
+	// A missing bind source is fatal here rather than at the failed start.
+	if err := os.RemoveAll(cfgDir); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, errs := capture(t, "es-seed-config", "dev", "--registry", reg); rc != exitError || !strings.Contains(errs, cfgDir) {
+		t.Errorf("missing config dir: rc %d err %q", rc, errs)
 	}
 }

@@ -43,6 +43,9 @@ func newWorld(t *testing.T) *world {
 	dataDir := filepath.Join(roots.DataDir, "dev")
 	for _, d := range []string{
 		filepath.Join(dataDir, "config"), filepath.Join(dataDir, "bin"),
+		// path.repo: the healthy baseline HAS it, because the ES unit binds
+		// it and apptainer refuses a bind whose source is missing.
+		filepath.Join(dataDir, "elasticsearch", "snapshots"),
 		roots.UnitsDir(), roots.ImagesDir, filepath.Join(roots.ProxyDir, "conf.d"),
 		filepath.Join(roots.ReposDir, "dev"),
 	} {
@@ -480,6 +483,7 @@ func TestOpsTableIsSane(t *testing.T) {
 		SudoersGroup, DormantProvisionedDirs, StoreURLDisallowed, CapabilitiesUnconfirmed,
 		ESHeapDrift, StoreNotListening, UIPortNotListening, UnsupportedEnvKey,
 		APIKeyRoleUnknown, ExternalRefOutsideDataDir, UnmanagedFiles, DataDirOffLayout,
+		OwnerNotInEnum, ESSnapshotsDirMissing, ESHeapUnparsable,
 	} {
 		known[c] = true
 	}
@@ -731,5 +735,95 @@ func TestOpsAreKnown(t *testing.T) {
 	// tolerates table, and Ops() is the union.
 	if !KnownOp("env-normalize") {
 		t.Error("env-normalize must be a known op")
+	}
+}
+
+// TestOpsCoversTheContractEnum: `--op` is validated against Ops(), and the
+// contract publishes the set of ops a caller may ask for. Two of them —
+// `adopt` and `settings-put` — had no row in either table, so KnownOp said no
+// and the CLI rejected an op the OpenAPI enum says is legal, while the daemon
+// would have run the gate with no preconditions at all. The list below is
+// copied from contracts/ctl/openapi.yaml (GET /v1/doctor, parameter `op`);
+// drift in either direction is a failure here.
+func TestOpsCoversTheContractEnum(t *testing.T) {
+	contract := []string{
+		"start", "stop", "restart", "backup", "restore", "handover",
+		"migrate-local", "decommission", "key-mint", "key-revoke", "admin-add",
+		"admin-remove", "sa-create", "sa-disable", "sa-enable", "env-set",
+		"env-unset", "env-normalize", "render-units", "update-code", "create",
+		"adopt", "gateway-apply", "settings-put",
+	}
+	if len(contract) != 24 {
+		t.Fatalf("the contract enum has 24 ops, this copy has %d", len(contract))
+	}
+	got := Ops()
+	if len(got) != len(contract) {
+		t.Errorf("Ops() = %d entries %v, want %d", len(got), got, len(contract))
+	}
+	have := map[string]bool{}
+	for _, op := range got {
+		have[op] = true
+	}
+	for _, op := range contract {
+		if !have[op] {
+			t.Errorf("op %q is in the contract enum but has no precondition row", op)
+		}
+		if !KnownOp(op) {
+			t.Errorf("KnownOp(%q) = false: the CLI would reject a legal op", op)
+		}
+		delete(have, op)
+	}
+	for op := range have {
+		t.Errorf("op %q has a precondition row but is not in the contract enum", op)
+	}
+	// adopt records what it finds; only a store URL no op may dial and a
+	// manifest row the registry does not know stop it.
+	if got := strings.Join(RedCodes("adopt"), " "); got != StoreURLDisallowed+" "+ManifestUnknownRow {
+		t.Errorf("RedCodes(adopt) = %q", got)
+	}
+	// settings-put has a row so the gate is a decision, not an omission.
+	if got := RedCodes("settings-put"); len(got) != 0 {
+		t.Errorf("RedCodes(settings-put) = %v, want none", got)
+	}
+}
+
+// TestESSnapshotsDirMissingBlocksStart: the ES unit binds
+// <data_dir>/elasticsearch/snapshots as path.repo, and apptainer refuses a
+// bind whose SOURCE does not exist — so an absent directory is not a lost
+// snapshot capability, it is a service that cannot start. Nothing created it
+// before it joined paths.ProvisionDirs, so every script-provisioned tenant
+// is in this state.
+func TestESSnapshotsDirMissingBlocksStart(t *testing.T) {
+	w := newWorld(t)
+	snaps := filepath.Join(w.tenant.DataDir, "elasticsearch", "snapshots")
+	if err := os.RemoveAll(snaps); err != nil {
+		t.Fatal(err)
+	}
+	f, ok := byCode(w.run(t))[ESSnapshotsDirMissing]
+	if !ok {
+		t.Fatalf("no %s finding", ESSnapshotsDirMissing)
+	}
+	if f.Level != model.LevelWarn {
+		t.Errorf("level = %s, want warn (a stopped tenant is not broken by it)", f.Level)
+	}
+	if !strings.Contains(f.Detail, snaps) {
+		t.Errorf("detail does not name the directory: %s", f.Detail)
+	}
+	// Raised to an error for the ops that start the store, and for nothing else.
+	for _, op := range []string{"start", "restart"} {
+		w.opts.Op = op
+		if got := w.run(t).Status; got != model.StatusRed {
+			t.Errorf("--op %s = %s, want red: the unit cannot start", op, got)
+		}
+	}
+	w.opts.Op = "stop"
+	if got := w.run(t).Status; got == model.StatusRed {
+		t.Error("--op stop must not block on a missing bind source: stopping needs no bind")
+	}
+	// A shared ES is not this tenant's to provision, so nothing is raised.
+	w.opts.Op = ""
+	w.tenant.Stores.Elasticsearch.Ownership = registry.OwnershipShared
+	if _, ok := byCode(w.run(t))[ESSnapshotsDirMissing]; ok {
+		t.Error("a shared elasticsearch raised es_snapshots_dir_missing")
 	}
 }

@@ -34,6 +34,12 @@ transient ``git`` timeout must not become a permanent ``null`` — but they are
 rate-limited to one attempt per :data:`RETRY_INTERVAL_S`, so a dead or hanging
 git is not re-spawned on every request either. The cold path is serialised by
 one module lock: N concurrent first requests spawn one git, not N.
+
+The startup warm-up (:func:`warm_cache`) is the one caller that does NOT arm
+that back-off. It runs before any request exists, so a warm-up that lost a race
+with a cold page cache or a slow NFS ``git`` would otherwise pre-commit the
+first real caller to :data:`RETRY_INTERVAL_S` of guaranteed nulls that nothing
+had asked for.
 """
 from __future__ import annotations
 
@@ -113,7 +119,7 @@ def _run_git(git: str, *args: str) -> str | None:
     return out or None
 
 
-def _git(*args: str) -> str | None:
+def _git(*args: str, arm_backoff: bool = True) -> str | None:
     """Cached ``git <args>``; ``None`` on any failure or empty output.
 
     The lock is held across the subprocess on purpose: the first request after
@@ -121,6 +127,14 @@ def _git(*args: str) -> str | None:
     them fork its own ``git`` is the amplification the cache exists to prevent.
     The call is bounded by :data:`GIT_TIMEOUT_S`, and it runs in the threadpool
     (the route is a plain ``def``), never on the event loop.
+
+    *arm_backoff* is what separates a REQUEST from the startup warm-up. A
+    request that finds git dead should stop everyone re-spawning it for
+    :data:`RETRY_INTERVAL_S`; the warm-up should not, because it runs once,
+    before any caller exists, at the moment the process is busiest — so a
+    warm-up that lost a race with a slow disk would hand the first real
+    request a minute of guaranteed nulls that nothing had asked for. It still
+    CONSUMES an existing back-off (no point spawning into a known-dead git).
     """
     git = _GIT
     if git is None:
@@ -136,21 +150,22 @@ def _git(*args: str) -> str | None:
             return None
         out = _run_git(git, *args)
         if out is None:
-            _RETRY_AFTER[args] = now + RETRY_INTERVAL_S
+            if arm_backoff:
+                _RETRY_AFTER[args] = now + RETRY_INTERVAL_S
         else:
             _CACHE[args] = out
             _RETRY_AFTER.pop(args, None)
         return out
 
 
-def git_is_this_checkout() -> bool:
+def git_is_this_checkout(*, arm_backoff: bool = True) -> bool:
     """Whether ``git`` in :data:`_CHECKOUT` answers for *this* checkout.
 
     ``git`` searches upward from its cwd, so a package installed outside a
     repository (a conda env, a wheel in site-packages) would otherwise report
     the identity of whatever repository encloses it.
     """
-    top = _git("rev-parse", "--show-toplevel")
+    top = _git("rev-parse", "--show-toplevel", arm_backoff=arm_backoff)
     if not top:
         return False
     try:
@@ -159,24 +174,29 @@ def git_is_this_checkout() -> bool:
         return False
 
 
-def _env_or_git(env_var: str, *git_args: str) -> str | None:
+def _env_or_git(env_var: str, *git_args: str, arm_backoff: bool = True) -> str | None:
     override = os.environ.get(env_var, "").strip()
     if override:
         return override
-    if not git_is_this_checkout():
+    if not git_is_this_checkout(arm_backoff=arm_backoff):
         return None
-    return _git(*git_args)
+    return _git(*git_args, arm_backoff=arm_backoff)
 
 
-def git_tag() -> str | None:
-    return _env_or_git("RAGSTACK_GIT_TAG", "describe", "--tags", "--always", "--dirty")
+def git_tag(*, arm_backoff: bool = True) -> str | None:
+    return _env_or_git(
+        "RAGSTACK_GIT_TAG", "describe", "--tags", "--always", "--dirty",
+        arm_backoff=arm_backoff,
+    )
 
 
-def git_sha() -> str | None:
-    return _env_or_git("RAGSTACK_GIT_SHA", "rev-parse", "--short", "HEAD")
+def git_sha(*, arm_backoff: bool = True) -> str | None:
+    return _env_or_git(
+        "RAGSTACK_GIT_SHA", "rev-parse", "--short", "HEAD", arm_backoff=arm_backoff
+    )
 
 
-def version_info() -> dict[str, Any]:
+def version_info(*, arm_backoff: bool = True) -> dict[str, Any]:
     """The ``VersionResponse`` body (``contracts/schemas/version_response.json``).
 
     Synchronous, and on the very first call possibly slow (up to three bounded
@@ -186,9 +206,26 @@ def version_info() -> dict[str, Any]:
     """
     return {
         "version": package_version(),
-        "git_tag": git_tag(),
-        "git_sha": git_sha(),
+        "git_tag": git_tag(arm_backoff=arm_backoff),
+        "git_sha": git_sha(arm_backoff=arm_backoff),
         "started_at": STARTED_AT,
         "python": platform.python_version(),
         "impl": IMPL,
     }
+
+
+def warm_cache() -> dict[str, Any]:
+    """Populate the cache off the request path. **Never arms the back-off.**
+
+    Called once from the API lifespan, in a worker thread, as a fire-and-forget
+    task (``api/deps.py``). Two properties it must have and ``version_info()``
+    must not:
+
+    * it does not arm the failure back-off, so a warm-up that loses a race
+      with a cold page cache or a slow NFS ``git`` cannot hand the first real
+      request :data:`RETRY_INTERVAL_S` of guaranteed nulls;
+    * it swallows nothing extra — ``version_info`` already turns every git
+      failure into ``None`` — so the caller's only job is to not let a
+      warm-up failure keep the API down.
+    """
+    return version_info(arm_backoff=False)

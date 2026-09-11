@@ -3,7 +3,15 @@
 [Unit]
 Description=ragstack-ctl tenant control plane ({{ ctl_version | default('unversioned', true) }})
 Documentation=file:{{ rag_root }}/repos/ragstack.git
-ConditionPathIsMountPoint={{ rag_root }}
+# NOT ConditionPathIsMountPoint={{ rag_root }}: a failed Condition makes systemd SKIP
+# the unit and report the skip as success, so on any host where {{ rag_root }} is a
+# plain directory rather than a mount point (a second site, a test box, a
+# bind-mount that resolves to the same filesystem) the daemon would silently
+# never start while `systemctl --user status` reported nothing wrong. What the
+# unit actually needs is its state directory; waiting for the MOUNT is the
+# RequiresMountsFor={{ rag_root }} in the user@ drop-in, where a miss delays the
+# unit instead of quietly cancelling it.
+ConditionPathIsDirectory={{ rag_root }}/data/ctl
 After=network-online.target
 
 [Service]

@@ -48,7 +48,22 @@ const (
 	ClassQuote         = "quote"          // unterminated / stray quote, `'` inside '…'
 	ClassSyntax        = "syntax"         // not KEY=value
 	ClassDuplicateKey  = "duplicate_key"  // key assigned more than once (last wins)
+	// ClassUnquotedMetachar: an unquoted value holding a character the shell
+	// acts on — ` | & ; < > ( ) ~ — which sh executes and systemd keeps
+	// literally. The two readers of the same file therefore disagree about
+	// the value, which is exactly the divergence this grammar exists to
+	// prevent (and `A=`id`` is command substitution in a file more than the
+	// API's unit sources). Strict Parse refuses it; ParseLenient loads it and
+	// reports it, like an inline comment, so Normalize can quote the value.
+	ClassUnquotedMetachar = "unquoted_metachar"
 )
+
+// shellMetachars are the characters an UNQUOTED value may not contain: each
+// one makes sh do something (pipe, background, terminate the command,
+// redirect, subshell, command-substitute, expand a home directory) that
+// systemd's EnvironmentFile= does not. `$` has its own class (ClassExpansion)
+// and its own message; these are the rest of the set.
+const shellMetachars = "`|&;<>()~"
 
 // Problem is one grammar or compatibility finding.
 type Problem struct {
@@ -167,7 +182,13 @@ func parse(b []byte) (*File, Problems, error) {
 		l, p := parseLine(n, raw)
 		l.cr = cr
 		if p != nil {
-			if p.Class == ClassInlineComment {
+			// Soft problems keep the line: the value is unambiguous, only the
+			// two READERS of it disagree, so the ctl can load the file, say
+			// exactly what is wrong and re-render it correctly (Normalize).
+			// A file it refuses outright is a file it cannot report on —
+			// which is how one stray character in a live secrets.env made a
+			// whole tenant un-adoptable instead of raising a finding.
+			if p.Class == ClassInlineComment || p.Class == ClassUnquotedMetachar {
 				soft = append(soft, *p)
 			} else {
 				hard = append(hard, *p)
@@ -244,6 +265,15 @@ func parseLine(n int, raw string) (line, *Problem) {
 	}
 	if strings.ContainsRune(rest, '$') {
 		return line{}, &Problem{Line: n, Class: ClassExpansion, Key: key, Msg: "`$` in an unquoted value: the shell expands it, systemd does not"}
+	}
+	if i := strings.IndexAny(rest, shellMetachars); i >= 0 {
+		// The value is what systemd would load — the literal characters. sh
+		// is the reader that does something else with them, so the line is
+		// kept (Normalize re-renders it single-quoted, which both readers
+		// then agree on) and reported.
+		l.value = rest
+		return l, &Problem{Line: n, Class: ClassUnquotedMetachar, Key: key,
+			Msg: fmt.Sprintf("%q in an unquoted value: the shell acts on it, systemd keeps it literally — quote the whole value", rest[i:i+1])}
 	}
 	if idx := inlineCommentIndex(rest); idx >= 0 {
 		l.value = strings.TrimRight(rest[:idx], " \t")
@@ -325,6 +355,26 @@ func (f *File) Get(key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Assignment is one KEY=value line, with the value as both readers see it.
+type Assignment struct{ Key, Value string }
+
+// Assignments returns EVERY assignment in source order, duplicates included.
+//
+// Keys+Get is the wrong pair for anything that has to see all of them: Keys
+// dedups and Get is last-wins, so an earlier duplicate's value is invisible
+// through that pair — which is fine for "what will the API read" and wrong
+// for "what secrets has this file ever held", where the shadowed value is
+// still a live credential sitting in the file.
+func (f *File) Assignments() []Assignment {
+	out := make([]Assignment, 0, len(f.lines))
+	for _, l := range f.lines {
+		if l.kind == 'a' {
+			out = append(out, Assignment{Key: l.key, Value: l.value})
+		}
+	}
+	return out
 }
 
 // Keys returns the assigned keys in first-seen order, without duplicates.
@@ -410,7 +460,11 @@ func chooseQuote(v string) (quote, error) {
 			return unquoted, fmt.Errorf("control character %U in value", r)
 		}
 	}
-	if v != "" && !strings.ContainsAny(v, " \t#'\"$\\") && strings.TrimSpace(v) == v {
+	// Anything the shell would ACT on forces quotes. Writing `V=a|b` unquoted
+	// produced a file sh and systemd read differently — sh ran `b`, systemd
+	// stored the three characters — so the writer could emit a value its own
+	// parser (and the tenant's API) would never read back.
+	if v != "" && !strings.ContainsAny(v, " \t#'\"$\\"+shellMetachars) && strings.TrimSpace(v) == v {
 		return unquoted, nil
 	}
 	if !strings.ContainsRune(v, '\'') {

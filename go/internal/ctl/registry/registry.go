@@ -231,6 +231,9 @@ func (f *Fleet) Validate() error {
 // order), generation+1, registry.json (tmp+fsync+rename), manifest.tsv
 // projection (tmp+fsync+rename), then the .generation record. updatedBy is
 // recorded verbatim (principal or "local:<uid>").
+//
+// Both halves of validation run: Validate before the locks, ValidateContract
+// on the stamped document just before it is marshalled (see below).
 func Save(path string, f *Fleet, updatedBy string) error {
 	if err := f.Validate(); err != nil {
 		return err
@@ -263,6 +266,23 @@ func Save(path string, f *Fleet, updatedBy string) error {
 	next.Generation = f.Generation + 1
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	next.UpdatedBy = updatedBy
+
+	// The contract check runs HERE, on the document that is about to be
+	// written — after generation, updated_at and updated_by are stamped,
+	// because those three are required fields and f does not carry the
+	// values this write will give them.
+	//
+	// Validate above checks the allocator's invariants (unique index, port
+	// arithmetic, manifest names); ValidateContract checks the SHAPE Load
+	// enforces on the way back in, and running only the first is how `adopt`
+	// persisted a registry no later Load could read: it copied the API
+	// process's account into `owner`, whose enum is svcbvbrc|wilke, and the
+	// tenant became unloadable the moment the daemon restarted. A write that
+	// cannot be read back is a corruption, and this is the last point where
+	// refusing it costs nothing.
+	if err := next.ValidateContract(); err != nil {
+		return err
+	}
 
 	reg, err := Marshal(&next)
 	if err != nil {

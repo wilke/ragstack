@@ -152,7 +152,7 @@ LOG_LEVEL=INFO
 // TenantEnv renders tenant.env for t exactly as apptainer/new-tenant.sh's
 // render_env does (sqlite and postgres branches), attribution aside.
 func TenantEnv(t *registry.Tenant, o EnvOptions) ([]byte, error) {
-	if err := checkTenant(t); err != nil {
+	if err := checkTenant(t, scriptCheck); err != nil {
 		return nil, err
 	}
 	kind := o.StoreKind
@@ -303,7 +303,7 @@ done
 
 // UpSh renders bin/up.sh (render_up_sh).
 func UpSh(t *registry.Tenant, o StoreOptions) ([]byte, error) {
-	if err := checkTenant(t); err != nil {
+	if err := checkTenant(t, scriptCheck); err != nil {
 		return nil, err
 	}
 	if o.Images == "" {
@@ -324,13 +324,27 @@ func UpSh(t *registry.Tenant, o StoreOptions) ([]byte, error) {
 
 // DownSh renders bin/down.sh (render_down_sh).
 func DownSh(t *registry.Tenant) ([]byte, error) {
-	if err := checkTenant(t); err != nil {
+	if err := checkTenant(t, scriptCheck); err != nil {
 		return nil, err
 	}
 	return execTmpl(downTmpl, upData{Name: t.Name})
 }
 
-func checkTenant(t *registry.Tenant) error {
+// checkOptions are the refusals a caller may waive.
+type checkOptions struct {
+	// AllowOffLayoutDataDir waives the data_dir/manifest_name agreement
+	// check below.
+	AllowOffLayoutDataDir bool
+}
+
+// scriptCheck is what the three script renderers pass. They interpolate
+// t.DataDir VERBATIM and derive no sibling path from it, so their output is
+// correct for a data dir of any name; only Units, which derives the whole
+// unit's paths from the data dir while naming instances and log files after
+// manifest_name, needs the two to agree.
+var scriptCheck = checkOptions{AllowOffLayoutDataDir: true}
+
+func checkTenant(t *registry.Tenant, opts checkOptions) error {
 	if t == nil {
 		return errors.New("nil tenant")
 	}
@@ -349,6 +363,16 @@ func checkTenant(t *registry.Tenant) error {
 	if t.DataDir != "" {
 		if _, err := paths.SafePath("/", t.DataDir); err != nil {
 			return fmt.Errorf("data_dir: %w", err)
+		}
+		// The data dir's basename IS the manifest name in the host layout,
+		// and a renderer that derives sibling paths from the data dir while
+		// naming instances and logs after manifest_name needs that to hold:
+		// otherwise the unit binds one tenant's store directory and writes
+		// the other tenant's log. adopt records the disagreement as
+		// data_dir_off_layout, so it is a known, nameable state — refused
+		// here rather than silently rendered into a systemd file.
+		if base := filepath.Base(t.DataDir); !opts.AllowOffLayoutDataDir && t.ManifestName != "" && base != t.ManifestName {
+			return fmt.Errorf("tenant %s: data_dir %s is named %q but manifest_name is %q — the rendered paths would describe two different tenants (set AllowOffLayoutDataDir to render it anyway)", t.Name, t.DataDir, base, t.ManifestName)
 		}
 	}
 	if t.Ports.Base == 0 {

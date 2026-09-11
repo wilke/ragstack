@@ -121,7 +121,9 @@ func TestDevInlineCommentsNormalize(t *testing.T) {
 }
 
 func TestGrammar(t *testing.T) {
-	ok := "# c\n; also c\n\nA=1\nB='x y # z'\nC=\"q \\\"n\\\" \\\\ \\n\"\nD=\nE=http://localhost:1/x?a=b&c=d\n"
+	// E is single-quoted on purpose: `&` in an UNQUOTED value backgrounds the
+	// assignment in sh (see TestUnquotedShellMetacharsAreRefusedAndQuoted).
+	ok := "# c\n; also c\n\nA=1\nB='x y # z'\nC=\"q \\\"n\\\" \\\\ \\n\"\nD=\nE='http://localhost:1/x?a=b&c=d'\n"
 	f, err := Parse([]byte(ok))
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +163,14 @@ func TestGrammar(t *testing.T) {
 		"A=\"v\"   # c\n":  ClassInlineComment,
 		"A=a#b # real\n":   ClassInlineComment,
 		"A=1\nB=$(id)\n":   ClassExpansion,
+		"A=`id`\n":         ClassUnquotedMetachar,
+		"A=x|y\n":          ClassUnquotedMetachar,
+		"A=x&\n":           ClassUnquotedMetachar,
+		"A=x;y\n":          ClassUnquotedMetachar,
+		"A=<in\n":          ClassUnquotedMetachar,
+		"A=>out\n":         ClassUnquotedMetachar,
+		"A=(sub)\n":        ClassUnquotedMetachar,
+		"A=~/x\n":          ClassUnquotedMetachar,
 		"A=1\r\nB=x y # c": ClassInlineComment,
 	}
 	for in, class := range bad {
@@ -505,5 +515,118 @@ func TestSeedRedactorFailsClosedOnALiveFile(t *testing.T) {
 	}
 	if err := SeedRedactor(dir2, settings.NewRedactor()); err != nil {
 		t.Fatalf("an unminable BACKUP must not fail the seeding: %v", err)
+	}
+}
+
+// TestUnquotedShellMetacharsAreRefusedAndQuoted is item 9 of the PR-A review.
+//
+// Two halves of one bug. Set chose `unquoted` for any value without a space,
+// quote, '#', '$' or backslash, so `Set("V", "a|b")` wrote `V=a|b` — a line
+// systemd loads as the three characters and sh reads as "run a, pipe into b".
+// The same file read back through Parse returned "a|b" with no complaint, so
+// nothing in the ctl could tell that the API and the shell were being handed
+// different values (`~/x`, `>out` and “ `id` “ are worse: one is a path
+// nobody expands, one TRUNCATES a file, one substitutes a command).
+//
+// The writer now quotes them and the reader reports them. The report is a
+// soft problem, like an inline comment: the value is unambiguous, so
+// ParseLenient loads the file and the ctl can say which line to fix rather
+// than refusing to read a tenant's env at all.
+func TestUnquotedShellMetacharsAreRefusedAndQuoted(t *testing.T) {
+	for _, v := range []string{"a|b", "a&b", "a;b", "a<b", "a>b", "a(b)", "~/x", "`id`"} {
+		f, err := Parse([]byte("K=v\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Set("K", v); err != nil {
+			t.Fatalf("Set(%q): %v", v, err)
+		}
+		line := strings.TrimSpace(string(f.Render()))
+		if line != "K='"+v+"'" {
+			t.Errorf("Set(%q) rendered %q, want it single-quoted", v, line)
+		}
+		// And what was written reads back as the same value, through the
+		// strict grammar, with no problems at all.
+		back, err := Parse(f.Render())
+		if err != nil {
+			t.Fatalf("re-parse of %q: %v", line, err)
+		}
+		if got, _ := back.Get("K"); got != v {
+			t.Errorf("round trip of %q = %q", v, got)
+		}
+	}
+	// Reading a hand-written one: strict Parse refuses it...
+	src := []byte("A=ok\nB=http://h/x?a=1&b=2\n")
+	if _, err := Parse(src); err == nil {
+		t.Error("strict Parse accepted an unquoted '&'")
+	}
+	// ...and the lenient parse loads the file, reports the line, and holds
+	// the value systemd would load (the literal characters).
+	f, problems, err := ParseLenient(src)
+	if err != nil {
+		t.Fatalf("ParseLenient: %v", err)
+	}
+	if len(problems) != 1 || problems[0].Class != ClassUnquotedMetachar || problems[0].Key != "B" || problems[0].Line != 2 {
+		t.Fatalf("problems = %+v", problems)
+	}
+	if got, _ := f.Get("B"); got != "http://h/x?a=1&b=2" {
+		t.Errorf("B = %q", got)
+	}
+	// Normalize is the repair: rewrite the line quoted and the file is clean.
+	if err := f.Set("B", "http://h/x?a=1&b=2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(f.Render()); err != nil {
+		t.Errorf("re-quoted file still refused: %v", err)
+	}
+	// A metachar inside quotes was always fine and stays fine.
+	if _, err := Parse([]byte("A='a|b'\nB=\"c;d\"\n")); err != nil {
+		t.Errorf("quoted metachars refused: %v", err)
+	}
+}
+
+// TestSeedRedactorCoversShadowedDuplicateAssignments is item 11 of the review.
+//
+// seedFrom mined the file with Keys()+Get: Keys dedups and Get is last-wins,
+// so a secrets.env that assigns a key twice — a rotation done by appending
+// the new line rather than editing the old one, which is how a shell-sourced
+// file is usually "edited" — seeded only the LAST value. The earlier one is
+// still a live credential sitting in the file, and it walked straight through
+// the redactor into any job log or API response that quoted the file.
+func TestSeedRedactorCoversShadowedDuplicateAssignments(t *testing.T) {
+	dir := t.TempDir()
+	body := "TENANT_PG_PASSWORD=pw-shadowed-one\nLOG_LEVEL=info\nTENANT_PG_PASSWORD=pw-effective-two\n"
+	if err := os.WriteFile(filepath.Join(dir, "secrets.env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := settings.NewRedactor()
+	if err := SeedRedactor(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	out := r.Redact("pw-shadowed-one pw-effective-two info")
+	for _, secret := range []string{"pw-shadowed-one", "pw-effective-two"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s survived redaction: %q", secret, out)
+		}
+	}
+	if !strings.Contains(out, "info") {
+		t.Errorf("a public value must not be a seed: %q", out)
+	}
+	// The seam the fix uses: every assignment, in source order, duplicates
+	// included — unlike Keys()+Get, which can only show the last one.
+	f, _, err := ParseLenient([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range f.Assignments() {
+		got = append(got, a.Key+"="+a.Value)
+	}
+	want := "TENANT_PG_PASSWORD=pw-shadowed-one LOG_LEVEL=info TENANT_PG_PASSWORD=pw-effective-two"
+	if strings.Join(got, " ") != want {
+		t.Errorf("Assignments() = %v", got)
+	}
+	if len(f.Keys()) != 2 {
+		t.Errorf("Keys() = %v, want the deduped pair (this is why Assignments exists)", f.Keys())
 	}
 }

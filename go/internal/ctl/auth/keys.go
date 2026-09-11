@@ -197,6 +197,15 @@ func LoadKeys(getenv func(string) string) (*Keys, error) {
 			return nil, err
 		}
 		for _, s := range subjects {
+			if !strings.Contains(s, ":") {
+				// A principal id is "<issuer>:<subject>", and that is what a
+				// resolved bearer identity is compared against — so a bare
+				// "alice" enrols NOBODY. It looked like an enrolment, the
+				// daemon started, and the operator it was written for was 403
+				// with the principal list apparently naming them. Refuse to
+				// start, exactly as CTL_API_KEY_PRINCIPALS does.
+				return nil, fmt.Errorf("%s: %q is not an issuer:subject principal id (e.g. %q)", env.name, s, "bvbrc:"+s)
+			}
 			// An operator listing wins over a viewer listing for the same
 			// subject only if it is read second; make the order explicit
 			// instead: admin first, and a viewer row never demotes it.

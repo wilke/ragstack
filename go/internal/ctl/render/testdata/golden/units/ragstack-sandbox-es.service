@@ -11,6 +11,7 @@ Type=simple
 UMask=0002
 Environment=APPTAINER_CACHEDIR=/rag/data/ctl/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config
+ExecStartPre=/rag/bin/ragstack-ctl es-seed-config sandbox --rag-root /rag
 ExecStart=/usr/bin/apptainer run --no-home --bind /rag/data/tenants/sandbox/elasticsearch/data:/usr/share/elasticsearch/data --bind /rag/data/tenants/sandbox/elasticsearch/logs:/usr/share/elasticsearch/logs --bind /rag/data/tenants/sandbox/elasticsearch/config:/usr/share/elasticsearch/config --bind /rag/data/tenants/sandbox/elasticsearch/snapshots:/usr/share/elasticsearch/snapshots --env "ES_JAVA_OPTS=-Xms1g -Xmx1g" /rag/apptainer/images/elasticsearch.sif /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=24083 -Etransport.port=24084 -Epath.repo=/usr/share/elasticsearch/snapshots
 KillMode=mixed
 TimeoutStopSec=120

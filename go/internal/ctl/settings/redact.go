@@ -22,10 +22,16 @@ var (
 	// inlineAssignPattern is assignPattern without the line anchor: the same
 	// `KEY=value` shape wherever it appears INSIDE a line — `export KEY=v`,
 	// one argv element of a rollback descriptor, a JSON-embedded
-	// `"…API_KEY=v…"`, an `env KEY=v cmd` prefix. The value stops at the
-	// first character that ends a shell word or a JSON string, so the
-	// surrounding quote, comma or brace is never swallowed with it.
-	inlineAssignPattern = regexp.MustCompile(`([A-Z][A-Z0-9_]*)=([^\s"',;}\]]+)`)
+	// `"…API_KEY=v…"`, an `env KEY=v cmd` prefix.
+	//
+	// The value is a QUOTED run first, then a bare word. Bare-word-only is
+	// how `export API_KEYS='["…"]'` and `env PGPASSWORD="…" psql` walked
+	// through untouched: the value began with the quote the bare-word class
+	// stops at, so the match was empty and the secret stayed in the text.
+	// The bare-word alternative still stops at the first character that ends
+	// a shell word or a JSON string, so a surrounding quote, comma or brace
+	// is never swallowed with it.
+	inlineAssignPattern = regexp.MustCompile(`([A-Z][A-Z0-9_]*)=('[^'\n]*'|"[^"\n]*"|[^\s"',;}\]]+)`)
 	// urlCredPattern is a credential carried in a URL authority
 	// (`scheme://user:pass@host`): a DSN, a proxy URL, a git remote. The
 	// whole userinfo goes — the username is half the credential.

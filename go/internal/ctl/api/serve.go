@@ -90,7 +90,7 @@ func RunServe(args []string) int {
 		logger.Error("credential configuration", "err", err.Error())
 		return exitError
 	}
-	verifier, err := newVerifier(*fakeDrivers)
+	verifier, err := newVerifier(*fakeDrivers, logger)
 	if err != nil {
 		logger.Error("identity configuration", "err", err.Error())
 		return exitError
@@ -214,8 +214,11 @@ func newBackend(fake bool, ragRoot, registryPath string, logger *slog.Logger) (B
 // string, or an operator who blanks the value believing it narrows the list,
 // used to get the WIDEST setting there is — the four default issuers — which is
 // the opposite of what blanking a security allowlist reads as.
-func newVerifier(fake bool) (*auth.Verifier, error) {
-	opts := auth.Options{}
+func newVerifier(fake bool, logger *slog.Logger) (*auth.Verifier, error) {
+	// The REDACTING logger, like every other line this package writes: the
+	// verifier logs when it falls back to a stale key, and a transport error
+	// is host text nobody has vetted.
+	opts := auth.Options{Logger: logger}
 	if raw, set := os.LookupEnv(EnvIdentityIssuerAllowlist); set {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {

@@ -22,18 +22,21 @@ import (
 // reviewer has to check:
 var preconditions = map[string][]string{
 	// Starting a tenant trusts the env file the unit will load, the account
-	// that will own the processes, and the store URLs it will dial; and it
-	// must never bring up the dormant pair of a shared-store tenant.
+	// that will own the processes, and the store URLs it will dial; it must
+	// never bring up the dormant pair of a shared-store tenant; and every
+	// directory its units BIND has to exist, because apptainer refuses a bind
+	// whose source is missing — an absent path.repo (es_snapshots_dir_missing)
+	// is an ES service that cannot start, caught before the attempt.
 	"start": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
-		DormantProvisionedDirs, VMMaxMapCountLow,
+		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
 	},
 	// Stopping needs to be sure it is stopping THIS tenant's processes.
 	"stop": {PortOwnerMismatch},
 	// Restart is stop then start.
 	"restart": {
 		PortOwnerMismatch, EnvNotSystemdParsable, StoreURLDisallowed,
-		DormantProvisionedDirs, VMMaxMapCountLow,
+		DormantProvisionedDirs, VMMaxMapCountLow, ESSnapshotsDirMissing,
 	},
 	// A backup writes a bundle plus a transient snapshot copy; without the
 	// reserve it fills the filesystem the tenants run on. It must also know
@@ -78,6 +81,19 @@ var preconditions = map[string][]string{
 	// Creating a tenant allocates from the registry, so the projection must
 	// be coherent, and the host must have room.
 	"create": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow},
+	// Adopting RECORDS a tenant the ctl did not make; nearly everything the
+	// run finds is what adoption exists to write down, so almost nothing
+	// blocks it. Two things do: a store URL the daemon will refuse to dial
+	// (the row would describe a tenant no later op can probe) and a
+	// manifest.tsv row the registry does not know (adoption is the moment the
+	// allocator's record and the registry are supposed to converge, and a
+	// stray row means two allocators).
+	"adopt": {StoreURLDisallowed, ManifestUnknownRow},
+	// settings-put rewrites the ctl's own configuration, not a tenant's, so
+	// no tenant finding is a reason to refuse it — and an empty row is the
+	// point: an op absent from this table has NO gate at all (RedCodes
+	// returns nil), which is not the same statement as "nothing blocks it".
+	"settings-put": {},
 	// update-code swaps the worktree under a running API — which has to BE
 	// running for "swap it under" to mean anything.
 	"update-code": {WorktreeOutsideMirror, WorktreeGitdirUnreadable, EnvNotSystemdParsable, PortNotListening},

@@ -270,3 +270,90 @@ func TestTarpitDelayIsCapped(t *testing.T) {
 		t.Fatalf("default delay = %v; want %v", d, DefaultTarpitDelay)
 	}
 }
+
+// TestConcurrentTarpitsAreBounded.
+//
+// Every held response occupies a request goroutine and a connection for the
+// whole delay, and the failure rate that decides how many are held at once is
+// the ATTACKER's to choose — so an unbounded tarpit hands them the daemon's
+// connection budget as a target: the defence would take the daemon down before
+// the guessing did. Past the bound a failure is answered at once, undelayed.
+func TestConcurrentTarpitsAreBounded(t *testing.T) {
+	const maxTarpits = 4
+	release := make(chan struct{})
+	entered := make(chan struct{}, 64)
+	l := New(Config{
+		PerCredential: -1, TarpitAt: 1, TarpitDelay: time.Second,
+		MaxTarpits: maxTarpits,
+		Sleep: func(context.Context, time.Duration) {
+			entered <- struct{}{}
+			<-release
+		},
+	})
+	l.Fail("k")
+
+	held := make(chan time.Duration, 64)
+	for i := 0; i < 4*maxTarpits; i++ {
+		go func() { held <- l.Tarpit(context.Background()) }()
+	}
+	// The ones past the bound return immediately; the bounded ones are parked
+	// in Sleep until release is closed.
+	for i := 0; i < 4*maxTarpits-maxTarpits; i++ {
+		select {
+		case d := <-held:
+			// The caller writes the same response either way, so the reported
+			// delay is what was ASKED for, not what was waited.
+			if d != time.Second {
+				t.Fatalf("an immediate answer reported %v; want the asked-for delay", d)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a tarpit past the bound blocked instead of answering immediately")
+		}
+	}
+	for i := 0; i < maxTarpits; i++ {
+		<-entered
+	}
+	if n := l.TarpitsHeld(); n != maxTarpits {
+		t.Fatalf("%d responses held; the bound is %d", n, maxTarpits)
+	}
+	close(release)
+	for i := 0; i < maxTarpits; i++ {
+		select {
+		case <-held:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a held tarpit never returned after the delay ended")
+		}
+	}
+	if n := l.TarpitsHeld(); n != 0 {
+		t.Fatalf("%d slots were never released", n)
+	}
+}
+
+// TestTarpitBoundDefaultsAndCanBeDisabled: the default bound is in force
+// without configuration, and a negative value is the deliberate "no bound"
+// (nothing in the daemon sets it; it exists so the semaphore is not an
+// untestable constant).
+func TestTarpitBoundDefaultsAndCanBeDisabled(t *testing.T) {
+	if got := cap(New(Config{}).tarpits); got != DefaultMaxTarpits {
+		t.Fatalf("default bound = %d; want %d", got, DefaultMaxTarpits)
+	}
+	if l := New(Config{MaxTarpits: -1}); l.tarpits != nil {
+		t.Fatal("a negative MaxTarpits did not disable the bound")
+	}
+	if got := cap(New(Config{MaxTarpits: 7}).tarpits); got != 7 {
+		t.Fatalf("configured bound = %d; want 7", got)
+	}
+	// A disabled bound still serves the delay, and reports nothing held.
+	var slept int
+	l := New(Config{
+		PerCredential: -1, TarpitAt: 1, MaxTarpits: -1,
+		Sleep: func(context.Context, time.Duration) { slept++ },
+	})
+	l.Fail("k")
+	if d := l.Tarpit(context.Background()); d != DefaultTarpitDelay || slept != 1 {
+		t.Fatalf("unbounded tarpit: d=%v slept=%d", d, slept)
+	}
+	if n := l.TarpitsHeld(); n != 0 {
+		t.Fatalf("TarpitsHeld = %d with the bound disabled; want 0", n)
+	}
+}

@@ -39,7 +39,6 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +47,8 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/authz"
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/fleet"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
@@ -64,16 +65,6 @@ var tenantNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // jobIDRE is components/parameters/JobId (a ULID).
 var jobIDRE = regexp.MustCompile(`^[0-7][0-9A-HJKMNP-TV-Z]{25}$`)
-
-// doctorOps is the `op` query enum of GET /v1/doctor.
-var doctorOps = map[string]bool{
-	"start": true, "stop": true, "restart": true, "backup": true, "restore": true,
-	"handover": true, "migrate-local": true, "decommission": true, "key-mint": true,
-	"key-revoke": true, "admin-add": true, "admin-remove": true, "sa-create": true,
-	"sa-disable": true, "sa-enable": true, "env-set": true, "env-unset": true,
-	"env-normalize": true, "render-units": true, "update-code": true,
-	"create": true, "adopt": true, "gateway-apply": true, "settings-put": true,
-}
 
 // logFiles is the `file` query enum of GET /v1/tenants/{name}/logs.
 var logFiles = map[string]bool{"api": true, "qdrant": true, "es": true, "ui": true}
@@ -154,18 +145,16 @@ func NewRouter(s *Server) http.Handler {
 	// conformance matrix asserts that a viewer hitting an operator mutation
 	// gets 403 — the authorization answer, before anything is looked up. The
 	// refusal is what a caller sees only once it IS authorized.
-	for _, m := range []struct {
-		method, path string
-	}{
-		{http.MethodPost, "/v1/tenants"},
-		{http.MethodPost, "/v1/tenants/{name}/ops/{verb}"},
-		{http.MethodPost, "/v1/gateway/apply"},
-		{http.MethodPost, "/v1/jobs/{id}/resume"},
-		{http.MethodPost, "/v1/jobs/{id}/continue"},
-		{http.MethodPost, "/v1/jobs/{id}/cancel"},
-		{http.MethodPut, "/v1/settings"},
-	} {
-		s.route(r, m.method, m.path, s.handleMutationRefused)
+	//
+	// Derived from the matrix's `Mutating` rows rather than listed here. A
+	// hand-kept list is a second place a mutation can be added to and, when it
+	// is forgotten there, the route 404s instead of answering the contract's
+	// 409 — and the guard's "a session may not mutate" rule, which keys off
+	// the same flag, never runs for it.
+	for _, row := range authz.Matrix {
+		if row.Mutating {
+			s.route(r, row.Method, row.Path, s.handleMutationRefused)
+		}
 	}
 	return r
 }
@@ -371,6 +360,15 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	p, _ := auth.PrincipalFromContext(r.Context())
 	sess, err := s.Sessions.Create(p)
 	if err != nil {
+		if errors.Is(err, session.ErrExpiredPrincipal) {
+			// Unreachable while the verifier refuses expired tokens, which it
+			// does uncached on every request — but the store refuses to mint
+			// from a dead credential in its own right, and the answer to that
+			// is the 401 of an unusable credential, not a 500.
+			writeError(w, r, model.CodeAuthRequired,
+				"the presented credential has expired; a session cannot outlive it", nil)
+			return
+		}
 		// A session id that is not unguessable is a credential anyone can
 		// mint, so a failed CSPRNG read fails the exchange rather than
 		// falling back to something weaker. The caller still holds its
@@ -520,7 +518,14 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	op := q.Get("op")
-	if op != "" && !doctorOps[op] {
+	// doctor.KnownOp, not a hand-kept list: the `op` query enum and the
+	// precondition table were two copies of one set, and they had already
+	// drifted — the router accepted `adopt` and `settings-put`, which doctor
+	// had no rows for, so RedCodes returned nil and the whole precondition
+	// gate was silently off for exactly those two ops. One source now, with
+	// TestEveryContractOpIsKnownToDoctor asserting it still covers the
+	// contract's enum.
+	if op != "" && !doctor.KnownOp(op) {
 		writeError(w, r, model.CodeValidation,
 			fmt.Sprintf("op %q is not a known operation", op),
 			map[string]any{"fields": []string{"op"}})
@@ -595,8 +600,7 @@ func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	routes := make([]model.GatewayRoute, 0, len(f.Tenants))
-	for _, name := range displayOrder(f) {
-		t := f.Tenants[name]
+	for _, t := range fleet.Order(f) {
 		routes = append(routes, model.GatewayRoute{
 			Name:     t.Name,
 			API:      t.Ports.API,
@@ -643,25 +647,6 @@ func nullablePort(p int) *int {
 		return nil
 	}
 	return &p
-}
-
-func displayOrder(f *registry.Fleet) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(f.Tenants))
-	for _, name := range f.DisplayOrder {
-		if _, ok := f.Tenants[name]; ok && !seen[name] {
-			seen[name] = true
-			out = append(out, name)
-		}
-	}
-	rest := make([]string, 0)
-	for name := range f.Tenants {
-		if !seen[name] {
-			rest = append(rest, name)
-		}
-	}
-	sort.Strings(rest)
-	return append(out, rest...)
 }
 
 // handleGatewayRender is a READ despite the verb: it renders the next
@@ -930,22 +915,35 @@ func (s *Server) handleMutationRefused(w http.ResponseWriter, r *http.Request) {
 // mutationCredentialsAgree applies the contract's rules about the ctl key a
 // mutation body may carry, for every mutating operation at once.
 //
-//   - Over a SESSION the member is required: a session authenticates reads
-//     only, and the key in the body is how a browser authorizes a mutation
-//     without ever storing one.
-//   - With an X-API-Key header, the two must be the SAME key (400
-//     `both_credentials`): which credential authorized must never be
-//     ambiguous, exactly as for the two headers.
+//   - `ctl_api_key` is REQUIRED, with exactly one exemption: "when the request
+//     already carries `X-API-Key`, `ctl_api_key` may be omitted"
+//     (op_request.json). The exemption is about the HEADER, not about the
+//     principal — so it is read off the presented credential, not off
+//     p.AuthMethod.
+//   - With that header, the two must be the SAME key (400 `both_credentials`):
+//     which credential authorized must never be ambiguous, exactly as for the
+//     two headers.
 //   - Otherwise the key must belong to the principal that authenticated (403),
 //     or a viewer's session plus a borrowed operator key would be a privilege
 //     escalation with two owners.
+//
+// Only the session case used to be refused here, so a BEARER token — a
+// credential a browser can hold for hours and one the ctl does not issue —
+// mutated the fleet with no ctl key anywhere in the request. The whole point
+// of `ctl_api_key` is that a long-lived read credential is not enough to
+// change anything; a bearer that skipped it was a session with better luck.
 func (s *Server) mutationCredentialsAgree(w http.ResponseWriter, r *http.Request, p auth.Principal, body opRequest) bool {
 	if body.CtlAPIKey == "" {
+		if auth.ReadCredential(r).Kind == "api_key" {
+			return true
+		}
 		if p.AuthMethod == auth.MethodSession {
 			writeError(w, r, model.CodeForbidden, auth.SessionsAreReadsOnlyDetail, nil)
 			return false
 		}
-		return true
+		writeError(w, r, model.CodeForbidden,
+			"this operation mutates: send the ctl API key in the body as ctl_api_key, or present it as the X-API-Key header", nil)
+		return false
 	}
 	return s.bodyKeyAgrees(w, r, p, body.CtlAPIKey)
 }

@@ -18,7 +18,7 @@ from ctl.helpers import (
     assert_request_id,
     find_secret_names,
     find_secret_values,
-    forbidden_setting_pattern,
+    forbidden_setting_name,
     validate,
 )
 
@@ -74,15 +74,15 @@ async def test_settings_never_contain_a_forbidden_key(
     """Every tenant's ``registry.settings`` (and every store's ``extra_env``)
     is checked against the registry schema's OWN forbidden-name pattern — the
     schema validation already enforces it, but this test names the failure."""
-    forbidden = forbidden_setting_pattern(schemas)
+    forbidden = forbidden_setting_name(schemas)
     tenants = (await client.get("/v1/tenants")).json()["tenants"]
     for t in tenants:
         row = t["registry"]
         assert row is not None
-        bad = [k for k in row["settings"] if forbidden.search(k)]
+        bad = [k for k in row["settings"] if forbidden(k)]
         assert bad == [], f"{row['name']}: secret-class keys in settings: {bad}"
         for store in ("qdrant", "elasticsearch"):
-            bad = [k for k in row["stores"][store]["extra_env"] if forbidden.search(k)]
+            bad = [k for k in row["stores"][store]["extra_env"] if forbidden(k)]
             assert bad == [], f"{row['name']}: secret-class keys in {store}.extra_env: {bad}"
 
 

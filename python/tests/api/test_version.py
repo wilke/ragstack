@@ -16,6 +16,7 @@ The response is checked against the published contract read from
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import subprocess
@@ -308,45 +309,194 @@ def test_handler_is_sync_so_git_never_runs_on_the_event_loop():
     assert inspect.isfunction(version_router.version)
 
 
-async def test_lifespan_warms_the_cache(monkeypatch):
-    """The control plane polls /v1/version right after a restart — precisely
-    when the cache is cold. The lifespan pays that cost once, in a thread."""
-    from fastapi import FastAPI
-
-    from ragstack.api import deps
+def _in_memory_settings(monkeypatch) -> None:
+    """Nothing in a lifespan test may reach a real store: the autouse
+    ``_isolate_qdrant`` fixture already pins Qdrant at a dead port, and the
+    rest is in-memory."""
     from ragstack.config import settings
 
-    # Nothing in this test may reach a real store: the autouse _isolate_qdrant
-    # fixture already pins Qdrant at a dead port, and the rest is in-memory.
     monkeypatch.setattr(settings, "vector_backend", "memory")
     monkeypatch.setattr(settings, "text_backend", "memory")
     monkeypatch.setattr(settings, "graph_backend", "memory")
     monkeypatch.setattr(settings, "rerank_enabled", False)
     monkeypatch.setattr(settings, "require_durable_backends", False)
 
+
+async def test_lifespan_warms_the_cache(monkeypatch):
+    """The control plane polls /v1/version right after a restart — precisely
+    when the cache is cold. The lifespan pays that cost once, in a thread."""
+    from fastapi import FastAPI
+
+    from ragstack.api import deps
+
+    _in_memory_settings(monkeypatch)
     version_mod.cache_clear()
     monkeypatch.setattr(version_mod.subprocess, "run", _fake_git("v4.0.0"))
     warmed: list[str] = []
     loop_thread = threading.get_ident()
+    done = threading.Event()
 
-    real = version_mod.version_info
+    real = version_mod.warm_cache
 
     def spy():
         assert threading.get_ident() != loop_thread, "warm-up ran ON the event loop"
         out = real()
         warmed.append(out["git_tag"])
+        done.set()
         return out
 
-    monkeypatch.setattr(version_mod, "version_info", spy)
+    monkeypatch.setattr(version_mod, "warm_cache", spy)
     # A no-op lifespan body would hide the point, so drive the real one and let
     # it fail on missing infra only AFTER the warm-up step.
     app = FastAPI()
     try:
         async with deps.lifespan(app):
-            pass
+            # Fire-and-forget: the warm-up is a task, so it may still be in
+            # flight here. Wait for it INSIDE the lifespan, off the loop.
+            await asyncio.get_running_loop().run_in_executor(None, done.wait, 10)
     except Exception:
         pass
     assert warmed == ["v4.0.0"], "the lifespan did not warm the version cache"
+    assert version_mod.version_info()["git_tag"] == "v4.0.0"
+
+
+async def test_lifespan_does_not_wait_for_the_warm_up(monkeypatch):
+    """Startup must not be serialised behind up to three 2 s ``git`` runs.
+
+    The previous shape was ``await asyncio.to_thread(version_info)`` under a
+    comment claiming the thread kept it off the critical path. It did not: the
+    ``await`` held startup until every subprocess returned, on a host whose
+    worktree is on NFS. Nothing waits on a warm-up, so nothing may wait for it.
+    """
+    from fastapi import FastAPI
+
+    from ragstack.api import deps
+
+    _in_memory_settings(monkeypatch)
+    version_mod.cache_clear()
+    entered, release, finished = (threading.Event() for _ in range(3))
+
+    def blocking_warm():
+        entered.set()
+        release.wait(timeout=10)
+        finished.set()
+        return {}
+
+    monkeypatch.setattr(version_mod, "warm_cache", blocking_warm)
+    app = FastAPI()
+    # Observed INSIDE the lifespan, asserted outside it: the `except Exception`
+    # that lets the lifespan fail on missing infra would otherwise swallow the
+    # assertion this test exists for.
+    observed: dict[str, bool] = {}
+    try:
+        async with deps.lifespan(app):
+            # Startup finished. The warm-up has begun and is STILL BLOCKED: an
+            # `await`ed warm-up would have had to return before this line ran,
+            # so `finished` would be set.
+            await asyncio.get_running_loop().run_in_executor(None, entered.wait, 10)
+            observed["started"] = entered.is_set()
+            observed["already_finished"] = finished.is_set()
+            release.set()
+    except Exception:
+        pass
+    finally:
+        release.set()  # never leave an executor thread parked
+    assert observed.get("started"), "the warm-up never started"
+    assert observed.get("already_finished") is False, "startup waited for the warm-up"
+
+
+async def test_shutdown_cancels_a_stuck_warm_up_instead_of_waiting(monkeypatch):
+    """A process that comes up and goes down again in a second (a failed
+    readiness gate, a systemd restart loop) must neither hang on the warm-up
+    nor leave the task pending."""
+    from fastapi import FastAPI
+
+    from ragstack.api import deps
+
+    _in_memory_settings(monkeypatch)
+    version_mod.cache_clear()
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_warm():
+        entered.set()
+        release.wait(timeout=10)
+        return {}
+
+    created: list[asyncio.Task] = []
+    real_create_task = asyncio.create_task
+
+    def spy_create_task(coro, **kwargs):
+        task = real_create_task(coro, **kwargs)
+        if kwargs.get("name") == "version-cache-warmup":
+            created.append(task)
+        return task
+
+    monkeypatch.setattr(version_mod, "warm_cache", blocking_warm)
+    monkeypatch.setattr(deps.asyncio, "create_task", spy_create_task)
+    monkeypatch.setattr(deps, "VERSION_WARMUP_DRAIN_S", 0.2)
+
+    app = FastAPI()
+    started = time.monotonic()
+    try:
+        async with deps.lifespan(app):
+            await asyncio.get_running_loop().run_in_executor(None, entered.wait, 10)
+    except Exception:
+        pass
+    elapsed = time.monotonic() - started
+    release.set()
+
+    assert created, "the lifespan started no version-cache-warmup task"
+    task = created[0]
+    # `asyncio.to_thread` cannot interrupt a running thread, so shutdown gives
+    # the cancel VERSION_WARMUP_DRAIN_S to land and then moves on rather than
+    # waiting out the thread's own 10 s.
+    assert elapsed < 5, f"shutdown waited {elapsed:.1f}s on the warm-up"
+    assert task.done() or task.cancelling(), task
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=10)
+
+
+def test_warm_up_does_not_arm_the_failure_backoff(monkeypatch):
+    """A warm-up that loses one race must not cost the first real request a
+    minute of nulls.
+
+    ``version_info()`` arms a :data:`RETRY_INTERVAL_S` back-off on failure —
+    right, for a request: a dead git must not be re-spawned per call. Wrong for
+    the warm-up, which runs once, before any caller exists: arming it there
+    pre-commits the endpoint to nulls on the strength of an attempt nobody
+    asked for. ``warm_cache()`` is the same lookups with that off.
+    """
+    version_mod.cache_clear()
+    failing = [True]
+
+    ok = _fake_git("v5.0.0")
+
+    def flaky(argv, *args, **kwargs):
+        if failing[0]:
+            raise subprocess.TimeoutExpired(argv, version_mod.GIT_TIMEOUT_S)
+        return ok(argv, *args, **kwargs)
+
+    monkeypatch.setattr(version_mod.subprocess, "run", flaky)
+    assert version_mod.warm_cache()["git_tag"] is None
+    assert version_mod._RETRY_AFTER == {}, "the warm-up armed the back-off"
+
+    # The very next call — no clock advance, no back-off window to sit out.
+    failing[0] = False
+    assert version_mod.version_info()["git_tag"] == "v5.0.0"
+
+
+def test_a_request_still_arms_the_failure_backoff(monkeypatch):
+    """The flag narrows the warm-up, it does not disarm the endpoint: the
+    per-request back-off that keeps a dead git from being re-spawned on every
+    call is unchanged (see test_a_failure_is_retried_not_memoised)."""
+    version_mod.cache_clear()
+    monkeypatch.setattr(
+        version_mod.subprocess,
+        "run",
+        _raises(lambda argv: subprocess.TimeoutExpired(argv, 2.0)),
+    )
+    assert version_mod.version_info()["git_tag"] is None
+    assert version_mod._RETRY_AFTER, "a request must arm the back-off"
 
 
 def _raises(exc_factory):

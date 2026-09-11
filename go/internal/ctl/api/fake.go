@@ -3,13 +3,12 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/fleet"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
@@ -58,29 +57,10 @@ func (b *FakeBackend) Registry(context.Context) (*registry.Fleet, error) { retur
 func (b *FakeBackend) stamp() string { return b.now().UTC().Format(time.RFC3339) }
 
 // order returns the tenants in display order, then anything display_order
-// forgot, by name — the same rule the real fleet view uses, so the fake cannot
-// hide an ordering bug.
-func (b *FakeBackend) order() []*registry.Tenant {
-	seen := map[string]bool{}
-	out := make([]*registry.Tenant, 0, len(b.fleet.Tenants))
-	for _, name := range b.fleet.DisplayOrder {
-		if t, ok := b.fleet.Tenants[name]; ok && !seen[name] {
-			seen[name] = true
-			out = append(out, t)
-		}
-	}
-	rest := make([]string, 0)
-	for name := range b.fleet.Tenants {
-		if !seen[name] {
-			rest = append(rest, name)
-		}
-	}
-	sort.Strings(rest)
-	for _, name := range rest {
-		out = append(out, b.fleet.Tenants[name])
-	}
-	return out
-}
+// forgot, by name. It is fleet.Order itself, not a copy of its rule: a fake
+// that ordered tenants its own way could hide an ordering bug in the real one,
+// which is the one thing the fixture backend must never do.
+func (b *FakeBackend) order() []*registry.Tenant { return fleet.Order(b.fleet) }
 
 // Fleet is the dashboard poll.
 func (b *FakeBackend) Fleet(context.Context) (*model.FleetResponse, error) {
@@ -112,7 +92,7 @@ func (b *FakeBackend) row(t *registry.Tenant) model.FleetRow {
 		State:        model.State(t.State),
 		Owner:        model.Owner(t.Owner),
 		Supervisor:   model.Supervisor(t.Supervisor),
-		StoresMode:   storesMode(t),
+		StoresMode:   fleet.StoresMode(t.Stores),
 		CodeTag:      t.Code.Tag,
 		DriftCount:   len(t.Drift),
 		Ports: model.FleetPorts{
@@ -131,21 +111,6 @@ func (b *FakeBackend) row(t *registry.Tenant) model.FleetRow {
 		Units:      rowUnits(t),
 		DiskBytes:  fakeDisk(t.Name),
 		LastBackup: nil, // no backup tooling exists yet; that is the plan's premise
-	}
-}
-
-func storesMode(t *registry.Tenant) model.StoresMode {
-	q, e := t.Stores.Qdrant.Ownership, t.Stores.Elasticsearch.Ownership
-	switch {
-	case q == registry.OwnershipExclusive && e == registry.OwnershipExclusive:
-		return model.StoresDedicated
-	case q == registry.OwnershipShared && e == registry.OwnershipShared:
-		return model.StoresShared
-	case (q == registry.OwnershipExclusive && e == registry.OwnershipShared) ||
-		(q == registry.OwnershipShared && e == registry.OwnershipExclusive):
-		return model.StoresMixed
-	default:
-		return model.StoresUnknown
 	}
 }
 
@@ -444,22 +409,9 @@ func (b *FakeBackend) Doctor(_ context.Context, tenant, op string) (*model.Docto
 	}
 	return &model.DoctorResponse{
 		Status:      model.StatusFor(findings),
-		Hash:        doctorHash(findings),
+		Hash:        doctor.Hash(findings),
 		GeneratedAt: b.stamp(),
 		Scope:       model.Scope{Tenant: registry.NullString(tenant), Op: registry.NullString(op)},
 		Findings:    findings,
 	}, nil
-}
-
-// doctorHash is what a Plan pins and what --force-with-doctor-diff quotes: a
-// digest of the FINDINGS alone. Not of the timestamp, not of the scope — two
-// runs a second apart over an unchanged host must hash the same, or every plan
-// would go stale on its own.
-func doctorHash(findings []model.Finding) string {
-	canonical, err := json.Marshal(findings)
-	if err != nil {
-		canonical = []byte(fmt.Sprintf("%v", findings))
-	}
-	sum := sha256.Sum256(canonical)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }

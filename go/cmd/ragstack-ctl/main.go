@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -49,6 +50,8 @@ func usage() {
   render tenant-env <name> [--index N] [--rag-root R] [--store sqlite|postgres --pg-host H --pg-port P]
   render up-sh <name> [--index N] [--rag-root R] [--images DIR] [--es-heap SIZE]
   render down-sh <name>
+                                            a tenant the registry knows is rendered FROM its row;
+                                            --index/--es-heap are for a name it does not know yet
   render units <name> --registry PATH [--allow-non-loopback-bind]
                                             per-tenant systemd --user units
   render nginx [--registry PATH] [--kind tenants|static]
@@ -60,6 +63,7 @@ func usage() {
   registry repair [--registry PATH]         rewrite manifest.tsv FROM the registry (explicit, destructive)
   doctor [<name>] [--op VERB] [--json]      diagnose the host/a tenant (exit 3 when red)
   wait-ready <name> [--timeout S]           block until the tenant's own stores answer (unit ExecStartPre)
+  es-seed-config <name> [--rag-root DIR]    seed an empty ES config bind from the image (unit ExecStartPre)
   fleet status [--json]                     the dashboard view: host band + one row per tenant
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
@@ -126,7 +130,7 @@ func run(args []string) int {
 	case "paths":
 		return cmdPaths(rest[1:])
 	case "render":
-		return cmdRender(rest[1:], *registryPath)
+		return cmdRender(rest[1:], *registryPath, *globalRagRoot)
 	case "adopt":
 		return cmdAdopt(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "adopt-all":
@@ -141,6 +145,8 @@ func run(args []string) int {
 		return cmdTenant(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "wait-ready":
 		return cmdWaitReady(rest[1:], *registryPath, *globalRagRoot)
+	case "es-seed-config":
+		return cmdESSeedConfig(rest[1:], *registryPath, *globalRagRoot)
 	case "serve":
 		return api.RunServe(rest[1:])
 	case "key", "admin", "sa", "env", "units", "gateway", "job", "backup", "selftest":
@@ -178,7 +184,7 @@ func cmdPaths(args []string) int {
 	return exitOK
 }
 
-func cmdRender(args []string, registryPath string) int {
+func cmdRender(args []string, registryPath, ragRoot string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl render tenant-env|up-sh|down-sh|units|nginx …")
 		return exitUsage
@@ -187,7 +193,7 @@ func cmdRender(args []string, registryPath string) int {
 	fs := flag.NewFlagSet("render "+kind, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	index := fs.Int("index", 0, "port-block index (base 24000 + 20*index)")
-	ragRoot := fs.String("rag-root", "/rag", "deployment root")
+	root := fs.String("rag-root", ragRoot, "deployment root")
 	store := fs.String("store", render.StoreSQLite, "sqlite|postgres")
 	pgHost := fs.String("pg-host", "", "postgres host (store=postgres)")
 	pgPort := fs.String("pg-port", "5432", "postgres port (store=postgres)")
@@ -211,10 +217,13 @@ func cmdRender(args []string, registryPath string) int {
 	if name == "" && fs.NArg() > 0 {
 		name = fs.Arg(0)
 	}
-	roots := paths.NewRoots(*ragRoot, paths.Overrides{})
+	roots := paths.NewRoots(*root, paths.Overrides{})
 	if *images == "" {
 		*images = roots.ImagesDir
 	}
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 
 	switch kind {
 	case "tenant-env", "up-sh", "down-sh":
@@ -225,15 +234,30 @@ func cmdRender(args []string, registryPath string) int {
 		if err := paths.ValidateName(name); err != nil {
 			return fail(err)
 		}
-		tp := paths.TenantPaths(roots, name, name)
-		t := &registry.Tenant{Name: name, ManifestName: name, DataDir: tp.DataDir, Ports: paths.Block(*index)}
+		// A tenant the registry knows is rendered FROM its row. These three
+		// renderers stamp a tenant's own ports, data dir and ES heap into
+		// files an operator then compares against what is on disk, and
+		// building them from the flag defaults instead meant every such
+		// render of a real tenant printed index 0 (ports 24000-24005) and a
+		// 512m heap — a diff against the live file that is pure noise, or
+		// worse, a bin/up.sh that starts a tenant's stores on another
+		// tenant's ports. --index and --es-heap stay for the greenfield case
+		// (a tenant that does not exist yet) and are refused for a row that
+		// does: the registry is the allocator, not the command line.
+		t, err := tenantForRender(*reg, *root, name, roots, *index, *esHeap, set)
+		if err != nil {
+			return fail(err)
+		}
+		heap := *esHeap
+		if e := t.Stores.Elasticsearch; !set["es-heap"] && string(e.Heap) != "" {
+			heap = string(e.Heap)
+		}
 		var out []byte
-		var err error
 		switch kind {
 		case "tenant-env":
 			out, err = render.TenantEnv(t, render.EnvOptions{DryRun: true, StoreKind: *store, PGHost: *pgHost, PGPort: *pgPort})
 		case "up-sh":
-			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: *esHeap})
+			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: heap})
 		case "down-sh":
 			out, err = render.DownSh(t)
 		}
@@ -293,6 +317,136 @@ func cmdRender(args []string, registryPath string) int {
 		fmt.Fprintf(stderr, "ragstack-ctl render: unknown renderer %q\n", kind)
 		return exitUsage
 	}
+}
+
+// tenantForRender resolves the tenant the three script renderers render.
+//
+// A row in the registry wins: its ports, data dir and manifest name are the
+// allocation of record, and rendering anything else for a tenant that exists
+// produces a file that disagrees with the one on disk. Only a name the
+// registry does not know is greenfield, and only there do --index and
+// --es-heap mean anything — quoting them at an existing tenant is refused
+// rather than silently ignored, because "ignored" is how an operator comes to
+// believe they moved a tenant's port block.
+//
+// A registry that cannot be read at all (no file yet, on a host that has never
+// run adopt) is not an error here: it means no tenant is known, which is the
+// greenfield answer.
+func tenantForRender(registryPath, ragRoot, name string, roots paths.Roots, index int, esHeap string, set map[string]bool) (*registry.Tenant, error) {
+	f, err := registry.LoadNoRepair(resolveRegistry(registryPath, ragRoot))
+	if err == nil {
+		if t, ok := f.Tenants[name]; ok {
+			for _, flag := range []string{"index", "es-heap"} {
+				if set[flag] {
+					return nil, fmt.Errorf("tenant %q is in %s: --%s is for a tenant that does not exist yet — its port block and heap come from the registry", name, registryPath, flag)
+				}
+			}
+			return t, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	tp := paths.TenantPaths(roots, name, name)
+	return &registry.Tenant{Name: name, ManifestName: name, DataDir: tp.DataDir, Ports: paths.Block(index)}, nil
+}
+
+// esSeedConfig is the seam the test replaces: the one command this binary
+// runs. It is argv-only — no shell, no string the tenant's own configuration
+// could reach — because it runs from a unit's ExecStartPre as the service
+// account.
+var esSeedConfig = func(bin string, args ...string) error {
+	cmd := exec.Command(bin, args...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	return cmd.Run()
+}
+
+// esSeedMaxMapCount is the second seam: the host's vm.max_map_count.
+var esSeedMaxMapCount = func(roots paths.Roots) (int, error) {
+	return hostfacts.NewReal(roots).SysctlMaxMapCount()
+}
+
+// cmdESSeedConfig is the ES unit's ExecStartPre, and the unit's port of the
+// two things bin/up.sh did before starting Elasticsearch and the unit did not:
+//
+//   - Seed the config bind. The unit binds <data_dir>/elasticsearch/config
+//     over the image's /usr/share/elasticsearch/config, so an EMPTY host
+//     directory leaves ES with no jvm.options, no log4j2.properties and no
+//     elasticsearch.yml, and it exits before it can say why. Seeding copies
+//     the image's own copy of that directory out once; a directory that
+//     already holds anything is left strictly alone (an operator's
+//     elasticsearch.yml is never overwritten).
+//   - Warn when vm.max_map_count is below what ES requires. It is a warning,
+//     not a refusal: the value is the host admin's to set (this host's
+//     default is 65530), doctor raises it as an error for `start`, and a
+//     preflight that REFUSED here would take the store down on a reboot that
+//     lost the sysctl rather than let it try.
+//
+// Exit 0 when there was nothing to do or the seed succeeded, 1 when it failed.
+func cmdESSeedConfig(args []string, registryPath, ragRoot string) int {
+	fs := flag.NewFlagSet("es-seed-config", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	reg := fs.String("registry", registryPath, "registry.json path")
+	root := fs.String("rag-root", ragRoot, "deployment root")
+	apptainerBin := fs.String("apptainer", "/usr/bin/apptainer", "apptainer binary")
+
+	var name string
+	if len(args) > 0 && args[0] != "" && args[0][0] != '-' {
+		name, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if name == "" {
+		fmt.Fprintln(stderr, "usage: ragstack-ctl es-seed-config <name> [--rag-root DIR]")
+		return exitUsage
+	}
+	roots := paths.NewRoots(*root, paths.Overrides{})
+	f, err := registry.LoadNoRepair(resolveRegistry(*reg, *root))
+	if err != nil {
+		return fail(err)
+	}
+	t, ok := f.Tenants[name]
+	if !ok {
+		fmt.Fprintf(stderr, "ragstack-ctl: tenant %q is not in the registry\n", name)
+		return exitError
+	}
+	if n, err := esSeedMaxMapCount(roots); err == nil && n > 0 && n < doctor.MinVMMaxMapCount {
+		fmt.Fprintf(stderr, "ragstack-ctl es-seed-config: WARNING vm.max_map_count=%d is below %d — Elasticsearch will fail its bootstrap checks; fix once with: sudo sysctl -w vm.max_map_count=%d\n",
+			n, doctor.MinVMMaxMapCount, doctor.MinVMMaxMapCount)
+	}
+	e := t.Stores.Elasticsearch
+	if e.Ownership != registry.OwnershipExclusive {
+		fmt.Fprintf(stdout, "%s: elasticsearch is not exclusively owned — nothing to seed\n", name)
+		return exitOK
+	}
+	cfgDir := filepath.Join(t.DataDir, "elasticsearch", "config")
+	if _, err := paths.SafePath("/", cfgDir); err != nil {
+		return fail(err)
+	}
+	entries, err := os.ReadDir(cfgDir)
+	if err != nil {
+		// The unit binds this directory; apptainer refuses a bind whose
+		// source is missing, so an unreadable one is fatal here too — and
+		// saying so before the start attempt is the whole point.
+		return fail(fmt.Errorf("es-seed-config %s: %w", name, err))
+	}
+	if len(entries) > 0 {
+		fmt.Fprintf(stdout, "%s: %s already populated — not seeding\n", name, cfgDir)
+		return exitOK
+	}
+	sif := string(e.SIF)
+	if sif == "" {
+		return fail(fmt.Errorf("es-seed-config %s: exclusive elasticsearch store has no sif", name))
+	}
+	if _, err := paths.SafePath("/", sif); err != nil {
+		return fail(err)
+	}
+	fmt.Fprintf(stdout, "%s: seeding %s from %s:/usr/share/elasticsearch/config\n", name, cfgDir, sif)
+	if err := esSeedConfig(*apptainerBin, "exec", "--bind", cfgDir+":/__seed", sif,
+		"cp", "-R", "/usr/share/elasticsearch/config/.", "/__seed/"); err != nil {
+		return fail(fmt.Errorf("es-seed-config %s: %w", name, err))
+	}
+	return exitOK
 }
 
 // loadForRead is the read path's registry load. It never writes, and it
@@ -488,12 +642,7 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 			}
 			return exitOK
 		}
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(results); err != nil {
-			return fail(err)
-		}
-		return exitOK
+		return encode(results)
 	}
 	if code := printResults(); code != exitOK {
 		return code
@@ -602,10 +751,8 @@ func cmdDoctor(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		Tenant: tenant, Op: *op, RegistryPath: registryPath, CtlUID: ctlUID(doctor.DefaultCtlUser),
 	})
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(resp); err != nil {
-			return fail(err)
+		if code := encode(resp); code != exitOK {
+			return code
 		}
 	} else {
 		for _, fnd := range resp.Findings {
@@ -643,12 +790,7 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	}
 	resp := fleet.Build(context.Background(), roots, f, fleet.Probes{})
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(resp); err != nil {
-			return fail(err)
-		}
-		return exitOK
+		return encode(resp)
 	}
 	h := resp.Host
 	fmt.Fprintf(stdout, "host: %.1f GiB free · linger %v · ctl unit active %v · vm.max_map_count %d · %s [%s]\n\n",

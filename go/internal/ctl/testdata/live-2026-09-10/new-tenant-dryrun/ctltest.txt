@@ -22,6 +22,7 @@ ctltest	0	41000
 /tmp/ctl-capture-873331/tenants/ctltest/elasticsearch/data
 /tmp/ctl-capture-873331/tenants/ctltest/elasticsearch/logs
 /tmp/ctl-capture-873331/tenants/ctltest/elasticsearch/config
+/tmp/ctl-capture-873331/tenants/ctltest/elasticsearch/snapshots
 /tmp/ctl-capture-873331/tenants/ctltest/state
 /tmp/ctl-capture-873331/tenants/ctltest/manifests
 /tmp/ctl-capture-873331/tenants/ctltest/ingest

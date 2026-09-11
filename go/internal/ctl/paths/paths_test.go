@@ -128,8 +128,31 @@ func TestRootsAndTenantPaths(t *testing.T) {
 	if d := TenantPaths(r, "dev", "").DataDir; d != "/rag/data/tenants/dev" {
 		t.Errorf("manifestName default: %s", d)
 	}
-	if n := len(tp.ProvisionDirs()); n != 10 {
-		t.Errorf("ProvisionDirs = %d entries, want 10 (new-tenant.sh TENANT_DIRS)", n)
+	if n := len(tp.ProvisionDirs()); n != 11 {
+		t.Errorf("ProvisionDirs = %d entries, want 11 (new-tenant.sh TENANT_DIRS)", n)
+	}
+}
+
+// TestProvisionDirsIncludesESSnapshots: the rendered ES unit binds
+// <data_dir>/elasticsearch/snapshots as ES's path.repo, and apptainer refuses
+// a bind whose source does not exist. Nothing else ever created that
+// directory, so leaving it out of the provisioned set produced a tenant whose
+// own unit could not start. (render/parity_test.go holds new-tenant.sh's
+// TENANT_DIRS array to this slice, element by element.)
+func TestProvisionDirsIncludesESSnapshots(t *testing.T) {
+	tp := TenantPaths(NewRoots("/rag", Overrides{}), "dev", "dev")
+	dirs := tp.ProvisionDirs()
+	found := false
+	for _, d := range dirs {
+		if d == tp.ESSnapshots {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ProvisionDirs %v lacks ESSnapshots %q — the ES unit binds it", dirs, tp.ESSnapshots)
+	}
+	if dirs[4] != tp.ESConfig || dirs[5] != tp.ESSnapshots {
+		t.Errorf("ProvisionDirs order changed: [4]=%q [5]=%q", dirs[4], dirs[5])
 	}
 }
 

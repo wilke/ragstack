@@ -32,7 +32,9 @@ name: CI
 #   PYTHONPATH=$PWD python -m pytest tests -q      # the `python` job
 #   PYTHONPATH=$PWD python -m ruff check .
 #   PYTHONPATH=$PWD python -m mypy ragstack
-#   cd ../go && go build ./... && go vet ./... && go test ./...   # the `go` job
+#   cd .. && make validate-contracts && pytest conformance/ctl/test_contract_static.py -q
+#   cd go && go build ./... && go vet ./... && go test ./...   # the `go` job
+#   RAGSTACK_REQUIRE_GEN=1 go test ./internal/ctl/authz/ -count=1   # needs PyYAML
 #   cd ../frontend && npm run typecheck && npx vitest run   # the `frontend` job
 #
 # On a host with no Go toolchain, the `go` line runs in a container instead:
@@ -79,6 +81,19 @@ jobs:
         # tests use in-memory doubles (tests/api/conftest.py). integration/eval
         # need live backends and run in the integration job / not at all.
         run: pytest tests/unit tests/ingestion tests/api tests/test_document_registry.py -q
+      - name: validate control-plane contract
+        # `make validate-contracts`: argv-only, no server, no imports from
+        # python/ or go/. It had no automatic runner at ALL — the contract is a
+        # security control (the settings-name guard that keeps secrets out of
+        # the registry) and nothing checked it on a PR.
+        working-directory: .
+        run: make validate-contracts PYTHON=python
+      - name: pytest (control-plane contract, static)
+        # The same checks as individual assertions, plus the schema-property
+        # name sweep the validator does not own. No server needed, and the root
+        # conftest keeps this one file collectable on a sweep for that reason.
+        working-directory: .
+        run: pytest conformance/ctl/test_contract_static.py -q
 
   go:
     # Added by #427 W7. Until now nothing in CI built or ran Go at all, so
@@ -110,12 +125,30 @@ jobs:
         with:
           go-version-file: go/go.mod   # single source of truth for the version
           cache-dependency-path: go/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML (the authz matrix generator needs it)
+        # internal/ctl/authz's matrix_gen.go is generated FROM
+        # contracts/ctl/openapi.yaml, and the generator shells out to an
+        # interpreter with PyYAML to parse it. Without one the drift test skips
+        # itself — so on a runner with no PyYAML the check that the committed
+        # authorization matrix still matches the contract silently did nothing,
+        # which for a security control is worse than not having it.
+        run: python -m pip install --disable-pip-version-check pyyaml
       - name: build
         run: go build ./...
       - name: vet
         run: go vet ./...
       - name: test
         run: go test ./...
+      - name: test (authz matrix drift — regeneration is MANDATORY here)
+        # RAGSTACK_REQUIRE_GEN turns the "no interpreter with PyYAML" skip into
+        # a failure: on this job the interpreter is installed above, so a skip
+        # would mean the step is lying about what it proved.
+        env:
+          RAGSTACK_REQUIRE_GEN: "1"
+        run: go test ./internal/ctl/authz/ -count=1
 
   frontend:
     name: frontend (typecheck · test · build)

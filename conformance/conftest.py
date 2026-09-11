@@ -76,14 +76,42 @@ CREDENTIAL_SKIP = "RAGSTACK_CREDENTIAL_SKIP:"
 #: ~96 collection ERRORS and a red run. Neither behaviour may be given up: the
 #: hard error stays for anyone who ASKS for the ctl suite, and a tenant run that
 #: merely sweeps the tree skips it, saying so.
+#:
+#: **Naming the suite is the ONLY thing that collects it.** ``RAGSTACK_CTL_URL``
+#: used to be enough on its own, which meant that on a shell where an operator
+#: had exported it — the natural state of a shell being used to talk to the
+#: control plane — a bare ``pytest conformance/`` swept the ctl suite in and ran
+#: it against the LIVE control plane. An environment variable says *which*
+#: daemon; it must never be what decides *whether* a second suite runs. The
+#: variable still gates the run (``ctl_url`` raises ``UsageError`` without it),
+#: it just no longer volunteers the suite.
 CTL_SUITE = Path(__file__).resolve().parent / "ctl"
 
+#: The one file in the ctl suite that needs no daemon at all: it reads
+#: ``contracts/ctl`` and checks it against itself. Collected even on a sweep —
+#: a static contract check that runs nowhere is a check nobody runs (C-3).
+CTL_STATIC_TESTS = CTL_SUITE / "test_contract_static.py"
+
 _CTL_IGNORED_NOTE = (
-    f"{CTL_SUITE.name}/ not collected: RAGSTACK_CTL_URL is unset, and this "
-    "invocation did not name the control-plane suite. It tests `ragstack-ctl "
-    "serve`, not the tenant API — run `make test-conformance-ctl` (self-boots a "
-    "--fake-drivers daemon) or `pytest conformance/ctl` with RAGSTACK_CTL_URL set."
+    f"{CTL_SUITE.name}/ not collected (except {CTL_STATIC_TESTS.name}, which needs "
+    "no server): this invocation did not name the control-plane suite. It tests "
+    "`ragstack-ctl serve`, not the tenant API — run `make test-conformance-ctl` "
+    "(self-boots a --fake-drivers daemon) or `pytest conformance/ctl` with "
+    "RAGSTACK_CTL_URL set. Exporting RAGSTACK_CTL_URL alone does NOT add the "
+    "suite to a sweep: it says which daemon, not whether to run."
 )
+
+
+def _positional_args(config: pytest.Config) -> list[str]:
+    """The invocation's file-or-dir arguments, parsed.
+
+    ``config.args`` is what pytest itself resolved to collection targets, with
+    option VALUES already consumed. Reading ``invocation_params.args`` (the raw
+    argv) instead treated a value as a path, so ``pytest . -k ctl`` "named" the
+    ctl suite via the word ``ctl`` belonging to ``-k`` — and collected a suite
+    that needs a control plane, with no control plane configured.
+    """
+    return [str(a) for a in getattr(config, "args", None) or []]
 
 
 def _names_ctl_suite(config: pytest.Config) -> bool:
@@ -91,8 +119,8 @@ def _names_ctl_suite(config: pytest.Config) -> bool:
     it). ``pytest conformance/`` names the parent and does not count — that is
     the sweep this guard exists for."""
     invocation_dir = Path(str(config.invocation_params.dir))
-    for raw in config.invocation_params.args:
-        arg = str(raw).split("::", 1)[0]
+    for raw in _positional_args(config):
+        arg = raw.split("::", 1)[0]
         if not arg or arg.startswith("-"):
             continue
         try:
@@ -116,10 +144,12 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config):
     path = Path(str(collection_path))
     if path != CTL_SUITE and CTL_SUITE not in path.parents:
         return None
-    if os.environ.get("RAGSTACK_CTL_URL"):
-        return None  # pointed at a control plane: collect it
     if _names_ctl_suite(config):
         return None  # asked for explicitly: let the UsageError fire, loudly
+    # The directory itself is never ignored — ignoring it would stop pytest
+    # descending, and the static contract file below would go with it.
+    if path in (CTL_SUITE, CTL_STATIC_TESTS):
+        return None
     config.stash[_ctl_ignored] = True
     return True
 

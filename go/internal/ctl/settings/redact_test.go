@@ -66,3 +66,47 @@ func TestRedactStripsEmbeddedAssignments(t *testing.T) {
 		t.Errorf("not idempotent: %q", twice)
 	}
 }
+
+// TestRedactStripsQuotedInlineAssignments is item 10 of the PR-A review.
+//
+// The inline (non-line-anchored) pattern matched only a BARE word after the
+// `=`, so a value that began with a quote matched nothing at all and the
+// secret stayed in the text. That is not an exotic shape: it is how every one
+// of these files and command lines actually writes a value —
+// `export API_KEYS='["…"]'`, `env PGPASSWORD="…" psql`, a rollback
+// descriptor's argv element — and the anchored pass does not cover them,
+// because the assignment is not at the start of the line.
+func TestRedactStripsQuotedInlineAssignments(t *testing.T) {
+	r := NewRedactor()
+	cases := []struct{ in, secret string }{
+		{`export TENANT_PG_PASSWORD='hunter2hunter2'`, "hunter2hunter2"},
+		{`env NEO4J_AUTH="neo4j/ragstackpw" cypher-shell`, "ragstackpw"},
+		{`run: export API_KEYS='["k-aaaaaaaaaaaaaaaa","k-bbbbbbbbbbbbbbbb"]' && start`, "k-aaaaaaaaaaaaaaaa"},
+		{`{"argv":["sh","-c","TENANT_API_KEY_ADMIN='k-cccccccccccccccc' run"]}`, "k-cccccccccccccccc"},
+	}
+	for _, c := range cases {
+		out := r.Redact(c.in)
+		if strings.Contains(out, c.secret) {
+			t.Errorf("%q: secret %q survived as %q", c.in, c.secret, out)
+		}
+		if !strings.Contains(out, Redacted) {
+			t.Errorf("%q: nothing was redacted: %q", c.in, out)
+		}
+	}
+	// The quoted run does not swallow what follows it: the rest of the line
+	// is still there to read.
+	got := r.Redact(`env TENANT_PG_PASSWORD='hunter2hunter2' psql -h db`)
+	if !strings.Contains(got, "psql -h db") {
+		t.Errorf("the redaction ate the rest of the line: %q", got)
+	}
+	// A public key keeps its quoted value.
+	keep := `export LOG_LEVEL='info'`
+	if out := r.Redact(keep); out != keep {
+		t.Errorf("public keys must survive: %q", out)
+	}
+	// Idempotent, as for the bare-word form.
+	twice := r.Redact(r.Redact(`export TENANT_PG_PASSWORD='hunter2hunter2'`))
+	if strings.Count(twice, Redacted) != 1 {
+		t.Errorf("not idempotent: %q", twice)
+	}
+}

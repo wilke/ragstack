@@ -12,7 +12,7 @@ import json
 import logging
 import math
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -1479,6 +1479,14 @@ def _build_graph_extract_runner(
     )
 
 
+#: How long shutdown waits for the fire-and-forget `/v1/version` warm-up to
+#: notice it has been cancelled. It cannot be interrupted mid-`git` (see the
+#: `finally` below), and each of its at most three subprocesses is capped at
+#: ``version.GIT_TIMEOUT_S``; this is the bound on how long a warm-up nobody
+#: wants may delay a shutdown.
+VERSION_WARMUP_DRAIN_S = 2.0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Construct singletons at startup; tear them down at shutdown."""
@@ -1542,17 +1550,36 @@ async def lifespan(app: FastAPI):
 
     validate_user_store_settings()
     # Warm the build-identity cache (`GET /v1/version`, ADR-0007) OFF the event
-    # loop: it shells out to `git` once per process, and the control plane polls
-    # that endpoint right after a restart — exactly when the cache is cold. In a
-    # thread so the bounded subprocesses do not serialise the rest of startup,
-    # and best-effort: version_info() swallows its own failures, but a warm-up
-    # must not be able to keep the API down even if that changes.
-    from ragstack.version import version_info
+    # loop AND off the startup path: it shells out to `git` once per process,
+    # and the control plane polls that endpoint right after a restart — exactly
+    # when the cache is cold.
+    #
+    # `await asyncio.to_thread(...)` did not do what its comment claimed. It
+    # kept the subprocesses off the event loop but still made startup WAIT for
+    # them — up to three bounded `git` runs (2 s each) before the next line, on
+    # a host where the worktree is on NFS. Nothing is waiting on a warm-up, by
+    # definition, so it becomes a task and startup carries on. The reference is
+    # kept (the loop holds only a weak one, so a bare `create_task(...)` result
+    # can be garbage-collected mid-flight) and the task is cancelled in the
+    # `finally` below, so a shutdown during startup leaves nothing pending.
+    #
+    # `warm_cache()` rather than `version_info()`: a warm-up must not arm the
+    # 60 s failure back-off. Losing one race with a cold page cache would
+    # otherwise hand the first real request a minute of guaranteed nulls that
+    # nobody asked for (see version.py).
+    from ragstack.version import warm_cache
 
-    try:
-        await asyncio.to_thread(version_info)
-    except Exception:  # pragma: no cover — defensive; version_info never raises
-        log.debug("version cache warm-up failed", exc_info=True)
+    async def _warm_version_cache() -> None:
+        try:
+            await asyncio.to_thread(warm_cache)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover — defensive; warm_cache never raises
+            log.debug("version cache warm-up failed", exc_info=True)
+
+    version_warmup: asyncio.Task[None] = asyncio.create_task(
+        _warm_version_cache(), name="version-cache-warmup"
+    )
     http_client = httpx.AsyncClient(timeout=120.0)
     embedder = _build_embedder(http_client)
     vector_store = _build_vector_store()
@@ -1880,6 +1907,18 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # The version warm-up is fire-and-forget, so shutdown is where it is
+        # collected: a process that comes up and goes down inside two seconds
+        # (a failed readiness gate, a systemd restart loop) must not leave a
+        # pending task behind for the loop to complain about.
+        version_warmup.cancel()
+        # `asyncio.to_thread` cannot interrupt a thread that is already running,
+        # so the cancellation lands only once the (bounded — GIT_TIMEOUT_S each)
+        # git calls return. Wait briefly so the common case is collected
+        # cleanly, then stop waiting: shutdown must not be held up by a warm-up
+        # nobody is waiting on in the first place.
+        with suppress(asyncio.CancelledError, TimeoutError):
+            await asyncio.wait_for(version_warmup, timeout=VERSION_WARMUP_DRAIN_S)
         # Stop the latency rollup before anything it might describe is torn
         # down. Cancels and awaits, so no pending task survives into shutdown.
         await _latency.stop_rollup()

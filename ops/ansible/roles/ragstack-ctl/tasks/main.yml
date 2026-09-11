@@ -190,6 +190,13 @@
       changed_when: true
 
 # ---- 4. ragops group pass (chgrp + g+rwX + setgid dirs; secrets.env 0640) -----
+# {{ rag_root }}/config/ctl is DELIBERATELY NOT on this list. `chmod -R g+rwX`
+# is a blunt instrument: over config/ctl it turns ctl-secrets.env from 0600 into
+# 0660 — handing every ragops member the ctl's API keys — and the 2750 directory
+# into 2770. It also made the role non-idempotent in both directions, because
+# sections 1 and 6 set those modes back on the next run. Every path under
+# config/ctl has its owner, group and mode set explicitly there; the assert at
+# the end of section 6 proves they are still what those tasks set.
 - name: Group pass targets
   ansible.builtin.set_fact:
     ragops_group_pass:
@@ -199,7 +206,6 @@
       - { path: "{{ rag_root }}/repos/ragstack.git", owner: "{{ operator_user }}" }
       - { path: "{{ rag_root }}/tools", owner: "{{ operator_user }}" }
       - { path: "{{ rag_root }}/data/ctl", owner: "{{ ctl_user }}" }
-      - { path: "{{ rag_root }}/config/ctl", owner: "{{ ctl_user }}" }
   tags: [wilke, ctl]
 
 - name: Group pass — existing targets
@@ -395,6 +401,49 @@
   when: ctl_units_dir.stat.exists or not ansible_check_mode
   tags: [ctl]
 
+# The modes above are the whole secret boundary of the control plane:
+# ctl-secrets.env holds the ctl's API keys and the role's `ragops` group pass
+# (section 4) used to include this directory and widen 0600 to 0660. It no
+# longer does — and this assert is what keeps that true, whether the widening
+# comes back from this role, from a stray `chmod -R g+rwX /rag/config`, or from
+# an operator's umask.
+- name: Expected modes under {{ rag_root }}/config/ctl
+  ansible.builtin.set_fact:
+    ctl_config_modes:
+      ctl.env: "0640"
+      ctl-secrets.env: "0600"
+  tags: [ctl]
+
+- name: Actual modes under {{ rag_root }}/config/ctl
+  ansible.builtin.stat:
+    path: "{{ rag_root }}/config/ctl/{{ item.key }}"
+  loop: "{{ ctl_config_modes | dict2items }}"
+  loop_control:
+    label: "{{ rag_root }}/config/ctl/{{ item.key }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_config_stat
+  changed_when: false
+  tags: [ctl]
+
+- name: ctl-secrets.env is 0600 and ctl.env 0640 (nothing widened them)
+  ansible.builtin.assert:
+    that: not item.stat.exists or item.stat.mode == item.item.value
+    fail_msg: >-
+      {{ rag_root }}/config/ctl/{{ item.item.key }} is
+      {{ item.stat.mode | default('absent') }}, expected {{ item.item.value }}.
+      A group- or world-readable ctl-secrets.env is every ctl API key readable by
+      every ragops member. Fix with
+      `chmod {{ item.item.value }} {{ rag_root }}/config/ctl/{{ item.item.key }}`
+      and find what widened it (a recursive `chmod g+rwX` over {{ rag_root }}/config
+      is the usual culprit — this role no longer does that).
+    quiet: true
+  loop: "{{ ctl_config_stat.results }}"
+  loop_control:
+    label: "{{ rag_root }}/config/ctl/{{ item.item.key }}"
+  when: not ansible_check_mode
+  tags: [ctl]
+
 # ---- 7. user manager: reexec, unit path check, enable --now -------------------
 - name: Is the binary installed?
   ansible.builtin.stat:
@@ -449,7 +498,12 @@
 - name: Root drop-in is effective (SYSTEMD_UNIT_PATH reaches the manager)
   ansible.builtin.assert:
     that: (rag_root ~ '/config/ctl/units') in (ctl_unit_path.stdout | default(''))
-    fail_msg: "{{ rag_root }}/config/ctl/units not in the {{ ctl_user }} manager's UnitPath — the user@{{ ctl_uid }} drop-in is not active; run `--tags root -K` (handler restarts user@{{ ctl_uid }}) or reboot"
+    # The root tag restarts user@{{ ctl_uid }} whenever SYSTEMD_UNIT_PATH is
+    # missing from the manager's environment — a pre-checked TASK, not a handler
+    # that only fires on a drop-in change — so re-running it really does fix
+    # this. (It did not before: with the drop-in already written and unchanged,
+    # the handler never fired and `--tags root -K` was a no-op.)
+    fail_msg: "{{ rag_root }}/config/ctl/units not in the {{ ctl_user }} manager's UnitPath — the user@{{ ctl_uid }} drop-in is written but not in effect; re-run `--tags root -K` (it restarts user@{{ ctl_uid }} when SYSTEMD_UNIT_PATH is absent from its environment), or reboot. If ctl_manager_restart=false, restart it by hand: `sudo systemctl restart user@{{ ctl_uid }}.service`"
   when: not ansible_check_mode and ctl_bin_installed.stat.exists
   tags: [ctl]
 
@@ -486,6 +540,40 @@
     - (ctl_service_enabled.stdout | default('')) == 'enabled'
     - ctl_unit is changed or ctl_env is changed or (ctl_secrets is defined and ctl_secrets is changed) or (ctl_binary is defined and ctl_binary is changed)
   changed_when: true
+  tags: [ctl]
+
+# `systemctl --user enable --now` exits 0 when a [Unit] Condition* is unmet: the
+# unit is SKIPPED, not started, and nothing in the run says so. So the role asks
+# the manager what actually happened. Retried because Restart=always means the
+# first probe can legitimately land on `activating` right after a restart.
+- name: ragstack-ctl.service state after enable --now
+  ansible.builtin.command: systemctl --user is-active ragstack-ctl.service
+  environment: "{{ ctl_user_env }}"
+  become: true
+  become_user: "{{ ctl_user }}"
+  register: ctl_service_active
+  changed_when: false
+  check_mode: false
+  retries: 5
+  delay: 3
+  until: (ctl_service_active.stdout | default('') | trim) == 'active'
+  ignore_errors: true
+  when: ctl_bin_installed.stat.exists and not ansible_check_mode
+  tags: [ctl]
+
+- name: ragstack-ctl.service is active
+  ansible.builtin.assert:
+    that: (ctl_service_active.stdout | default('') | trim) == 'active'
+    fail_msg: >-
+      ragstack-ctl.service is
+      '{{ ctl_service_active.stdout | default('(no answer)') | trim }}' after
+      enable --now. `inactive` right after a clean enable usually means a [Unit]
+      Condition was not met (systemd skips the unit and calls it a success) —
+      check with
+      `sudo -u {{ ctl_user }} XDG_RUNTIME_DIR=/run/user/{{ ctl_uid }} systemctl --user status ragstack-ctl.service`
+      and `journalctl --user-unit ragstack-ctl.service -n 50`; the unit's
+      ConditionPathIsDirectory needs {{ rag_root }}/data/ctl to exist.
+  when: ctl_bin_installed.stat.exists and not ansible_check_mode
   tags: [ctl]
 
 - name: Re-login note

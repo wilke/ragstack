@@ -16,12 +16,26 @@
   "additionalProperties": false,
   "$defs": {
     "PublicSettingKey": {
-      "description": "Byte-identical to `registry.json#/$defs/PublicSettingKey` — asserted by `conformance/ctl/test_contract_static.py`.",
+      "description": "Byte-identical to `registry.json#/$defs/PublicSettingKey` (pattern, anyOf and all) — asserted by `conformance/ctl/test_contract_static.py`. The forbidden pattern is `go/internal/ctl/settings/settings.go`'s `secretPattern` and the `anyOf` enum its `publicDespitePattern`.",
       "type": "string",
       "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
-      "not": {
-        "pattern": "^(API_KEYS|API_KEY_TENANTS|API_KEY_ROLES|NEO4J_AUTH)$|(_DSN|PASSWORD|TOKEN|_API_KEY)$"
-      }
+      "anyOf": [
+        {
+          "enum": [
+            "CHUNK_MAX_TOKENS",
+            "CHUNK_TOKEN_COUNTER",
+            "EMBEDDING_MAX_BATCH_TOKENS",
+            "EMBEDDING_CHARS_PER_TOKEN",
+            "GOWE_RECEIPTS_OUTPUT_KEY",
+            "GOWE_SHARDS_INPUT_KEY"
+          ]
+        },
+        {
+          "not": {
+            "pattern": "(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)"
+          }
+        }
+      ]
     },
     "CreateArgs": {
       "type": "object",

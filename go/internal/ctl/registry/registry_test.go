@@ -736,3 +736,55 @@ func TestNewFleetIsBornContractValid(t *testing.T) {
 		t.Fatalf("a fresh fleet must be loadable: %v", err)
 	}
 }
+
+// TestSaveRefusesARowLoadCannotReadBack is item 2 of the PR-A review.
+//
+// Save ran Validate (the allocator's invariants) but not ValidateContract
+// (the shape Load enforces), so a writer could persist a registry the next
+// Load refuses — adopt did exactly that, copying the API process's account
+// into `owner`, whose enum is svcbvbrc|wilke. The file was written, the
+// command reported success, and the fleet became unreadable at the next
+// restart, with nothing left to say which write had done it.
+func TestSaveRefusesARowLoadCannotReadBack(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.json")
+	f := LiveFixture()
+	if err := Save(path, f, "local:test"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.Tenants["dev"].Owner = "someoneelse"
+	err = Save(path, f, "local:test")
+	if err == nil {
+		t.Fatal("Save accepted an owner outside the contract's enum")
+	}
+	if !strings.Contains(err.Error(), "owner") {
+		t.Errorf("the refusal must name the offending field: %v", err)
+	}
+	// And it refused BEFORE writing: the generation on disk is untouched.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the refused Save still rewrote the registry")
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("the registry on disk is no longer loadable: %v", err)
+	}
+
+	// The check is on the document as WRITTEN — generation, updated_at and
+	// updated_by are stamped by Save, so validating the caller's copy would
+	// have failed on three required fields that are Save's own to fill in.
+	f.Tenants["dev"].Owner = "svcbvbrc"
+	if err := Save(path, f, "local:test"); err != nil {
+		t.Fatalf("a contract-valid fleet must still save: %v", err)
+	}
+	if !KnownOwner("wilke") || !KnownOwner("svcbvbrc") || KnownOwner("root") {
+		t.Errorf("KnownOwner disagrees with the enum %v", Owners())
+	}
+}

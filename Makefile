@@ -19,6 +19,10 @@ help: ## Show this help
 # Python
 # ---------------------------------------------------------------------------
 
+# Overridable the way GO is, so a host whose `python` is not the ragstack env
+# can say `make validate-contracts PYTHON=/rag/envs/ragstack/bin/python`.
+PYTHON ?= python
+
 install-python: ## Install Python package in dev mode
 	cd python && pip install -e ".[all,dev]"
 
@@ -128,8 +132,13 @@ test-conformance-identity-google: ## Boot a Google-OIDC API and run the identity
 test-conformance-ctl: build-ctl ## Boot a --fake-drivers ragstack-ctl on :23999 with its own principals and run the control-plane conformance suite
 	conformance/run_ctl_local.sh
 
+# No server, no infra, ~1 s — which is why it is part of `test-all` rather than
+# something only the ctl conformance run reaches. `conformance/ctl/
+# test_contract_static.py` wraps these same checks as individual assertions and
+# is collected by a plain `pytest conformance/` (the root conftest keeps that
+# one file even when it skips the rest of the ctl suite).
 validate-contracts: ## Static checks on the control-plane contract (contracts/ctl/openapi.yaml + schemas)
-	python contracts/ctl/validate.py
+	$(PYTHON) contracts/ctl/validate.py
 
 # ---------------------------------------------------------------------------
 # Docker
@@ -186,4 +195,8 @@ new-tenant-apptainer: ## Provision a tenant (ADR-0005): NAME=acme [ARGS="--dry-r
 # All
 # ---------------------------------------------------------------------------
 
-test-all: test-python test-go ## Run all unit tests (Python + Go)
+# validate-contracts is in here because it was in nothing: it needs no server
+# and no infra, so there was no reason for the control-plane contract's only
+# automatic check to be reachable exclusively through `make
+# test-conformance-ctl` (which builds a Go binary and boots a daemon).
+test-all: test-python test-go validate-contracts ## Run all unit tests (Python + Go) + the control-plane contract checks

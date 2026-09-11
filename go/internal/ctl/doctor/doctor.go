@@ -409,6 +409,19 @@ func (d *run) storeChecks(t *registry.Tenant) {
 			d.add(model.LevelError, StoreURLDisallowed, t.Name, fmt.Sprintf("%s=%s: %s", s.key, s.url, reason))
 		}
 	}
+	// A store the tenant owns exclusively is started from a unit that binds
+	// <data_dir>/elasticsearch/snapshots as ES's path.repo. apptainer refuses
+	// a bind whose SOURCE is missing, so an absent directory is not a
+	// degraded snapshot capability — it is a service that will not come up.
+	// Nothing created that directory before it joined paths.ProvisionDirs, so
+	// every tenant provisioned by the older script is in this state.
+	if t.Stores.Elasticsearch.Ownership == registry.OwnershipExclusive {
+		snaps := filepath.Join(t.DataDir, "elasticsearch", "snapshots")
+		if fi, err := os.Stat(snaps); err != nil || !fi.IsDir() {
+			d.add(model.LevelWarn, ESSnapshotsDirMissing, t.Name, fmt.Sprintf(
+				"%s is absent; the es unit binds it as path.repo and apptainer refuses a bind whose source is missing — create it before starting", snaps))
+		}
+	}
 	if !t.Stores.DormantProvisionedDirs {
 		return
 	}

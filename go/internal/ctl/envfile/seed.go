@@ -123,9 +123,12 @@ func seedFrom(path string, b []byte, r *settings.Redactor, strict bool) error {
 	}
 	f, _, err := ParseLenient(b)
 	if err == nil {
-		for _, k := range f.Keys() {
-			v, _ := f.Get(k)
-			add(k, v)
+		// Every assignment, not Keys()+Get: Keys dedups and Get is last-wins,
+		// so a file that assigns API_KEYS twice seeded only the second value
+		// and the FIRST one — still a live key, still printable by anything
+		// this redactor guards — went through unredacted.
+		for _, a := range f.Assignments() {
+			add(a.Key, a.Value)
 		}
 		return nil
 	}

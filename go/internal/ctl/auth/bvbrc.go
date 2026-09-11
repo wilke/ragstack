@@ -41,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -145,6 +146,11 @@ type Options struct {
 	Fetch FetchFunc
 	// Timeout bounds the default Fetch. 0 ⇒ 5 s.
 	Timeout time.Duration
+	// Logger is where the stale-key warning goes. nil ⇒ slog.Default(). The
+	// daemon passes its REDACTING logger; the only values logged here are a
+	// pinned allowlist URL and a transport error, neither of which is a
+	// credential, but the redactor costs nothing and the habit is the point.
+	Logger *slog.Logger
 }
 
 type cachedKey struct {
@@ -162,6 +168,7 @@ type Verifier struct {
 	now        func() time.Time
 	mono       func() time.Duration
 	fetch      FetchFunc
+	logger     *slog.Logger
 
 	mu   sync.Mutex
 	keys map[string]cachedKey
@@ -193,6 +200,7 @@ func New(opts Options) (*Verifier, error) {
 		now:         opts.Now,
 		mono:        opts.Mono,
 		fetch:       opts.Fetch,
+		logger:      opts.Logger,
 		keys:        map[string]cachedKey{},
 		lastAttempt: map[string]time.Duration{},
 	}
@@ -308,6 +316,19 @@ func (v *Verifier) verify(ctx context.Context, url, payload string, sig []byte) 
 	return invalid("token signature does not verify")
 }
 
+// publicKey returns the verifying key for url: the cached one while it is
+// fresh, a refetched one past the TTL, and — when that refetch cannot be made
+// — the STALE cached one.
+//
+// The stale fallback is the difference between a key server outage and a fleet
+// outage. Past the 24 h TTL a failed refetch used to answer `unavailable` even
+// though a perfectly good key was sitting in the map, so every BV-BRC operator
+// was locked out of the control plane for as long as the key server was down —
+// precisely when they might need it. A key that verified yesterday is a far
+// better answer than no answer; the refetch is retried once per minRefetch, so
+// a rotation is picked up as soon as the server can be reached. `unavailable`
+// is now reserved for the case where nothing was EVER cached, which is the
+// only one where the ctl genuinely cannot decide.
 func (v *Verifier) publicKey(ctx context.Context, url string) (*rsa.PublicKey, error) {
 	now := v.mono()
 	v.mu.Lock()
@@ -318,13 +339,38 @@ func (v *Verifier) publicKey(ctx context.Context, url string) (*rsa.PublicKey, e
 		return cached.key, nil
 	}
 	if tried && now-attempted < v.minRefetch {
-		// Negative cache: a fetch was already tried this recently and we have
-		// no usable key to show for it. Answering without a second outbound
-		// call is what keeps a dead key server from turning each unverifiable
-		// token into a 5 s wait.
+		// Negative cache: a fetch was already tried this recently. Answering
+		// without a second outbound call is what keeps a dead key server from
+		// turning each unverifiable token into a 5 s wait. Not logged — this
+		// branch runs per request, and the attempt it stands in for was
+		// already logged once.
+		if ok {
+			return cached.key, nil
+		}
 		return nil, unavailable(fmt.Sprintf("bvbrc public key at %s is unreachable", url))
 	}
-	return v.fetchKey(ctx, url)
+	key, err := v.fetchKey(ctx, url)
+	if err != nil {
+		if !ok {
+			return nil, err
+		}
+		// At most one line per minRefetch per URL: fetchKey stamps
+		// lastAttempt, so the branch above absorbs the rest of the storm.
+		v.log().Warn("bvbrc key server unreachable; verifying with the stale cached key",
+			"url", url, "stale_for", (now - cached.fetchedAt).Round(time.Second).String(), "err", err.Error())
+		return cached.key, nil
+	}
+	return key, nil
+}
+
+// log returns the verifier's logger. slog.Default() is the fallback rather
+// than a silent discard: a daemon verifying tokens against a key it could not
+// refresh must say so somewhere.
+func (v *Verifier) log() *slog.Logger {
+	if v.logger != nil {
+		return v.logger
+	}
+	return slog.Default()
 }
 
 // refreshKey returns (nil, nil) when the refetch is rate-limited — the caller

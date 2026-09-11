@@ -115,6 +115,22 @@ const (
 	// the expected state for every adopted tenant.
 	CapabilitiesUnconfirmed = "capabilities_unconfirmed"
 
+	// OwnerNotInEnum: the account running a tenant's API is not one of the
+	// contract's owners (svcbvbrc|wilke), so the row adopt would write is one
+	// registry.Load can never read back. Error: the commit is refused rather
+	// than recording either the unloadable value silently or a legal-looking
+	// substitute that is not true.
+	OwnerNotInEnum = "owner_not_in_enum"
+
+	// ESSnapshotsDirMissing: an exclusively-owned Elasticsearch store has no
+	// <data_dir>/elasticsearch/snapshots directory, which its unit binds as
+	// path.repo. apptainer refuses a bind whose SOURCE does not exist, so the
+	// unit fails to start — the directory is not optional, it is a
+	// precondition of starting ES at all. Warn on its own (a stopped tenant
+	// is not broken by it) and an error for the ops that start the store:
+	// see preconditions.go.
+	ESSnapshotsDirMissing = "es_snapshots_dir_missing"
+
 	// ESHeapDrift: the live ES heap differs from what provision.env records.
 	// Warn; recorded as a registry drift row by adopt.
 	ESHeapDrift = "es_heap_drift"

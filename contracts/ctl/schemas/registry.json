@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "registry.json",
   "title": "CtlRegistry",
-  "description": "The fleet registry — `/rag/data/tenants/registry.json`, the single source of truth for every managed and adopted tenant. `manifest.tsv` is a PROJECTION of it (same header, rows sorted by port index, tombstones live here and never as manifest comments); the gateway generation, the systemd units and `tenant.env` are RENDERED from it. Written only under the registry lock (tmp + fsync + rename), with `generation` incremented on every write.\n\nTwo rules this schema enforces, not just documents:\n\n1. **No secret values, ever.** `settings` holds PUBLIC keys only — the `$defs/PublicSettings` object refuses any property whose name is `API_KEYS`, `API_KEY_TENANTS`, `API_KEY_ROLES`, `NEO4J_AUTH`, or ends in `_DSN`, `PASSWORD`, `TOKEN` or `_API_KEY` (the secret classes of the settings classification table). Secret-class keys are recorded as `secret_refs[{key, file}]` — the NAME and WHICH FILE holds it, never the value. Keys are recorded by fingerprint. A registry that fails this schema is refused at load, so a bug that wrote a secret cannot be re-read into a dashboard.\n\n2. **Closed shapes.** Every fixed-member object is `additionalProperties: false`; the four maps (`artifacts`, `tenants`, `settings`, `extra_env`, `last_ops`) constrain their key names with `propertyNames` and type their values. An unknown member is a schema-version problem, not something to carry along.\n\nPaths are absolute, `filepath.Clean`-stable, under the fixed roots the `paths` package knows, and limited to `[A-Za-z0-9._/-]`. Ports are evidence of what was allocated, never authority over what is listening — `doctor` compares them with `/proc/net/tcp`.",
+  "description": "The fleet registry — `/rag/data/tenants/registry.json`, the single source of truth for every managed and adopted tenant. `manifest.tsv` is a PROJECTION of it (same header, rows sorted by port index, tombstones live here and never as manifest comments); the gateway generation, the systemd units and `tenant.env` are RENDERED from it. Written only under the registry lock (tmp + fsync + rename), with `generation` incremented on every write.\n\nTwo rules this schema enforces, not just documents:\n\n1. **No secret values, ever.** `settings` holds PUBLIC keys only — the `$defs/PublicSettings` object refuses any property name containing `API_KEY…`, `SECRET`, `PASSWORD`, `TOKEN`, `DSN` or `AUTH`, or ending in `_KEY` — `go/internal/ctl/settings/settings.go`'s `secretPattern`, ported byte-identically, minus its six reviewed `publicDespitePattern` exceptions. Secret-class keys are recorded as `secret_refs[{key, file}]` — the NAME and WHICH FILE holds it, never the value. Keys are recorded by fingerprint. A registry that fails this schema is refused at load, so a bug that wrote a secret cannot be re-read into a dashboard.\n\n2. **Closed shapes.** Every fixed-member object is `additionalProperties: false`; the four maps (`artifacts`, `tenants`, `settings`, `extra_env`, `last_ops`) constrain their key names with `propertyNames` and type their values. An unknown member is a schema-version problem, not something to carry along.\n\nPaths are absolute, `filepath.Clean`-stable, under the fixed roots the `paths` package knows, and limited to `[A-Za-z0-9._/-]`. Ports are evidence of what was allocated, never authority over what is listening — `doctor` compares them with `/proc/net/tcp`.",
   "type": "object",
   "required": [
     "schema_version",
@@ -116,12 +116,26 @@
       ]
     },
     "PublicSettingKey": {
-      "description": "An env key that may be stored in the registry: shell-identifier shaped AND not of a secret class. The `not` is the guard — `propertyNames` on `PublicSettings` applies it to every key, so ONE forbidden name fails the whole registry. Keep the forbidden pattern byte-identical to `create_request.json#/$defs/PublicSettingKey` (a static conformance test asserts it) and RE2-compatible (no lookahead — the Go daemon validates with the same schema).",
+      "description": "An env key that may be stored in the registry: shell-identifier shaped AND not of a secret class. The `anyOf` is the guard — `propertyNames` on `PublicSettings` applies it to every key, so ONE forbidden name fails the whole registry.\n\nThe forbidden pattern is `go/internal/ctl/settings/settings.go`'s `secretPattern`, ported byte-identically: the daemon's classifier is what decides where a key may live and what the redactors strip, and a contract that forbids LESS than the classifier would accept into the registry exactly the names the daemon calls secret (`TENANT_API_KEY_USER`, `AWS_SECRET_ACCESS_KEY`, `SSH_PRIVATE_KEY` all passed the older, anchored spelling). It is unanchored on purpose — a secret-shaped substring anywhere in the name is enough — and RE2-compatible (no lookaround), because the Go daemon validates with this same schema.\n\nThe `anyOf`'s first branch is `settings.go`'s `publicDespitePattern`: six ragstack settings whose NAME trips the pattern but whose value is a number or an identifier, never a credential. Listed explicitly so the exception is reviewable; anything not on it that matches is a secret (fail closed). Keep this whole `$def` byte-identical to `create_request.json#/$defs/PublicSettingKey` (a static conformance test asserts it).",
       "type": "string",
       "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
-      "not": {
-        "pattern": "^(API_KEYS|API_KEY_TENANTS|API_KEY_ROLES|NEO4J_AUTH)$|(_DSN|PASSWORD|TOKEN|_API_KEY)$"
-      }
+      "anyOf": [
+        {
+          "enum": [
+            "CHUNK_MAX_TOKENS",
+            "CHUNK_TOKEN_COUNTER",
+            "EMBEDDING_MAX_BATCH_TOKENS",
+            "EMBEDDING_CHARS_PER_TOKEN",
+            "GOWE_RECEIPTS_OUTPUT_KEY",
+            "GOWE_SHARDS_INPUT_KEY"
+          ]
+        },
+        {
+          "not": {
+            "pattern": "(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)"
+          }
+        }
+      ]
     },
     "PublicSettings": {
       "description": "Public-class `tenant.env` keys and their values, verbatim. Secret-class keys are refused by name (see `PublicSettingKey`); executable-surface keys (paths, code refs, images, toolchains) may appear here but are refused by the HTTP `env-set` path, which mutates only the typed allowlist.",

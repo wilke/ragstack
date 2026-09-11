@@ -344,15 +344,29 @@ fi
 
 # ---------------------------------------------------------------- proxy
 if want proxy; then
-  say "== gateway nginx :9000 (runs as svcbvbrc; unit not installed)"
+  # Whether the unit owns the gateway is a question with an answer on the host,
+  # so ask it rather than printing a hand-rolled `sudo cp` recipe that would
+  # overwrite whatever ops/ansible installed. `is-enabled` prints enabled /
+  # disabled / static / masked and exits non-zero when the unit is unknown.
+  proxy_unit_state="$(systemctl is-enabled coconut-proxy 2>/dev/null || true)"
+  say "== gateway nginx :9000 (runs as svcbvbrc; unit: ${proxy_unit_state:-not installed})"
   if port_up 9000; then say "  ✓ :9000 already up"; elif (( PROXY )); then
     say "  starting the proxy under $(id -un): regenerating the self-signed cert (the svcbvbrc key is unreadable here)"
     run "proxy cert force" /rag/config/proxy/proxy.sh cert force
     run "proxy start" /rag/config/proxy/proxy.sh start
     wait_http "http://127.0.0.1:9000/ragstack/dev/api/v1/collections?counts=false" 60 "gateway :9000" || fail=1
+  elif [[ $proxy_unit_state == enabled ]]; then
+    say "  ✗ :9000 is DOWN, but coconut-proxy.service is installed and ENABLED — the unit owns this gateway."
+    say "     a) admin: sudo systemctl start coconut-proxy"
+    say "        then:  systemctl status coconut-proxy  /  journalctl -u coconut-proxy -n 50"
+    say "     Do NOT start it under this account as well (--proxy) while the unit is enabled: two masters on :9000."
+    fail=1
   else
     say "  ✗ :9000 is DOWN. Options:"
-    say "     a) admin: sudo cp /rag/config/proxy/coconut-proxy.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now coconut-proxy"
+    say "     a) admin: install/enable the unit from ops/ansible (it owns this file now — a hand `cp` would be overwritten):"
+    say "          cd ~/Development/ragstack/ops/ansible && ./check.sh root -K     # preview"
+    say "          ansible-playbook -i inventory/coconut.yml site.yml --tags root -K -e proxy_switch_now=true"
+    say "        (proxy_switch_now also removes svcbvbrc's @reboot start-proxy.sh crontab line, so boot start has one owner)"
     say "     b) re-run: $0 --only proxy --proxy   (starts it under this account with a fresh self-signed cert)"
     fail=1
   fi

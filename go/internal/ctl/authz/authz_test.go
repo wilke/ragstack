@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
@@ -20,10 +21,21 @@ const contractPath = "../../../../contracts/ctl/openapi.yaml"
 // Skips (loudly) when no interpreter with PyYAML is available — the generator
 // shells out to one at build time by design, and a developer machine without
 // the conda env must still be able to run `go test ./...`.
+//
+// A skip is a developer convenience, never a CI result: an alarm that can
+// disarm itself by being run somewhere without PyYAML is not an alarm, and the
+// one environment that must never skip it is the one that gates merges. So
+// under CI — or under RAGSTACK_REQUIRE_GEN, for a local run that wants the
+// same guarantee — the missing interpreter is a FAILURE, with the fix named.
 func TestMatrixIsRegeneratedFromTheContract(t *testing.T) {
 	python := findPython(t)
 	if python == "" {
-		t.Skip("no interpreter with PyYAML found (tried /rag/envs/ragstack/bin/python, python3); the matrix diff needs one")
+		const detail = "no interpreter with PyYAML found (tried /rag/envs/ragstack/bin/python, python3); the matrix diff needs one"
+		if v, req := requireGen(); req {
+			t.Fatalf("%s — but %s is set, and the generated authz matrix is a security control: "+
+				"install PyYAML (pip install pyyaml) or point the runner at /rag/envs/ragstack/bin/python", detail, v)
+		}
+		t.Skip(detail)
 	}
 	dir := t.TempDir()
 	out := filepath.Join(dir, "matrix_gen.go")
@@ -47,6 +59,17 @@ func TestMatrixIsRegeneratedFromTheContract(t *testing.T) {
 			"  cd go && go run ./internal/ctl/authz/gen -contract ../contracts/ctl/openapi.yaml -out internal/ctl/authz/matrix_gen.go\n"+
 			"got %d bytes, committed %d bytes", len(got), len(want))
 	}
+}
+
+// requireGen reports whether this environment must not skip the drift test,
+// and which variable said so.
+func requireGen() (string, bool) {
+	for _, name := range []string{"CI", "RAGSTACK_REQUIRE_GEN"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" && v != "0" && !strings.EqualFold(v, "false") {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func findPython(t *testing.T) string {
@@ -167,6 +190,31 @@ func TestViewerFields(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("ctlTenantShow ViewerFields = %v; want %v", got, want)
+		}
+	}
+}
+
+// TestDriftAlarmCannotSkipItselfInCI pins the rule above: the generated matrix
+// is a security control, and a check that quietly skips in the environment
+// that gates merges is a check nobody runs. `CI` and `RAGSTACK_REQUIRE_GEN`
+// both arm it; an explicitly false value does not.
+func TestDriftAlarmCannotSkipItselfInCI(t *testing.T) {
+	for _, c := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"CI", "true", true},
+		{"CI", "1", true},
+		{"RAGSTACK_REQUIRE_GEN", "yes", true},
+		{"CI", "", false},
+		{"CI", "0", false},
+		{"CI", "false", false},
+	} {
+		t.Setenv("CI", "")
+		t.Setenv("RAGSTACK_REQUIRE_GEN", "")
+		t.Setenv(c.name, c.value)
+		if _, got := requireGen(); got != c.want {
+			t.Errorf("%s=%q: required = %v; want %v", c.name, c.value, got, c.want)
 		}
 	}
 }

@@ -24,6 +24,28 @@ const (
 	sessionsAreReadsOnly = "sessions are read-only; re-present a ctl API key"
 )
 
+// AnonBucket is the rate-limiter key every CREDENTIAL-LESS failure is counted
+// under.
+//
+// A request with no credential at all hashes to "" — there is nothing to hash
+// — and Allow("") is always true, so a caller who simply sends no header could
+// produce unbounded 401s: tarpitted, but never given a budget and never told
+// to come back later. One fixed bucket gives that traffic the same per-window
+// budget every credential has, and the 429 that goes with it. It is a literal,
+// not a hash, so it cannot collide with the 64-hex key of a real credential.
+//
+// It is consulted ONLY inside Middleware, never in RateLimitMiddleware: the
+// rate-limit middleware also runs for GET /health, the one anonymous
+// operation, and keying that on the anon bucket would let a flood of
+// credential-less 401s elsewhere turn the public health probe into a 429.
+const AnonBucket = "anon"
+
+// identityProviderUnavailable is the detail of the 401 a caller gets when the
+// KEY SERVER — not the credential — is what could not answer. error.json fixes
+// one status per code and has no code that maps to 503, so the status stays
+// the 401 of "no usable credential" and the detail carries the distinction.
+const identityProviderUnavailable = "identity provider unavailable; the presented credential could not be verified"
+
 // SessionResolver resolves an opaque session id to the principal it
 // authenticates as. *session.MemoryStore satisfies it; the interface lives
 // here so package session may import auth and not the other way round.
@@ -184,11 +206,13 @@ func (a *Resolver) Resolve(ctx context.Context, c Credential) (Principal, error)
 func (a *Resolver) RateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.Limiter != nil {
+			// The PRESENTED credential's hash only — never the anon bucket:
+			// this middleware also runs for the one anonymous operation, and
+			// keying credential-less traffic here would let failures
+			// elsewhere turn GET /health into a 429.
 			if ok, retryAfter := a.Limiter.Allow(ReadCredential(r).Hash); !ok {
-				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-				a.Reject(w, r, http.StatusTooManyRequests, CodeRateLimited,
-					"too many failed authentication attempts for this credential; retry after "+strconv.Itoa(retryAfter)+"s",
-					map[string]any{"retry_after": retryAfter})
+				a.rejectRateLimited(w, r, retryAfter,
+					"too many failed authentication attempts for this credential; retry after ")
 				return
 			}
 		}
@@ -216,6 +240,11 @@ func (a *Resolver) Middleware(skip func(*http.Request) bool) func(http.Handler) 
 					"X-API-Key and Authorization were both present; which credential authenticated must never be ambiguous")
 				return
 			case "none":
+				// Credential-less failures are budgeted under one fixed
+				// bucket; over it, this is a 429 like any other.
+				if !a.allowAnon(w, r) {
+					return
+				}
 				a.fail(w, r, c, http.StatusUnauthorized, CodeAuthRequired,
 					"this operation requires a ctl API key, a BV-BRC token or a session")
 				return
@@ -226,6 +255,17 @@ func (a *Resolver) Middleware(skip func(*http.Request) bool) func(http.Handler) 
 				if errors.As(err, &unlisted) {
 					a.fail(w, r, c, http.StatusForbidden, CodeForbidden,
 						"credential verified, but "+unlisted.Subject+" is not on the control plane's principal list; there is no default role")
+					return
+				}
+				if errors.Is(err, ErrUnavailable) {
+					// The key server did not answer. NOTHING about the
+					// credential was learned, so counting this as a credential
+					// failure punished the caller for the identity provider's
+					// outage: an operator retrying during one would burn their
+					// own budget to a 429 and be tarpitted on every attempt,
+					// turning a provider outage into a lockout that outlives
+					// it. Refused, not counted, not delayed.
+					a.Reject(w, r, http.StatusUnauthorized, CodeAuthRequired, identityProviderUnavailable, nil)
 					return
 				}
 				a.fail(w, r, c, http.StatusUnauthorized, CodeAuthRequired,
@@ -243,7 +283,7 @@ func (a *Resolver) Middleware(skip func(*http.Request) bool) func(http.Handler) 
 // counted, or a viewer clicking around the UI would lock their own key out.
 func (a *Resolver) fail(w http.ResponseWriter, r *http.Request, c Credential, status int, code, detail string) {
 	if a.Limiter != nil {
-		a.Limiter.Fail(c.Hash)
+		a.Limiter.Fail(bucketFor(c))
 		// Delay FAILURES only. A legitimate operator's successful request is
 		// never held, which is what makes a tarpit acceptable here. The delay
 		// is bounded by the request context: a client that hung up, and a
@@ -251,6 +291,39 @@ func (a *Resolver) fail(w http.ResponseWriter, r *http.Request, c Credential, st
 		a.Limiter.Tarpit(r.Context())
 	}
 	a.Reject(w, r, status, code, detail, nil)
+}
+
+// bucketFor is the limiter key one credential's failures are counted under:
+// its hash, or the shared anon bucket when nothing was presented.
+func bucketFor(c Credential) string {
+	if c.Hash == "" && c.Kind == "none" {
+		return AnonBucket
+	}
+	return c.Hash
+}
+
+// allowAnon applies the anon bucket's budget to a credential-less request. It
+// writes the contract's 429 — the same body and Retry-After the per-credential
+// limiter writes — and reports false when it did.
+func (a *Resolver) allowAnon(w http.ResponseWriter, r *http.Request) bool {
+	if a.Limiter == nil {
+		return true
+	}
+	ok, retryAfter := a.Limiter.Allow(AnonBucket)
+	if ok {
+		return true
+	}
+	a.rejectRateLimited(w, r, retryAfter,
+		"too many failed authentication attempts without a credential; retry after ")
+	return false
+}
+
+// rejectRateLimited writes the 429 both budgets share.
+func (a *Resolver) rejectRateLimited(w http.ResponseWriter, r *http.Request, retryAfter int, detail string) {
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	a.Reject(w, r, http.StatusTooManyRequests, CodeRateLimited,
+		detail+strconv.Itoa(retryAfter)+"s",
+		map[string]any{"retry_after": retryAfter})
 }
 
 // SessionsAreReadsOnlyDetail is the refusal a mutating route gives a session

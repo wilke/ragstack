@@ -7,7 +7,11 @@ body says which implementation answered (``impl``); the fields are what the
 control plane (ADR-0007) shows on its fleet view as "running".
 
 Python-only in v1 (ADR-0006 decision 4): the Go scaffold has no route, so the
-whole file skips on ``RAGSTACK_IMPL=go``.
+whole file skips on ``RAGSTACK_IMPL=go`` — and ONLY on that. The guard used to
+read ``impl != "python"``, which also caught ``"unknown"``, the value when
+``RAGSTACK_IMPL`` is unset; the file then skipped green against the very
+implementation it is written for. Exclude what is known to be absent, never
+everything that has not identified itself.
 
 The 401 assertion takes :func:`conftest.anon_client`, not the shared ``client``:
 since #405 ``client`` carries ``X-API-Key`` by default and httpx MERGES request
@@ -30,9 +34,19 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _python_only(impl: str) -> None:
-    if impl != "python":
-        pytest.skip("Python-only surface (ADR-0006 d4)")
+def _not_the_go_scaffold(impl: str) -> None:
+    """Skip only the implementation KNOWN not to have the route.
+
+    ``impl != "python"`` also caught ``"unknown"`` — what the ``impl`` fixture
+    returns whenever ``RAGSTACK_IMPL`` is unset, which is every hand-run
+    ``pytest conformance/test_version.py`` and every invocation that sets only
+    ``RAGSTACK_BASE_URL``. The whole file then skipped, green, against the one
+    implementation that does have the endpoint. Name the exclusion instead: the
+    Go phase-1 scaffold has no ``/v1/version`` (ADR-0006 d4); anything else is
+    asked, and a server that cannot answer fails here rather than vanishing.
+    """
+    if impl == "go":
+        pytest.skip("the Go phase-1 scaffold has no /v1/version (ADR-0006 d4)")
 
 
 def _key(name: str) -> str | None:
@@ -45,13 +59,22 @@ def _validate(data, schemas: dict[str, dict]) -> None:
     jsonschema.validate(instance=data, schema=schemas["version_response"], resolver=resolver)
 
 
-async def test_version_schema(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
+async def test_version_schema(
+    client: httpx.AsyncClient, schemas: dict[str, dict], impl: str
+) -> None:
     """The suite's default principal gets a schema-valid body naming this impl."""
     resp = await client.get("/v1/version")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     _validate(body, schemas)
-    assert body["impl"] == "python"
+    # When the run declared which implementation it points at, the server must
+    # agree with it; when it did not (RAGSTACK_IMPL unset — `impl` is then
+    # "unknown"), the schema's enum is still checked above and the body must at
+    # least name something.
+    if impl != "unknown":
+        assert body["impl"] == impl, f"RAGSTACK_IMPL={impl} but the server says {body['impl']!r}"
+    else:
+        assert body["impl"], body
     # started_at is ISO-8601 and timezone-aware (the schema can only say "string").
     started = datetime.fromisoformat(body["started_at"])
     assert started.tzinfo is not None, body["started_at"]

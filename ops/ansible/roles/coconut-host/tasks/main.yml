@@ -30,7 +30,6 @@
     append: true
   loop: "{{ ragops_members }}"
   register: ragops_enroll
-  notify: restart ctl user manager
   when: ansible_facts.getent_group[ragops_group] is not none or not ansible_check_mode
 
 - name: Note on new supplementary groups
@@ -38,7 +37,7 @@
     msg: >-
       {{ ragops_group }} membership changed for {{ ragops_enroll.results | selectattr('changed') | map(attribute='item') | list }}.
       Supplementary groups are set at login: {{ operator_user }} must log out and back in
-      before --tags ctl; the {{ ctl_user }} user manager is restarted by handler.
+      before --tags ctl; the {{ ctl_user }} user manager is restarted below (section 3).
   when: ragops_enroll is changed
 
 # ---- 2. linger ------------------------------------------------------------
@@ -86,9 +85,51 @@
     owner: root
     group: root
     mode: "0644"
-  notify:
-    - systemd daemon-reload
-    - restart ctl user manager
+  register: ctl_dropin
+  notify: systemd daemon-reload
+
+# The restart is a pre-checked TASK, not a handler, on purpose. As a handler it
+# fired only when the drop-in CHANGED — so on the common case (drop-in already
+# written by an earlier run, manager still holding the environment it was
+# started with) nothing restarted it, the ctl role's "SYSTEMD_UNIT_PATH reaches
+# the manager" assert failed, and its fail_msg told the operator to re-run
+# `--tags root -K`, which was a guaranteed no-op. The state the play needs is
+# "SYSTEMD_UNIT_PATH is in the manager's environment"; that is observable, so it
+# is checked directly and the restart is driven by the observation.
+- name: Environment of the {{ ctl_user }} user manager (PID 1 only re-reads the drop-in on restart)
+  ansible.builtin.command: systemctl show -p Environment --value user@{{ ctl_uid }}.service
+  register: ctl_manager_env
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Restart user@{{ ctl_uid }}.service (drop-in changed, groups changed, or SYSTEMD_UNIT_PATH missing)
+  # Only PID 1 re-reads the user@<uid> drop-in (SYSTEMD_UNIT_PATH is process
+  # environment), and new supplementary groups reach the manager only on a
+  # fresh start. With linger and no interactive sessions this is safe; login
+  # sessions live in session scopes, not under user@.service.
+  ansible.builtin.systemd_service:
+    name: "user@{{ ctl_uid }}.service"
+    state: restarted
+    daemon_reload: true
+  when:
+    - ctl_manager_restart | bool
+    - user_manager_active.rc | default(1) == 0
+    - (ctl_dropin is defined and ctl_dropin is changed)
+      or (ragops_enroll is defined and ragops_enroll is changed)
+      or 'SYSTEMD_UNIT_PATH' not in (ctl_manager_env.stdout | default(''))
+
+- name: Manager restart is disabled but its environment is stale
+  ansible.builtin.debug:
+    msg: >-
+      SYSTEMD_UNIT_PATH is not in user@{{ ctl_uid }}.service's environment and
+      ctl_manager_restart=false, so this play left it alone. Until someone runs
+      `sudo systemctl restart user@{{ ctl_uid }}.service`, the manager cannot see
+      {{ rag_root }}/config/ctl/units and `--tags ctl` will fail its UnitPath assert.
+  when:
+    - not (ctl_manager_restart | bool)
+    - user_manager_active.rc | default(1) == 0
+    - "'SYSTEMD_UNIT_PATH' not in (ctl_manager_env.stdout | default(''))"
 
 # ---- 4. sysctl ------------------------------------------------------------
 # ansible.builtin.template + `sysctl --system` instead of ansible.posix.sysctl:
@@ -140,11 +181,28 @@
     - name: Flush handlers so the unit is known before enable
       ansible.builtin.meta: flush_handlers
 
-    - name: Enable coconut-proxy (NOT started — see proxy_switch_now)
+    # `enabled` is gated on proxy_switch_now, not hard-coded true. The cutover
+    # block below is what removes {{ ctl_user }}'s `@reboot start-proxy.sh` crontab
+    # line; enabling the unit while that line still stands gives the host TWO
+    # things starting nginx :9000 at boot — the unit and the cron job — and the
+    # loser of that race leaves a half-started master behind. So: install the
+    # unit file always (so a later cutover is one variable away), own boot start
+    # only when this run is actually taking it over.
+    - name: Enable coconut-proxy — only when this run cuts over (proxy_switch_now)
       ansible.builtin.systemd_service:
         name: coconut-proxy.service
-        enabled: true
+        enabled: "{{ proxy_switch_now | bool }}"
         daemon_reload: true
+
+    - name: Boot start still belongs to {{ ctl_user }}'s crontab
+      ansible.builtin.debug:
+        msg: >-
+          coconut-proxy.service is INSTALLED but not enabled: {{ ctl_user }}'s
+          `@reboot start-proxy.sh` crontab line still owns starting nginx :9000 at
+          boot, and two owners would race. Re-run with `-e proxy_switch_now=true`
+          to remove that line, stop the interactively started master and hand boot
+          start to systemd.
+      when: not (proxy_switch_now | bool)
 
 # ---- 6. optional cutover: crontab @reboot -> proxy.sh stop -> systemctl start ---
 # Ordered tasks rather than handlers: handlers only fire on change and the
@@ -164,9 +222,24 @@
     - name: Remove the @reboot start-proxy.sh line from {{ ctl_user }}'s crontab
       # The existing entry has no ansible name, so ansible.builtin.cron
       # state=absent cannot address it; filter the line out instead.
+      #
+      # Two hazards, both handled here:
+      #
+      #   * `grep -v` exits 1 when it prints NOTHING — which is exactly the case
+      #     where the crontab is the single @reboot line. Under `set -o pipefail`
+      #     that failed the task on the very host state the cutover is for, and
+      #     it failed AFTER `crontab -` had already consumed its (empty) input on
+      #     a re-run. `{ grep -v … || [ $? -eq 1 ]; }` makes "filtered everything"
+      #     a success and still fails on a real grep error (rc 2).
+      #   * writing the filter's output straight into `crontab -` means a mid-pipe
+      #     failure installs a truncated crontab. Filter into a temp file first
+      #     and install only once the filter has succeeded.
       ansible.builtin.shell: |
-        set -o pipefail
-        crontab -l -u {{ ctl_user }} | grep -v 'start-proxy.sh' | crontab -u {{ ctl_user }} -
+        set -euo pipefail
+        tmp="$(mktemp)"
+        trap 'rm -f "$tmp"' EXIT
+        crontab -l -u {{ ctl_user }} | { grep -v 'start-proxy.sh' || [ $? -eq 1 ]; } > "$tmp"
+        crontab -u {{ ctl_user }} - < "$tmp"
       args:
         executable: /bin/bash
       when: "'start-proxy.sh' in ctl_crontab.stdout"
