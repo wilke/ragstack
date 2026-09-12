@@ -54,6 +54,11 @@ type FakeSignaller struct {
 	FrozenWorkers bool
 	// WorkersErr, when set, is what Workers returns.
 	WorkersErr error
+
+	// workerCalls counts Workers lookups, which is how a test sees that the
+	// reload was CONFIRMED rather than merely sent: confirmReload is the only
+	// thing that samples the worker set after a HUP.
+	workerCalls int
 }
 
 // NewFakeSignaller is a master owned by uid that looks like nginx.
@@ -70,6 +75,7 @@ func NewFakeSignaller(uid int) *FakeSignaller {
 func (f *FakeSignaller) Workers(int) ([]int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.workerCalls++
 	if f.WorkersErr != nil {
 		return nil, f.WorkersErr
 	}
@@ -102,6 +108,13 @@ func (f *FakeSignaller) Count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.Signals)
+}
+
+// WorkersCount is how many times the worker set was sampled.
+func (f *FakeSignaller) WorkersCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.workerCalls
 }
 
 // FakeProber answers GETs from a table keyed by request path.

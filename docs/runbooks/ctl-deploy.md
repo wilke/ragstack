@@ -173,13 +173,39 @@ comments. The authoritative key list is `go/internal/ctl/api/env.go`; the
 ansible templates (`ops/ansible/roles/ragstack-ctl/templates/`) render exactly
 that set and are reconciled by a test.
 
+Both files are **created by `svcbvbrc` itself**, with their content carried
+through `ctl-as-svc.sh`'s stdin — never through a `wilke`-owned temp file that
+gets `install`ed or `cp`'d into place, and never as a command-line argument
+(arguments are visible to any local user via `ps`, and land in the sudo log).
+A file written as `wilke` under `umask 077` is 0600 and owned by `wilke`;
+`svcbvbrc` cannot read it, so installing it AS `svcbvbrc` fails outright — the
+values never reach `/rag/config/ctl` at all, and this is not hypothetical: it
+is exactly what the previous version of this step did, and it failed this way.
+
+**Transport: base64 over stdin.** `ctl-as-svc.sh` runs its command on a pty
+(`script -qec` — see the wrapper's own header comment for why), and stdin IS
+piped through to the far side unchanged; verified on this host:
+`printf 'A=1\nB=x\n' | script -qec 'cat > f' /dev/null` reproduces the input
+byte-for-byte in `f`, with no CR added. (The pty's line discipline affects the
+child's *output* — the typescript, which this runbook already discards to
+`/dev/null` — not what the child reads from stdin.) What raw envfile content
+cannot safely cross a pty as-is is: a control character (an API key can
+contain one), and canonical mode's 4095-byte line cap, which silently drops
+anything longer. `base64 -w76` sidesteps both — 76 fixed printable-ASCII
+columns per line — and round-trips the exact original bytes back out the
+other side.
+
 ```bash
+# wilke-only staging dir — never /tmp/ctl.env, which any local user can see.
+D=$(mktemp -d /tmp/ctl-secrets.XXXXXX)
+chmod 0700 "$D"
+
 # Mint two keys. Print them ONCE, paste them into the file, clear the scrollback.
 openssl rand -hex 32     # operator key
 openssl rand -hex 32     # viewer key
 
 umask 077
-cat > /tmp/ctl.env <<'EOF'
+cat > "$D/ctl.env" <<'EOF'
 CTL_LISTEN=127.0.0.1:23990
 CTL_RAG_ROOT=/rag
 CTL_STATE_DIR=/rag/data/ctl
@@ -193,19 +219,47 @@ APPTAINER_CACHEDIR=/rag/data/ctl/apptainer/cache
 APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config
 EOF
 
-cat > /tmp/ctl-secrets.env <<'EOF'
+cat > "$D/ctl-secrets.env" <<'EOF'
 CTL_API_KEYS='["<operator-key>","<viewer-key>"]'
 CTL_API_KEY_ROLES='{"<operator-key>":"operator","<viewer-key>":"viewer"}'
 EOF
 
-# Install both as the service account, then remove the /tmp copies. The files
-# are written here rather than through ctl-as-svc.sh on purpose: that wrapper
-# runs its command on a PTY (see `script -qec` in the script), and a heredoc fed
-# through a pty comes out with a CR on every line — which would put `\r` at the
-# end of every value in an env file.
-CTL_BIN=/usr/bin/install ops/coconut/ctl-as-svc.sh -m 0640 /tmp/ctl.env         /rag/config/ctl/ctl.env
-CTL_BIN=/usr/bin/install ops/coconut/ctl-as-svc.sh -m 0600 /tmp/ctl-secrets.env /rag/config/ctl/ctl-secrets.env
-shred -u /tmp/ctl.env /tmp/ctl-secrets.env
+# Install both AS svcbvbrc: svcbvbrc decodes its own stdin, writes atomically
+# (tmp + mv, so a killed transfer never leaves a half-written file at the real
+# path) and sets its own mode. wilke never gets write access to the installed
+# path and never needs read access to svcbvbrc's copy.
+base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+    umask 077
+    base64 -d > /rag/config/ctl/ctl.env.tmp &&
+    mv /rag/config/ctl/ctl.env.tmp /rag/config/ctl/ctl.env &&
+    chmod 0640 /rag/config/ctl/ctl.env
+'
+base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+    umask 077
+    base64 -d > /rag/config/ctl/ctl-secrets.env.tmp &&
+    mv /rag/config/ctl/ctl-secrets.env.tmp /rag/config/ctl/ctl-secrets.env &&
+    chmod 0600 /rag/config/ctl/ctl-secrets.env
+'
+
+# Verify WITHOUT ever printing content: ownership/mode, ACL if this host has
+# one, and a line-count / key-prefix sanity check. Asserts, so a bad install
+# fails this command rather than silently passing.
+CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
+    set -e
+    stat -c "%U:%G %a %n" /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
+    if command -v getfacl >/dev/null 2>&1; then
+        getfacl -p /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
+    fi
+    [ "$(stat -c %a /rag/config/ctl/ctl.env)" = 640 ]
+    [ "$(stat -c %a /rag/config/ctl/ctl-secrets.env)" = 600 ]
+    wc -l /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
+    [ "$(grep -c "^CTL_" /rag/config/ctl/ctl.env)" -ge 5 ]
+    [ "$(grep -c "^CTL_" /rag/config/ctl/ctl-secrets.env)" -ge 2 ]
+' &&
+# Remove the wilke-side copies ONLY once the verification above exited 0 —
+# chained with `&&` on purpose: an install that failed partway must leave the
+# only prepared copies on disk, not have them shredded out from under it.
+shred -u "$D/ctl.env" "$D/ctl-secrets.env" && rmdir "$D"
 ```
 
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.

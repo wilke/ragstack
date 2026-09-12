@@ -423,6 +423,17 @@ export function TenantView({
   const [section, setSection] = useState<SectionId>("overview");
   const tenant = useCtlQuery<CtlTenant>(ctlKeys.tenant(name), `/v1/tenants/${name}`);
 
+  // This header renders off the SAME `tenant` read no matter which tab is
+  // showing, so it is the one place a failed `/v1/tenants/{name}` poll is
+  // visible on the Config/Logs/Doctor tabs (their own bodies read other
+  // endpoints and never look at `tenant.error`). A retained summary must say
+  // so rather than read as the current answer.
+  const tenantStale = Boolean(tenant.error) && Boolean(tenant.data);
+  // Overview and Drift already show their own ErrorBanner for this query
+  // (TenantSection, below) and drop the stale body entirely — a second banner
+  // up here would just repeat that message.
+  const showHeaderError = Boolean(tenant.error) && section !== "overview" && section !== "drift";
+
   return (
     <div>
       <div className="bg-ink-900 px-5 py-4 md:px-8">
@@ -436,12 +447,31 @@ export function TenantView({
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="font-display text-[20px] font-extrabold text-white">{name}</h1>
           {tenant.data && (
-            <span className="font-mono text-[11px] text-ink-dim">
+            <span
+              className="font-mono text-[11px] text-ink-dim"
+              title={
+                tenantStale
+                  ? `stale — last successful read from ${since(
+                      new Date(tenant.dataUpdatedAt).toISOString(),
+                    )}; refresh failed`
+                  : undefined
+              }
+            >
               manifest {tenant.data.summary.manifest_name} · api {tenant.data.summary.ports.api} ·
               observed {since(tenant.data.status.observed_at)}
+              {tenantStale && (
+                <span className="ml-2 rounded-chip bg-accent px-1.5 py-[1px] text-[10.5px] font-medium text-ink-900">
+                  stale
+                </span>
+              )}
             </span>
           )}
         </div>
+        {showHeaderError && (
+          <div className="mt-1">
+            <ErrorBanner error={tenant.error} onRetry={() => void tenant.refetch()} />
+          </div>
+        )}
       </div>
 
       <div className="md:flex">

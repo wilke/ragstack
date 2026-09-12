@@ -161,7 +161,39 @@ func Publish(ctx context.Context, f *registry.Fleet, opts Options) (*Result, err
 
 	// An incomplete publication is repaired before a new one starts: the
 	// pointer must be honest before it is moved again.
-	if rep, err := st.repair(); err != nil {
+	//
+	// A DRY RUN does not repair, because repair WRITES — it moves `current`, the
+	// symlink nginx resolves both generated includes through. `gateway apply
+	// --dry-run` against a host with an interrupted publication used to repoint
+	// the live gateway at the previous generation and say nothing about it,
+	// arming a routing change nobody asked for at whatever reload came next.
+	//
+	// Reporting the incomplete transaction and carrying on (rather than
+	// refusing) is a FAITHFUL simulation here, because nothing the dry run does
+	// reads `current`: stage() copies the proxy tree and then overwrites both
+	// generated include paths with this generation's bytes, and rewriteConfPaths
+	// only rewrites proxy-dir references — so no include in the staged tree
+	// resolves through the pointer, and the staged `nginx -t` tests the same
+	// bytes whether or not the pointer is still on the interrupted generation.
+	// If that ever stops holding — a generated include gaining an
+	// `include <state>/current/...` line of its own — this has to become a
+	// refusal (ErrRefused), because the simulation would then depend on a
+	// pointer the dry run is not allowed to correct.
+	if opts.DryRun {
+		t, ok, err := st.ReadTxn()
+		if err != nil {
+			res.step("repair", err, "")
+			return res, err
+		}
+		if ok && !t.Complete() {
+			msg := fmt.Sprintf("the previous publication is incomplete (gen-%d, state %q) and a dry run does not repair it, "+
+				"so `current` still points at gen-%d: run `ragstack-ctl gateway repair` before applying",
+				t.Generation, t.State, st.CurrentGeneration())
+			res.Warnings = append(res.Warnings, msg)
+			res.step("repair", nil, msg)
+			opts.Log("repair", msg)
+		}
+	} else if rep, err := st.repair(); err != nil {
 		res.step("repair", err, "")
 		return res, err
 	} else if rep.Incomplete {
@@ -1321,6 +1353,10 @@ func prune(s State, keep, current, previous int) []int {
 // Targets are limited to generations that actually reached `verified` (see
 // VerifiedName). A generation that was published and reverted is on disk and
 // is not a resting place.
+//
+// The only case that skips the sequence is a target the durable record proves
+// nginx was CONFIRMED on (nginxConfirmedOn). `current` pointing at the target
+// is not that proof — see the comment at the shortcut.
 func Rollback(ctx context.Context, f *registry.Fleet, to int, opts Options) (*Result, error) {
 	opts.defaults()
 	st := NewState(opts.Roots)
@@ -1333,12 +1369,24 @@ func Rollback(ctx context.Context, f *registry.Fleet, to int, opts Options) (*Re
 	}
 	defer lock.unlock()
 
-	if _, err := st.repair(); err != nil {
-		return res, err
-	}
+	// The record is read BEFORE the repair, because the repair is one of the
+	// things that makes the pointer stop meaning what it says: it moves
+	// `current` back to the previous generation without signalling anything, so
+	// afterwards the pointer names a generation the running workers are not
+	// serving. Whether the shortcut below is allowed is decided from this
+	// record, not from what the pointer looks like once repair has been at it.
 	txn, haveTxn, err := st.ReadTxn()
 	if err != nil {
 		return res, err
+	}
+	rep, err := st.repair()
+	if err != nil {
+		res.step("repair", err, "")
+		return res, err
+	}
+	if rep.Incomplete {
+		res.Warnings = append(res.Warnings, "the previous publication was incomplete: "+rep.Action)
+		opts.Log("repair", rep.Action)
 	}
 	if to == 0 {
 		if !haveTxn || txn.PreviousGeneration == 0 {
@@ -1354,12 +1402,33 @@ func Rollback(ctx context.Context, f *registry.Fleet, to int, opts Options) (*Re
 		return res, fmt.Errorf("%w: generation %d never reached `verified`, so rolling back to it is not going back to a "+
 			"state this host is known to have served (verified: %v)", ErrRefused, to, verified)
 	}
+	// `current` already naming the target is NOT on its own a reason to do
+	// nothing: the pointer is where the next reload will READ from, never proof
+	// of what the running workers are serving.
+	//
+	// The case that made this a bug: gen-2 is published, the master is HUPed and
+	// the workers pick gen-2 up, and the process dies before the txn reaches
+	// `verified`. The rollback's own st.repair() then moves `current` from gen-2
+	// back to gen-1 — pointer only, repair deliberately never signals — and the
+	// shortcut saw cur == to and reported `rolled_back` without a HUP. The
+	// gateway went on serving gen-2 while the pointer and the result both said
+	// gen-1, which is the exact state a rollback exists to leave nobody in.
+	//
+	// So the shortcut needs evidence about nginx, and the only durable evidence
+	// is a COMPLETE transaction that reached one of the two states reached after
+	// confirmReload and a probe both passed, naming this generation.
 	cur := st.CurrentGeneration()
-	if cur == to {
+	if cur == to && nginxConfirmedOn(txn, haveTxn, to) {
 		res.Generation, res.PreviousGeneration = to, cur
 		res.State = TxnRolledBack
-		res.step("switch", nil, fmt.Sprintf("current already points at gen-%d", to))
+		res.step("switch", nil, fmt.Sprintf("current already points at gen-%d and the last transaction (%s, finished %s) "+
+			"confirmed nginx on it; nothing to do", to, txn.State, txn.FinishedAt))
 		return res, nil
+	}
+	if cur == to {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("current already points at gen-%d, but no completed publication "+
+			"confirmed nginx on it (the last record is %s), so this rollback stages, reloads and verifies gen-%d rather "+
+			"than trusting the pointer", to, describeTxn(txn, haveTxn), to))
 	}
 
 	files, err := st.ReadGeneration(to)
@@ -1484,6 +1553,45 @@ func Rollback(ctx context.Context, f *registry.Fleet, to int, opts Options) (*Re
 	res.State = TxnRolledBack
 	_ = f // the registry is deliberately NOT the yardstick here; see the doc comment.
 	return res, nil
+}
+
+// nginxConfirmedOn reports whether the durable record proves the RUNNING nginx
+// was confirmed on generation n.
+//
+// Only two states qualify, and both are terminal and are only ever written
+// AFTER confirmReload proved the master replaced its workers with no
+// [emerg]/[alert] and after the probes passed:
+//
+//   - `verified`: a publish of n reached the end.
+//   - `rolled_back`: a rollback TO n reached the end (confirmReload plus
+//     probeGeneration against n's own bytes).
+//
+// Everything else — an incomplete record, `switched`/`reloaded` from a crashed
+// publish, `reverted` (which includes the one `gateway repair --acknowledge`
+// writes), `failed`, `rollback_failed`, or a terminal record naming a DIFFERENT
+// generation — says nothing about what the workers loaded, so it is not a
+// reason to skip a reload.
+func nginxConfirmedOn(t *Txn, ok bool, n int) bool {
+	if !ok || !t.Complete() || t.Generation != n {
+		return false
+	}
+	return t.State == TxnVerified || t.State == TxnRolledBack
+}
+
+// describeTxn is the record in one phrase, for the warning that explains why a
+// rollback is doing the full sequence over a pointer that already agrees.
+func describeTxn(t *Txn, ok bool) string {
+	if !ok {
+		return "absent"
+	}
+	state := t.State
+	if state == "" {
+		state = "unknown"
+	}
+	if !t.Complete() {
+		return fmt.Sprintf("an INCOMPLETE %s of gen-%d", state, t.Generation)
+	}
+	return fmt.Sprintf("%s of gen-%d", state, t.Generation)
 }
 
 func readManifest(s State, n int) (Manifest, error) {

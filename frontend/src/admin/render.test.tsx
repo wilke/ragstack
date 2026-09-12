@@ -3,6 +3,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AdminApp, effectiveRole, hashFor, parseHash, VisionToggle } from "./AdminApp";
+import { CtlError } from "./api/http";
 import { ctlKeys } from "./api/queries";
 import { FleetView } from "./components/FleetView";
 import { GatewayDiff, GatewayView } from "./components/GatewayView";
@@ -31,7 +32,14 @@ import {
 
 function render(node: ReactElement, seed?: (qc: QueryClient) => void): string {
   const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    // `retryOnMount` must join `retry: false` here: with no listeners yet (an
+    // SSR string render never mounts), React Query treats every "error, no
+    // data" query as due for a mount-time refetch regardless of `retry`, and
+    // its OPTIMISTIC result for that pending fetch reports `status: "pending"`
+    // — silently reverting exactly the seeded error state seedQueryError below
+    // exists to test. Real views never hit this: they mount for real and the
+    // seam is React Query's own refetch machinery, not app code.
+    defaultOptions: { queries: { retry: false, retryOnMount: false, staleTime: Infinity } },
   });
   seed?.(qc);
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, node));
@@ -48,6 +56,44 @@ const seedTenant = (qc: QueryClient) => {
   qc.setQueryData(ctlKeys.tenant("dev"), tenantFixture);
   qc.setQueryData(ctlKeys.tenantEnv("dev"), envFixture);
 };
+
+/**
+ * Put a query into React Query's real "failed" shape — `setQueryData` alone
+ * cannot express this, since a fetch failure sets `error` and `status:
+ * "error"` while LEAVING any previously-cached `data` in place (query-core's
+ * own reducer never clears `data` on an error action; see
+ * `Query#dispatch`/case "error" in `@tanstack/query-core`). That retained-data
+ * shape is exactly the bug this file guards: a stale success sitting next to
+ * a live error, which a view must not present as a current answer.
+ */
+function seedQueryError(
+  qc: QueryClient,
+  key: readonly unknown[],
+  opts: { data?: unknown; dataUpdatedAt?: number } = {},
+): CtlError {
+  const error = new CtlError({
+    status: 500,
+    code: "internal",
+    detail: "the daemon had a problem",
+    requestId: "dddddddd11112222",
+  });
+  const query = qc.getQueryCache().build(qc, { queryKey: key as unknown[] });
+  query.setState({
+    status: "error",
+    fetchStatus: "idle",
+    error,
+    errorUpdateCount: 1,
+    errorUpdatedAt: Date.now(),
+    fetchFailureCount: 1,
+    fetchFailureReason: error,
+    isInvalidated: true,
+    data: opts.data,
+    dataUpdatedAt: opts.dataUpdatedAt ?? 0,
+    dataUpdateCount: opts.data === undefined ? 0 : 1,
+    fetchMeta: null,
+  });
+  return error;
+}
 
 const section = (id: "config" | "drift" | "logs" | "doctor", role: "viewer" | "operator") =>
   createElement(TenantSection, { section: id, name: "dev", role });
@@ -116,6 +162,66 @@ describe("FleetView", () => {
     expect(html).toContain("api: ok");
     expect(html).toContain("qdrant: n/a");
     expect(html).toContain("api: degraded");
+  });
+});
+
+// The doctor poll rides alongside the fleet poll but is read through its own
+// query, so it fails and recovers independently — these are the two failure
+// modes the reviewer reproduced: a first fetch that never had data, and a
+// background refetch that clobbers nothing but must not pass its stale
+// success off as current.
+describe("FleetView doctor errors", () => {
+  it("shows an error banner (with retry) instead of the loading chip when the first doctor fetch fails", () => {
+    const html = render(createElement(FleetView, { onSelectTenant: () => {} }), (qc) => {
+      qc.setQueryData(ctlKeys.fleet(), fleetFixture);
+      qc.setQueryData(ctlKeys.version(), versionFixture);
+      seedQueryError(qc, ctlKeys.doctor());
+    });
+    // The fleet table still rendered fine off its own successful query.
+    expect(html).toContain("dev");
+    // No indefinite "doctor …" placeholder, and no verdict chip to click into.
+    expect(html).not.toContain("doctor …");
+    expect(html).not.toContain("finding");
+    // The failure itself is on screen, with a way to retry it.
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Reference: dddddddd11112222");
+    expect(html).toContain("Retry");
+  });
+
+  it("marks a retained green doctor verdict as stale on a failed refresh, rather than showing it as current", () => {
+    const greenDoctor = { ...doctorFixture, status: "green" as const };
+    const html = render(createElement(FleetView, { onSelectTenant: () => {} }), (qc) => {
+      qc.setQueryData(ctlKeys.fleet(), fleetFixture);
+      qc.setQueryData(ctlKeys.version(), versionFixture);
+      // A poll that had succeeded before (dataUpdatedAt in the past) and then
+      // failed on its next tick — react-query's real shape for that keeps
+      // `data` and flips `error`/`status`, which is what seedQueryError models.
+      seedQueryError(qc, ctlKeys.doctor(), {
+        data: greenDoctor,
+        dataUpdatedAt: Date.parse("2026-09-10T11:00:00Z"),
+      });
+    });
+    // The retained verdict is still on screen …
+    expect(html).toContain("green");
+    // … but qualified, not presented as the current read.
+    expect(html).toContain("stale");
+    // … and the failure has a retry.
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Retry");
+  });
+
+  it("qualifies the tenant table itself as stale when the fleet poll fails but rows are retained", () => {
+    const html = render(createElement(FleetView, { onSelectTenant: () => {} }), (qc) => {
+      qc.setQueryData(ctlKeys.doctor(), doctorFixture);
+      qc.setQueryData(ctlKeys.version(), versionFixture);
+      seedQueryError(qc, ctlKeys.fleet(), {
+        data: fleetFixture,
+        dataUpdatedAt: Date.parse("2026-09-10T11:55:00Z"),
+      });
+    });
+    expect(html).toContain("dev"); // the retained rows are still shown …
+    expect(html).toContain("stale"); // … qualified …
+    expect(html).toContain('role="alert"'); // … with the failure surfaced.
   });
 });
 
@@ -210,6 +316,26 @@ describe("TenantView", () => {
     });
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).not.toContain("<script>");
+  });
+
+  it("marks the header's tenant summary as stale when /v1/tenants/{name} fails after a prior success", () => {
+    const html = render(
+      createElement(TenantView, { name: "dev", role: "operator", onBack: () => {} }),
+      (qc) => {
+        seedFleet(qc);
+        qc.setQueryData(ctlKeys.tenantEnv("dev"), envFixture);
+        seedQueryError(qc, ctlKeys.tenant("dev"), {
+          data: tenantFixture,
+          dataUpdatedAt: Date.parse("2026-09-10T11:00:00Z"),
+        });
+      },
+    );
+    // The retained summary is still readable in the header …
+    expect(html).toContain(tenantFixture.summary.manifest_name);
+    // … but qualified as stale, and the failure is surfaced with a retry.
+    expect(html).toContain("stale");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("Retry");
   });
 });
 

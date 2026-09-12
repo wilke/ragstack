@@ -13,6 +13,30 @@ import { bytes, since } from "../lib/format";
 import { ErrorBanner } from "./ErrorBanner";
 import { HealthDot, StateChip } from "./StateChip";
 
+/** "3 h ago" for a `dataUpdatedAt` epoch ms, the shape React Query hands back. */
+function sinceMs(ms: number, now: number): string {
+  return since(ms ? new Date(ms).toISOString() : null, now);
+}
+
+/**
+ * A tone-warn tag reading "stale", for a chip or table caption whose data is a
+ * retained (possibly old) success rather than the current answer.
+ *
+ * Not folded into `StateChip`'s vocabulary (StateChip.tsx) — that table maps
+ * enums the control plane emits, and "stale" is a client-side freshness
+ * judgement about a poll, not a value the daemon sent.
+ */
+function StaleTag({ title }: { title: string }) {
+  return (
+    <span
+      title={title}
+      className="inline-flex items-center rounded-chip bg-accent-soft px-2 py-[2px] font-mono text-[10.5px] font-medium leading-[15px] text-accent-text"
+    >
+      stale
+    </span>
+  );
+}
+
 function BandFact({ label, value, tone }: { label: string; value: string; tone?: "bad" | "warn" }) {
   return (
     <div className="rounded-card bg-white/[.06] px-[16px] py-3">
@@ -38,26 +62,38 @@ export function fleetUpDown(rows: readonly FleetRow[]): { up: number; down: numb
 
 function DoctorChip({
   doctor,
+  now,
   expanded,
   onToggle,
 }: {
-  doctor: CtlDoctor | undefined;
+  doctor: ReturnType<typeof useCtlQuery<CtlDoctor>>;
+  now: number;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  if (!doctor) {
-    return <span className="font-mono text-[11px] text-dim">doctor …</span>;
+  if (!doctor.data) {
+    // Nothing to click into. A fetch failure with no prior data gets its own
+    // ErrorBanner below — this spot is only ever the "still loading" filler,
+    // and only while there is no error to report instead.
+    return doctor.error ? null : <span className="font-mono text-[11px] text-dim">doctor …</span>;
   }
-  const n = doctor.findings.length;
+  const stale = Boolean(doctor.error);
+  const n = doctor.data.findings.length;
+  const title = stale
+    ? `stale — last successful doctor result from ${sinceMs(doctor.dataUpdatedAt, now)}; refresh failed`
+    : `doctor ${doctor.data.status} — ${n} finding${n === 1 ? "" : "s"}`;
   return (
     <button
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="inline-flex items-center gap-2 rounded-chip px-1 py-0.5 hover:bg-lineSoft"
-      title={`doctor ${doctor.status} — ${n} finding${n === 1 ? "" : "s"}`}
+      className={`inline-flex items-center gap-2 rounded-chip px-1 py-0.5 hover:bg-lineSoft ${
+        stale ? "opacity-70" : ""
+      }`}
+      title={title}
     >
-      <StateChip kind="status" value={doctor.status} />
+      <StateChip kind="status" value={doctor.data.status} />
+      {stale && <StaleTag title={title} />}
       <span className="font-mono text-[11px] text-dim">
         {n} finding{n === 1 ? "" : "s"}
       </span>
@@ -162,14 +198,38 @@ export function FleetView({ onSelectTenant }: { onSelectTenant: (name: string) =
           <h2 className="font-mono text-[11px] font-medium uppercase tracking-[.14em] text-strong">
             Tenants
           </h2>
+          {/* Stale rows are still the fleet table's business, not the doctor
+              chip's — a fleet-fetch failure with tenants retained from the
+              last poll must not read as a current table. */}
+          {fleet.error && rows.length > 0 && (
+            <StaleTag
+              title={`stale — showing tenants from the last successful fetch (${sinceMs(
+                fleet.dataUpdatedAt,
+                now,
+              )}); refresh failed`}
+            />
+          )}
           <DoctorChip
-            doctor={doctor.data}
+            doctor={doctor}
+            now={now}
             expanded={showFindings}
             onToggle={() => setShowFindings((v) => !v)}
           />
         </div>
 
-        {showFindings && doctor.data && <DoctorFindings doctor={doctor.data} />}
+        {doctor.error && <ErrorBanner error={doctor.error} onRetry={() => void doctor.refetch()} />}
+
+        {showFindings && doctor.data && (
+          <>
+            {doctor.error && (
+              <p className="mt-3 font-mono text-[11px] text-accent-text">
+                stale — the findings below are from the last successful doctor run; the refresh
+                failed.
+              </p>
+            )}
+            <DoctorFindings doctor={doctor.data} />
+          </>
+        )}
 
         {fleet.error && <ErrorBanner error={fleet.error} onRetry={() => void fleet.refetch()} />}
 
