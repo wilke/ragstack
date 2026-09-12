@@ -22,7 +22,7 @@ step 6, which refuses rather than guesses.
 
 | Thing | Check | If missing |
 |---|---|---|
-| Go toolchain (off-host) | `~/sdk/go1.23.12/bin/go version` | Build elsewhere and copy the binary; coconut has no Go on `PATH`. |
+| Go toolchain | `make go-mode` → `GO_MODE=container` (or `host`) | `make golang-sif` pulls `golang:1.23.12` (the `toolchain` line of `go/go.mod`) into `/rag/apptainer/images/golang.sif`; coconut has no Go on `PATH`, so the ctl targets build inside that image. A host toolchain still works: `GO=~/sdk/go1.23.12/bin/go`. |
 | `/rag/config/ctl`, `/rag/data/ctl` | `ls -ld /rag/config/ctl /rag/data/ctl` | Step 3. |
 | `coconut-proxy` change deployed | `ls -l /rag/config/proxy/conf.d/05-tenants.generated.conf` | Step 1 — do it first (see the ordering note there). |
 | sudo to `svcbvbrc` from a tty | `ops/coconut/ctl-as-svc.sh version` | Ask the admin for the `(svcbvbrc) NOPASSWD: ALL` rule (it exists today). |
@@ -94,11 +94,23 @@ symlinks if a generation is already published (step 6 rollback).
 
 ```bash
 cd ~/Development/ragstack
-make build-ctl GO=$HOME/sdk/go1.23.12/bin/go      # go/bin/ragstack-ctl, static, -trimpath
-make test-ctl  GO=$HOME/sdk/go1.23.12/bin/go      # must be green before installing
-make install-ctl GO=$HOME/sdk/go1.23.12/bin/go    # /rag/bin/ragstack-ctl-<ver> + symlink
+make golang-sif        # once per toolchain bump: pulls golang:1.23.12 → /rag/apptainer/images/golang.sif (~290 MB)
+make go-mode           # -> GO_MODE=container  (host `go` on PATH would win: GO_MODE=host)
+make build-ctl         # go/bin/ragstack-ctl, static, -trimpath, built inside the image
+make test-ctl          # race detector; must be green before installing
+make install-ctl       # /rag/bin/ragstack-ctl-<ver> + symlink
 /rag/bin/ragstack-ctl version
 ```
+
+The image is the exact `toolchain go1.23.12` that `go/go.mod` pins and that CI's
+`actions/setup-go` reads from the same file, so a coconut build and a CI build
+use the same compiler. Module and build caches live under `/rag/cache/go`, not
+in the NFS home. `GO_MODE=host GO=~/sdk/go1.23.12/bin/go` builds with a host
+toolchain instead; `GO_MODE=container` forces the image even when a host `go`
+exists. Only *building and testing* happen in the container: the ctl binary
+itself always runs on the host, because a rootless Apptainer user namespace
+cannot read `/proc/<pid>/{cwd,exe,fd}` of processes outside it, and adopt,
+doctor and the gateway preflight all need those.
 
 **Rollback:** `ln -sfn ragstack-ctl-<previous> /rag/bin/ragstack-ctl`. The
 versioned binaries are kept, so this is instant and needs no rebuild.

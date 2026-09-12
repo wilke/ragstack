@@ -51,12 +51,15 @@ curl -s localhost:9000/ragstack/tenants
 
 ```bash
 cd ~/Development/ragstack
-make build-ctl test-ctl install-ctl GO=$HOME/sdk/go1.23.12/bin/go
+make golang-sif                        # once: golang:1.23.12 → /rag/apptainer/images/golang.sif
+make go-mode                           # -> GO_MODE=container
+make build-ctl test-ctl install-ctl    # built and tested inside the image; caches under /rag/cache/go
 /rag/bin/ragstack-ctl version
 ops/coconut/ctl-as-svc.sh version
 ```
 
-**Expect:** both print the same version and 40-hex commit; `test-ctl` green.
+**Expect:** `go-mode` says `container`; both `version` calls print the same version and
+40-hex commit; `test-ctl` green. (`GO=~/sdk/go1.23.12/bin/go` still selects a host toolchain.)
 **Undo:** `ln -sfn ragstack-ctl-<previous> /rag/bin/ragstack-ctl` (old binaries are kept).
 
 ## 3. State directories and golden bodies (as svcbvbrc)

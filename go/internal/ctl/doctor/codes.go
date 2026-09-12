@@ -172,4 +172,19 @@ const (
 	// <manifest_name>. Info: legal, but every path convention downstream is
 	// then explicit rather than derived.
 	DataDirOffLayout = "data_dir_off_layout"
+
+	// APIBindFromScript: the API was not listening, so `api.bind` was read
+	// from the `--host` in the tenant's own launch script rather than from a
+	// live command line. Info: still evidence, one step removed.
+	APIBindFromScript = "api_bind_from_script"
+
+	// APIBindAssumed: nothing could be observed about the API's bind — no
+	// listener on the API port (a stopped tenant, or a host where the
+	// listener→pid mapping is unreadable) and no `--host` in a launch script
+	// — so the contract's default 127.0.0.1 was recorded. Warn: the row is a
+	// default, not an observation, and the tenant's next start confirms or
+	// corrects it. The alternative was an empty bind, which registry.Save
+	// refuses against contracts/ctl/schemas/registry.json, so adopt could not
+	// commit a stopped tenant at all.
+	APIBindAssumed = "api_bind_assumed"
 )
