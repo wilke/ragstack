@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "version_response.json",
+  "title": "CtlVersionResponse",
+  "description": "Build identity of the running daemon, stamped by `-ldflags -X` in `make build-ctl`. `schema_version` is the registry schema version this binary reads and writes; a registry on disk with a higher value is refused, never migrated silently.",
+  "type": "object",
+  "required": ["version", "commit", "built_at", "go", "schema_version"],
+  "properties": {
+    "version": { "type": "string" },
+    "commit": {
+      "description": "Full 40-hex source commit, or `unknown` for an unstamped local build.",
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|unknown)$"
+    },
+    "built_at": {
+      "description": "RFC 3339 UTC build timestamp, or `unknown`.",
+      "type": "string"
+    },
+    "go": {
+      "description": "`runtime.Version()` of the toolchain that built the binary.",
+      "type": "string"
+    },
+    "schema_version": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

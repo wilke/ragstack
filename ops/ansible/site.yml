@@ -1,0 +1,67 @@
+# ops/ansible/site.yml — coconut host preparation for ragstack-ctl (plan v3, Rollout).
+# Host prep only. The ctl never calls Ansible; tenant lifecycle and gateway
+# generation stay in the ctl. Tags: root | hardening | ctl | wilke.
+# Always: --check --diff first. See README.md for the run pattern.
+---
+- name: Resolve shared facts (always)
+  hosts: coconut
+  gather_facts: true
+  become: false
+  tags: [always]
+  tasks:
+    - name: Look up the ctl account
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ ctl_user }}"
+
+    - name: Set ctl_uid from getent
+      ansible.builtin.set_fact:
+        ctl_uid: "{{ ansible_facts.getent_passwd[ctl_user][1] }}"
+
+    - name: Announce facts
+      ansible.builtin.debug:
+        msg: "ctl_user={{ ctl_user }} uid={{ ctl_uid }} rag_root={{ rag_root }} running_as={{ ansible_facts.user_id }} check_mode={{ ansible_check_mode }}"
+
+- name: Root host preparation (tag root; needs become, run with -K from a tty)
+  hosts: coconut
+  become: true
+  tags: [root]
+  roles:
+    - role: coconut-host
+
+- name: Hardening (tag hardening; become; gated by hardening_enabled)
+  hosts: coconut
+  become: true
+  tags: [hardening]
+  roles:
+    - role: hardening
+
+- name: ragstack-ctl host prerequisites (tag ctl; runs as wilke, become_user svcbvbrc for ctl-owned files)
+  hosts: coconut
+  become: false
+  tags: [ctl]
+  vars:
+    # Unprivileged become (wilke -> svcbvbrc) without setfacl: keep Ansible's
+    # temp files inside a ragops-only directory (created by the first task)
+    # and allow the world-readable fallback only there. See README.
+    ansible_remote_tmp: "{{ ctl_ansible_tmp }}"
+    ansible_shell_allow_world_readable_temp: true
+  pre_tasks:
+    - name: Group {{ ragops_group }} lookup for the temp dir
+      ansible.builtin.getent:
+        database: group
+        key: "{{ ragops_group }}"
+        fail_key: false
+      tags: [always]
+    - name: Confine Ansible temp files to {{ ctl_ansible_tmp }} (2770 {{ operator_user }}:{{ ragops_group }})
+      ansible.builtin.file:
+        path: "{{ ctl_ansible_tmp }}"
+        state: directory
+        mode: "2770"
+        group: "{{ ragops_group if ansible_facts.getent_group[ragops_group] is not none else omit }}"
+      vars:
+        ansible_shell_allow_world_readable_temp: false
+      check_mode: false   # the dir must exist for the preview's become tasks too
+      tags: [always]
+  roles:
+    - role: ragstack-ctl

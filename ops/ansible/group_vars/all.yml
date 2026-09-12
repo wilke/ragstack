@@ -1,0 +1,81 @@
+# ops/ansible/group_vars/all.yml — host-prep variables (plan v3, "Host layout & permissions").
+# Playbook-adjacent group_vars so a second-site inventory reuses them.
+
+rag_root: /rag
+
+# Accounts and groups. ragops = {wilke, svcbvbrc}; NOT applied to
+# /rag/config/proxy (stays `cels`, the coconut-proxy repo contract).
+ctl_user: svcbvbrc
+ctl_group: cels          # svcbvbrc's primary group (unchanged)
+ragops_group: ragops
+ragops_members:
+  - wilke
+  - svcbvbrc
+operator_user: wilke
+# ctl_uid is NOT set here: site.yml resolves it with a getent task
+# (set_fact) so a missing account fails loudly instead of templating "".
+
+# Node toolchain for artifact builds (wilke:ragops, /rag/tools/node/<ver>).
+# PLACEHOLDER VERSION: frontend/package.json has no `engines` pin and the
+# operator's login shell runs node v26.x; 20.17.0 is a stand-in until the
+# artifact-build toolchain is pinned (PR-D). When changing node_version, take
+# node_tarball_sha256 from https://nodejs.org/dist/v<ver>/SHASUMS256.txt
+# (linux-x64.tar.xz line) — the role refuses to download on a mismatch and
+# on a placeholder checksum.
+node_version: "20.17.0"
+node_tarball_url: "https://nodejs.org/dist/v{{ node_version }}/node-v{{ node_version }}-linux-x64.tar.xz"
+node_tarball_sha256: "a24db3dcd151a52e75965dba04cf1b3cd579ff30d6e0af9da1aede4d0f17486b"  # v20.17.0 linux-x64.tar.xz
+node_install: true
+
+# Gateway unit (coconut-proxy repo contract).
+proxy_dir: "{{ rag_root }}/config/proxy"
+proxy_unit_src: "{{ proxy_dir }}/coconut-proxy.service"
+proxy_unit_install: true      # copy + daemon-reload + enable (never starts on its own)
+proxy_switch_now: false       # true = crontab @reboot removal -> proxy.sh stop -> systemctl start
+proxy_health_url: "http://127.0.0.1:9000/health"
+
+# Control plane.
+ctl_port: 23990
+ctl_version: ""               # e.g. v1.6.0-3-gabc1234 (`ragstack-ctl version`); required with ctl_bin_src
+# ctl_bin_src: /path/to/built/ragstack-ctl   # control-node path; undefined => binary/unit/doctor tasks skip
+ctl_bin_owner: "{{ operator_user }}"   # binary installed by the operator (wilke), 0755, executable by svcbvbrc; required once hardening removes group-write from /rag/bin (see README)
+ctl_mirror_src: "{{ lookup('env', 'HOME') }}/Development/ragstack"   # source of the bare mirror (path or URL)
+# Temp dir for tasks that become svcbvbrc from wilke without root: setfacl is
+# not on coconut, so Ansible needs world-readable temp files; confining them to
+# a 2770 wilke:ragops directory keeps them readable by ragops only (README).
+ctl_ansible_tmp: "{{ rag_root }}/tmp/ansible-ctl"
+ctl_manager_restart: true     # restart user@<uid> after group enrollment / drop-in change (root tag)
+ctl_external_store_ports: "6333,6343,9200"
+ctl_port_base: 24000          # apptainer/new-tenant.sh defaults
+ctl_port_stride: 20
+
+# Hardening (open decision) — gated twice: hardening_enabled AND, for a real
+# run, -e hardening_confirmed=true (check mode never needs the latter).
+hardening_enabled: false
+hardening_confirmed: false
+hardening_paths:              # chmod g-w (non-recursive)
+  - "{{ rag_root }}/bin"
+  - "{{ rag_root }}/config"
+  - "{{ rag_root }}/config/proxy"
+  - "{{ rag_root }}/config/proxy/nginx.conf"
+  - "{{ rag_root }}/apptainer"
+  - "{{ rag_root }}/apptainer/images"
+hardening_globs:              # chmod g-w on each match
+  - { path: "{{ rag_root }}/config/proxy", pattern: "*.sh" }
+  - { path: "{{ rag_root }}/apptainer/images", pattern: "*.sif" }
+hardening_recursive_paths:    # chmod -R g-w,o-w (ragstack env is inside envs; listed per plan)
+  - "{{ rag_root }}/envs"
+  - "{{ rag_root }}/envs/ragstack"
+rag_root_owner: p3            # /rag is p3:cels; chmod 0755 runs as p3 (operator is in seed-admins-p3)
+
+# Kernel settings: ES needs vm.max_map_count; overcommit silences Redis.
+sysctl_settings:
+  vm.max_map_count: 262144
+  vm.overcommit_memory: 1
+sysctl_file: /etc/sysctl.d/90-ragstack.conf
+
+# Second-site / migration target (tenant-host.yml).
+tenant_host_images:           # from apptainer/pull.sh; pin to registry images{...}.version for a migration
+  qdrant: "docker://qdrant/qdrant:latest"
+  elasticsearch: "docker://elasticsearch:8.13.4"
+conda_env_python: "{{ rag_root }}/envs/ragstack/bin/python"

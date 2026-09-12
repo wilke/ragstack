@@ -1,0 +1,16 @@
+# Handlers run in the order listed here (not notification order).
+---
+- name: systemd daemon-reload
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: apply sysctl
+  ansible.builtin.command: sysctl --system
+  changed_when: true
+
+# There is deliberately NO `restart ctl user manager` handler. A handler fires
+# only on change, and the state that matters here — SYSTEMD_UNIT_PATH present in
+# user@<uid>'s environment — can be wrong with nothing having changed this run
+# (drop-in already written, manager never restarted since). It is a pre-checked
+# TASK in tasks/main.yml section 3 instead, so re-running `--tags root -K`
+# actually repairs it, which is what the ctl role's fail_msg promises.

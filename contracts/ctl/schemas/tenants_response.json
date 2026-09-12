@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tenants_response.json",
+  "title": "CtlTenantsResponse",
+  "description": "`GET /v1/tenants`: every registry tenant in `display_order`, each in the `tenant_response.json` shape (so `registry` is null for a viewer on every row). Decommissioned tenants are included with `summary.state: decommissioned`; tombstones are not tenants and are not listed.",
+  "type": "object",
+  "required": ["generated_at", "registry_generation", "tenants"],
+  "properties": {
+    "generated_at": { "type": "string" },
+    "registry_generation": { "type": "integer", "minimum": 0 },
+    "tenants": { "type": "array", "items": { "$ref": "tenant_response.json" } }
+  },
+  "additionalProperties": false
+}

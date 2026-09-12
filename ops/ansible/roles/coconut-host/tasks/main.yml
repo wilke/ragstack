@@ -1,0 +1,290 @@
+# roles/coconut-host — ROOT items (plan v3 "Root items"): ragops group, linger,
+# user@<uid> drop-in, sysctl, proxy unit (+ optional cutover from the crontab).
+---
+- name: Assert we are root
+  ansible.builtin.assert:
+    that: ansible_facts.user_id == 'root' or ansible_check_mode
+    fail_msg: "tag root needs become (run with -K from a tty; sudo has requiretty — see README)"
+
+# ---- 1. group ragops + members --------------------------------------------
+- name: Group {{ ragops_group }} exists
+  ansible.builtin.group:
+    name: "{{ ragops_group }}"
+    state: present
+
+- name: Does {{ ragops_group }} exist yet? (the user module cannot preview against a missing group)
+  ansible.builtin.getent:
+    database: group
+    key: "{{ ragops_group }}"
+    fail_key: false
+
+- name: Members that would be enrolled (check mode, group absent)
+  ansible.builtin.debug:
+    msg: "would add {{ ragops_members | join(', ') }} to {{ ragops_group }} (usermod -aG)"
+  when: ansible_check_mode and ansible_facts.getent_group[ragops_group] is none
+
+- name: Enroll members in {{ ragops_group }} (append, primary group untouched)
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: "{{ ragops_group }}"
+    append: true
+  loop: "{{ ragops_members }}"
+  register: ragops_enroll
+  when: ansible_facts.getent_group[ragops_group] is not none or not ansible_check_mode
+
+- name: Note on new supplementary groups
+  ansible.builtin.debug:
+    msg: >-
+      {{ ragops_group }} membership changed for {{ ragops_enroll.results | selectattr('changed') | map(attribute='item') | list }}.
+      Supplementary groups are set at login: {{ operator_user }} must log out and back in
+      before --tags ctl; the {{ ctl_user }} user manager is restarted below (section 3).
+  when: ragops_enroll is changed
+
+# ---- 2. linger ------------------------------------------------------------
+- name: Check linger for {{ ctl_user }}
+  ansible.builtin.stat:
+    path: "/var/lib/systemd/linger/{{ ctl_user }}"
+  register: linger_file
+
+- name: loginctl enable-linger {{ ctl_user }}
+  ansible.builtin.command: loginctl enable-linger {{ ctl_user }}
+  when: not linger_file.stat.exists
+  changed_when: true
+
+- name: Is the {{ ctl_user }} user manager running?
+  ansible.builtin.command: systemctl is-active user@{{ ctl_uid }}.service
+  register: user_manager_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# ---- 3. user@<uid> drop-in -------------------------------------------------
+- name: Drop-in directory for user@{{ ctl_uid }}.service
+  ansible.builtin.file:
+    path: "/etc/systemd/system/user@{{ ctl_uid }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Drop-in directory present? (a preview cannot diff into a missing directory)
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/user@{{ ctl_uid }}.service.d"
+  register: dropin_dir
+
+- name: Drop-in that would be written (check mode, directory absent)
+  ansible.builtin.debug:
+    msg: "{{ lookup('template', 'user-dropin.conf.j2') }}"
+  when: ansible_check_mode and not dropin_dir.stat.exists
+
+- name: Drop-in user@{{ ctl_uid }}.service.d/ragstack.conf (RequiresMountsFor + SYSTEMD_UNIT_PATH)
+  when: dropin_dir.stat.exists or not ansible_check_mode
+  ansible.builtin.template:
+    src: user-dropin.conf.j2
+    dest: "/etc/systemd/system/user@{{ ctl_uid }}.service.d/ragstack.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  register: ctl_dropin
+  notify: systemd daemon-reload
+
+# The restart is a pre-checked TASK, not a handler, on purpose. As a handler it
+# fired only when the drop-in CHANGED — so on the common case (drop-in already
+# written by an earlier run, manager still holding the environment it was
+# started with) nothing restarted it, the ctl role's "SYSTEMD_UNIT_PATH reaches
+# the manager" assert failed, and its fail_msg told the operator to re-run
+# `--tags root -K`, which was a guaranteed no-op. The state the play needs is
+# "SYSTEMD_UNIT_PATH is in the manager's environment"; that is observable, so it
+# is checked directly and the restart is driven by the observation.
+- name: Environment of the {{ ctl_user }} user manager (PID 1 only re-reads the drop-in on restart)
+  ansible.builtin.command: systemctl show -p Environment --value user@{{ ctl_uid }}.service
+  register: ctl_manager_env
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Restart user@{{ ctl_uid }}.service (drop-in changed, groups changed, or SYSTEMD_UNIT_PATH missing)
+  # Only PID 1 re-reads the user@<uid> drop-in (SYSTEMD_UNIT_PATH is process
+  # environment), and new supplementary groups reach the manager only on a
+  # fresh start. With linger and no interactive sessions this is safe; login
+  # sessions live in session scopes, not under user@.service.
+  ansible.builtin.systemd_service:
+    name: "user@{{ ctl_uid }}.service"
+    state: restarted
+    daemon_reload: true
+  when:
+    - ctl_manager_restart | bool
+    - user_manager_active.rc | default(1) == 0
+    - (ctl_dropin is defined and ctl_dropin is changed)
+      or (ragops_enroll is defined and ragops_enroll is changed)
+      or 'SYSTEMD_UNIT_PATH' not in (ctl_manager_env.stdout | default(''))
+
+- name: Manager restart is disabled but its environment is stale
+  ansible.builtin.debug:
+    msg: >-
+      SYSTEMD_UNIT_PATH is not in user@{{ ctl_uid }}.service's environment and
+      ctl_manager_restart=false, so this play left it alone. Until someone runs
+      `sudo systemctl restart user@{{ ctl_uid }}.service`, the manager cannot see
+      {{ rag_root }}/config/ctl/units and `--tags ctl` will fail its UnitPath assert.
+  when:
+    - not (ctl_manager_restart | bool)
+    - user_manager_active.rc | default(1) == 0
+    - "'SYSTEMD_UNIT_PATH' not in (ctl_manager_env.stdout | default(''))"
+
+# ---- 4. sysctl ------------------------------------------------------------
+# ansible.builtin.template + `sysctl --system` instead of ansible.posix.sysctl:
+# keeps the playbook free of collection dependencies (ansible-core only).
+- name: Persist kernel settings in {{ sysctl_file }}
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: "{{ sysctl_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: apply sysctl
+
+- name: Current vm.max_map_count
+  ansible.builtin.command: sysctl -n vm.max_map_count
+  register: max_map_count_now
+  changed_when: false
+  check_mode: false
+
+- name: Apply sysctl now if the live value is below the target
+  ansible.builtin.command: sysctl --system
+  when: (max_map_count_now.stdout | int) < (sysctl_settings['vm.max_map_count'] | int)
+  changed_when: true
+
+# ---- 5. proxy unit ----------------------------------------------------------
+- name: Proxy unit
+  when: proxy_unit_install | bool
+  block:
+    - name: Source unit {{ proxy_unit_src }} is present (deployed by coconut-proxy/deploy.sh)
+      ansible.builtin.stat:
+        path: "{{ proxy_unit_src }}"
+      register: proxy_unit_file
+
+    - name: Fail if the proxy tree is not deployed
+      ansible.builtin.assert:
+        that: proxy_unit_file.stat.exists
+        fail_msg: "{{ proxy_unit_src }} missing — deploy ~/Development/coconut-proxy first (deploy.sh) or set proxy_unit_install=false"
+
+    - name: Install /etc/systemd/system/coconut-proxy.service (copy of the deployed unit)
+      ansible.builtin.copy:
+        src: "{{ proxy_unit_src }}"
+        remote_src: true
+        dest: /etc/systemd/system/coconut-proxy.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: systemd daemon-reload
+
+    - name: Flush handlers so the unit is known before enable
+      ansible.builtin.meta: flush_handlers
+
+    # `enabled` is gated on proxy_switch_now, not hard-coded true. The cutover
+    # block below is what removes {{ ctl_user }}'s `@reboot start-proxy.sh` crontab
+    # line; enabling the unit while that line still stands gives the host TWO
+    # things starting nginx :9000 at boot — the unit and the cron job — and the
+    # loser of that race leaves a half-started master behind. So: install the
+    # unit file always (so a later cutover is one variable away), own boot start
+    # only when this run is actually taking it over.
+    - name: Enable coconut-proxy — only when this run cuts over (proxy_switch_now)
+      ansible.builtin.systemd_service:
+        name: coconut-proxy.service
+        enabled: "{{ proxy_switch_now | bool }}"
+        daemon_reload: true
+
+    - name: Boot start still belongs to {{ ctl_user }}'s crontab
+      ansible.builtin.debug:
+        msg: >-
+          coconut-proxy.service is INSTALLED but not enabled: {{ ctl_user }}'s
+          `@reboot start-proxy.sh` crontab line still owns starting nginx :9000 at
+          boot, and two owners would race. Re-run with `-e proxy_switch_now=true`
+          to remove that line, stop the interactively started master and hand boot
+          start to systemd.
+      when: not (proxy_switch_now | bool)
+
+# ---- 6. optional cutover: crontab @reboot -> proxy.sh stop -> systemctl start ---
+# Ordered tasks rather than handlers: handlers only fire on change and the
+# cutover must be re-runnable (e.g. unit already installed on a previous run).
+- name: Proxy cutover (proxy_switch_now=true)
+  when:
+    - proxy_unit_install | bool
+    - proxy_switch_now | bool
+  block:
+    - name: Read {{ ctl_user }}'s crontab
+      ansible.builtin.command: crontab -l -u {{ ctl_user }}
+      register: ctl_crontab
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Remove the @reboot start-proxy.sh line from {{ ctl_user }}'s crontab
+      # The existing entry has no ansible name, so ansible.builtin.cron
+      # state=absent cannot address it; filter the line out instead.
+      #
+      # Two hazards, both handled here:
+      #
+      #   * `grep -v` exits 1 when it prints NOTHING — which is exactly the case
+      #     where the crontab is the single @reboot line. Under `set -o pipefail`
+      #     that failed the task on the very host state the cutover is for, and
+      #     it failed AFTER `crontab -` had already consumed its (empty) input on
+      #     a re-run. `{ grep -v … || [ $? -eq 1 ]; }` makes "filtered everything"
+      #     a success and still fails on a real grep error (rc 2).
+      #   * writing the filter's output straight into `crontab -` means a mid-pipe
+      #     failure installs a truncated crontab. Filter into a temp file first
+      #     and install only once the filter has succeeded.
+      ansible.builtin.shell: |
+        set -euo pipefail
+        tmp="$(mktemp)"
+        trap 'rm -f "$tmp"' EXIT
+        crontab -l -u {{ ctl_user }} | { grep -v 'start-proxy.sh' || [ $? -eq 1 ]; } > "$tmp"
+        crontab -u {{ ctl_user }} - < "$tmp"
+      args:
+        executable: /bin/bash
+      when: "'start-proxy.sh' in ctl_crontab.stdout"
+      changed_when: true
+
+    - name: Proxy status as {{ ctl_user }}
+      ansible.builtin.command: "{{ proxy_dir }}/proxy.sh status"
+      become: true
+      become_user: "{{ ctl_user }}"
+      register: proxy_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Owner of the running master (proxy.sh prints "running (pid N, owner U, up T)")
+      ansible.builtin.set_fact:
+        proxy_master_owner: "{{ proxy_status.stdout | regex_search('owner ([^,)]+)', '\\1') | default([''], true) | first }}"
+
+    - name: Stop the interactively started master (as its owner — proxy.sh refuses otherwise)
+      ansible.builtin.command: "{{ proxy_dir }}/proxy.sh stop"
+      become: true
+      become_user: "{{ proxy_master_owner }}"
+      when:
+        - "'running (pid' in proxy_status.stdout"
+        - proxy_master_owner | length > 0
+      changed_when: true
+
+    - name: Start coconut-proxy under systemd
+      ansible.builtin.systemd_service:
+        name: coconut-proxy.service
+        state: started
+
+    - name: Gateway answers on {{ proxy_health_url }}
+      ansible.builtin.uri:
+        url: "{{ proxy_health_url }}"
+        status_code: 200
+      register: proxy_health
+      retries: 10
+      delay: 3
+      until: proxy_health.status == 200
+
+# ---- 7. documented, unmanaged prerequisites ---------------------------------
+- name: Manual prerequisites (not managed here)
+  ansible.builtin.debug:
+    msg:
+      - "sudo has requiretty: the admin needs `Defaults:<admin> !requiretty` (or runs plays via `script -qc ... /dev/null` from a tty)."
+      - "{{ operator_user }} keeps the `({{ ctl_user }}) NOPASSWD: ALL` sudoers rule (confirm with `sudo -l` from a tty) — the ctl role's become_user tasks rely on it."
+      - "{{ operator_user }} must re-login after {{ ragops_group }} enrollment; {{ ctl_user }}'s manager is restarted by handler when ctl_manager_restart=true."

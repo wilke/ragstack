@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fleet_response.json",
+  "title": "CtlFleetResponse",
+  "description": "The dashboard's one poll (`GET /v1/fleet`, every 15 s): host facts plus one summary row per registry tenant. This is the VIEWER-safe shape by construction — every field is the summary set, so viewers and operators receive the same body. Nothing here is a path to a secret file, a key value, or a fingerprint; a conformance test walks the whole tree and refuses any field name matching `(?i)(api_key|password|secret|token|dsn)`.",
+  "type": "object",
+  "required": ["generated_at", "registry_generation", "host", "tenants"],
+  "properties": {
+    "generated_at": { "description": "RFC 3339.", "type": "string" },
+    "registry_generation": { "type": "integer", "minimum": 0 },
+    "host": { "$ref": "#/$defs/Host" },
+    "tenants": {
+      "description": "In `display_order`, then any tenant not listed there, by name.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/FleetRow" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Host": {
+      "type": "object",
+      "required": ["disk_free_bytes", "linger", "ctl_unit_active", "vm_max_map_count", "sudoers_group"],
+      "properties": {
+        "disk_free_bytes": { "description": "Free bytes on the filesystem holding `rag_root` (`vg1-rag`).", "type": "integer", "minimum": 0 },
+        "linger": { "description": "`/var/lib/systemd/linger/svcbvbrc` exists — the user manager survives logout and starts at boot.", "type": "boolean" },
+        "ctl_unit_active": { "description": "`ragstack-ctl.service` is `active` in the svcbvbrc user manager (false when the daemon was started by hand).", "type": "boolean" },
+        "vm_max_map_count": { "description": "The live sysctl; Elasticsearch needs ≥ 262144.", "type": "integer", "minimum": 0 },
+        "sudoers_group": {
+          "description": "Members of the group ADR-0007 lists as fleet admins (`seed-admins-svcbvbrc`). Usernames, not secrets.",
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "HealthState": { "type": "string", "enum": ["ok", "degraded", "down", "unknown", "n/a"] },
+    "UnitState": {
+      "description": "systemd `ActiveState` for a `systemd`-supervised tenant; for a `manual` one, `active` when the pidfile's process is alive with the expected cwd/cmdline, `inactive` otherwise, `n/a` when the tenant has no such service.",
+      "type": "string",
+      "enum": ["active", "activating", "deactivating", "inactive", "failed", "n/a"]
+    },
+    "FleetRow": {
+      "type": "object",
+      "required": [
+        "name", "manifest_name", "state", "owner", "supervisor", "stores_mode", "code_tag",
+        "drift_count", "ports", "health", "units", "disk_bytes", "last_backup"
+      ],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "manifest_name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "state": { "type": "string", "enum": ["provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"] },
+        "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
+        "supervisor": { "type": "string", "enum": ["systemd", "manual"] },
+        "stores_mode": {
+          "description": "`dedicated`: both qdrant and elasticsearch are `exclusive`. `shared`: both on the shared stores. `mixed`: one of each (lucid-next). `unknown`: ownership not yet confirmed.",
+          "type": "string",
+          "enum": ["dedicated", "shared", "mixed", "unknown"]
+        },
+        "code_tag": { "type": "string", "minLength": 1 },
+        "drift_count": { "type": "integer", "minimum": 0 },
+        "ports": {
+          "type": "object",
+          "required": ["api", "qdrant_http", "es_http"],
+          "properties": {
+            "api": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "qdrant_http": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+            "es_http": { "type": "integer", "minimum": 1024, "maximum": 65535 }
+          },
+          "additionalProperties": false
+        },
+        "health": {
+          "description": "`api`: `GET /health` on the tenant API. `qdrant`/`es`: the store probe (`/collections`, `_cluster/health`) — `n/a` for a shared store the ctl only observes. `deep`: the tenant's `/v1/health/deep`, `unknown` when the probe is disabled or the API is down.",
+          "type": "object",
+          "required": ["api", "qdrant", "es", "deep"],
+          "properties": {
+            "api": { "$ref": "#/$defs/HealthState" },
+            "qdrant": { "$ref": "#/$defs/HealthState" },
+            "es": { "$ref": "#/$defs/HealthState" },
+            "deep": { "$ref": "#/$defs/HealthState" }
+          },
+          "additionalProperties": false
+        },
+        "units": {
+          "type": "object",
+          "required": ["target", "api", "ui", "qdrant", "es"],
+          "properties": {
+            "target": { "$ref": "#/$defs/UnitState" },
+            "api": { "$ref": "#/$defs/UnitState" },
+            "ui": { "$ref": "#/$defs/UnitState" },
+            "qdrant": { "$ref": "#/$defs/UnitState" },
+            "es": { "$ref": "#/$defs/UnitState" }
+          },
+          "additionalProperties": false
+        },
+        "disk_bytes": { "description": "`du` of `data_dir`, cached (at most once per 5 min).", "type": "integer", "minimum": 0 },
+        "last_backup": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["at", "fenced", "verified"],
+              "properties": {
+                "at": { "type": "string" },
+                "fenced": { "type": "boolean" },
+                "verified": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

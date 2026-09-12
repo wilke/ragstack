@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "settings_response.json",
+  "title": "CtlSettingsResponse",
+  "description": "`GET /v1/settings` (viewer) and the body a successful `PUT /v1/settings` job applies. Fleet-level knobs only: retention, default images, default Python env, the ctl block. `recipients` (the age backup recipients) is READ-ONLY here — recipients, unit templates, toolchains and anything else that decides what code runs or who can decrypt a backup are CLI-only trusted-operator changes. Image entries are pinned by digest; changing one over HTTP means choosing among SIFs already on disk under `/rag/apptainer/images`, never fetching.",
+  "type": "object",
+  "required": ["registry_generation", "retention", "images", "python_env_default", "ctl", "recipients"],
+  "properties": {
+    "registry_generation": { "type": "integer", "minimum": 0 },
+    "retention": {
+      "type": "object",
+      "required": ["keep_last", "keep_partial_hours", "auto_delete"],
+      "properties": {
+        "keep_last": {
+          "description": "Counted over VERIFIED bundles only; the newest verified bundle is never pruned.",
+          "type": "object",
+          "required": ["backup", "pre_update"],
+          "properties": {
+            "backup": { "type": "integer", "minimum": 1 },
+            "pre_update": { "type": "integer", "minimum": 1 }
+          },
+          "additionalProperties": false
+        },
+        "keep_partial_hours": { "type": "integer", "minimum": 1 },
+        "auto_delete": { "description": "Constant false in v1: `backup prune` is `--dry-run` only.", "type": "boolean", "const": false }
+      },
+      "additionalProperties": false
+    },
+    "images": {
+      "type": "object",
+      "required": ["qdrant", "elasticsearch"],
+      "properties": {
+        "qdrant": { "$ref": "registry.json#/$defs/Image" },
+        "elasticsearch": { "$ref": "registry.json#/$defs/Image" }
+      },
+      "additionalProperties": false
+    },
+    "python_env_default": { "$ref": "registry.json#/$defs/AbsPath" },
+    "ctl": {
+      "type": "object",
+      "required": ["port", "ui_dist", "gateway_enabled"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "ui_dist": { "$ref": "registry.json#/$defs/AbsPath" },
+        "gateway_enabled": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "recipients": {
+      "type": "object",
+      "required": ["file", "count", "fingerprints", "read_only"],
+      "properties": {
+        "file": { "$ref": "registry.json#/$defs/AbsPath" },
+        "count": { "description": "0 means backups FAIL CLOSED: a bundle cannot be written without someone able to decrypt its secrets.", "type": "integer", "minimum": 0 },
+        "fingerprints": { "description": "Public-key fingerprints (`sha256:` + 16 hex) of the recipients — identifying, not secret.", "type": "array", "items": { "type": "string", "pattern": "^sha256:[0-9a-f]{16}$" } },
+        "read_only": { "type": "boolean", "const": true }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

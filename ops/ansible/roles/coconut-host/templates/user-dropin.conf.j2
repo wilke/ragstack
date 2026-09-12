@@ -1,0 +1,8 @@
+# {{ ansible_managed }} — ops/ansible/roles/coconut-host/templates/user-dropin.conf.j2
+# Drop-in for the {{ ctl_user }} (uid {{ ctl_uid }}) user manager: wait for {{ rag_root }} and
+# load the canonical unit files from {{ rag_root }}/config/ctl/units (nothing in the NFS home).
+[Unit]
+RequiresMountsFor={{ rag_root }}
+After=remote-fs.target network-online.target
+[Service]
+Environment=SYSTEMD_UNIT_PATH={{ rag_root }}/config/ctl/units:

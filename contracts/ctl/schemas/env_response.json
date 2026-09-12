@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "env_response.json",
+  "title": "CtlEnvResponse",
+  "description": "`GET /v1/tenants/{name}/env`: the tenant's configuration keys as the settings classification table sees them. Every key found in `tenant.env`, `secrets.env` and `provision.env` is listed with its `class`; `value_redacted` is the verbatim value for a `public` key and the literal `<redacted>` for every other class — the daemon has no code path that returns a secret-class value over HTTP. A VIEWER receives `public` rows only (the other classes are filtered out entirely, so a viewer cannot enumerate which secrets exist); an OPERATOR receives all rows. `drift` is per key: the registry's `settings` value vs the file vs the live process environment.",
+  "type": "object",
+  "required": ["tenant", "env_layout", "keys"],
+  "properties": {
+    "tenant": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "env_layout": { "type": "string", "enum": ["legacy", "managed"] },
+    "keys": { "type": "array", "items": { "$ref": "#/$defs/EnvKey" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "EnvKey": {
+      "type": "object",
+      "required": ["key", "value_redacted", "source", "class", "drift"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+        "value_redacted": { "type": "string" },
+        "source": { "type": "string", "enum": ["tenant.env", "secrets.env", "provision.env", "unit", "registry"] },
+        "class": {
+          "description": "`public`: safe to store, show and edit over HTTP. `secret`: value never leaves the host. `executable-surface`: paths, code refs, images, toolchains — public to read, CLI-only to change. `unsupported`: a key the classification table does not know; recorded as drift, never rendered.",
+          "type": "string",
+          "enum": ["public", "secret", "executable-surface", "unsupported"]
+        },
+        "drift": {
+          "description": "null when registry, file and live process agree; otherwise which pair disagrees.",
+          "oneOf": [
+            { "type": "string", "enum": ["registry_vs_file", "file_vs_live", "registry_vs_live", "file_only", "live_only"] },
+            { "type": "null" }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

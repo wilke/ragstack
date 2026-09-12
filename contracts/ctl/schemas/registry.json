@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "registry.json",
+  "title": "CtlRegistry",
+  "description": "The fleet registry — `/rag/data/tenants/registry.json`, the single source of truth for every managed and adopted tenant. `manifest.tsv` is a PROJECTION of it (same header, rows sorted by port index, tombstones live here and never as manifest comments); the gateway generation, the systemd units and `tenant.env` are RENDERED from it. Written only under the registry lock (tmp + fsync + rename), with `generation` incremented on every write.\n\nTwo rules this schema enforces, not just documents:\n\n1. **No secret values, ever.** `settings` holds PUBLIC keys only — the `$defs/PublicSettings` object refuses any property name containing `API_KEY…`, `SECRET`, `PASSWORD`, `TOKEN`, `DSN` or `AUTH`, or ending in `_KEY` — `go/internal/ctl/settings/settings.go`'s `secretPattern`, ported byte-identically, minus its six reviewed `publicDespitePattern` exceptions. Secret-class keys are recorded as `secret_refs[{key, file}]` — the NAME and WHICH FILE holds it, never the value. Keys are recorded by fingerprint. A registry that fails this schema is refused at load, so a bug that wrote a secret cannot be re-read into a dashboard.\n\n2. **Closed shapes.** Every fixed-member object is `additionalProperties: false`; the four maps (`artifacts`, `tenants`, `settings`, `extra_env`, `last_ops`) constrain their key names with `propertyNames` and type their values. An unknown member is a schema-version problem, not something to carry along.\n\nPaths are absolute, `filepath.Clean`-stable, under the fixed roots the `paths` package knows, and limited to `[A-Za-z0-9._/-]`. Ports are evidence of what was allocated, never authority over what is listening — `doctor` compares them with `/proc/net/tcp`.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generation",
+    "updated_at",
+    "updated_by",
+    "rag_root",
+    "port_base",
+    "port_stride",
+    "display_order",
+    "legacy_routes",
+    "ctl",
+    "images",
+    "artifacts",
+    "tenants",
+    "tombstones"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "generation": {
+      "description": "Monotonic write counter. Every Plan pins the generation it was computed against; execution re-validates after taking the locks and answers 409 `plan_stale` if it moved.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "updated_at": { "description": "RFC 3339 UTC of the last write.", "type": "string" },
+    "updated_by": {
+      "description": "Principal of the last write (`key:<label>`, `bvbrc:<user>`, `local:<uid>`), plus `sudo_user` when the CLI saw one, joined as `principal[/sudo_user]`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "rag_root": { "$ref": "#/$defs/AbsPath" },
+    "port_base": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+    "port_stride": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "display_order": {
+      "description": "Gateway landing-page order. Every entry names a tenant in `tenants`; `admin` is never listed (the gateway renderer filters it anyway).",
+      "type": "array",
+      "items": { "$ref": "#/$defs/TenantName" },
+      "uniqueItems": true
+    },
+    "legacy_routes": {
+      "description": "Gateway rows that are NOT registry tenants — the pre-ctl `lucid` (:8010/:5175) and `asm` (:8000/:5173) read-only routes. Dropped in v1.1 PR-I with owner sign-off.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/LegacyRoute" }
+    },
+    "ctl": {
+      "type": "object",
+      "required": ["port", "ui_dist", "gateway_enabled"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "ui_dist": { "$ref": "#/$defs/AbsPath" },
+        "gateway_enabled": {
+          "description": "Whether the admin `/ragstack/admin/{api,ui}` block is rendered into the gateway generation.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "images": {
+      "description": "Fleet-default Apptainer images. A tenant store may pin its own `sif`; `doctor` reports a digest mismatch against these as drift.",
+      "type": "object",
+      "required": ["qdrant", "elasticsearch"],
+      "properties": {
+        "qdrant": { "$ref": "#/$defs/Image" },
+        "elasticsearch": { "$ref": "#/$defs/Image" }
+      },
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "description": "Prepared artifacts, keyed by id. Prepared ONLY by the CLI (`fleet artifact prepare --tag`); the HTTP API consumes ids and never a git ref or path.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/ArtifactId" },
+      "additionalProperties": { "$ref": "#/$defs/Artifact" }
+    },
+    "tenants": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/TenantName" },
+      "additionalProperties": { "$ref": "#/$defs/Tenant" }
+    },
+    "tombstones": {
+      "description": "PERMANENT. Port allocation is `max(index over tenants ∪ tombstones) + 1`, so a decommissioned tenant's block is never reused and a stale gateway row or unit can never land on a new tenant.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/Tombstone" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "TenantName": {
+      "description": "Registry key = gateway path segment = worktree dir name = pidfile/log suffix. Reserved names (`qdrant elasticsearch neo4j postgres redis embedding crossencoder faiss tenants manifest default public admin services health ragstack api ui gowe vaxpipe grafana sfr ctl`) are refused by `paths.ValidateName`, not by this pattern.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "ArtifactId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+    "AbsPath": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]*$" },
+    "Sha256Hex": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "GitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "Fingerprint": {
+      "description": "`\"sha256:\" + hex(sha256(value))[:16]` — enough to recognise a key, never enough to reconstruct it.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{16}$"
+    },
+    "Port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+    "Timestamp": { "description": "RFC 3339 UTC.", "type": "string" },
+    "Role": { "type": "string", "enum": ["admin", "user"] },
+    "OpVerb": {
+      "type": "string",
+      "enum": [
+        "adopt", "create", "start", "stop", "restart", "backup", "restore", "handover",
+        "migrate-local", "decommission", "key-mint", "key-revoke", "admin-add", "admin-remove",
+        "sa-create", "sa-disable", "sa-enable", "env-set", "env-unset", "env-normalize",
+        "render-units", "update-code"
+      ]
+    },
+    "PublicSettingKey": {
+      "description": "An env key that may be stored in the registry: shell-identifier shaped AND not of a secret class. The `anyOf` is the guard — `propertyNames` on `PublicSettings` applies it to every key, so ONE forbidden name fails the whole registry.\n\nThe forbidden pattern is `go/internal/ctl/settings/settings.go`'s `secretPattern`, ported byte-identically: the daemon's classifier is what decides where a key may live and what the redactors strip, and a contract that forbids LESS than the classifier would accept into the registry exactly the names the daemon calls secret (`TENANT_API_KEY_USER`, `AWS_SECRET_ACCESS_KEY`, `SSH_PRIVATE_KEY` all passed the older, anchored spelling). It is unanchored on purpose — a secret-shaped substring anywhere in the name is enough — and RE2-compatible (no lookaround), because the Go daemon validates with this same schema.\n\nThe `anyOf`'s first branch is `settings.go`'s `publicDespitePattern`: six ragstack settings whose NAME trips the pattern but whose value is a number or an identifier, never a credential. Listed explicitly so the exception is reviewable; anything not on it that matches is a secret (fail closed). Keep this whole `$def` byte-identical to `create_request.json#/$defs/PublicSettingKey` (a static conformance test asserts it).",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+      "anyOf": [
+        {
+          "enum": [
+            "CHUNK_MAX_TOKENS",
+            "CHUNK_TOKEN_COUNTER",
+            "EMBEDDING_MAX_BATCH_TOKENS",
+            "EMBEDDING_CHARS_PER_TOKEN",
+            "GOWE_RECEIPTS_OUTPUT_KEY",
+            "GOWE_SHARDS_INPUT_KEY"
+          ]
+        },
+        {
+          "not": {
+            "pattern": "(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)"
+          }
+        }
+      ]
+    },
+    "PublicSettings": {
+      "description": "Public-class `tenant.env` keys and their values, verbatim. Secret-class keys are refused by name (see `PublicSettingKey`); executable-surface keys (paths, code refs, images, toolchains) may appear here but are refused by the HTTP `env-set` path, which mutates only the typed allowlist.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/PublicSettingKey" },
+      "additionalProperties": { "type": "string" }
+    },
+    "LegacyRoute": {
+      "type": "object",
+      "required": ["name", "api", "ui", "readonly", "status", "note"],
+      "properties": {
+        "name": { "$ref": "#/$defs/TenantName" },
+        "api": { "$ref": "#/$defs/Port" },
+        "ui": { "$ref": "#/$defs/Port" },
+        "readonly": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "retired"] },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "Image": {
+      "type": "object",
+      "required": ["sif", "version", "digest"],
+      "properties": {
+        "sif": { "$ref": "#/$defs/AbsPath" },
+        "version": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "Artifact": {
+      "type": "object",
+      "required": ["sha", "tag", "worktree", "ui_dist", "python_env", "prepared_at", "prepared_by", "schema_compatible"],
+      "properties": {
+        "sha": { "$ref": "#/$defs/GitSha" },
+        "tag": { "type": "string", "minLength": 1 },
+        "worktree": { "$ref": "#/$defs/AbsPath" },
+        "ui_dist": { "$ref": "#/$defs/AbsPath" },
+        "python_env": { "$ref": "#/$defs/AbsPath" },
+        "prepared_at": { "$ref": "#/$defs/Timestamp" },
+        "prepared_by": { "type": "string", "minLength": 1 },
+        "schema_compatible": {
+          "description": "Operator-asserted from the release notes at prepare time: `update-code` to this artifact needs no store/DB migration and can be rolled back as a whole generation.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Tombstone": {
+      "type": "object",
+      "required": ["manifest_name", "index", "base", "decommissioned_at"],
+      "properties": {
+        "manifest_name": { "$ref": "#/$defs/TenantName" },
+        "index": { "type": "integer", "minimum": 0 },
+        "base": { "$ref": "#/$defs/Port" },
+        "decommissioned_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "Ports": {
+      "description": "`base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them.",
+      "type": "object",
+      "required": ["index", "base", "api", "qdrant_http", "qdrant_grpc", "es_http", "es_transport", "pg"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "base": { "$ref": "#/$defs/Port" },
+        "api": { "$ref": "#/$defs/Port" },
+        "qdrant_http": { "$ref": "#/$defs/Port" },
+        "qdrant_grpc": { "$ref": "#/$defs/Port" },
+        "es_http": { "$ref": "#/$defs/Port" },
+        "es_transport": { "$ref": "#/$defs/Port" },
+        "pg": { "$ref": "#/$defs/Port" }
+      },
+      "additionalProperties": false
+    },
+    "StoreCapabilities": {
+      "description": "What the ctl is ALLOWED to do to this store. All four default to false at adoption and stay false until an operator has confirmed process identity, backing path and exclusive ownership; a `false` capability makes the corresponding op step a 409 `refused`, never a best effort.",
+      "type": "object",
+      "required": ["stop", "purge", "restore", "snapshot"],
+      "properties": {
+        "stop": { "type": "boolean" },
+        "purge": { "type": "boolean" },
+        "restore": { "type": "boolean" },
+        "snapshot": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "ExtraEnv": {
+      "description": "Extra environment for the store's `apptainer run` (e.g. `ES_JAVA_OPTS`). Public-class keys only — the same guard as `settings`.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/PublicSettingKey" },
+      "additionalProperties": { "type": "string" }
+    },
+    "QdrantStore": {
+      "type": "object",
+      "required": ["ownership", "capabilities", "url", "instance", "sif", "extra_env"],
+      "properties": {
+        "ownership": { "type": "string", "enum": ["exclusive", "shared", "unknown"] },
+        "capabilities": { "$ref": "#/$defs/StoreCapabilities" },
+        "url": { "$ref": "#/$defs/LoopbackUrl" },
+        "instance": {
+          "description": "Apptainer instance name (`qdrant-<manifest_name>`) for adopted stores; the unit name (`ragstack-<name>-qdrant.service`) for managed ones; null for a shared store the ctl only probes.",
+          "type": ["string", "null"]
+        },
+        "sif": { "type": ["string", "null"], "pattern": "^/[A-Za-z0-9._/-]*$" },
+        "extra_env": { "$ref": "#/$defs/ExtraEnv" }
+      },
+      "additionalProperties": false
+    },
+    "ElasticsearchStore": {
+      "type": "object",
+      "required": ["ownership", "capabilities", "url", "instance", "sif", "heap", "provision_heap", "path_repo", "extra_env"],
+      "properties": {
+        "ownership": { "type": "string", "enum": ["exclusive", "shared", "unknown"] },
+        "capabilities": { "$ref": "#/$defs/StoreCapabilities" },
+        "url": { "$ref": "#/$defs/LoopbackUrl" },
+        "instance": { "type": ["string", "null"] },
+        "sif": { "type": ["string", "null"], "pattern": "^/[A-Za-z0-9._/-]*$" },
+        "heap": {
+          "description": "The LIVE `-Xms/-Xmx` (from `/proc/<pid>/environ` at adoption, from the unit afterwards), e.g. `1g`.",
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*[mg]$"
+        },
+        "provision_heap": {
+          "description": "What `provision.env` says. Differs from `heap` on dev (`512m` vs `1g`) — recorded as a drift row, not silently reconciled.",
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*[mg]$"
+        },
+        "path_repo": {
+          "description": "The `path.repo` the instance was started with (container-side `/usr/share/elasticsearch/snapshots`); null when the store is shared or unknown.",
+          "type": ["string", "null"]
+        },
+        "extra_env": { "$ref": "#/$defs/ExtraEnv" }
+      },
+      "additionalProperties": false
+    },
+    "Neo4jStore": {
+      "description": "Never managed in v1: `neo4j-dev` stays wilke-run and `ownership` is the constant `external`.",
+      "type": "object",
+      "required": ["ownership", "url"],
+      "properties": {
+        "ownership": { "type": "string", "const": "external" },
+        "url": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "LoopbackUrl": {
+      "description": "Only loopback origins are ever probed: `http://127.0.0.1:<port>` or `http://localhost:<port>`. Ports outside the tenant's block must be listed in `CTL_EXTERNAL_STORE_PORTS`.",
+      "type": "string",
+      "pattern": "^http://(127\\.0\\.0\\.1|localhost):[0-9]{4,5}$"
+    },
+    "Stores": {
+      "type": "object",
+      "required": ["qdrant", "elasticsearch", "neo4j", "dormant_provisioned_dirs"],
+      "properties": {
+        "qdrant": { "$ref": "#/$defs/QdrantStore" },
+        "elasticsearch": { "$ref": "#/$defs/ElasticsearchStore" },
+        "neo4j": { "$ref": "#/$defs/Neo4jStore" },
+        "dormant_provisioned_dirs": {
+          "description": "True when `new-tenant.sh` provisioned per-tenant store directories that the tenant does not use (demo runs on the shared stores). `start`/`stop` refuse to touch the dormant pair.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SecretRef": {
+      "description": "WHERE a secret-class key lives — never its value.",
+      "type": "object",
+      "required": ["key", "file"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+        "file": { "type": "string", "enum": ["tenant.env", "secrets.env", "provision.env"] }
+      },
+      "additionalProperties": false
+    },
+    "KeyRecord": {
+      "description": "One entry of the tenant's `API_KEYS` triple, by fingerprint. `effective` is the PROVEN state: a revoked key stays `effective: true` (with `revoked_at` set) until the API restarted AND the old key answered 401 — configured vs effective generations are distinct on purpose.",
+      "type": "object",
+      "required": ["id", "label", "role", "tenant_string", "fingerprint", "created_at", "created_by", "revoked_at", "effective"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "role": { "$ref": "#/$defs/Role" },
+        "tenant_string": {
+          "description": "The `API_KEY_TENANTS` value for this key — the tenant's data-isolation label, not a secret.",
+          "type": "string",
+          "minLength": 1
+        },
+        "fingerprint": { "$ref": "#/$defs/Fingerprint" },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "created_by": { "type": "string", "minLength": 1 },
+        "revoked_at": { "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "null" } ] },
+        "effective": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "ServiceAccountRecord": {
+      "type": "object",
+      "required": ["subject", "role", "purpose", "status", "created_at"],
+      "properties": {
+        "subject": {
+          "description": "Colon-free: a service-account subject is never an `issuer:sub` identity.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "role": { "$ref": "#/$defs/Role" },
+        "purpose": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "disabled"] },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "ExternalRef": {
+      "description": "A file outside the tenant's data dir that its configuration points at (demo: `COLLECTIONS_FILE=/rag/config/demo.collections.json`). Backed up by reference in `external[]`, never moved.",
+      "type": "object",
+      "required": ["key", "path"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,127}$" },
+        "path": { "$ref": "#/$defs/AbsPath" }
+      },
+      "additionalProperties": false
+    },
+    "DriftRow": {
+      "description": "One registry-vs-reality disagreement. `expected` is what the registry (or provision.env) says, `actual` what was observed; both are strings so a row can compare heaps, tags, owners and port lists alike. Values are redacted before they get here.",
+      "type": "object",
+      "required": ["code", "level", "expected", "actual", "observed_at"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "level": { "type": "string", "enum": ["info", "warn", "error"] },
+        "field": { "type": "string" },
+        "expected": { "type": "string" },
+        "actual": { "type": "string" },
+        "observed_at": { "$ref": "#/$defs/Timestamp" },
+        "note": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ReleaseGeneration": {
+      "type": "object",
+      "required": ["artifact_id", "config_generation", "schema_compatible"],
+      "properties": {
+        "artifact_id": { "$ref": "#/$defs/ArtifactId" },
+        "config_generation": { "type": "integer", "minimum": 0 },
+        "schema_compatible": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "RollbackDescriptor": {
+      "description": "IMMUTABLE pre-handover record of how the wilke-owned tenant was running, sufficient for `restore.sh --tenant <n>` to bring exactly that tenant back without the ctl. Captured by `adopt`; never rewritten.",
+      "type": "object",
+      "required": ["captured_at", "owner", "paths", "ports", "code", "env_file_sha256", "images", "launch_args", "gateway_generation"],
+      "properties": {
+        "captured_at": { "$ref": "#/$defs/Timestamp" },
+        "owner": { "type": "string", "enum": ["wilke", "svcbvbrc"] },
+        "paths": {
+          "type": "object",
+          "required": ["data_dir", "worktree", "python_env", "up_sh"],
+          "properties": {
+            "data_dir": { "$ref": "#/$defs/AbsPath" },
+            "worktree": { "$ref": "#/$defs/AbsPath" },
+            "python_env": { "$ref": "#/$defs/AbsPath" },
+            "up_sh": { "oneOf": [ { "$ref": "#/$defs/AbsPath" }, { "type": "null" } ] }
+          },
+          "additionalProperties": false
+        },
+        "ports": { "$ref": "#/$defs/Ports" },
+        "code": { "$ref": "#/$defs/Code" },
+        "env_file_sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "images": {
+          "type": "object",
+          "required": ["qdrant", "elasticsearch"],
+          "properties": {
+            "qdrant": { "oneOf": [ { "$ref": "#/$defs/Image" }, { "type": "null" } ] },
+            "elasticsearch": { "oneOf": [ { "$ref": "#/$defs/Image" }, { "type": "null" } ] }
+          },
+          "additionalProperties": false
+        },
+        "launch_args": {
+          "description": "Per process, the argv observed in `/proc/<pid>/cmdline` at capture — with secret-bearing arguments redacted.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "argv", "cwd"],
+            "properties": {
+              "kind": { "type": "string", "enum": ["api", "ui", "qdrant", "es"] },
+              "argv": { "type": "array", "items": { "type": "string" } },
+              "cwd": { "$ref": "#/$defs/AbsPath" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "gateway_generation": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "Code": {
+      "type": "object",
+      "required": ["tag", "sha", "previous_artifact_id"],
+      "properties": {
+        "tag": { "description": "`git describe --tags` at the worktree; `unknown` when the gitdir is unreadable (svcbvbrc before handover).", "type": "string", "minLength": 1 },
+        "sha": { "oneOf": [ { "$ref": "#/$defs/GitSha" }, { "type": "null" } ] },
+        "previous_artifact_id": { "oneOf": [ { "$ref": "#/$defs/ArtifactId" }, { "type": "null" } ] }
+      },
+      "additionalProperties": false
+    },
+    "LastOp": {
+      "type": "object",
+      "required": ["job_id", "at", "outcome"],
+      "properties": {
+        "job_id": { "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "outcome": { "type": "string", "enum": ["succeeded", "failed", "rolled_back", "interrupted", "cancelled"] }
+      },
+      "additionalProperties": false
+    },
+    "LastBackup": {
+      "description": "Only a `fenced` AND `verified` bundle satisfies the restore / handover / decommission prerequisites; an unfenced one is `best_effort` and never eligible.",
+      "type": "object",
+      "required": ["bundle", "at", "kind", "fenced", "verified"],
+      "properties": {
+        "bundle": { "$ref": "#/$defs/AbsPath" },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "kind": { "type": "string", "enum": ["backup", "pre-update", "recovery"] },
+        "fenced": { "type": "boolean" },
+        "verified": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "Tenant": {
+      "type": "object",
+      "required": [
+        "name", "manifest_name", "data_dir", "worktree", "artifact_id", "code", "python_env",
+        "ports", "api", "stores", "ui", "supervisor", "owner", "state", "desired_boot",
+        "env_layout", "settings", "secret_refs", "env_file_sha256", "secrets_file_sha256",
+        "identity", "keys", "service_accounts", "external_refs", "unmanaged_files", "drift",
+        "restart_pending", "release_generation", "rollback_descriptor", "last_ops",
+        "last_backup", "adopted_at"
+      ],
+      "properties": {
+        "name": { "$ref": "#/$defs/TenantName" },
+        "manifest_name": {
+          "description": "The `manifest.tsv` row name = data-dir basename = apptainer instance suffix. Usually equal to `name`; differs for tenants adopted from a renamed directory.",
+          "$ref": "#/$defs/TenantName"
+        },
+        "data_dir": { "$ref": "#/$defs/AbsPath" },
+        "worktree": { "$ref": "#/$defs/AbsPath" },
+        "artifact_id": {
+          "description": "Null for an adopted tenant running from a hand-made worktree, until `handover` moves it onto a prepared artifact.",
+          "oneOf": [ { "$ref": "#/$defs/ArtifactId" }, { "type": "null" } ]
+        },
+        "code": { "$ref": "#/$defs/Code" },
+        "python_env": { "$ref": "#/$defs/AbsPath" },
+        "ports": { "$ref": "#/$defs/Ports" },
+        "api": {
+          "type": "object",
+          "required": ["bind", "pidfile", "log"],
+          "properties": {
+            "bind": { "type": "string", "pattern": "^(127\\.0\\.0\\.1|0\\.0\\.0\\.0|localhost)$" },
+            "pidfile": { "$ref": "#/$defs/AbsPath" },
+            "log": { "$ref": "#/$defs/AbsPath" }
+          },
+          "additionalProperties": false
+        },
+        "stores": { "$ref": "#/$defs/Stores" },
+        "ui": {
+          "type": "object",
+          "required": ["mode", "port", "base"],
+          "properties": {
+            "mode": {
+              "description": "`static`: `vite build` output served by nginx from `<data_dir>/ui/dist`. `dev`: a Vite dev server on `port` (dev tenant only). `external`: served elsewhere, the gateway just proxies.",
+              "type": "string",
+              "enum": ["static", "dev", "external"]
+            },
+            "port": { "oneOf": [ { "$ref": "#/$defs/Port" }, { "type": "null" } ] },
+            "base": { "description": "The `--base` the UI was built with, e.g. `/ragstack/dev/ui/`.", "type": "string", "pattern": "^/[A-Za-z0-9._/-]*/$" }
+          },
+          "additionalProperties": false
+        },
+        "supervisor": {
+          "description": "`systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover).",
+          "type": "string",
+          "enum": ["systemd", "manual"]
+        },
+        "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
+        "state": {
+          "type": "string",
+          "enum": ["provisioned", "active", "stopped", "migrating", "quarantined", "decommissioned"]
+        },
+        "desired_boot": {
+          "description": "`enabled` ⇔ the target is `WantedBy=default.target`. `stop` flips it to `disabled` unless `--keep-enabled`, so a deliberately stopped tenant stays down across a reboot.",
+          "type": "string",
+          "enum": ["enabled", "disabled"]
+        },
+        "env_layout": {
+          "description": "`legacy`: one `tenant.env` holding everything (all four adopted tenants today). `managed`: `tenant.env` public + `secrets.env` secret, the grammar the units load. `env-normalize` moves a tenant from the first to the second and is a `handover` prerequisite.",
+          "type": "string",
+          "enum": ["legacy", "managed"]
+        },
+        "settings": { "$ref": "#/$defs/PublicSettings" },
+        "secret_refs": { "type": "array", "items": { "$ref": "#/$defs/SecretRef" } },
+        "env_file_sha256": { "$ref": "#/$defs/Sha256Hex" },
+        "secrets_file_sha256": { "oneOf": [ { "$ref": "#/$defs/Sha256Hex" }, { "type": "null" } ] },
+        "identity": {
+          "type": "object",
+          "required": ["provider", "admin_subjects_count"],
+          "properties": {
+            "provider": { "type": "string", "enum": ["bvbrc", "oidc", "none"] },
+            "admin_subjects_count": { "description": "How many `ADMIN_SUBJECTS` entries — the subjects themselves are identities, not counted as secrets, but they are not carried here either.", "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "keys": { "type": "array", "items": { "$ref": "#/$defs/KeyRecord" } },
+        "service_accounts": { "type": "array", "items": { "$ref": "#/$defs/ServiceAccountRecord" } },
+        "external_refs": { "type": "array", "items": { "$ref": "#/$defs/ExternalRef" } },
+        "unmanaged_files": {
+          "description": "Files found under `data_dir` at adoption that no renderer produces (e.g. `bin/up.sh`). Listed so nothing is silently orphaned; the ctl never edits or deletes them.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$" }
+        },
+        "drift": { "type": "array", "items": { "$ref": "#/$defs/DriftRow" } },
+        "restart_pending": {
+          "description": "A configured change (env, keys, admins) has not yet been applied by a restart — the effective generation lags the configured one.",
+          "type": "boolean"
+        },
+        "release_generation": { "oneOf": [ { "$ref": "#/$defs/ReleaseGeneration" }, { "type": "null" } ] },
+        "rollback_descriptor": { "oneOf": [ { "$ref": "#/$defs/RollbackDescriptor" }, { "type": "null" } ] },
+        "last_ops": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/OpVerb" },
+          "additionalProperties": { "$ref": "#/$defs/LastOp" }
+        },
+        "last_backup": { "oneOf": [ { "$ref": "#/$defs/LastBackup" }, { "type": "null" } ] },
+        "adopted_at": {
+          "description": "When `adopt --commit` wrote the row; null for a tenant the ctl created itself.",
+          "oneOf": [ { "$ref": "#/$defs/Timestamp" }, { "type": "null" } ]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

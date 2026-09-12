@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "job.json",
+  "title": "CtlJob",
+  "description": "One execution of a mutation — the 202 body of every non-dry-run mutating call, and `GET /v1/jobs/{id}`. Persisted in `jobs.db`; every transition is also an audit row. States: `queued` → `running` → `succeeded` | `failed` | `rolled_back` | `cancelled`; `awaiting_cutover` is the parked state of `handover`/`migrate-local` before the explicit `continue`; `interrupted` is what reconcile-on-restart assigns to a job whose worker died — resources stay reserved in both parked states, and `resume` re-authorizes the caller before anything moves. Steps record their `external_ids` (snapshot names, unit names, staging dirs) BEFORE the external call, so an interrupted step can be reconciled (does the snapshot exist? is the unit active?) rather than repeated. `result` and `error` are typed summaries; the step `log` is a path the operator reads through `GET /v1/jobs/{id}/steps/{n}/log`. VIEWERS receive the job with `worker`, `lock`, `reservations`, `steps[].log` and `steps[].external_ids` set to null / empty — the shape is unchanged so one schema serves both roles.",
+  "type": "object",
+  "required": [
+    "id", "op", "tenant", "principal", "auth_method", "sudo_user", "state", "plan_hash",
+    "request_id", "idempotency_key", "created_at", "started_at", "finished_at", "worker",
+    "lock", "reservations", "current_step", "steps", "result", "error", "rollback"
+  ],
+  "properties": {
+    "id": { "$ref": "#/$defs/JobId" },
+    "op": { "type": "string", "minLength": 1 },
+    "tenant": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "principal": { "type": "string", "minLength": 1 },
+    "auth_method": { "type": "string", "enum": ["api_key", "bearer", "session", "local"] },
+    "sudo_user": { "type": ["string", "null"] },
+    "state": { "$ref": "#/$defs/JobState" },
+    "plan_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "request_id": { "description": "The `X-Request-Id` of the request that submitted the job.", "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "created_at": { "type": "string" },
+    "started_at": { "type": ["string", "null"] },
+    "finished_at": { "type": ["string", "null"] },
+    "worker": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["pid", "host", "mode"],
+          "properties": {
+            "pid": { "type": "integer", "minimum": 1 },
+            "host": { "type": "string" },
+            "mode": { "type": "string", "enum": ["daemon", "direct"] }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "lock": {
+      "description": "The lock files held, in the single fleet lock order (registry → manifest → tenant → gateway → images).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["order", "since"],
+          "properties": {
+            "order": { "type": "array", "items": { "type": "string", "enum": ["registry", "manifest", "tenant", "gateway", "images"] } },
+            "since": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "reservations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["resource", "until"],
+        "properties": {
+          "resource": { "description": "`port:<n>`, `dir:<path>`, `heap:<bytes>`, `disk:<bytes>`.", "type": "string", "minLength": 1 },
+          "until": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "current_step": { "type": ["integer", "null"], "minimum": 1 },
+    "steps": { "type": "array", "items": { "$ref": "#/$defs/Step" } },
+    "result": {
+      "description": "Op-specific typed summary on success (e.g. backup → `{bundle, fenced, verified, bytes}`; create → `{tenant, ports, secrets_available}`); null otherwise. Never a secret value — minted secrets go through the delivery envelope.",
+      "type": ["object", "null"]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["step", "code", "detail"],
+          "properties": {
+            "step": { "type": ["integer", "null"], "minimum": 1 },
+            "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+            "detail": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    },
+    "rollback": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["attempted", "state", "detail"],
+          "properties": {
+            "attempted": { "type": "boolean" },
+            "state": { "type": "string", "enum": ["not_needed", "succeeded", "failed", "partial"] },
+            "detail": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        { "type": "null" }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "JobId": { "description": "ULID (Crockford base32, 26 chars).", "type": "string", "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$" },
+    "JobState": {
+      "type": "string",
+      "enum": ["queued", "running", "awaiting_cutover", "succeeded", "failed", "rolled_back", "interrupted", "cancelled"]
+    },
+    "Step": {
+      "type": "object",
+      "required": ["n", "kind", "title", "state", "attempts", "started_at", "finished_at", "error", "log", "checkpoint", "external_ids"],
+      "properties": {
+        "n": { "type": "integer", "minimum": 1 },
+        "kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "title": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "enum": ["pending", "running", "succeeded", "failed", "skipped", "rolled_back", "interrupted"] },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "started_at": { "type": ["string", "null"] },
+        "finished_at": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] },
+        "log": { "description": "Relative path of the step log under `/rag/data/ctl/jobs/<id>/` (read through the steps/log endpoint); null for a viewer or a step that produced no log.", "type": ["string", "null"], "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$" },
+        "checkpoint": { "description": "Whether the step's durable checkpoint was written — a resumed job skips checkpointed steps.", "type": "boolean" },
+        "external_ids": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

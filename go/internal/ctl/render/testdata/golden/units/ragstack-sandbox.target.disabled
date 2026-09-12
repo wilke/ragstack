@@ -1,0 +1,4 @@
+[Unit]
+Description=ragstack tenant sandbox
+Wants=ragstack-sandbox-qdrant.service ragstack-sandbox-es.service ragstack-sandbox-api.service ragstack-sandbox-ui.service
+ConditionPathIsMountPoint=/rag

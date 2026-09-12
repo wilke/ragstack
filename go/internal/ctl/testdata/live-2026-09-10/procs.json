@@ -1,0 +1,274 @@
+[
+  {
+    "cmdline": "node /home/wilke/Development/VaxpipeApp/ui/node_modules/.bin/vite --host",
+    "cwd": "/home/wilke/Development/VaxpipeApp/ui",
+    "pid": 221274,
+    "port": 5174,
+    "safe_env": [
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "node /rag/repos/tenants/demo/frontend/node_modules/.bin/vite --host --port 5210 --strictPort --base /ragstack/demo/ui/",
+    "cwd": "/rag/repos/tenants/demo/frontend",
+    "pid": 207378,
+    "port": 5210,
+    "safe_env": [
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "node /rag/repos/tenants/lucid-next/frontend/node_modules/.bin/vite --host --port 5211 --strictPort --base /ragstack/lucid-next/ui/",
+    "cwd": "/rag/repos/tenants/lucid-next/frontend",
+    "pid": 207426,
+    "port": 5211,
+    "safe_env": [
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "node /rag/repos/tenants/asm-next/frontend/node_modules/.bin/vite --host --port 5212 --strictPort --base /ragstack/asm-next/ui/",
+    "cwd": "/rag/repos/tenants/asm-next/frontend",
+    "pid": 207925,
+    "port": 5212,
+    "safe_env": [
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "postgres",
+    "cwd": "/var/lib/postgresql/data/pgdata",
+    "pid": 191695,
+    "port": 5432,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "PGDATA=/var/lib/postgresql/data/pgdata",
+      "POSTGRES_DB=ragstack",
+      "POSTGRES_USER=ragstack"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": null,
+    "cwd": null,
+    "note": "listener owned by another account (root or a service account)",
+    "pid": null,
+    "port": 5666,
+    "safe_env": [],
+    "user": null
+  },
+  {
+    "cmdline": "./qdrant",
+    "cwd": "/qdrant",
+    "pid": 184263,
+    "port": 6333,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1",
+      "QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "./qdrant",
+    "cwd": "/qdrant",
+    "pid": 185701,
+    "port": 6343,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "QDRANT__SERVICE__GRPC_PORT=6344",
+      "QDRANT__SERVICE__HTTP_PORT=6343",
+      "QDRANT__STORAGE__OPTIMIZERS__MAX_OPTIMIZATION_THREADS=1",
+      "QDRANT__STORAGE__PERFORMANCE__OPTIMIZER_CPU_BUDGET=12"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "node /rag/repos/tenants/dev/frontend/node_modules/.bin/vite --host --port 8090 --strictPort --base /ragstack/dev/ui/",
+    "cwd": "/rag/repos/tenants/dev/frontend",
+    "pid": 208228,
+    "port": 8090,
+    "safe_env": [
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": null,
+    "cwd": null,
+    "note": "listener owned by another account (root or a service account)",
+    "pid": null,
+    "port": 9000,
+    "safe_env": [],
+    "user": null
+  },
+  {
+    "cmdline": "/usr/share/elasticsearch/jdk/bin/java -Des.networkaddress.cache.ttl=60 -Des.networkaddress.cache.negative.ttl=10 -Djava.security.manager=allow -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Dlog4j2.formatMsgNoLookups=true -Djava.locale.providers=SPI,COMPAT --add-opens=java.base/java.io=org.elasticsearch.preallocate --enable-native-access=org.elasticsearch.nativeaccess -Des.cgroups.hierarchy.override=/ -XX:ReplayDataFile=logs/replay_pid%p.log -Des.distribution.type=docker -XX:+UseG1GC -Djava.io.tmpdir=/tmp/elasticsearch-12929223324821830930 --add-modules=jdk.incubator.vector -XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError -XX:HeapDumpPath=data -XX:ErrorFile=logs/hs_err_pid%p.log -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,level,pid,tags:filecount=32,filesize=64m -Xms1g -Xmx1g -XX:MaxDirectMemorySize=536870912 -XX:G1HeapRegionSize=4m -XX:InitiatingHeapOccupancyPercent=30 -XX:G1ReservePercent=15 --module-path /usr/share/elasticsearch/lib --add-modules=jdk.net --add-modules=ALL-MODULE-PATH -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch",
+    "cwd": "/usr/share/elasticsearch",
+    "pid": 191825,
+    "port": 9200,
+    "safe_env": [
+      "ES_JAVA_OPTS=-Xms1g -Xmx1g",
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": null,
+    "cwd": null,
+    "note": "listener owned by another account (root or a service account)",
+    "pid": null,
+    "port": 9443,
+    "safe_env": [],
+    "user": null
+  },
+  {
+    "cmdline": "/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port 24000",
+    "cwd": "/rag/repos/tenants/lucid-next/python",
+    "pid": 206629,
+    "port": 24000,
+    "safe_env": [
+      "HF_HOME=/rag/cache",
+      "HOME=/home/wilke",
+      "PYTHONPATH=/rag/repos/tenants/lucid-next/python"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/usr/share/elasticsearch/jdk/bin/java -Des.networkaddress.cache.ttl=60 -Des.networkaddress.cache.negative.ttl=10 -Djava.security.manager=allow -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Dlog4j2.formatMsgNoLookups=true -Djava.locale.providers=SPI,COMPAT --add-opens=java.base/java.io=org.elasticsearch.preallocate --enable-native-access=org.elasticsearch.nativeaccess -Des.cgroups.hierarchy.override=/ -XX:ReplayDataFile=logs/replay_pid%p.log -Des.distribution.type=docker -XX:+UseG1GC -Djava.io.tmpdir=/tmp/elasticsearch-316007769026370988 --add-modules=jdk.incubator.vector -XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError -XX:HeapDumpPath=data -XX:ErrorFile=logs/hs_err_pid%p.log -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,level,pid,tags:filecount=32,filesize=64m -Xms2g -Xmx2g -XX:MaxDirectMemorySize=1073741824 -XX:G1HeapRegionSize=4m -XX:InitiatingHeapOccupancyPercent=30 -XX:G1ReservePercent=15 --module-path /usr/share/elasticsearch/lib --add-modules=jdk.net --add-modules=ALL-MODULE-PATH -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch",
+    "cwd": "/usr/share/elasticsearch",
+    "pid": 191831,
+    "port": 24003,
+    "safe_env": [
+      "ES_JAVA_OPTS=-Xms2g -Xmx2g",
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/usr/share/elasticsearch/jdk/bin/java -Des.networkaddress.cache.ttl=60 -Des.networkaddress.cache.negative.ttl=10 -Djava.security.manager=allow -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Dlog4j2.formatMsgNoLookups=true -Djava.locale.providers=SPI,COMPAT --add-opens=java.base/java.io=org.elasticsearch.preallocate --enable-native-access=org.elasticsearch.nativeaccess -Des.cgroups.hierarchy.override=/ -XX:ReplayDataFile=logs/replay_pid%p.log -Des.distribution.type=docker -XX:+UseG1GC -Djava.io.tmpdir=/tmp/elasticsearch-316007769026370988 --add-modules=jdk.incubator.vector -XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError -XX:HeapDumpPath=data -XX:ErrorFile=logs/hs_err_pid%p.log -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,level,pid,tags:filecount=32,filesize=64m -Xms2g -Xmx2g -XX:MaxDirectMemorySize=1073741824 -XX:G1HeapRegionSize=4m -XX:InitiatingHeapOccupancyPercent=30 -XX:G1ReservePercent=15 --module-path /usr/share/elasticsearch/lib --add-modules=jdk.net --add-modules=ALL-MODULE-PATH -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch",
+    "cwd": "/usr/share/elasticsearch",
+    "pid": 191831,
+    "port": 24004,
+    "safe_env": [
+      "ES_JAVA_OPTS=-Xms2g -Xmx2g",
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port 24020",
+    "cwd": "/rag/repos/tenants/asm-next/python",
+    "pid": 206634,
+    "port": 24020,
+    "safe_env": [
+      "HF_HOME=/rag/cache",
+      "HOME=/home/wilke",
+      "PYTHONPATH=/rag/repos/tenants/asm-next/python"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port 24040",
+    "cwd": "/rag/repos/tenants/dev/python",
+    "pid": 206639,
+    "port": 24040,
+    "safe_env": [
+      "GOWE_URL=http://localhost:8091",
+      "GOWE_WORKER_GROUP=ragstack",
+      "GOWE_WORKFLOW_CWL=/rag/repos/tenants/dev/cwl/pdf-ingest-scatter.cwl",
+      "HF_HOME=/rag/cache",
+      "HOME=/home/wilke",
+      "PORT=24040",
+      "PYTHONPATH=/rag/repos/tenants/dev/python"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "./qdrant",
+    "cwd": "/qdrant",
+    "pid": 187124,
+    "port": 24041,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "QDRANT__SERVICE__GRPC_PORT=24042",
+      "QDRANT__SERVICE__HTTP_PORT=24041"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "./qdrant",
+    "cwd": "/qdrant",
+    "pid": 187124,
+    "port": 24042,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "QDRANT__SERVICE__GRPC_PORT=24042",
+      "QDRANT__SERVICE__HTTP_PORT=24041"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/usr/share/elasticsearch/jdk/bin/java -Des.networkaddress.cache.ttl=60 -Des.networkaddress.cache.negative.ttl=10 -Djava.security.manager=allow -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Dlog4j2.formatMsgNoLookups=true -Djava.locale.providers=SPI,COMPAT --add-opens=java.base/java.io=org.elasticsearch.preallocate --enable-native-access=org.elasticsearch.nativeaccess -Des.cgroups.hierarchy.override=/ -XX:ReplayDataFile=logs/replay_pid%p.log -Des.distribution.type=docker -XX:+UseG1GC -Djava.io.tmpdir=/tmp/elasticsearch-2909582130528447458 --add-modules=jdk.incubator.vector -XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError -XX:HeapDumpPath=data -XX:ErrorFile=logs/hs_err_pid%p.log -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,level,pid,tags:filecount=32,filesize=64m -Xms1g -Xmx1g -XX:MaxDirectMemorySize=536870912 -XX:G1HeapRegionSize=4m -XX:InitiatingHeapOccupancyPercent=30 -XX:G1ReservePercent=15 --module-path /usr/share/elasticsearch/lib --add-modules=jdk.net --add-modules=ALL-MODULE-PATH -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch",
+    "cwd": "/usr/share/elasticsearch",
+    "pid": 193127,
+    "port": 24043,
+    "safe_env": [
+      "ES_JAVA_OPTS=-Xms1g -Xmx1g",
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/usr/share/elasticsearch/jdk/bin/java -Des.networkaddress.cache.ttl=60 -Des.networkaddress.cache.negative.ttl=10 -Djava.security.manager=allow -XX:+AlwaysPreTouch -Xss1m -Djava.awt.headless=true -Dfile.encoding=UTF-8 -Djna.nosys=true -XX:-OmitStackTraceInFastThrow -Dio.netty.noUnsafe=true -Dio.netty.noKeySetOptimization=true -Dio.netty.recycler.maxCapacityPerThread=0 -Dlog4j.shutdownHookEnabled=false -Dlog4j2.disable.jmx=true -Dlog4j2.formatMsgNoLookups=true -Djava.locale.providers=SPI,COMPAT --add-opens=java.base/java.io=org.elasticsearch.preallocate --enable-native-access=org.elasticsearch.nativeaccess -Des.cgroups.hierarchy.override=/ -XX:ReplayDataFile=logs/replay_pid%p.log -Des.distribution.type=docker -XX:+UseG1GC -Djava.io.tmpdir=/tmp/elasticsearch-2909582130528447458 --add-modules=jdk.incubator.vector -XX:+HeapDumpOnOutOfMemoryError -XX:+ExitOnOutOfMemoryError -XX:HeapDumpPath=data -XX:ErrorFile=logs/hs_err_pid%p.log -Xlog:gc*,gc+age=trace,safepoint:file=logs/gc.log:utctime,level,pid,tags:filecount=32,filesize=64m -Xms1g -Xmx1g -XX:MaxDirectMemorySize=536870912 -XX:G1HeapRegionSize=4m -XX:InitiatingHeapOccupancyPercent=30 -XX:G1ReservePercent=15 --module-path /usr/share/elasticsearch/lib --add-modules=jdk.net --add-modules=ALL-MODULE-PATH -m org.elasticsearch.server/org.elasticsearch.bootstrap.Elasticsearch",
+    "cwd": "/usr/share/elasticsearch",
+    "pid": 193127,
+    "port": 24044,
+    "safe_env": [
+      "ES_JAVA_OPTS=-Xms1g -Xmx1g",
+      "HOME=/home/wilke"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/opt/java/openjdk/bin/java -cp /var/lib/neo4j/plugins/*:/var/lib/neo4j/conf/*:/var/lib/neo4j/lib/* -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow -XX:+AlwaysPreTouch -XX:+UnlockExperimentalVMOptions -XX:+TrustFinalNonStaticFields -XX:+DisableExplicitGC -Djdk.nio.maxCachedBufferSize=1024 -Dio.netty.tryReflectionSetAccessible=true -Djdk.tls.ephemeralDHKeySize=2048 -Djdk.tls.rejectClientInitiatedRenegotiation=true -XX:FlightRecorderOptions=stackdepth=256 -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Dlog4j2.disable.jmx=true -Dlog4j.layout.jsonTemplate.maxStringLength=32768 -Dfile.encoding=UTF-8 org.neo4j.server.CommunityEntryPoint --home-dir=/var/lib/neo4j --config-dir=/var/lib/neo4j/conf --console-mode",
+    "cwd": "/rag/backups/reboot-2026-09-10",
+    "pid": 190855,
+    "port": 24046,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "NEO4J_server_bolt_listen__address=0.0.0.0:24047",
+      "NEO4J_server_http_listen__address=0.0.0.0:24046"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/opt/java/openjdk/bin/java -cp /var/lib/neo4j/plugins/*:/var/lib/neo4j/conf/*:/var/lib/neo4j/lib/* -XX:+UseG1GC -XX:-OmitStackTraceInFastThrow -XX:+AlwaysPreTouch -XX:+UnlockExperimentalVMOptions -XX:+TrustFinalNonStaticFields -XX:+DisableExplicitGC -Djdk.nio.maxCachedBufferSize=1024 -Dio.netty.tryReflectionSetAccessible=true -Djdk.tls.ephemeralDHKeySize=2048 -Djdk.tls.rejectClientInitiatedRenegotiation=true -XX:FlightRecorderOptions=stackdepth=256 -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Dlog4j2.disable.jmx=true -Dlog4j.layout.jsonTemplate.maxStringLength=32768 -Dfile.encoding=UTF-8 org.neo4j.server.CommunityEntryPoint --home-dir=/var/lib/neo4j --config-dir=/var/lib/neo4j/conf --console-mode",
+    "cwd": "/rag/backups/reboot-2026-09-10",
+    "pid": 190855,
+    "port": 24047,
+    "safe_env": [
+      "HOME=/home/wilke",
+      "NEO4J_server_bolt_listen__address=0.0.0.0:24047",
+      "NEO4J_server_http_listen__address=0.0.0.0:24046"
+    ],
+    "user": "wilke"
+  },
+  {
+    "cmdline": "/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port 24060",
+    "cwd": "/rag/repos/tenants/demo/python",
+    "pid": 206644,
+    "port": 24060,
+    "safe_env": [
+      "HF_HOME=/rag/cache",
+      "HOME=/home/wilke",
+      "PORT=24060",
+      "PYTHONPATH=/rag/repos/tenants/demo/python"
+    ],
+    "user": "wilke"
+  }
+]

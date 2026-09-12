@@ -27,6 +27,7 @@ from ragstack.api.routers import (
     query,
     service_accounts,
     stats,
+    version,
 )
 from ragstack.api.security import (
     ROLE_ADMIN,
@@ -201,6 +202,11 @@ app.include_router(health.router, tags=["Health"])
 app.include_router(query.router, prefix="/v1", tags=["Query"], dependencies=_secured)
 app.include_router(documents.router, prefix="/v1", tags=["Documents"], dependencies=_secured)
 app.include_router(graph.router, prefix="/v1/graph", tags=["Graph"], dependencies=_secured)
+# /v1/version (ADR-0007): which code this process runs. "Any credential" — the
+# same resolve_tenant gate as the data routes (401 without a key on a keyed
+# server), and deliberately NOT the admin group: the control plane reads it with
+# a tenant's own key and its viewers see the same fields. Python-only in v1.
+app.include_router(version.router, prefix="/v1", tags=["Health"], dependencies=_secured)
 # Stats/aggregation reads: any authenticated caller, tenant-scoped in the handlers.
 # Enforce auth with resolve_principal (not resolve_tenant) so it matches the handler
 # dependency and FastAPI caches it — the API key is verified once, not twice.

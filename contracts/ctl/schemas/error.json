@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "error.json",
+  "title": "CtlError",
+  "description": "The shape of EVERY non-2xx body the control plane emits, including the 404 for an unknown route and the 429 from the rate limiter. Unlike the tenant API's `error.json` (which models what FastAPI already shipped), this one is contract-first for a new Go daemon, so it can require the machine-readable `code` and the correlation `request_id` from the start.\n\n`code` is the field a client branches on; `detail` is server prose for operators and logs (it may name paths, units and hosts — the admin UI never renders it verbatim). `extra` carries the typed payload some codes need: `confirm_required` puts the expected `confirm` value there, `plan_stale` the current `plan_hash` and `registry_generation`, `locked` the holder `{job_id, since}`, `duplicate` the original `job_id`, `doctor_red` the `doctor_hash`, `rate_limited` the `retry_after` seconds.\n\nStatus mapping (one status per code, so the code alone is enough to reconstruct the status in a log): `both_credentials` 400 · `auth_required` 401 · `forbidden` 403 · `not_found` 404 (also the 410 of an already-delivered secrets envelope, whose body says so in `detail`) · `locked` / `plan_stale` / `duplicate` / `doctor_red` / `refused` 409 · `validation` 422 · `confirm_required` 428 · `rate_limited` 429 · `internal` 500.",
+  "type": "object",
+  "required": ["detail", "code", "request_id"],
+  "properties": {
+    "detail": {
+      "description": "What went wrong, as a human-readable sentence. Always a string here — the Go daemon owns its validation body, so there is no FastAPI-style list variant; per-field validation problems go under `extra.fields`.",
+      "type": "string"
+    },
+    "code": {
+      "description": "Machine-readable failure class. `auth_required`: no usable credential (absent, malformed, unknown key, bad signature, expired token, revoked session). `forbidden`: the credential verified but the subject is not on the ctl's principal list, or its role is below the operation's minimum — there is NEVER a default role. `both_credentials`: `X-API-Key` and `Authorization` on one request (or a body `ctl_api_key` that differs from the header key). `refused`: a policy or precondition refusal that is not a lock/plan/doctor/confirm problem — a store with `capabilities.<x>: false`, an unfenced backup offered where a fenced one is required, a containment or ownership check, an executable-surface key on the HTTP settings path.",
+      "type": "string",
+      "enum": [
+        "auth_required",
+        "forbidden",
+        "both_credentials",
+        "not_found",
+        "validation",
+        "locked",
+        "plan_stale",
+        "duplicate",
+        "doctor_red",
+        "confirm_required",
+        "refused",
+        "rate_limited",
+        "internal"
+      ]
+    },
+    "request_id": {
+      "description": "The correlation id for the failed request — identical to the `X-Request-Id` response header and to the `rid=` on every log line and audit row the request produced. Redundant with the header on purpose: a header does not survive a user pasting the body into a ticket.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "extra": {
+      "description": "Code-specific typed payload; absent when the code needs none. Free-form by necessity (each code has its own shape, documented on `code`), but it is the ONLY untyped member and it never carries a secret value.",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

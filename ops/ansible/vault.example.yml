@@ -1,0 +1,17 @@
+# ops/ansible/vault.example.yml — shape of the vault file (NOT the file).
+#
+#   cp vault.example.yml vault.yml          # vault.yml is gitignored
+#   ansible-vault encrypt vault.yml
+#   ansible-playbook ... -e @vault.yml --ask-vault-pass
+#
+# ctl_api_keys/ctl_api_key_roles/ctl_api_key_names land in
+# /rag/config/ctl/ctl-secrets.env (0600 svcbvbrc, exactly api.SecretEnvKeys()
+# from go/internal/ctl/api/env.go) via the ragstack-ctl role with no_log.
+# JSON strings are written as KEY='...' (envfile grammar: single-quoted
+# literal, so no ' inside a value). ctl_admin_subjects is not a credential
+# (a bearer subject is a user name) and lands in the public ctl.env instead —
+# it stays here only because it is deployment-specific, same as the others.
+ctl_api_keys: '["<64-hex>"]'
+ctl_api_key_roles: '{"<64-hex>":"operator"}'
+ctl_api_key_names: '{"<64-hex>":"some-label"}'
+ctl_admin_subjects: "bvbrc:someone"

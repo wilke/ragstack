@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "health_response.json",
+  "title": "CtlHealthResponse",
+  "description": "Liveness of the control-plane daemon itself — NOT of any tenant (that is `GET /v1/fleet`). Anonymous on purpose: the gateway and `doctor` probe it before any credential exists, and nothing in it is sensitive.",
+  "type": "object",
+  "required": ["status", "version"],
+  "properties": {
+    "status": { "type": "string", "enum": ["ok"] },
+    "version": {
+      "description": "The build version (`git describe --tags --always --dirty` at build time), the same value `GET /v1/version` reports as `version`.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

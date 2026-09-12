@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan.json",
+  "title": "CtlPlan",
+  "description": "What a mutation WOULD do — the 200 body of every mutating operation called with `dry_run: true`, and the thing a client must have seen before it executes. `plan_hash` = sha256 over the canonical JSON of `{op, tenant, args_redacted, registry_generation, doctor_findings_sha256, steps[].{kind, target, args_sha256}, schema_version}`; the execute call carries the same request, the daemon recomputes the hash AFTER taking the locks, and a mismatch is 409 `plan_stale` (the registry moved, a finding changed, an argument differs). `requires_confirm: true` means the execute call must also carry `confirm: <confirm_value>` — the tenant name for tenant ops (like the CLI's `--yes-destructive <name>`), `gateway` or `settings` otherwise — or it is 428 `confirm_required`. Previews inside `would_write` are redacted and capped at 64 KiB.",
+  "type": "object",
+  "required": [
+    "plan_hash", "op", "tenant", "registry_generation", "schema_version", "doctor",
+    "requires_confirm", "confirm_value", "steps", "warnings"
+  ],
+  "properties": {
+    "plan_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "op": { "type": "string", "minLength": 1 },
+    "tenant": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "registry_generation": { "type": "integer", "minimum": 0 },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "doctor": {
+      "description": "The op-scoped doctor run this plan was computed against — same shape as `GET /v1/doctor?tenant=&op=`. A `red` status here means the execute call will be 409 `doctor_red` unless the findings change.",
+      "$ref": "doctor_response.json"
+    },
+    "requires_confirm": { "type": "boolean" },
+    "confirm_value": { "type": ["string", "null"] },
+    "steps": { "type": "array", "items": { "$ref": "#/$defs/PlannedStep" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "PlannedStep": {
+      "type": "object",
+      "required": ["n", "kind", "title", "destructive", "targets", "would_write", "would_run", "warnings"],
+      "properties": {
+        "n": { "type": "integer", "minimum": 1 },
+        "kind": {
+          "description": "The driver the step uses — `registry`, `envfile`, `render`, `systemd`, `apptainer`, `git`, `nginx`, `qdrant`, `es`, `sqlitebackup`, `tar`, `tenantapi`, `fs`, `probe`, `checkpoint`.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "destructive": { "type": "boolean" },
+        "targets": {
+          "description": "What the step acts on — unit names, instance names, collection names, paths (redacted).",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "would_write": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "mode", "preview"],
+            "properties": {
+              "path": { "type": "string", "pattern": "^/[A-Za-z0-9._/-]*$" },
+              "mode": { "description": "Octal file mode as written, e.g. `0660`.", "type": "string", "pattern": "^0[0-7]{3}$" },
+              "preview": { "description": "Redacted content, ≤ 64 KiB; null when the file is binary or the content is a secret (e.g. `secrets.env`).", "type": ["string", "null"], "maxLength": 65536 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "would_run": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["argv"],
+            "properties": {
+              "argv": { "description": "Absolute program then arguments — the ctl never runs a shell.", "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}

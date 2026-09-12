@@ -2,11 +2,13 @@
        build-go test-go lint-go run-go \
        test-conformance-python test-conformance-go test-conformance \
        test-conformance-authz test-conformance-identity-google \
+       test-conformance-ctl validate-contracts \
        infra-up infra-down up-python up-go down \
        infra-pull-apptainer infra-up-apptainer infra-down-apptainer \
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
        new-tenant-apptainer \
        frontend-install frontend-dev frontend-build frontend-gen-api \
+       build-ctl install-ctl test-ctl \
        test-all
 
 help: ## Show this help
@@ -16,6 +18,10 @@ help: ## Show this help
 # ---------------------------------------------------------------------------
 # Python
 # ---------------------------------------------------------------------------
+
+# Overridable the way GO is, so a host whose `python` is not the ragstack env
+# can say `make validate-contracts PYTHON=/rag/envs/ragstack/bin/python`.
+PYTHON ?= python
 
 install-python: ## Install Python package in dev mode
 	cd python && pip install -e ".[all,dev]"
@@ -69,16 +75,48 @@ run-go: build-go ## Start Go API server (dev)
 	cd go && ./bin/api
 
 # ---------------------------------------------------------------------------
+# ragstack-ctl (tenant control plane, ADR-0007) — static binary, no CGO.
+# GO is overridable because the toolchain is not on the deploy host's PATH
+# (e.g. GO=~/sdk/go1.23.12/bin/go). install-ctl is versioned + symlinked so
+# rollback is `ln -sfn`; it never overwrites a previous version.
+# ---------------------------------------------------------------------------
+GO ?= go
+CTL_VERSION ?= $(shell git describe --tags --always --dirty)
+CTL_COMMIT ?= $(shell git rev-parse HEAD)
+CTL_BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+CTL_PKG := github.com/ragstack/ragstack/internal/ctl/version
+CTL_LDFLAGS := -s -w -X $(CTL_PKG).Version=$(CTL_VERSION) -X $(CTL_PKG).Commit=$(CTL_COMMIT) -X $(CTL_PKG).BuiltAt=$(CTL_BUILT_AT)
+CTL_PREFIX ?= /rag/bin
+
+build-ctl: ## Build the ragstack-ctl static binary into go/bin/ragstack-ctl
+	cd go && CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -ldflags '$(CTL_LDFLAGS)' -o bin/ragstack-ctl ./cmd/ragstack-ctl
+
+install-ctl: build-ctl ## Install go/bin/ragstack-ctl as $(CTL_PREFIX)/ragstack-ctl-<version> and point the symlink at it
+	install -m 0755 go/bin/ragstack-ctl $(CTL_PREFIX)/ragstack-ctl-$(CTL_VERSION)
+	ln -sfn ragstack-ctl-$(CTL_VERSION) $(CTL_PREFIX)/ragstack-ctl
+
+test-ctl: ## Run the ctl package tests (goldens, parity vs new-tenant.sh, canaries) with the race detector
+	cd go && $(GO) test ./internal/ctl/... ./cmd/ragstack-ctl/... -race
+
+# ---------------------------------------------------------------------------
 # Conformance
 # ---------------------------------------------------------------------------
 
+# `conformance/` holds TWO suites now: the tenant API's, and the control
+# plane's (`conformance/ctl`, ADR-0007) — a different daemon, different
+# credentials, and a conftest that requires RAGSTACK_CTL_URL and refuses to
+# default it (the conventional bind on the deployment host is the LIVE control
+# plane). So a bare `pytest conformance/` collected the ctl suite and turned a
+# healthy tenant API into ~96 collection errors. The root conftest skips that
+# directory when the variable is unset; `--ignore` here is the explicit half,
+# so each target says what it runs. The ctl suite has its own target below.
 test-conformance-python: ## Run conformance tests against Python
 	RAGSTACK_BASE_URL=http://localhost:8000 RAGSTACK_IMPL=python \
-		pytest conformance/ -v
+		pytest conformance/ --ignore=conformance/ctl -v
 
 test-conformance-go: ## Run conformance tests against Go
 	RAGSTACK_BASE_URL=http://localhost:8080 RAGSTACK_IMPL=go \
-		pytest conformance/ -v
+		pytest conformance/ --ignore=conformance/ctl -v
 
 test-conformance: test-conformance-python test-conformance-go ## Run conformance against both
 
@@ -90,6 +128,17 @@ test-conformance-keyed: ## Boot a keyed in-memory API with FOUR distinct princip
 
 test-conformance-identity-google: ## Boot a Google-OIDC API and run the identity conformance suite (needs GOOGLE_OIDC_CLIENT_ID)
 	conformance/run_identity_google.sh
+
+test-conformance-ctl: build-ctl ## Boot a --fake-drivers ragstack-ctl on :23999 with its own principals and run the control-plane conformance suite
+	conformance/run_ctl_local.sh
+
+# No server, no infra, ~1 s — which is why it is part of `test-all` rather than
+# something only the ctl conformance run reaches. `conformance/ctl/
+# test_contract_static.py` wraps these same checks as individual assertions and
+# is collected by a plain `pytest conformance/` (the root conftest keeps that
+# one file even when it skips the rest of the ctl suite).
+validate-contracts: ## Static checks on the control-plane contract (contracts/ctl/openapi.yaml + schemas)
+	$(PYTHON) contracts/ctl/validate.py
 
 # ---------------------------------------------------------------------------
 # Docker
@@ -146,4 +195,8 @@ new-tenant-apptainer: ## Provision a tenant (ADR-0005): NAME=acme [ARGS="--dry-r
 # All
 # ---------------------------------------------------------------------------
 
-test-all: test-python test-go ## Run all unit tests (Python + Go)
+# validate-contracts is in here because it was in nothing: it needs no server
+# and no infra, so there was no reason for the control-plane contract's only
+# automatic check to be reachable exclusively through `make
+# test-conformance-ctl` (which builds a Go binary and boots a daemon).
+test-all: test-python test-go validate-contracts ## Run all unit tests (Python + Go) + the control-plane contract checks

@@ -109,9 +109,12 @@ done
 # strings are 'issuer:sub'), no uppercase, no leading '-'.
 [[ "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || \
     die "invalid tenant name '$NAME' — must match ^[a-z][a-z0-9-]{0,31}\$"
+# Keep in sync with go/internal/ctl/paths.Reserved (the Go parity test reads
+# this arm). admin/services/health/ragstack/api/ui are gateway routes; gowe,
+# vaxpipe, grafana, sfr and ctl are neighbours on the same host.
 case "$NAME" in
-    qdrant|elasticsearch|neo4j|postgres|redis|embedding|crossencoder|faiss|tenants|manifest|default|public)
-        die "tenant name '$NAME' is reserved (collides with a shared instance or built-in)" ;;
+    qdrant|elasticsearch|neo4j|postgres|redis|embedding|crossencoder|faiss|tenants|manifest|default|public|admin|services|health|ragstack|api|ui|gowe|vaxpipe|grafana|sfr|ctl)
+        die "tenant name '$NAME' is reserved (collides with a shared instance, a gateway route or a built-in)" ;;
 esac
 
 # --------------------------------------------------------------------------
@@ -126,6 +129,38 @@ esac
 PORT_BASE="${TENANT_PORT_BASE:-24000}"
 PORT_STRIDE="${TENANT_PORT_STRIDE:-20}"
 MANIFEST="$DATA/tenants/manifest.tsv"
+
+# Once ragstack-ctl owns the fleet the manifest is a PROJECTION of its
+# registry, so this script may no longer ALLOCATE: a row appended here would
+# be overwritten by the next projection and the block it named re-allocated.
+# What is refused is therefore the allocation, not the script — the refusal is
+# deferred to just after the manifest lookup below, where it is known whether
+# this run needs a new block or is reusing a row the registry already holds.
+#
+# Re-running for a tenant that already HAS a manifest row allocates nothing: it
+# regenerates bin/up.sh, bin/down.sh and provision.env from the row the
+# registry projected. That is the idempotent path every runbook uses to repair
+# a half-provisioned tenant, and refusing it on registry presence alone left an
+# adopt-managed host — which is every host that has run `adopt` — with no way
+# to regenerate a tenant's own scripts.
+#
+# A --dry-run is never refused. It writes nothing at all, and
+# `ragstack-ctl tenant create` does not exist yet (it lands in PR-D), so
+# refusing it left an operator with no way to even SEE what a tenant would
+# look like. It prints a warning instead: the plan it shows is a projection of
+# a manifest this script no longer owns, so a NEW block in it is a guess.
+CTL_MANAGED=0
+if [[ -f "$DATA/tenants/registry.json" ]]; then
+    CTL_MANAGED=1
+    if (( DRY_RUN )); then
+        echo "WARNING: $DATA/tenants/registry.json exists — this host is managed by" >&2
+        echo "WARNING: ragstack-ctl, and manifest.tsv is a PROJECTION of its registry." >&2
+        echo "WARNING: The ports below are derived from that projection, NOT allocated:" >&2
+        echo "WARNING: the registry's allocator may hand this block to someone else." >&2
+        echo "WARNING: Provision with 'ragstack-ctl tenant create' (PR-D); until then," >&2
+        echo "WARNING: adopt-managed hosts must not provision by script." >&2
+    fi
+fi
 
 (( PORT_BASE >= 10000 )) || die "TENANT_PORT_BASE=$PORT_BASE too low — must be >= 10000 to clear host services"
 (( PORT_STRIDE >= 6 )) || die "TENANT_PORT_STRIDE=$PORT_STRIDE too small — need at least 6 ports per tenant"
@@ -164,6 +199,14 @@ if [[ -z "$BASE" ]]; then
     IDX=$(( max + 1 ))
     BASE=$(( PORT_BASE + IDX * PORT_STRIDE ))
 fi
+
+# The deferred half of the registry guard (see CTL_MANAGED above): on a host
+# ragstack-ctl manages, a NEW block is the registry allocator's to hand out.
+# Reusing the row it already projected is not an allocation and stays allowed.
+if (( CTL_MANAGED && ! DRY_RUN )) && [[ "$ALLOC_SOURCE" != "from manifest" ]]; then
+    die "tenant '$NAME' has no row in $MANIFEST and $DATA/tenants/registry.json exists — this host is managed by ragstack-ctl and NEW port blocks are the registry's to allocate; use 'ragstack-ctl tenant create' (PR-D) — until then, adopt-managed hosts must not provision new tenants by script (re-running for a tenant that already has a manifest row is still supported)"
+fi
+
 (( BASE + PORT_STRIDE <= 65535 )) || die "allocated port block $BASE+$PORT_STRIDE exceeds 65535"
 
 # Collision check against every other manifest row (blocks must be disjoint).
@@ -230,6 +273,10 @@ fi
 # Paths — extends the apptainer/data/<service>/<purpose>/ enumeration one
 # level down: $RAG_DATA/tenants/<name>/<service>/<purpose>/.
 # Keep this list authoritative — every writable path an instance touches.
+# elasticsearch/snapshots is ES's path.repo: this script does not bind it, but
+# the systemd unit ragstack-ctl renders does, and apptainer refuses a bind
+# whose source is missing. Provisioning it here is what keeps the two agreeing
+# (go/internal/ctl/paths.ProvisionDirs mirrors this array, same order).
 # --------------------------------------------------------------------------
 TDIR="$DATA/tenants/$NAME"
 TENANT_DIRS=(
@@ -238,6 +285,7 @@ TENANT_DIRS=(
     "$TDIR/elasticsearch/data"
     "$TDIR/elasticsearch/logs"
     "$TDIR/elasticsearch/config"
+    "$TDIR/elasticsearch/snapshots"
     "$TDIR/state"
     "$TDIR/manifests"
     "$TDIR/ingest"

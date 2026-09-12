@@ -1,0 +1,1 @@
+{"tenants":[{"name":"dev","api":"/ragstack/dev/api/v1/...","ui":"/ragstack/dev/ui/"},{"name":"demo","api":"/ragstack/demo/api/v1/...","ui":"/ragstack/demo/ui/"},{"name":"lucid-next","api":"/ragstack/lucid-next/api/v1/...","ui":"/ragstack/lucid-next/ui/"},{"name":"asm-next","api":"/ragstack/asm-next/api/v1/...","ui":"/ragstack/asm-next/ui/"}]}

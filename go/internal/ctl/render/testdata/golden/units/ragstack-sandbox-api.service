@@ -1,0 +1,29 @@
+[Unit]
+Description=ragstack tenant sandbox — api (:24080)
+PartOf=ragstack-sandbox.target
+Requires=ragstack-sandbox-qdrant.service ragstack-sandbox-es.service
+After=ragstack-sandbox-qdrant.service ragstack-sandbox-es.service
+ConditionPathIsMountPoint=/rag
+ConditionPathIsDirectory=/rag/repos/tenants/sandbox
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+UMask=0002
+WorkingDirectory=/rag/repos/tenants/sandbox/python
+EnvironmentFile=/rag/data/tenants/sandbox/config/tenant.env
+EnvironmentFile=-/rag/data/tenants/sandbox/config/secrets.env
+Environment=PYTHONPATH=/rag/repos/tenants/sandbox/python
+Environment=HF_HOME=/rag/cache
+Environment=PYTHONUNBUFFERED=1
+Environment=RAGSTACK_GIT_TAG=v1.5.3
+Environment=RAGSTACK_GIT_SHA=d4c07047753d4a1b2c3d4e5f60718293a4b5c6d7
+ExecStartPre=/rag/bin/ragstack-ctl wait-ready sandbox --timeout 180
+ExecStart=/rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 127.0.0.1 --port 24080
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/rag/data/tenants/sandbox/logs/api-sandbox.log
+StandardError=append:/rag/data/tenants/sandbox/logs/api-sandbox.log

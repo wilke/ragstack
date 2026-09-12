@@ -10,3 +10,5 @@
 Read `NOTES.md` first: it lists what needs an admin (sysctl persistence, the gateway unit), what
 was found to be already broken, and the order of operations for a planned reboot. The 2026-09-10
 baseline and copies of these scripts are in `/rag/backups/reboot-2026-09-10/`.
+
+Host bootstrap for `ragstack-ctl` (ragops group, linger, `user@<uid>` drop-in, sysctl, the gateway unit above, ctl dirs) is automated in [`ops/ansible/`](../ansible/README.md); NOTES.md admin items 1–3 map to its `root` tag.

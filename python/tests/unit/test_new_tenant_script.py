@@ -77,12 +77,82 @@ def test_shellcheck_clean():
 @pytest.mark.parametrize(
     "bad",
     ["Acme", "a:b", "-acme", "a_b", "acme!", "1acme", "qdrant", "elasticsearch",
-     "postgres", "tenants", "public", "a" * 40],
+     "postgres", "tenants", "public",
+     # gateway routes and host neighbours (ragstack-ctl PR-A; mirrored in
+     # go/internal/ctl/paths.Reserved)
+     "admin", "services", "health", "ragstack", "api", "ui", "gowe", "ctl",
+     "a" * 40],
 )
 def test_invalid_name_rejected(tmp_path, bad):
     proc = run_script([bad, "--dry-run"], tmp_path)
     assert proc.returncode != 0
     assert "ERROR" in proc.stderr
+
+
+def test_registry_present_refuses_real_run_but_warns_on_dry_run(tmp_path):
+    """Once ragstack-ctl's registry.json exists the manifest is a PROJECTION
+    of its registry, so a row appended here would be overwritten and the block
+    it named re-allocated: a real run that needs a NEW block is refused.
+
+    A --dry-run is not. It writes nothing, and `ragstack-ctl tenant create`
+    does not exist yet (PR-D), so refusing it left an operator on an
+    adopt-managed host unable even to SEE what a tenant would look like. It
+    prints instead, behind a warning that the ports shown are a projection
+    rather than an allocation.
+    """
+    (tmp_path / "tenants").mkdir()
+    (tmp_path / "tenants" / "registry.json").write_text("{}\n")
+
+    proc = run_script(["acme", "--dry-run"], tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "WARNING" in proc.stderr
+    assert "managed by" in proc.stderr
+    assert "PROJECTION" in proc.stderr
+    assert "ragstack-ctl tenant create" in proc.stderr
+    # It is still a dry run: nothing was written, manifest included.
+    assert not (tmp_path / "tenants" / "manifest.tsv").exists()
+    assert "== new-tenant plan: acme ==" in proc.stdout
+
+    proc = run_script(["acme"], tmp_path)
+    assert proc.returncode != 0
+    assert "managed by ragstack-ctl" in proc.stderr
+    assert "must not provision new tenants by script" in proc.stderr
+    assert not (tmp_path / "tenants" / "manifest.tsv").exists()
+
+
+def test_registry_present_still_allows_rerun_of_an_existing_row(tmp_path):
+    """The registry guard refuses ALLOCATION, not the script.
+
+    Guarding on registry presence alone refused every real run on every host
+    that has ever run ``adopt`` — including the idempotent re-run that is the
+    only way to regenerate a tenant's own bin/up.sh, bin/down.sh and
+    provision.env from the row the registry already projected. A tenant whose
+    row is in manifest.tsv allocates nothing, so it stays allowed; a tenant
+    with no row is the allocation the registry owns, and stays refused.
+    """
+    # Provision 'acme' the pre-ctl way, then let the ctl take over: registry.json
+    # appears and manifest.tsv becomes a projection of its registry.
+    first = run_script(["acme"], tmp_path)
+    assert first.returncode == 0, first.stderr
+    manifest = tmp_path / "tenants" / "manifest.tsv"
+    before = manifest.read_text()
+    (tmp_path / "tenants" / "registry.json").write_text("{}\n")
+
+    # Re-run for the adopted tenant: allowed, and it re-renders its scripts.
+    up_sh = tmp_path / "tenants" / "acme" / "bin" / "up.sh"
+    up_sh.unlink()
+    rerun = run_script(["acme"], tmp_path)
+    assert rerun.returncode == 0, rerun.stderr
+    assert "reusing index 0, base 41000" in rerun.stdout
+    assert up_sh.is_file()
+    assert manifest.read_text() == before  # nothing allocated
+
+    # A tenant the manifest does not know still needs the registry's allocator.
+    fresh = run_script(["beta"], tmp_path)
+    assert fresh.returncode != 0
+    assert "managed by ragstack-ctl" in fresh.stderr
+    assert "must not provision new tenants by script" in fresh.stderr
+    assert "beta" not in manifest.read_text()
 
 
 def test_missing_name_rejected(tmp_path):
@@ -110,6 +180,7 @@ def test_dry_run_plan_enumerates_writable_paths(tmp_path):
         f"{tdir}/elasticsearch/data",
         f"{tdir}/elasticsearch/logs",     # ES writes logs in-image otherwise
         f"{tdir}/elasticsearch/config",   # auto-keystore + autoconfig certs
+        f"{tdir}/elasticsearch/snapshots",  # ES path.repo; the ctl's unit binds it
         f"{tdir}/state",                  # sqlite ACL/registry/jobs
         f"{tdir}/ingest",
         f"{tdir}/manifests",

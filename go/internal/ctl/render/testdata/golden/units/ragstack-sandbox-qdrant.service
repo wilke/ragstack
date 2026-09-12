@@ -1,0 +1,20 @@
+[Unit]
+Description=ragstack tenant sandbox — qdrant (:24081)
+PartOf=ragstack-sandbox.target
+ConditionPathIsMountPoint=/rag
+ConditionPathIsDirectory=/rag/data/tenants/sandbox/qdrant/storage
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+UMask=0002
+Environment=APPTAINER_CACHEDIR=/rag/data/ctl/apptainer/cache
+Environment=APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config
+ExecStart=/usr/bin/apptainer run --no-home --bind /rag/data/tenants/sandbox/qdrant/storage:/qdrant/storage --bind /rag/data/tenants/sandbox/qdrant/snapshots:/qdrant/snapshots --env QDRANT__SERVICE__HTTP_PORT=24081 --env QDRANT__SERVICE__GRPC_PORT=24082 /rag/apptainer/images/qdrant.sif /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
+KillMode=mixed
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/rag/data/tenants/sandbox/logs/qdrant-sandbox.log
+StandardError=append:/rag/data/tenants/sandbox/logs/qdrant-sandbox.log

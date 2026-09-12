@@ -26,7 +26,11 @@
 # Env knobs:
 #   AUTHZ_CONF_PORT        API port (default 8137)
 #   AUTHZ_CONF_SCOPE       pytest selection (default `test_authz.py`; the
-#                          `test-conformance-keyed` target passes `.`)
+#                          `test-conformance-keyed` target passes `.`). `ctl/`
+#                          is always ignored: that suite tests `ragstack-ctl
+#                          serve`, a different daemon with different
+#                          credentials, and this server is not it. See
+#                          conformance/run_ctl_local.sh.
 #   AUTHZ_CONF_CREATE_GATE 1 → also run the A3 create-gate phase (second boot)
 #   PYTHON                 interpreter (default `python`)
 # Extra args are forwarded to pytest: `conformance/run_authz_keyed.sh -v -k admin`.
@@ -226,7 +230,7 @@ RAGSTACK_API_KEY_ADMIN="$ADMIN_KEY" \
 RAGSTACK_API_KEY_NONADMIN="$NONADMIN_KEY" \
 RAGSTACK_API_KEY_P2="$P2_KEY" \
 RAGSTACK_API_KEY_B="$B_KEY" \
-  "$PYTHON" -m pytest $SCOPE -rs "$@" > "$PYTEST_OUT" 2>&1
+  "$PYTHON" -m pytest $SCOPE --ignore=ctl -rs "$@" > "$PYTEST_OUT" 2>&1
 status=$?
 set -e
 redact < "$PYTEST_OUT"

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audit_response.json",
+  "title": "CtlAuditResponse",
+  "description": "`GET /v1/audit?tenant=&limit=` — OPERATOR only. Rows from `jobs.db` (mirrored to `audit.jsonl`), newest first. Every mutation writes two rows, `intent` before anything runs and `result` after; a read never writes one. `args_redacted` is the request's `args` after the redactors (key-shaped names and value-seeded from every current and historical secret file).",
+  "type": "object",
+  "required": ["rows", "limit", "truncated"],
+  "properties": {
+    "rows": { "type": "array", "items": { "$ref": "#/$defs/AuditRow" } },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "truncated": { "type": "boolean" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AuditRow": {
+      "type": "object",
+      "required": [
+        "id", "at", "phase", "principal", "auth_method", "sudo_user", "request_id", "op",
+        "tenant", "job_id", "args_redacted", "plan_hash", "outcome", "error", "duration_ms"
+      ],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "at": { "type": "string" },
+        "phase": { "type": "string", "enum": ["intent", "result"] },
+        "principal": { "type": "string", "minLength": 1 },
+        "auth_method": { "type": "string", "enum": ["api_key", "bearer", "session", "local"] },
+        "sudo_user": { "type": ["string", "null"] },
+        "request_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "op": { "type": "string", "minLength": 1 },
+        "tenant": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "job_id": { "oneOf": [ { "$ref": "job.json#/$defs/JobId" }, { "type": "null" } ] },
+        "args_redacted": { "type": "object" },
+        "plan_hash": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "outcome": {
+          "oneOf": [
+            { "type": "string", "enum": ["accepted", "refused", "succeeded", "failed", "rolled_back", "interrupted", "cancelled"] },
+            { "type": "null" }
+          ]
+        },
+        "error": { "type": ["string", "null"] },
+        "duration_ms": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

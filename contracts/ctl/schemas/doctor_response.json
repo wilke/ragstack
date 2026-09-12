@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "doctor_response.json",
+  "title": "CtlDoctorResponse",
+  "description": "The result of one `doctor` run — the fleet, one tenant, or one tenant against the preconditions of one operation (`?op=`). `hash` is sha256 over the canonical JSON of `findings` and is what a Plan pins (`doctor.hash`) and what `--force-with-doctor-diff HASH` must quote: an operator can only override the findings they have seen. `status` is the max over findings: no findings → `green`; only `warn` → `yellow`; any `error` → `red`, which blocks every mutation on that scope (409 `doctor_red`).",
+  "type": "object",
+  "required": ["status", "hash", "generated_at", "scope", "findings"],
+  "properties": {
+    "status": { "type": "string", "enum": ["green", "yellow", "red"] },
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "generated_at": { "description": "RFC 3339.", "type": "string" },
+    "scope": {
+      "type": "object",
+      "required": ["tenant", "op"],
+      "properties": {
+        "tenant": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "op": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Finding" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Finding": {
+      "type": "object",
+      "required": ["level", "code", "tenant", "detail"],
+      "properties": {
+        "level": { "type": "string", "enum": ["info", "warn", "error"] },
+        "code": {
+          "description": "Stable snake_case identifier of the check, e.g. `worktree_gitdir_unreadable`, `es_heap_drift`, `vm_max_map_count_low`, `unit_path_group_writable`, `linger_disabled`, `env_grammar`, `manifest_mismatch`, `pid_owner_mismatch`, `disk_reserve`.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "tenant": {
+          "description": "The tenant the finding is about; null for a host-level finding.",
+          "type": ["string", "null"],
+          "pattern": "^[a-z][a-z0-9-]{0,31}$"
+        },
+        "detail": { "type": "string" },
+        "repair": {
+          "description": "The operation that would clear the finding, when one exists (e.g. `env-normalize`, `render-units`, `fleet enable-boot`) — a hint, never auto-run.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

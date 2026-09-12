@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "create_request.json",
+  "title": "CtlCreateRequest",
+  "description": "`POST /v1/tenants`: the mutation envelope of `op_request.json` with TYPED `args`. Everything that decides what code runs is an ID into something a trusted operator prepared on the CLI: `artifact_id` (never a git ref or path), images from `settings.images`, the Python env from the artifact. `settings` accepts PUBLIC keys only, with the same name guard as the registry — `template_from` copies the named tenant's public settings and nothing else. Keys are described by `{label, role}`; their VALUES are minted server-side and delivered once through `GET /v1/jobs/{id}/secrets`. `admin_subjects` are `issuer:sub` with issuer = `identity_provider`, refused when the provider is `none`.",
+  "type": "object",
+  "required": ["dry_run", "idempotency_key", "args"],
+  "properties": {
+    "dry_run": { "type": "boolean" },
+    "idempotency_key": { "type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{8,128}$" },
+    "confirm": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "ctl_api_key": { "type": "string", "minLength": 16, "maxLength": 256 },
+    "force_with_doctor_diff": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "args": { "$ref": "#/$defs/CreateArgs" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "PublicSettingKey": {
+      "description": "Byte-identical to `registry.json#/$defs/PublicSettingKey` (pattern, anyOf and all) — asserted by `conformance/ctl/test_contract_static.py`. The forbidden pattern is `go/internal/ctl/settings/settings.go`'s `secretPattern` and the `anyOf` enum its `publicDespitePattern`.",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+      "anyOf": [
+        {
+          "enum": [
+            "CHUNK_MAX_TOKENS",
+            "CHUNK_TOKEN_COUNTER",
+            "EMBEDDING_MAX_BATCH_TOKENS",
+            "EMBEDDING_CHARS_PER_TOKEN",
+            "GOWE_RECEIPTS_OUTPUT_KEY",
+            "GOWE_SHARDS_INPUT_KEY"
+          ]
+        },
+        {
+          "not": {
+            "pattern": "(API_KEY[A-Z_]*|_KEY$|SECRET|PASSWORD|TOKEN|DSN|AUTH)"
+          }
+        }
+      ]
+    },
+    "CreateArgs": {
+      "type": "object",
+      "required": ["name", "artifact_id"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "artifact_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
+        "es_heap": { "description": "JVM heap for the dedicated Elasticsearch, e.g. `1g`. Admission checks the fleet heap sum against host memory.", "type": "string", "pattern": "^[1-9][0-9]*[mg]$", "default": "1g" },
+        "identity_provider": { "type": "string", "enum": ["bvbrc", "none"], "default": "none" },
+        "admin_subjects": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9]*:[^:\\s]{1,128}$" },
+          "uniqueItems": true,
+          "default": []
+        },
+        "keys": {
+          "description": "Keys to mint. At least one `admin` key is always minted (the bootstrap admin the ctl itself uses to register service accounts), whether or not it is listed here.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["label", "role"],
+            "properties": {
+              "label": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+              "role": { "type": "string", "enum": ["admin", "user"] }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "service_accounts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["subject", "role", "purpose"],
+            "properties": {
+              "subject": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+              "role": { "type": "string", "enum": ["admin", "user"] },
+              "purpose": { "type": "string", "maxLength": 256 }
+            },
+            "additionalProperties": false
+          },
+          "default": []
+        },
+        "template_from": { "description": "Copy this tenant's PUBLIC settings as a starting point.", "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "settings": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/PublicSettingKey" },
+          "additionalProperties": { "type": "string" },
+          "default": {}
+        },
+        "ui_mode": { "type": "string", "enum": ["static", "dev", "external"], "default": "static" },
+        "start": { "description": "Start the tenant (readiness-gated) once provisioned.", "type": "boolean", "default": true },
+        "gateway": { "description": "Publish a gateway generation that routes the new tenant.", "type": "boolean", "default": true }
+      },
+      "additionalProperties": false
+    }
+  }
+}

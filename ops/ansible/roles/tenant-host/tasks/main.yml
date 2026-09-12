@@ -1,0 +1,45 @@
+# roles/tenant-host — runtime checks for a migration / second-site target:
+# apptainer present, store SIFs pulled (images from apptainer/pull.sh), conda
+# env present. The sysctl lives in coconut-host (imported by tenant-host.yml).
+---
+- name: apptainer is installed (rootless; --fakeroot is not available here)
+  ansible.builtin.command: apptainer version
+  register: apptainer_version
+  changed_when: false
+  check_mode: false
+
+- name: Report apptainer
+  ansible.builtin.debug:
+    msg: "apptainer {{ apptainer_version.stdout }}"
+
+- name: "{{ rag_root }}/apptainer/images"
+  ansible.builtin.file:
+    path: "{{ rag_root }}/apptainer/images"
+    state: directory
+    mode: "0775"
+
+- name: Pull store images (apptainer pull; skipped when the SIF exists)
+  # Pin tenant_host_images to the registry's images{qdrant,elasticsearch}.version
+  # for a migration — pull.sh's qdrant:latest is not a migration-safe pin.
+  ansible.builtin.command:
+    cmd: apptainer pull {{ rag_root }}/apptainer/images/{{ item.key }}.sif {{ item.value }}
+    creates: "{{ rag_root }}/apptainer/images/{{ item.key }}.sif"
+  environment:
+    APPTAINER_CACHEDIR: "{{ apptainer_pull_cachedir }}"
+  loop: "{{ tenant_host_images | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}.sif <- {{ item.value }}"
+
+- name: Conda env python present?
+  ansible.builtin.stat:
+    path: "{{ conda_env_python }}"
+  register: conda_python
+
+- name: Conda env {{ rag_root }}/envs/ragstack exists
+  ansible.builtin.assert:
+    that: conda_python.stat.exists
+    fail_msg: >-
+      {{ conda_env_python }} missing — create the shared env first:
+      conda create -p {{ rag_root }}/envs/ragstack python=3.12 &&
+      {{ rag_root }}/envs/ragstack/bin/pip install -e '<checkout>/python[vector]'
+      (see /rag/CLAUDE.md); tenant-host.yml does not build it.

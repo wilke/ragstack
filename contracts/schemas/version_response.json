@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "version_response.json",
+  "title": "VersionResponse",
+  "description": "Which code the answering process runs. Returned by GET /v1/version to ANY authenticated caller (a credential is required when keys are configured, but no role is: nothing here is backend detail). The control plane (ADR-0007) reads it with a tenant's own key to show configured-vs-running on the fleet view. Python-only in v1 (ADR-0006 decision 4); the Go scaffold does not implement it, and `impl` says which implementation answered.",
+  "type": "object",
+  "required": ["version", "git_tag", "git_sha", "started_at", "python", "impl"],
+  "properties": {
+    "version": {
+      "description": "Package version from importlib.metadata; `0.1.0` when the package is not installed (a bare PYTHONPATH checkout).",
+      "type": "string"
+    },
+    "git_tag": {
+      "description": "`RAGSTACK_GIT_TAG` when the supervisor set it (the artifact the tenant was launched from — what an operator comparing configured vs running wants), else `git describe --tags --always --dirty` run in the checkout the package was imported from, else null. Never an error: a version endpoint must not be the thing that 500s.",
+      "type": ["string", "null"]
+    },
+    "git_sha": {
+      "description": "`RAGSTACK_GIT_SHA` when set, else `git rev-parse --short HEAD` in the checkout, else null. Same fallback rules as `git_tag`.",
+      "type": ["string", "null"]
+    },
+    "started_at": {
+      "description": "RFC 3339 UTC wall-clock time this process started, captured once at import, with a trailing `Z` (e.g. `2026-09-11T04:12:00Z`) — the same spelling the control plane renders its own timestamps in.",
+      "type": "string"
+    },
+    "python": {
+      "description": "Interpreter version (`platform.python_version()`), e.g. `3.12.4`.",
+      "type": "string"
+    },
+    "impl": {
+      "description": "Which implementation answered. Only `python` exists in v1.",
+      "type": "string",
+      "enum": ["python", "go"]
+    }
+  },
+  "additionalProperties": false
+}

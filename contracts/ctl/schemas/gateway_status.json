@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gateway_status.json",
+  "title": "CtlGatewayStatus",
+  "description": "`GET /v1/gateway`: the published generation and whether the registry has moved past it. The ctl writes only untracked generated files under `/rag/data/ctl/gateway/gen-<n>/` and publishes them by switching two stable include symlinks (`05-tenants.generated.conf`, `tenants-ui-static.generated.conf`); `txn.json` is the durable record of the last switch and `txn_state` tells whether it completed. `pending_diff: true` means `POST /v1/gateway/render` would produce a non-empty diff.",
+  "type": "object",
+  "required": ["generation", "published_at", "published_by", "txn_state", "pending_diff", "registry_generation", "nginx", "routes", "legacy_routes"],
+  "properties": {
+    "generation": { "description": "The published gateway generation; 0 before the first publish.", "type": "integer", "minimum": 0 },
+    "published_at": { "type": ["string", "null"] },
+    "published_by": { "type": ["string", "null"] },
+    "txn_state": { "type": "string", "enum": ["complete", "incomplete", "repaired", "none"] },
+    "pending_diff": { "type": "boolean" },
+    "registry_generation": { "description": "The registry generation the published gateway generation was rendered from.", "type": "integer", "minimum": 0 },
+    "nginx": {
+      "type": "object",
+      "required": ["master_pid", "master_uid", "config_ok", "last_reload_at"],
+      "properties": {
+        "master_pid": { "type": ["integer", "null"], "minimum": 1 },
+        "master_uid": { "type": ["integer", "null"], "minimum": 0 },
+        "config_ok": { "description": "Result of the last staged `nginx -t`; null when never run.", "type": ["boolean", "null"] },
+        "last_reload_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "routes": {
+      "description": "The rows of the generated `$tenant_api` / `$tenant_ui` / `$tenant_readonly` maps, from the registry.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/Route" }
+    },
+    "legacy_routes": { "type": "array", "items": { "$ref": "#/$defs/Route" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Route": {
+      "type": "object",
+      "required": ["name", "api", "ui", "ui_mode", "readonly", "status"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+        "api": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "ui": { "type": ["integer", "null"], "minimum": 1024, "maximum": 65535 },
+        "ui_mode": { "type": "string", "enum": ["static", "dev", "external"] },
+        "readonly": { "type": "boolean" },
+        "status": { "description": "What the gateway is told to expect: `active` (health probed 200), `maintenance` (declared 502), `retired`.", "type": "string", "enum": ["active", "maintenance", "retired"] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "logs_response.json",
+  "title": "CtlLogsResponse",
+  "description": "The tail of one tenant log, bounded (`lines` ≤ 5000) and REDACTED before it leaves the daemon: the key-shaped regex `(API_KEY[A-Z_]*|KEY|SECRET|PASSWORD|TOKEN|DSN|AUTH)=…`, `|sig=<hex>` tails, and every value seeded from the tenant's current AND historical secret files (`*.bak-*`, the revocation ledger) are replaced with `<redacted>`. `redacted` is a constant `true` — a log endpoint that could ever answer unredacted would need a different schema. The file's on-disk path is deliberately NOT returned.",
+  "type": "object",
+  "required": ["tenant", "file", "lines", "requested", "returned", "truncated", "redacted"],
+  "properties": {
+    "tenant": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "file": { "type": "string", "enum": ["api", "qdrant", "es", "ui"] },
+    "lines": { "type": "array", "items": { "type": "string" } },
+    "requested": { "type": "integer", "minimum": 1, "maximum": 5000 },
+    "returned": { "type": "integer", "minimum": 0 },
+    "truncated": {
+      "description": "True when the log has more lines than `requested` (the tail was cut) OR a single line exceeded the 16 KiB per-line cap and was cut.",
+      "type": "boolean"
+    },
+    "redacted": { "type": "boolean", "const": true }
+  },
+  "additionalProperties": false
+}

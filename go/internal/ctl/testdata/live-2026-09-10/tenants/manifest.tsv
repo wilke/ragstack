@@ -1,0 +1,5 @@
+# tenant	index	base_port  (owned by apptainer/new-tenant.sh — do not edit)
+lucid	0	24000
+asm	1	24020
+dev	2	24040
+demo	3	24060

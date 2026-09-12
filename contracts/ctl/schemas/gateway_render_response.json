@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gateway_render_response.json",
+  "title": "CtlGatewayRenderResponse",
+  "description": "`POST /v1/gateway/render`: render the NEXT gateway generation from the current registry into a scratch dir and diff it against the published one. Nothing is published; a viewer may call it. `sha256` is over the concatenated rendered files in path order and is the value `gateway/apply` pins in its plan so that what gets published is what was previewed.",
+  "type": "object",
+  "required": ["generation", "registry_generation", "changed", "files", "sha256"],
+  "properties": {
+    "generation": { "description": "The generation number the render WOULD be published as.", "type": "integer", "minimum": 1 },
+    "registry_generation": { "type": "integer", "minimum": 0 },
+    "changed": { "type": "boolean" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "diff"],
+        "properties": {
+          "path": { "description": "Path relative to the generation dir, e.g. `conf.d/05-tenants.generated.conf`.", "type": "string", "pattern": "^[A-Za-z0-9._][A-Za-z0-9._/-]*$" },
+          "diff": { "description": "Unified diff against the published generation (empty string when unchanged; a whole-file addition when new). Rendered config never contains secrets, so this is unredacted.", "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}
