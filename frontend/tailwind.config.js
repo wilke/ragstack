@@ -13,6 +13,15 @@ export default {
           700: "#071b2f", // dark screen background (Evidence tab)
           600: "#04121f", // drawer / deepest surface
           500: "#0f2c45", // source-viewer card on dark
+          // The TEXT ramp for the ink-900/ink-700 surfaces above. These three
+          // were literal hexes scattered across the admin views, which put them
+          // outside the accessible-vision swap entirely: every band label, the
+          // tenant sub-header and the log/diff panes kept a sub-4.5:1 blue no
+          // matter what the viewer had chosen. Same CSS-variable device as the
+          // state colours, so `data-vision="accessible"` reaches them too.
+          dim: "rgb(var(--c-ink-dim) / <alpha-value>)", // eyebrow / metadata on navy
+          body: "rgb(var(--c-ink-body) / <alpha-value>)", // body + monospace panes on navy
+          bad: "rgb(var(--c-ink-bad) / <alpha-value>)", // a failing band fact on navy
         },
         accent: {
           DEFAULT: "#ffd100", // yellow: active tab underline, primary CTA, highlights

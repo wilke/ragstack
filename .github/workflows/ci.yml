@@ -35,7 +35,9 @@ name: CI
 #   cd .. && make validate-contracts && pytest conformance/ctl/test_contract_static.py -q
 #   cd go && go build ./... && go vet ./... && go test ./...   # the `go` job
 #   RAGSTACK_REQUIRE_GEN=1 go test ./internal/ctl/authz/ -count=1   # needs PyYAML
-#   cd ../frontend && npm run typecheck && npx vitest run   # the `frontend` job
+#   cd ../frontend && npm run typecheck && npm run guard:xss && npx vitest run
+#   npm run gen:ctl-api && git diff --exit-code -- src/admin/api/ctlSchema.d.ts
+#   npm run build && npm run build:admin -- --base /ragstack/admin/ui/  # the `frontend` job
 #
 # On a host with no Go toolchain, the `go` line runs in a container instead:
 #   apptainer exec docker://golang:1.23 bash -c \
@@ -171,8 +173,21 @@ jobs:
         run: npm run guard:xss
       - name: test
         run: npm test
+      # The committed ctl types are generated from contracts/ctl/openapi.yaml.
+      # Nothing regenerates them on a contract change, so they drift silently
+      # and the admin bundle typechecks against a contract that no longer
+      # exists. Regenerate and require the result to be identical.
+      - name: ctl types are not stale
+        run: npm run gen:ctl-api && git diff --exit-code -- src/admin/api/ctlSchema.d.ts
       - name: build
         run: npm run build
+      # The ADMIN bundle is a second config, a second outDir and a second base,
+      # and `npm run build` builds neither of the last two. Build it the way the
+      # deployment does: under /ragstack/admin/ui/ the app derives its API as
+      # /ragstack/admin/api, so a base that is not what nginx aliases is a
+      # bundle that calls the wrong host.
+      - name: build admin
+        run: npm run build:admin -- --base /ragstack/admin/ui/
 
   integration:
     name: integration (ES + Postgres)

@@ -6,3 +6,5 @@ dist/
 *.tsbuildinfo
 # Generated from contracts/openapi.yaml via `npm run gen:api`
 src/api/schema.d.ts
+# The admin bundle's build output (frontend/vite.admin.config.ts, outDir dist-admin)
+dist-admin/

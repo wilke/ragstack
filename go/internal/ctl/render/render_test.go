@@ -293,6 +293,15 @@ func TestNginxLiveFixture(t *testing.T) {
 	if strings.Index(s, `lucid       "127.0.0.1:8010"`) > strings.Index(s, `dev         "127.0.0.1:24040"`) {
 		t.Error("legacy routes must come first")
 	}
+	// The header has to say WHY hand-editing this file is unsafe, not just that
+	// it is generated: the JSON literals survive nginx's `$` interpolation only
+	// because checkValue refused those characters upstream.
+	header := s[:strings.Index(s, "\nmap ")]
+	for _, w := range []string{"DO NOT HAND-EDIT", "renderer refuses", "interpolates $"} {
+		if !strings.Contains(header, w) {
+			t.Errorf("maps header lacks %q:\n%s", w, header)
+		}
+	}
 
 	static, err := NginxStatic(f, NginxConfig{})
 	if err != nil {
@@ -323,11 +332,35 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 		"location ^~ /ragstack/dev/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/tenants/dev/ui/dist/;\n    try_files $uri $uri/ /ragstack/dev/ui/index.html;\n}",
 		"alias /rag/data/tenants/sandbox/ui/dist/;",
 		"location ^~ /ragstack/admin/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/ctl/ui/dist/;\n    try_files $uri $uri/ /ragstack/admin/ui/admin.html;\n}",
-		"location ^~ /ragstack/admin/api/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    include /rag/config/proxy/snippets/proxy-common.conf;\n    proxy_set_header X-Forwarded-Prefix /ragstack/admin/api;\n    proxy_set_header Host $host;\n    proxy_pass http://127.0.0.1:23990/;\n}",
+		"location = /ragstack/admin/api {\n    return 301 /ragstack/admin/api/;\n}",
+		"location ^~ /ragstack/admin/api/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    include /rag/config/proxy/snippets/proxy-common.conf;\n    proxy_set_header X-Forwarded-Prefix /ragstack/admin/api;\n    proxy_pass http://127.0.0.1:23990/;\n}",
 	} {
 		if !strings.Contains(s, w) {
 			t.Errorf("static snippet lacks %q\n%s", w, s)
 		}
+	}
+
+	// The admin API block must carry EXACTLY ONE Host header, and it must be
+	// the include's. nginx appends rather than replaces, so a literal
+	// `proxy_set_header Host $host;` here sent the daemon two Host lines —
+	// which is not a duplicate of a correct value, it is a request Go's
+	// ValidHostHeader can no longer vet. Count the literals: zero, because
+	// proxy-common.conf supplies the one.
+	block := adminAPIBlock(t, s)
+	if n := strings.Count(block, "proxy_set_header Host"); n != 0 {
+		t.Errorf("admin API block sets Host %d time(s) on top of proxy-common.conf's:\n%s", n, block)
+	}
+	if !strings.Contains(block, "include /rag/config/proxy/snippets/proxy-common.conf;") {
+		t.Errorf("admin API block must get its single Host header from proxy-common.conf:\n%s", block)
+	}
+	// …and proxy-common.conf really is the one setting it, so "zero literals"
+	// means one header and not none.
+	common, err := os.ReadFile("../testdata/live-2026-09-10/proxy/snippets/proxy-common.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(common), "proxy_set_header Host"); n != 1 {
+		t.Fatalf("proxy-common.conf sets Host %d times; the admin block relies on exactly one", n)
 	}
 	// dev is static now → no $tenant_ui row; sandbox appended after display_order.
 	maps, err := NginxTenants(f, NginxConfig{})
@@ -341,6 +374,21 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 		t.Errorf("names: %s", maps)
 	}
 	golden(t, "05-tenants.generated.conf.with-sandbox", maps)
+}
+
+// adminAPIBlock returns the body of `location ^~ /ragstack/admin/api/ { … }`.
+func adminAPIBlock(t *testing.T, conf string) string {
+	t.Helper()
+	const head = "location ^~ /ragstack/admin/api/ {"
+	i := strings.Index(conf, head)
+	if i < 0 {
+		t.Fatalf("no admin API block:\n%s", conf)
+	}
+	j := strings.Index(conf[i:], "\n}")
+	if j < 0 {
+		t.Fatalf("unterminated admin API block:\n%s", conf[i:])
+	}
+	return conf[i : i+j+2]
 }
 
 func TestNginxRefusesInjection(t *testing.T) {

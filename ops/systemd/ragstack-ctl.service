@@ -1,0 +1,59 @@
+# ragstack-ctl.service — systemd --user unit for the tenant control plane.
+#
+# This file is the ansible template
+# ops/ansible/roles/ragstack-ctl/templates/ragstack-ctl.service.j2 rendered
+# with the coconut defaults (ctl_user=svcbvbrc, rag_root=/rag). It is checked
+# in so the unit can be read, reviewed and installed by hand on a host where
+# ansible has not run yet; the template stays the source of truth, and
+# `ragstack-ctl doctor` compares what is installed against what the registry
+# and the layout say.
+#
+# Install (as the service account, once the root items of the coconut-host
+# role are done — linger + the user@<uid> drop-in that sets
+# SYSTEMD_UNIT_PATH=/rag/config/ctl/units):
+#
+#   install -m 0644 ops/systemd/ragstack-ctl.service /rag/config/ctl/units/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ragstack-ctl.service
+#
+# Until those root items exist, ops/coconut/ctl-daemon.sh runs the same binary
+# with the same environment: it reproduces UMask, Environment=HOME,
+# WorkingDirectory, the append-mode log and both EnvironmentFile lines
+# deliberately, and it PARSES the env files the way systemd does rather than
+# sourcing them as shell. Keep the two in step — a setting that exists here and
+# not there means the daemon behaves differently depending on how it was
+# started, which is a class of bug nobody looks for.
+#
+# ExecStart here does NOT pass --pidfile: systemd tracks the main process
+# itself (Type=simple), and a pidfile it does not read is one more file to go
+# stale. ctl-daemon.sh does pass it, because nothing else there knows the pid.
+
+[Unit]
+Description=ragstack-ctl tenant control plane
+Documentation=file:/rag/repos/ragstack.git
+# NOT ConditionPathIsMountPoint=/rag: a failed Condition makes systemd SKIP the
+# unit and report the skip as success, so on any host where /rag is a plain
+# directory rather than a mount point (a second site, a test box, a bind mount
+# that resolves to the same filesystem) the daemon would silently never start
+# while `systemctl --user status` reported nothing wrong. What the unit
+# actually needs is its state directory; waiting for the MOUNT is the
+# RequiresMountsFor=/rag in the user@ drop-in, where a miss delays the unit
+# instead of quietly cancelling it.
+ConditionPathIsDirectory=/rag/data/ctl
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/rag/config/ctl/ctl.env
+EnvironmentFile=-/rag/config/ctl/ctl-secrets.env
+Environment=HOME=/rag/data/ctl/home
+WorkingDirectory=/rag/data/ctl
+ExecStart=/rag/bin/ragstack-ctl serve
+Restart=always
+RestartSec=5s
+UMask=0002
+StandardOutput=append:/rag/data/ctl/ctl.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

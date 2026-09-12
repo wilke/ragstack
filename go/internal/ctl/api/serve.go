@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -70,6 +71,15 @@ func RunServe(args []string) int {
 	fakeDrivers := fs.Bool("fake-drivers", false, "serve the recorded 2026-09-10 fixture instead of probing this host")
 	registryPath := fs.String("registry", os.Getenv(EnvRegistry), "registry.json path (default <rag-root>/data/tenants/registry.json)")
 	ragRoot := fs.String("rag-root", envOr(EnvRagRoot, "/rag"), "deployment root")
+	// The daemon writes its OWN pid, and only once it is listening.
+	//
+	// A supervisor cannot record it correctly from outside. `setsid nohup … &`
+	// under job control makes `$!` the setsid parent, not the daemon, so
+	// ops/coconut/ctl-daemon.sh recorded a pid that had already exited — the
+	// start then "failed", deleted the pidfile and left a live daemon nobody
+	// could stop. Only the process itself knows its pid, and writing it after
+	// the bind means the file's existence also means "it is up".
+	pidFile := fs.String("pidfile", "", "write this process's pid here once it is listening, and remove it at exit")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -132,6 +142,17 @@ func RunServe(args []string) int {
 		return exitError
 	}
 
+	if *pidFile != "" {
+		if err := writePIDFile(*pidFile); err != nil {
+			logger.Error("pidfile", "path", *pidFile, "err", err.Error())
+			_ = ln.Close()
+			return exitError
+		}
+		// Removed on every ORDERLY exit. A crash leaves it behind, which is why
+		// anything reading it must verify /proc/<pid> before trusting it.
+		defer func() { _ = os.Remove(*pidFile) }()
+	}
+
 	logger.Info("serving",
 		"listen", ln.Addr().String(),
 		"version", version.Version,
@@ -178,6 +199,33 @@ func RunServe(args []string) int {
 		}
 		return exitOK
 	}
+}
+
+// writePIDFile writes this process's pid via a temp file and a rename, so a
+// reader never sees a half-written number.
+func writePIDFile(path string) error {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o2770); err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := fmt.Fprintf(tmp, "%d\n", os.Getpid()); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // newHTTPServer builds the daemon's *http.Server with every timeout set.

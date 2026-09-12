@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/fleet"
+	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/logs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
@@ -43,6 +45,10 @@ type liveBackend struct {
 	registryPath string
 	probes       fleet.Probes
 	doctorOpts   doctor.Options
+	// signaller reads /proc for the gateway status. Built once, like the
+	// probes: it is a value, not a connection, and the handler must not
+	// construct one per request.
+	signaller gateway.Signaller
 }
 
 func newLiveBackend(ragRoot, registryPath string) (*liveBackend, error) {
@@ -91,6 +97,7 @@ func newLiveBackendWithLogger(ragRoot, registryPath string, logger *slog.Logger)
 			CtlUser:      fleet.DefaultCtlUser,
 			SudoersGroup: fleet.DefaultSudoersGroup,
 		},
+		signaller: gateway.NewRealSignaller(),
 		doctorOpts: doctor.Options{
 			RegistryPath: registryPath,
 			// CtlUID is what the `user_dropin_missing` and
@@ -137,6 +144,79 @@ func (b *liveBackend) Logs(_ context.Context, name, file string, lines int) (*mo
 		return nil, err
 	}
 	return resp, nil
+}
+
+// GatewayStatus reads the published gateway generation off the host: the
+// `current` pointer, txn.json and the nginx master's /proc identity. Every
+// read repairs an incomplete publication first, so the dashboard never shows
+// a pointer the next reload would disagree with.
+//
+// It re-reads the registry rather than using the one loaded at start-up: an
+// adopt or a publish moves the registry on, and `pending_diff` has to compare
+// what is published against what the registry says NOW.
+func (b *liveBackend) GatewayStatus(_ context.Context) (*model.GatewayStatus, error) {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return gateway.StatusWith(b.roots, f, gateway.Options{Sig: b.signaller})
+}
+
+// ErrGatewayRender marks a failure of the gateway RENDERER — the registry does
+// not render to a loadable configuration — as opposed to a failure to READ the
+// registry.
+//
+// The two need different answers. A load failure is a host fault whose text
+// quotes the registry path and, on a parse error, the line it failed on; it
+// goes through backendError, which logs it and tells the caller nothing. A
+// render refusal is the caller's own registry content and is worth returning —
+// but its text still carries host paths (`tenant demo: /rag/data/tenants/demo/
+// ui/dist escapes …`), so it is redacted first. GET/POST /v1/gateway/render is
+// a VIEWER operation.
+var ErrGatewayRender = errors.New("the gateway renderer refused the registry")
+
+// GatewayDiff renders the next generation and diffs it against the published
+// one. A READ despite the verb: nothing is written and no lock is taken.
+func (b *liveBackend) GatewayDiff(_ context.Context) (*model.GatewayRenderResponse, error) {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := gateway.Diff(b.roots, f)
+	if err != nil {
+		// Marked, not redacted: what leaves the process is the handler's
+		// decision, and it redacts once for every backend rather than trusting
+		// each one to have done it.
+		return nil, fmt.Errorf("%w: %v", ErrGatewayRender, err)
+	}
+	return resp, nil
+}
+
+// absPath matches an absolute filesystem path in an error message: a slash at
+// a word boundary and everything up to whitespace, a quote or a closing
+// bracket. The leading group keeps a RELATIVE path (`conf.d/05-tenants…`, which
+// names a file inside the generation and no host layout) out of the match.
+var absPath = regexp.MustCompile(`(^|[\s"'(=])(/[^\s"'` + "`" + `),;:]*)`)
+
+// RedactHostPaths replaces every absolute path in a message with `<path>`.
+//
+// The renderer's refusals name files under /rag — a tenant's data dir, the
+// admin bundle, the proxy tree — and the layout of the host's filesystem is not
+// something a viewer is entitled to read out of an error body. The rest of the
+// message (which tenant, which field, what was wrong with it) is exactly what
+// the caller needs and survives.
+func RedactHostPaths(s string) string {
+	return absPath.ReplaceAllString(s, "${1}<path>")
+}
+
+// reloadRegistry re-reads the registry file. LoadNoRepair, never a repairing
+// load: a READ must not rewrite manifest.tsv (see newLiveBackend).
+func (b *liveBackend) reloadRegistry() (*registry.Fleet, error) {
+	f, err := registry.LoadNoRepair(b.registryPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", b.registryPath, err)
+	}
+	return f, nil
 }
 
 // Doctor runs the real diagnostics with the SAME options the CLI uses. The

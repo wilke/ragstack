@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -426,6 +428,40 @@ func TestParseTenantMapsReadsTheLiveFiles(t *testing.T) {
 		if !m.Readonly["lucid"] || !m.Readonly["asm"] || m.Readonly["dev"] {
 			t.Errorf("%s: readonly map = %v", p, m.Readonly)
 		}
+		// The ADDRESS, not just the port: `10.0.0.5:24040` and
+		// `127.0.0.1:24040` are different machines, and a comparison built on
+		// the port alone calls them the same route.
+		for name, port := range want {
+			if m.APIAddr[name] != fmt.Sprintf("127.0.0.1:%d", port) {
+				t.Errorf("%s: APIAddr[%s] = %q, want the full host:port", p, name, m.APIAddr[name])
+			}
+		}
+		if m.UIAddr["dev"] != "127.0.0.1:8090" {
+			t.Errorf("%s: UIAddr[dev] = %q", p, m.UIAddr["dev"])
+		}
+	}
+
+	// The two tenant JSON lists come out of the GENERATED file only: before
+	// the first publication they are `return 200 '…'` literals in routes.conf,
+	// which is a different file and a different grammar.
+	gen, err := os.ReadFile("../render/testdata/golden/05-tenants.generated.conf")
+	if err != nil {
+		t.Skip("no golden generated include")
+	}
+	m := ParseTenantMaps(gen, "golden")
+	var names []string
+	if err := json.Unmarshal([]byte(m.NamesJSON), &names); err != nil {
+		t.Fatalf("$tenants_names_json = %q: %v", m.NamesJSON, err)
+	}
+	if strings.Join(names, ",") != "dev,demo,lucid-next,asm-next" {
+		t.Errorf("$tenants_names_json = %v", names)
+	}
+	if !strings.HasPrefix(m.TenantsJSON, `[{"name":"dev"`) {
+		t.Errorf("$tenants_json = %q", m.TenantsJSON)
+	}
+	// A file with neither literal reports them absent rather than guessing.
+	if m := ParseTenantMaps([]byte("map $tenant $tenant_api {\n    default \"\";\n}\n"), "x"); m.NamesJSON != "" || m.TenantsJSON != "" {
+		t.Errorf("literals invented from a file that has none: %q %q", m.NamesJSON, m.TenantsJSON)
 	}
 }
 

@@ -13,31 +13,27 @@
 // the API's permissive CORS). Convenient for local dev, but it does NOT traverse
 // a port forward — prefer a preset (or point VITE_API_TARGET at your backend).
 
+import { gatewayApiBase, KEY_SCOPE } from "./base";
 import { bearerAppliesToBase, type AuthMode, type Credential } from "../lib/auth";
+
+/**
+ * Both now LIVE in `./base.ts` and are re-exported here for this module's
+ * existing callers.
+ *
+ * They moved because the ADMIN bundle needs exactly those two derivations and
+ * NOTHING else from this file: importing them from here dragged the whole of
+ * the localStorage-backed credential storage below into the admin module graph,
+ * which is the one thing that bundle is built not to have (its session lives in
+ * sessionStorage — see src/admin/auth/session.ts). The admin now imports from
+ * `api/base.ts`; nothing under `src/admin/` may import this module, and
+ * src/admin/bundle.test.ts fails the build if it does.
+ */
+export { gatewayApiBase, KEY_SCOPE };
 
 export interface BackendPreset {
   id: string;
   label: string;
   url: string; // "/be/<name>" proxy prefix, or "" for the default proxy
-}
-
-/**
- * When this UI is served under a path prefix by the front proxy
- * (`/ragstack/<tenant>/ui/`), the sibling API is `/ragstack/<tenant>/api`.
- * Derive it from Vite's own base rather than hardcoding a tenant, so every
- * base-aware instance gets a correct preset for free.
- *
- * It has to be a preset at all because the app calls `/v1/...` absolute — behind
- * the gateway that resolves to the gateway ROOT, which is a 404, not to the
- * tenant's API. Returns null when served at "/" (plain dev), where the Vite
- * proxy already handles `/v1`.
- */
-function gatewayApiBase(): string | null {
-  const base = import.meta.env.BASE_URL || "/";
-  const m = base.match(/^(.*)\/ui\/?$/);
-  // m[1] is legitimately EMPTY for a gateway that mounts a tenant at '/ui/'
-  // (-> '/api'); the regex already excludes a bare '/', so test m, not m[1].
-  return m ? `${m[1]}/api` : null;
 }
 
 const GATEWAY_BASE = gatewayApiBase();
@@ -51,22 +47,6 @@ export const BACKEND_PRESETS: BackendPreset[] = [
   { id: "asm", label: "asm (prod) · :8000", url: "/be/asm" },
   { id: "lucid", label: "lucid (prod) · :8010", url: "/be/lucid" },
 ];
-
-/**
- * localStorage is scoped to the ORIGIN, but the front proxy serves every tenant
- * from one origin (`/ragstack/<tenant>/ui/`). Unprefixed keys therefore made all
- * tenants share one stored base, one API key and one bearer token: opening
- * tenant B's UI would read tenant A's stored base and silently address A's API —
- * and hand A's backend the token confirmed for it while the user believed they
- * were on B. Scope the keys to the served path so each tenant's UI has its own.
- *
- * Plain dev (BASE_URL="/") keeps the original key names, so nobody's local
- * settings are disturbed.
- */
-export const KEY_SCOPE = (() => {
-  const base = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
-  return base ? `${base}.` : "";
-})();
 
 const BASE_STORAGE_KEY = `ragstack.${KEY_SCOPE}apiBase`;
 const KEY_STORAGE_KEY = `ragstack.${KEY_SCOPE}apiKey`;

@@ -20,6 +20,27 @@ type TenantMaps struct {
 	UI       map[string]int
 	Readonly map[string]bool
 	Source   string // the file it was read from
+
+	// APIAddr and UIAddr are the map values in full — `127.0.0.1:24040`, not
+	// 24040.
+	//
+	// The port alone is not the route. `dev "10.0.0.5:24040"` and
+	// `dev "127.0.0.1:24040"` reach different machines, and a comparison that
+	// kept only the port called them equal — which is exactly the comparison
+	// PR-B's "the generated maps route what the hand-written ones route" claim
+	// rests on. The renderer only ever emits loopback, so a live row that is
+	// not loopback is a difference the operator has to see, not a rounding
+	// error.
+	APIAddr map[string]string
+	UIAddr  map[string]string
+
+	// NamesJSON and TenantsJSON are the `$tenants_names_json` and
+	// `$tenants_json` literals — the tenant lists the landing page and
+	// /ragstack/tenants serve. Empty when the file carries neither. They are
+	// routing too: a tenant present in the maps but missing from the list is
+	// reachable and invisible.
+	NamesJSON   string
+	TenantsJSON string
 }
 
 // mapBlock captures `map $tenant $<name> { … }` including nested braces-free
@@ -35,6 +56,7 @@ var mapRow = regexp.MustCompile(`^\s*([A-Za-z0-9_.-]+)\s+"([^"]*)"\s*;`)
 func ParseTenantMaps(b []byte, source string) TenantMaps {
 	m := TenantMaps{
 		API: map[string]int{}, UI: map[string]int{}, Readonly: map[string]bool{},
+		APIAddr: map[string]string{}, UIAddr: map[string]string{},
 		Source: source,
 	}
 	for _, block := range mapBlock.FindAllStringSubmatch(string(b), -1) {
@@ -58,16 +80,42 @@ func ParseTenantMaps(b []byte, source string) TenantMaps {
 					continue
 				}
 				if kind == "tenant_api" {
-					m.API[name] = port
+					m.API[name], m.APIAddr[name] = port, value
 				} else {
-					m.UI[name] = port
+					m.UI[name], m.UIAddr[name] = port, value
 				}
 			case "tenant_readonly":
 				m.Readonly[name] = value == "ro"
 			}
 		}
 	}
+	if lit := jsonMapLiteral(string(b), "tenants_names_json"); lit != "" {
+		m.NamesJSON = lit
+	}
+	if lit := jsonMapLiteral(string(b), "tenants_json"); lit != "" {
+		m.TenantsJSON = lit
+	}
 	return m
+}
+
+// jsonMapDefault matches `map $host $<name> { default '…'; }`. nginx cannot
+// escape a quote inside such a literal, so "up to the next quote" is the exact
+// grammar, not an approximation.
+var jsonMapDefault = map[string]*regexp.Regexp{
+	"tenants_names_json": regexp.MustCompile(`map\s+\$\w+\s+\$tenants_names_json\s*\{[^}]*?\bdefault\s+'([^']*)'`),
+	"tenants_json":       regexp.MustCompile(`map\s+\$\w+\s+\$tenants_json\s*\{[^}]*?\bdefault\s+'([^']*)'`),
+}
+
+func jsonMapLiteral(s, name string) string {
+	re, ok := jsonMapDefault[name]
+	if !ok {
+		return ""
+	}
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return ""
+	}
+	return m[1]
 }
 
 // GatewayMaps reads the live routing tables from a proxy tree: the generated
