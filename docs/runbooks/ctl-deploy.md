@@ -1,5 +1,7 @@
 # Runbook — deploying `ragstack-ctl` on coconut (PR-B)
 
+Short form: [`ctl-quickstart.md`](ctl-quickstart.md).
+
 What this covers: getting the control-plane binary onto coconut, adopting the
 four live tenants into the registry, publishing the first **gateway
 generation**, and running the daemon — plus how to undo each step.
@@ -44,13 +46,14 @@ The ctl publishes into two include paths:
 Those paths have to exist in the proxy configuration: `routes.conf` includes
 the static snippet and reads `$tenants_names_json` / `$tenants_json` in its
 four literal lists, and `00-maps.conf` drops the three `map $tenant …` tables.
-That change is the `coconut-proxy` repo's, on branch `ctl-generated-includes`:
+That change is on the `coconut-proxy` repo's `main` (PR #1, merged 2026-09-12 as
+14baa1b):
 
 ```bash
 cd ~/Development/coconut-proxy
-git checkout ctl-generated-includes
+git checkout main && git pull --ff-only
 ./deploy.sh --dry-run          # shows what would be copied + any deployed-tree drift
-./deploy.sh                    # rsync into /rag/config/proxy, then reload
+./deploy.sh                    # rsync into /rag/config/proxy, then reload (first run ever: --force)
 ./proxy.sh status              # same master pid, still listening on 9000/9443
 curl -s localhost:9000/ragstack/tenants
 ```
