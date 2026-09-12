@@ -12,7 +12,10 @@
  *    instead of green vs red-brown; degraded shifts to a dark ochre separated
  *    from vermillion by lightness, not hue alone);
  *  - the dim-text ramp rises to a ≥4.5:1 floor against white/paper, keeping
- *    its relative hierarchy (muted < dim < faint stays ordered).
+ *    its relative hierarchy (muted < dim < faint stays ordered);
+ *  - the ink-* ramp does the same against the NAVY surfaces (the admin bands,
+ *    the log and diff panes). Those three colours used to be literal hexes in
+ *    the admin components, so the mode could not reach them at all.
  */
 :root {
   --c-moss: 42 125 95; /* #2a7d5f */
@@ -23,6 +26,11 @@
   --c-muted: 138 138 133; /* #8a8a85 */
   --c-dim: 156 156 150; /* #9c9c96 */
   --c-faint: 179 179 173; /* #b3b3ad */
+
+  /* Text ON the navy surfaces (ink-900 #001f3f, ink-700 #071b2f). */
+  --c-ink-dim: 93 132 173; /* #5d84ad — 4.2:1 on ink-900: under the floor */
+  --c-ink-body: 199 216 232; /* #c7d8e8 — 11.4:1 on ink-900 */
+  --c-ink-bad: 255 155 118; /* #ff9b76 — a failing band fact */
 }
 
 [data-vision="accessible"] {
@@ -38,4 +46,14 @@
      and aria-live status, so the mode failed the floor its own header claims.
      Checked against BOTH grounds: white alone would have left paper at 4.4. */
   --c-faint: 112 112 106;
+
+  /* The navy ramp, same floor. The band labels and the tenant sub-header are
+     10–11px, so 4.2:1 was the worst text on the admin screens. */
+  --c-ink-dim: 111 145 183; /* 5.1:1 on ink-900, 5.6:1 on ink-700 */
+  --c-ink-body: 219 231 242; /* 13.1:1 — the log/diff panes */
+  /* Pink-leaning rather than salmon: `bad` on a navy band sits next to `warn`
+     (the accent yellow), and orange-vs-yellow is the pair deuteranopia flattens
+     first. This is off that hue AND darker than the yellow, so the two separate
+     by lightness even when the hue does not survive. */
+  --c-ink-bad: 255 158 168;
 }

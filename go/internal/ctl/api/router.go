@@ -588,12 +588,33 @@ func redactPaths(detail string, f *registry.Fleet) string {
 // Gateway and settings (projections of the registry)
 // --------------------------------------------------------------------------
 
-// handleGatewayStatus answers honestly for a daemon that has published
-// nothing: generation 0, `txn_state: none`, every nginx fact null (PR-A does
-// not read the master's /proc), and `pending_diff: true` — because a registry
-// that has never been published to the gateway IS ahead of what is serving,
-// and the schema has no third value for "unknown".
+// gatewayBackend is the OPTIONAL half of the gateway surface: a backend that
+// can read the published generations off the host implements it, and the
+// fake-driver daemon (which has no state dir and no nginx master) does not.
+// The handlers ask for it and fall back to the projection-only answer, so the
+// conformance suite keeps running against a backend that never touches a
+// proxy tree while the real daemon answers from the state dir.
+type gatewayBackend interface {
+	GatewayStatus(ctx context.Context) (*model.GatewayStatus, error)
+	GatewayDiff(ctx context.Context) (*model.GatewayRenderResponse, error)
+}
+
+// handleGatewayStatus answers from the published gateway state when the
+// backend can read it. Without one it answers honestly for a daemon that has
+// published nothing: generation 0, `txn_state: none`, every nginx fact null,
+// and `pending_diff: true` — because a registry that has never been published
+// to the gateway IS ahead of what is serving, and the schema has no third
+// value for "unknown".
 func (s *Server) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
+	if gb, ok := s.Backend.(gatewayBackend); ok {
+		status, err := gb.GatewayStatus(r.Context())
+		if err != nil {
+			s.backendError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, status)
+		return
+	}
 	f, err := s.Backend.Registry(r.Context())
 	if err != nil {
 		s.backendError(w, r, err)
@@ -653,6 +674,28 @@ func nullablePort(p int) *int {
 // generation from the registry into memory and reports the digest that
 // `gateway/apply` would pin. Nothing is written, no lock is taken.
 func (s *Server) handleGatewayRender(w http.ResponseWriter, r *http.Request) {
+	if gb, ok := s.Backend.(gatewayBackend); ok {
+		resp, err := gb.GatewayDiff(r.Context())
+		if err != nil {
+			// Two different failures behind one call, and they cannot share an
+			// answer. Reading the registry failed: host text that quotes the
+			// registry path and, on a parse error, the line it choked on —
+			// backendError logs it and the body says nothing. The RENDERER
+			// refused: that is the caller's own registry content and worth
+			// returning, path-redacted (ErrGatewayRender). This route is a
+			// viewer operation; it used to hand back whichever raw host error
+			// came out.
+			if errors.Is(err, ErrGatewayRender) {
+				s.log().Error("gateway render", "request_id", observability.RequestIDFromContext(r.Context()), "err", err.Error())
+				writeError(w, r, model.CodeInternal, RedactHostPaths(err.Error()), nil)
+				return
+			}
+			s.backendError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	f, err := s.Backend.Registry(r.Context())
 	if err != nil {
 		s.backendError(w, r, err)
@@ -660,12 +703,12 @@ func (s *Server) handleGatewayRender(w http.ResponseWriter, r *http.Request) {
 	}
 	tenants, err := render.NginxTenants(f, render.NginxConfig{})
 	if err != nil {
-		writeError(w, r, model.CodeInternal, "the gateway renderer refused the registry: "+err.Error(), nil)
+		writeError(w, r, model.CodeInternal, ErrGatewayRender.Error()+": "+RedactHostPaths(err.Error()), nil)
 		return
 	}
 	static, err := render.NginxStatic(f, render.NginxConfig{})
 	if err != nil {
-		writeError(w, r, model.CodeInternal, "the gateway renderer refused the registry: "+err.Error(), nil)
+		writeError(w, r, model.CodeInternal, ErrGatewayRender.Error()+": "+RedactHostPaths(err.Error()), nil)
 		return
 	}
 	files := []model.GatewayFile{

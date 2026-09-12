@@ -8,6 +8,7 @@
        sidecars-pull-apptainer sidecars-up-apptainer sidecars-down-apptainer \
        new-tenant-apptainer \
        frontend-install frontend-dev frontend-build frontend-gen-api \
+       frontend-build-admin \
        build-ctl install-ctl test-ctl \
        test-all
 
@@ -57,6 +58,25 @@ frontend-build: ## Type-check + production build to frontend/dist
 
 frontend-gen-api: ## Regenerate the typed API client from contracts/openapi.yaml
 	cd frontend && npm run gen:api
+
+# The ADMIN bundle is a separate Vite build (frontend/vite.admin.config.ts), not
+# a second entry of the one above: a shared multi-entry build would ship
+# admin.html — the control plane's screens — inside every tenant's dist/. The
+# base must match where nginx aliases it (the generated static snippet's
+# `alias /rag/data/ctl/ui/dist/` under /ragstack/admin/ui/), because the app
+# derives the ctl API's location from its own BASE_URL.
+#
+# That derivation is `gatewayApiBase()` (frontend/src/api/base.ts): it matches
+# the base against `^(.*)/ui/?$` and returns null for anything else. A BASE that
+# does not end in `/ui/` therefore does not fail loudly — it builds a bundle
+# whose ctl API base is "", so the admin page calls the GATEWAY ROOT (`/v1/...`)
+# instead of `/ragstack/admin/api/v1/...`, and every read 404s on a page that
+# looks fine. Refuse it here, where the mistake is made.
+BASE ?= /ragstack/admin/ui/
+
+frontend-build-admin: ## Build the admin bundle to frontend/dist-admin (BASE=/ragstack/admin/ui/)
+	@case "$(BASE)" in */ui/) ;; *) echo "BASE must end in /ui/ (got '$(BASE)'): the admin bundle derives its API base from it and would call the gateway root instead." >&2; exit 1;; esac
+	cd frontend && npm run build:admin -- --base $(BASE)
 
 # ---------------------------------------------------------------------------
 # Go

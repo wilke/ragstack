@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The CONTROL PLANE's own page, not a tenant's. Deliberately a second Vite
+      entry (vite.admin.config.ts, outDir dist-admin) rather than a second route
+      inside the tenant SPA: a shared multi-entry build would ship this file —
+      and the fleet views with it — into every tenant's bundle, and the tenant
+      bundles are served from origins the control plane does not own.
+
+      CSP: the reviewed production bundle is served by nginx under
+      /ragstack/admin/ui/ and gets its Content-Security-Policy from the gateway
+      block (PR-B, ops/coconut). It is NOT a <meta> here on purpose — a meta CSP
+      applies to `npm run dev:admin` too, where @vitejs/plugin-react injects the
+      inline React-refresh preamble, so a strict policy in this file would make
+      the dev server unusable and be softened until it meant nothing.
+    -->
+    <title>ragstack control plane</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="admin-root"></div>
+    <script type="module" src="/src/admin/main.tsx"></script>
+  </body>
+</html>

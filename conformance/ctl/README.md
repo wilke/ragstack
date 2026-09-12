@@ -67,3 +67,13 @@ are distinct). See `conftest.py`.
 | `test_doctor.py` | schema; status = max(findings); hash stability; scoped runs; 404/422 |
 | `test_authz_matrix.py` | parametrized from `x-ctl-role`: anonymous → 401 on everything; **viewer → 403 on every operator operation**, GET and mutation; viewer reaches every viewer operation |
 | `test_ops.py` | module-level skip — mutations are PR-C |
+
+## Against a real-driver daemon
+
+`run_ctl_local.sh` disables rate limiting because it boots a `--fake-drivers`
+daemon. Against a real daemon the anonymous-failure budget (20/min) turns nine
+of the 401 assertions into 429s; run a separate daemon with
+`CTL_RATE_LIMIT_PER_CREDENTIAL=-1` for the suite (see
+`docs/runbooks/ctl-deploy.md`, "Running the conformance suite against the
+deployed daemon"). The unlisted-bearer test skips there: the fixture key
+server exists only under `--fake-drivers`.

@@ -54,7 +54,12 @@ func usage() {
                                             --index/--es-heap are for a name it does not know yet
   render units <name> --registry PATH [--allow-non-loopback-bind]
                                             per-tenant systemd --user units
-  render nginx [--registry PATH] [--kind tenants|static]
+  render nginx tenants|static [--registry PATH] [--proxy-dir DIR]
+                                            the two generated gateway includes; the positional
+                                            selects which (--kind is the explicit alternative and
+                                            must agree with it). --proxy-dir is the tree the
+                                            rendered include lines name — the same flag, and the
+                                            same meaning, as gateway render.
 
   adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-port P] [--force] --preview|--commit
                                             read a hand-started tenant into a registry row
@@ -72,7 +77,16 @@ func usage() {
 
   serve [--listen 127.0.0.1:23990] [--fake-drivers] [--registry PATH] [--rag-root DIR]
                                             the read-only control-plane HTTP API (PR-A)
-  key | admin | sa | env | units | gateway | job | backup | selftest
+
+  gateway render [--out DIR]                render the next gateway generation
+  gateway diff                              unified diff vs the published generation (or the live maps)
+  gateway apply [--dry-run] [--yes] [--expect-bodies DIR]
+                                            publish: stage + nginx -t, switch, HUP, probe, revert on failure
+  gateway status [--json]                   published generation, txn state, nginx master, routes
+  gateway rollback [--to N]                 switch back + HUP + probe
+  gateway repair                            put the current pointer back on the last verified generation
+
+  key | admin | sa | env | units | job | backup | selftest
                                             not implemented in this PR
 
 adopt-all on coconut adopts, in this order (data dirs and worktrees derived
@@ -149,7 +163,9 @@ func run(args []string) int {
 		return cmdESSeedConfig(rest[1:], *registryPath, *globalRagRoot)
 	case "serve":
 		return api.RunServe(rest[1:])
-	case "key", "admin", "sa", "env", "units", "gateway", "job", "backup", "selftest":
+	case "gateway":
+		return cmdGateway(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "key", "admin", "sa", "env", "units", "job", "backup", "selftest":
 		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR (PR-A ships the read surface)\n", rest[0])
 		return exitUsage
 	case "help", "-h", "--help":
@@ -201,6 +217,14 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 	esHeap := fs.String("es-heap", "512m", "Elasticsearch heap")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	nginxKind := fs.String("kind", "tenants", "tenants|static")
+	// `render nginx` and `gateway render` render the SAME two files and must
+	// agree about the proxy tree those files name. This flag was missing here,
+	// so `render nginx static --proxy-dir <checkout>` silently emitted
+	// `include /rag/config/proxy/snippets/cors.conf` — the deployed tree —
+	// while `gateway render --proxy-dir <checkout>` emitted the checkout's.
+	// Two renderers answering one question differently is how a diff against a
+	// branch reads clean and then fails on the host.
+	proxyDir := fs.String("proxy-dir", "", "nginx tree the generated includes name (default <rag-root>/config/proxy)")
 	// Off by default on purpose: see render.UnitConfig.AllowNonLoopbackBind.
 	// The adopted tenants really do bind 0.0.0.0 today, so rendering their
 	// units is a deliberate act an operator has to name.
@@ -217,7 +241,7 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 	if name == "" && fs.NArg() > 0 {
 		name = fs.Arg(0)
 	}
-	roots := paths.NewRoots(*root, paths.Overrides{})
+	roots := paths.NewRoots(*root, paths.Overrides{ProxyDir: *proxyDir})
 	if *images == "" {
 		*images = roots.ImagesDir
 	}
@@ -299,14 +323,28 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 		if err != nil {
 			return fail(err)
 		}
+		// The positional SELECTS the kind: `render nginx static` must render
+		// the snippet. It used to be parsed and then dropped on the floor, so
+		// that command printed the tenant maps instead — a renderer quietly
+		// answering a question nobody asked.
+		nk := *nginxKind
+		if name != "" {
+			if set["kind"] && name != *nginxKind {
+				return fail(fmt.Errorf("render nginx: positional %q and --kind %q disagree", name, *nginxKind))
+			}
+			nk = name
+		}
+		// roots.ProxyDir, the same value gateway.Render passes: `--proxy-dir`
+		// has to mean the same thing in both commands.
+		cfg := render.NginxConfig{ProxyDir: roots.ProxyDir}
 		var out []byte
-		switch *nginxKind {
+		switch nk {
 		case "tenants":
-			out, err = render.NginxTenants(f, render.NginxConfig{})
+			out, err = render.NginxTenants(f, cfg)
 		case "static":
-			out, err = render.NginxStatic(f, render.NginxConfig{})
+			out, err = render.NginxStatic(f, cfg)
 		default:
-			return fail(fmt.Errorf("unknown --kind %q (tenants|static)", *nginxKind))
+			return fail(fmt.Errorf("unknown nginx kind %q (tenants|static)", nk))
 		}
 		if err != nil {
 			return fail(err)
