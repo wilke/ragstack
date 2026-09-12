@@ -74,6 +74,20 @@ type Options struct {
 // DefaultPythonEnv is the shared conda env every tenant API runs from today.
 const DefaultPythonEnv = "/rag/envs/ragstack"
 
+// DefaultAPIBind is the bind a row records when nothing about the API's own
+// bind could be observed. It is the plan's `api.bind` default and the safe
+// end of the range the contract allows.
+const DefaultAPIBind = "127.0.0.1"
+
+// contractBinds is the set registry.json's api.bind pattern accepts. bindOf's
+// set is wider (it also reads ::1 off a live command line, which is a fact
+// worth reporting), so anything adopt DERIVES is checked against this.
+var contractBinds = map[string]bool{"127.0.0.1": true, "0.0.0.0": true, "localhost": true}
+
+// apiLaunchScripts are the tenant-owned scripts that may start the API, in
+// the order adopt trusts them. Inventory only — never run, never edited.
+var apiLaunchScripts = []string{"bin/up.sh", "bin/api.sh", "bin/start-api.sh"}
+
 // The contract-shaped markers for a SIF nobody has pinned yet. `fleet image
 // list` replaces them with the real version and digest; adopt refuses to
 // invent one. Aliased to the registry's constants so there is one definition
@@ -239,7 +253,7 @@ func (p *previewer) build() (*registry.Tenant, error) {
 	} else {
 		p.warn(doctor.PortNotListening, fmt.Sprintf("no listener on the API port %d", p.ports.API))
 	}
-	t.API = registry.API{Bind: bindOf(api.Cmdline), PidFile: p.tp.PidFile, Log: p.tp.APILog}
+	t.API = registry.API{Bind: p.apiBind(api), PidFile: p.tp.PidFile, Log: p.tp.APILog}
 	t.PythonEnv = p.pythonEnv(api)
 
 	t.Code = p.code()
@@ -851,6 +865,67 @@ func (p *previewer) finding(level model.Level, code, detail string) {
 func (p *previewer) info(code, detail string) { p.finding(model.LevelInfo, code, detail) }
 func (p *previewer) warn(code, detail string) { p.finding(model.LevelWarn, code, detail) }
 func (p *previewer) err(code, detail string)  { p.finding(model.LevelError, code, detail) }
+
+// apiBind decides what goes in `api.bind`, in descending order of evidence:
+// the live command line of the process on the API port, then the `--host` of
+// the tenant's own launch script, then DefaultAPIBind.
+//
+// The last step is the one that has to exist. `api.bind` is a REQUIRED field
+// whose contract pattern is (127.0.0.1|0.0.0.0|localhost), so an empty bind —
+// which is what a stopped tenant produced, and what ANY host produces when
+// the listener→pid mapping is unreadable (a rootless container cannot read
+// the /proc/<pid>/fd links of host processes) — is a row registry.Save
+// refuses, and `adopt --commit --force` exited 3 on a tenant that was merely
+// not running.
+//
+// The default is recorded WITH a finding, never silently: 127.0.0.1 is the
+// safe half of the old S2 lesson (an absent observation must never become
+// 0.0.0.0), but it is still a default and not a fact, so the row says so and
+// the tenant's next start replaces it with an observation.
+func (p *previewer) apiBind(api hostfacts.Listener) string {
+	if b := bindOf(api.Cmdline); b != "" {
+		return b
+	}
+	if b, script := p.scriptBind(); b != "" {
+		p.info(doctor.APIBindFromScript, fmt.Sprintf(
+			"the API on port %d is not observable; %s starts it with --host %s, so that is what api.bind records",
+			p.ports.API, script, b))
+		return b
+	}
+	p.warn(doctor.APIBindAssumed, fmt.Sprintf(
+		"the API on port %d is not listening and no launch script names a --host, so its bind could not be observed; api.bind records the default %s and the tenant's next start will confirm or correct it",
+		p.ports.API, DefaultAPIBind))
+	return DefaultAPIBind
+}
+
+// scriptBind reads `--host X` out of the tenant's launch script — the same
+// files adopt already treats as inventory (bin/up.sh is the one the rollback
+// descriptor records). Only a value the registry contract can store counts:
+// bindOf also accepts ::1, which `api.bind` cannot hold, and recording it
+// would put back the unsavable row this function exists to prevent.
+func (p *previewer) scriptBind() (bind, script string) {
+	for _, rel := range apiLaunchScripts {
+		path := filepath.Join(p.dataDir, filepath.FromSlash(rel))
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if v := bindOf(scriptTokens(b)); contractBinds[v] {
+			return v, path
+		}
+	}
+	return "", ""
+}
+
+// scriptTokens splits a shell script into argv-like tokens, unquoting each
+// one, so `--host "0.0.0.0"` reads the same as `--host 0.0.0.0`.
+func scriptTokens(b []byte) []string {
+	f := strings.Fields(string(b))
+	for i, tok := range f {
+		f[i] = strings.Trim(tok, "\"'")
+	}
+	return f
+}
 
 // bindOf reads `--host X` out of a uvicorn command line (the adopted tenants
 // bind 0.0.0.0; managed ones will bind loopback).

@@ -649,25 +649,134 @@ func TestBindOfIsEmptyWhenUnobserved(t *testing.T) {
 	}
 }
 
-// TestPreviewRecordsNoBindWhenTheAPIIsDown: the end-to-end half of S2 — a
-// tenant whose API is not running is adopted with an EMPTY bind, so the
-// renderer applies its loopback default instead of republishing 0.0.0.0.
-func TestPreviewRecordsNoBindWhenTheAPIIsDown(t *testing.T) {
-	roots := materialize(t, t.TempDir())
+// previewDown previews one tenant against a host where NOTHING is listening
+// — a stopped tenant, and equally any host on which the listener→pid mapping
+// is unreadable (a rootless container cannot read the /proc/<pid>/fd links of
+// host processes, so no socket ever maps to a command line).
+func previewDown(t *testing.T, roots paths.Roots, name string) (*registry.Tenant, []model.Finding) {
+	t.Helper()
 	h := liveHost(t, roots)
-	h.Ports = nil // nothing listening at all
+	h.Ports = nil
 	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
-	tenant, _, err := Preview(roots, "dev", Options{
-		DataDir:  filepath.Join(roots.DataDir, "dev"),
-		Worktree: filepath.Join(roots.ReposDir, "dev"),
+	tenant, findings, err := Preview(roots, name, Options{
+		DataDir:  filepath.Join(roots.DataDir, name),
+		Worktree: filepath.Join(roots.ReposDir, name),
 		UIPort:   8090, Host: h, Now: func() time.Time { return at },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tenant.API.Bind != "" {
-		t.Errorf("api.bind = %q for an unobservable API, want \"\"", tenant.API.Bind)
+	return tenant, findings
+}
+
+// TestPreviewAssumesLoopbackWhenTheAPIIsDown is the end-to-end half of S2,
+// corrected. An unobservable API used to record an EMPTY bind — which the
+// renderer tolerated, but `api.bind` is a REQUIRED field with a three-value
+// pattern, so registry.Save refused the row and `adopt --commit --force`
+// exited 3 on a tenant whose only sin was not running. The row now records
+// the contract's 127.0.0.1 default (never 0.0.0.0 — that is the S2 lesson)
+// and says so with a warn-level finding.
+func TestPreviewAssumesLoopbackWhenTheAPIIsDown(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	tenant, findings := previewDown(t, roots, "dev")
+	if tenant.API.Bind != DefaultAPIBind {
+		t.Errorf("api.bind = %q for an unobservable API, want %q", tenant.API.Bind, DefaultAPIBind)
 	}
+	if countCode(findings, doctor.APIBindAssumed) != 1 {
+		t.Errorf("an assumed bind must be reported once: %v", codes(findings))
+	}
+	if countCode(findings, doctor.APIBindFromScript) != 0 {
+		t.Errorf("no script names a --host here: %v", codes(findings))
+	}
+
+	// The point of the default: the row SAVES. Batch, because a single
+	// adoption cannot reconcile with the four-row live manifest.
+	regPath := roots.Registry()
+	h := liveHost(t, roots)
+	h.Ports = nil
+	tenants := previewLive(t, roots, h)
+	batch := []*registry.Tenant{tenants["lucid-next"], tenants["asm-next"], tenants["dev"], tenants["demo"]}
+	if err := CommitAll(regPath, batch, CommitOptions{Roots: roots, UpdatedBy: "local:1000"}); err != nil {
+		t.Fatalf("a stopped fleet must still be adoptable: %v", err)
+	}
+	f, err := registry.Load(regPath)
+	if err != nil {
+		t.Fatalf("the saved rows must load back: %v", err)
+	}
+	for name, tn := range f.Tenants {
+		if tn.API.Bind != DefaultAPIBind {
+			t.Errorf("%s: api.bind = %q after the round trip, want %q", name, tn.API.Bind, DefaultAPIBind)
+		}
+	}
+}
+
+// TestPreviewReadsTheBindFromTheLaunchScript: a stopped tenant is not a
+// tenant with no evidence. Its own launch script says what --host it starts
+// the API with, and that beats the default — recorded with an INFO finding
+// (evidence, one step removed), not the warn a pure assumption gets.
+func TestPreviewReadsTheBindFromTheLaunchScript(t *testing.T) {
+	appendToUp := func(roots paths.Roots, line string) {
+		up := filepath.Join(roots.DataDir, "dev", "bin", "up.sh")
+		b, err := os.ReadFile(up)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(up, append(b, []byte("\n"+line+"\n")...), 0o711); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("script bind wins over the default", func(t *testing.T) {
+		roots := materialize(t, t.TempDir())
+		appendToUp(roots, `exec python -m uvicorn ragstack.api.main:app --host "0.0.0.0" --port 24040`)
+		tenant, findings := previewDown(t, roots, "dev")
+		if tenant.API.Bind != "0.0.0.0" {
+			t.Errorf("api.bind = %q, want the script's 0.0.0.0", tenant.API.Bind)
+		}
+		if countCode(findings, doctor.APIBindFromScript) != 1 {
+			t.Errorf("a script-derived bind must be reported: %v", codes(findings))
+		}
+		if countCode(findings, doctor.APIBindAssumed) != 0 {
+			t.Errorf("nothing was assumed here: %v", codes(findings))
+		}
+	})
+
+	t.Run("a bind the contract cannot store is not recorded", func(t *testing.T) {
+		// bindOf reads ::1 off a live command line because it is a fact worth
+		// reporting; `api.bind` cannot hold it. Deriving it from a script
+		// would put back the unsavable row this whole change removes.
+		roots := materialize(t, t.TempDir())
+		appendToUp(roots, `exec python -m uvicorn ragstack.api.main:app --host ::1 --port 24040`)
+		tenant, findings := previewDown(t, roots, "dev")
+		if tenant.API.Bind != DefaultAPIBind {
+			t.Errorf("api.bind = %q, want the default %q", tenant.API.Bind, DefaultAPIBind)
+		}
+		if countCode(findings, doctor.APIBindAssumed) != 1 {
+			t.Errorf("want the assumed-bind warning: %v", codes(findings))
+		}
+	})
+
+	t.Run("a live listener beats the script", func(t *testing.T) {
+		roots := materialize(t, t.TempDir())
+		appendToUp(roots, `exec python -m uvicorn ragstack.api.main:app --host 127.0.0.1 --port 24040`)
+		at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+		tenant, findings, err := Preview(roots, "dev", Options{
+			DataDir:  filepath.Join(roots.DataDir, "dev"),
+			Worktree: filepath.Join(roots.ReposDir, "dev"),
+			UIPort:   8090, Host: liveHost(t, roots), Now: func() time.Time { return at },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tenant.API.Bind != "0.0.0.0" {
+			t.Errorf("api.bind = %q, want the RUNNING process's 0.0.0.0", tenant.API.Bind)
+		}
+		for _, code := range []string{doctor.APIBindAssumed, doctor.APIBindFromScript} {
+			if countCode(findings, code) != 0 {
+				t.Errorf("an observed bind raises neither derivation finding: %v", codes(findings))
+			}
+		}
+	})
 }
 
 // TestRollbackArgvIsRedactedWithTheTenantsOwnSecrets is S17. The descriptor

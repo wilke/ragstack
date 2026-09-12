@@ -9,7 +9,7 @@
        new-tenant-apptainer \
        frontend-install frontend-dev frontend-build frontend-gen-api \
        frontend-build-admin \
-       build-ctl install-ctl test-ctl \
+       build-ctl install-ctl test-ctl golang-sif go-mode \
        test-all
 
 help: ## Show this help
@@ -96,11 +96,51 @@ run-go: build-go ## Start Go API server (dev)
 
 # ---------------------------------------------------------------------------
 # ragstack-ctl (tenant control plane, ADR-0007) — static binary, no CGO.
-# GO is overridable because the toolchain is not on the deploy host's PATH
-# (e.g. GO=~/sdk/go1.23.12/bin/go). install-ctl is versioned + symlinked so
-# rollback is `ln -sfn`; it never overwrites a previous version.
+# install-ctl is versioned + symlinked so rollback is `ln -sfn`; it never
+# overwrites a previous version.
+#
+# Toolchain: host `go` or the Go CONTAINER, selected by GO_MODE.
+#   auto (default)  host `go` if one is on PATH, else the SIF if it exists
+#   host            $(GO) on this machine (e.g. GO=~/sdk/go1.23.12/bin/go)
+#   container       `apptainer exec $(GO_SIF) go` — the image pinned to the
+#                   `toolchain` line of go/go.mod, so every build on coconut
+#                   uses the same compiler as CI (actions/setup-go reads the
+#                   same file). Caches live under $(GO_CACHE) on /rag, not in
+#                   the NFS home. `make golang-sif` pulls the image once.
+# Apptainer passes the caller's environment through, so the CGO_ENABLED=0 /
+# -race prefixes below apply inside the container exactly as on the host.
 # ---------------------------------------------------------------------------
 GO ?= go
+GO_MODE ?= auto
+GO_SIF ?= /rag/apptainer/images/golang.sif
+GO_IMAGE ?= docker://golang:1.23.12-bookworm
+GO_CACHE ?= /rag/cache/go
+ifeq ($(GO_MODE),auto)
+  ifeq ($(shell command -v $(GO) 2>/dev/null),)
+    ifneq ($(wildcard $(GO_SIF)),)
+      GO_MODE := container
+    else
+      GO_MODE := host
+    endif
+  else
+    GO_MODE := host
+  endif
+endif
+ifeq ($(GO_MODE),container)
+  GO := apptainer exec -B /rag --pwd $(CURDIR)/go \
+        --env GOMODCACHE=$(GO_CACHE)/mod,GOCACHE=$(GO_CACHE)/build,GOPATH=$(GO_CACHE)/path,GOTOOLCHAIN=local \
+        $(GO_SIF) go
+endif
+
+golang-sif: ## Pull the pinned Go image into $(GO_SIF) (once; cache under /rag/cache/apptainer, not the NFS home)
+	mkdir -p /rag/cache/apptainer/tmp $(GO_CACHE)
+	APPTAINER_CACHEDIR=/rag/cache/apptainer APPTAINER_TMPDIR=/rag/cache/apptainer/tmp \
+	    apptainer pull --disable-cache $(GO_SIF) $(GO_IMAGE)
+	apptainer exec $(GO_SIF) go version
+
+go-mode: ## Print which Go toolchain the ctl targets will use (host | container)
+	@echo "GO_MODE=$(GO_MODE)"
+	@$(GO) version
 CTL_VERSION ?= $(shell git describe --tags --always --dirty)
 CTL_COMMIT ?= $(shell git rev-parse HEAD)
 CTL_BUILT_AT ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -109,6 +149,7 @@ CTL_LDFLAGS := -s -w -X $(CTL_PKG).Version=$(CTL_VERSION) -X $(CTL_PKG).Commit=$
 CTL_PREFIX ?= /rag/bin
 
 build-ctl: ## Build the ragstack-ctl static binary into go/bin/ragstack-ctl
+	@echo "build-ctl: GO_MODE=$(GO_MODE)"
 	cd go && CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false -ldflags '$(CTL_LDFLAGS)' -o bin/ragstack-ctl ./cmd/ragstack-ctl
 
 install-ctl: build-ctl ## Install go/bin/ragstack-ctl as $(CTL_PREFIX)/ragstack-ctl-<version> and point the symlink at it

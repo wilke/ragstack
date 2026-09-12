@@ -168,7 +168,16 @@ func TestAdoptCommitRefusesErrorFindings(t *testing.T) {
 	// neither in this tenant's own port block nor an external store port, so
 	// the probe gate rejects it. An error-level finding no later op could
 	// proceed over.
-	env := "PORT=24040\nLOG_LEVEL=info\nQDRANT_URL=http://localhost:29999\nELASTICSEARCH_URL=http://localhost:9200\n"
+	//
+	// PORT is block 49, which NOTHING listens on: this test used to sit on
+	// 24040 and so passed only on coconut, where the live dev tenant answers
+	// there with `--host 0.0.0.0`. Off that host — a CI runner, a dev laptop,
+	// or coconut itself from inside a rootless container, where the
+	// listener→pid mapping is unreadable — the API was unobservable, adopt
+	// recorded an empty api.bind and registry.Save refused the row, so the
+	// --force leg exited 3. The fix is adopt's assumed-bind default; this
+	// port makes the test exercise it instead of the live host.
+	env := "PORT=24980\nLOG_LEVEL=info\nQDRANT_URL=http://localhost:29999\nELASTICSEARCH_URL=http://localhost:9200\n"
 	if err := os.WriteFile(filepath.Join(dataDir, "config", "tenant.env"), []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,8 +213,14 @@ func TestAdoptCommitRefusesErrorFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := f.Tenants["acme"]; !ok {
-		t.Error("--force did not write the row")
+	tn, ok := f.Tenants["acme"]
+	if !ok {
+		t.Fatal("--force did not write the row")
+	}
+	// The row a stopped tenant gets: the loopback default, not "" (unsavable)
+	// and not 0.0.0.0 (a guess that publishes an API to the internet).
+	if tn.API.Bind != "127.0.0.1" {
+		t.Errorf("api.bind = %q for a tenant nothing listens for, want 127.0.0.1", tn.API.Bind)
 	}
 }
 
