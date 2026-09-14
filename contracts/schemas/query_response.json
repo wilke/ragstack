@@ -4,7 +4,11 @@
   "title": "QueryResponse",
   "description": "Query response containing the generated answer, source chunks, and rewritten queries.",
   "type": "object",
-  "required": ["answer", "sources", "rewritten_queries"],
+  "required": [
+    "answer",
+    "sources",
+    "rewritten_queries"
+  ],
   "properties": {
     "answer": {
       "type": "string"
@@ -20,6 +24,22 @@
       "items": {
         "type": "string"
       }
+    },
+    "template": {
+      "description": "The template id the answer was generated with; absent when none was used.",
+      "type": "string"
+    },
+    "template_version": {
+      "description": "That template's declared version. Bumped on any content change.",
+      "type": "integer"
+    },
+    "template_hash": {
+      "description": "Content hash of the rendered template body, computed at load. Templates are per-tenant and copied by hand, so two tenants can hold the same (id, version) with drifted bodies while claiming the same identity; the hash makes that detectable rather than invisible (ADR-0008 decision 4). Same role as the ragstack-ctl gateway header's registry sha256.",
+      "type": "string"
+    },
+    "model": {
+      "description": "The registered model id the answer was actually generated with, after the per-request `llm` override and the server default are resolved. Echoed rather than assumed: a template does NOT pin a model (ADR-0008 decision 5), so this is how a degraded result is attributed to a swapped default instead of being mistaken for a prompt regression.",
+      "type": "string"
     }
   },
   "additionalProperties": false

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prompt_templates_response.json",
+  "title": "PromptTemplatesResponse",
+  "description": "The prompt templates this tenant offers for /v1/query generation (ADR-0008). Templates are deployment configuration loaded and validated at startup, not user content: a caller SELECTS one and fills its declared slots, and can never supply prompt text of its own. A server with no templates configured answers with an empty list, which is how a client learns the capability is absent without a version check.",
+  "type": "object",
+  "required": ["templates"],
+  "properties": {
+    "templates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "hash", "label", "output", "slots"],
+        "properties": {
+          "id": {
+            "description": "The value a caller passes as `template` on /v1/query.",
+            "type": "string"
+          },
+          "version": {
+            "description": "Bumped on ANY content change. With `id` and `hash` it names the condition a result was produced under, which is what lets an ablation arm hold generation fixed.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "hash": {
+            "description": "Content hash of the rendered template body, computed at load. Because templates are per-tenant and copied by hand, two tenants can hold the same (id, version) with bodies that have drifted apart; comparing hashes is how that is detected rather than silently mis-attributed.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Human name, for a picker.",
+            "type": "string"
+          },
+          "output": {
+            "description": "The shape the template asks the model for. `table` declares `columns`; `text` is prose. Advisory to the client for rendering — the response's `answer` is the model's raw text either way, since a model may not comply and the server does not parse it (ADR-0008 consequences).",
+            "type": "string",
+            "enum": ["text", "table"]
+          },
+          "columns": {
+            "description": "Column names when `output` is `table`; absent otherwise.",
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "slots": {
+            "description": "The named values this template accepts in `template_vars`. A slot not declared here is a 422 rather than being ignored, because a typo'd name that renders an empty clause produces a subtly wrong prompt and no error.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "required", "max_len"],
+              "properties": {
+                "name": { "type": "string" },
+                "required": { "type": "boolean" },
+                "max_len": {
+                  "description": "Maximum accepted length of the value. Declared per slot and mandatory: an organism name is not an essay, and an undeclared cap is a template authoring error that fails at load rather than at request time.",
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "label": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
