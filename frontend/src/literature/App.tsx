@@ -39,6 +39,7 @@ import {
   type QueryFields,
 } from "./extraction";
 import { getToken, setToken, subjectOf } from "./session";
+import { LoginGate } from "./LoginGate";
 import { AnswerPanel } from "./AnswerPanel";
 import { ResultsTable } from "./ResultsTable";
 import { SourceCard } from "./SourceCard";
@@ -56,7 +57,6 @@ const LABEL = "mb-1 block text-[11px] font-medium uppercase tracking-wide text-d
 export function App() {
   // --- credential ---------------------------------------------------------
   const [token, setTokenState] = useState(getToken);
-  const [tokenDraft, setTokenDraft] = useState("");
   const subject = useMemo(() => subjectOf(token), [token]);
 
   const saveToken = useCallback((t: string) => {
@@ -216,47 +216,7 @@ export function App() {
   const modelLabel = models.find((m) => m.model === model)?.label;
 
   // --- sign-in gate -------------------------------------------------------
-  if (!token) {
-    return (
-      <div className="mx-auto max-w-lg px-4 py-20">
-        <h1 className="text-xl font-semibold text-strong">BV-BRC Literature Search</h1>
-        <p className="mt-2 text-sm text-dim">
-          Paste a BV-BRC token to continue. It opens both the <code>{tenant()}</code> corpus and
-          the Copilot model, and is kept in this tab only — never written to disk.
-        </p>
-        <form
-          className="mt-6 space-y-3"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (tokenDraft.trim()) saveToken(tokenDraft.trim());
-          }}
-        >
-          <textarea
-            value={tokenDraft}
-            onChange={(e) => setTokenDraft(e.target.value)}
-            placeholder="un=…|tokenid=…|sig=…"
-            rows={4}
-            className={`${INPUT} font-mono text-xs`}
-            aria-label="BV-BRC token"
-          />
-          <button
-            type="submit"
-            disabled={!tokenDraft.trim()}
-            className="rounded-pill bg-accent px-5 py-2 text-sm font-semibold text-ink-900 disabled:opacity-50"
-          >
-            Continue
-          </button>
-        </form>
-        <p className="mt-6 text-xs text-faint">
-          Get one with:{" "}
-          <code className="break-all">
-            curl -s -X POST https://user.patricbrc.org/authenticate -d 'username=&lt;u&gt;' -d
-            'password=&lt;p&gt;'
-          </code>
-        </p>
-      </div>
-    );
-  }
+  if (!token) return <LoginGate onToken={saveToken} />;
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">

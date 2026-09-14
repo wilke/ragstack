@@ -92,6 +92,11 @@ export default defineConfig(({ mode }) => {
         },
       },
     },
-    build: { outDir: "dist-literature", sourcemap: true, rollupOptions: { input: "literature.html" } },
+    // No sourcemap: this bundle is served from a PUBLIC mount. Emitting one and
+    // then not deploying the .map file leaves a dangling `sourceMappingURL` in
+    // the shipped JS — the browser fetches it, the SPA fallback answers with
+    // index.html, and every page load logs a parse error. Not generating it is
+    // the honest version; `npm run dev:literature` has full maps regardless.
+    build: { outDir: "dist-literature", sourcemap: false, rollupOptions: { input: "literature.html" } },
   };
 });
