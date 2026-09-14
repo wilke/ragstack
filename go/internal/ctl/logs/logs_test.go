@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -371,5 +372,72 @@ func TestReadFailsClosedWhenSeedingFails(t *testing.T) {
 
 	if _, err := Read(roots, tenant, model.LogAPI, 10); err == nil {
 		t.Fatal("Read succeeded with an unseedable tenant.env; it must fail closed")
+	}
+}
+
+// TestReadRefusesTypedWhenSecretsAreUnreadable: the pre-handover shape. The
+// file exists and holds the values the redactor needs, this account cannot
+// read it, and the answer must be a CLASSIFIED refusal — still no log line,
+// but one the HTTP layer can turn into a 409 that explains itself instead of
+// a 500 that tells an operator to retry.
+func TestReadRefusesTypedWhenSecretsAreUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the permission case cannot be staged")
+	}
+	roots, tenant := tenantTree(t)
+	tp := paths.TenantPaths(roots, "dev", "dev")
+	write(t, tp.APILog, "hello\n")
+	tenant.Owner = "someone-else"
+	if err := os.Chmod(tp.SecretsEnv, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(tp.SecretsEnv, 0o600) })
+
+	_, err := Read(roots, tenant, model.LogAPI, 10)
+	var unreadable *SecretsUnreadableError
+	if !errors.As(err, &unreadable) {
+		t.Fatalf("err = %v (%T), want a *SecretsUnreadableError", err, err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Error("the refusal no longer unwraps to the permission error it classifies")
+	}
+	if unreadable.Path != tp.SecretsEnv || unreadable.Owner != "someone-else" || !unreadable.PreHandover() {
+		t.Errorf("refusal = %+v, want the secrets path, the owner and pre-handover", unreadable)
+	}
+	for _, want := range []string{
+		"logs for dev are unavailable", tp.SecretsEnv,
+		"whose values seed the log redactor",
+		"owned by someone-else until its handover (PR-E)",
+	} {
+		if !strings.Contains(unreadable.Detail(), want) {
+			t.Errorf("detail %q does not carry %q", unreadable.Detail(), want)
+		}
+	}
+}
+
+// A HISTORICAL secret file that cannot be read is the same refusal: the key
+// it holds was rotated out of secrets.env but a process started before the
+// rotation still prints it, so a tail seeded without it is not redacted.
+func TestReadRefusesWhenAHistoricalSecretsCopyIsUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the permission case cannot be staged")
+	}
+	roots, tenant := tenantTree(t)
+	tp := paths.TenantPaths(roots, "dev", "dev")
+	write(t, tp.APILog, "hello\n")
+	bak := tp.SecretsEnv + ".bak-20260901"
+	write(t, bak, "TENANT_PG_PASSWORD=the-old-password-value\n")
+	if err := os.Chmod(bak, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(bak, 0o600) })
+
+	_, err := Read(roots, tenant, model.LogAPI, 10)
+	var unreadable *SecretsUnreadableError
+	if !errors.As(err, &unreadable) {
+		t.Fatalf("err = %v (%T), want a *SecretsUnreadableError for the historical copy", err, err)
+	}
+	if unreadable.Path != bak {
+		t.Errorf("path = %q, want the historical copy %q", unreadable.Path, bak)
 	}
 }

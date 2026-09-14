@@ -2599,6 +2599,16 @@ export interface operations {
                     "application/json": components["schemas"]["error"];
                 };
             };
+            /** @description `refused`: the daemon cannot READ the tenant's secret files, whose values seed the log redactor. `redacted` is the constant true, so an unseeded redactor means NO line is returned rather than an unredacted one — and until a tenant's handover those env files belong to its `owner`, not to the daemon's account, which makes this an ownership refusal and not an internal error. `detail` names the account, the file and the owner; `extra` carries `path`, `owner`, `tenant`, `ctl_user` and `pre_handover`. */
+            409: {
+                headers: {
+                    "X-Request-Id": components["headers"]["XRequestId"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["error"];
+                };
+            };
             422: components["responses"]["Validation"];
             429: components["responses"]["RateLimited"];
         };

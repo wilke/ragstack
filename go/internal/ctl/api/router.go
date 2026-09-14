@@ -49,6 +49,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/authz"
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/fleet"
+	"github.com/ragstack/ragstack/internal/ctl/logs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
@@ -498,6 +499,27 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := s.Backend.Logs(r.Context(), name, file, lines)
 	if err != nil {
+		// The redactor could not be seeded because this account cannot READ
+		// the tenant's secret files. That is not an internal fault: on a host
+		// where the tenants have not been handed over yet (PR-E) it is the
+		// expected state, and "the control plane had a problem, please retry"
+		// sent an operator chasing a daemon bug over a 0600 file. It is a
+		// policy refusal — 409 `refused` — and its detail is the whole point:
+		// it names the account, the file and the owner.
+		//
+		// The refusal happens BEFORE any log line is returned and the seeding
+		// requirement is untouched: an unreadable secret file still means no
+		// logs, never a half-redacted tail.
+		var unreadable *logs.SecretsUnreadableError
+		if errors.As(err, &unreadable) {
+			// Still logged, at the level the event deserves: the audit line
+			// for this request must exist whichever way the request ended.
+			s.log().Warn("logs refused",
+				"request_id", observability.RequestIDFromContext(r.Context()),
+				"tenant", name, "file", file, "err", err.Error())
+			writeError(w, r, model.CodeRefused, unreadable.Detail(), unreadable.Extra())
+			return
+		}
 		s.backendError(w, r, err)
 		return
 	}

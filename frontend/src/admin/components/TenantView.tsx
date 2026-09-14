@@ -335,6 +335,22 @@ function Logs({ name, role }: { name: string; role: CtlRole }) {
     );
   }
 
+  // 409 `refused` is the daemon saying it CANNOT redact — not that it broke.
+  // It could not read the tenant's secret files (they belong to the tenant's
+  // `owner` until its handover), those values seed the log redactor, and it
+  // will not return a line it could not redact. The generic banner is wrong
+  // twice over there: nothing is faulty, and no retry changes a file mode.
+  //
+  // This is the one place the bundle prints `detail` verbatim, and it is a
+  // deliberate exception rather than a drift from ErrorBanner's rule. That
+  // rule exists so host text is not shown to whoever happens to be looking;
+  // this panel is operator-gated three lines up, and the account, path and
+  // owner in this sentence ARE the answer — reconstructing it client-side
+  // from `extra` would only be the same text, one version behind the daemon.
+  // React escapes it, so a path is text and never markup.
+  const refused =
+    logs.error instanceof CtlError && logs.error.code === "refused" ? logs.error : null;
+
   return (
     <div>
       <div className="mb-3 flex flex-wrap items-center gap-3">
@@ -362,9 +378,23 @@ function Logs({ name, role }: { name: string; role: CtlRole }) {
         </span>
       </div>
 
-      {logs.error && <ErrorBanner error={logs.error} onRetry={() => void logs.refetch()} />}
+      {refused && (
+        <div role="note" className="rounded-card bg-accent-soft p-3 text-[12.5px] text-accent-text">
+          <div className="font-medium">Logs are unavailable for this tenant.</div>
+          <div className="mt-1">{refused.detail}</div>
+          {refused.requestId && (
+            <div className="mt-1 font-mono text-[11px] opacity-80">
+              Reference: {refused.requestId}
+            </div>
+          )}
+        </div>
+      )}
 
-      {logs.data && (
+      {logs.error && !refused && (
+        <ErrorBanner error={logs.error} onRetry={() => void logs.refetch()} />
+      )}
+
+      {logs.data && !refused && (
         <>
           {logs.data.truncated && (
             <p className="mb-2 font-mono text-[11px] text-accent-text">
