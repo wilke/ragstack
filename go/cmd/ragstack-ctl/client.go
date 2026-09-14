@@ -108,6 +108,13 @@ type opFlags struct {
 	// so the collection goes back the same way the submission went.
 	wantSecrets  bool
 	fetchSecrets func(jobID string) (*model.SecretsResponse, error)
+
+	// mountPoint overrides what a rendered unit's ConditionPathIsMountPoint
+	// names. It is deliberately not a flag: `selftest --rag-root <scratch>`
+	// sets it, because that is the one run whose paths move into a sandbox tree
+	// while the mount those units wait for is still /rag. Empty means
+	// Roots.RagRoot, which is right everywhere else.
+	mountPoint string
 }
 
 func addOpFlags(fs *flag.FlagSet, registryPath, ragRoot string, jsonOut bool) *opFlags {
@@ -832,9 +839,18 @@ func printJob(j *model.Job, asJSON bool) int {
 // starts returning a real engine, --direct starts working here with no change
 // to this file.
 func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
+	eng, _, err := buildDirectEngineAndDrivers(o)
+	return eng, err
+}
+
+// buildDirectEngineAndDrivers is buildDirectEngine, and it also hands back the
+// driver set the engine was built with. Only `selftest` needs both: it submits
+// jobs through the engine and then asks the same host whether the ports are
+// free, the units are gone and the quarantine is there.
+func buildDirectEngineAndDrivers(o *opFlags) (jobs.Engine, jobs.Drivers, error) {
 	host, err := os.Hostname()
 	if err != nil {
-		return nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
+		return nil, nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
 	}
 	// The same CTL_STATE_DIR / CTL_CONFIG_DIR the daemon honours: a --direct
 	// run that ignored them would open the daemon's jobs.db and write units
@@ -847,6 +863,7 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 		Mode:         model.WorkerDirect,
 		Host:         host,
 		Mirror:       mirrorPath(*o.ragRoot),
+		MountPoint:   o.mountPoint,
 		SecretsTTL:   api.DefaultSecretsTTL,
 		Now:          time.Now,
 	}
@@ -855,7 +872,7 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 	// mirror and the npm cache identically, or an operator would be debugging
 	// two different driver sets.
 	api.SetHostToolsFromEnv(&cfg)
-	return api.BuildEngine(cfg)
+	return api.BuildEngineAndDrivers(cfg)
 }
 
 // directPrincipal is who a --direct run is. Nothing about it comes from a

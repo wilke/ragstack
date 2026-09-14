@@ -56,6 +56,16 @@ type Deps struct {
 	// `decommission` removes one; empty means no mirror is configured, and the
 	// steps that need one refuse rather than guessing at a checkout.
 	Mirror string
+	// MountPoint is what every rendered unit's `ConditionPathIsMountPoint`
+	// names. Empty means Roots.RagRoot, which is right for the deployment.
+	//
+	// It is separate from Roots because a run against a SANDBOX root — the
+	// selftest's `--rag-root`, a scratch tree under /rag — needs every path in
+	// the unit to point at that tree while the condition still names the real
+	// mount. ConditionPathIsMountPoint on a directory inside the mount is
+	// false, and a unit conditioned on it never starts and never says why,
+	// which is the least debuggable failure systemd has.
+	MountPoint string
 }
 
 // Sealer is the age half of internal/ctl/seal behind a two-method seam, so
@@ -146,6 +156,10 @@ func NewRegistry(d Deps) jobs.Registry {
 	// `--direct` decisions and neither belongs on an HTTP surface a session can
 	// reach.
 	add("artifact-prepare", false, planArtifactPrepare)
+	// create-sandbox is CLI-only for the same reason and for one more: it is
+	// the verb that allocates out of the SELFTEST port range, and nothing
+	// reachable over the network should be able to do that (ops/sandbox.go).
+	add("create-sandbox", false, planCreateSandbox)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)
@@ -181,11 +195,11 @@ type op struct {
 func (o *op) Verb() string      { return o.verb }
 func (o *op) Destructive() bool { return o.destructive }
 
-// CreatesTenant satisfies the engine's optional tenantCreator interface:
-// `create`'s request names a tenant that does not exist yet, and every other
+// CreatesTenant satisfies the engine's optional tenantCreator interface: the
+// two create verbs name a tenant that does not exist yet, and every other
 // verb's names one that must. The planner is where "that name is taken" is
 // refused; the engine only needs to know not to 404 first.
-func (o *op) CreatesTenant() bool { return o.verb == "create" }
+func (o *op) CreatesTenant() bool { return o.verb == "create" || o.verb == "create-sandbox" }
 
 func (o *op) Validate(a map[string]any) error {
 	if a == nil {

@@ -83,6 +83,11 @@ type EngineConfig struct {
 	Apptainer string
 	Mirror    string
 	NpmCache  string
+	// MountPoint is what a rendered unit's `ConditionPathIsMountPoint` names.
+	// Empty means Roots.RagRoot. Only a run against a SANDBOX root sets it —
+	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
+	// the scratch tree and the mount the units wait for is still /rag.
+	MountPoint string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -102,6 +107,25 @@ const DefaultSecretsTTL = 15 * time.Minute
 // their TTL (age sealing to the backup recipients lands with PR-D's bundle
 // encryption).
 func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
+	eng, _, err := BuildEngineAndDrivers(cfg)
+	return eng, err
+}
+
+// BuildEngineAndDrivers is BuildEngine, and it also hands back the driver set
+// the engine was built with.
+//
+// One caller needs both: `ragstack-ctl selftest` submits jobs through the
+// engine and then asks the HOST what happened — is anything still listening on
+// the sandbox block, does systemd still know these units, is the quarantined
+// directory there. Those questions have to be put to the SAME host the jobs
+// ran against, or a selftest against `--fake-drivers` would be interrogating a
+// second, empty fixture and reporting it as the truth.
+//
+// It is a second constructor rather than an accessor on the engine because a
+// jobs.Engine that could hand out its drivers would be an engine any caller
+// could reach around; here the drivers are available only to whoever built the
+// engine in the first place.
+func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -116,7 +140,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	}
 	store, err := jobs.NewStore(cfg.StorePath)
 	if err != nil {
-		return nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
+		return nil, nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
 	}
 	loadFleet := cfg.LoadFleet
 	if loadFleet == nil {
@@ -215,8 +239,11 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		doctorFn = cfg.Doctor
 	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
-		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror}),
+		Store: store,
+		Ops: ops.NewRegistry(ops.Deps{
+			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
+			MountPoint: cfg.MountPoint,
+		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
@@ -229,7 +256,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		SecretsTTL:   cfg.SecretsTTL,
 		Logger:       cfg.Logger,
 	})
-	return eng, nil
+	return eng, drv, nil
 }
 
 // fixtureListening is the LISTEN set the fixture host starts with: the API

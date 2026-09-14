@@ -284,6 +284,15 @@ x-ctl-op-args:
 #
 # The daemon still validates `args` against these schemas, so a --direct run
 # is refused for a bad argument exactly as an HTTP one would be.
+#
+# `create-sandbox` is `create` onto a SANDBOX port block (26000-26099) — the
+# only kind of tenant `ragstack-ctl selftest` makes and destroys. Its arguments
+# are create_request.json's CreateArgs unchanged except for `name`, which must
+# start with `ctltest-`. The two verbs are separated rather than joined by a
+# flag because that flag would be the only thing standing between a selftest
+# and a production port block: `create` refuses a `ctltest-` name and
+# `create-sandbox` refuses every other one, so neither allocator can be reached
+# by the wrong request.
 # ---------------------------------------------------------------------------
 x-ctl-cli-op-args:
   artifact-prepare:
@@ -294,6 +303,24 @@ x-ctl-cli-op-args:
       mirror: { description: "The bare mirror to resolve and check out from. Defaults to the daemon's configured mirror (`CTL_MIRROR`).", type: string, pattern: "^/[A-Za-z0-9._/-]{0,255}$" }
       python_env: { description: "The Python env tenants created from this artifact run under. Defaults to `<rag_root>/envs/ragstack`.", type: string, pattern: "^/[A-Za-z0-9._/-]{0,255}$" }
       schema_compatible: { description: "Operator assertion from the release notes: `update-code` to this artifact needs no store/DB migration.", type: boolean, default: false }
+    additionalProperties: false
+  create-sandbox:
+    type: object
+    required: [artifact_id, name]
+    properties:
+      name: { description: "The sandbox tenant name; must start with `ctltest-` (the selftest spells it `ctltest-<stamp>`).", type: string, pattern: "^ctltest-[a-z0-9-]{1,23}$" }
+      artifact_id: { description: "A PREPARED artifact (`fleet artifact prepare`).", type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" }
+      es_heap: { description: "JVM heap for the sandbox's own Elasticsearch.", type: string, pattern: "^[1-9][0-9]*[mg]$" }
+      postgres: { description: "Where the ACL/job/collection state lives.", type: string, enum: [sqlite, local] }
+      identity_provider: { type: string, enum: [bvbrc, none] }
+      admin_subjects: { type: array, uniqueItems: true, items: { type: string, pattern: "^[a-z][a-z0-9]*:[^:\\s]{1,128}$" } }
+      keys: { description: "Extra keys to mint, as create_request.json's KeySpec objects.", type: array, items: { type: object } }
+      service_accounts: { description: "Service accounts to register, as create_request.json's ServiceAccountSpec objects.", type: array, items: { type: object } }
+      template_from: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
+      settings: { description: "PUBLIC-class settings only.", type: object }
+      ui_mode: { type: string, enum: [static, dev, external] }
+      start: { type: boolean, default: true }
+      gateway: { type: boolean, default: true }
     additionalProperties: false
 
 paths:
