@@ -333,7 +333,11 @@ func continueDirect(o *opFlags, verb, id string, req model.OpRequest) int {
 	case "continue":
 		job, err = eng.Continue(ctx, id, p)
 	case "cancel":
-		job, err = eng.Cancel(ctx, id, p)
+		// --yes / --yes-destructive <name>, exactly as for any other call
+		// that undoes something: cancelling a job that has already done work
+		// rolls that work back, and the engine refuses without the plan's
+		// confirm value.
+		job, err = eng.Cancel(ctx, id, p, req.Confirm)
 	}
 	if err != nil {
 		return directExit(err)

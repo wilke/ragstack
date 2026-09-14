@@ -210,16 +210,43 @@ func newEngineRedactor(roots paths.Roots, loadFleet func() (*registry.Fleet, err
 func (e *engineRedactor) Redact(s string) string { return e.text.Redact(s) }
 
 func (e *engineRedactor) RedactArgs(args map[string]any) map[string]any {
+	// The redacted args are not just what an audit row shows — they are what
+	// a RE-PLAN is computed from, because the plan hash is over
+	// args_redacted and a continuation has only the stored copy. So every
+	// name blanked here is a name a resume, a rebuild or a cancel of an
+	// interrupted job will re-plan with the literal string "<redacted>".
+	// Blank a name that IDENTIFIES the work rather than a value, and the job
+	// is unresumable forever.
+	secretValue := siblingKeyIsSecret(args)
 	out := make(map[string]any, len(args))
 	for k, v := range args {
+		if isSecretArg(k) || (k == "value" && secretValue) {
+			out[k] = argRedacted
+			continue
+		}
 		out[k] = e.redactValue(k, v)
 	}
 	return out
 }
 
+// argRedacted is the placeholder a blanked ARG value carries.
+const argRedacted = "<redacted>"
+
+// siblingKeyIsSecret answers "is this args object an edit of a secret-class
+// setting?" — env-set's `{key, value}` pair. The VALUE is a credential only
+// when the KEY names one; `{key: LOG_LEVEL, value: DEBUG}` is neither, and
+// redacting either half of it makes the job unresumable.
+func siblingKeyIsSecret(args map[string]any) bool {
+	k, ok := args["key"].(string)
+	if !ok {
+		return false
+	}
+	return settings.Classify(strings.ToUpper(strings.TrimSpace(k))) == settings.Secret
+}
+
 func (e *engineRedactor) redactValue(key string, v any) any {
 	if isSecretArg(key) {
-		return "<redacted>"
+		return argRedacted
 	}
 	switch x := v.(type) {
 	case string:
@@ -237,21 +264,50 @@ func (e *engineRedactor) redactValue(key string, v any) any {
 	}
 }
 
-// isSecretArg: an arg named like a secret-class setting (value of env-set on
-// a secret key, a minted key, a password) is never recorded in clear. The
-// settings classifier knows the tenant.env vocabulary; the fixed list covers
-// the op vocabulary (ctl_api_key, token, secret, password).
-func isSecretArg(key string) bool {
-	k := strings.ToUpper(key)
-	if settings.Classify(k) == settings.Secret {
+// secretArgNames is the op vocabulary whose VALUE is always a credential,
+// listed by exact name. `value` is not here: it is conditional on its sibling
+// `key` (see siblingKeyIsSecret).
+var secretArgNames = map[string]bool{
+	"ctl_api_key": true,
+	"token":       true,
+	"secret":      true,
+	"password":    true,
+	"dsn":         true,
+	"api_key":     true,
+}
+
+// neverSecretArgs are the arg names that IDENTIFY what an op acts on. They
+// are checked first and win over everything, because the cost of getting
+// them wrong is not a leak — it is a job that can never be replanned.
+//
+// `key` is the reason this list exists. It is env-set's SETTING NAME
+// ("LOG_LEVEL"), never a credential, but it contains the substring "KEY". A
+// substring test blanked it, the stored args_redacted then read
+// {key: "<redacted>"}, and every rebuild — resume, cancel of an interrupted
+// job — re-planned env-set for a setting called "<redacted>", which the op
+// refuses as not a known ragstack setting. The job was stuck, permanently,
+// with no way for an operator to unstick it.
+var neverSecretArgs = map[string]bool{
+	"key":     true,
+	"label":   true,
+	"subject": true,
+	"id":      true,
+	"role":    true,
+}
+
+// isSecretArg classifies one arg by its EXACT name — never by substring. The
+// settings classifier knows the tenant.env vocabulary (API_KEY*, *_KEY,
+// SECRET, PASSWORD, TOKEN, DSN, AUTH); secretArgNames covers the op
+// vocabulary on top of it.
+func isSecretArg(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if neverSecretArgs[n] {
+		return false
+	}
+	if secretArgNames[n] {
 		return true
 	}
-	for _, needle := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "DSN"} {
-		if strings.Contains(k, needle) {
-			return true
-		}
-	}
-	return false
+	return settings.Classify(strings.ToUpper(n)) == settings.Secret
 }
 
 // fixtureFiles seeds the fake files driver with the env files the fixture

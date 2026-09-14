@@ -127,14 +127,21 @@ func PlanHash(p model.Plan, argsRedacted map[string]any) (string, error) {
 // 409 `duplicate`. It hashes the UNREDACTED args on purpose — two requests
 // that differ only in a secret are different requests — which is also why it
 // is the one place unredacted args reach the database, and only as a digest.
-func Fingerprint(op, tenant string, args map[string]any, planHash string) (string, error) {
+//
+// The PRINCIPAL is part of the key (plan: "key = principal, op, tenant,
+// normalized args, plan digest"). Without it, one operator's idempotency key
+// silently hands back another operator's job — the second caller gets a 202
+// for work they never authorized, attributed to someone else, and the audit
+// trail records a single actor for two requests.
+func Fingerprint(principal, op, tenant string, args map[string]any, planHash string) (string, error) {
 	if args == nil {
 		args = map[string]any{}
 	}
 	return canonicalSHA256(struct {
-		Op       string         `json:"op"`
-		Tenant   string         `json:"tenant"`
-		Args     map[string]any `json:"args"`
-		PlanHash string         `json:"plan_hash"`
-	}{op, tenant, args, planHash})
+		Principal string         `json:"principal"`
+		Op        string         `json:"op"`
+		Tenant    string         `json:"tenant"`
+		Args      map[string]any `json:"args"`
+		PlanHash  string         `json:"plan_hash"`
+	}{principal, op, tenant, args, planHash})
 }

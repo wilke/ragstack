@@ -583,7 +583,7 @@ func TestCancelDuringASlowStep(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the slow step never started")
 	}
-	if _, err := e.Cancel(ctx, job.ID, operator()); err != nil {
+	if _, err := e.Cancel(ctx, job.ID, operator(), "yes"); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
 	done := waitFor(t, e, job.ID, model.JobCancelled, model.JobFailed, model.JobSucceeded)
@@ -594,7 +594,7 @@ func TestCancelDuringASlowStep(t *testing.T) {
 	if got := tr.trace(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("trace = %v, want %v", got, want)
 	}
-	if _, err := e.Cancel(ctx, job.ID, operator()); !errors.Is(err, ErrRefused) {
+	if _, err := e.Cancel(ctx, job.ID, operator(), "yes"); !errors.Is(err, ErrRefused) {
 		t.Fatalf("cancelling a terminal job = %v, want ErrRefused", err)
 	}
 }

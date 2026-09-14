@@ -433,7 +433,11 @@ func (s *Server) handleJobContinuation(op string) http.HandlerFunc {
 		case opJobContinue:
 			job, err = s.Engine.Continue(r.Context(), id, p)
 		case opJobCancel:
-			job, err = s.Engine.Cancel(r.Context(), id, p)
+			// The envelope's `confirm` is not decoration on this route:
+			// openapi.yaml requires it when the cancel would roll back
+			// succeeded steps, and the engine is what decides whether it
+			// would. Dropping it here made every such cancel unconfirmable.
+			job, err = s.Engine.Cancel(r.Context(), id, p, req.Confirm)
 		default:
 			writeError(w, r, model.CodeInternal, "unknown job continuation", nil)
 			return

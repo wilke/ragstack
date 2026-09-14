@@ -47,6 +47,7 @@ type fakeEngine struct {
 	audit   []model.AuditRow
 
 	continuation string // the last continuation called: resume/continue/cancel
+	confirm      string // the `confirm` the cancel route handed the engine
 	principal    jobs.Principal
 	reconciled   []string
 }
@@ -78,8 +79,8 @@ func (f *fakeEngine) Continue(_ context.Context, _ string, p jobs.Principal) (*m
 	return f.job, f.err
 }
 
-func (f *fakeEngine) Cancel(_ context.Context, _ string, p jobs.Principal) (*model.Job, error) {
-	f.continuation, f.principal = "cancel", p
+func (f *fakeEngine) Cancel(_ context.Context, _ string, p jobs.Principal, confirm string) (*model.Job, error) {
+	f.continuation, f.principal, f.confirm = "cancel", p, confirm
 	return f.job, f.err
 }
 

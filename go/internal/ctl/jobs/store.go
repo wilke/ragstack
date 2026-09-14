@@ -109,6 +109,21 @@ CREATE TABLE IF NOT EXISTS envelopes (
   delivered_at TEXT
 );
 `,
+	// The worker's IDENTITY, kept beside the job rather than inside it.
+	// job.json (the contract) records {pid, host, mode}; a pid alone cannot
+	// survive pid reuse, and the process start time that makes the pair
+	// unique is a host fact no client of the API should have to parse. So it
+	// lives here, where only reconcile reads it.
+	`
+CREATE TABLE IF NOT EXISTS job_workers (
+  job_id      TEXT PRIMARY KEY,
+  pid         INTEGER NOT NULL,
+  host        TEXT NOT NULL,
+  start_time  INTEGER NOT NULL,
+  mode        TEXT NOT NULL DEFAULT '',
+  recorded_at TEXT NOT NULL
+);
+`,
 }
 
 // DefaultStorePath is where the daemon keeps jobs.db when the operator says
@@ -143,6 +158,28 @@ type ReservationStore interface {
 type ArgsStore interface {
 	PutArgs(ctx context.Context, jobID string, argsRedacted map[string]any) error
 	Args(ctx context.Context, jobID string) (map[string]any, error)
+}
+
+// WorkerIdentity is who is running a job, precisely enough to survive pid
+// reuse: the pair (pid, start time) is unique for the life of the kernel, and
+// the host says which kernel.
+type WorkerIdentity struct {
+	PID       int
+	Host      string
+	StartTime uint64
+	Mode      model.WorkerMode
+}
+
+// WorkerStore is the optional Store extension reconcile uses to tell a live
+// worker from a recycled pid. It is deliberately NOT part of model.JobWorker:
+// job.json is the published contract, and the start time is a /proc detail no
+// API client should have to know about. A Store that does not implement it
+// still works — reconcile then falls back to host + kill(pid, 0) + the flock
+// probe, which is what the code did before.
+type WorkerStore interface {
+	PutWorker(ctx context.Context, jobID string, w WorkerIdentity) error
+	// Worker returns (nil, nil) when nothing was recorded for jobID.
+	Worker(ctx context.Context, jobID string) (*WorkerIdentity, error)
 }
 
 type store struct {
@@ -494,6 +531,37 @@ func (s *store) Args(ctx context.Context, jobID string) (map[string]any, error) 
 		return nil, err
 	}
 	return nonNilArgs(out), nil
+}
+
+// ---------------------------------------------------------------- workers
+
+func (s *store) PutWorker(ctx context.Context, jobID string, w WorkerIdentity) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO job_workers (job_id, pid, host, start_time, mode, recorded_at) VALUES (?,?,?,?,?,?)`,
+		jobID, w.PID, w.Host, int64(w.StartTime), string(w.Mode), time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("jobs: recording the worker of %s: %w", jobID, err)
+	}
+	return nil
+}
+
+func (s *store) Worker(ctx context.Context, jobID string) (*WorkerIdentity, error) {
+	var (
+		pid     int
+		host    string
+		started int64
+		mode    string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT pid, host, start_time, mode FROM job_workers WHERE job_id = ?`, jobID).
+		Scan(&pid, &host, &started, &mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &WorkerIdentity{PID: pid, Host: host, StartTime: uint64(started), Mode: model.WorkerMode(mode)}, nil
 }
 
 // ---------------------------------------------------------------- reservations

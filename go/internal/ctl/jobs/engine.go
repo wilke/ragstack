@@ -11,6 +11,9 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -80,8 +83,17 @@ type engine struct {
 	active map[string]*run
 	// mem holds the plaintext of memory-only envelopes (no Sealer): the
 	// contract's alternative to encryption at rest, and it must not touch
-	// the database.
-	mem map[string][]byte
+	// the database. Each entry carries its own expiry so the sweep can drop
+	// it on time — a secret that outlives its envelope is a secret nobody is
+	// still watching.
+	mem map[string]memEnvelope
+}
+
+// memEnvelope is one memory-only envelope: the plaintext and the moment it
+// stops being deliverable.
+type memEnvelope struct {
+	payload   []byte
+	expiresAt time.Time
 }
 
 // run is one job executing in this process.
@@ -97,6 +109,14 @@ type run struct {
 	// cancelled records that a human asked for the stop, so the terminal
 	// state is `cancelled` rather than `failed`.
 	cancelled bool
+	// settling is the compare-and-set that makes exactly ONE goroutine
+	// responsible for driving this run to its terminal state. A second
+	// Cancel, or a Cancel racing a Continue, finds it set and refuses rather
+	// than starting a second rollback over the same steps.
+	settling bool
+	// finished guards the terminal write itself: one result audit row, one
+	// Release, however many paths reach finish.
+	finished bool
 }
 
 // NewEngine builds the engine. It does not touch the database or the host.
@@ -144,7 +164,7 @@ func NewEngine(o EngineOptions) Engine {
 		o:      o,
 		locks:  NewLocks(o.Roots),
 		active: map[string]*run{},
-		mem:    map[string][]byte{},
+		mem:    map[string]memEnvelope{},
 	}
 }
 
@@ -203,8 +223,10 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 	}
 
 	now := e.o.Now().UTC()
+	// Every submission is also a chance to drop envelopes nobody came for.
+	e.sweepMem(now)
 	job := e.newJob(req, plan, now)
-	fp, err := Fingerprint(req.Op, req.Tenant, req.Args, plan.PlanHash)
+	fp, err := Fingerprint(req.Principal.Subject, req.Op, req.Tenant, req.Args, plan.PlanHash)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,6 +240,18 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 	}
 	if stored.ID != job.ID {
 		// The same request under the same key: the original job, as stored.
+		// The attempt still leaves a trace — an operator who pressed the
+		// button twice, or a client that retried a lost 202, did something,
+		// and an audit log that shows nothing cannot tell the two apart.
+		e.audit(ctx, model.AuditRow{
+			At: now.Format(time.RFC3339), Phase: model.AuditIntent,
+			Principal: req.Principal.Subject, AuthMethod: req.Principal.Method,
+			SudoUser:  model.NullString(req.Principal.SudoUser),
+			RequestID: normalizeRequestID(req.Principal.RequestID),
+			Op:        req.Op, Tenant: model.NullString(req.Tenant),
+			JobID: model.NullString(stored.ID), ArgsRedacted: argsRedacted,
+			PlanHash: model.NullString(plan.PlanHash), Outcome: "joined",
+		})
 		return plan, stored, nil
 	}
 	if as, ok := e.o.Store.(ArgsStore); ok {
@@ -376,6 +410,7 @@ func (e *engine) start(job *model.Job, op Op, req Request, planned *Planned, oc 
 func (e *engine) execute(ctx context.Context, r *run, op Op, req Request, argsRedacted map[string]any, from int) {
 	started := e.o.Now().UTC()
 	job := r.job
+	defer e.recoverRun(r, req, argsRedacted, started)
 
 	holder := LockHolder{JobID: job.ID, PID: os.Getpid(), Since: started.Format(time.RFC3339)}
 	set, err := e.locks.Take(r.planned.Locks, req.Tenant, holder, started)
@@ -395,6 +430,7 @@ func (e *engine) execute(ctx context.Context, r *run, op Op, req Request, argsRe
 	job.Lock = &model.JobLock{Order: set.Names(), Since: started.Format(time.RFC3339)}
 	job.State = model.JobRunning
 	job.StartedAt = model.NullString(started.Format(time.RFC3339))
+	e.recordWorker(ctx, job.ID)
 	e.save(ctx, job)
 
 	// Re-plan UNDER the locks. Until the locks were held, the registry could
@@ -423,12 +459,13 @@ func (e *engine) execute(ctx context.Context, r *run, op Op, req Request, argsRe
 
 // runSteps executes steps [from, len) and settles the job.
 func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted map[string]any, started time.Time, from int) {
+	defer e.recoverRun(r, req, argsRedacted, started)
 	job := r.job
 	steps := r.planned.Steps
 
 	for i := from; i < len(steps); i++ {
 		if ctx.Err() != nil {
-			e.rollbackAndSettle(r, req, argsRedacted, started, i-1, model.JobCancelled,
+			e.rollbackAndSettle(r, req, argsRedacted, started, i, model.JobCancelled,
 				&model.JobError{Step: stepNo(i + 1), Code: "cancelled", Detail: "cancelled by an operator"})
 			return
 		}
@@ -466,7 +503,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			if e.wasCancelled(r) || errors.Is(err, context.Canceled) {
 				state, code = model.JobCancelled, "cancelled"
 			}
-			e.rollbackAndSettle(r, req, argsRedacted, started, i-1, state,
+			e.rollbackAndSettle(r, req, argsRedacted, started, i, state,
 				&model.JobError{Step: stepNo(st.N), Code: code, Detail: e.o.Redactor.Redact(err.Error())})
 			return
 		}
@@ -492,7 +529,20 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	if r.planned.Secrets != nil {
 		if secrets := r.planned.Secrets(); len(secrets) > 0 {
 			if err := e.putEnvelope(ctx, job, secrets); err != nil {
+				// A mint that cannot be delivered must not report success:
+				// job.result would say `secrets_available` for an envelope
+				// nobody can ever take, and the operator would go looking for
+				// a value that does not exist. The mint is UNDONE instead —
+				// the step that wrote the credential has a Rollback keyed on
+				// what it wrote — so the remedy is a fresh, audited re-mint
+				// rather than a key that lives on a host with no owner.
 				e.o.Logger.Error("sealing the delivery envelope", "job", job.ID, "err", err)
+				job.Result = nil
+				e.rollbackAndSettle(r, req, argsRedacted, started, len(job.Steps)-1, model.JobFailed,
+					&model.JobError{Code: "secrets_undeliverable", Detail: e.o.Redactor.Redact(
+						"the minted secrets could not be sealed into the delivery envelope (" + err.Error() +
+							"); what was minted has been rolled back — re-mint to get a value that can be delivered")})
+				return
 			}
 		}
 	}
@@ -504,6 +554,14 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 func (e *engine) stepContext(ctx context.Context, r *run, i int) *StepContext {
 	job := r.job
 	st := &job.Steps[i]
+	// The durability hooks run on a context that CANNOT be cancelled. A step
+	// being cancelled is exactly the step that most needs to record the ids
+	// of the work it already started: if Checkpoint failed because the cancel
+	// beat it to the store, the external effect would exist with nothing in
+	// the database pointing at it, and reconcile would have nothing to act
+	// on. The cancellation still reaches the STEP through ctx — it just does
+	// not reach the step's bookkeeping.
+	dctx := context.WithoutCancel(ctx)
 	return &StepContext{
 		Job: job, Step: st, Ops: r.oc,
 		Checkpoint: func(ids ...string) error {
@@ -512,7 +570,7 @@ func (e *engine) stepContext(ctx context.Context, r *run, i int) *StepContext {
 			// on the very next instruction.
 			st.ExternalIDs = append(st.ExternalIDs, ids...)
 			st.Checkpoint = true
-			return e.o.Store.Update(ctx, job)
+			return e.o.Store.Update(dctx, job)
 		},
 		Reserve: func(resource string, until *time.Time) error {
 			res := model.Reservation{Resource: resource}
@@ -521,14 +579,14 @@ func (e *engine) stepContext(ctx context.Context, r *run, i int) *StepContext {
 			}
 			job.Reservations = append(job.Reservations, res)
 			if rs, ok := e.o.Store.(ReservationStore); ok {
-				if err := rs.PutReservation(ctx, job.ID, res, e.o.Now()); err != nil {
+				if err := rs.PutReservation(dctx, job.ID, res, e.o.Now()); err != nil {
 					return err
 				}
 			}
-			return e.o.Store.Update(ctx, job)
+			return e.o.Store.Update(dctx, job)
 		},
 		Logf: func(format string, args ...any) {
-			e.appendLog(ctx, job, st, fmt.Sprintf(format, args...))
+			e.appendLog(dctx, job, st, fmt.Sprintf(format, args...))
 		},
 	}
 }
@@ -550,16 +608,24 @@ func (e *engine) appendLog(ctx context.Context, job *model.Job, st *model.Step, 
 // rollbackAndSettle undoes the steps that DID succeed, newest first, and
 // settles the job. Reverse order is the only order that can work: step 3
 // cannot be undone while step 4's effects still depend on it.
-func (e *engine) rollbackAndSettle(r *run, req Request, argsRedacted map[string]any, started time.Time, lastSucceeded int, state model.JobState, jobErr *model.JobError) {
+// lastStep is the index of the last step the job TOUCHED — the one that
+// failed or was cancelled, not the one before it.
+func (e *engine) rollbackAndSettle(r *run, req Request, argsRedacted map[string]any, started time.Time, lastStep int, state model.JobState, jobErr *model.JobError) {
 	// A fresh context: the cancellation that got us here must not also cancel
 	// the undo.
 	ctx := context.Background()
 	job := r.job
 	rb := &model.JobRollback{Attempted: false, State: model.RollbackNotNeeded}
 
+	if lastStep > len(job.Steps)-1 {
+		lastStep = len(job.Steps) - 1
+	}
 	var failed, done int
-	for i := lastSucceeded; i >= 0; i-- {
-		if job.Steps[i].State != model.StepSucceeded {
+	for i := lastStep; i >= 0; i-- {
+		if !rollbackable(&job.Steps[i]) {
+			continue
+		}
+		if i >= len(r.planned.Steps) {
 			continue
 		}
 		step := r.planned.Steps[i]
@@ -578,7 +644,13 @@ func (e *engine) rollbackAndSettle(r *run, req Request, argsRedacted map[string]
 			continue
 		}
 		done++
-		job.Steps[i].State = model.StepRolledBack
+		if job.Steps[i].State == model.StepSucceeded {
+			// The step that FAILED keeps its state: which step broke is the
+			// first thing an operator reads, and job.error names it. That its
+			// half-done work was undone is recorded by the job's rollback
+			// block, not by relabelling the failure.
+			job.Steps[i].State = model.StepRolledBack
+		}
 	}
 	switch {
 	case !rb.Attempted:
@@ -601,9 +673,73 @@ func (e *engine) rollbackAndSettle(r *run, req Request, argsRedacted map[string]
 	e.finish(ctx, r, state, jobErr, argsRedacted, req, started)
 }
 
+// rollbackable says whether the reverse pass should offer this step to its
+// Rollback. A succeeded step, always. A FAILED step too, but only when it got
+// far enough to leave something behind: a checkpoint, or external ids. That
+// is the case the plan's "a step records its external ids BEFORE the call
+// that creates them" exists for — the snapshot was created and the call then
+// timed out, and the only record of it is the id the step checkpointed. A
+// rollback that skips the failing step leaks exactly the resource the
+// checkpoint was written to make recoverable, and the step's own Rollback is
+// the only code that knows how to key off those ids.
+func rollbackable(st *model.Step) bool {
+	switch st.State {
+	case model.StepSucceeded:
+		return true
+	case model.StepFailed:
+		return st.Checkpoint || len(st.ExternalIDs) > 0
+	default:
+		return false
+	}
+}
+
+// recoverRun turns a panicking step into a failed job instead of a dead
+// daemon. A control plane that loses its process to one bad step loses every
+// OTHER job's bookkeeping with it: their locks stay on disk, their rows stay
+// `running`, and the restart has to reconcile work that was never in trouble.
+// So the panic is caught HERE, at the one boundary that owns the job's locks
+// and its terminal write, and the stack goes to the log.
+func (e *engine) recoverRun(r *run, req Request, argsRedacted map[string]any, started time.Time) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	job := r.job
+	detail := e.o.Redactor.Redact(fmt.Sprintf("the step panicked: %v", rec))
+	e.o.Logger.Error("a job step panicked", "job", job.ID, "op", job.Op,
+		"panic", fmt.Sprint(rec), "stack", string(debug.Stack()))
+
+	jobErr := &model.JobError{Code: "step_panic", Detail: detail}
+	for i := range job.Steps {
+		if job.Steps[i].State == model.StepRunning {
+			job.Steps[i].State = model.StepFailed
+			job.Steps[i].FinishedAt = model.NullString(e.o.Now().UTC().Format(time.RFC3339))
+			job.Steps[i].Error = model.NullString(detail)
+			jobErr.Step = stepNo(job.Steps[i].N)
+			break
+		}
+	}
+	// No rollback: a step that panicked left the host in a state its own undo
+	// has no reason to understand. The locks ARE released — holding a fleet
+	// lock for a goroutine that no longer exists would wedge every later job
+	// on this tenant — and the job is failed so a human decides what is true.
+	e.finish(context.Background(), r, model.JobFailed, jobErr, argsRedacted, req, started)
+}
+
 // finish releases the locks, writes the terminal state and the `result` audit
-// row, and deregisters the run.
+// row, and deregisters the run. It settles a run exactly ONCE: two paths can
+// reach it (a Cancel's rollback and the run goroutine finding its context
+// done), and a second terminal write would emit a second `result` audit row
+// and Release a lock set the first pass already dropped.
 func (e *engine) finish(ctx context.Context, r *run, state model.JobState, jobErr *model.JobError, argsRedacted map[string]any, req Request, started time.Time) {
+	e.mu.Lock()
+	if r.finished {
+		e.mu.Unlock()
+		return
+	}
+	r.finished = true
+	e.mu.Unlock()
+
 	job := r.job
 	now := e.o.Now().UTC()
 	job.State = state
@@ -793,6 +929,7 @@ func (e *engine) Resume(ctx context.Context, id string, p Principal) (*model.Job
 	job.Error = nil
 	job.Worker = &model.JobWorker{PID: os.Getpid(), Host: e.o.Host, Mode: e.o.Mode}
 	job.Lock = &model.JobLock{Order: set.Names(), Since: started.Format(time.RFC3339)}
+	e.recordWorker(ctx, job.ID)
 	e.save(ctx, job)
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -847,6 +984,14 @@ func (e *engine) Continue(ctx context.Context, id string, p Principal) (*model.J
 		argsRedacted = map[string]any{}
 	}
 
+	// Take responsibility for this run before anything else touches it. A
+	// Cancel that arrived a microsecond earlier already owns it, and two
+	// goroutines driving one parked job would roll its steps back while the
+	// remaining ones were still running.
+	if !e.claimSettle(r) {
+		return nil, fmt.Errorf("%w: job %s is already settling; wait for it to reach a terminal state", ErrRefused, id)
+	}
+
 	from := 0
 	for i := range job.Steps {
 		if job.Steps[i].State == model.StepPending {
@@ -865,8 +1010,28 @@ func (e *engine) Continue(ctx context.Context, id string, p Principal) (*model.J
 	return continued, nil
 }
 
+// claimSettle is the compare-and-set that makes ONE caller responsible for
+// driving r to a terminal state. Everything that spawns a goroutine which
+// will settle the run — Continue, and Cancel on a parked or interrupted job —
+// goes through it, so a double Cancel, or a Cancel racing a Continue, refuses
+// instead of starting a second pass over the same steps.
+func (e *engine) claimSettle(r *run) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r.settling {
+		return false
+	}
+	r.settling = true
+	return true
+}
+
 // Cancel stops a job and undoes what it managed to do.
-func (e *engine) Cancel(ctx context.Context, id string, p Principal) (*model.Job, error) {
+//
+// confirm is the contract's: cancelling a job that has succeeded steps with a
+// rollback is itself a mutation of the fleet, so openapi.yaml gives the route
+// the same `confirm` every destructive call has. A cancel that would undo
+// nothing needs none.
+func (e *engine) Cancel(ctx context.Context, id string, p Principal, confirm string) (*model.Job, error) {
 	if err := reauthorize(p); err != nil {
 		return nil, err
 	}
@@ -879,27 +1044,43 @@ func (e *engine) Cancel(ctx context.Context, id string, p Principal) (*model.Job
 	}
 	e.mu.Lock()
 	r := e.active[id]
-	if r != nil {
-		r.cancelled = true
-	}
 	e.mu.Unlock()
 
 	switch {
-	case r != nil && job.State == model.JobRunning:
+	case r != nil && (job.State == model.JobRunning || job.State == model.JobQueued):
 		// Cooperative: the step sees the cancelled context, the run goroutine
-		// rolls back what succeeded and settles the job as `cancelled`.
+		// rolls back what succeeded and settles the job as `cancelled`. No
+		// second goroutine is started, so no compare-and-set is needed — and
+		// a repeated Cancel just cancels an already-cancelled context.
+		if err := e.gateCancelConfirm(job, r.planned, confirm); err != nil {
+			return nil, err
+		}
+		e.markCancelled(r)
 		r.cancel()
 		return job, nil
+
 	case r != nil && job.State == model.JobAwaitingCutover:
 		// The parked run has no goroutine watching; undo it from here.
+		if err := e.gateCancelConfirm(job, r.planned, confirm); err != nil {
+			return nil, err
+		}
+		if !e.claimSettle(r) {
+			// A Continue, or another Cancel, already owns this run.
+			return nil, fmt.Errorf("%w: job %s is already settling; wait for it to reach a terminal state", ErrRefused, id)
+		}
+		e.markCancelled(r)
 		last := len(r.job.Steps) - 1
 		go e.rollbackAndSettle(r, Request{Op: job.Op, Tenant: string(job.Tenant)}, map[string]any{},
 			e.o.Now().UTC(), last, model.JobCancelled,
 			&model.JobError{Code: "cancelled", Detail: "cancelled by an operator while awaiting cutover"})
 		return job, nil
+
 	case job.State == model.JobInterrupted:
 		req, planned, oc, ar, err := e.rebuild(ctx, job)
 		if err != nil {
+			return nil, err
+		}
+		if err := e.gateCancelConfirm(job, planned, confirm); err != nil {
 			return nil, err
 		}
 		started := e.o.Now().UTC()
@@ -908,15 +1089,22 @@ func (e *engine) Cancel(ctx context.Context, id string, p Principal) (*model.Job
 		if err != nil {
 			return nil, lockRefusal(err)
 		}
-		rr := &run{job: job, planned: planned, oc: oc, locks: set, cancelled: true}
+		rr := &run{job: job, planned: planned, oc: oc, locks: set, cancelled: true, settling: true}
 		e.mu.Lock()
+		if prev := e.active[id]; prev != nil {
+			// Something claimed this job between the Get and the locks.
+			e.mu.Unlock()
+			set.Release()
+			return nil, fmt.Errorf("%w: job %s is already settling; wait for it to reach a terminal state", ErrRefused, id)
+		}
 		e.active[id] = rr
 		e.mu.Unlock()
 		cancelled := cloneJob(job)
 		go e.rollbackAndSettle(rr, req, ar, started, len(job.Steps)-1, model.JobCancelled,
 			&model.JobError{Code: "cancelled", Detail: "cancelled by an operator while interrupted"})
 		return cancelled, nil
-	default:
+
+	case job.State == model.JobQueued:
 		// Queued and not yet started anywhere: nothing ran, so nothing to undo.
 		now := e.o.Now().UTC()
 		job.State = model.JobCancelled
@@ -932,7 +1120,74 @@ func (e *engine) Cancel(ctx context.Context, id string, p Principal) (*model.Job
 			PlanHash: model.NullString(job.PlanHash), Outcome: string(model.JobCancelled),
 		})
 		return cloneJob(job), nil
+
+	default:
+		// Running or parked, and NOT ours. The old code marked it "cancelled
+		// before it started" — a lie about a job that is at this moment
+		// running steps in another process, and one that frees the row while
+		// that process goes on writing to the same fleet. Only the process
+		// holding the run can stop it, so say so and name it.
+		extra := map[string]any{}
+		who := "another process"
+		if job.Worker != nil {
+			extra["pid"], extra["host"], extra["mode"] = job.Worker.PID, job.Worker.Host, string(job.Worker.Mode)
+			who = fmt.Sprintf("pid %d on %s (%s)", job.Worker.PID, job.Worker.Host, job.Worker.Mode)
+		}
+		return nil, refuse(fmt.Errorf(
+			"%w: job %s is %s in %s, not in this one; cancel it from there (`ragstack-ctl --direct job cancel %s` on that host) or wait for reconcile to interrupt it",
+			ErrRefused, id, job.State, who, id), extra)
 	}
+}
+
+// markCancelled records that a HUMAN asked for the stop, so the terminal
+// state is `cancelled` rather than `failed`.
+func (e *engine) markCancelled(r *run) {
+	e.mu.Lock()
+	r.cancelled = true
+	e.mu.Unlock()
+}
+
+// gateCancelConfirm is openapi.yaml's "cancel requires confirm when a
+// rollback would run". The confirm VALUE is the plan's: a destructive op is
+// confirmed by typing the tenant's name, everything else by "yes" — typing
+// "yes" to "undo the handover of prod" is not evidence you read which tenant
+// it said.
+func (e *engine) gateCancelConfirm(job *model.Job, planned *Planned, confirm string) error {
+	if !wouldRollBack(job, planned) {
+		return nil
+	}
+	want := e.cancelConfirmValue(job)
+	if confirm == want {
+		return nil
+	}
+	return refuse(fmt.Errorf("%w: cancelling job %s rolls back what it already did; pass confirm=%q",
+		ErrConfirmRequired, job.ID, want), map[string]any{"confirm_value": want})
+}
+
+// wouldRollBack reports whether a cancel now would actually undo something:
+// at least one succeeded step whose planned half has a Rollback.
+func wouldRollBack(job *model.Job, planned *Planned) bool {
+	if planned == nil {
+		return false
+	}
+	for i := range job.Steps {
+		if i >= len(planned.Steps) {
+			break
+		}
+		if rollbackable(&job.Steps[i]) && planned.Steps[i].Rollback != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// cancelConfirmValue is the same rule plan() applies: the tenant name for a
+// destructive op, "yes" otherwise.
+func (e *engine) cancelConfirmValue(job *model.Job) string {
+	if op, ok := e.o.Ops.Lookup(job.Op); ok && op.Destructive() && job.Tenant != "" {
+		return string(job.Tenant)
+	}
+	return "yes"
 }
 
 // ---------------------------------------------------------------- secrets
@@ -960,10 +1215,48 @@ func (e *engine) putEnvelope(ctx context.Context, job *model.Job, secrets []mode
 		// and die with it. That is the contract's fallback, and it is why a
 		// lost value's remedy is a new mint rather than a recovery.
 		e.mu.Lock()
-		e.mem[job.ID] = plaintext
+		e.mem[job.ID] = memEnvelope{payload: plaintext, expiresAt: env.ExpiresAt}
 		e.mu.Unlock()
 	}
-	return e.o.Store.PutEnvelope(ctx, env)
+	e.sweepMem(now)
+	if err := e.o.Store.PutEnvelope(ctx, env); err != nil {
+		// The store refused the envelope, so nothing will ever deliver it.
+		// Drop the plaintext rather than leave an undeliverable secret in
+		// this process's heap for the rest of the daemon's life.
+		e.mu.Lock()
+		e.forgetMem(job.ID)
+		e.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+// sweepMem drops every memory-only envelope whose TTL has passed. The store
+// expires the envelope ROW on read, but the plaintext lives here, and an
+// entry nobody ever comes back for would otherwise sit in the daemon's heap
+// until the process ends — an unbounded, unauditable pile of live
+// credentials. It runs on every Secrets call, on Submit and on each mint, so
+// no ticker (and no extra goroutine to leak) is needed.
+func (e *engine) sweepMem(now time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, m := range e.mem {
+		if !m.expiresAt.After(now) {
+			e.forgetMem(id)
+		}
+	}
+}
+
+// forgetMem zeroes and drops one entry. Callers hold e.mu.
+func (e *engine) forgetMem(id string) {
+	m, ok := e.mem[id]
+	if !ok {
+		return
+	}
+	for i := range m.payload {
+		m.payload[i] = 0
+	}
+	delete(e.mem, id)
 }
 
 func (e *engine) Secrets(ctx context.Context, id string, p Principal) (*model.SecretsResponse, error) {
@@ -977,8 +1270,16 @@ func (e *engine) Secrets(ctx context.Context, id string, p Principal) (*model.Se
 		return nil, err
 	}
 	now := e.o.Now().UTC()
+	e.sweepMem(now)
 	env, err := e.o.Store.TakeEnvelope(ctx, id, p.Subject, now)
 	if err != nil {
+		if errors.Is(err, ErrGone) {
+			// Delivered already, or expired: either way the plaintext must
+			// not outlive the row that authorized reading it.
+			e.mu.Lock()
+			e.forgetMem(id)
+			e.mu.Unlock()
+		}
 		return nil, err
 	}
 
@@ -993,7 +1294,8 @@ func (e *engine) Secrets(ctx context.Context, id string, p Principal) (*model.Se
 		}
 	} else {
 		e.mu.Lock()
-		held, ok := e.mem[id]
+		m, ok := e.mem[id]
+		held := m.payload
 		delete(e.mem, id)
 		e.mu.Unlock()
 		if !ok {
@@ -1028,8 +1330,8 @@ func (e *engine) Reconcile(ctx context.Context) ([]string, error) {
 	var out []string
 	for i := range running {
 		job := running[i]
-		if job.Worker != nil && job.Worker.Host == e.o.Host && pidAlive(job.Worker.PID) {
-			continue // still ours, still alive
+		if e.workerAlive(ctx, &job) {
+			continue // still ours, still alive, still holding its locks
 		}
 		for j := range job.Steps {
 			if job.Steps[j].State == model.StepRunning {
@@ -1057,6 +1359,53 @@ func (e *engine) Reconcile(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+// workerAlive decides whether job's recorded worker is still running it. It
+// is the whole basis of reconcile's "did this job's process survive?", so
+// getting it wrong in the optimistic direction is the expensive mistake: a
+// job wrongly judged alive is never interrupted, its locks are never
+// reclaimed, and the fleet waits on a process that no longer exists.
+//
+// kill(pid, 0) alone cannot answer it. Pids are RECYCLED, and a daemon
+// restart on a busy host is exactly when the number the dead worker had is
+// most likely to belong to something new. So three things must agree:
+//
+//   - the HOST, because a pid on another machine says nothing here;
+//   - the worker's process START TIME, recorded when the job took its locks —
+//     the pair (pid, start time) is unique for as long as the kernel runs,
+//     which is what makes pid reuse detectable rather than invisible;
+//   - the job's FLOCKS, because a live worker holds them and a dead one
+//     cannot. flock(2) belongs to the open file description, so a set we can
+//     take is a set nobody holds.
+func (e *engine) workerAlive(ctx context.Context, job *model.Job) bool {
+	w := job.Worker
+	if w == nil || w.Host != e.o.Host || !pidAlive(w.PID) {
+		return false
+	}
+	if ws, ok := e.o.Store.(WorkerStore); ok {
+		rec, err := ws.Worker(ctx, job.ID)
+		if err != nil {
+			e.o.Logger.Error("reading a job's recorded worker identity", "job", job.ID, "err", err)
+		} else if rec != nil {
+			if rec.Host != e.o.Host || rec.PID != w.PID {
+				return false
+			}
+			started, ok := procStartTime(w.PID)
+			if !ok || started != rec.StartTime {
+				// The pid exists but it is NOT the process that took this
+				// job: the number was recycled.
+				e.o.Logger.Warn("a job's pid was reused by another process",
+					"job", job.ID, "pid", w.PID, "recorded_start", rec.StartTime, "now", started)
+				return false
+			}
+		}
+	}
+	if job.Lock != nil && len(job.Lock.Order) > 0 && e.locks.Free(job.Lock.Order, string(job.Tenant)) {
+		// Nothing holds the locks this job says it holds.
+		return false
+	}
+	return true
+}
+
 // pidAlive is signal 0: it asks the kernel whether the pid exists without
 // touching the process. EPERM means it exists and belongs to someone else,
 // which for our purposes is "alive".
@@ -1066,6 +1415,59 @@ func pidAlive(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// procStartTime is field 22 of /proc/<pid>/stat: the process's start time in
+// clock ticks since boot. Same field ops/coconut/ctl-daemon.sh reads, for the
+// same reason.
+//
+// The comm field (2) is in parentheses and may itself contain spaces and
+// parentheses, so the split starts after the LAST ')' — the only parse of
+// this file that is correct for a process called "(evil) thing".
+func procStartTime(pid int) (uint64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, false
+	}
+	i := strings.LastIndex(string(b), ")")
+	if i < 0 {
+		return 0, false
+	}
+	fields := strings.Fields(string(b)[i+1:])
+	// After comm, field 3 is state; start time is field 22, i.e. index 19 here.
+	const startTimeIndex = 19
+	if len(fields) <= startTimeIndex {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(fields[startTimeIndex], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
+}
+
+// recordWorker persists the identity of the process that is about to run
+// job, so a later reconcile can tell this process from whatever inherits its
+// pid. It is deliberately NOT part of model.JobWorker: job.json is the
+// contract, the start time is a host implementation detail, and widening a
+// published schema to carry it would make every client's parser care.
+func (e *engine) recordWorker(ctx context.Context, jobID string) {
+	ws, ok := e.o.Store.(WorkerStore)
+	if !ok {
+		return
+	}
+	pid := os.Getpid()
+	started, _ := procStartTime(pid)
+	// Uncancellable: the identity has to be on disk before the steps run,
+	// and a cancel arriving in that window must not leave reconcile blind.
+	if err := ws.PutWorker(context.WithoutCancel(ctx), jobID, WorkerIdentity{
+		PID: pid, Host: e.o.Host, StartTime: started, Mode: e.o.Mode,
+	}); err != nil {
+		e.o.Logger.Error("recording the worker identity", "job", jobID, "err", err)
+	}
 }
 
 // ---------------------------------------------------------------- helpers

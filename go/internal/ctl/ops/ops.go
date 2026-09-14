@@ -23,12 +23,8 @@ package ops
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -297,7 +293,16 @@ func (p *planner) planned() *jobs.Planned {
 		Steps:              steps,
 		Warnings:           nonNilStrings(p.warnings),
 	}
-	plan.PlanHash = PlanHash(plan, redactArgs(p.oc, p.args))
+	// The digest is jobs.PlanHash's, not a second implementation of the same
+	// spec. The engine recomputes it under the locks and refuses when the two
+	// differ, so a planner that hashed the plan its OWN way would make
+	// `plan_stale` fire on every job — or, worse, not fire when the plan
+	// really had moved.
+	if h, err := jobs.PlanHash(plan, redactArgs(p.oc, p.args)); err == nil {
+		plan.PlanHash = h
+	} else {
+		p.warn("the plan hash could not be computed: " + err.Error())
+	}
 	result := p.result
 	return &jobs.Planned{
 		Plan:    plan,
@@ -306,45 +311,6 @@ func (p *planner) planned() *jobs.Planned {
 		Secrets: p.secrets,
 		Result:  func() map[string]any { return result },
 	}
-}
-
-// PlanHash is plan.json's hash: sha256 over the canonical JSON of {op,
-// tenant, args_redacted, registry_generation, doctor_findings_sha256,
-// steps[].{kind, target, args_sha256}, schema_version}.
-//
-// It is computed here rather than in the engine so that the two calls the
-// engine compares are two calls to ONE function: a hash the planner and the
-// re-planner computed differently would make `plan_stale` a coin toss.
-func PlanHash(p model.Plan, argsRedacted map[string]any) string {
-	type stepKey struct {
-		Kind       string `json:"kind"`
-		Target     string `json:"target"`
-		ArgsSHA256 string `json:"args_sha256"`
-	}
-	keys := make([]stepKey, 0, len(p.Steps))
-	for _, s := range p.Steps {
-		body, _ := json.Marshal(struct {
-			Title      string             `json:"title"`
-			Dest       bool               `json:"destructive"`
-			WouldWrite []model.WouldWrite `json:"would_write"`
-			WouldRun   []model.WouldRun   `json:"would_run"`
-		}{s.Title, s.Destructive, s.WouldWrite, s.WouldRun})
-		sum := sha256.Sum256(body)
-		keys = append(keys, stepKey{Kind: s.Kind, Target: strings.Join(s.Targets, ","), ArgsSHA256: hex.EncodeToString(sum[:])})
-	}
-	findings, _ := json.Marshal(p.Doctor.Findings)
-	fsum := sha256.Sum256(findings)
-	body, _ := json.Marshal(struct {
-		Op            string         `json:"op"`
-		Tenant        string         `json:"tenant"`
-		Args          map[string]any `json:"args_redacted"`
-		RegGen        int64          `json:"registry_generation"`
-		Doctor        string         `json:"doctor_findings_sha256"`
-		Steps         []stepKey      `json:"steps"`
-		SchemaVersion int            `json:"schema_version"`
-	}{p.Op, string(p.Tenant), argsRedacted, p.RegistryGeneration, hex.EncodeToString(fsum[:]), keys, p.SchemaVersion})
-	sum := sha256.Sum256(body)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ---------------------------------------------------------------- previews

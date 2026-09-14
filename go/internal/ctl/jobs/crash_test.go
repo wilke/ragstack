@@ -222,3 +222,106 @@ func TestKillDuringJobLeavesAResumableJob(t *testing.T) {
 		t.Fatalf("step 3 log = %q, %v", log, err)
 	}
 }
+
+// TestReconcileFromAnotherHostInterruptsTheCrashedJob is the crash test with
+// a HOST mismatch: the same jobs.db opened by a daemon that does not believe
+// it is the machine the job ran on.
+//
+// The pid is the trap. After the child is killed, its number is free and may
+// already belong to something else on THIS host — and on a different host it
+// means nothing at all, because pids are per-kernel. kill(pid, 0) would
+// happily report "alive" for an unrelated process and the job would stay
+// `running` forever, holding its reservations, with no worker behind it. The
+// recorded {host, pid, start time} triple is what makes that answerable.
+func TestReconcileFromAnotherHostInterruptsTheCrashedJob(t *testing.T) {
+	dir := t.TempDir()
+	roots := testRoots(dir)
+
+	cmd, out := helperCommand(t, dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting the helper: %v", err)
+	}
+	killed := false
+	t.Cleanup(func() {
+		if !killed {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+
+	st, err := NewStore(DefaultStorePath(roots.CtlStateDir))
+	if err != nil {
+		t.Fatalf("opening the worker's store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+
+	var child model.Job
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker never reached step 2's checkpoint; its output was:\n%s", out.String())
+		}
+		jobs, _, err := st.List(ctx, ListFilter{})
+		if err == nil && len(jobs) == 1 && len(jobs[0].Steps) == 3 &&
+			jobs[0].State == model.JobRunning && jobs[0].Steps[1].Checkpoint {
+			child = jobs[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The worker recorded its own identity, start time and all, when it took
+	// the locks — that is what a later process has to compare against.
+	ws, ok := st.(WorkerStore)
+	if !ok {
+		t.Fatal("the store does not record worker identities")
+	}
+	rec, err := ws.Worker(ctx, child.ID)
+	if err != nil || rec == nil {
+		t.Fatalf("Worker(%s) = %+v, %v; want the child's recorded identity", child.ID, rec, err)
+	}
+	if rec.PID != cmd.Process.Pid || rec.Host != "testhost" {
+		t.Fatalf("recorded worker = %+v, want pid %d on testhost", rec, cmd.Process.Pid)
+	}
+	live, ok := procStartTime(cmd.Process.Pid)
+	if !ok {
+		t.Skip("/proc is not available on this host")
+	}
+	if rec.StartTime != live {
+		t.Fatalf("recorded start time %d, the live process says %d", rec.StartTime, live)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGKILL); err != nil {
+		t.Fatalf("kill -9: %v", err)
+	}
+	_, _ = cmd.Process.Wait()
+	killed = true
+
+	// A daemon on a DIFFERENT host, over the same database.
+	e := NewEngine(EngineOptions{
+		Store:     st,
+		Ops:       fakeRegistry{"backup": crashOp(newTracker(), false)},
+		Roots:     roots,
+		LoadFleet: func() (*registry.Fleet, error) { return testFleet(), nil },
+		Host:      "some-other-box",
+		Mode:      model.WorkerDaemon,
+	})
+	ids, err := e.Reconcile(ctx)
+	if err != nil || len(ids) != 1 || ids[0] != child.ID {
+		t.Fatalf("Reconcile from another host = %v, %v; want the crashed job interrupted", ids, err)
+	}
+	got, err := e.Get(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != model.JobInterrupted || got.Steps[1].State != model.StepInterrupted {
+		t.Fatalf("after Reconcile: job %s, step 2 %s", got.State, got.Steps[1].State)
+	}
+	if len(got.Reservations) != 1 {
+		t.Fatalf("the interrupted job's reservations = %+v, want them KEPT", got.Reservations)
+	}
+	if got.Steps[1].ExternalIDs[0] != "snap-20260914T100000Z" {
+		t.Fatalf("the checkpointed external id did not survive: %+v", got.Steps[1].ExternalIDs)
+	}
+}

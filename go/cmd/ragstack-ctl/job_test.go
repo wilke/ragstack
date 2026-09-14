@@ -350,7 +350,7 @@ func (e *scriptedEngine) Resume(context.Context, string, jobs.Principal) (*model
 func (e *scriptedEngine) Continue(context.Context, string, jobs.Principal) (*model.Job, error) {
 	return nil, nil
 }
-func (e *scriptedEngine) Cancel(context.Context, string, jobs.Principal) (*model.Job, error) {
+func (e *scriptedEngine) Cancel(context.Context, string, jobs.Principal, string) (*model.Job, error) {
 	return nil, nil
 }
 func (e *scriptedEngine) Secrets(context.Context, string, jobs.Principal) (*model.SecretsResponse, error) {
