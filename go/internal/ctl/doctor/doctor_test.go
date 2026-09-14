@@ -596,6 +596,52 @@ func TestPortOwnerUnreadableIsAMismatch(t *testing.T) {
 	}
 }
 
+// TestPortOwnerUnreadablePreHandoverIsInfo: the live shape reported by the
+// daemon on coconut — it runs as svcbvbrc, the registry still records
+// wilke as dev's owner (pre PR-E handover), and /proc/<pid>/fd across
+// accounts is unreadable. There is no readable owner to compare against the
+// registry here, so this is not a mismatch: it is the designed pre-handover
+// state, the same class as secrets_unreadable_by_ctl, and must not turn the
+// fleet red.
+func TestPortOwnerUnreadablePreHandoverIsInfo(t *testing.T) {
+	w := newWorld(t)
+	w.host.Self = DefaultCtlUser                                         // daemon account; tenant.Owner stays "wilke"
+	w.host.Ports = []hostfacts.Listener{{Port: devAPI, Pid: 0, UID: -1}} // owner invisible
+	got := byCode(w.run(t))
+	if f, ok := got[PortOwnerMismatch]; ok {
+		t.Errorf("port_owner_mismatch = %+v, want no error finding pre-handover", f)
+	}
+	f, ok := got[PortOwnerUnverifiable]
+	if !ok || f.Level != model.LevelInfo {
+		t.Fatalf("port_owner_unverifiable = %+v, want an info finding", f)
+	}
+	if !strings.Contains(f.Detail, "cannot attribute") || !strings.Contains(f.Detail, "wilke") {
+		t.Errorf("the finding must say it cannot attribute the port and name the registry owner: %q", f.Detail)
+	}
+	if resp := w.run(t); resp.Status == model.StatusRed {
+		t.Errorf("an unattributable port on a pre-handover tenant must not redden the fleet, got %s", resp.Status)
+	}
+}
+
+// TestPortOwnerUnreadableOwnAccountIsAMismatch: the owner is unreadable, but
+// the registry says THIS ctl account owns the port — there is no pending
+// handover to explain the gap, so something is genuinely wrong and the
+// finding must stay an error.
+func TestPortOwnerUnreadableOwnAccountIsAMismatch(t *testing.T) {
+	w := newWorld(t)
+	w.host.Self = DefaultCtlUser
+	w.tenant.Owner = DefaultCtlUser
+	w.host.Ports = []hostfacts.Listener{{Port: devAPI, Pid: 0, UID: -1}} // owner invisible
+	got := byCode(w.run(t))
+	f, ok := got[PortOwnerMismatch]
+	if !ok || f.Level != model.LevelError {
+		t.Fatalf("port_owner_mismatch = %+v, want a red finding", f)
+	}
+	if _, unverifiable := got[PortOwnerUnverifiable]; unverifiable {
+		t.Errorf("port_owner_unverifiable should not also fire when the registry owner is the ctl account")
+	}
+}
+
 // TestPortNotListeningLetsStartThrough is S13: a crashed tenant (state active,
 // no listener) must not refuse the ops that exist to repair it.
 func TestPortNotListeningLetsStartThrough(t *testing.T) {

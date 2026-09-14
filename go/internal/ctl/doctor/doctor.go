@@ -301,12 +301,20 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 		// `restart`). preconditions.go raises it for the ops that must not
 		// run over a tenant whose live state contradicts the registry.
 		d.add(model.LevelWarn, PortNotListening, t.Name, fmt.Sprintf("state is active but nothing listens on :%d", t.Ports.API))
+	case listening && api.User == "" && d.preHandover(t):
+		// The owner is UNREADABLE, and the registry owner is not this
+		// account — the pre-handover shape every tenant is in until PR-E, the
+		// same class as secrets_unreadable_by_ctl one directory over. There is
+		// no readable owner to compare against the registry, so this is not a
+		// mismatch: info, not error.
+		d.add(model.LevelInfo, PortOwnerUnverifiable, t.Name, fmt.Sprintf(
+			":%d is held by a process this account cannot attribute (owner unreadable: /proc/<pid>/fd is not readable across accounts); the registry records owner %s",
+			t.Ports.API, t.Owner))
 	case listening && api.User == "":
-		// The owner is UNREADABLE, not "fine". /proc/<pid>/fd is not
-		// readable across accounts, so a ctl running as svcbvbrc sees
-		// wilke's uvicorn as an ownerless socket — precisely the case the
-		// identity gate exists for. Passing it silently let every mutation
-		// through on the one host layout the gate was written for.
+		// Unreadable, but the registry says THIS account owns it — the ctl
+		// should be able to read its own listener. Something is genuinely
+		// wrong, so this stays an error rather than being folded into the
+		// pre-handover info case above.
 		d.add(model.LevelError, PortOwnerMismatch, t.Name, fmt.Sprintf(
 			":%d is held by a process this account cannot attribute (owner unreadable: /proc/<pid>/fd is not readable across accounts); the registry records owner %s",
 			t.Ports.API, t.Owner))
