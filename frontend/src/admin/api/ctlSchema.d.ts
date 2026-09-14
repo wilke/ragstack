@@ -1570,7 +1570,7 @@ export interface components {
             job_id: components["schemas"]["JobId"] | null;
             args_redacted: Record<string, never>;
             plan_hash: string | null;
-            outcome: ("accepted" | "refused" | "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled") | null;
+            outcome: ("accepted" | "joined" | "refused" | "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled") | null;
             error: string | null;
             duration_ms: number | null;
         };
@@ -1598,7 +1598,7 @@ export interface components {
                     job_id: components["schemas"]["JobId"] | null;
                     args_redacted: Record<string, never>;
                     plan_hash: string | null;
-                    outcome: ("accepted" | "refused" | "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled") | null;
+                    outcome: ("accepted" | "joined" | "refused" | "succeeded" | "failed" | "rolled_back" | "interrupted" | "cancelled") | null;
                     error: string | null;
                     duration_ms: number | null;
                 };
