@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -196,7 +198,27 @@ func (g *RealGateway) options(dryRun bool) gateway.Options {
 		NginxSIF:  g.opts.NginxSIF,
 		Apptainer: g.opts.Apptainer,
 		DryRun:    dryRun,
+		// This driver runs only inside a job, and every op whose plan carries
+		// a gateway step declares LockGateway (an ops test asserts it), so
+		// the engine already holds the gateway package's lock file.
+		LockHeld: true,
 	}
+}
+
+// Routes reads the tenant list the live proxy tree serves.
+func (g *RealGateway) Routes(_ context.Context) ([]string, error) {
+	lists, err := doctor.LiveTenantLists(g.opts.Roots.ProxyDir)
+	if err != nil {
+		return nil, err
+	}
+	if lists.NamesJSON == "" {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(lists.NamesJSON), &names); err != nil {
+		return nil, fmt.Errorf("the live tenant list %s does not parse: %w", lists.NamesSource, err)
+	}
+	return names, nil
 }
 
 func (g *RealGateway) fleet() (*registry.Fleet, error) {

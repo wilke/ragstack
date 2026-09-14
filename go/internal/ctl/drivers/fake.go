@@ -26,6 +26,8 @@ type FakeOptions struct {
 	Enabled []string
 	// Listening is the set of ports that start out bound.
 	Listening []int
+	// Routed is the tenant list the fake gateway serves at the start.
+	Routed []string
 	// Collections maps a qdrant base URL to the collections it holds.
 	Collections map[string][]string
 	// Indices maps an elasticsearch base URL to the indices it holds.
@@ -144,7 +146,7 @@ func NewFake(opts FakeOptions) *Fake {
 		Linked: copyMapString(opts.Linked), Failed: setOf(opts.Failed),
 		proc: f.proc, ports: opts.UnitPorts, pids: map[string]int{}, nextPID: 20001,
 	}
-	f.gateway = &FakeGateway{r: &f.recorder, Generation: opts.Generation}
+	f.gateway = &FakeGateway{r: &f.recorder, Generation: opts.Generation, Routed: append([]string(nil), opts.Routed...)}
 	f.files = &FakeFiles{
 		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
 		Roots: append([]string(nil), opts.Roots...), Free: opts.DiskFree,
@@ -552,6 +554,23 @@ type FakeGateway struct {
 	Applies    []bool // dry-run flag of each Apply, in order
 	Reloads    []bool // dry-run flag of each Reload
 	Rollbacks  []int  // targets of each Rollback
+	// Routed is the tenant list the fake's live gateway serves. Apply does
+	// not recompute it (the fake knows no fleet); a test or the fixture seeds
+	// it, and a create with gateway:true against the fake is routed only when
+	// the caller says so.
+	Routed []string
+}
+
+// Routes is the fake's live tenant list, sorted.
+func (g *FakeGateway) Routes(_ context.Context) ([]string, error) {
+	if err := g.r.record("gateway", "Routes"); err != nil {
+		return nil, err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := append([]string(nil), g.Routed...)
+	sort.Strings(out)
+	return out, nil
 }
 
 func (g *FakeGateway) Apply(_ context.Context, dryRun bool) (int, string, error) {

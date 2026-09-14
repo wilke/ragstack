@@ -107,6 +107,9 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 	tp := paths.TenantPaths(roots, tenant.Name, tenant.ManifestName)
 	fake := drivers.NewFake(drivers.FakeOptions{
 		Roots: []string{"/rag"},
+		// The fixture tenant is routed by the live gateway, so the fence and
+		// the quarantine have a route to publish over.
+		Routed: []string{name},
 		Files: map[string][]byte{
 			tp.TenantEnv:  env,
 			tp.SecretsEnv: ledgerEnv(),

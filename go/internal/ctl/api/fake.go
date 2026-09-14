@@ -243,6 +243,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		opts.UnitPorts[apiUnit] = t.Ports.API
 		if t.State == "active" {
 			opts.Listening = append(opts.Listening, t.Ports.API)
+			opts.Routed = append(opts.Routed, name)
 			if t.Supervisor == string(model.SupervisorSystemd) {
 				opts.Active = append(opts.Active, apiUnit)
 			}

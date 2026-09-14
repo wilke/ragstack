@@ -74,11 +74,21 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 		p.addUnitStep("disable", c)
 	}
 	p.addUnitFileRemoval()
+	// The registry step comes BEFORE the publish: the gateway renders routes
+	// for active rows only, so the generation without this tenant can only be
+	// rendered once the row says quarantined.
+	p.addQuarantineRegistry(sandbox)
 	p.add(step{
 		Kind: "nginx", Title: "publish a generation without " + t.Name, Destructive: true, Targets: []string{t.Name},
 		Warnings: []string{"the gateway renders only ACTIVE tenants, so a quarantined row drops out of the map by " +
 			"itself; this publishes the generation in which it has"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if routed, why, err := gatewayRoutes(ctx, sc, t.Name); err != nil {
+				return "", err
+			} else if !routed {
+				sc.Logf("%s", why)
+				return "skipped: " + why, nil
+			}
 			if err := sc.Checkpoint("gateway:apply:pending"); err != nil {
 				return "", err
 			}
@@ -89,7 +99,6 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 			return detail, sc.Checkpoint("gateway:gen:" + strconv.Itoa(gen))
 		},
 	})
-	p.addQuarantineRegistry(sandbox)
 	p.addQuarantineRename()
 	p.addRecoveryNote()
 	p.addWorktreeRemoval()

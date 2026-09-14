@@ -315,6 +315,10 @@ type GatewayDriver interface {
 	// Reload tests the LIVE tree, HUPs, confirms and probes — no new generation.
 	Reload(ctx context.Context, dryRun bool) (detail string, err error)
 	Rollback(ctx context.Context, to int) (detail string, err error)
+	// Routes names the tenants the LIVE gateway routes right now (the
+	// published include's tenant list). A fence or a quarantine of a tenant
+	// that is not routed has nothing to publish, and says so.
+	Routes(ctx context.Context) ([]string, error)
 }
 
 // Files is the atomic-write surface (mode and group set BEFORE rename;

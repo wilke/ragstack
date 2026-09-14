@@ -1500,6 +1500,17 @@ func (p *planner) addGatewayReadonly(on bool) {
 		Warnings: []string{"the read-only flag itself is a registry field; this step publishes the generation that " +
 			"carries it, so the fence is visible to nginx"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// A tenant the live gateway does not route — a sandbox created
+			// without a gateway publish, a tenant not yet published — has no
+			// route to fence. Publishing anyway would be a generation for
+			// nothing, and on a host where this account cannot signal the
+			// proxy (a --direct run as wilke) a failure for nothing.
+			if routed, why, err := gatewayRoutes(ctx, sc, p.t.Name); err != nil {
+				return "", err
+			} else if !routed {
+				sc.Logf("%s", why)
+				return "skipped: " + why, nil
+			}
 			// There is no generation number to record before a publish — the
 			// gateway package assigns it — so what is checkpointed first is
 			// the INTENT, and the number as soon as it exists. A crash between
@@ -1518,10 +1529,29 @@ func (p *planner) addGatewayReadonly(on bool) {
 			return detail, nil
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if len(sc.Step.ExternalIDs) == 0 {
+				return "nothing was published", nil
+			}
 			_, detail, err := sc.Ops.Drivers.Gateway().Apply(ctx, false)
 			return detail, err
 		},
 	})
+}
+
+// gatewayRoutes asks the live gateway whether it routes name. The sentence it
+// returns for "no" is what the step logs, so an operator reading the job sees
+// why nothing was published rather than a step that silently did nothing.
+func gatewayRoutes(ctx context.Context, sc *jobs.StepContext, name string) (routed bool, why string, err error) {
+	routes, err := sc.Ops.Drivers.Gateway().Routes(ctx)
+	if err != nil {
+		return false, "", fmt.Errorf("reading the live gateway's tenant list: %w", err)
+	}
+	for _, r := range routes {
+		if r == name {
+			return true, "", nil
+		}
+	}
+	return false, fmt.Sprintf("the live gateway does not route %s (it serves %v), so there is nothing to publish", name, routes), nil
 }
 
 // addAPIStop stops the tenant API whichever way this tenant is supervised.

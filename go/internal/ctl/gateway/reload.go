@@ -44,12 +44,14 @@ func Reload(ctx context.Context, opts Options) (*Result, error) {
 	st := NewState(opts.Roots)
 	res := &Result{DryRun: opts.DryRun}
 
-	lock, err := st.lock()
-	if err != nil {
-		res.step("lock", err, "")
-		return res, err
+	if !opts.LockHeld {
+		lock, err := st.lock()
+		if err != nil {
+			res.step("lock", err, "")
+			return res, err
+		}
+		defer lock.unlock()
 	}
-	defer lock.unlock()
 
 	// The LIVE generation, not a fresh render: a reload's job is to load what
 	// is published, and rendering here would silently arm a registry change
