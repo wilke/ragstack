@@ -73,9 +73,18 @@ func status(t *registry.Tenant, listeners map[int]hostfacts.Listener, now time.T
 		// PR-A has no job engine: nothing holds a tenant lock yet.
 		RunningJobs: []string{},
 		Listening: model.Listening{
-			API:        up,
-			QdrantHTTP: has(listeners, portOf(t.Stores.Qdrant.URL, t.Ports.QdrantHTTP)),
-			ESHTTP:     has(listeners, portOf(t.Stores.Elasticsearch.URL, t.Ports.ESHTTP)),
+			API: up,
+			// QdrantHTTP/ESHTTP ask "is a LISTEN socket open on THIS
+			// tenant's own port block right now" — deliberately the block
+			// port (t.Ports.*), not portOf(store.URL, ...): portOf resolves
+			// to wherever the tenant actually TALKS, which for a shared
+			// store is someone else's port (e.g. 6333) — right for health
+			// and for display, but wrong here. A shared tenant has no
+			// listener of its own on that slot; checking the shared
+			// store's port instead would report a stranger's socket as
+			// "listening" for every tenant that shares it.
+			QdrantHTTP: has(listeners, t.Ports.QdrantHTTP),
+			ESHTTP:     has(listeners, t.Ports.ESHTTP),
 			UI:         has(listeners, int(t.UI.Port)),
 		},
 	}
@@ -86,6 +95,14 @@ func status(t *registry.Tenant, listeners map[int]hostfacts.Listener, now time.T
 	return s
 }
 
+// has reports whether a LISTEN socket exists on port right now. This is
+// deliberately independent of process attribution: hostfacts.Listener.Pid is
+// 0 whenever the owning process is invisible to this account (a different
+// user, e.g. a tenant's qdrant/ES running as `wilke` while the ctl runs as
+// `svcbvbrc`) — that is the expected, common case for every store leg, not
+// an error, and it must never be read as "not listening". Attribution-
+// dependent facts (owning pid, its user, its cmdline) live separately on
+// LiveStatus.APIPid / APIPidOwner and are only ever populated when Pid > 0.
 func has(listeners map[int]hostfacts.Listener, port int) bool {
 	if port == 0 {
 		return false
