@@ -295,7 +295,12 @@ type Listening struct {
 	API        bool `json:"api"`
 	QdrantHTTP bool `json:"qdrant_http"`
 	ESHTTP     bool `json:"es_http"`
-	UI         bool `json:"ui"`
+	// PG is the block's +5 port. Only a stores.postgres.kind == "local"
+	// tenant binds it; for sqlite and external it is reserved and unused, so
+	// this is false. TCP LISTEN only — there is no postgres leg in Health
+	// because this PR makes no protocol probe.
+	PG bool `json:"pg"`
+	UI bool `json:"ui"`
 }
 
 // LiveStatus is what /proc says right now

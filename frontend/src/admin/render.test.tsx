@@ -12,6 +12,7 @@ import { TenantSection, TenantView } from "./components/TenantView";
 import { isSecretName } from "./components/SecretSafeValue";
 import {
   demoTenantFixture,
+  postgresTenantFixture,
   doctorFixture,
   envFixture,
   fleetFixture,
@@ -252,6 +253,11 @@ describe("TenantView", () => {
     expect(html).toMatch(/>qdrant<\/span><span[^>]*>ok<\/span><span[^>]*>:24041</);
     expect(html).toMatch(/>es<\/span><span[^>]*>ok<\/span><span[^>]*>:24043</);
     expect(html).toMatch(/>ui<\/span><span[^>]*>down<\/span>/);
+    // tenantFixture is a VIEWER body (registry: null), and the relational
+    // store's kind lives only in the registry row — so the postgres leg is
+    // `unknown`, not a guess derived from a boolean whose meaning depends on
+    // the kind.
+    expect(html).toMatch(/>postgres<\/span><span[^>]*>unknown<\/span>/);
     expect(html).toContain("(from /proc/net/tcp)");
   });
 
@@ -270,6 +276,22 @@ describe("TenantView", () => {
     expect(html).toMatch(/>es<\/span><span[^>]*>shared<\/span>/);
     expect(html).toMatch(/>ui<\/span><span[^>]*>static<\/span>/);
     expect(html).toMatch(/>api<\/span><span[^>]*>ok<\/span><span[^>]*>:24060</);
+    // Same idea for the relational store: demo keeps it in SQLite files, so
+    // the +5 port it never binds is not reported as a down store.
+    expect(html).toMatch(/>postgres<\/span><span[^>]*>sqlite<\/span>/);
+  });
+
+  it("shows a dedicated postgres instance as a real listening check, on its own port", () => {
+    const html = render(
+      createElement(TenantView, { name: "hackathon", role: "operator", onBack: () => {} }),
+      (qc) => {
+        seedFleet(qc);
+        qc.setQueryData(ctlKeys.tenant("hackathon"), postgresTenantFixture);
+      },
+    );
+    // `--postgres local`: the block's +5 port IS this tenant's, so the row is
+    // an ok/down chip with the port beside it, like api/qdrant/es.
+    expect(html).toMatch(/>postgres<\/span><span[^>]*>ok<\/span><span[^>]*>:24085</);
   });
 
   it("says the registry row is withheld rather than showing an empty block", () => {

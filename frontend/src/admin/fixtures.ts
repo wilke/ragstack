@@ -160,7 +160,7 @@ export const tenantFixture: CtlTenant = {
     observed_at: AT,
     api_pid: 1234567,
     api_pid_owner: "wilke",
-    listening: { api: true, qdrant_http: true, es_http: true, ui: false },
+    listening: { api: true, qdrant_http: true, es_http: true, pg: false, ui: false },
     restart_pending: false,
     running_jobs: [],
   },
@@ -279,6 +279,9 @@ export const demoTenantFixture: CtlTenant = {
       qdrant: { ownership: "shared", capabilities: { stop: false, purge: false, restore: false, snapshot: false }, url: "http://localhost:6333", instance: null, sif: null, extra_env: {} },
       elasticsearch: { ownership: "shared", capabilities: { stop: false, purge: false, restore: false, snapshot: false }, url: "http://localhost:9200", instance: null, sif: null, heap: null, provision_heap: null, path_repo: null, extra_env: {} },
       neo4j: { ownership: "external", url: null },
+      // demo predates `--postgres`: its ACL/job/collection state is SQLite
+      // under state/, so there is no server and the block's +5 port is unused.
+      postgres: { kind: "sqlite", ownership: "exclusive", capabilities: { stop: false, purge: false, restore: false, snapshot: false }, url: null, port: null, instance: null, sif: null, data_dir: null },
       dormant_provisioned_dirs: true,
     },
     ui: { mode: "static", port: null, base: "/ragstack/demo/ui/" },
@@ -308,7 +311,7 @@ export const demoTenantFixture: CtlTenant = {
     observed_at: AT,
     api_pid: 7654321,
     api_pid_owner: "wilke",
-    listening: { api: true, qdrant_http: false, es_http: false, ui: false },
+    listening: { api: true, qdrant_http: false, es_http: false, pg: false, ui: false },
     restart_pending: false,
     running_jobs: [],
   },
@@ -320,6 +323,37 @@ export const demoTenantFixture: CtlTenant = {
     ],
   },
   drift: [],
+};
+
+/**
+ * An OPERATOR body for a `--postgres local` tenant (hackathon on coconut): a
+ * DEDICATED postgres instance on the block's +5 port. It is the only shape in
+ * which `status.listening.pg` is a real fact about the tenant, and the only
+ * one whose Listening table shows a postgres port rather than a kind label.
+ */
+export const postgresTenantFixture: CtlTenant = {
+  ...demoTenantFixture,
+  summary: { ...demoTenantFixture.summary, name: "hackathon", manifest_name: "hackathon" },
+  registry: {
+    ...demoTenantFixture.registry!,
+    name: "hackathon",
+    manifest_name: "hackathon",
+    ports: { index: 4, base: 24080, api: 24080, qdrant_http: 24081, qdrant_grpc: 24082, es_http: 24083, es_transport: 24084, pg: 24085 },
+    stores: {
+      ...demoTenantFixture.registry!.stores,
+      postgres: {
+        kind: "local",
+        ownership: "exclusive",
+        capabilities: { stop: false, purge: false, restore: false, snapshot: false },
+        url: "postgresql://localhost:24085",
+        port: 24085,
+        instance: "postgres-hackathon",
+        sif: "/rag/apptainer/images/postgres.sif",
+        data_dir: "/rag/data/tenants/hackathon/postgres",
+      },
+    },
+  },
+  status: { ...demoTenantFixture.status, listening: { api: true, qdrant_http: true, es_http: true, pg: true, ui: false } },
 };
 
 export const hostileTenantFixture: CtlTenant = {

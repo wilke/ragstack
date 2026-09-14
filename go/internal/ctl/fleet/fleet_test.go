@@ -596,3 +596,38 @@ func TestBuildProbesTenantsConcurrently(t *testing.T) {
 		t.Error("an empty fleet must marshal as [], not null")
 	}
 }
+
+// TestListeningPGFollowsTheStoreKind: `listening.pg` is the +5 port asked the
+// same way qdrant_http and es_http ask their own — with the one difference
+// that the port is only THIS tenant's when the relational store is a
+// dedicated instance. For sqlite and external the +5 port is reserved and
+// unused, so whatever happens to be squatting there is never reported as this
+// tenant's store being up.
+func TestListeningPGFollowsTheStoreKind(t *testing.T) {
+	roots := paths.NewRoots("/rag", paths.Overrides{})
+	for _, c := range []struct {
+		name     string
+		pg       registry.Postgres
+		listener bool
+		want     bool
+	}{
+		{"local with the instance up", registry.Postgres{Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive, URL: "postgresql://localhost:24045", Port: 24045, Instance: "postgres-dev"}, true, true},
+		{"local with the instance down", registry.Postgres{Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive, URL: "postgresql://localhost:24045", Port: 24045, Instance: "postgres-dev"}, false, false},
+		{"sqlite with a stranger on the port", registry.SQLiteStore(), true, false},
+		{"external with a stranger on the port", registry.Postgres{Kind: registry.PostgresKindExternal, Ownership: registry.OwnershipExternal, URL: "postgresql://db.example.org:5432", Port: 5432}, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := registry.LiveFixture()
+			dev := f.Tenants["dev"]
+			dev.Stores.Postgres = c.pg
+			p := probes(t)
+			h := p.Host.(*hostfacts.Fake)
+			if c.listener {
+				h.Ports = append(h.Ports, hostfacts.Listener{Port: dev.Ports.PG, Pid: 0})
+			}
+			if got := TenantView(context.Background(), roots, dev, p, true).Status.Listening.PG; got != c.want {
+				t.Errorf("listening.pg = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

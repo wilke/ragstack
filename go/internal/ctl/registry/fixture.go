@@ -35,6 +35,11 @@ func LiveFixture() *Fleet {
 		t.Supervisor, t.Owner, t.State, t.DesiredBoot, t.EnvLayout = "manual", "wilke", "active", "disabled", "legacy"
 		t.EnvFileSHA256 = emptySHA256
 		t.Identity = Identity{Provider: "bvbrc"}
+		// All four coconut tenants keep their ACL/job/collection state in
+		// SQLite under <data_dir>/state — none was provisioned with
+		// `--postgres`, so none binds the block's +5 port. (hackathon, the
+		// `--postgres local` tenant, is not in this fixture.)
+		t.Stores.Postgres = SQLiteStore()
 		f.Tenants[name] = t
 		return t
 	}

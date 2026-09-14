@@ -92,7 +92,7 @@ func usage() {
                                             vite build nginx serves from <data-dir>/ui/dist and takes
                                             NO --ui-port (the pair is a usage error); its dist has to
                                             exist, or the preview raises ui_dist_missing (error).
-  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection]
+  adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection] [--readopt]
                                             the four live coconut tenants in one batch (see below).
                                             --spec entries take an optional ui_mode field with the same
                                             meaning as --ui-mode.
@@ -689,6 +689,7 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	commit := fs.Bool("commit", false, "write the row to --registry")
 	force := fs.Bool("force", false, "commit even when the preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
+	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 
@@ -712,7 +713,7 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		fmt.Fprintf(stderr, "adopt: %v\n", err)
 		return exitUsage
 	}
-	return runAdopt([]adoptSpec{spec}, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, jsonOut)
+	return runAdopt([]adoptSpec{spec}, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, *readopt, jsonOut)
 }
 
 func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int {
@@ -722,6 +723,7 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 	commit := fs.Bool("commit", false, "write the rows to --registry as one generation")
 	force := fs.Bool("force", false, "commit even when a preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
+	readopt := fs.Bool("readopt", false, "replace the row of a tenant already in the registry with this preview (keeps adopted_at, desired_boot, rollback descriptor, last ops/backup)")
 	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode} (default: the four live tenants)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
@@ -747,7 +749,7 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 		fmt.Fprintf(stderr, "adopt-all: %v\n", err)
 		return exitUsage
 	}
-	return runAdopt(specs, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, jsonOut)
+	return runAdopt(specs, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, *readopt, jsonOut)
 }
 
 // cmdRegistry is the explicit projection-repair verb. It is a verb and not a
@@ -780,7 +782,7 @@ func cmdRegistry(args []string, registryPath, ragRoot string) int {
 // runAdopt previews every spec and, with commit, writes them as one registry
 // generation. A preview that fails on any tenant does not write anything —
 // and neither does one whose findings include an error, unless --force.
-func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, repairProjection, jsonOut bool) int {
+func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, repairProjection, readopt, jsonOut bool) int {
 	roots := paths.NewRoots(ragRoot, paths.Overrides{})
 	results := make([]previewResult, 0, len(specs))
 	rows := make([]*registry.Tenant, 0, len(specs))
@@ -826,7 +828,7 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	}
 	if err := adopt.CommitAll(registryPath, rows, adopt.CommitOptions{
 		Roots: roots, UpdatedBy: fmt.Sprintf("local:%d", os.Getuid()),
-		RepairProjection: repairProjection,
+		RepairProjection: repairProjection, Readopt: readopt,
 	}); err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
 		return exitRefused
@@ -860,6 +862,17 @@ func printPreview(r previewResult) {
 		orNone(string(t.Stores.Elasticsearch.Heap)), orNone(string(t.Stores.Elasticsearch.ProvisionHeap)))
 	if t.Stores.Neo4j.URL != "" {
 		fmt.Fprintf(stdout, "   neo4j      external   %s\n", t.Stores.Neo4j.URL)
+	}
+	// The relational store is printed for every tenant, sqlite included: "no
+	// server" is the answer to a question an operator reading an adoption
+	// preview is asking, and a missing line reads as "not checked".
+	switch pg := t.Stores.Postgres; pg.Kind {
+	case registry.PostgresKindSQLite:
+		fmt.Fprintf(stdout, "   postgres   %-10s sqlite (files under %s/state)\n", pg.Ownership, t.DataDir)
+	case registry.PostgresKindLocal:
+		fmt.Fprintf(stdout, "   postgres   %-10s %s instance %s data %s\n", pg.Ownership, pg.URL, pg.Instance, pg.DataDir)
+	default:
+		fmt.Fprintf(stdout, "   postgres   %-10s %s\n", pg.Ownership, pg.URL)
 	}
 	fmt.Fprintf(stdout, "   settings %d · secret_refs %d · keys %d · admins %d · external_refs %d · unmanaged %d · drift %d\n",
 		len(t.Settings), len(t.SecretRefs), len(t.Keys), t.Identity.AdminSubjectsCount,

@@ -138,3 +138,50 @@ func TestCommitAllRepairsTheProjectionOnceRefusalsAreCleared(t *testing.T) {
 		t.Fatalf("registry has %d tenants, want 3 (a, b, c)", len(got.Tenants))
 	}
 }
+
+// TestReadoptReplacesTheRowAndKeepsWhatAdoptionCannotSee: a tenant whose
+// store kind the contract only just learned (#535) is re-adopted in place —
+// the row is rebuilt from the host, the generation moves, and the state
+// adoption does not observe (adopted_at, desired_boot) survives.
+func TestReadoptReplacesTheRowAndKeepsWhatAdoptionCannotSee(t *testing.T) {
+	dir := t.TempDir()
+	roots := paths.NewRoots(dir, paths.Overrides{})
+	reg := roots.Registry()
+	first := commitTestTenant(roots, "dev", 2)
+	first.AdoptedAt = "2026-09-14T00:00:00Z"
+	first.DesiredBoot = "disabled"
+	if err := Commit(reg, first, CommitOptions{Roots: roots, UpdatedBy: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := commitTestTenant(roots, "dev", 2)
+	again.AdoptedAt = "2026-09-15T00:00:00Z" // a fresh preview stamps now; the original must win
+	again.Stores.Postgres = registry.Postgres{
+		Kind: "local", Ownership: "exclusive", URL: "postgresql://localhost:24045",
+		Port: 24045, Instance: "postgres-dev", SIF: "/rag/apptainer/images/postgres.sif",
+		DataDir: registry.NullString(paths.TenantPaths(roots, "dev", "dev").DataDir + "/postgres"),
+	}
+	if err := Commit(reg, again, CommitOptions{Roots: roots, UpdatedBy: "test"}); err == nil {
+		t.Fatal("re-adoption without --readopt was accepted")
+	}
+	if err := Commit(reg, again, CommitOptions{Roots: roots, UpdatedBy: "test", Readopt: true}); err != nil {
+		t.Fatalf("--readopt refused: %v", err)
+	}
+	after, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := after.Tenants["dev"]
+	if row.Stores.Postgres.Kind != "local" || row.Stores.Postgres.Instance != "postgres-dev" {
+		t.Errorf("the row was not replaced: %+v", row.Stores.Postgres)
+	}
+	if after.Generation != before.Generation+1 {
+		t.Errorf("generation %d -> %d, want +1", before.Generation, after.Generation)
+	}
+	if row.AdoptedAt != "2026-09-14T00:00:00Z" || row.DesiredBoot != "disabled" {
+		t.Errorf("adopted_at/desired_boot were not carried over: %q %q", row.AdoptedAt, row.DesiredBoot)
+	}
+}

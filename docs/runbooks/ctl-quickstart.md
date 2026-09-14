@@ -265,7 +265,9 @@ below once verified.)
 
 The sequence that worked pre-registry: `new-tenant.sh <name> --postgres local
 --es-heap 1g` (dedicated Postgres on the block's +5 port; the sqlite default
-and the shared-server `--postgres <dsn>` mode still exist), edit `tenant.env`
+and the shared-server `--postgres <dsn>` mode still exist — all three are
+recorded as `stores.postgres.kind` = `local`/`sqlite`/`external`, see the
+deploy runbook's "The relational store in the registry"), edit `tenant.env`
 (identity, admins, GoWe ingest, limits — no inline comments), `git -C
 ~/Development/ragstack worktree add --detach /rag/repos/tenants/<name>
 <tag>`, `npm ci` + `.env` in its `frontend/`, then either a Vite dev server or

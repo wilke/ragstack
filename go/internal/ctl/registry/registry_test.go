@@ -643,6 +643,36 @@ func TestUnusableLockNamesTheFix(t *testing.T) {
 	}
 }
 
+// The postgres row as Save writes it, and the edits of it that have to be
+// refused. `"kind"` appears nowhere else in a tenant row, so anchoring on it
+// selects the postgres block unambiguously (`"ownership"` alone would hit
+// qdrant's first).
+const (
+	pgKindOwnership = `"kind": "sqlite",
+          "ownership": "exclusive",`
+	pgKindOwnershipShared = `"kind": "sqlite",
+          "ownership": "shared",`
+
+	pgRowHead = `"kind": "sqlite",
+          "ownership": "exclusive",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": null,`
+	pgRowHeadDSN = `"kind": "external",
+          "ownership": "external",
+          "capabilities": {
+            "stop": false,
+            "purge": false,
+            "restore": false,
+            "snapshot": false
+          },
+          "url": "postgresql://ragstack:hunter2@localhost:5432/dev",`
+)
+
 // contractEditCases are one-byte-level hand edits of a valid registry, the
 // JSON pointer the Go error must name, and why. Replayed twice: through
 // Fleet.ValidateContract (the Go mirror) and through the real JSON schema, so
@@ -657,6 +687,11 @@ var contractEditCases = []struct{ name, from, to, wantPtr, wantWhy string }{
 	{"secret in settings", `"settings": {}`, `"settings": {"OPENAI_API_KEY": "sk-live"}`, "/settings/OPENAI_API_KEY", "SECRET-class"},
 	{"lowercase setting", `"settings": {}`, `"settings": {"openai_base": "x"}`, "/settings/openai_base", "shell-identifier"},
 	{"tenant name", `"name": "dev"`, `"name": "Dev"`, "/name", "does not match"},
+	{"bad postgres kind", `"kind": "sqlite"`, `"kind": "mysql"`, "/stores/postgres/kind", `"mysql" is not one of`},
+	{"postgres ownership shared", pgKindOwnership, pgKindOwnershipShared, "/stores/postgres/ownership", `"shared" is not one of`},
+	// The one edit the whole "url is host+port" rule exists to refuse: a DSN,
+	// credentials and all, in the field every reader prints.
+	{"dsn in the postgres url", pgRowHead, pgRowHeadDSN, "/stores/postgres/url", "does not match"},
 	{"bad fingerprint", `"keys": []`, `"keys": [{"id":"k1","label":"l","role":"admin","tenant_string":"dev","fingerprint":"sha256:zz","created_at":"2026-09-11T00:00:00Z","created_by":"t","revoked_at":null,"effective":true}]`, "/keys/0/fingerprint", "does not match"},
 }
 
@@ -786,5 +821,106 @@ func TestSaveRefusesARowLoadCannotReadBack(t *testing.T) {
 	}
 	if !KnownOwner("wilke") || !KnownOwner("svcbvbrc") || KnownOwner("root") {
 		t.Errorf("KnownOwner disagrees with the enum %v", Owners())
+	}
+}
+
+// TestPostgresRowCoherence: `kind` and the five location fields are not
+// independent, and the JSON schema cannot say so (the same reason ui.mode and
+// ui.port are checked in ValidateContract rather than in the schema). A
+// sqlite row carrying a port describes a server that does not exist; a local
+// row without one names no socket for doctor to check or a future backup to
+// fence; an external row claiming an instance claims a process the ctl does
+// not run.
+func TestPostgresRowCoherence(t *testing.T) {
+	sif := "/rag/apptainer/images/postgres.sif"
+	local := Postgres{
+		Kind: PostgresKindLocal, Ownership: OwnershipExclusive,
+		URL: "postgresql://localhost:24085", Port: 24085,
+		Instance: "postgres-hackathon", SIF: NullString(sif),
+		DataDir: "/rag/data/tenants/hackathon/postgres",
+	}
+	external := Postgres{Kind: PostgresKindExternal, Ownership: OwnershipExternal, URL: "postgresql://db.example.org:5432", Port: 5432}
+
+	for _, c := range []struct {
+		name    string
+		pg      Postgres
+		wantPtr string // "" ⇒ must be accepted
+	}{
+		{"sqlite", SQLiteStore(), ""},
+		{"local", local, ""},
+		{"external", external, ""},
+		{"sqlite with a port", func() Postgres { p := SQLiteStore(); p.Port = 24085; return p }(), "/port"},
+		{"sqlite with an instance", func() Postgres { p := SQLiteStore(); p.Instance = "postgres-dev"; return p }(), "/instance"},
+		{"sqlite with a url", func() Postgres { p := SQLiteStore(); p.URL = "postgresql://localhost:24085"; return p }(), "/url"},
+		{"local without a port", func() Postgres { p := local; p.Port = 0; return p }(), "/port"},
+		{"local without an instance", func() Postgres { p := local; p.Instance = ""; return p }(), "/instance"},
+		{"local owned externally", func() Postgres { p := local; p.Ownership = OwnershipExternal; return p }(), "/ownership"},
+		{"external owned exclusively", func() Postgres { p := external; p.Ownership = OwnershipExclusive; return p }(), "/ownership"},
+		{"external without a url", func() Postgres { p := external; p.URL = ""; return p }(), "/url"},
+		{"external claiming an instance", func() Postgres { p := external; p.Instance = "postgres-dev"; return p }(), "/instance"},
+		{"external claiming data at rest", func() Postgres { p := external; p.DataDir = "/rag/data/tenants/dev/postgres"; return p }(), "/data_dir"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := LiveFixture()
+			f.UpdatedBy = "local:test"
+			f.Tenants["dev"].Stores.Postgres = c.pg
+			err := f.ValidateContract()
+			switch {
+			case c.wantPtr == "" && err != nil:
+				t.Fatalf("a valid %s row was refused: %v", c.pg.Kind, err)
+			case c.wantPtr == "":
+			case err == nil:
+				t.Fatalf("incoherent row accepted: %+v", c.pg)
+			case !strings.Contains(err.Error(), "/stores/postgres"+c.wantPtr):
+				t.Fatalf("error does not name %s: %v", "/stores/postgres"+c.wantPtr, err)
+			}
+		})
+	}
+}
+
+// TestLoadBackfillsAMissingPostgresRow: `stores.postgres` did not exist before
+// #535, so the registry running on coconut has no such member. Refusing to
+// LOAD it would take the whole control plane down on a binary upgrade, for a
+// field every one of those tenants has the default value of — so the absent
+// row is filled with the sqlite one.
+//
+// It is filled, never faked: a sqlite row claims no port, so a `postgres-local`
+// tenant adopted before this field existed keeps raising unexpected_listener
+// on its +5 port until `adopt` re-reads provision.env. That warning is the
+// signal to re-adopt, and this test pins it.
+func TestLoadBackfillsAMissingPostgresRow(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	if err := Save(reg, LiveFixture(), "local:test"); err != nil {
+		t.Fatal(err)
+	}
+	valid, err := os.ReadFile(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Strip every postgres member, which is exactly what a pre-#535 file is.
+	var raw map[string]any
+	if err := json.Unmarshal(valid, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range raw["tenants"].(map[string]any) {
+		delete(v.(map[string]any)["stores"].(map[string]any), "postgres")
+	}
+	legacy, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reg, legacy, 0o660); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := LoadNoRepair(reg)
+	if err != nil {
+		t.Fatalf("a registry written before stores.postgres existed must still load: %v", err)
+	}
+	for name, tn := range f.Tenants {
+		if got := tn.Stores.Postgres; got != SQLiteStore() {
+			t.Errorf("%s postgres = %+v, want the sqlite row", name, got)
+		}
 	}
 }

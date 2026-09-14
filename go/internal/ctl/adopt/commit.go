@@ -26,6 +26,14 @@ type CommitOptions struct {
 	// new-tenant.sh reissues index 0 onto a live tenant's ports), so a
 	// commit REFUSES over a stale projection rather than quietly fixing it.
 	RepairProjection bool
+	// Readopt replaces the row of a tenant that is ALREADY in the registry
+	// with a fresh preview (a tenant re-provisioned, a store kind that the
+	// contract only just learned — #535). The fields adoption cannot observe
+	// on the host are carried over from the existing row: adopted_at,
+	// desired_boot, restart_pending, rollback_descriptor, last_ops,
+	// last_backup. Off by default: adoption happens once, and a silent
+	// re-adoption is how a hand edit gets lost.
+	Readopt bool
 }
 
 // Commit writes one adopted tenant. It is CommitAll with a single row, and
@@ -50,8 +58,11 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 		if t == nil {
 			return errors.New("adopt: nil tenant in batch")
 		}
-		if _, exists := f.Tenants[t.Name]; exists {
-			return fmt.Errorf("adopt: tenant %q is already in %s — adoption happens once", t.Name, registryPath)
+		if prev, exists := f.Tenants[t.Name]; exists {
+			if !opts.Readopt {
+				return fmt.Errorf("adopt: tenant %q is already in %s — adoption happens once (pass --readopt to replace the row from a fresh preview)", t.Name, registryPath)
+			}
+			carryOver(t, prev)
 		}
 	}
 	// Every refusal decidable from the load alone (duplicate tenants above;
@@ -233,4 +244,22 @@ func reconcile(registryPath string, f *registry.Fleet) error {
 	default:
 		return fmt.Errorf("adopt: %s does not reconcile with the registry: %w — adopt every row in one batch", man, err)
 	}
+}
+
+// carryOver copies onto a re-adopted row the state adoption does not read
+// from the host, so a --readopt never resets what an operator or a job set.
+func carryOver(next, prev *registry.Tenant) {
+	if prev == nil || next == nil {
+		return
+	}
+	next.AdoptedAt = prev.AdoptedAt
+	if prev.DesiredBoot != "" {
+		next.DesiredBoot = prev.DesiredBoot
+	}
+	next.RestartPending = prev.RestartPending
+	next.RollbackDescriptor = prev.RollbackDescriptor
+	if len(prev.LastOps) > 0 {
+		next.LastOps = prev.LastOps
+	}
+	next.LastBackup = prev.LastBackup
 }

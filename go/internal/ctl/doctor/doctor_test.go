@@ -982,3 +982,85 @@ func TestSecretsUnreadableIsNotReportedForAnOwnedTenant(t *testing.T) {
 		t.Errorf("%s claimed a pending handover for a tenant this account owns: %+v", SecretsUnreadableByCtl, f)
 	}
 }
+
+// TestPostgresStoreFindings covers the +5 port once a tenant's relational
+// store is first-class in the registry (#535). The three kinds answer the
+// same question differently, and the pair of findings has to stay
+// complementary: exactly one of them can be true for a given port, never both
+// and never neither.
+func TestPostgresStoreFindings(t *testing.T) {
+	local := func(w *world) {
+		w.tenant.Stores.Postgres = registry.Postgres{
+			Kind: registry.PostgresKindLocal, Ownership: registry.OwnershipExclusive,
+			URL: "postgresql://localhost:24045", Port: registry.NullPort(w.tenant.Ports.PG),
+			Instance: "postgres-dev",
+			SIF:      registry.NullString(filepath.Join(w.roots.ImagesDir, "postgres.sif")),
+			DataDir:  registry.NullString(filepath.Join(w.tenant.DataDir, "postgres")),
+		}
+	}
+
+	// The regression #535 names: before the row existed, a dedicated
+	// postgres on the +5 port was a stranger in the tenant's own block and
+	// doctor said so on every single pass.
+	t.Run("a dedicated instance on the pg port is no longer unexpected", func(t *testing.T) {
+		w := newWorld(t)
+		local(w)
+		w.host.Ports = append(w.host.Ports, hostfacts.Listener{Port: w.tenant.Ports.PG, Pid: 77, User: "wilke", Cmdline: []string{"postgres", "-c", "port=24045"}})
+		got := byCode(w.run(t))
+		if f, ok := got[UnexpectedListener]; ok {
+			t.Errorf("unexpected_listener = %+v; the port is the tenant's own with kind=local", f)
+		}
+		if f, ok := got[PostgresNotListening]; ok {
+			t.Errorf("postgres_not_listening = %+v with a live listener", f)
+		}
+	})
+
+	t.Run("an active tenant with its dedicated store down is a warning", func(t *testing.T) {
+		w := newWorld(t)
+		local(w)
+		got := byCode(w.run(t))
+		f, ok := got[PostgresNotListening]
+		if !ok || f.Level != model.LevelWarn || f.Tenant != "dev" {
+			t.Fatalf("postgres_not_listening = %+v (present %v), want a warn on dev", f, ok)
+		}
+		if !strings.Contains(f.Detail, "postgres-dev") || !strings.Contains(f.Detail, "24045") {
+			t.Errorf("detail = %q, want the instance name and the port", f.Detail)
+		}
+		if _, ok := got[UnexpectedListener]; ok {
+			t.Error("nothing listens on the port: it cannot also be an unexpected listener")
+		}
+	})
+
+	t.Run("a stopped tenant's store is meant to be down", func(t *testing.T) {
+		w := newWorld(t)
+		local(w)
+		w.tenant.State = "stopped"
+		w.host.Ports = nil
+		if _, ok := byCode(w.run(t))[PostgresNotListening]; ok {
+			t.Error("a stopped tenant's stores are stopped too: no finding")
+		}
+	})
+
+	// sqlite and external keep the OLD behaviour for the +5 port, and that is
+	// the point: neither binds it, so a listener there is still a stranger.
+	for _, c := range []struct {
+		name string
+		pg   registry.Postgres
+	}{
+		{"sqlite", registry.SQLiteStore()},
+		{"external", registry.Postgres{Kind: registry.PostgresKindExternal, Ownership: registry.OwnershipExternal, URL: "postgresql://db.example.org:5432", Port: 5432}},
+	} {
+		t.Run(c.name+" does not claim the pg port", func(t *testing.T) {
+			w := newWorld(t)
+			w.tenant.Stores.Postgres = c.pg
+			w.host.Ports = append(w.host.Ports, hostfacts.Listener{Port: w.tenant.Ports.PG, Pid: 77, User: "wilke", Cmdline: []string{"postgres"}})
+			got := byCode(w.run(t))
+			if f := got[UnexpectedListener]; f.Level != model.LevelWarn {
+				t.Errorf("unexpected_listener = %+v, want a warning: kind %q binds nothing on that port", f, c.pg.Kind)
+			}
+			if _, ok := got[PostgresNotListening]; ok {
+				t.Errorf("kind %q has no dedicated instance to be down", c.pg.Kind)
+			}
+		})
+	}
+}

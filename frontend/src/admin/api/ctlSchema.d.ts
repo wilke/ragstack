@@ -810,10 +810,40 @@ export interface components {
             ownership: "external";
             url: string | null;
         };
+        /** @description `postgresql://<host>:<port>` — host and port, nothing else. The pattern refuses a userinfo (`user:pw@`), a path (the database name) and a query string, so a DSN cannot be written here by accident. */
+        PostgresUrl: string;
+        /**
+         * @description The tenant's RELATIONAL store — the ACL / job / collection store, which every tenant has in one of three shapes `new-tenant.sh` provisions (`provision.env`'s `TENANT_STORE_KIND`):
+         *
+         *     * `sqlite` (the default, `TENANT_STORE_KIND=sqlite` or absent) — files under `<data_dir>/state/`. There is no server, so `url`, `port`, `instance`, `sif` and `data_dir` are all null.
+         *     * `local` (`TENANT_STORE_KIND=postgres-local`, i.e. `new-tenant.sh <name> --postgres local`) — a DEDICATED apptainer instance `postgres-<name>` from `postgres.sif`, bound to 127.0.0.1 on the block's `ports.pg` (+5), data at rest under `<data_dir>/postgres/{data,run}`. This is the only kind whose +5 port is the tenant's own to bind, and the only kind `doctor` expects a listener for.
+         *     * `external` (`TENANT_STORE_KIND=postgres`, i.e. `--postgres <admin-dsn>`) — a database and role inside a Postgres server somebody else runs. The ctl neither starts it nor stops it.
+         *
+         *     `ownership` follows from the kind and is not independently settable: `sqlite` and `local` are `exclusive` (the files, or the instance and its data dir, are this tenant's alone — a backup or a purge may act on them), `external` is `external` (someone else's server, like neo4j).
+         *
+         *     **`url` is host and port ONLY.** The three DSNs the tenant actually connects with (`USER_STORE_DSN`, `JOB_STORE_DSN`, `COLLECTION_STORE_DSN`) carry a password and are secret-class: they are recorded as `secret_refs[{key, file}]` and NEVER here. `capabilities` defaults to all-false exactly like the other stores.
+         */
+        PostgresStore: {
+            /** @enum {string} */
+            kind: "sqlite" | "local" | "external";
+            /** @enum {string} */
+            ownership: "exclusive" | "external";
+            capabilities: components["schemas"]["StoreCapabilities"];
+            /** @description `postgresql://<host>:<port>` for `local` and `external`; null for `sqlite`. Host and port only — no userinfo, no database name. */
+            url: components["schemas"]["PostgresUrl"] | null;
+            /** @description The server's port: `ports.pg` for `local`, `TENANT_PG_PORT` for `external`, null for `sqlite`. */
+            port: components["schemas"]["Port"] | null;
+            /** @description Apptainer instance name (`postgres-<name>`) for `local`; null for `sqlite` and `external`, which have no instance of this tenant's. */
+            instance: string | null;
+            sif: string | null;
+            /** @description `<data_dir>/postgres` for `local` (PGDATA is the `data/pgdata` subdir of it); null otherwise. What a snapshot/restore would act on. */
+            data_dir: components["schemas"]["AbsPath"] | null;
+        };
         Stores: {
             qdrant: components["schemas"]["QdrantStore"];
             elasticsearch: components["schemas"]["ElasticsearchStore"];
             neo4j: components["schemas"]["Neo4jStore"];
+            postgres: components["schemas"]["PostgresStore"];
             /** @description True when `new-tenant.sh` provisioned per-tenant store directories that the tenant does not use (demo runs on the shared stores). `start`/`stop` refuse to touch the dormant pair. */
             dormant_provisioned_dirs: boolean;
         };
@@ -1009,6 +1039,8 @@ export interface components {
                 api: boolean;
                 qdrant_http: boolean;
                 es_http: boolean;
+                /** @description A listener on the block's `ports.pg` (+5). Only a `stores.postgres.kind == "local"` tenant binds it — for `sqlite` and `external` the port is reserved and unused, and this is false. TCP LISTEN only: this PR makes no protocol probe, so there is no postgres leg in `health`. */
+                pg: boolean;
                 ui: boolean;
             };
             restart_pending: boolean;
@@ -1056,6 +1088,8 @@ export interface components {
                         api: boolean;
                         qdrant_http: boolean;
                         es_http: boolean;
+                        /** @description A listener on the block's `ports.pg` (+5). Only a `stores.postgres.kind == "local"` tenant binds it — for `sqlite` and `external` the port is reserved and unused, and this is false. TCP LISTEN only: this PR makes no protocol probe, so there is no postgres leg in `health`. */
+                        pg: boolean;
                         ui: boolean;
                     };
                     restart_pending: boolean;
@@ -1857,12 +1891,42 @@ export interface components {
                     ownership: "external";
                     url: string | null;
                 };
+                /**
+                 * @description The tenant's RELATIONAL store — the ACL / job / collection store, which every tenant has in one of three shapes `new-tenant.sh` provisions (`provision.env`'s `TENANT_STORE_KIND`):
+                 *
+                 *     * `sqlite` (the default, `TENANT_STORE_KIND=sqlite` or absent) — files under `<data_dir>/state/`. There is no server, so `url`, `port`, `instance`, `sif` and `data_dir` are all null.
+                 *     * `local` (`TENANT_STORE_KIND=postgres-local`, i.e. `new-tenant.sh <name> --postgres local`) — a DEDICATED apptainer instance `postgres-<name>` from `postgres.sif`, bound to 127.0.0.1 on the block's `ports.pg` (+5), data at rest under `<data_dir>/postgres/{data,run}`. This is the only kind whose +5 port is the tenant's own to bind, and the only kind `doctor` expects a listener for.
+                 *     * `external` (`TENANT_STORE_KIND=postgres`, i.e. `--postgres <admin-dsn>`) — a database and role inside a Postgres server somebody else runs. The ctl neither starts it nor stops it.
+                 *
+                 *     `ownership` follows from the kind and is not independently settable: `sqlite` and `local` are `exclusive` (the files, or the instance and its data dir, are this tenant's alone — a backup or a purge may act on them), `external` is `external` (someone else's server, like neo4j).
+                 *
+                 *     **`url` is host and port ONLY.** The three DSNs the tenant actually connects with (`USER_STORE_DSN`, `JOB_STORE_DSN`, `COLLECTION_STORE_DSN`) carry a password and are secret-class: they are recorded as `secret_refs[{key, file}]` and NEVER here. `capabilities` defaults to all-false exactly like the other stores.
+                 */
+                PostgresStore: {
+                    /** @enum {string} */
+                    kind: "sqlite" | "local" | "external";
+                    /** @enum {string} */
+                    ownership: "exclusive" | "external";
+                    capabilities: components["schemas"]["StoreCapabilities"];
+                    /** @description `postgresql://<host>:<port>` for `local` and `external`; null for `sqlite`. Host and port only — no userinfo, no database name. */
+                    url: components["schemas"]["PostgresUrl"] | null;
+                    /** @description The server's port: `ports.pg` for `local`, `TENANT_PG_PORT` for `external`, null for `sqlite`. */
+                    port: components["schemas"]["Port"] | null;
+                    /** @description Apptainer instance name (`postgres-<name>`) for `local`; null for `sqlite` and `external`, which have no instance of this tenant's. */
+                    instance: string | null;
+                    sif: string | null;
+                    /** @description `<data_dir>/postgres` for `local` (PGDATA is the `data/pgdata` subdir of it); null otherwise. What a snapshot/restore would act on. */
+                    data_dir: components["schemas"]["AbsPath"] | null;
+                };
+                /** @description `postgresql://<host>:<port>` — host and port, nothing else. The pattern refuses a userinfo (`user:pw@`), a path (the database name) and a query string, so a DSN cannot be written here by accident. */
+                PostgresUrl: string;
                 /** @description Only loopback origins are ever probed: `http://127.0.0.1:<port>` or `http://localhost:<port>`. Ports outside the tenant's block must be listed in `CTL_EXTERNAL_STORE_PORTS`. */
                 LoopbackUrl: string;
                 Stores: {
                     qdrant: components["schemas"]["QdrantStore"];
                     elasticsearch: components["schemas"]["ElasticsearchStore"];
                     neo4j: components["schemas"]["Neo4jStore"];
+                    postgres: components["schemas"]["PostgresStore"];
                     /** @description True when `new-tenant.sh` provisioned per-tenant store directories that the tenant does not use (demo runs on the shared stores). `start`/`stop` refuse to touch the dormant pair. */
                     dormant_provisioned_dirs: boolean;
                 };

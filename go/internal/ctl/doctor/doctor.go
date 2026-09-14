@@ -322,12 +322,42 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 		d.add(model.LevelError, PortOwnerMismatch, t.Name, fmt.Sprintf(":%d is held by pid %d running as %s, the registry records owner %s", t.Ports.API, api.Pid, api.User, t.Owner))
 	}
 	d.unexpectedListeners(t)
+	d.postgresCheck(t)
 	d.uiCheck(t)
 	d.envCheck(t)
 	d.codeChecks(t)
 	d.storeChecks(t)
 	d.permissionChecks(t)
 	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
+}
+
+// postgresCheck asks the one question a dedicated relational store raises:
+// is it up? A `local` tenant keeps its ACL, job and collection state in
+// postgres-<name>, so an active tenant with nothing on that port has an API
+// that cannot answer — a fact no other finding covers, because the +5 port is
+// now attributed to the tenant and so no longer reaches unexpectedListeners.
+//
+// A stopped tenant is not asked (its stores are meant to be down), and the
+// other two kinds have no server of this tenant's to be up or down.
+func (d *run) postgresCheck(t *registry.Tenant) {
+	pg := t.Stores.Postgres
+	if pg.Kind != registry.PostgresKindLocal || t.State != string(model.StateActive) {
+		return
+	}
+	port := int(pg.Port)
+	if port == 0 {
+		port = t.Ports.PG
+	}
+	if _, ok := d.ports[port]; ok {
+		return
+	}
+	instance := string(pg.Instance)
+	if instance == "" {
+		instance = "postgres-" + t.Name
+	}
+	d.add(model.LevelWarn, PostgresNotListening, t.Name, fmt.Sprintf(
+		"state is active but nothing listens on :%d, the dedicated relational store (%s); the tenant's user, job and collection stores are all unreachable",
+		port, instance))
 }
 
 // uiCheck re-runs adoption's static-UI precondition on EVERY pass.
@@ -364,6 +394,16 @@ func (d *run) unexpectedListeners(t *registry.Tenant) {
 	}
 	if t.UI.Port != 0 {
 		used[int(t.UI.Port)] = true
+	}
+	// The +5 port is the tenant's own ONLY with a dedicated instance
+	// (`new-tenant.sh --postgres local`). A `sqlite` or `external` tenant
+	// binds nothing there, so a listener on it stays what it has always been:
+	// a stranger in this tenant's block, reported.
+	if t.Stores.Postgres.Kind == registry.PostgresKindLocal {
+		used[t.Ports.PG] = true
+		if pg := int(t.Stores.Postgres.Port); pg != 0 {
+			used[pg] = true
+		}
 	}
 	for _, p := range []int{t.Ports.API, t.Ports.QdrantHTTP, t.Ports.QdrantGRPC, t.Ports.ESHTTP, t.Ports.ESTransport, t.Ports.PG} {
 		if used[p] {
