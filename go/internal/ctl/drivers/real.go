@@ -109,7 +109,11 @@ var _ jobs.Drivers = (*Real)(nil)
 // NewReal builds the real driver set.
 func NewReal(o RealOptions) *Real {
 	if len(o.ApprovedRoots) == 0 {
-		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir}
+		// The tenant worktrees root is on the list too: `tenant create`
+		// checks a worktree out under it and `decommission` moves one aside.
+		// It was missing on coconut's first selftest and the create refused
+		// its own worktree path.
+		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir, o.Roots.ReposDir}
 	}
 	o.SystemctlBin = orDefault(o.SystemctlBin, defaultSystemctlBin)
 	o.GitBin = orDefault(o.GitBin, defaultGitBin)
