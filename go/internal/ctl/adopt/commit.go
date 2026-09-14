@@ -42,7 +42,7 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 	if len(tenants) == 0 {
 		return errors.New("adopt: nothing to commit")
 	}
-	f, created, err := loadOrCreate(registryPath, opts)
+	f, diag, created, err := loadCurrent(registryPath, opts)
 	if err != nil {
 		return err
 	}
@@ -53,6 +53,27 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 		if _, exists := f.Tenants[t.Name]; exists {
 			return fmt.Errorf("adopt: tenant %q is already in %s — adoption happens once", t.Name, registryPath)
 		}
+	}
+	// Every refusal decidable from the load alone (duplicate tenants above;
+	// more may join them later) has had its chance. Only now that the commit
+	// is certain to proceed may the projection be repaired: repairing first
+	// and refusing on a LATER check would leave manifest.tsv rewritten FROM
+	// the registry on disk — dropping any row the registry does not yet
+	// know, such as one just appended for the very tenant this commit is
+	// trying, and failing, to add — with nothing committed to show for it.
+	if diag.Stale() {
+		if !opts.RepairProjection {
+			return fmt.Errorf(
+				"adopt: %w — pass --repair-projection to rewrite manifest.tsv FROM the registry first, "+
+					"but only after checking that the registry is the side that is right", diag.ProjectionStale)
+		}
+		repaired, rerr := registry.Repair(registryPath)
+		if rerr != nil {
+			return fmt.Errorf("adopt: repair projection: %w", rerr)
+		}
+		f = repaired
+	}
+	for _, t := range tenants {
 		f.Tenants[t.Name] = t
 	}
 	order, err := displayOrder(f, tenants, created, opts.Roots)
@@ -77,40 +98,28 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 	return registry.Save(registryPath, f, by)
 }
 
-// loadOrCreate reads the registry, or builds the fleet defaults (port base
-// 24000, stride 20, the standard image paths) when there is none yet.
-//
-// The load NEVER repairs the projection on the way in: reconcile below decides
-// whether this registry and this manifest.tsv agree, and a load that silently
-// rewrote manifest.tsv first would be answering that question by erasing the
-// evidence. A stale projection is therefore a REFUSAL, which --repair-projection
-// converts into an explicit repair-then-commit.
-func loadOrCreate(registryPath string, opts CommitOptions) (*registry.Fleet, bool, error) {
+// loadCurrent reads the registry, or builds the fleet defaults (port base
+// 24000, stride 20, the standard image paths) when there is none yet. It
+// NEVER repairs the projection itself — repairing is destructive (it
+// rewrites manifest.tsv FROM the registry) and CommitAll must run every
+// other refusal check first, against this as-loaded fleet, before deciding
+// whether a repair is even reachable. The staleness diagnostic is returned
+// alongside the fleet so CommitAll can act on it once it knows the commit
+// will proceed.
+func loadCurrent(registryPath string, opts CommitOptions) (*registry.Fleet, registry.Diagnostics, bool, error) {
 	f, diag, err := registry.LoadWithDiagnostics(registryPath)
 	switch {
 	case err == nil:
-		if !diag.Stale() {
-			return f, false, nil
-		}
-		if !opts.RepairProjection {
-			return nil, false, fmt.Errorf(
-				"adopt: %w — pass --repair-projection to rewrite manifest.tsv FROM the registry first, "+
-					"but only after checking that the registry is the side that is right", diag.ProjectionStale)
-		}
-		repaired, rerr := registry.Repair(registryPath)
-		if rerr != nil {
-			return nil, false, fmt.Errorf("adopt: repair projection: %w", rerr)
-		}
-		return repaired, false, nil
+		return f, diag, false, nil
 	case errors.Is(err, os.ErrNotExist):
 		// NewFleet already stamps registry.UnpinnedVersion/UnpinnedDigest on
 		// both shared images — nobody has pinned the SIFs yet (`fleet image
 		// list` does, at PR-D) — so there is nothing for adopt to fill in
 		// here. The contract types version/digest as required strings and
 		// adopt refuses to invent a digest.
-		return registry.NewFleet(opts.Roots.RagRoot), true, nil
+		return registry.NewFleet(opts.Roots.RagRoot), registry.Diagnostics{}, true, nil
 	default:
-		return nil, false, err
+		return nil, registry.Diagnostics{}, false, err
 	}
 }
 
