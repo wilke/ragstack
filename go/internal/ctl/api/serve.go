@@ -120,6 +120,17 @@ func RunServe(args []string) int {
 	// half is unavailable would remove the only view of the problem. Every
 	// mutation then answers 409 `refused` naming the reason (jobs.go).
 	roots := paths.NewRoots(*ragRoot, paths.Overrides{CtlStateDir: strings.TrimSpace(os.Getenv(EnvStateDir))})
+	if *fakeDrivers && strings.TrimSpace(os.Getenv(EnvStateDir)) == "" {
+		// A fixture daemon WRITES: jobs.db, locks, gateway generations. With
+		// the default state dir those land next to the production daemon's
+		// store, owned by whoever ran the fixture. That happened on coconut on
+		// 2026-09-14 (a wilke-owned jobs.db blocked the svcbvbrc daemon's
+		// engine). --fake-drivers therefore refuses to run without an
+		// explicit, scratch CTL_STATE_DIR.
+		logger.Error("--fake-drivers refuses the default state dir; set "+EnvStateDir+" to a scratch directory",
+			"default", roots.CtlStateDir)
+		return exitUsage
+	}
 	cfg := EngineConfig{
 		Roots:        roots,
 		RegistryPath: *registryPath,
@@ -144,10 +155,11 @@ func RunServe(args []string) int {
 		cfg.LoadFleet, cfg.SaveFleet = fb.LoadFleet, fb.SaveFleet
 	}
 	engine, err := BuildEngine(cfg)
+	var engineErr error
 	if err != nil {
 		logger.Warn("job engine unavailable; the mutation surface will refuse",
 			"store", filepath.Join(roots.CtlStateDir, "jobs.db"), "err", err.Error())
-		engine = nil
+		engine, engineErr = nil, err
 	} else {
 		// Reconcile-on-start, before the listener opens: a job whose worker
 		// died becomes `interrupted` and KEEPS its reservations, and nothing
@@ -164,8 +176,9 @@ func RunServe(args []string) int {
 
 	sessions := session.NewMemoryStore()
 	srv := &Server{
-		Backend: backend,
-		Engine:  engine,
+		Backend:   backend,
+		Engine:    engine,
+		EngineErr: engineErr,
 		Resolver: &auth.Resolver{
 			Keys:     keys,
 			Verifier: verifier,

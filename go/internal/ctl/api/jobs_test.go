@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"net/http"
@@ -901,3 +902,55 @@ func TestBuildEngineBuildsAFakeDriverEngine(t *testing.T) {
 // through do() only; without a reference the import would be dropped and the
 // helper signature would drift from the rest of the package's tests.
 var _ = func() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
+// TestFakeDriversRefuseTheDefaultStateDir: a fixture daemon writes jobs.db,
+// locks and gateway generations; without an explicit scratch CTL_STATE_DIR it
+// would write them next to the production daemon's store (it did, on coconut,
+// 2026-09-14). It must refuse to start, before it binds or writes anything.
+func TestFakeDriversRefuseTheDefaultStateDir(t *testing.T) {
+	t.Setenv(EnvStateDir, "")
+	t.Setenv("CTL_API_KEYS", `["`+strings.Repeat("a", 32)+`"]`)
+	t.Setenv("CTL_API_KEY_ROLES", `{"`+strings.Repeat("a", 32)+`":"operator"}`)
+	rc := RunServe([]string{"--fake-drivers", "--listen", "127.0.0.1:0", "--rag-root", t.TempDir()})
+	if rc != exitUsage {
+		t.Fatalf("rc = %d, want %d (usage): a fixture daemon started on the default state dir", rc, exitUsage)
+	}
+}
+
+// TestMutationRefusalNamesTheEngineError: "not wired" was the seam's word;
+// once the engine is wired, the reason it is missing is a host fact (a
+// read-only store, a bad path) and the refusal has to carry it.
+func TestMutationRefusalNamesTheEngineError(t *testing.T) {
+	envs := map[string]string{
+		auth.EnvAPIKeys:     `["` + opKey + `"]`,
+		auth.EnvAPIKeyRoles: `{"` + opKey + `":"operator"}`,
+		auth.EnvAPIKeyNames: `{"` + opKey + `":"ops"}`,
+	}
+	keys, err := auth.LoadKeys(func(k string) string { return envs[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := auth.New(auth.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := session.NewMemoryStore()
+	h := NewRouter(&Server{
+		Backend:   NewFakeBackend(),
+		EngineErr: errors.New("job store /x/jobs.db: attempt to write a readonly database"),
+		Resolver: &auth.Resolver{
+			Keys: keys, Verifier: verifier, Sessions: sessions,
+			Limiter: ratelimit.New(ratelimit.Config{PerCredential: -1, TarpitAt: -1}),
+			Reject:  reject,
+		},
+		Sessions: sessions,
+	})
+	w := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/env-normalize", opHeaders(),
+		`{"dry_run":true,"idempotency_key":"refusal-names-the-cause","args":{}}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "readonly database") || strings.Contains(w.Body.String(), "not wired") {
+		t.Errorf("the refusal does not name the cause: %s", w.Body.String())
+	}
+}
