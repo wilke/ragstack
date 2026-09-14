@@ -159,3 +159,24 @@ func DisplayOrderFromRoutes(routesConf string) []string {
 	}
 	return names
 }
+
+// DisplayOrder reads the tenant order the gateway currently advertises,
+// trying routes.conf's literal `"tenants":[…]` list first (the pre-deploy
+// shape, where that list is a hand-written `return` body) and falling back to
+// the generated include's `$tenants_names_json` (the post-deploy shape, where
+// routes.conf only interpolates the variable and carries no literal at all).
+// Returns nil when neither source has an order to give.
+func DisplayOrder(proxyDir string) []string {
+	if order := DisplayOrderFromRoutes(filepath.Join(proxyDir, "snippets", "routes.conf")); order != nil {
+		return order
+	}
+	maps, ok := GatewayMaps(proxyDir)
+	if !ok || maps.NamesJSON == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(maps.NamesJSON), &names); err != nil {
+		return nil
+	}
+	return names
+}

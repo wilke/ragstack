@@ -21,6 +21,10 @@ import (
 
 const fixtureDir = "../testdata/live-2026-09-10"
 
+// bootstrapFixtureDir is the coconut-proxy repo's own committed generated
+// include, byte for byte — see its README.
+const bootstrapFixtureDir = "../testdata/coconut-proxy-bootstrap"
+
 // live is the four tenants as they ran on coconut on 2026-09-10, with the
 // arguments the operator passes to `adopt` for each.
 var live = []struct {
@@ -934,5 +938,50 @@ func TestMissingESSnapshotsDirIsReported(t *testing.T) {
 	}
 	if n := countCode(findings, doctor.ESSnapshotsDirMissing); n != 0 {
 		t.Errorf("%d findings for a directory that exists", n)
+	}
+}
+
+// TestDisplayOrderPostDeployReadsGeneratedInclude is BUG 1 from the coconut
+// migration: once coconut-proxy's deploy has replaced the literal tenant
+// lists in snippets/routes.conf with `$tenants_names_json`/`$tenants_json`
+// interpolation, routes.conf carries no literal for displayOrder to read, and
+// it fell back to manifest-index order — reordering the landing page on
+// `adopt-all --commit` even though the gateway's own advertised order had not
+// changed. displayOrder must fall back to the generated include's
+// `$tenants_names_json`, wherever the live tree actually carries the list.
+func TestDisplayOrderPostDeployReadsGeneratedInclude(t *testing.T) {
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Post-deploy routes.conf: no literal "tenants":[...] anywhere, only the
+	// interpolated variable — DisplayOrderFromRoutes must see nothing here.
+	routes := `location = / { return 200 '{"tenants":$tenants_names_json}\n'; }` + "\n"
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "snippets", "routes.conf"), []byte(routes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The shipped bootstrap copy of the generated include, byte for byte.
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixtureDir, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf"), gen, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := registry.NewFleet(roots.RagRoot)
+	var added []*registry.Tenant
+	for _, name := range []string{"dev", "demo", "lucid-next", "asm-next", "newco"} {
+		tenant := registry.NewTenant(name, name)
+		f.Tenants[name] = tenant
+		added = append(added, tenant)
+	}
+
+	got := displayOrder(f, added, true, roots)
+	want := []string{"dev", "demo", "lucid-next", "asm-next", "newco"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("display_order = %v, want %v (the live $tenants_names_json order, adopted tenant appended)", got, want)
 	}
 }
