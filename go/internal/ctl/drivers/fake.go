@@ -2,6 +2,8 @@ package drivers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -74,11 +76,22 @@ type FakeOptions struct {
 	Worktrees map[string]string
 	// Installed is the set of artifact worktrees whose node_modules are there.
 	Installed []string
+	// QdrantSnapshotDirs maps a qdrant base URL to the HOST directory its
+	// snapshots land in (<data_dir>/qdrant/snapshots). With an entry, Snapshot
+	// writes a placeholder file at <dir>/<collection>/<name> — which is what a
+	// backup then renames into its bundle, so the step's move is moving
+	// something. Without one, the fake only names the snapshot, as it did
+	// before the backup had legs.
+	QdrantSnapshotDirs map[string]string
 	// PostgresReady maps a postgres run directory to whether pg_isready
 	// succeeds. An ABSENT entry is READY: the ordinary fixture is a store
 	// that works, and a fake defaulting to "not ready" would make every test
 	// seed a map in order to say nothing.
 	PostgresReady map[string]bool
+	// DiskFree is the bytes Files.DiskFree reports. Zero means "a terabyte" —
+	// the ordinary host with room — so only a test about the free-space
+	// precheck has to say anything.
+	DiskFree int64
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -134,17 +147,18 @@ func NewFake(opts FakeOptions) *Fake {
 	f.gateway = &FakeGateway{r: &f.recorder, Generation: opts.Generation}
 	f.files = &FakeFiles{
 		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
-		Roots: append([]string(nil), opts.Roots...),
+		Roots: append([]string(nil), opts.Roots...), Free: opts.DiskFree,
 	}
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
 	}
 	f.qdrant = &FakeQdrant{
-		r: &f.recorder, now: now, ByURL: copyMapSlice(opts.Collections),
+		r: &f.recorder, now: now, ByURL: copyMapSlice(opts.Collections), files: f.files,
 		Snapshots: map[string][]string{}, Counts: copyMapInt64(opts.QdrantCounts),
+		SnapshotDirs: copyMapString(opts.QdrantSnapshotDirs),
 	}
 	f.es = &FakeElasticsearch{
-		r: &f.recorder, ByURL: copyMapSlice(opts.Indices), Snapshots: map[string][]string{},
+		r: &f.recorder, ByURL: copyMapSlice(opts.Indices), Taken: map[string][]string{},
 		Repos: copyMapRepo(opts.ESRepos), Counts: copyMapInt64(opts.ESCounts),
 	}
 	f.api = &FakeTenantAPI{
@@ -495,6 +509,8 @@ type FakeFiles struct {
 	// so this is where a test reads back "the tenant dir was made 2770".
 	Dirs  map[string]uint32
 	Roots []string
+	// Free is what DiskFree answers; zero means the default terabyte.
+	Free int64
 }
 
 // ErrOutsideRoots is the containment refusal of both Files drivers.
@@ -579,13 +595,27 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 		delete(f.Files, from)
 		return nil
 	}
-	// A directory rename: move every path under from.
+	// A directory rename: move every path under from — the recorded
+	// directories as well as the files, or a ReadDir of the destination would
+	// report a tree that half moved.
 	prefix := strings.TrimSuffix(from, "/") + "/"
 	moved := false
 	for p, v := range f.Files {
 		if strings.HasPrefix(p, prefix) {
 			f.Files[filepath.Join(to, strings.TrimPrefix(p, prefix))] = v
 			delete(f.Files, p)
+			moved = true
+		}
+	}
+	for d, mode := range f.Dirs {
+		switch {
+		case d == from:
+			f.Dirs[to] = mode
+			delete(f.Dirs, d)
+			moved = true
+		case strings.HasPrefix(d, prefix):
+			f.Dirs[filepath.Join(to, strings.TrimPrefix(d, prefix))] = mode
+			delete(f.Dirs, d)
 			moved = true
 		}
 	}
@@ -625,6 +655,96 @@ func (f *FakeFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return append([]byte(nil), v.Data...), nil
 }
 
+// ReadDir lists one level of the in-memory filesystem.
+//
+// The fake keeps no tree — a file's parents are implied by its path — so the
+// entries are DERIVED: every stored path under dir contributes either its own
+// base name (a file) or the first segment below dir (a directory). That is
+// what lets the step that checksums a bundle read back what the steps before
+// it wrote, without the fixture declaring directories nobody created.
+func (f *FakeFiles) ReadDir(_ context.Context, dir string) ([]jobs.DirEntry, error) {
+	if err := f.r.record("files", "ReadDir", dir); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := strings.TrimSuffix(dir, "/") + "/"
+	seen := map[string]bool{}
+	var out []jobs.DirEntry
+	known := false
+	add := func(name string, isDir bool) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, jobs.DirEntry{Name: name, IsDir: isDir})
+	}
+	for p := range f.Files {
+		if !strings.HasPrefix(p, prefix) {
+			continue
+		}
+		known = true
+		rest := strings.TrimPrefix(p, prefix)
+		if i := strings.Index(rest, "/"); i >= 0 {
+			add(rest[:i], true)
+			continue
+		}
+		add(rest, false)
+	}
+	for d := range f.Dirs {
+		if d == dir {
+			known = true
+			continue
+		}
+		if !strings.HasPrefix(d, prefix) {
+			continue
+		}
+		known = true
+		name := strings.TrimPrefix(d, prefix)
+		if i := strings.Index(name, "/"); i >= 0 {
+			name = name[:i]
+		}
+		add(name, true)
+	}
+	if !known {
+		// fs.ErrNotExist, like ReadFile: "there is no such directory" is a
+		// fact a caller reads with errors.Is, not a failure to list one.
+		return nil, fmt.Errorf("open %s: %w", dir, fs.ErrNotExist)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// Sha256 is the digest and the size of one in-memory file.
+func (f *FakeFiles) Sha256(_ context.Context, path string) (string, int64, error) {
+	if err := f.r.record("files", "Sha256", path); err != nil {
+		return "", 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.Files[path]
+	if !ok {
+		return "", 0, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+	}
+	sum := sha256.Sum256(v.Data)
+	return hex.EncodeToString(sum[:]), int64(len(v.Data)), nil
+}
+
+// DiskFree answers Free, defaulting to a terabyte: the ordinary fixture is a
+// host with room, and a fake that answered zero would make every test which
+// runs a backup seed a number in order to say nothing.
+func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
+	if err := f.r.record("files", "DiskFree", path); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Free != 0 {
+		return f.Free, nil
+	}
+	return 1 << 40, nil
+}
+
 // Paths lists the files present, sorted.
 func (f *FakeFiles) Paths() []string {
 	f.mu.Lock()
@@ -657,9 +777,10 @@ func (f *FakeFiles) Content(path string) []byte {
 
 // FakeQdrant is a qdrant with a collection list and a snapshot ledger.
 type FakeQdrant struct {
-	r   *recorder
-	now func() time.Time
-	mu  sync.Mutex
+	r     *recorder
+	now   func() time.Time
+	files *FakeFiles
+	mu    sync.Mutex
 	// ByURL maps a base URL to the collections it holds.
 	ByURL map[string][]string
 	// Snapshots maps a collection to the snapshot names taken of it, in order.
@@ -669,7 +790,9 @@ type FakeQdrant struct {
 	Counts map[string]int64
 	// Recovered records every recovery as "<baseURL> <collection> <location>".
 	Recovered []string
-	n         int
+	// SnapshotDirs maps a base URL to the host directory snapshots land in.
+	SnapshotDirs map[string]string
+	n            int
 }
 
 // Collections lists the collections of base, sorted.
@@ -693,6 +816,12 @@ func (q *FakeQdrant) Snapshot(_ context.Context, base, collection string) (strin
 	q.n++
 	name := fmt.Sprintf("%s-%s-%d.snapshot", collection, q.now().UTC().Format("20060102T150405Z"), q.n)
 	q.Snapshots[collection] = append(q.Snapshots[collection], name)
+	// The FILE, where the real store would have written it: a backup moves the
+	// snapshot into its bundle, and a fake that only returned a name would let
+	// a step which never checked the move pass its tests.
+	if dir := q.SnapshotDirs[base]; dir != "" && q.files != nil {
+		q.files.Put(filepath.Join(dir, collection, name), []byte("fake qdrant snapshot of "+collection+"\n"), 0o640)
+	}
 	return name, nil
 }
 
@@ -752,6 +881,11 @@ func (q *FakeQdrant) DeleteSnapshot(_ context.Context, base, collection, name st
 		}
 	}
 	q.Snapshots[collection] = kept
+	if dir := q.SnapshotDirs[base]; dir != "" && q.files != nil {
+		q.files.mu.Lock()
+		delete(q.files.Files, filepath.Join(dir, collection, name))
+		q.files.mu.Unlock()
+	}
 	return nil
 }
 
@@ -761,8 +895,10 @@ type FakeElasticsearch struct {
 	mu sync.Mutex
 	// ByURL maps a base URL to the indices it holds.
 	ByURL map[string][]string
-	// Snapshots maps a repo to the snapshot names taken into it, in order.
-	Snapshots map[string][]string
+	// Taken maps a repo to the snapshot names taken into it, in order. It is
+	// not called `Snapshots` because the DRIVER METHOD is (GET
+	// _snapshot/{repo}/_all), and Go lets a type have one or the other.
+	Taken map[string][]string
 	// Repos maps a registered repository to its settings.
 	Repos map[string]Repo
 	// Restored records every restore as "<repo> <name> <index,index>".
@@ -789,7 +925,7 @@ func (e *FakeElasticsearch) Snapshot(_ context.Context, base, repo, name string)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.Snapshots[repo] = append(e.Snapshots[repo], name)
+	e.Taken[repo] = append(e.Taken[repo], name)
 	return nil
 }
 
@@ -833,6 +969,38 @@ func (e *FakeElasticsearch) UnregisterRepo(_ context.Context, base, repo string)
 	return nil
 }
 
+// Snapshots lists the snapshot names a registered repository holds, sorted.
+//
+// An UNREGISTERED repository is an error, which is what makes it a
+// verification: the backup re-registers the directory it just wrote under a
+// second, read-only name and asks this question of it, and a directory
+// elasticsearch could not open as a repository has to answer differently from
+// one that is simply empty.
+func (e *FakeElasticsearch) Snapshots(_ context.Context, base, repo string) ([]string, error) {
+	if err := e.r.record("es", "Snapshots", repo, base); err != nil {
+		return nil, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.Repos[repo]; !ok {
+		return nil, fmt.Errorf("%w: no snapshot repository %q is registered", jobs.ErrRefused, repo)
+	}
+	// Every repository registered at the same LOCATION sees the same
+	// snapshots: that is the whole point of re-registering a directory under a
+	// verify name, and a fake that keyed snapshots by repo name alone would
+	// make the verification pass on an empty answer.
+	loc := e.Repos[repo].Location
+	var out []string
+	for name, r := range e.Repos {
+		if r.Location != loc {
+			continue
+		}
+		out = append(out, e.Taken[name]...)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // Restore restores indices from a snapshot, and refuses when the repository
 // is not registered or holds no such snapshot — the two ways a restore
 // against the wrong bundle fails on a real cluster, and the two a restore
@@ -847,7 +1015,7 @@ func (e *FakeElasticsearch) Restore(_ context.Context, base, repo, name string, 
 		return fmt.Errorf("%w: no snapshot repository %q is registered", jobs.ErrRefused, repo)
 	}
 	found := false
-	for _, s := range e.Snapshots[repo] {
+	for _, s := range e.Taken[repo] {
 		if s == name {
 			found = true
 		}

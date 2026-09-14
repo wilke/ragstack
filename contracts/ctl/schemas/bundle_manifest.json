@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "bundle_manifest.json",
   "title": "CtlBundleManifest",
-  "description": "`manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`); a bundle is refused, not written, when no recipient is configured. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.",
+  "description": "`manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`), NEVER in the clear; with no recipient configured the bundle is still written and `secrets.included` is false, so the data is backed up and the credentials are honestly declared missing. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.",
   "type": "object",
   "required": [
     "schema_version", "kind", "bundle_id", "created_at", "created_by", "ctl_version", "fenced",
@@ -72,7 +72,7 @@
     },
     "stores": {
       "type": "object",
-      "required": ["qdrant", "elasticsearch", "neo4j"],
+      "required": ["qdrant", "elasticsearch", "neo4j", "postgres"],
       "properties": {
         "qdrant": {
           "type": "object",
@@ -134,6 +134,19 @@
             "included": { "type": "boolean", "const": false }
           },
           "additionalProperties": false
+        },
+        "postgres": {
+          "description": "The tenant's RELATIONAL store. Every tenant has one of the three kinds, so the block is always present: `sqlite` says the state lives in the files the `sqlite` array already lists (and `included` is false, because there is no server to dump), `local` carries the `pg_dump -Fc` archive this bundle took, and `external` is a database somebody else runs, which the bundle records and does not contain.",
+          "type": "object",
+          "required": ["kind", "ownership", "included"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["sqlite", "local", "external"] },
+            "ownership": { "type": "string", "enum": ["exclusive", "shared", "unknown", "external"] },
+            "included": { "type": "boolean" },
+            "file": { "description": "The custom-format dump inside the bundle; null unless kind is `local`.", "oneOf": [ { "$ref": "#/$defs/RelPath" }, { "type": "null" } ] },
+            "sha256": { "oneOf": [ { "$ref": "registry.json#/$defs/Sha256Hex" }, { "type": "null" } ] }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -174,12 +187,14 @@
       }
     },
     "secrets": {
+      "description": "The encrypted payload, or the statement that there is none. `included: false` is the fail-closed outcome: no age recipient was configured, so the tenant's secret files were left OUT of the bundle rather than written in the clear, and a restore from it mints fresh credentials. When it is false, `file` is null and `key_fingerprints` is empty.",
       "type": "object",
-      "required": ["encrypted", "file", "recipients_file", "key_fingerprints"],
+      "required": ["encrypted", "included", "file", "recipients_file", "key_fingerprints"],
       "properties": {
-        "encrypted": { "type": "boolean", "const": true },
-        "file": { "$ref": "#/$defs/RelPath" },
-        "recipients_file": { "$ref": "#/$defs/RelPath" },
+        "encrypted": { "description": "Always true: whatever a bundle carries of a tenant's secrets is age-encrypted. It is not a statement that something IS carried — `included` is.", "type": "boolean", "const": true },
+        "included": { "type": "boolean" },
+        "file": { "oneOf": [ { "$ref": "#/$defs/RelPath" }, { "type": "null" } ] },
+        "recipients_file": { "oneOf": [ { "$ref": "#/$defs/RelPath" }, { "type": "null" } ] },
         "key_fingerprints": { "description": "Fingerprints of the tenant API keys whose values are inside the payload — for reconciling against the revocation ledger at restore.", "type": "array", "items": { "$ref": "registry.json#/$defs/Fingerprint" } }
       },
       "additionalProperties": false

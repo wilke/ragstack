@@ -23,8 +23,10 @@ package ops
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -44,6 +46,47 @@ type Deps struct {
 	// step writes a registry row). Nil refuses those steps with ErrRefused —
 	// a plan still renders, the run says the registry writer is not wired.
 	SaveFleet func(*registry.Fleet) error
+	// Sealer encrypts a backup bundle's secret payload to the configured age
+	// recipients. NIL means no recipients are configured, and the plan says so
+	// in as many words: the bundle is written WITHOUT the tenant's secret
+	// files rather than with them in the clear.
+	Sealer Sealer
+	// Mirror is the bare git mirror tenant worktrees hang off
+	// (`/rag/repos/ragstack.git`). `tenant create` adds a worktree from it and
+	// `decommission` removes one; empty means no mirror is configured, and the
+	// steps that need one refuse rather than guessing at a checkout.
+	Mirror string
+}
+
+// Sealer is the age half of internal/ctl/seal behind a two-method seam, so
+// that the ops package compiles and is tested without the crypto and so that
+// a test can seal with a recognisable stand-in.
+//
+// There is no Open: the daemon holds no identity. It can write a bundle
+// nobody but the holders of the recipient keys can read, and that asymmetry is
+// the point — a control plane that could decrypt its own backups would be a
+// single account holding every tenant's credentials.
+type Sealer interface {
+	// Seal encrypts plaintext to the configured recipients. It answers
+	// ErrNoRecipients (or an error wrapping it) when there are none.
+	Seal(plaintext []byte) ([]byte, error)
+	// Fingerprints identifies the recipients for the plan and the log — the
+	// public halves, which are not secret.
+	Fingerprints() []string
+}
+
+// ErrNoRecipients is "nobody could decrypt this": the sentinel a Sealer
+// answers when no age recipient is configured. The backup treats it as a
+// reason to EXCLUDE the secrets and say so, never as a reason to write them
+// unencrypted, and never as a job failure.
+var ErrNoRecipients = errors.New("no age recipient is configured")
+
+// noRecipients is the same question asked of an error that came from another
+// package's sentinel (internal/ctl/seal has its own ErrNoRecipients, and the
+// adapter that wires it may not wrap this one). It is a fallback, not the
+// check: errors.Is is tried first.
+func noRecipients(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no recipient")
 }
 
 func (d Deps) now() time.Time {

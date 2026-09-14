@@ -120,15 +120,18 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	if cfg.FakeDrivers {
 		// The fake files driver honours the same approved roots the real one
 		// defaults to; with none, every write is a containment refusal.
-		files := map[string][]byte{}
-		if f, err := loadFleet(); err == nil {
-			files = fixtureFiles(cfg.Roots, f)
-		}
-		drv = drivers.NewFake(drivers.FakeOptions{
+		opts := drivers.FakeOptions{
 			Now:   cfg.Now,
 			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
-			Files: files,
-		})
+		}
+		if f, err := loadFleet(); err == nil {
+			// The whole in-memory host, seeded from the fixture fleet: the env
+			// files AND the stores those tenants' registry rows describe, so a
+			// verb that reads a collection list or moves a snapshot is running
+			// against a host that matches the registry it planned from.
+			opts = FixtureDrivers(cfg.Roots, f, cfg.Now)
+		}
+		drv = drivers.NewFake(opts)
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
 			Roots: cfg.Roots,

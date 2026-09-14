@@ -221,7 +221,15 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 		// every snapshot name recorded before the call that makes it
 		"job.checkpoint(qdrant:pending:chunks)\nqdrant.Snapshot(chunks,http://localhost:24041)",
 		"job.checkpoint(qdrant:pending:docs)\nqdrant.Snapshot(docs,http://localhost:24041)",
-		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z-backup/20260914T093000Z-backup)",
+		// The repository name the contract spells is `ctl-<ts>`; the snapshot
+		// inside it is the whole bundle id.
+		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z/20260914T093000Z-backup)",
+		// The verification: the same directory, re-registered READ-ONLY under
+		// a second name, listed, and both registrations dropped again.
+		"es.RegisterRepo(verify-20260914T093000Z-backup,/usr/share/elasticsearch/snapshots/20260914T093000Z-backup,true,http://localhost:24043)",
+		"es.Snapshots(verify-20260914T093000Z-backup,http://localhost:24043)",
+		"es.UnregisterRepo(verify-20260914T093000Z-backup,http://localhost:24043)",
+		"es.UnregisterRepo(ctl-20260914T093000Z,http://localhost:24043)",
 		// and the tenant comes back
 		"systemd.Start(ragstack-dev-api.service)",
 	} {
@@ -260,7 +268,7 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 	oc, fake := fixtureEnv(t, "dev", managed, tenantEnv())
 	// The state databases exist, so the sqlite leg copies rather than skips.
 	for _, db := range sqliteDBs {
-		fake.FakeFiles().Put("/rag/data/tenants/dev/state/"+db, []byte("sqlite-"+db), 0o640)
+		fake.FakeFiles().Put("/rag/data/tenants/dev/state/"+db.File, []byte("sqlite-"+db.File), 0o640)
 	}
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	r := newRunner(oc, fake)
@@ -278,8 +286,8 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 		}
 	}
 	for _, db := range sqliteDBs {
-		if got := string(fake.FakeFiles().Content(want + "state/" + db)); got != "sqlite-"+db {
-			t.Errorf("%s is not in the stamped bundle; the bundle holds %v", db, bundled)
+		if got := string(fake.FakeFiles().Content(want + "state/" + db.File)); got != "sqlite-"+db.File {
+			t.Errorf("%s is not in the stamped bundle; the bundle holds %v", db.File, bundled)
 		}
 	}
 	if string(fake.FakeFiles().Content(want+"manifest.json")) == "" {
@@ -308,7 +316,7 @@ func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
 func TestBackupFailsAStateFileItCannotREAD(t *testing.T) {
 	oc, fake := fixture(t, "dev", managed)
 	boom := errors.New("permission denied")
-	fake.Fail("files.ReadFile:/rag/data/tenants/dev/state/ragstack_users.db", boom)
+	fake.Fail("sqlite.Backup:/rag/data/tenants/dev/state/ragstack_users.db", boom)
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	r := newRunner(oc, fake)
 	var got error
@@ -456,11 +464,28 @@ func TestDecommissionRenamesTheTreeAndCanPutItBack(t *testing.T) {
 	if len(fake.FakeGateway().Applies) != 1 {
 		t.Errorf("gateway applies = %v", fake.FakeGateway().Applies)
 	}
-	if fake.Count("files.Remove") != 0 {
-		t.Error("decommission deleted something; v1 only ever renames")
+	// The ONLY deletions are the ctl's own rendered unit files: v1 never
+	// deletes a byte of a tenant's data.
+	for _, c := range fake.Calls() {
+		if c.Key() != "files.Remove" {
+			continue
+		}
+		if !strings.HasPrefix(c.Args[0], "/rag/config/ctl/units/") {
+			t.Errorf("decommission deleted %s; v1 removes its own unit files and nothing else", c.Args[0])
+		}
 	}
-	last := p.Steps[len(p.Steps)-1]
-	if _, err := last.Rollback(context.Background(), r.ctx(last)); err != nil {
+	// The rename is the step that has to be reversible: rolling it back is
+	// how an operator gets a tenant they quarantined by mistake back.
+	var rename jobs.Step
+	for _, s := range p.Steps {
+		if strings.Contains(s.Plan.Title, "quarantine the data directory") {
+			rename = s
+		}
+	}
+	if rename.Rollback == nil {
+		t.Fatalf("the quarantine rename has no rollback: %v", titles(p))
+	}
+	if _, err := rename.Rollback(context.Background(), r.ctx(rename)); err != nil {
 		t.Fatalf("rollback: %v", err)
 	}
 	if fake.FakeFiles().Content("/rag/data/tenants/dev/config/tenant.env") == nil {

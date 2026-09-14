@@ -106,7 +106,14 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 		Listening:   []int{tenant.Ports.API},
 		Collections: map[string][]string{tenant.Stores.Qdrant.URL: {"docs", "chunks"}},
 		Indices:     map[string][]string{tenant.Stores.Elasticsearch.URL: {"dev-chunks"}},
-		Now:         func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },
+		// Where this store's snapshots land on the host, so the backup's move
+		// into the bundle is moving a file rather than a name.
+		QdrantSnapshotDirs: map[string]string{tenant.Stores.Qdrant.URL: tp.QdrantSnapshots},
+		QdrantCounts: map[string]int64{
+			tenant.Stores.Qdrant.URL + "/docs": 1200, tenant.Stores.Qdrant.URL + "/chunks": 88_000,
+		},
+		ESCounts: map[string]int64{tenant.Stores.Elasticsearch.URL + "/dev-chunks": 88_000},
+		Now:      func() time.Time { return time.Date(2026, 9, 14, 9, 30, 0, 0, time.UTC) },
 	})
 	return jobs.Context{
 		Roots: roots, Fleet: f, Tenant: tenant, Drivers: fake,
@@ -126,10 +133,20 @@ func managed(t *registry.Tenant) {
 	t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities = registry.OwnershipExclusive, caps
 }
 
+// testDeps are the op Deps a test plans with: the fixture's roots and clock,
+// and a registry writer that mutates the fixture fleet in place (which is what
+// the engine's does, under the locks).
+func testDeps(oc jobs.Context) Deps {
+	return Deps{Roots: oc.Roots, Now: oc.Now, SaveFleet: func(f *registry.Fleet) error {
+		f.Generation++
+		return nil
+	}}
+}
+
 // plan runs one verb and returns the planned steps.
 func plan(t *testing.T, oc jobs.Context, verb string, args map[string]any) *jobs.Planned {
 	t.Helper()
-	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup(verb)
+	op, ok := NewRegistry(testDeps(oc)).Lookup(verb)
 	if !ok {
 		t.Fatalf("no op %q", verb)
 	}
@@ -143,7 +160,7 @@ func plan(t *testing.T, oc jobs.Context, verb string, args map[string]any) *jobs
 // planErr runs one verb expecting a refusal.
 func planErr(t *testing.T, oc jobs.Context, verb string, args map[string]any) error {
 	t.Helper()
-	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup(verb)
+	op, ok := NewRegistry(testDeps(oc)).Lookup(verb)
 	if !ok {
 		t.Fatalf("no op %q", verb)
 	}
@@ -288,16 +305,28 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 	oc, _ := fixture(t, "dev", managed)
 	p := plan(t, oc, "backup", map[string]any{"fence": true})
 	want := []string{
+		// The precheck comes BEFORE the fence: refusing for want of disk
+		// after the API is stopped would be an outage for nothing.
+		"probe: check the backup filesystem has room",
 		"nginx: gateway: publish a generation serving dev read-only",
 		"systemd: stop ragstack-dev-api.service",
 		"probe: fence verify: nothing listens on 24040",
-		"qdrant: snapshot every qdrant collection",
-		"es: snapshot every elasticsearch index into a per-bundle repo",
+		"fs: create the bundle directory (written as <id>.partial, mode 2770)",
+		"qdrant: snapshot every qdrant collection into the bundle",
+		"es: snapshot every elasticsearch index into a per-bundle repo, verify it and move it into the bundle",
 		"sqlitebackup: copy ragstack_users.db into the bundle",
 		"sqlitebackup: copy ragstack_jobs.db into the bundle",
 		"sqlitebackup: copy ragstack_collections.db into the bundle",
 		"sqlitebackup: copy ragstack_grading.db into the bundle",
-		"fs: write the bundle manifest",
+		"postgres: skip the postgres leg",
+		"fs: copy the public config allowlist, the manifests and the rendered units into the bundle",
+		"fs: skip the encrypted secrets payload",
+		"fs: write MIGRATE.md, the bundle's own runbook",
+		"fs: write SHA256SUMS and the bundle manifest",
+		// The rename is the LAST write: until it happens the directory is
+		// `.partial` and no reader mistakes it for a finished bundle.
+		"fs: rename the bundle into place (drop the .partial suffix)",
+		"registry: record the bundle as this tenant's last backup",
 		"systemd: start ragstack-dev-api.service",
 		"probe: wait for the API to listen on 24040",
 		"nginx: gateway: publish a generation serving dev read-write",
@@ -440,12 +469,29 @@ func TestPlanDecommissionQuarantinesOnlyWhatTheCtlRuns(t *testing.T) {
 		tn.LastBackup = &registry.BackupRecord{Bundle: "b", Fenced: true, Verified: true}
 	})
 	p := plan(t, oc, "decommission", nil)
-	if !hasStep(p, "fs", "quarantine the data directory") {
-		t.Fatalf("no quarantine step: %v", titles(p))
+	for _, want := range [][2]string{
+		{"fs", "quarantine the data directory"},
+		{"fs", "remove the rendered unit files"},
+		{"systemd", "daemon-reload"},
+		{"registry", "quarantined"},
+		{"fs", "RECOVERY.json"},
+	} {
+		if !hasStep(p, want[0], want[1]) {
+			t.Fatalf("no %s step containing %q: %v", want[0], want[1], titles(p))
+		}
+	}
+	// Everything decommission writes is a RECORD — the registry row, the
+	// recovery note — and never a change to the tenant's own data, which is
+	// renamed and left exactly as it was.
+	allowed := map[string]bool{
+		oc.Roots.Registry(): true,
+		oc.Tenant.DataDir + ".quarantined-<ts>/" + recoveryFile: true,
 	}
 	for _, s := range p.Steps {
 		for _, w := range s.Plan.WouldWrite {
-			t.Errorf("decommission writes %s — v1 renames, it never deletes or writes", w.Path)
+			if !allowed[w.Path] {
+				t.Errorf("decommission writes %s — v1 renames, it never deletes or rewrites tenant data", w.Path)
+			}
 		}
 	}
 	if p.Result()["state"] != "quarantined" {

@@ -161,7 +161,13 @@ flags every operation accepts:
   gateway rollback [--to N]                 switch back + HUP + probe
   gateway repair                            put the current pointer back on the last verified generation
 
-  backup | selftest                         not implemented in this PR
+  backup list [<tenant>]                    every bundle on this host: id, kind, fenced, verified, size
+  backup verify <tenant> <bundle-id>        re-hash every file against SHA256SUMS + check the manifest
+                                            (the SHALLOW check; the deep one is "tenant restore --as")
+  backup prune <tenant> --dry-run           what a retention pass WOULD remove. v1 removes nothing:
+                                            --dry-run is required and deletion is an operator's own rm
+
+  selftest                                  not implemented in this PR
 
 adopt-all on coconut adopts, in this order (data dirs and worktrees derived
 from --rag-root, i.e. /rag by default):
@@ -255,7 +261,9 @@ func run(args []string) int {
 		return cmdUnits(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
 	case "job":
 		return cmdJob(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
-	case "backup", "selftest":
+	case "backup":
+		return cmdBackup(rest[1:], *globalRagRoot, *jsonOut)
+	case "selftest":
 		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR\n", rest[0])
 		return exitUsage
 	case "help", "-h", "--help":

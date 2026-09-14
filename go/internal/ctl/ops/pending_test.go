@@ -36,6 +36,16 @@ func (w *watched) Elasticsearch() jobs.Elasticsearch {
 	return w.Fake.Elasticsearch()
 }
 
+// The PR-D half of the seam. A driver missing from this list is one whose
+// steps this test cannot see being used — which reads as "the plan warns about
+// a driver it never uses" and is a failure about the test, not the plan.
+func (w *watched) Git() jobs.Git           { w.used["git"] = true; return w.Fake.Git() }
+func (w *watched) Build() jobs.Build       { w.used["build"] = true; return w.Fake.Build() }
+func (w *watched) Postgres() jobs.Postgres { w.used["postgres"] = true; return w.Fake.Postgres() }
+func (w *watched) SQLite() jobs.SQLite     { w.used["sqlite"] = true; return w.Fake.SQLite() }
+func (w *watched) Archive() jobs.Archive   { w.used["archive"] = true; return w.Fake.Archive() }
+func (w *watched) Files() jobs.Files       { w.used["files"] = true; return w.Fake.Files() }
+
 // planCase is one verb planned on the fixture, with whatever the tenant has
 // to look like for it to plan at all. Every verb that reaches a plan is here:
 // a verb that refuses at plan time has no steps and so nothing to warn about.

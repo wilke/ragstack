@@ -906,3 +906,190 @@ async def test_settings_round_trip_bumps_the_registry_generation(
         f"the generation did not move: {was['registry_generation']} -> "
         f"{now['registry_generation']}"
     )
+
+
+# =========================================================================== #
+# backup and decommission (PR-D)
+# =========================================================================== #
+async def managed_tenant(client: httpx.AsyncClient) -> str:
+    """The fixture tenant the ctl itself supervises.
+
+    The four captured coconut tenants are hand-started with every store
+    capability false — a fleet on which `backup` skips both stores and
+    `decommission` is refused by design. Asserting the backup legs against one
+    of those would be asserting that nothing happened. The fixture carries one
+    systemd/svcbvbrc tenant with exclusive stores for exactly this, and it is
+    FOUND here rather than named, so the suite does not encode the fixture's
+    spelling."""
+    resp = await client.get("/v1/fleet")
+    assert resp.status_code == 200, resp.text
+    for row in resp.json().get("tenants", []):
+        if row.get("supervisor") == "systemd":
+            return row["name"]
+    pytest.skip("the fixture fleet has no ctl-supervised tenant; the backup legs cannot be exercised")
+
+
+def step_titled(plan_or_job: dict[str, Any], needle: str) -> dict[str, Any] | None:
+    """The first step whose title contains *needle*."""
+    for step in plan_or_job.get("steps", []):
+        if needle in step.get("title", ""):
+            return step
+    return None
+
+
+async def test_a_fenced_backup_runs_every_leg_to_succeeded(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The whole verb, end to end, on the fake host: fence, snapshot both
+    stores, copy the state, write the manifest, rename the bundle into place
+    and record it in the registry.
+
+    ``succeeded`` and not merely terminal: a build whose drivers refuse leaves
+    a job that FAILED with a tidy plan attached, which is the outcome this test
+    exists to catch."""
+    tenant = await managed_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": True}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", (
+        f"the fenced backup settled as {job['state']}: {json.dumps(job.get('error'))} · steps "
+        + json.dumps([{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+                      for s in job["steps"]])
+    )
+    assert job["result"]["fenced"] is True and job["result"]["best_effort"] is False, job["result"]
+
+    # The manifest step, by name: a bundle without one is a directory of files
+    # no restore can read.
+    manifest = step_titled(job, "bundle manifest")
+    assert manifest is not None, [s["title"] for s in job["steps"]]
+    assert manifest["state"] == "succeeded", manifest
+
+    # The rename is the LAST write of the bundle, and it happens after the
+    # manifest: that ordering is what makes `<id>.partial` mean "unfinished".
+    rename = step_titled(job, "rename the bundle into place")
+    assert rename is not None and rename["n"] > manifest["n"], [s["title"] for s in job["steps"]]
+
+    # And the registry learned its recovery point, unverified.
+    record = step_titled(job, "record the bundle as this tenant's last backup")
+    assert record is not None and record["state"] == "succeeded", record
+    shown = await client.get(f"/v1/tenants/{tenant}")
+    assert shown.status_code == 200, shown.text
+    last = shown.json()["summary"]["last_backup"]
+    assert last and last["fenced"] is True and last["verified"] is False, last
+
+
+async def test_the_elasticsearch_leg_verifies_and_unregisters_its_repository(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """`_restore` has no dry run, so the bundle's proof that its snapshot is
+    readable is a SECOND, read-only registration of the same directory, listed
+    and then dropped. Both registrations are the ctl's own and both are
+    unregistered before the directory moves — a repository elasticsearch still
+    holds while its files walk away is the way this leg corrupts a cluster."""
+    tenant = await managed_tenant(client)
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": True}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", job.get("error")
+    leg = step_titled(job, "elasticsearch index into a per-bundle repo")
+    assert leg is not None, [s["title"] for s in job["steps"]]
+    assert "verify it and move it into the bundle" in leg["title"], leg["title"]
+    ids = leg["external_ids"]
+    assert any(i.startswith("es:verify:") for i in ids), (
+        f"the verification repository is not recorded before it is registered: {ids}"
+    )
+    assert any(i.startswith("es:ctl-") for i in ids), ids
+
+
+async def test_an_unfenced_backup_is_best_effort(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Without ``--fence`` nothing stopped the tenant writing, so the bundle is
+    `best_effort` and the plan says in as many words that it can never be
+    restored, handed over or decommissioned from."""
+    tenant = await managed_tenant(client)
+    preview = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={}))
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    assert any("best_effort" in w for w in plan["warnings"]), plan["warnings"]
+    assert step_titled(plan, "fence verify") is None, [s["title"] for s in plan["steps"]]
+    assert step_titled(plan, "read-only") is None, [s["title"] for s in plan["steps"]]
+
+    job = await submit_and_settle(client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={}, timeout=60.0)
+    assert job["state"] == "succeeded", job.get("error")
+    assert job["result"]["best_effort"] is True and job["result"]["fenced"] is False, job["result"]
+
+
+async def test_without_recipients_the_secrets_are_excluded_and_the_plan_says_so(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The fail-closed rule, read where an operator would read it. This daemon
+    has no age recipient configured, so the bundle is written WITHOUT the
+    tenant's secret files — never with them in the clear — and the plan warns
+    before anything runs that a restore from it will mint fresh credentials."""
+    tenant = await managed_tenant(client)
+    preview = await client.post(f"/v1/tenants/{tenant}/ops/backup", json=op_body(args={"fence": True}))
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    warned = [w for w in plan["warnings"] if "no age recipient is configured" in w]
+    assert warned, plan["warnings"]
+    assert "EXCLUDED" in warned[0], warned[0]
+    skip = step_titled(plan, "skip the encrypted secrets payload")
+    assert skip is not None, [s["title"] for s in plan["steps"]]
+    # And no step claims it would write a secrets payload.
+    for step in plan["steps"]:
+        for write in step.get("would_write", []):
+            assert not write["path"].endswith("secrets.age"), step["title"]
+
+
+async def test_the_postgres_leg_is_planned_only_for_a_postgres_local_tenant(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """A tenant whose relational state is SQLite files has nothing to dump, and
+    the plan says so as a skipped step rather than silently omitting it: the
+    operator asked for a backup of everything, and "there is no postgres here"
+    is an outcome."""
+    managed = await managed_tenant(client)
+    dumped = await client.post(f"/v1/tenants/{managed}/ops/backup", json=op_body(args={"fence": True}))
+    assert dumped.status_code == 200, dumped.text
+    assert step_titled(dumped.json(), "dump the tenant's postgres database") is not None, (
+        [s["title"] for s in dumped.json()["steps"]]
+    )
+
+    sqlite_only = await client.post(f"/v1/tenants/{some_tenant}/ops/backup", json=op_body(args={}))
+    assert sqlite_only.status_code == 200, sqlite_only.text
+    plan = sqlite_only.json()
+    assert step_titled(plan, "dump the tenant's postgres database") is None, [s["title"] for s in plan["steps"]]
+    skipped = step_titled(plan, "skip the postgres leg")
+    assert skipped is not None, [s["title"] for s in plan["steps"]]
+    assert skipped["warnings"], skipped
+
+
+async def test_decommission_refuses_a_tenant_the_ctl_does_not_run(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """v1 quarantines only what the ctl supervises and owns. Renaming the data
+    directory of a hand-started tenant belonging to another account is
+    destroying somebody else's work with a tool that cannot put it back, so it
+    is refused at PLAN time — before any lock, and with a sentence naming what
+    the tenant actually is."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/decommission", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "quarantines only what the ctl runs" in err["detail"], err["detail"]
+    assert "not wired" not in err["detail"], (
+        f"decommission must be refused as a policy decision, not as an unwired engine: {err['detail']}"
+    )
+
+
+async def test_decommission_of_a_managed_tenant_needs_a_verified_bundle(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The prerequisite that makes quarantine reversible: a fenced bundle a
+    restore has PROVED. The fixture tenant's bundles are unverified (only a
+    `restore --as` sets that flag), so the refusal names the bundle and what to
+    do with it rather than proceeding."""
+    tenant = await managed_tenant(client)
+    resp = await client.post(f"/v1/tenants/{tenant}/ops/decommission", json=op_body(args={}))
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "backup" in err["detail"], err["detail"]
