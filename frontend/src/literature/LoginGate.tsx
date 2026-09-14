@@ -47,6 +47,9 @@ export function LoginGate({ onToken }: { onToken: (token: string) => void }) {
       setPassword("");
       onToken(token.trim());
     } catch (err) {
+      // Cleared on the failure path too, not only on success: a wrong-password
+      // attempt otherwise left the value in component state and in the input.
+      setPassword("");
       setError(
         err instanceof SignInError
           ? err.message

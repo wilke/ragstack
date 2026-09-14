@@ -257,8 +257,14 @@ export function App() {
     const a = document.createElement("a");
     a.href = url;
     a.download = `${fields.dataTypeId}-${Date.now()}.tsv`;
+    // Appended before click and revoked on a later tick: a detached anchor and a
+    // synchronously-revoked object URL both work in Chrome but have historically
+    // cancelled the download in Firefox and Safari. A demo runs on whatever
+    // browser is on the podium.
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [table, fields.dataTypeId]);
 
   const modelLabel = models.find((m) => m.model === model)?.label;
@@ -619,7 +625,13 @@ function PromptDialog({
 function describe(e: unknown, what: string): string {
   if (e instanceof ApiError) {
     if (e.status === 401) return `Not authorized for ${what} — the token may have expired. Sign out and paste a fresh one.`;
-    if (e.status === 404) return `No such collection, or it is not readable by this account (${what}).`;
+    // 404 means different things per leg: on retrieval it is the leak-safe
+    // read-deny (ADR-0003), but a Copilot 404 is a missing route and rendering
+    // "No such collection…(models)" was actively misleading.
+    if (e.status === 404)
+      return what === "retrieval" || what === "collections"
+        ? `No such collection, or it is not readable by this account.`
+        : `The ${what} service did not recognise that request (404).`;
     if (e.status === 0) return `Could not reach the ${what} service: ${e.message}`;
     return `${what} failed (HTTP ${e.status}). ${e.message}`;
   }

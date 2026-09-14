@@ -79,8 +79,15 @@ export function buildFilters(raw: {
   const filters: Record<string, string | number> = {};
   const year = (raw.year ?? "").trim();
   if (year) {
-    const n = Number(year);
-    if (Number.isInteger(n) && n > 0) filters.year = n;
+    // Number() is far looser than "a year": it accepts 0x7E9 (2025), 1e3 (1000),
+    // 2.025e3 (2025) and +2025, and silently loses precision above 2^53 — so
+    // "20255555555555555555" became 20255555555555557000, passed validation, and
+    // returned zero hits with nothing on screen to explain why. Require four
+    // plain digits in a plausible range instead.
+    if (/^\d{4}$/.test(year)) {
+      const n = Number(year);
+      if (n >= 1500 && n <= 2100) filters.year = n;
+    }
   }
   const docType = (raw.docType ?? "").trim();
   if (docType) filters.doc_type = docType;
@@ -176,52 +183,108 @@ export interface ParsedTable {
 }
 
 /**
- * Parse the model's answer into a table.
+ * A fence LINE, not an inline occurrence.
  *
- * Tolerant on purpose, because models do not reliably honour "TSV only":
- *   * strips ``` fences (with or without a language tag);
- *   * drops markdown separator rows (`|---|---|`);
- *   * falls back to `|` as the delimiter when the header has no tab, which is
- *     what a model emitting a markdown table produces.
+ * The earlier form stripped every ``` in the text globally, so a cell containing
+ * "use ```code``` here" lost its content. Only a line that is nothing but a fence
+ * is a fence.
+ */
+const FENCE_LINE = /^\s*```[a-z]*\s*$/i;
+
+/**
+ * A markdown separator row — `|---|:---:|`.
  *
- * Returns null when there is nothing table-shaped, so the caller can render the
- * raw text instead of an empty grid.
+ * Requires a run of THREE dashes. A two-column TSV data row of `-\t-` (models
+ * routinely write `-` for "unknown" despite being asked for "N/A") matches the
+ * character class but has no such run, and must survive: dropping it silently
+ * removed a whole row of extracted data with no gap in the UI.
+ */
+function isSeparatorRow(line: string): boolean {
+  return /^[\s|:=-]+$/.test(line) && /-{3,}/.test(line);
+}
+
+/** Split on `|` that is not backslash-escaped, then unescape. `\|` is the standard
+ *  markdown escape for a literal pipe, and splitting naively shifted every later
+ *  column of any row containing one. */
+function splitPipes(line: string): string[] {
+  return line
+    .split(/(?<!\\)\|/)
+    .map((c) => c.replace(/\\\|/g, "|").trim());
+}
+
+function splitRow(line: string, delimiter: "\t" | "|"): string[] {
+  if (delimiter === "\t") return line.split("\t").map((c) => c.trim());
+  const cells = splitPipes(line);
+  // `| a | b |` splits to an empty cell at EACH END. Drop exactly those, never an
+  // interior empty — that is a real value here as much as in TSV.
+  let start = 0;
+  let end = cells.length;
+  if (start < end && cells[start] === "") start++;
+  if (end > start && cells[end - 1] === "") end--;
+  return cells.slice(start, end);
+}
+
+/**
+ * Parse the model's answer into a table, or return null when it is not a table.
+ *
+ * Tolerant, because models do not reliably honour "TSV only" — but tolerance has
+ * to stop somewhere, and the previous version had no stopping point: ANY text
+ * with two non-blank lines produced a "table". The single most likely stage
+ * failure — a model in table mode replying "I could not find any PPIs in the
+ * provided context." over two lines — rendered as a one-column grid with a
+ * working Download button instead of the prose it should have been.
+ *
+ * So the delimiter is chosen by MAJORITY across lines rather than from the first
+ * line, and at least two lines must actually carry it. That also fixes the
+ * commonest real violation: a lead-in sentence ("Here is the table you asked
+ * for:") used to become the header row and push the real header into the data.
+ *
+ * The result is RECTANGULAR — every row is padded, and the header widened, to
+ * the widest row. That is what keeps the rendered table and the downloaded TSV
+ * from disagreeing: the renderer iterates headers, so a cell beyond the header
+ * count was previously invisible on screen but present in the file.
  */
 export function parseTable(text: string): ParsedTable | null {
-  const cleaned = text
-    .replace(/```[a-z]*\n?/gi, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const lines = cleaned
+  const lines = text
     .split("\n")
-    .filter((l) => l.trim().length > 0 && !/^[-|=\s]+$/.test(l.trim()));
+    .filter((l) => !FENCE_LINE.test(l))
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 
   if (lines.length < 2) return null;
 
-  const delimiter = !lines[0].includes("\t") && lines[0].includes("|") ? "|" : "\t";
-  const parseRow = (line: string): string[] => {
-    const cells = line.split(delimiter).map((c) => c.trim());
-    if (delimiter !== "|") return cells; // TSV: an empty cell is data.
-    // A markdown row is `| a | b |`, so splitting on `|` yields one empty cell
-    // at each END. Drop exactly those — NOT every empty cell. Filtering them
-    // all would collapse `| Ada |  | 1815 |` to ["Ada", "1815"], shifting every
-    // later column one to the left and silently mis-attributing the data.
-    // An interior empty is a real value, in this mode as much as in TSV.
-    let start = 0;
-    let end = cells.length;
-    if (start < end && cells[start] === "") start++;
-    if (end > start && cells[end - 1] === "") end--;
-    return cells.slice(start, end);
-  };
+  // Choose a delimiter only if the lines are genuinely TABLE-SHAPED. Counting
+  // lines that merely contain the character is not enough, and the pipe branch is
+  // where that bites: two prose sentences each using "|" as an or-separator
+  // ("the result is unclear | uncertain") both "contain a pipe", and an earlier
+  // version of this function turned them into a two-cell table with a working
+  // Download button — the very failure the tab branch was rewritten to prevent.
+  //
+  // So a pipe table must also LOOK like one: markdown rows are bounded by pipes
+  // (`| a | b |`), or the block carries a `|---|` separator. Prose is not bounded.
+  // A bare `a | b` with neither marker is genuinely ambiguous, and we prefer the
+  // false negative — prose rendered as prose is still readable, a fabricated
+  // table is not.
+  const tabbed = lines.filter((l) => l.includes("\t")).length;
+  const bounded = lines.filter((l) => l.startsWith("|") && l.endsWith("|")).length;
+  const hasSeparator = lines.some(isSeparatorRow);
+  const pipedTable = bounded >= 2 || (hasSeparator && lines.filter((l) => l.includes("|")).length >= 2);
+  const delimiter: "\t" | "|" | null = tabbed >= 2 ? "\t" : pipedTable ? "|" : null;
+  if (delimiter === null) return null; // prose — the caller renders it as text
 
-  const headers = parseRow(lines[0]);
-  const rows = lines
-    .slice(1)
-    .map(parseRow)
-    .filter((r) => r.length > 0 && r.some((c) => c !== ""));
+  const parsed = lines
+    .filter((l) => !isSeparatorRow(l))
+    .map((l) => splitRow(l, delimiter))
+    // Drop lead-in and trailing prose: a line that does not split into at least
+    // two cells is not part of the table.
+    .filter((cells) => cells.length >= 2);
 
-  return rows.length > 0 ? { headers, rows } : null;
+  if (parsed.length < 2) return null; // need a header and at least one data row
+
+  const width = Math.max(...parsed.map((r) => r.length));
+  const pad = (r: string[]): string[] => [...r, ...Array(width - r.length).fill("")];
+
+  return { headers: pad(parsed[0]), rows: parsed.slice(1).map(pad) };
 }
 
 /** The table as a TSV file body, for the download button. */

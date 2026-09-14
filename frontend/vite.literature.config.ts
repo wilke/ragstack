@@ -1,4 +1,7 @@
+import autoprefixer from "autoprefixer";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "tailwindcss";
+import litTailwind from "./tailwind.literature.config.js";
 import { defineConfig, loadEnv } from "vite";
 
 // The LITERATURE DEMO bundle — a structured-query console over a literature
@@ -35,11 +38,6 @@ import { defineConfig, loadEnv } from "vite";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
 
-  // Which tenant's API the demo reads. Baked in at build time; the app also
-  // accepts a `?tenant=` override at runtime so one bundle can be pointed at
-  // another tenant on stage without a rebuild.
-  const tenant = env.VITE_RAGSTACK_TENANT || "dev";
-
   // The gateway the DEV proxy forwards to. Plain http on purpose — in dev the
   // browser talks to Vite over http, so there is no mixed-content rule to break
   // and coconut:9443 is a self-signed cert.
@@ -54,6 +52,13 @@ export default defineConfig(({ mode }) => {
       : allowedRaw.split(",").map((h) => h.trim()).filter(Boolean);
 
   return {
+    // Tailwind for THIS bundle only: same theme, different `content`, so the
+    // literature app's utilities land here and not in every tenant's stylesheet.
+    css: {
+      postcss: {
+        plugins: [tailwindcss(litTailwind), autoprefixer()],
+      },
+    },
     // Matches the nginx mount. Vite rewrites asset URLs against it, and the app
     // reads it back via import.meta.env.BASE_URL.
     base: env.VITE_BASE || "/ragstack/litdemo/",
@@ -86,7 +91,13 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // Mirror production's same-origin shape: the app always fetches
         // /ragstack/<tenant>/api/..., and only this proxy knows where that is.
-        [`/ragstack/${tenant}/api`]: {
+        //
+        // A REGEX over every tenant, not just the build-time one. nginx routes
+        // all of them in production, so registering a single literal path here
+        // made the documented `?tenant=` override silently production-only — in
+        // dev it 404'd, and the app rendered that as "No such collection, or it
+        // is not readable by this account", which points at the wrong problem.
+        "^/ragstack/[A-Za-z0-9_-]+/api": {
           target: gateway,
           changeOrigin: true,
         },

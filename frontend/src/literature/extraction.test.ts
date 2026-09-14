@@ -338,3 +338,87 @@ describe("collectionDetail", () => {
     expect(collectionDetail({ id: "bare", label: "Bare collection" })).toBe("");
   });
 });
+
+describe("parseTable — prose is not a table (rewrite)", () => {
+  it("returns null for plain prose with no delimiter at all", () => {
+    expect(parseTable("No relevant interactions were found.\nPlease refine the query.")).toBeNull();
+  });
+
+  it("treats two prose lines that each carry an incidental '|' as prose, not a table", () => {
+    // Regression: the majority vote counted lines CONTAINING a pipe, so two
+    // sentences using "|" as an or-separator became a two-cell table with a
+    // working Download button — the same failure the tab branch was rewritten
+    // to prevent. A pipe table must also look like one: pipe-bounded rows, or a
+    // |---| separator. Prose is neither.
+    expect(
+      parseTable("The result is unclear | uncertain.\nWe could not find evidence | at all."),
+    ).toBeNull();
+  });
+
+  it("drops a lead-in sentence that does not split into >= 2 cells, so the next line becomes the header", () => {
+    const t = parseTable("Here is the table you asked for:\nA\tB\nx\ty");
+    expect(t).toEqual({ headers: ["A", "B"], rows: [["x", "y"]] });
+  });
+});
+
+describe("parseTable — an all-dash TSV row is data, not a separator", () => {
+  it("keeps a '-\\t-' data row (models write '-' for unknown)", () => {
+    const t = parseTable("A\tB\n-\t-\nx\ty");
+    expect(t).toEqual({ headers: ["A", "B"], rows: [["-", "-"], ["x", "y"]] });
+  });
+
+  it("contrast: a real markdown separator (3+ dashes) is still dropped, while a single-dash data row in the same table survives", () => {
+    const t = parseTable("| A | B |\n| --- | --- |\n| - | - |");
+    expect(t).toEqual({ headers: ["A", "B"], rows: [["-", "-"]] });
+  });
+});
+
+describe("parseTable — escaped pipes and inline fences", () => {
+  it("unescapes a backslash-escaped pipe as a literal character within one cell, not a delimiter", () => {
+    const t = parseTable("| A | B |\n| a \\| b | y |");
+    expect(t).toEqual({ headers: ["A", "B"], rows: [["a | b", "y"]] });
+  });
+
+  it("preserves an inline triple-backtick occurrence inside a cell — only a fence-only LINE is stripped", () => {
+    const t = parseTable("A\tB\nuse ```code``` here\ty");
+    expect(t).toEqual({ headers: ["A", "B"], rows: [["use ```code``` here", "y"]] });
+  });
+});
+
+describe("parseTable — rectangularity", () => {
+  it("widens the header with empty column names when a row has more cells than the header, so every row and the header share one width", () => {
+    const t = parseTable("A\tB\nx\ty\tz");
+    expect(t).toEqual({ headers: ["A", "B", ""], rows: [["x", "y", "z"]] });
+    // The screen-vs-download consistency fix: headers and every row agree on
+    // length, and so does the TSV the download button produces from them.
+    expect(t!.headers).toHaveLength(3);
+    for (const row of t!.rows) expect(row).toHaveLength(t!.headers.length);
+    const tsvLines = toTsv(t!).split("\n");
+    expect(tsvLines[0].split("\t")).toHaveLength(t!.headers.length);
+    for (const line of tsvLines.slice(1)) expect(line.split("\t")).toHaveLength(t!.headers.length);
+  });
+});
+
+describe("buildFilters — tightened year validation", () => {
+  it.each(["0x7E9", "1e3", "2.025e3", "+2025", "20255555555555555555", "999", "12345", "1499", "2101"])(
+    "omits a year that is not four plain digits in [1500, 2100] (%j)",
+    (bad) => {
+      const f = buildFilters({ year: bad });
+      expect(f).not.toHaveProperty("year");
+    },
+  );
+
+  it.each(["2025", "1500", "2100"])("accepts %j as a number", (good) => {
+    const f = buildFilters({ year: good });
+    expect(f.year).toBe(Number(good));
+    expect(typeof f.year).toBe("number");
+  });
+
+  it("passes journal through as a trimmed string", () => {
+    expect(buildFilters({ journal: "  Nature  " })).toEqual({ journal: "Nature" });
+  });
+
+  it("omits journal when blank", () => {
+    expect(buildFilters({ journal: "   " })).not.toHaveProperty("journal");
+  });
+});

@@ -1,3 +1,6 @@
+# No trailing slash: a git worktree borrows the main checkout's install via a
+# SYMLINK named node_modules, which `node_modules/` (directories only) did not
+# match — so it got committed as a link.
 node_modules
 dist/
 *.local
