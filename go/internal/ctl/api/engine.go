@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/user"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +89,9 @@ type EngineConfig struct {
 	// `ragstack-ctl selftest --rag-root <scratch>` — where the paths move into
 	// the scratch tree and the mount the units wait for is still /rag.
 	MountPoint string
+	// Owner is the account this process runs as, recorded as the owner of
+	// every tenant it creates. Empty means the current OS user.
+	Owner string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -128,6 +132,11 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.Owner == "" {
+		if u, err := user.Current(); err == nil {
+			cfg.Owner = u.Username
+		}
 	}
 	if cfg.SecretsTTL == 0 {
 		cfg.SecretsTTL = DefaultSecretsTTL
@@ -242,7 +251,7 @@ func BuildEngineAndDrivers(cfg EngineConfig) (jobs.Engine, jobs.Drivers, error) 
 		Store: store,
 		Ops: ops.NewRegistry(ops.Deps{
 			Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror,
-			MountPoint: cfg.MountPoint,
+			MountPoint: cfg.MountPoint, Owner: cfg.Owner,
 		}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,

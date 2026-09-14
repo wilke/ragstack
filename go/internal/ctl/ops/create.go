@@ -104,6 +104,9 @@ type createSpec struct {
 	Start   bool
 	Gateway bool
 
+	// Owner is the account recorded on the row: the one running the ctl.
+	Owner string
+
 	// Verb is the name the registry's last_ops entry is filed under, empty
 	// meaning "create". `restore --as` lays its fresh tenant down through this
 	// same builder, and a row whose last_ops said `create` with a restore job's
@@ -250,7 +253,11 @@ func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) er
 		Keys: keys, Accounts: serviceAccountArgs(args), Settings: set,
 		UIMode: argStringOf(args, "ui_mode"),
 		Start:  boolArgOrDefault(args, "start", true), Gateway: boolArgOrDefault(args, "gateway", true),
-		Mirror: p.op.deps.Mirror,
+		Mirror: p.op.deps.Mirror, Owner: p.op.deps.owner(),
+	}
+	if !registry.KnownOwner(spec.Owner) {
+		return p.refuse("the ctl runs as %q, which is not an owner the registry admits (%v); a tenant it created "+
+			"would be a row no later load accepts", spec.Owner, registry.Owners())
 	}
 	spec.Tenant = prospectiveTenant(p.oc.Roots, f, spec)
 	return planCreateSteps(p, spec)
@@ -1098,7 +1105,7 @@ func prospectiveTenant(roots paths.Roots, f *registry.Fleet, spec createSpec) *r
 	if uiMode == registry.UIModeDev {
 		t.UI.Port = registry.NullPort(t.Ports.Base + 10)
 	}
-	t.Supervisor, t.Owner, t.State = supervisorSystemd, "svcbvbrc", "provisioned"
+	t.Supervisor, t.Owner, t.State = supervisorSystemd, orDefault(spec.Owner, "svcbvbrc"), "provisioned"
 	t.DesiredBoot, t.EnvLayout = "enabled", "managed"
 	t.Identity = registry.Identity{Provider: spec.Provider, AdminSubjectsCount: len(spec.Subjects)}
 	t.Settings = spec.Settings

@@ -66,6 +66,14 @@ type Deps struct {
 	// false, and a unit conditioned on it never starts and never says why,
 	// which is the least debuggable failure systemd has.
 	MountPoint string
+	// Owner is the account the ctl runs as — the `owner` a created tenant's
+	// row records and the account whose units the lifecycle verbs may touch.
+	// It is the PROCESS's identity (the daemon's svcbvbrc, a --direct run's
+	// user), never a request argument: a sandbox created by wilke through
+	// --direct that recorded svcbvbrc as its owner made doctor's
+	// port_owner_mismatch red for its own processes, and refused the
+	// decommission that would have removed it. Empty means svcbvbrc.
+	Owner string
 }
 
 // Sealer is the age half of internal/ctl/seal behind a two-method seam, so
@@ -439,4 +447,12 @@ func nonNilRuns(r []model.WouldRun) []model.WouldRun {
 		return []model.WouldRun{}
 	}
 	return r
+}
+
+// owner is Deps.Owner with the deployment default applied.
+func (d Deps) owner() string {
+	if d.Owner == "" {
+		return "svcbvbrc"
+	}
+	return d.Owner
 }

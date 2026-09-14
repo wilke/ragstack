@@ -208,7 +208,7 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 		// and published — by the steps below.
 		Start: false, Gateway: false,
 		Verb:   "restore",
-		Mirror: p.op.deps.Mirror,
+		Mirror: p.op.deps.Mirror, Owner: p.op.deps.owner(),
 	}
 	// A sandbox is restored into a SANDBOX. `registry.Allocate` ignores
 	// selftest rows and hands out the next production block, so a selftest that

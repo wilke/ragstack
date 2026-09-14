@@ -44,7 +44,7 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	// made or supervises: renaming the data directory of a hand-run tenant
 	// belonging to another account is destroying somebody else's work with a
 	// tool that cannot put it back.
-	managed := t.Supervisor == supervisorSystemd && t.Owner == "svcbvbrc"
+	managed := t.Supervisor == supervisorSystemd && t.Owner == p.op.deps.owner()
 	sandbox := p.isSandbox()
 	if !managed && !sandbox {
 		return p.refuse("%s is neither a ctl-managed tenant (supervisor systemd, owner svcbvbrc — it is %s/%s) nor a "+

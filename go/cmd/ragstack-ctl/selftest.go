@@ -702,7 +702,26 @@ func (s *selftest) ingest(ctx context.Context, fixture string) error {
 	started := s.now()
 	res := stepResult{Name: "ingest"}
 
-	id, err := s.tenantAPI.Ingest(ctx, origin, s.adminKey, fixture)
+	// The tenant API ingests only from under its own INGEST_ROOT
+	// (<data_dir>/ingest): the fixture is copied there first, and the copy is
+	// what is ingested. Handing it the original path — the first thing this
+	// selftest tried on coconut — is refused by the API as "outside the
+	// permitted ingest root".
+	// Read from the OS and written through the Files driver: the fixture is a
+	// document on this host (small by construction), and the driver is what
+	// keeps the write inside the tenant tree on the real host and inside the
+	// fake host in a test.
+	staged := filepath.Join(t.DataDir, "ingest", filepath.Base(fixture))
+	body, err := os.ReadFile(fixture)
+	if err == nil {
+		err = s.drv.Files().WriteAtomic(ctx, staged, body, 0o640)
+	}
+	if err != nil {
+		res.State, res.Err, res.Duration = "failed", fmt.Errorf("staging the fixture under the ingest root: %w", err), s.now().Sub(started)
+		s.steps = append(s.steps, res)
+		return res.Err
+	}
+	id, err := s.tenantAPI.Ingest(ctx, origin, s.adminKey, staged)
 	if err != nil {
 		res.State, res.Err, res.Duration = "failed", err, s.now().Sub(started)
 		s.steps = append(s.steps, res)
@@ -1226,6 +1245,16 @@ func (s *selftest) sweepRows() (removed, refused []string, err error) {
 			refused = append(refused, fmt.Sprintf("%s is named like a sandbox but sits on port block %d, which is "+
 				"not in %d–%d: refusing to delete its row", name, f.Tenants[name].Ports.Base,
 				paths.SelftestBase, paths.SelftestEnd))
+			continue
+		}
+		if st := f.Tenants[name].State; st != "quarantined" {
+			// A row that is not quarantined belongs to a sandbox that is, or
+			// may be, still running. The sweep once deleted the row of a live
+			// sandbox on coconut and left its units and tree orphaned; the row
+			// is what `decommission` needs to stop them, so it stays until
+			// decommission has run.
+			refused = append(refused, fmt.Sprintf("%s is %s, not quarantined: decommission it first "+
+				"(`ragstack-ctl tenant decommission %s --direct --yes-destructive %s`), then sweep", name, st, name, name))
 			continue
 		}
 		doomed = append(doomed, name)

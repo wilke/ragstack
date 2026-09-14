@@ -40,7 +40,7 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 		return err
 	}
 	t := p.t
-	if t.Owner == "svcbvbrc" && t.Supervisor == supervisorSystemd {
+	if t.Owner == p.op.deps.owner() && t.Supervisor == supervisorSystemd {
 		return p.refuse("%s is already owned by svcbvbrc and supervised by systemd; there is nothing to hand over", t.Name)
 	}
 	if err := p.requireFencedBackup("handover"); err != nil {
