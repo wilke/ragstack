@@ -162,11 +162,11 @@ func TestRenderedGenerationIsASemanticNoop(t *testing.T) {
 	live := doctor.ParseTenantMaps(b, liveMaps)
 	// The two JSON lists live in routes.conf until the generated include takes
 	// over, so the live half of the comparison is assembled from both files.
-	names, tenants, err := liveTenantLists(filepath.Join(liveProxy, "snippets", "routes.conf"))
+	lists, err := doctor.LiveTenantLists(liveProxy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	live.NamesJSON, live.TenantsJSON = names, tenants
+	live.NamesJSON, live.TenantsJSON = lists.NamesJSON, lists.TenantsJSON
 	rendered := doctor.ParseTenantMaps(gen.Files[FileTenants], "rendered")
 	if ok, notes := semanticEqual(live, rendered); !ok {
 		t.Errorf("rendered maps differ from the live ones:\n  %s", strings.Join(notes, "\n  "))
@@ -564,15 +564,35 @@ func TestFirstPublishProbeFailureLeavesLoadableIncludes(t *testing.T) {
 	})
 }
 
+// Once a generation HAS been published the ctl owns both include paths, so a
+// regular file at one of them is a hand edit and the publish refuses it.
+//
+// The refusal cannot be tested on a FIRST publish any more, and must not be:
+// before anything is published there is no ctl-owned content a hand edit could
+// have replaced, so the same regular file is the coconut-proxy bootstrap copy
+// by definition (see TestFirstPublishAdoptsABootstrapCopyItCannotVerify).
 func TestSwitchRefusesAHandEditedRegularFile(t *testing.T) {
 	roots := testRoots(t)
 	f := registry.LiveFixture()
 	opts, _, sig, pr := testOpts(t, roots)
+
+	// Generation 1: the ctl now owns both paths.
+	publishOnce(t, f, opts, pr)
+	before := sig.Count()
+
 	hand := filepath.Join(roots.ProxyDir, FileStatic)
+	if err := os.Remove(hand); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(hand, []byte("# someone's hand edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gen, _ := Render(f, roots)
+
+	f.Generation++ // something to publish
+	gen, err := Render(f, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
 	answerDesiredState(t, pr, gen, f)
 	res, err := Publish(context.Background(), f, opts)
 	if !errors.Is(err, ErrRefused) {
@@ -581,7 +601,7 @@ func TestSwitchRefusesAHandEditedRegularFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "hand edit") {
 		t.Errorf("the refusal does not explain itself: %v", err)
 	}
-	if sig.Count() != 0 {
+	if sig.Count() != before {
 		t.Error("the master was signalled although the switch was refused")
 	}
 	b, _ := os.ReadFile(hand)

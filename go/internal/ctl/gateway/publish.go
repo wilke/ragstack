@@ -785,6 +785,12 @@ func inspectIncludes(proxyDir string) ([]IncludeState, error) {
 				return out, err
 			}
 			out = append(out, IncludeState{Rel: rel, Kind: IncludeSymlink, Target: target})
+		case !st.Mode().IsRegular():
+			// A directory, a fifo, a device. None of them is a bootstrap copy,
+			// none of them can be recorded for a revert, and os.ReadFile on a
+			// fifo BLOCKS. Refuse before anything moves.
+			return out, fmt.Errorf("%w: %s is a %s, not a regular file or a symlink; the publish cannot record it for a revert",
+				ErrRefused, live, st.Mode().Type())
 		default:
 			b, err := os.ReadFile(live)
 			if err != nil {
@@ -835,13 +841,25 @@ func switchTo(opts Options, s State, gen *Generation, prev int, prior []IncludeS
 				return notes, err
 			}
 		default:
-			// validateIncludes already proved this regular file is the
-			// coconut-proxy bootstrap copy, before the pointer moved.
+			// validateIncludes already decided this regular file is the
+			// coconut-proxy bootstrap copy, before the pointer moved — either
+			// because its configuration is identical to a ctl render, or
+			// because no generation has ever been published and so nothing
+			// ctl-owned can be what it replaced. Say which of the two: the
+			// second adopts bytes nobody compared, and the operator is owed
+			// the path, the size and the fact that a revert puts them back.
+			identical := isGeneratedCopy(p.Content, p.Rel, s, gen, prev)
 			if err := link(live, want); err != nil {
 				return notes, err
 			}
-			notes = append(notes, fmt.Sprintf("%s was the coconut-proxy bootstrap copy (a regular file with identical "+
-				"configuration); it is now the symlink into %s", p.Rel, s.CurrentLink()))
+			if identical {
+				notes = append(notes, fmt.Sprintf("%s was the coconut-proxy bootstrap copy (a regular file with identical "+
+					"configuration); it is now the symlink into %s", p.Rel, s.CurrentLink()))
+				continue
+			}
+			notes = append(notes, fmt.Sprintf("%s (%d bytes) was a regular file and no generation had ever been published, "+
+				"so it was adopted as the pre-publish bootstrap copy; a revert restores it. It is now the symlink into %s",
+				live, len(p.Content), s.CurrentLink()))
 		}
 	}
 	return notes, nil
@@ -854,10 +872,22 @@ func switchTo(opts Options, s State, gen *Generation, prev int, prior []IncludeS
 // thing generation-based publishing must never overwrite. The exception is the
 // BOOTSTRAP: coconut-proxy ships a committed copy of each generated include so
 // that a freshly deployed proxy tree loads before the ctl has ever published,
-// and deploy.sh writes it as a regular file. That file is a ctl render — its
-// ROUTING is identical either to the generation being published or to the one
-// already published — and replacing it with the symlink is precisely the
-// hand-over this step exists for. Anything else is refused.
+// and deploy.sh writes it as a regular file.
+//
+// On the FIRST publish (prev == 0, no generation has ever been published) that
+// file is the bootstrap copy BY DEFINITION: the ctl has never written at this
+// path, so there is no ctl-owned content a hand edit could have replaced, and
+// "is it byte-identical to a render?" answers a question nobody asked. The
+// shipped copy is rendered once and committed while the registry keeps moving
+// — a tenant switched to a static UI, a route added — so demanding identity
+// bricked the very first apply on hosts that had done nothing wrong. Accept
+// any regular file (inspectIncludes has already refused a directory or a
+// special file, and a dangling link is a symlink, not this branch), record its
+// bytes in the txn — which is what makes the adoption reversible — and warn.
+//
+// From the second publish on the strict rule stands: the ctl owns this path
+// now, so a regular file whose configuration is neither the generation being
+// published nor the one currently published IS a hand edit, and is refused.
 //
 // Deciding it here rather than mid-switch is what keeps a refusal free of side
 // effects: the pointer has not moved, so there is nothing to put back and no
@@ -865,6 +895,9 @@ func switchTo(opts Options, s State, gen *Generation, prev int, prior []IncludeS
 func validateIncludes(opts Options, s State, gen *Generation, prev int, prior []IncludeState) error {
 	for _, p := range prior {
 		if p.Kind != IncludeRegular {
+			continue
+		}
+		if prev == 0 {
 			continue
 		}
 		if !isGeneratedCopy(p.Content, p.Rel, s, gen, prev) {

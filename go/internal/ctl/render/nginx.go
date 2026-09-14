@@ -16,6 +16,12 @@ import (
 // statement/block delimiters, variable expansion, quotes, escapes, newlines.
 var nginxRefuse = regexp.MustCompile("[;{}$\"'\\\\\n]")
 
+// reUIBase is registry/contract.go's ui.base pattern, enforced again HERE
+// because this is where the value becomes nginx configuration: absolute,
+// slash-terminated, and drawn from an alphabet with no quote, `$`, `;` or
+// brace in it.
+var reUIBase = regexp.MustCompile(`^/[A-Za-z0-9._/-]*/$`)
+
 // Map targets are always loopback: the gateway never forwards off-host.
 func loopback(port int) string { return fmt.Sprintf("127.0.0.1:%d", port) }
 
@@ -163,8 +169,17 @@ func NginxTenants(f *registry.Fleet, cfg NginxConfig) ([]byte, error) {
 				return nil, fmt.Errorf("tenant %s: ui mode %s needs a port in range, got %d", t.Name, t.UI.Mode, t.UI.Port)
 			}
 			ui = append(ui, mapRow{t.Name, loopback(int(t.UI.Port))})
-		case registry.UIModeStatic, "":
+		case registry.UIModeStatic:
 			// served by tenants-ui-static.generated.conf
+		case "":
+			// NOT static. The contract's enum is static|dev|external and the
+			// empty string is none of them, so a tenant whose mode was never
+			// recorded is UNKNOWN. Folding it in with static was silently
+			// wrong in both directions: NginxStatic skips it (it tests for
+			// static exactly), so the tenant got no $tenant_ui row AND no
+			// alias block — an invisible UI, with no error to say so.
+			return nil, fmt.Errorf("tenant %s: ui mode is empty; the registry records one of %s|%s|%s",
+				t.Name, registry.UIModeStatic, registry.UIModeDev, registry.UIModeExternal)
 		default:
 			return nil, fmt.Errorf("tenant %s: unknown ui mode %q", t.Name, t.UI.Mode)
 		}
@@ -289,17 +304,30 @@ func NginxStatic(f *registry.Fleet, cfg NginxConfig) ([]byte, error) {
 		if _, err := paths.SafePath("/", dist); err != nil {
 			return nil, fmt.Errorf("tenant %s: %w", t.Name, err)
 		}
+		// The mount point is t.UI.Base when the registry records one, and the
+		// name-derived path only when it does not. There used to be two
+		// independent derivations of this prefix — adopt wrote ui.base from
+		// --public-name while the renderer keyed on t.Name — so a tenant
+		// adopted under a public name got a registry row describing a mount
+		// nginx did not serve. One authority, checked here.
+		base := t.UI.Base
+		if base == "" {
+			base = "/ragstack/" + t.Name + "/ui/"
+		}
+		if !reUIBase.MatchString(base) {
+			return nil, fmt.Errorf("tenant %s: ui base %q is not an absolute, slash-terminated path in [A-Za-z0-9._/-]", t.Name, base)
+		}
 		fmt.Fprintf(&b, `
-location = /ragstack/%[1]s/ui {
-    return 301 /ragstack/%[1]s/ui/;
+location = %[1]s {
+    return 301 %[2]s;
 }
 
-location ^~ /ragstack/%[1]s/ui/ {
-    include %[2]s;
-    alias %[3]s/;
-    try_files $uri $uri/ /ragstack/%[1]s/ui/index.html;
+location ^~ %[2]s {
+    include %[3]s;
+    alias %[4]s/;
+    try_files $uri $uri/ %[2]sindex.html;
 }
-`, t.Name, cors, dist)
+`, strings.TrimSuffix(base, "/"), base, cors, dist)
 	}
 	if f.Ctl.GatewayEnabled {
 		if cfg.CtlPort <= 0 || cfg.CtlPort > 65535 {

@@ -249,57 +249,148 @@ func DiffDetail(roots paths.Roots, f *registry.Fleet) (*DiffResult, error) {
 	// doctor.GatewayMaps already tries them in that order and reads straight
 	// through a symlink, so this one call is the same "vs published
 	// generation" comparison whether or not the ctl itself did the publishing.
-	liveMaps, ok := doctor.GatewayMaps(roots.ProxyDir)
+	liveMaps, ok, err := doctor.GatewayMaps(roots.ProxyDir)
+	if err != nil {
+		// The live routing is THERE and unreadable (EACCES, a dangling
+		// symlink from a half-finished deploy). "No live maps found" would be
+		// a lie, and a semantic-no-op verdict reached by comparing against
+		// nothing is the dangerous half of that lie: it is what tells an
+		// operator the first publish changes no route.
+		out.ComparedTo = "the live tenant maps under " + roots.ProxyDir + " could not be read"
+		out.SemanticNoop = false
+		out.Notes = append(out.Notes, fmt.Sprintf(
+			"%s: %v — the live routing could NOT be read, so nothing was compared and this is not a known no-op",
+			roots.ProxyDir, err))
+		return out, nil
+	}
 	if !ok {
 		out.ComparedTo = "nothing published yet; no live tenant maps found under " + roots.ProxyDir
 		return out, nil
 	}
 	out.ComparedTo = liveMaps.Source
-	if liveMaps.NamesJSON == "" && liveMaps.TenantsJSON == "" {
-		// The generated include carries both JSON lists itself. Only the
-		// legacy conf.d/00-maps.conf needs the routes.conf fallback: before
-		// the generated include exists, the two lists are `return 200 '…'`
-		// literals inside routes.conf rather than `$tenants_names_json` /
-		// `$tenants_json` map values.
-		routes := filepath.Join(roots.ProxyDir, "snippets", "routes.conf")
-		names, tenants, rerr := liveTenantLists(routes)
-		if rerr != nil {
-			out.Notes = append(out.Notes, fmt.Sprintf("%s: %v — the two tenant JSON lists were NOT compared", routes, rerr))
+
+	// The two tenant JSON lists are routing of their own, and they do not
+	// necessarily live in the same file as the maps: pre-deploy they are
+	// hand-written `return 200 '…'` bodies in routes.conf, post-deploy they
+	// are the include's map values. doctor.LiveTenantLists applies that
+	// precedence once, for this and for adopt's display_order alike, and
+	// fills each list INDEPENDENTLY — a mixed tree really does carry one of
+	// them in each file, and taking both from whichever file answered first
+	// dropped the other.
+	lists, lerr := doctor.LiveTenantLists(roots.ProxyDir)
+	switch {
+	case lerr != nil:
+		out.Notes = append(out.Notes, fmt.Sprintf("%s: %v — the two tenant JSON lists were NOT compared", roots.ProxyDir, lerr))
+	default:
+		if lists.NamesJSON != "" {
+			liveMaps.NamesJSON = lists.NamesJSON
 		}
-		liveMaps.NamesJSON, liveMaps.TenantsJSON = names, tenants
+		if lists.TenantsJSON != "" {
+			liveMaps.TenantsJSON = lists.TenantsJSON
+		}
+		if src := lists.Source(); src != "" && src != liveMaps.Source {
+			out.ComparedTo = liveMaps.Source + " (tenant lists from " + src + ")"
+		}
 	}
+
+	// A textual difference in the static-UI snippet is a routing difference
+	// too — that file decides which alias block serves which tenant's
+	// `vite build`, and it appears in NEITHER map. Comparing only the maps
+	// called a first publish that adds, drops or repoints an alias block a
+	// semantic no-op.
+	staticDiff := staticNotes(liveStatic(roots.ProxyDir), gen.Files[FileStatic])
+	out.Notes = append(out.Notes, staticDiff...)
+
 	noop, notes := semanticEqual(liveMaps,
 		doctor.ParseTenantMaps(gen.Files[FileTenants], fmt.Sprintf("gen-%d/%s", gen.N, FileTenants)))
-	out.SemanticNoop, out.Notes = noop, append(out.Notes, notes...)
+	out.SemanticNoop, out.Notes = noop && len(staticDiff) == 0, append(out.Notes, notes...)
 	return out, nil
 }
 
-// liveRouteLists finds the two literals routes.conf serves today.
-//
-// tenantsObjects is the table `location = /ragstack/tenants` returns; names is
-// the bare list the landing page and the 404 bodies carry. Both are matched
-// inside the single-quoted nginx `return` body, which cannot contain a quote of
-// its own.
+// liveStatic reads the static-UI snippet the proxy tree carries today, through
+// a symlink if that is what it is. An absent file is nil: "the tree serves no
+// static UI", which is a comparable state, not an error.
+func liveStatic(proxyDir string) []byte {
+	b, err := os.ReadFile(filepath.Join(proxyDir, filepath.FromSlash(FileStatic)))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// staticAliasBlock captures one `location ^~ <prefix> { … }` and its body;
+// aliasDirective picks the `alias <dir>;` out of that body. The generated
+// snippet never nests a block inside one of these, which is what makes the
+// non-greedy match exact rather than approximate.
 var (
-	liveTenantsObjects = regexp.MustCompile(`return\s+200\s+'\{"tenants":(\[\{.*?\}\])\}`)
-	liveTenantsNames   = regexp.MustCompile(`"tenants":(\["[^\]]*"\]|\[\])`)
+	staticAliasBlock = regexp.MustCompile(`(?s)location\s+\^~\s+(\S+)\s*\{(.*?)
+\}`)
+	aliasDirective = regexp.MustCompile(`alias\s+([^;]+);`)
 )
 
-func liveTenantLists(routesConf string) (names, tenants string, err error) {
-	b, err := os.ReadFile(routesConf)
-	if err != nil {
-		return "", "", err
+func staticBlocks(b []byte) map[string]string {
+	out := map[string]string{}
+	for _, m := range staticAliasBlock.FindAllSubmatch(b, -1) {
+		alias := ""
+		if a := aliasDirective.FindSubmatch(m[2]); a != nil {
+			alias = strings.TrimSpace(string(a[1]))
+		}
+		out[string(m[1])] = alias
 	}
-	if m := liveTenantsNames.FindSubmatch(b); m != nil {
-		names = string(m[1])
+	return out
+}
+
+// staticNotes says, in words, how the live static-UI snippet differs from the
+// render. It returns something for ANY textual difference once the provenance
+// header is off: the per-prefix alias comparison names the ones it can, and a
+// difference it cannot attribute to a block is still reported, because
+// "different and unexplained" must not round down to "no-op".
+func staticNotes(live, rendered []byte) []string {
+	l, r := directives(StripHeader(live)), directives(StripHeader(rendered))
+	if l == r {
+		return nil
 	}
-	if m := liveTenantsObjects.FindSubmatch(b); m != nil {
-		tenants = string(m[1])
+	var notes []string
+	a, b := staticBlocks([]byte(l)), staticBlocks([]byte(r))
+	for _, p := range sortedKeys(a) {
+		switch {
+		case b[p] == "" && !hasKey(b, p):
+			notes = append(notes, fmt.Sprintf("%s: %s is served from %s live and has no block in the render", FileStatic, p, a[p]))
+		case b[p] != a[p]:
+			notes = append(notes, fmt.Sprintf("%s: %s alias %s live -> %s rendered", FileStatic, p, a[p], b[p]))
+		}
 	}
-	if names == "" && tenants == "" {
-		return "", "", fmt.Errorf("carries neither tenant list")
+	for _, p := range sortedKeys(b) {
+		if !hasKey(a, p) {
+			notes = append(notes, fmt.Sprintf("%s: %s is new in the render (alias %s)", FileStatic, p, b[p]))
+		}
 	}
-	return names, tenants, nil
+	if notes == nil {
+		notes = append(notes, fmt.Sprintf("%s: the live file and the render differ in text outside the alias blocks", FileStatic))
+	}
+	return notes
+}
+
+// directives drops comment and blank lines. nginx routes on directives, and
+// the two files carry a paragraph of prose each — an ABSENT live snippet and a
+// render whose only content is that prose serve exactly the same thing (no
+// static UI at all), and calling that a difference would make every pre-deploy
+// tree a non-no-op. Everything a comment is not still counts.
+func directives(b []byte) string {
+	var keep []string
+	for _, line := range strings.Split(string(b), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		keep = append(keep, t)
+	}
+	return strings.Join(keep, "\n")
+}
+
+func hasKey(m map[string]string, k string) bool {
+	_, ok := m[k]
+	return ok
 }
 
 // semanticEqual compares two parsed map sets and reports every difference in

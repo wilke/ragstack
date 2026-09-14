@@ -733,7 +733,13 @@ func ValidateUIMode(mode string, port int) error {
 //     NginxTenants skips such a tenant's $tenant_ui row rather than failing
 //     the whole fleet's gateway file.
 func (p *previewer) ui() registry.UI {
-	ui := registry.UI{Mode: p.opts.UIMode, Base: "/ragstack/" + p.public + "/ui/"}
+	// The base is built from the REGISTRY KEY, not from --public-name: the
+	// gateway renderer keys every location block, every map row and every
+	// try_files fallback on t.Name, so a base derived from a different name
+	// described a mount nginx does not serve. (render.NginxStatic now takes
+	// t.UI.Base when it is set, which is the other half of the same fix: the
+	// two cannot disagree because only one of them is authoritative.)
+	ui := registry.UI{Mode: p.opts.UIMode, Base: "/ragstack/" + p.name + "/ui/"}
 	if ui.Mode == "" {
 		ui.Mode = registry.UIModeDev
 		if p.opts.UIPort == 0 {
@@ -741,8 +747,8 @@ func (p *previewer) ui() registry.UI {
 		}
 	}
 	if ui.Mode == registry.UIModeStatic {
-		index := filepath.Join(p.dataDir, "ui", "dist", "index.html")
-		if !fileExists(index) {
+		index := doctor.UIDistIndex(p.dataDir)
+		if !doctor.StaticUIDistOK(p.dataDir) {
 			p.err(doctor.UIDistMissing, fmt.Sprintf(
 				"ui mode static serves %s/ui/dist, but %s is not a regular file; run the tenant's `vite build --base %s` first",
 				p.dataDir, index, ui.Base))

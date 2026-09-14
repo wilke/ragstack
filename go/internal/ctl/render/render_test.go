@@ -682,3 +682,66 @@ func TestRetiredLegacyRouteDoesNotReserveItsName(t *testing.T) {
 		t.Error("an active legacy route and a tenant sharing a name must be refused")
 	}
 }
+
+// TestNginxStaticUsesTheRecordedUIBase.
+//
+// The mount prefix used to be derived here from t.Name while adopt derived
+// ui.base from --public-name, so the two could describe different mounts and
+// nothing noticed. t.UI.Base is now the single authority when it is set — the
+// location block, the slashless 301 and the try_files fallback all come from
+// it — and the name-derived path is the fallback for a row that has none.
+func TestNginxStaticUsesTheRecordedUIBase(t *testing.T) {
+	f := registry.LiveFixture()
+	f.Tenants["dev"].UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/pretty-name/ui/"}
+	out, err := NginxStatic(f, NginxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, w := range []string{
+		"location = /ragstack/pretty-name/ui {\n    return 301 /ragstack/pretty-name/ui/;\n}",
+		"location ^~ /ragstack/pretty-name/ui/ {",
+		"try_files $uri $uri/ /ragstack/pretty-name/ui/index.html;",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("the snippet ignores the recorded ui.base; lacks %q\n%s", w, s)
+		}
+	}
+	if strings.Contains(s, "/ragstack/dev/ui/") {
+		t.Errorf("the name-derived mount is still rendered alongside the recorded base:\n%s", s)
+	}
+
+	// An empty base still falls back to the name.
+	f.Tenants["dev"].UI.Base = ""
+	out, err = NginxStatic(f, NginxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "location ^~ /ragstack/dev/ui/ {") {
+		t.Errorf("a row with no ui.base lost its name-derived mount:\n%s", out)
+	}
+
+	// And a base that is not an absolute, slash-terminated safe path is a
+	// refusal, not nginx configuration.
+	f.Tenants["dev"].UI.Base = "/ragstack/$tenant/ui/"
+	if _, err := NginxStatic(f, NginxConfig{}); err == nil {
+		t.Error("a ui.base carrying an nginx variable was rendered")
+	}
+}
+
+// TestNginxTenantsRefusesAnEmptyUIMode: the contract's enum is
+// static|dev|external and "" is none of them. Folding it in with `static` was
+// wrong in both directions — NginxStatic tests for static EXACTLY, so such a
+// tenant got no $tenant_ui row AND no alias block: an invisible UI, with no
+// error to say so.
+func TestNginxTenantsRefusesAnEmptyUIMode(t *testing.T) {
+	f := registry.LiveFixture()
+	f.Tenants["demo"].UI = registry.UI{}
+	_, err := NginxTenants(f, NginxConfig{})
+	if err == nil {
+		t.Fatal("an empty ui mode was rendered as static")
+	}
+	if !strings.Contains(err.Error(), "demo") || !strings.Contains(err.Error(), "ui mode") {
+		t.Errorf("the refusal does not name the tenant and the field: %v", err)
+	}
+}

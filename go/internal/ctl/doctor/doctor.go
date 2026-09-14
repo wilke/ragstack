@@ -266,7 +266,15 @@ func (d *run) manifestChecks() {
 
 // gatewayChecks compare the live routing table with the registry's ports.
 func (d *run) gatewayChecks() {
-	maps, ok := GatewayMaps(d.roots.ProxyDir)
+	maps, ok, err := GatewayMaps(d.roots.ProxyDir)
+	if err != nil {
+		// Not "no gateway yet": the live routing table is THERE and
+		// unreadable, so every port comparison below is one this run silently
+		// did not make.
+		d.add(model.LevelError, GatewayMapMismatch, "", fmt.Sprintf(
+			"%s: the live routing table could not be read, so no tenant's gateway port was checked: %v", d.roots.ProxyDir, err))
+		return
+	}
 	if !ok {
 		return
 	}
@@ -305,11 +313,33 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 		d.add(model.LevelError, PortOwnerMismatch, t.Name, fmt.Sprintf(":%d is held by pid %d running as %s, the registry records owner %s", t.Ports.API, api.Pid, api.User, t.Owner))
 	}
 	d.unexpectedListeners(t)
+	d.uiCheck(t)
 	d.envCheck(t)
 	d.codeChecks(t)
 	d.storeChecks(t)
 	d.permissionChecks(t)
 	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
+}
+
+// uiCheck re-runs adoption's static-UI precondition on EVERY pass.
+//
+// adopt checks <data_dir>/ui/dist/index.html once, at adoption. The dist is a
+// build artifact: it is deleted by a `git clean`, replaced by a rebuild, and
+// moved by a handover — long after adoption, and with no finding to say so.
+// nginx's alias block keeps pointing at it either way, so the tenant's UI
+// answers 404 while doctor reports a clean fleet. Same code, same finding,
+// re-asked.
+func (d *run) uiCheck(t *registry.Tenant) {
+	if t.UI.Mode != registry.UIModeStatic || StaticUIDistOK(t.DataDir) {
+		return
+	}
+	base := t.UI.Base
+	if base == "" {
+		base = "/ragstack/" + t.Name + "/ui/"
+	}
+	d.add(model.LevelError, UIDistMissing, t.Name, fmt.Sprintf(
+		"ui mode static serves %s/ui/dist, but %s is not a regular file; the gateway answers %s with 404 until `vite build --base %s` is run",
+		t.DataDir, UIDistIndex(t.DataDir), base, base))
 }
 
 // unexpectedListeners looks at the six allocated service ports of a tenant's

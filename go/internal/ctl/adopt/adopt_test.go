@@ -1080,7 +1080,8 @@ func TestDisplayOrderPostDeployReadsGeneratedInclude(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "snippets", "routes.conf"), []byte(routes), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The shipped bootstrap copy of the generated include, byte for byte.
+	// The shipped bootstrap copy of the generated include, byte for byte. Its
+	// $tenants_names_json is ["dev","demo","lucid-next","asm-next"].
 	gen, err := os.ReadFile(filepath.Join(bootstrapFixtureDir, "conf.d", "05-tenants.generated.conf"))
 	if err != nil {
 		t.Fatal(err)
@@ -1091,15 +1092,120 @@ func TestDisplayOrderPostDeployReadsGeneratedInclude(t *testing.T) {
 
 	f := registry.NewFleet(roots.RagRoot)
 	var added []*registry.Tenant
-	for _, name := range []string{"dev", "demo", "lucid-next", "asm-next", "newco"} {
+	// ADOPTION order, deliberately NOT the include's order and not the answer.
+	// Built the same way round as the include, this test passed without ever
+	// reading the include at all.
+	for _, name := range []string{"newco", "asm-next", "dev", "demo", "lucid-next"} {
 		tenant := registry.NewTenant(name, name)
 		f.Tenants[name] = tenant
 		added = append(added, tenant)
 	}
 
-	got := displayOrder(f, added, true, roots)
+	got, err := displayOrder(f, added, true, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
 	want := []string{"dev", "demo", "lucid-next", "asm-next", "newco"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("display_order = %v, want %v (the live $tenants_names_json order, adopted tenant appended)", got, want)
+		t.Errorf("display_order = %v, want %v (the live $tenants_names_json order, the adopted tenant appended)", got, want)
+	}
+}
+
+// The negative half: with NOTHING to read — no generated include and a
+// routes.conf carrying no literal — there is no live order to keep, and the
+// fleet must fall back to adoption (manifest-index) order rather than to some
+// order invented by the map iteration.
+func TestDisplayOrderWithNoLiveListKeepsAdoptionOrder(t *testing.T) {
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "snippets", "routes.conf"),
+		[]byte(`location = / { return 200 '{"tenants":$tenants_names_json}\n'; }`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := registry.NewFleet(roots.RagRoot)
+	var added []*registry.Tenant
+	order := []string{"newco", "asm-next", "dev", "demo", "lucid-next"}
+	for _, name := range order {
+		tenant := registry.NewTenant(name, name)
+		f.Tenants[name] = tenant
+		added = append(added, tenant)
+	}
+	got, err := displayOrder(f, added, true, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != strings.Join(order, ",") {
+		t.Errorf("display_order = %v, want the adoption order %v", got, order)
+	}
+}
+
+// TestDisplayOrderRefusesAnUnreadableProxyTree: "the file could not be read"
+// must not become "the gateway advertises nothing". That silently reordered
+// the landing page on the next publish, from an `adopt-all --commit` that
+// reported success.
+func TestDisplayOrderRefusesAnUnreadableProxyTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads an 0000 file")
+	}
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inc := filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf")
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixtureDir, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inc, gen, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(inc, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(inc, 0o600) })
+
+	f := registry.NewFleet(roots.RagRoot)
+	tenant := registry.NewTenant("dev", "dev")
+	f.Tenants["dev"] = tenant
+	if _, err := displayOrder(f, []*registry.Tenant{tenant}, true, roots); err == nil {
+		t.Fatal("an unreadable proxy tree produced an order instead of an error")
+	}
+}
+
+// TestPreviewUIBaseIsTheRegistryKeyNotThePublicName.
+//
+// ui.base and render.NginxStatic's location prefix are the SAME path, derived
+// in two places: adopt built it from --public-name while the renderer keyed
+// every location block, map row and try_files fallback on t.Name. A tenant
+// adopted under a public name therefore carried a registry row describing a
+// mount nginx does not serve — and it is the registry row the operator reads,
+// the docs quote and `vite build --base` is copied from.
+//
+// One authority: the registry key. (render.NginxStatic then takes t.UI.Base
+// when it is set, so the two cannot drift apart again.)
+func TestPreviewUIBaseIsTheRegistryKeyNotThePublicName(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	tenant, _, err := Preview(roots, "dev", Options{
+		DataDir:    filepath.Join(roots.DataDir, "dev"),
+		Worktree:   filepath.Join(roots.ReposDir, "dev"),
+		UIMode:     registry.UIModeDev,
+		UIPort:     8090,
+		PublicName: "pretty-name",
+		Host:       h, Now: func() time.Time { return at },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.UI.Base != "/ragstack/dev/ui/" {
+		t.Errorf("ui.base = %q, want /ragstack/dev/ui/ — the name the gateway renderer keys on", tenant.UI.Base)
 	}
 }
