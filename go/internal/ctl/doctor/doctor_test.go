@@ -863,3 +863,76 @@ func TestESSnapshotsDirMissingBlocksStart(t *testing.T) {
 		t.Error("a shared elasticsearch raised es_snapshots_dir_missing")
 	}
 }
+
+// TestSecretsUnreadableByCtlIsInfoBeforeHandover: on the host as it stands,
+// every tenant is still owned by the operator who provisioned it and its env
+// files are 0600. The daemon cannot seed the log redactor from them, so it
+// refuses the logs endpoint — and doctor has to SAY so, at info, or the
+// refusal looks like a defect on the dashboard.
+func TestSecretsUnreadableByCtlIsInfoBeforeHandover(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the permission case cannot be staged")
+	}
+	w := newWorld(t)
+	w.host.Self = DefaultCtlUser // the daemon's account …
+	w.tenant.Owner = "wilke"     // … and a tenant it has not been handed yet
+	secrets := filepath.Join(w.tenant.DataDir, "config", "secrets.env")
+	write(t, secrets, "TENANT_PG_PASSWORD=hunter2hunter2\n")
+	if err := os.Chmod(secrets, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secrets, 0o600) })
+
+	resp := w.run(t)
+	got := byCode(resp)
+	f, ok := got[SecretsUnreadableByCtl]
+	if !ok {
+		t.Fatalf("no %s finding; the dashboard cannot explain the refused logs tab", SecretsUnreadableByCtl)
+	}
+	if f.Level != model.LevelInfo {
+		t.Errorf("level = %s, want info: this is the designed pre-handover state, not a fault", f.Level)
+	}
+	if string(f.Tenant) != "dev" {
+		t.Errorf("finding is not scoped to the tenant: %+v", f)
+	}
+	for _, want := range []string{DefaultCtlUser, "secrets.env", "wilke", "409"} {
+		if !strings.Contains(f.Detail, want) {
+			t.Errorf("detail %q does not carry %q", f.Detail, want)
+		}
+	}
+	if strings.Contains(f.Detail, "hunter2hunter2") {
+		t.Errorf("a finding must never quote the value: %q", f.Detail)
+	}
+	// And it does not ALSO come back as a broken env file: an unreadable file
+	// is not an ungrammatical one, and reporting it at error (this tenant is
+	// systemd-supervised) would gate every op behind a file mode that is
+	// nobody's fault until the handover.
+	w.tenant.Supervisor = string(model.SupervisorSystemd)
+	if f, bad := byCode(w.run(t))[EnvNotSystemdParsable]; bad {
+		t.Errorf("an unreadable secrets.env was also reported as unparsable: %+v", f)
+	}
+	if resp.Status != model.StatusGreen {
+		t.Errorf("status = %s, want green: an info finding is not a defect", resp.Status)
+	}
+}
+
+// The same unreadable file for a tenant this account OWNS is not this
+// finding: nothing is pending, so it is not softened to info here.
+func TestSecretsUnreadableIsNotReportedForAnOwnedTenant(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file, so the permission case cannot be staged")
+	}
+	w := newWorld(t)
+	w.host.Self = DefaultCtlUser
+	w.tenant.Owner = DefaultCtlUser
+	secrets := filepath.Join(w.tenant.DataDir, "config", "secrets.env")
+	write(t, secrets, "TENANT_PG_PASSWORD=hunter2hunter2\n")
+	if err := os.Chmod(secrets, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(secrets, 0o600) })
+
+	if f, bad := byCode(w.run(t))[SecretsUnreadableByCtl]; bad {
+		t.Errorf("%s claimed a pending handover for a tenant this account owns: %+v", SecretsUnreadableByCtl, f)
+	}
+}
