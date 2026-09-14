@@ -818,7 +818,7 @@ func TestLiveBackendReusesOneSetOfProbes(t *testing.T) {
 	f := registry.NewFleet(b.roots.RagRoot)
 	f.Tenants["dev"] = registry.NewTenant("dev", "dev")
 	f.DisplayOrder = []string{"dev"}
-	b.FakeBackend.fleet = f
+	b.fleet = f
 	if _, err := b.Fleet(context.Background()); err != nil {
 		t.Fatal(err)
 	}
