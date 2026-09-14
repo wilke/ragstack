@@ -22,7 +22,21 @@ const (
 	// PortOwnerMismatch: the process listening on the tenant's API port runs
 	// as a different account than registry `owner`. Every start/stop decision
 	// downstream assumes the owner, so this blocks mutations. Error.
+	//
+	// Raised only when the owner IS readable and differs, or when it is
+	// unreadable but the registry owner IS the ctl's own account (in which
+	// case the ctl's failure to attribute its own listener is itself the
+	// defect). An unreadable owner on a pre-handover tenant is
+	// port_owner_unverifiable instead — see there.
 	PortOwnerMismatch = "port_owner_mismatch"
+
+	// PortOwnerUnverifiable: the tenant's API port is held by a process whose
+	// owner this account cannot read (/proc/<pid>/fd is not readable across
+	// accounts) AND the registry owner is not the ctl's own account. This is
+	// not a mismatch — there is no readable owner to compare — it is the
+	// pre-handover shape every tenant is in until PR-E, the same class as
+	// secrets_unreadable_by_ctl one directory over. Info, not error.
+	PortOwnerUnverifiable = "port_owner_unverifiable"
 
 	// PortNotListening: the registry says `state: active` but nothing listens
 	// on the API port — a crashed tenant. WARN, because this is precisely the

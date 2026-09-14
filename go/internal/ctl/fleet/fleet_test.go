@@ -366,6 +366,41 @@ func TestTenantViewShapes(t *testing.T) {
 	}
 }
 
+// TestStatusListeningIgnoresPidAttribution: a tenant's qdrant/ES (and API)
+// almost always runs as a different account than the ctl daemon (tenants
+// under `wilke`, the daemon under `svcbvbrc`) — hostfacts.Real cannot read
+// such a process's /proc/<pid>/fd and leaves Pid 0, "the honest answer, not
+// an error" (real.go). That must never read as "not listening": a LISTEN
+// socket in /proc/net/tcp[6] is the whole fact, independent of whether its
+// owner could be identified. Attribution-dependent facts (the pid, its
+// owner) are separate and simply stay unset when Pid is 0.
+func TestStatusListeningIgnoresPidAttribution(t *testing.T) {
+	f := registry.LiveFixture()
+	dev := f.Tenants["dev"] // exclusive qdrant (24041) + ES (24043), like a live tenant on ports 2408x
+	p := probes(t)
+	h := p.Host.(*hostfacts.Fake)
+	// Same ports as the default fixture, but with an unresolved owner: this
+	// is exactly what the ctl sees for a store process it cannot ptrace.
+	h.Ports = []hostfacts.Listener{
+		{Port: dev.Ports.API, Pid: 0},
+		{Port: dev.Ports.QdrantHTTP, Pid: 0},
+		{Port: dev.Ports.ESHTTP, Pid: 0},
+		{Port: int(dev.UI.Port), Pid: 0},
+	}
+	roots := paths.NewRoots("/rag", paths.Overrides{})
+
+	view := TenantView(context.Background(), roots, dev, p, true)
+	st := view.Status
+	if !st.Listening.API || !st.Listening.QdrantHTTP || !st.Listening.ESHTTP || !st.Listening.UI {
+		t.Errorf("listening = %+v, want all four up even with Pid 0 (unattributed)", st.Listening)
+	}
+	// The pid itself is attribution-dependent: it must stay unset, not
+	// fabricated, when the owner could not be identified.
+	if st.APIPid != 0 || st.APIPidOwner != "" {
+		t.Errorf("api_pid/api_pid_owner = %v/%q, want unset: pid 0 is unknown, not a value", st.APIPid, st.APIPidOwner)
+	}
+}
+
 // TestTenantsViewIsOrderedAndCounted mirrors GET /v1/tenants.
 func TestTenantsViewIsOrderedAndCounted(t *testing.T) {
 	f := registry.LiveFixture()

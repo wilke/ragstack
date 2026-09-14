@@ -41,6 +41,65 @@ func TestParseNetTCP(t *testing.T) {
 	}
 }
 
+// TestListenersReportsSocketsWithNoOwningPid: the common case for a store a
+// tenant runs as a different account (tenants run as `wilke`, the ctl daemon
+// as `svcbvbrc`) is that /proc/net/tcp shows the LISTEN socket but no
+// process on the box hands the ctl a matching, readable /proc/<pid>/fd entry
+// — either because the pid is genuinely gone, or the pid exists but the fd
+// directory read is refused (permission, or hardening like ProtectProc).
+// Listeners() must still report the socket, with Pid left at 0: "the honest
+// answer, not an error" (see the doc comment on Listeners). It must never
+// silently drop the entry — that would read at the call site as "not
+// listening" for a service that plainly is.
+func TestListenersReportsSocketsWithNoOwningPid(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// port 24040 (api, inode 111111) is claimed by pid 1234 below; port
+	// 24041 (store, inode 222222) has NO owning pid anywhere in this /proc —
+	// modeling both "process gone" and "process exists but unreadable" the
+	// same way, since Listeners() treats them identically (see below).
+	tcp := `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:5DE8 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 111111 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:5DE9 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 222222 1 0000000000000000 100 0 0 10 0
+`
+	if err := os.WriteFile(filepath.Join(dir, "net", "tcp"), []byte(tcp), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fdDir := filepath.Join(dir, "1234", "fd")
+	if err := os.MkdirAll(fdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("socket:[111111]", filepath.Join(fdDir, "0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "1234", "status"), []byte("Uid:\t1000\t1000\t1000\t1000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &Real{ProcRoot: dir}
+	ls, err := r.Listeners()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPort := map[int]Listener{}
+	for _, l := range ls {
+		byPort[l.Port] = l
+	}
+	api, ok := byPort[24040]
+	if !ok || api.Pid != 1234 {
+		t.Fatalf("api (24040) = %+v, ok=%v, want pid 1234", api, ok)
+	}
+	store, ok := byPort[24041]
+	if !ok {
+		t.Fatalf("port 24041 missing from Listeners() entirely — an unattributed socket was dropped, not just left unowned")
+	}
+	if store.Pid != 0 {
+		t.Errorf("store.Pid = %d, want 0 (no readable owner)", store.Pid)
+	}
+}
+
 // TestSafeEnvAllowed pins the allowlist against ops/coconut/snapshot.sh: the
 // keys adopt needs pass, and a key that merely looks harmless but names a
 // credential never does.

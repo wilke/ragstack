@@ -11,6 +11,7 @@ import { LoginView } from "./components/LoginView";
 import { TenantSection, TenantView } from "./components/TenantView";
 import { isSecretName } from "./components/SecretSafeValue";
 import {
+  demoTenantFixture,
   doctorFixture,
   envFixture,
   fleetFixture,
@@ -238,6 +239,36 @@ describe("TenantView", () => {
     }
     expect(html).toContain("manifest name");
     expect(html).toContain("Units");
+  });
+
+  it("renders the Listening block as one row per service, the name beside its own chip and port", () => {
+    const html = render(
+      createElement(TenantView, { name: "dev", role: "operator", onBack: () => {} }),
+      seedTenant,
+    );
+    // tenantFixture: api/qdrant/es up on the tenant's own block, ui down.
+    expect(html).toMatch(/>api<\/span><span[^>]*>ok<\/span><span[^>]*>:24040</);
+    expect(html).toMatch(/>qdrant<\/span><span[^>]*>ok<\/span><span[^>]*>:24041</);
+    expect(html).toMatch(/>es<\/span><span[^>]*>ok<\/span><span[^>]*>:24043</);
+    expect(html).toMatch(/>ui<\/span><span[^>]*>down<\/span>/);
+    expect(html).toContain("(from /proc/net/tcp)");
+  });
+
+  it("labels a shared store 'shared' and a static UI 'static', from the registry row, instead of a port-derived chip", () => {
+    const html = render(
+      createElement(TenantView, { name: "demo", role: "operator", onBack: () => {} }),
+      (qc) => {
+        seedFleet(qc);
+        qc.setQueryData(ctlKeys.tenant("demo"), demoTenantFixture);
+      },
+    );
+    // demo: shared qdrant/es (no port of its own to report on) and a static UI
+    // (never bound to a port at all) — status.listening says all three are
+    // "down", but the registry row says why that boolean isn't the story.
+    expect(html).toMatch(/>qdrant<\/span><span[^>]*>shared<\/span>/);
+    expect(html).toMatch(/>es<\/span><span[^>]*>shared<\/span>/);
+    expect(html).toMatch(/>ui<\/span><span[^>]*>static<\/span>/);
+    expect(html).toMatch(/>api<\/span><span[^>]*>ok<\/span><span[^>]*>:24060</);
   });
 
   it("says the registry row is withheld rather than showing an empty block", () => {
