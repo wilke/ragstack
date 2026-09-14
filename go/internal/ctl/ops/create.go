@@ -133,7 +133,7 @@ func planCreate(_ context.Context, p *planner, args map[string]any) error {
 		Run: p.pendingRun("exec", "ViteBuild"),
 	})
 	p.addUnitsWrite(units)
-	p.add(step{
+	p.addFor("systemd", step{
 		Kind: "systemd", Title: "systemctl --user daemon-reload",
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -157,7 +157,7 @@ func planCreate(_ context.Context, p *planner, args map[string]any) error {
 	origin := fmt.Sprintf("http://127.0.0.1:%d", t.Ports.API)
 	for _, sa := range serviceAccountSubjects(args) {
 		subject := sa
-		p.add(step{
+		p.addFor("tenantapi", step{
 			Kind: "tenantapi", Title: "register the service account " + subject, Targets: []string{subject, origin},
 			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 				if err := sc.Checkpoint("sa:create:" + subject); err != nil {
@@ -185,7 +185,7 @@ func planCreate(_ context.Context, p *planner, args map[string]any) error {
 			},
 		})
 	}
-	p.add(step{
+	p.addFor("tenantapi", step{
 		Kind: "probe", Title: "post-checks: /health and the gateway route", Targets: []string{origin},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			return "health ok", sc.Ops.Drivers.TenantAPI().Health(ctx, origin)

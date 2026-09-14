@@ -535,7 +535,26 @@ func replaceWithRegular(path string, b []byte, mode os.FileMode) error {
 // files is rewritten to the staging dir. Without that, the staged nginx.conf
 // would include the LIVE conf.d and test the live files under a different
 // name — the one thing the staging copy exists to avoid.
+// stageMode says which bytes the staged copy's two generated includes get.
+type stageMode int
+
+const (
+	// stageGenerated writes the generation's own bytes over both include
+	// paths: what a PUBLISH would serve, which is what a publish must test.
+	stageGenerated stageMode = iota
+	// stageLive keeps the bytes the proxy tree serves RIGHT NOW, read through
+	// whatever each include path actually is. A reload publishes nothing, so
+	// what it has to prove loads is the live tree; writing the generation's
+	// bytes over the includes would test a configuration nobody asked about
+	// and pass while the live one was broken.
+	stageLive
+)
+
 func stage(opts Options, gen *Generation) (string, []string, error) {
+	return stageWith(opts, gen, stageGenerated)
+}
+
+func stageWith(opts Options, gen *Generation, mode stageMode) (string, []string, error) {
 	src := opts.Roots.ProxyDir
 	parent, err := stageParent(opts)
 	if err != nil {
@@ -566,10 +585,23 @@ func stage(opts Options, gen *Generation) (string, []string, error) {
 		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 			return dir, warns, err
 		}
+		body := gen.Files[rel]
+		if mode == stageLive {
+			// Read the LIVE path, following whatever it is (the copy left a
+			// symlink into <state>/gateway/current). Writing those bytes in as
+			// a regular file — rather than leaving the link — is what lets the
+			// path rewrite below treat them like every other staged *.conf: a
+			// rewrite through a symlink would edit the real generation file.
+			b, err := os.ReadFile(filepath.Join(src, filepath.FromSlash(rel)))
+			if err != nil {
+				return dir, warns, fmt.Errorf("reading the live include %s: %w", rel, err)
+			}
+			body = b
+		}
 		// Remove first: the copy may have left a symlink into the live tree
 		// there, and writing through it would touch the real file.
 		_ = os.Remove(p)
-		if err := os.WriteFile(p, gen.Files[rel], 0o640); err != nil {
+		if err := os.WriteFile(p, body, 0o640); err != nil {
 			return dir, warns, err
 		}
 	}

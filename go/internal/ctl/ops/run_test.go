@@ -221,7 +221,7 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 		// every snapshot name recorded before the call that makes it
 		"job.checkpoint(qdrant:pending:chunks)\nqdrant.Snapshot(chunks,http://localhost:24041)",
 		"job.checkpoint(qdrant:pending:docs)\nqdrant.Snapshot(docs,http://localhost:24041)",
-		"job.checkpoint(es:ctl-20260914T093000Z/20260914T093000Z)",
+		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z-backup/20260914T093000Z-backup)",
 		// and the tenant comes back
 		"systemd.Start(ragstack-dev-api.service)",
 	} {
@@ -249,6 +249,77 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	}
 	if body := string(fake.FakeFiles().Content(manifest)); !strings.Contains(body, `"fenced": true`) {
 		t.Errorf("manifest =\n%s", body)
+	}
+}
+
+// TestBackupWritesEveryLegIntoOneStampedBundle is finding 4's regression: the
+// sqlite leg baked the plan's `new-bundle` PLACEHOLDER into the path it wrote
+// at run time, so every backup this tenant ever took overwrote one directory
+// and no `<stamp>-backup` bundle held any state at all.
+func TestBackupWritesEveryLegIntoOneStampedBundle(t *testing.T) {
+	oc, fake := fixtureEnv(t, "dev", managed, tenantEnv())
+	// The state databases exist, so the sqlite leg copies rather than skips.
+	for _, db := range sqliteDBs {
+		fake.FakeFiles().Put("/rag/data/tenants/dev/state/"+db, []byte("sqlite-"+db), 0o640)
+	}
+	p := plan(t, oc, "backup", map[string]any{"fence": true})
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	want := "/rag/backups/tenants/dev/20260914T093000Z-backup/"
+	var bundled []string
+	for _, path := range fake.FakeFiles().Paths() {
+		if strings.Contains(path, "/backups/") {
+			bundled = append(bundled, path)
+		}
+		if strings.Contains(path, bundlePlaceholder) {
+			t.Errorf("%s carries the PLAN's placeholder %q; the run must stamp the real bundle id",
+				path, bundlePlaceholder)
+		}
+	}
+	for _, db := range sqliteDBs {
+		if got := string(fake.FakeFiles().Content(want + "state/" + db)); got != "sqlite-"+db {
+			t.Errorf("%s is not in the stamped bundle; the bundle holds %v", db, bundled)
+		}
+	}
+	if string(fake.FakeFiles().Content(want+"manifest.json")) == "" {
+		t.Errorf("the manifest is not in the same bundle as the state copies; bundle holds %v", bundled)
+	}
+	// One id, checkpointed, for the whole job.
+	ids := map[string]bool{}
+	for _, c := range fake.Calls() {
+		if c.Driver != "job" {
+			continue
+		}
+		for _, id := range c.Args {
+			if strings.HasPrefix(id, bundleIDPrefix) {
+				ids[id] = true
+			}
+		}
+	}
+	if len(ids) != 1 {
+		t.Errorf("the job checkpointed %d bundle ids (%v); a backup writes ONE bundle", len(ids), ids)
+	}
+}
+
+// TestBackupFailsAStateFileItCannotREAD is the other half of finding 4: every
+// read error was reported as `absent`, so an EACCES produced a succeeded step
+// and a manifest claiming `consistent: true` over a bundle with a hole in it.
+func TestBackupFailsAStateFileItCannotREAD(t *testing.T) {
+	oc, fake := fixture(t, "dev", managed)
+	boom := errors.New("permission denied")
+	fake.Fail("files.ReadFile:/rag/data/tenants/dev/state/ragstack_users.db", boom)
+	p := plan(t, oc, "backup", map[string]any{"fence": true})
+	r := newRunner(oc, fake)
+	var got error
+	for _, s := range p.Steps {
+		if _, err := r.run(s); err != nil {
+			got = err
+			break
+		}
+	}
+	if got == nil || !strings.Contains(got.Error(), "permission denied") {
+		t.Fatalf("an unreadable state database = %v, want the step to FAIL rather than call it absent", got)
 	}
 }
 

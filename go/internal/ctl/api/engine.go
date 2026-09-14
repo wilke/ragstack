@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -63,6 +65,17 @@ type EngineConfig struct {
 	Logger *slog.Logger
 	// Now is injected so a test can pin job timestamps.
 	Now func() time.Time
+	// LoadFleet and SaveFleet are where the engine reads and writes the
+	// registry. Nil means the file at RegistryPath (registry.LoadNoRepair /
+	// registry.Save); the --fake-drivers daemon points them at its in-memory
+	// fixture so the mutation surface is exercised end to end without a host.
+	LoadFleet func() (*registry.Fleet, error)
+	SaveFleet func(*registry.Fleet) error
+	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
+	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
+	// plan carries is the hash the dashboard shows (and, with fake drivers,
+	// the fixture's doctor rather than this host's).
+	Doctor func(ctx context.Context, tenant, op string) (model.DoctorResponse, error)
 }
 
 // DefaultSecretsTTL is secrets_response.json's "lives 15 minutes".
@@ -93,11 +106,29 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
 	}
-	loadFleet := func() (*registry.Fleet, error) { return registry.LoadNoRepair(cfg.RegistryPath) }
+	loadFleet := cfg.LoadFleet
+	if loadFleet == nil {
+		loadFleet = func() (*registry.Fleet, error) { return registry.LoadNoRepair(cfg.RegistryPath) }
+	}
+	saveFleet := cfg.SaveFleet
+	if saveFleet == nil {
+		by := fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host)
+		saveFleet = func(f *registry.Fleet) error { return registry.Save(cfg.RegistryPath, f, by) }
+	}
 
 	var drv jobs.Drivers
 	if cfg.FakeDrivers {
-		drv = drivers.NewFake(drivers.FakeOptions{Now: cfg.Now})
+		// The fake files driver honours the same approved roots the real one
+		// defaults to; with none, every write is a containment refusal.
+		files := map[string][]byte{}
+		if f, err := loadFleet(); err == nil {
+			files = fixtureFiles(cfg.Roots, f)
+		}
+		drv = drivers.NewFake(drivers.FakeOptions{
+			Now:   cfg.Now,
+			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
+			Files: files,
+		})
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
 			Roots: cfg.Roots,
@@ -130,9 +161,12 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		return *resp, nil
 	}
 
+	if cfg.Doctor != nil {
+		doctorFn = cfg.Doctor
+	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
 		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now}),
+		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
@@ -176,16 +210,43 @@ func newEngineRedactor(roots paths.Roots, loadFleet func() (*registry.Fleet, err
 func (e *engineRedactor) Redact(s string) string { return e.text.Redact(s) }
 
 func (e *engineRedactor) RedactArgs(args map[string]any) map[string]any {
+	// The redacted args are not just what an audit row shows — they are what
+	// a RE-PLAN is computed from, because the plan hash is over
+	// args_redacted and a continuation has only the stored copy. So every
+	// name blanked here is a name a resume, a rebuild or a cancel of an
+	// interrupted job will re-plan with the literal string "<redacted>".
+	// Blank a name that IDENTIFIES the work rather than a value, and the job
+	// is unresumable forever.
+	secretValue := siblingKeyIsSecret(args)
 	out := make(map[string]any, len(args))
 	for k, v := range args {
+		if isSecretArg(k) || (k == "value" && secretValue) {
+			out[k] = argRedacted
+			continue
+		}
 		out[k] = e.redactValue(k, v)
 	}
 	return out
 }
 
+// argRedacted is the placeholder a blanked ARG value carries.
+const argRedacted = "<redacted>"
+
+// siblingKeyIsSecret answers "is this args object an edit of a secret-class
+// setting?" — env-set's `{key, value}` pair. The VALUE is a credential only
+// when the KEY names one; `{key: LOG_LEVEL, value: DEBUG}` is neither, and
+// redacting either half of it makes the job unresumable.
+func siblingKeyIsSecret(args map[string]any) bool {
+	k, ok := args["key"].(string)
+	if !ok {
+		return false
+	}
+	return settings.Classify(strings.ToUpper(strings.TrimSpace(k))) == settings.Secret
+}
+
 func (e *engineRedactor) redactValue(key string, v any) any {
 	if isSecretArg(key) {
-		return "<redacted>"
+		return argRedacted
 	}
 	switch x := v.(type) {
 	case string:
@@ -203,19 +264,133 @@ func (e *engineRedactor) redactValue(key string, v any) any {
 	}
 }
 
-// isSecretArg: an arg named like a secret-class setting (value of env-set on
-// a secret key, a minted key, a password) is never recorded in clear. The
-// settings classifier knows the tenant.env vocabulary; the fixed list covers
-// the op vocabulary (ctl_api_key, token, secret, password).
-func isSecretArg(key string) bool {
-	k := strings.ToUpper(key)
-	if settings.Classify(k) == settings.Secret {
+// secretArgNames is the op vocabulary whose VALUE is always a credential,
+// listed by exact name. `value` is not here: it is conditional on its sibling
+// `key` (see siblingKeyIsSecret).
+var secretArgNames = map[string]bool{
+	"ctl_api_key": true,
+	"token":       true,
+	"secret":      true,
+	"password":    true,
+	"dsn":         true,
+	"api_key":     true,
+}
+
+// neverSecretArgs are the arg names that IDENTIFY what an op acts on. They
+// are checked first and win over everything, because the cost of getting
+// them wrong is not a leak — it is a job that can never be replanned.
+//
+// `key` is the reason this list exists. It is env-set's SETTING NAME
+// ("LOG_LEVEL"), never a credential, but it contains the substring "KEY". A
+// substring test blanked it, the stored args_redacted then read
+// {key: "<redacted>"}, and every rebuild — resume, cancel of an interrupted
+// job — re-planned env-set for a setting called "<redacted>", which the op
+// refuses as not a known ragstack setting. The job was stuck, permanently,
+// with no way for an operator to unstick it.
+var neverSecretArgs = map[string]bool{
+	"key":     true,
+	"label":   true,
+	"subject": true,
+	"id":      true,
+	"role":    true,
+}
+
+// isSecretArg classifies one arg by its EXACT name — never by substring. The
+// settings classifier knows the tenant.env vocabulary (API_KEY*, *_KEY,
+// SECRET, PASSWORD, TOKEN, DSN, AUTH); secretArgNames covers the op
+// vocabulary on top of it.
+func isSecretArg(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if neverSecretArgs[n] {
+		return false
+	}
+	if secretArgNames[n] {
 		return true
 	}
-	for _, needle := range []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "DSN"} {
-		if strings.Contains(k, needle) {
-			return true
+	return settings.Classify(strings.ToUpper(n)) == settings.Secret
+}
+
+// fixtureFiles seeds the fake files driver with the env files the fixture
+// tenants would have on a host: tenant.env from the registry's public
+// settings, and every secret-class key from secret_refs with a PLACEHOLDER
+// value — the key ledger (API_KEYS / API_KEY_TENANTS / API_KEY_ROLES) is
+// rebuilt from the registry's key records so the credential ops can plan
+// and run end to end without a single real secret anywhere.
+func fixtureFiles(roots paths.Roots, f *registry.Fleet) map[string][]byte {
+	out := map[string][]byte{}
+	for name, t := range f.Tenants {
+		tp := paths.TenantPaths(roots, name, t.ManifestName)
+		byFile := map[string][]string{}
+		for _, ref := range t.SecretRefs {
+			byFile[ref.File] = append(byFile[ref.File], ref.Key)
+		}
+		// Public settings, sorted for a stable file.
+		keys := make([]string, 0, len(t.Settings))
+		for k := range t.Settings {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var tenantEnv strings.Builder
+		tenantEnv.WriteString("# fixture tenant.env rendered from the registry (--fake-drivers)\n")
+		for _, k := range keys {
+			tenantEnv.WriteString(k + "=" + envQuote(t.Settings[k]) + "\n")
+		}
+		for _, k := range byFile["tenant.env"] {
+			tenantEnv.WriteString(k + "=" + fixtureSecret(k, t) + "\n")
+		}
+		out[tp.TenantEnv] = []byte(tenantEnv.String())
+		if secretKeys := byFile["secrets.env"]; len(secretKeys) > 0 || t.SecretsFileSHA256 != "" {
+			var secrets strings.Builder
+			secrets.WriteString("# fixture secrets.env (--fake-drivers): placeholders, never real values\n")
+			for _, k := range secretKeys {
+				secrets.WriteString(k + "=" + fixtureSecret(k, t) + "\n")
+			}
+			out[tp.SecretsEnv] = []byte(secrets.String())
 		}
 	}
-	return false
+	return out
+}
+
+// fixtureSecret renders one secret-class key. The API key triple is derived
+// from the registry's key records with placeholder values that carry the key
+// id, so a plan's redaction canary and a mint's ledger edit both have real
+// structure to work on.
+func fixtureSecret(key string, t *registry.Tenant) string {
+	switch key {
+	case "API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES":
+		vals := make([]string, 0, len(t.Keys))
+		tenants := map[string]string{}
+		roles := map[string]string{}
+		for _, k := range t.Keys {
+			v := "fixture-" + k.ID
+			vals = append(vals, v)
+			tenants[v] = k.TenantString
+			roles[v] = k.Role
+		}
+		var b []byte
+		switch key {
+		case "API_KEYS":
+			b, _ = json.Marshal(vals)
+		case "API_KEY_TENANTS":
+			b, _ = json.Marshal(tenants)
+		default:
+			b, _ = json.Marshal(roles)
+		}
+		return "'" + string(b) + "'"
+	default:
+		return "'fixture-" + strings.ToLower(key) + "'"
+	}
+}
+
+// envQuote writes a value in the envfile grammar: bare when it is plain,
+// single-quoted otherwise (a single quote inside is not representable and is
+// replaced, which for fixture data is acceptable).
+func envQuote(v string) string {
+	if v == "" {
+		return ""
+	}
+	if !strings.ContainsAny(v, " \t#'\"$\\") {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", "") + "'"
 }

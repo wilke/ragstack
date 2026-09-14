@@ -121,5 +121,29 @@ func (r *recorder) Clear() {
 // the CLI exits 3 — the same answer a capability refusal gets, because from
 // the caller's side they are the same fact: the ctl will not do this today.
 func pending(err error, driver, method string) error {
-	return fmt.Errorf("%w: %s.%s lands in PR-D", err, driver, method)
+	return fmt.Errorf("%w: %s.%s lands in %s", err, driver, method, PendingPR)
 }
+
+// PendingPR names the PR the unwired drivers land in. One string, so the
+// refusal a step hits at RUN time and the warning its PLAN carries cannot
+// drift apart.
+const PendingPR = "PR-D"
+
+// pendingReal is the set of drivers the REAL set has not wired yet — the
+// single source both `Real.Pending` and the refusals above are read from. It
+// is named by the driver names the ops package's steps declare, which are the
+// names in the refusal text (`systemd.Start lands in PR-D`).
+var pendingReal = []string{"systemd", "proc", "qdrant", "elasticsearch", "tenantapi"}
+
+// Pending is the drivers this set cannot run, by name.
+//
+// It exists so a PLAN can say what a RUN will refuse. Before it, `tenant
+// start --dry-run` on the real driver set printed a plan of systemd steps with
+// nothing to suggest that every one of them would answer "lands in PR-D" the
+// moment it ran — a dry run that reads as approval for an operation the build
+// cannot perform. The planner asks the driver set it was given, so the same
+// verb planned against the fakes (which run everything) carries no warning.
+func (r *Real) Pending() []string { return append([]string(nil), pendingReal...) }
+
+// Pending is empty for the fakes: every one of the seven drivers runs.
+func (f *Fake) Pending() []string { return nil }

@@ -30,7 +30,8 @@ func jobUsage() int {
   continue <id>                               release a job waiting in awaiting_cutover
   cancel   <id>                               stop a job, rolling back what can be rolled back
 
-exit: 0 ok · 1 error · 2 usage · 3 refused · 4 job failed · 5 job interrupted
+exit: 0 ok · 1 error · 2 usage · 3 refused/cancelled · 4 job failed · 5 job
+interrupted · 6 parked at the cutover (job continue) · 7 --wait timed out
 `)
 	return exitUsage
 }
@@ -253,13 +254,31 @@ func cmdJobContinuation(verb string, args []string, registryPath, ragRoot string
 		return usageErr("usage: ragstack-ctl job %s <id> %s", verb, opFlagSummary)
 	}
 	id := pos[0]
-	if *o.direct {
-		return continueDirect(o, verb, id)
-	}
-	req, err := o.envelope(map[string]any{})
+	// The envelope is built BEFORE the transport is chosen, and it is the same
+	// envelope either way.
+	//
+	// It used to be built after the --direct branch, so --direct never saw it:
+	// `job cancel <id> --direct --dry-run` performed the cancellation, because
+	// the flag the HTTP path refuses on had simply not been read yet, and the
+	// idempotency key and the confirm value went nowhere. A --dry-run that
+	// mutates is the worst thing a preview flag can do.
+	req, err := o.envelope(opTarget{op: "job-" + verb, tenant: id, path: "/v1/jobs/" + id + "/" + verb},
+		map[string]any{})
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
 		return exitUsage
+	}
+	if req.DryRun {
+		// Word for word the daemon's own refusal (api/jobs.go,
+		// handleJobContinuation) and the exit code a 409 `refused` produces, so
+		// the two transports answer --dry-run identically.
+		fmt.Fprintf(stderr, "ragstack-ctl: refused: a continuation has no dry run: %s acts on job %s, "+
+			"whose plan is already recorded — read it with GET /v1/jobs/%s\n", verb, id, id)
+		fmt.Fprintf(stderr, "ragstack-ctl: `ragstack-ctl job show %s`\n", id)
+		return exitRefused
+	}
+	if *o.direct {
+		return continueDirect(o, verb, id, req)
 	}
 	c, err := o.client()
 	if err != nil {
@@ -297,7 +316,7 @@ func cmdJobContinuation(verb string, args []string, registryPath, ragRoot string
 // TODO(integration): like submitDirect, this works the moment
 // api.BuildEngine stops returning api.ErrEngineNotWired. Nothing is stubbed
 // here on purpose.
-func continueDirect(o *opFlags, verb, id string) int {
+func continueDirect(o *opFlags, verb, id string, req model.OpRequest) int {
 	eng, err := buildDirectEngine(o)
 	if err != nil {
 		return failClient(err)
@@ -314,7 +333,11 @@ func continueDirect(o *opFlags, verb, id string) int {
 	case "continue":
 		job, err = eng.Continue(ctx, id, p)
 	case "cancel":
-		job, err = eng.Cancel(ctx, id, p)
+		// --yes / --yes-destructive <name>, exactly as for any other call
+		// that undoes something: cancelling a job that has already done work
+		// rolls that work back, and the engine refuses without the plan's
+		// confirm value.
+		job, err = eng.Cancel(ctx, id, p, req.Confirm)
 	}
 	if err != nil {
 		return directExit(err)
@@ -322,13 +345,9 @@ func continueDirect(o *opFlags, verb, id string) int {
 	if job == nil {
 		return failClient(fmt.Errorf("the engine returned no job for %s %s", verb, id))
 	}
-	if *o.wait {
-		if code, done := waitExit(job.State); done {
-			finishWait(job, o)
-			return code
-		}
-	}
-	return printJob(job, *o.asJSON)
+	// Like submitDirect: a resumed job runs on a goroutine in THIS process, so
+	// returning here would exit while the worker was mid-step. --direct waits.
+	return followDirect(eng, o, job)
 }
 
 // writeRaw prints a response body verbatim under --json. Re-encoding the

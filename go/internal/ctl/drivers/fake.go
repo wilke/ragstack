@@ -3,6 +3,7 @@ package drivers
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -286,14 +287,25 @@ type FakeFiles struct {
 
 // ErrOutsideRoots is the containment refusal of both Files drivers.
 func outsideRoots(path string, roots []string) error {
+	if len(roots) == 0 {
+		return fmt.Errorf("%w: the files driver has no approved roots, so there is nowhere it may write; %s is refused",
+			jobs.ErrRefused, path)
+	}
 	return fmt.Errorf("%w: %s is outside every approved root %v", jobs.ErrRefused, path, roots)
 }
 
-// contained reports whether path is under one of roots (all of them when
-// roots is empty).
+// contained reports whether path is under one of roots.
+//
+// An EMPTY root list DENIES. It used to allow everything, which made "no roots
+// configured" — a driver set built without them, a fixture, a future caller
+// that forgets — the one configuration in which the only guard between a job
+// and the filesystem does nothing at all. Fail-open on a containment check is
+// the wrong way round: a driver with no approved roots has nowhere it may
+// write, and saying so is a refusal an operator can read rather than a silent
+// write outside the deployment.
 func contained(path string, roots []string) bool {
 	if len(roots) == 0 {
-		return true
+		return false
 	}
 	for _, root := range roots {
 		if _, err := paths.SafePath(root, path); err == nil {
@@ -369,7 +381,11 @@ func (f *FakeFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 	defer f.mu.Unlock()
 	v, ok := f.Files[path]
 	if !ok {
-		return nil, fmt.Errorf("open %s: no such file or directory", path)
+		// fs.ErrNotExist, not a bare string: callers tell "the file is not
+		// there" from "the file could not be read" with errors.Is, and a fake
+		// whose absence is unrecognisable would let that distinction pass the
+		// tests and fail on the host.
+		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
 	}
 	return append([]byte(nil), v.Data...), nil
 }
@@ -384,6 +400,15 @@ func (f *FakeFiles) Paths() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Put seeds a file directly, bypassing the approved roots and the call log —
+// it is how a test says "this file was already on the host", which is a fact
+// about the fixture and not a driver call the assertions should see.
+func (f *FakeFiles) Put(path string, data []byte, mode uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Files[path] = FakeFile{Data: append([]byte(nil), data...), Mode: mode}
 }
 
 // Content is the bytes at path (nil when absent).

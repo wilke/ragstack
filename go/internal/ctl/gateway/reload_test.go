@@ -31,7 +31,7 @@ func TestReloadTestsHUPsConfirmsAndProbesTheLiveGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload: %v (steps %+v)", err, res.Steps)
 	}
-	want := []string{"render", "nginx -t", "preflight", "reload", "confirm reload", "probe"}
+	want := []string{"preconditions", "render", "nginx -t", "preflight", "reload", "confirm reload", "probe"}
 	if got := strings.Join(stepNames(res), ","); got != strings.Join(want, ",") {
 		t.Errorf("steps = %v, want %v", stepNames(res), want)
 	}
@@ -97,7 +97,7 @@ func TestReloadDryRunStopsAfterNginxTestAndSignalsNothing(t *testing.T) {
 	if sig.Count() != sigBefore {
 		t.Errorf("a dry run sent %d signal(s)", sig.Count()-sigBefore)
 	}
-	for _, s := range res.Steps[2:] {
+	for _, s := range res.Steps[3:] {
 		if !strings.Contains(s.Detail, "--dry-run") {
 			t.Errorf("step %q ran in a dry run: %s", s.Name, s.Detail)
 		}
@@ -242,5 +242,176 @@ func TestReloadTestsTheHandEditedTree(t *testing.T) {
 	}
 	if staged == "" {
 		t.Fatal("nginx -t was never run against a staged tree")
+	}
+}
+
+// ------------------------------------------------- the reload preconditions
+
+// A reload makes the running master ADOPT whatever the live tree says. So it
+// must first establish that the live tree is the generation the ctl published
+// — an unfinished publication or a hand-edited include is exactly the state a
+// reload would quietly bless.
+
+func TestReloadRefusesWhileTheLastPublicationIsIncomplete(t *testing.T) {
+	roots := testRoots(t)
+	f := registry.LiveFixture()
+	opts, ex, sig, pr := testOpts(t, roots)
+	published := publishOnce(t, f, opts, pr)
+
+	// A publication that died between its switch and its verification: the
+	// state names a step, and there is no finished_at.
+	st := NewState(roots)
+	txn, _, err := st.ReadTxn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	txn.State, txn.FinishedAt = TxnSwitched, ""
+	if err := st.WriteTxn(txn); err != nil {
+		t.Fatal(err)
+	}
+
+	execBefore, sigBefore := ex.Count(), sig.Count()
+	_, err = Reload(context.Background(), opts)
+	if !errors.Is(err, ErrRefused) {
+		t.Fatalf("reload over an incomplete txn = %v, want a refusal", err)
+	}
+	for _, want := range []string{"never finished", "gateway repair"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q: %v", want, err)
+		}
+	}
+	if ex.Count() != execBefore || sig.Count() != sigBefore {
+		t.Error("the refusal ran nginx -t or signalled the master; it must decide before either")
+	}
+	if got := st.CurrentGeneration(); got != published.Generation {
+		t.Errorf("the refusal moved `current` to gen-%d", got)
+	}
+}
+
+func TestReloadRefusesAnIncludeThatIsNotASymlinkIntoTheGeneration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(t *testing.T, live string)
+		want string
+	}{
+		{
+			name: "a hand edit or bootstrap copy",
+			make: func(t *testing.T, live string) {
+				b, err := os.ReadFile(live)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(live); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(live, b, 0o640); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "regular file",
+		},
+		{
+			name: "missing",
+			make: func(t *testing.T, live string) {
+				if err := os.Remove(live); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "does not exist",
+		},
+		{
+			name: "pointing somewhere else",
+			make: func(t *testing.T, live string) {
+				other := filepath.Join(t.TempDir(), "elsewhere.conf")
+				if err := os.WriteFile(other, []byte("# not the ctl's\n"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(live); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, live); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "not into the published generation",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roots := testRoots(t)
+			f := registry.LiveFixture()
+			opts, ex, sig, pr := testOpts(t, roots)
+			publishOnce(t, f, opts, pr)
+
+			live := filepath.Join(roots.ProxyDir, filepath.FromSlash(FileTenants))
+			tc.make(t, live)
+
+			execBefore, sigBefore := ex.Count(), sig.Count()
+			_, err := Reload(context.Background(), opts)
+			if !errors.Is(err, ErrRefused) {
+				t.Fatalf("reload = %v, want a refusal", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal does not say what it found (%q): %v", tc.want, err)
+			}
+			if !strings.Contains(err.Error(), live) {
+				t.Errorf("the refusal does not name the path it looked at: %v", err)
+			}
+			if ex.Count() != execBefore || sig.Count() != sigBefore {
+				t.Error("the refusal ran nginx -t or signalled the master")
+			}
+		})
+	}
+}
+
+// TestReloadTestsTheLIVEIncludeBytesNotTheGenerations is the third half of
+// finding 5: staging used to overwrite both includes with the generation's
+// own bytes, so `nginx -t` validated a render and the result was reported as
+// proof that the live tree loads.
+func TestReloadTestsTheLIVEIncludeBytesNotTheGenerations(t *testing.T) {
+	roots := testRoots(t)
+	f := registry.LiveFixture()
+	opts, ex, sig, pr := testOpts(t, roots)
+	published := publishOnce(t, f, opts, pr)
+
+	// A marker written into the PUBLISHED generation file, which both include
+	// symlinks resolve to. A staged tree carrying the generation's bytes and
+	// one carrying the live bytes are the same file here — so the marker also
+	// has to be absent from a tree staged the publish way, which is what the
+	// second half asserts.
+	genFile := filepath.Join(NewState(roots).GenDir(published.Generation), filepath.FromSlash(FileTenants))
+	b, err := os.ReadFile(genFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "# live-edit-marker\n"
+	if err := os.WriteFile(genFile, append([]byte(marker), b...), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	opts.KeepStage = true
+	execBefore, sigBefore := ex.Count(), sig.Count()
+	res, err := Reload(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("reload: %v (steps %+v)", err, res.Steps)
+	}
+	if ex.Count() != execBefore+1 || sig.Count() != sigBefore+1 {
+		t.Fatalf("reload ran %d tests and %d signals", ex.Count()-execBefore, sig.Count()-sigBefore)
+	}
+	defer os.RemoveAll(res.StagedDir)
+	stagedBody, err := os.ReadFile(filepath.Join(res.StagedDir, filepath.FromSlash(FileTenants)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stagedBody), strings.TrimSpace(marker)) {
+		t.Error("the staged include does not carry what the LIVE path serves; nginx -t tested something else")
+	}
+	// It is a real file in the staged tree, not a link back into the live one:
+	// the path rewrite must not be able to reach the published generation.
+	fi, err := os.Lstat(filepath.Join(res.StagedDir, filepath.FromSlash(FileTenants)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("the staged include is a symlink into the live tree; a rewrite through it would edit the real generation")
 	}
 }

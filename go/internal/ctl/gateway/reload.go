@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -59,6 +62,41 @@ func Reload(ctx context.Context, opts Options) (*Result, error) {
 		res.State = TxnFailed
 		return res, err
 	}
+	// An INCOMPLETE txn means the last publication died between its switch and
+	// its verification: `current` may be on a generation nobody proved, and
+	// the two include paths may be half rewritten. Reloading then makes the
+	// running master adopt exactly that state — the one operation that turns
+	// an unfinished publish into a live one, done by a command whose whole
+	// promise is that it publishes nothing. `gateway repair` is what resolves
+	// it; until then there is no answer here worth giving.
+	if txn, ok, terr := st.ReadTxn(); terr != nil {
+		res.step("preconditions", terr, "")
+		res.State = TxnFailed
+		return res, terr
+	} else if ok && !txn.Complete() {
+		err := fmt.Errorf("%w: the last publication (gen-%d, state %q) never finished, so `current` may be on a "+
+			"generation that was never verified and the include symlinks may be half written; a reload would make "+
+			"the running master adopt it. Run `ragstack-ctl gateway repair` first",
+			ErrRefused, txn.Generation, txn.State)
+		res.step("preconditions", err, "")
+		res.State = TxnFailed
+		return res, err
+	}
+
+	// And the two include paths have to BE the published generation. A reload
+	// proves "the live tree loads", and the live tree is only the ctl's if
+	// nginx reads the generation through `current`. A regular file at one of
+	// them is a hand edit or the coconut-proxy bootstrap copy, a dangling link
+	// is a deleted generation, and either way this operation would test and
+	// bless a configuration the ctl does not own.
+	if err := checkPublishedIncludes(st, opts.Roots.ProxyDir, n); err != nil {
+		res.step("preconditions", err, "")
+		res.State = TxnFailed
+		return res, err
+	}
+	res.step("preconditions", nil, fmt.Sprintf("the last publication is complete and both generated includes are "+
+		"symlinks into gen-%d", n))
+
 	files, err := st.ReadGeneration(n)
 	if err != nil {
 		res.step("render", err, "")
@@ -84,7 +122,15 @@ func Reload(ctx context.Context, opts Options) (*Result, error) {
 	// point: the change being reloaded is IN that tree, and testing the
 	// generation alone would test the one part of the configuration this
 	// operation is not about.
-	staged, warns, err := stage(opts, gen)
+	//
+	// stageLive, therefore, and not stage(): the ordinary staging writes the
+	// generation's bytes over both generated includes, so a reload used to
+	// validate *rendered* configuration and call it proof that the LIVE tree
+	// loads. The preconditions above have just established that the live
+	// includes resolve into this generation, so the bytes should be the same —
+	// but "should be" is exactly what a configuration test exists to stop
+	// anyone assuming.
+	staged, warns, err := stageWith(opts, gen, stageLive)
 	res.StagedDir, res.Warnings = staged, append(res.Warnings, warns...)
 	if err == nil {
 		res.ConfigTest, err = nginxTest(ctx, opts, staged)
@@ -163,4 +209,60 @@ func Reload(ctx context.Context, opts Options) (*Result, error) {
 	opts.Log("probe", "ok")
 	res.State = TxnReloaded
 	return res, nil
+}
+
+// checkPublishedIncludes refuses unless BOTH generated include paths in the
+// proxy tree are symlinks that resolve into generation n.
+//
+// It is the reload's "is the live tree the one the ctl published?" question,
+// and it says what it found rather than just "no": the three ways it fails —
+// missing, a regular file, a link pointing somewhere else — have three
+// different fixes, and an operator who is told only that the reload was
+// refused has to go and look at two paths by hand.
+func checkPublishedIncludes(st State, proxyDir string, n int) error {
+	genDir, err := filepath.EvalSymlinks(st.GenDir(n))
+	if err != nil {
+		return fmt.Errorf("%w: generation gen-%d is published but its directory cannot be resolved (%v); run "+
+			"`ragstack-ctl gateway repair`", ErrRefused, n, err)
+	}
+	for _, rel := range RelPaths() {
+		live := filepath.Join(proxyDir, filepath.FromSlash(rel))
+		fi, err := os.Lstat(live)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("%w: %s does not exist, so the proxy tree is not serving the published generation; "+
+				"`ragstack-ctl gateway apply` publishes and links it", ErrRefused, live)
+		case err != nil:
+			return err
+		case fi.Mode()&fs.ModeSymlink == 0:
+			return fmt.Errorf("%w: %s is a %s, not a symlink into %s — a hand edit or the coconut-proxy bootstrap "+
+				"copy. A reload would test and bless configuration the ctl does not own; `ragstack-ctl gateway apply` "+
+				"adopts it (recording the bytes so a revert puts them back)",
+				ErrRefused, live, describeMode(fi.Mode()), st.CurrentLink())
+		}
+		target, _ := os.Readlink(live)
+		real, err := filepath.EvalSymlinks(live)
+		if err != nil {
+			return fmt.Errorf("%w: %s is a dangling symlink (-> %s): the generation it names is gone. Run "+
+				"`ragstack-ctl gateway repair`", ErrRefused, live, target)
+		}
+		if want := filepath.Join(genDir, filepath.FromSlash(rel)); real != want {
+			return fmt.Errorf("%w: %s (-> %s) resolves to %s, not into the published generation gen-%d (%s); the "+
+				"proxy tree is serving something else. Run `ragstack-ctl gateway apply` or `gateway repair`",
+				ErrRefused, live, target, real, n, want)
+		}
+	}
+	return nil
+}
+
+// describeMode names what an include path turned out to be, in words.
+func describeMode(m fs.FileMode) string {
+	switch {
+	case m.IsRegular():
+		return "regular file"
+	case m.IsDir():
+		return "directory"
+	default:
+		return m.Type().String()
+	}
 }

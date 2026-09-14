@@ -120,7 +120,7 @@ func RunServe(args []string) int {
 	// half is unavailable would remove the only view of the problem. Every
 	// mutation then answers 409 `refused` naming the reason (jobs.go).
 	roots := paths.NewRoots(*ragRoot, paths.Overrides{CtlStateDir: strings.TrimSpace(os.Getenv(EnvStateDir))})
-	engine, err := BuildEngine(EngineConfig{
+	cfg := EngineConfig{
 		Roots:        roots,
 		RegistryPath: *registryPath,
 		StorePath:    filepath.Join(roots.CtlStateDir, "jobs.db"),
@@ -130,7 +130,20 @@ func RunServe(args []string) int {
 		SecretsTTL:   DefaultSecretsTTL,
 		Logger:       logger,
 		Now:          time.Now,
-	})
+	}
+	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
+		d, err := backend.Doctor(ctx, tenant, op)
+		if err != nil {
+			return model.DoctorResponse{}, err
+		}
+		return *d, nil
+	}
+	if fb, ok := backend.(*FakeBackend); ok {
+		// The fixture daemon has no registry file: the engine plans against
+		// and saves into the same in-memory fleet the read surface serves.
+		cfg.LoadFleet, cfg.SaveFleet = fb.LoadFleet, fb.SaveFleet
+	}
+	engine, err := BuildEngine(cfg)
 	if err != nil {
 		logger.Warn("job engine unavailable; the mutation surface will refuse",
 			"store", filepath.Join(roots.CtlStateDir, "jobs.db"), "err", err.Error())

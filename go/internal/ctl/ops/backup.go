@@ -3,9 +3,13 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
@@ -20,6 +24,72 @@ import (
 // only [A-Za-z0-9._/-], so it cannot carry a `<ts>` placeholder either. This
 // one segment is what the plan shows and every step warns about.
 const bundlePlaceholder = "new-bundle"
+
+// bundleSuffix is the kind half of a bundle id: `<stamp>-backup`.
+const bundleSuffix = "-backup"
+
+// bundleIDPrefix is the external-ID namespace the bundle id is checkpointed
+// under, so reconcile can find the directory a half-finished backup wrote
+// into without having to guess at a clock.
+const bundleIDPrefix = "bundle:"
+
+// bundleID is THE bundle id of this job: one value, for every step of it.
+//
+// It used to be `p.stampOf(sc)`, called wherever a step needed a name — which
+// is a fresh reading of the clock each time. On a host whose clock moves
+// between two steps (it always does), the qdrant leg, the elasticsearch leg
+// and the manifest could each land in a DIFFERENT `<stamp>-backup` directory,
+// and a restore reading the manifest's directory would find one file in it.
+// Worse, the sqlite leg did not stamp at all: it wrote the plan's
+// `new-bundle` placeholder, so every backup this tenant ever took overwrote
+// the same four state files and no `<stamp>-backup` directory held any.
+//
+// So the id is decided ONCE and every later step reads it back:
+//
+//   - from the job's own checkpoints when an earlier step already stamped it
+//     (which is also what survives an interruption: a resumed backup must keep
+//     writing into the directory it started);
+//   - else from the job's created_at, which is a fact about the JOB and not
+//     about the moment this particular step happened to run;
+//   - else from the op clock, for a caller with no job (the unit runner).
+func (p *planner) bundleID(sc *jobs.StepContext) string {
+	if sc != nil && sc.Job != nil {
+		for _, st := range sc.Job.Steps {
+			for _, id := range st.ExternalIDs {
+				if strings.HasPrefix(id, bundleIDPrefix) {
+					return strings.TrimPrefix(id, bundleIDPrefix)
+				}
+			}
+		}
+		if t, err := time.Parse(time.RFC3339, sc.Job.CreatedAt); err == nil {
+			return t.UTC().Format(stampFormat) + bundleSuffix
+		}
+	}
+	return p.stampOf(sc) + bundleSuffix
+}
+
+// bundleDirOf is the real directory this job's bundle is written into, with
+// the id recorded as an external id BEFORE the caller writes anything — which
+// is what lets reconcile-on-restart go and look at the directory.
+//
+// Every RUN half that names a path inside the bundle goes through it; only the
+// PLAN uses bundlePlaceholder.
+func (p *planner) bundleDirOf(sc *jobs.StepContext) (string, error) {
+	id := p.bundleID(sc)
+	if err := sc.Checkpoint(bundleIDPrefix + id); err != nil {
+		return "", err
+	}
+	return filepath.Join(sc.Ops.Roots.BackupsDir, p.t.Name, id), nil
+}
+
+// realBundlePath is bundleDirOf plus the relative path inside the bundle.
+func (p *planner) realBundlePath(sc *jobs.StepContext, rel ...string) (string, error) {
+	dir, err := p.bundleDirOf(sc)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{dir}, rel...)...), nil
+}
 
 // sqliteDBs are the state files a bundle captures, named as
 // python/ragstack/config.py's *_STORE_PATH defaults spell them under
@@ -137,7 +207,7 @@ func (p *planner) addAPIStart() {
 
 func (p *planner) addFenceVerify() {
 	port := p.t.Ports.API
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("fence verify: nothing listens on %d", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -163,7 +233,7 @@ func (p *planner) addQdrantSnapshots(bundleDir string) {
 		return
 	}
 	url := q.URL
-	p.add(step{
+	p.addFor("qdrant", step{
 		Kind: "qdrant", Title: "snapshot every qdrant collection", Targets: []string{url},
 		WouldWrite: []model.WouldWrite{{Path: filepath.Join(bundleDir, "qdrant"), Mode: "0640", Preview: ""}},
 		Warnings:   []string{"one snapshot per collection; the collection list is read when the job runs"},
@@ -204,17 +274,19 @@ func (p *planner) addESSnapshots(bundleDir string) {
 		return
 	}
 	url := es.URL
-	p.add(step{
+	p.addFor("elasticsearch", step{
 		Kind: "es", Title: "snapshot every elasticsearch index into a per-bundle repo",
 		Targets:    []string{url, "ctl-<bundle-id>"},
 		WouldWrite: []model.WouldWrite{{Path: filepath.Join(bundleDir, "elasticsearch"), Mode: "0640", Preview: ""}},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			stamp := p.stampOf(sc)
-			repo, name := "ctl-"+stamp, stamp
-			// Both names are chosen HERE and recorded before the call: unlike
-			// qdrant's, they are the ctl's own, so a crash leaves the exact
-			// repo a cleanup has to unregister.
-			if err := sc.Checkpoint("es:" + repo + "/" + name); err != nil {
+			// The bundle id, not a fresh clock reading: the repo has to be the
+			// one this job's other legs and its manifest name.
+			id := p.bundleID(sc)
+			repo, name := "ctl-"+id, id
+			// Both names are the ctl's own, so — unlike qdrant's — a crash
+			// leaves the exact repo a cleanup has to unregister; they are
+			// recorded before the call, with the bundle id itself.
+			if err := sc.Checkpoint(bundleIDPrefix+id, "es:"+repo+"/"+name); err != nil {
 				return "", err
 			}
 			idx, err := sc.Ops.Drivers.Elasticsearch().Indices(ctx, url)
@@ -242,21 +314,37 @@ func (p *planner) addSQLiteCopies(bundleDir string) {
 			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 				b, err := sc.Ops.Drivers.Files().ReadFile(ctx, src)
 				if err != nil {
-					// A tenant that never used a store has no file, and that
-					// is a fact about the tenant, not a failure of the backup.
+					// ONLY "the file is not there" is absence. A tenant that
+					// never used a store has no file, and that is a fact about
+					// the tenant; an EACCES, an EIO or a directory in its place
+					// is a failure to read a database this bundle claims to
+					// contain, and reporting it as `absent` produced a
+					// succeeded step and a manifest saying `consistent: true`
+					// over a bundle with a hole in it.
+					if !errors.Is(err, fs.ErrNotExist) {
+						return "", fmt.Errorf("reading %s: %w", src, err)
+					}
 					sc.Logf("%s is not present; nothing to copy", src)
 					return "absent: " + db, nil
 				}
-				if err := sc.Checkpoint("file:" + dst); err != nil {
+				real, err := p.realBundlePath(sc, "state", db)
+				if err != nil {
 					return "", err
 				}
-				if err := sc.Ops.Drivers.Files().WriteAtomic(ctx, dst, b, 0o640); err != nil {
+				if err := sc.Checkpoint("file:" + real); err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("%s (%d bytes)", db, len(b)), nil
+				if err := sc.Ops.Drivers.Files().WriteAtomic(ctx, real, b, 0o640); err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("%s (%d bytes)", real, len(b)), nil
 			},
 			Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				return "removed " + dst, sc.Ops.Drivers.Files().Remove(ctx, dst)
+				real, err := p.realBundlePath(sc, "state", db)
+				if err != nil {
+					return "", err
+				}
+				return "removed " + real, sc.Ops.Drivers.Files().Remove(ctx, real)
 			},
 		})
 	}
@@ -286,9 +374,8 @@ func (p *planner) addBundleManifest(bundleDir string, fence bool) {
 		Warnings: []string{"`" + bundlePlaceholder + "` stands for the bundle id `<ts>-backup`, which is stamped when " +
 			"the job runs"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			stamp := p.stampOf(sc)
-			real := filepath.Join(sc.Ops.Roots.BackupsDir, p.t.Name, stamp+"-backup", "manifest.json")
-			if err := sc.Checkpoint("bundle:" + stamp + "-backup"); err != nil {
+			real, err := p.realBundlePath(sc, "manifest.json")
+			if err != nil {
 				return "", err
 			}
 			if err := sc.Ops.Drivers.Files().WriteAtomic(ctx, real, body, 0o640); err != nil {

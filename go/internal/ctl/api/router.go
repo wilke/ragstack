@@ -593,12 +593,24 @@ func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 		// "findings[].detail is path-redacted for a viewer": the absolute
 		// paths in a finding are host layout, which a viewer has no route to
 		// act on and every reason not to learn.
+		// A registry this request could not read is not a reason to stop
+		// redacting. It used to be — the loop sat inside `if ferr == nil` — so
+		// the one condition under which the viewer's protection vanished was a
+		// failure nothing in the response mentioned: the body still looked
+		// right, and it carried the host's absolute paths.
+		//
+		// Without the registry the per-tenant substitutions cannot be built,
+		// so the fallback is the blunt one: every absolute path becomes
+		// `<path>`. Less informative, never less safe.
 		fleet, ferr := s.Backend.Registry(r.Context())
-		if ferr == nil {
-			for i := range body.Findings {
-				body.Findings[i].Detail = redactPaths(body.Findings[i].Detail, fleet)
-				body.Findings[i].Repair = redactPaths(body.Findings[i].Repair, fleet)
+		for i := range body.Findings {
+			if ferr != nil {
+				body.Findings[i].Detail = RedactHostPaths(body.Findings[i].Detail)
+				body.Findings[i].Repair = RedactHostPaths(body.Findings[i].Repair)
+				continue
 			}
+			body.Findings[i].Detail = redactPaths(body.Findings[i].Detail, fleet)
+			body.Findings[i].Repair = redactPaths(body.Findings[i].Repair, fleet)
 		}
 	}
 	writeJSON(w, http.StatusOK, body)
@@ -989,7 +1001,7 @@ const sessionMustRePresentKey = "mutations from a session must re-present a ctl 
 // credential carries the operator role — so without this check a viewer key
 // in the body would satisfy "re-present a ctl key" while authorizing nothing,
 // and the re-presentation would be a formality rather than a control.
-const sessionKeyMustBeOperator = "the ctl_api_key re-presented from a session must itself be an operator key"
+const sessionKeyMustBeOperator = "a re-presented ctl_api_key must itself be an operator key"
 
 func (s *Server) mutationCredentialsAgree(w http.ResponseWriter, r *http.Request, p auth.Principal, body opRequest) bool {
 	if body.CtlAPIKey == "" {
@@ -1036,9 +1048,18 @@ func (s *Server) bodyKeyAgrees(w http.ResponseWriter, r *http.Request, p auth.Pr
 		return true
 	}
 	keyPrincipal, err := s.Resolver.Keys.LookupKey(bodyKey)
-	if err == nil && p.AuthMethod == auth.MethodSession && !auth.RoleAtLeast(keyPrincipal.Role, auth.RoleOperator) {
+	if err == nil && !auth.RoleAtLeast(keyPrincipal.Role, auth.RoleOperator) {
+		// EVERY re-presented key must be operator-class, not only a session's.
+		//
+		// This used to test `p.AuthMethod == auth.MethodSession`, so a BEARER
+		// principal could re-present a viewer-class key and mutate with it —
+		// and bearer is the other half of the same browser flow the rule
+		// exists for. The credential in the body is what authorizes the
+		// mutation; which credential carried the request to the door does not
+		// change what that key is allowed to do.
+		//
 		// Counted against the presenting credential like every other body-key
-		// refusal: a session walking a list of keys it holds is exactly the
+		// refusal: a caller walking a list of keys it holds is exactly the
 		// traffic the budget exists to bound.
 		s.failBodyKey(r)
 		writeError(w, r, model.CodeForbidden, sessionKeyMustBeOperator, nil)

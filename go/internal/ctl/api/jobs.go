@@ -359,7 +359,20 @@ func (s *Server) handleSettingsPut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if bad := validateSettingsArgs(req.Args); len(bad) > 0 {
+	refused, bad := validateSettingsArgs(req.Args)
+	if len(refused) > 0 {
+		// 409, not 422: these members EXIST and are well formed. What is
+		// refused is the caller — the contract makes them CLI-only /
+		// server-owned — and a 422 would tell a client its document was
+		// malformed and invite it to fix the spelling.
+		writeError(w, r, model.CodeRefused,
+			"CLI-only / server-owned: "+strings.Join(refused, ", ")+
+				" may not be set over HTTP (recipients decides who can decrypt every future backup, "+
+				"python_env_default is a trusted-operator change, and registry_generation is the server's own counter)",
+			map[string]any{"fields": refused})
+		return
+	}
+	if len(bad) > 0 {
 		writeError(w, r, model.CodeValidation,
 			"settings args are outside the writable subset of settings_response.json: "+strings.Join(bad, ", "),
 			map[string]any{"fields": bad})
@@ -420,7 +433,11 @@ func (s *Server) handleJobContinuation(op string) http.HandlerFunc {
 		case opJobContinue:
 			job, err = s.Engine.Continue(r.Context(), id, p)
 		case opJobCancel:
-			job, err = s.Engine.Cancel(r.Context(), id, p)
+			// The envelope's `confirm` is not decoration on this route:
+			// openapi.yaml requires it when the cancel would roll back
+			// succeeded steps, and the engine is what decides whether it
+			// would. Dropping it here made every such cancel unconfirmable.
+			job, err = s.Engine.Cancel(r.Context(), id, p, req.Confirm)
 		default:
 			writeError(w, r, model.CodeInternal, "unknown job continuation", nil)
 			return
@@ -552,6 +569,17 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, model.CodeNotFound, "no job "+id, nil)
 		return
 	}
+	if !isViewer(r) {
+		// An operator's job names each step's log: the contract's `log` is
+		// the relative path under /rag/data/ctl/jobs/<id>/ that the
+		// steps/{n}/log endpoint serves (redacted), null when the step wrote
+		// nothing; the viewer reduction nulls it always.
+		for i := range job.Steps {
+			if text, err := s.Engine.StepLog(r.Context(), id, job.Steps[i].N); err == nil && text != "" {
+				job.Steps[i].Log = model.NullString(fmt.Sprintf("steps/%d.log", job.Steps[i].N))
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, presentJob(*job, isViewer(r)))
 }
 
@@ -681,20 +709,40 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 // `registry_generation` is the server's own counter, so neither is a value a
 // browser may send; both are CLI-only, trusted-operator changes.
 var settingsWritable = map[string]bool{
-	"retention": true, "images": true, "python_env_default": true, "ctl": true,
+	"retention": true, "images": true, "ctl": true,
 }
 
-// validateSettingsArgs returns the offending member paths, or nil when the
-// args are a valid PARTIAL settings_response.json over the writable subset.
+// settingsCLIOnly is the rest of settings_response.json's top level: members
+// that exist, are well formed, and are still not a browser's to send.
+//
+// `recipients` decides who can DECRYPT every future backup; `python_env_default`
+// re-points the interpreter every tenant API is started with — a
+// trusted-operator change, and one nothing over HTTP should be able to make;
+// `registry_generation` is the server's own counter, and a caller that could
+// forge it could forge the generation a plan is validated against.
+//
+// python_env_default used to be in settingsWritable, so the handler ACCEPTED
+// it while the contract says 409 — the one of the three that actually got
+// through.
+var settingsCLIOnly = map[string]bool{
+	"recipients": true, "python_env_default": true, "registry_generation": true,
+}
+
+// validateSettingsArgs splits the args into the members that are refused
+// (409 `refused`: CLI-only / server-owned) and the ones that are invalid
+// (422 `validation`: unknown, or malformed), either list empty when there is
+// nothing of that kind.
 //
 // Partial by design: `PUT /v1/settings {"ctl": {"gateway_enabled": true}}` is
 // the flip that mattered on coconut, and demanding the whole document for it
 // would make every settings change a read-modify-write race against the
 // registry generation.
-func validateSettingsArgs(args map[string]any) []string {
-	var bad []string
+func validateSettingsArgs(args map[string]any) (refused, bad []string) {
 	for key := range args {
-		if !settingsWritable[key] {
+		switch {
+		case settingsCLIOnly[key]:
+			refused = append(refused, key)
+		case !settingsWritable[key]:
 			bad = append(bad, key)
 		}
 	}
@@ -704,16 +752,12 @@ func validateSettingsArgs(args map[string]any) []string {
 	if v, ok := args["images"]; ok {
 		bad = append(bad, validateImages(v)...)
 	}
-	if v, ok := args["python_env_default"]; ok {
-		if !absPathValue(v) {
-			bad = append(bad, "python_env_default")
-		}
-	}
 	if v, ok := args["ctl"]; ok {
 		bad = append(bad, validateCtlSettings(v)...)
 	}
+	sortStrings(refused)
 	sortStrings(bad)
-	return bad
+	return refused, bad
 }
 
 func validateRetention(v any) []string {

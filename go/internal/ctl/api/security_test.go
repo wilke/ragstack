@@ -21,6 +21,8 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/authz"
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/ops"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/session"
@@ -1139,5 +1141,59 @@ func TestEveryMutatingRowIsRegistered(t *testing.T) {
 	}
 	if mutating == 0 {
 		t.Fatal("the matrix has no mutating rows; the test asserted nothing")
+	}
+}
+
+// TestEveryOpTheHandlersSubmitResolvesInTheRegistry.
+//
+// The API layer and the op registry are two lists of operation names. When one
+// grows an entry the other does not have, the symptom is a 404 or a 409 from a
+// route that plainly exists: `PUT /v1/settings` answered "no such op
+// settings-put" for exactly that reason, and nothing in the build said so —
+// every unit test on either side passed, because each was testing its own
+// list.
+//
+// So: every name a handler can put in a jobs.Request must Lookup. The names
+// are read from the handlers' OWN tables (opVerbs and the op* constants), not
+// from a copy, and the contract's enums are folded in as well so a verb added
+// to openapi.yaml and to neither side is caught here too.
+//
+// The three CONTINUATION names (resume/continue/cancel) are deliberately not
+// included: they are not ops, they name engine methods, and handleJobContinuation
+// dispatches on them without a registry lookup.
+func TestEveryOpTheHandlersSubmitResolvesInTheRegistry(t *testing.T) {
+	reg := ops.NewRegistry(ops.Deps{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
+
+	submitted := map[string]string{}
+	for verb := range opVerbs {
+		submitted[verb] = "api.opVerbs"
+	}
+	for _, c := range []string{opCreate, opGatewayApply, opGatewayReload, opSettingsPut} {
+		submitted[c] = "an api op constant"
+	}
+	for _, verb := range contractOps(t) {
+		if _, ok := submitted[verb]; !ok {
+			submitted[verb] = "contracts/ctl/openapi.yaml"
+		}
+	}
+
+	for verb, where := range submitted {
+		if verb == "adopt" {
+			// doctor's `op` enum carries `adopt`, which is a CLI command
+			// (ragstack-ctl adopt) and not a job the engine runs.
+			continue
+		}
+		if _, ok := reg.Lookup(verb); !ok {
+			t.Errorf("%q comes from %s and ops.NewRegistry has no op for it: a request naming it is answered "+
+				"as though the route did not exist", verb, where)
+		}
+	}
+
+	// And the other direction: an op the registry knows that no handler can
+	// ever reach is dead code, or a route somebody forgot to wire.
+	for _, verb := range reg.Verbs() {
+		if _, ok := submitted[verb]; !ok {
+			t.Errorf("the registry has op %q and nothing in the API submits it", verb)
+		}
 	}
 }

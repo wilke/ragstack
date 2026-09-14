@@ -72,7 +72,7 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 		Kind: "git", Title: "check the worktree out from the artifact at the same SHA",
 		Targets: []string{t.Worktree, string(t.Code.SHA)}, Run: p.pendingRun("git", "Worktree"),
 	})
-	p.add(step{
+	p.addFor("systemd", step{
 		Kind: "systemd", Title: "systemctl --user daemon-reload",
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -87,7 +87,7 @@ func planHandover(_ context.Context, p *planner, args map[string]any) error {
 	}
 	p.addReadyStep(legs)
 	origin := fmt.Sprintf("http://127.0.0.1:%d", t.Ports.API)
-	p.add(step{
+	p.addFor("tenantapi", step{
 		Kind: "probe", Title: "post-checks against the destination API", Targets: []string{origin},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			return "health ok", sc.Ops.Drivers.TenantAPI().Health(ctx, origin)
@@ -141,7 +141,7 @@ func (p *planner) addSourceStop() {
 		pidfile = p.tpaths.PidFile
 	}
 	worktree, port := p.t.Worktree, p.t.Ports.API
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "proc", Title: "stop the source processes (pidfile + /proc identity)", Destructive: true,
 		Targets: []string{pidfile},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -160,7 +160,7 @@ func (p *planner) addSourceStop() {
 				sc.Ops.Drivers.Proc().Signal(ctx, pid, worktree, "uvicorn", "TERM")
 		},
 	})
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("verify the source is gone (nothing on %d)", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {

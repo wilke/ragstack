@@ -215,7 +215,7 @@ func planRenderUnits(_ context.Context, p *planner, args map[string]any) error {
 			},
 		})
 	}
-	p.add(step{
+	p.addFor("systemd", step{
 		Kind: "systemd", Title: "systemctl --user daemon-reload",
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {

@@ -111,7 +111,7 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 	if err != nil {
 		return err
 	}
-	p.add(step{
+	p.addFor("systemd", step{
 		Kind: "systemd", Title: "systemctl --user daemon-reload",
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", "daemon-reload"}}},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -192,7 +192,7 @@ func (p *planner) planManualStop(only []string) error {
 		pidfile = p.tpaths.PidFile
 	}
 	worktree, port := p.t.Worktree, p.t.Ports.API
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "proc", Title: "stop the hand-started API through its pidfile, after verifying cwd and cmdline",
 		Destructive: true, Targets: []string{pidfile},
 		Warnings: []string{"the ctl signals a pid it has verified is this tenant's; it never runs pkill"},
@@ -226,7 +226,7 @@ func (p *planner) planManualStop(only []string) error {
 			return jobs.ReconcileDone, nil
 		},
 	})
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("verify nothing listens on %d any more", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
@@ -292,7 +292,7 @@ func (p *planner) addUnitStep(verb string, c component) {
 		"disable": "disable " + c.Unit + " (desired_boot)",
 	}[verb]
 	want := verb == "start"
-	p.add(step{
+	p.addFor("systemd", step{
 		Kind: "systemd", Title: title, Destructive: dest, Targets: []string{c.Unit},
 		WouldRun: []model.WouldRun{{Argv: []string{"/usr/bin/systemctl", "--user", verb, c.Unit}}},
 		Run:      unitRun(verb, c.Unit),
@@ -368,7 +368,7 @@ func (p *planner) addReadyStep(legs []component) {
 	if port == 0 {
 		return
 	}
-	p.add(step{
+	p.addFor("proc", step{
 		Kind: "probe", Title: fmt.Sprintf("wait for the API to listen on %d", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {

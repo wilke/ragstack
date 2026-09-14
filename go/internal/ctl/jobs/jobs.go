@@ -354,8 +354,12 @@ type Engine interface {
 	Resume(ctx context.Context, id string, p Principal) (*model.Job, error)
 	// Continue releases a job waiting in awaiting_cutover.
 	Continue(ctx context.Context, id string, p Principal) (*model.Job, error)
-	// Cancel stops a queued/running/interrupted job, rolling back what it can.
-	Cancel(ctx context.Context, id string, p Principal) (*model.Job, error)
+	// Cancel stops a queued/running/interrupted job, rolling back what it
+	// can. confirm is openapi.yaml's: a cancel that would roll succeeded
+	// steps back is a mutation of the fleet in its own right, so it carries
+	// the same confirm value the plan does (the tenant name for a destructive
+	// op, "yes" otherwise) and answers ErrConfirmRequired without it.
+	Cancel(ctx context.Context, id string, p Principal, confirm string) (*model.Job, error)
 	// Secrets delivers the envelope once (ErrGone after; ErrForbidden for
 	// another principal or a session credential).
 	Secrets(ctx context.Context, id string, p Principal) (*model.SecretsResponse, error)
