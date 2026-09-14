@@ -24,6 +24,22 @@ const (
 	SelftestEnd  = 26099
 )
 
+// IsSelftestBlock reports whether a port block base belongs to the SANDBOX
+// range — the blocks `ragstack-ctl selftest` creates and destroys.
+//
+// It is a property of the BASE and of nothing else, on purpose: a sandbox
+// tenant is recognised by where its ports are, not by its name, not by a flag
+// in its registry row and not by who created it. A name can be typed by
+// anybody, a flag can be edited, and either would make "is this safe to
+// quarantine without a backup?" a question about metadata. The port block is
+// the one fact that is also true of the running processes.
+//
+// Everything downstream keys off it: registry.Allocate skips sandboxes and
+// their tombstones (so a selftest never advances the production index),
+// quarantine writes no tombstone for one, and `decommission` needs no verified
+// bundle before destroying one.
+func IsSelftestBlock(base int) bool { return base >= SelftestBase && base <= SelftestEnd }
+
 // Store kinds for a tenant's ACL/registry/job stores, spelled exactly as
 // new-tenant.sh writes TENANT_STORE_KIND into provision.env. They live here
 // rather than in render because the list of directories provisioning creates

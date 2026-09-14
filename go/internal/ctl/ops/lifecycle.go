@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
@@ -20,7 +21,7 @@ const (
 
 // component is one leg of a tenant the lifecycle ops act on.
 type component struct {
-	Name string // api | ui | qdrant | es
+	Name string // api | ui | qdrant | es | postgres
 	Unit string
 	Port int
 	// Managed is false when the ctl owns no unit for this leg — a shared
@@ -34,10 +35,11 @@ type component struct {
 // by `only` when it is non-empty.
 func (p *planner) legs(only []string) ([]component, error) {
 	t := p.t
-	_, qdrantUnit, esUnit, apiUnit, uiUnit := render.UnitNames(t.Name)
+	_, qdrantUnit, esUnit, pgUnit, apiUnit, uiUnit := render.UnitNames(t.Name)
 	all := []component{
 		storeLeg("qdrant", qdrantUnit, t.Stores.Qdrant.Ownership, t.Stores.Qdrant.Capabilities, t.Ports.QdrantHTTP),
 		storeLeg("es", esUnit, t.Stores.Elasticsearch.Ownership, t.Stores.Elasticsearch.Capabilities, t.Ports.ESHTTP),
+		postgresLeg(t, pgUnit),
 		{Name: "api", Unit: apiUnit, Port: t.Ports.API, Managed: true},
 		uiLeg(t, uiUnit),
 	}
@@ -78,6 +80,31 @@ func storeLeg(name, unit, ownership string, caps registry.Capabilities, port int
 	return c
 }
 
+// postgresLeg is the tenant's OWN relational store. Only `local` is a server
+// the ctl supervises: `sqlite` is a file under <data_dir>/state (nothing to
+// start), and `external` is a database in a server somebody else runs — the
+// same rule storeLeg applies to a shared qdrant, said for the one store whose
+// "no server at all" case is the common one.
+func postgresLeg(t *registry.Tenant, unit string) component {
+	c := component{Name: "postgres", Unit: unit, Port: t.Ports.PG}
+	switch t.Stores.Postgres.Kind {
+	case registry.PostgresKindLocal:
+		if !t.Stores.Postgres.Capabilities.Stop {
+			c.Why = "capabilities.stop is false for the postgres store, so the ctl never touches it (confirm ownership with `adopt` first)"
+			return c
+		}
+		if port := int(t.Stores.Postgres.Port); port != 0 {
+			c.Port = port
+		}
+		c.Managed = true
+	case registry.PostgresKindExternal:
+		c.Why = "the relational store is a database in a server somebody else runs (kind: external); the ctl does not supervise it"
+	default:
+		c.Why = "the relational store is SQLite under <data_dir>/state; there is no server to start or stop"
+	}
+	return c
+}
+
 func uiLeg(t *registry.Tenant, unit string) component {
 	c := component{Name: "ui", Unit: unit, Port: int(t.UI.Port)}
 	switch t.UI.Mode {
@@ -103,11 +130,14 @@ func reverse(cs []component) []component {
 // ---------------------------------------------------------------- start
 
 func planStart(_ context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	// LockRegistry/LockManifest because the last step records the new state:
+	// the registry write is part of the operation, not a side effect of it.
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
 	if err := p.requireSystemd("start"); err != nil {
 		return err
 	}
-	legs, err := p.legs(argStringsOf(args, "only"))
+	only := argStringsOf(args, "only")
+	legs, err := p.legs(only)
 	if err != nil {
 		return err
 	}
@@ -132,13 +162,22 @@ func planStart(_ context.Context, p *planner, args map[string]any) error {
 		return nil
 	}
 	p.addReadyStep(legs)
+	if len(only) > 0 {
+		p.warn("this is a partial start (--only): the tenant's `state` and `desired_boot` are left as they are, " +
+			"because starting one leg says nothing about the whole tenant")
+		return nil
+	}
+	p.result["state"] = "active"
+	p.result["desired_boot"] = "enabled"
+	p.addRegistryEffect("start", fmt.Sprintf("record %s as active (desired_boot enabled) in the registry", p.tenant),
+		func(t *registry.Tenant) { t.State, t.DesiredBoot = "active", "enabled" })
 	return nil
 }
 
 // ---------------------------------------------------------------- stop
 
 func planStop(_ context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
 	force, keepEnabled := argBoolOf(args, "force"), argBoolOf(args, "keep_enabled")
 	only := argStringsOf(args, "only")
 
@@ -178,6 +217,26 @@ func planStop(_ context.Context, p *planner, args map[string]any) error {
 			}
 		}
 	}
+	p.result["state"] = "stopped"
+	// A PARTIAL stop (`--only es`) leaves the tenant running, so it is not a
+	// tenant that is `stopped`; recording it as such would tell the next boot
+	// and every dashboard something false about the API that is still serving.
+	// The registry write is for the whole-tenant stop only.
+	if len(only) > 0 {
+		delete(p.result, "state")
+		p.warn("this is a partial stop (--only): the tenant's `state` is left as it is, because part of it is still running")
+		if !keepEnabled {
+			p.warn("desired_boot is left as it is too: a partial stop cannot say whether the TENANT should come back at boot")
+			delete(p.result, "desired_boot")
+		}
+		return nil
+	}
+	p.addRegistryEffect("stop", fmt.Sprintf("record %s as stopped in the registry", p.t.Name), func(t *registry.Tenant) {
+		t.State = "stopped"
+		if !keepEnabled {
+			t.DesiredBoot = "disabled"
+		}
+	})
 	return nil
 }
 
@@ -247,11 +306,12 @@ func (p *planner) planManualStop(only []string) error {
 // ---------------------------------------------------------------- restart
 
 func planRestart(ctx context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockTenant)
+	p.need(model.LockTenant, model.LockRegistry, model.LockManifest)
 	if err := p.requireSystemd("restart"); err != nil {
 		return err
 	}
-	legs, err := p.legs(argStringsOf(args, "only"))
+	only := argStringsOf(args, "only")
+	legs, err := p.legs(only)
 	if err != nil {
 		return err
 	}
@@ -269,6 +329,13 @@ func planRestart(ctx context.Context, p *planner, args map[string]any) error {
 	}
 	p.addReadyStep(legs)
 	_ = ctx
+	if len(only) > 0 {
+		p.warn("this is a partial restart (--only): the tenant's `state` is left as it is")
+		return nil
+	}
+	p.result["state"] = "active"
+	p.addRegistryEffect("restart", fmt.Sprintf("record %s as active in the registry", p.tenant),
+		func(t *registry.Tenant) { t.State = "active" })
 	return nil
 }
 
@@ -355,14 +422,95 @@ func unitRun(verb, unit string) jobs.StepFunc {
 	}
 }
 
-// addReadyStep plans the readiness gate: the API port has to be listening
-// before the job calls itself done, because "systemctl start returned" is not
-// "the tenant answers".
+// ---------------------------------------------------------------- registry effects
+//
+// `start`, `stop` and `restart` change what the fleet IS, not only what is
+// running: a stopped tenant whose registry still says `active` is a row the
+// dashboard, the doctor and the next boot all read as a lie. So each of the
+// three ends with ONE registry write — state, desired_boot when the verb moved
+// it, and last_ops[verb] — saved after the unit steps succeeded.
+//
+// One write, not one per leg: registry.Save bumps the generation, and a job
+// that touched four units would otherwise advance the fleet's generation four
+// times for a single operator action, which makes "what changed at generation
+// 91?" unanswerable.
+
+// addRegistryEffect is that step. apply mutates the tenant row of the fleet
+// the ENGINE loaded under the locks (sc.Ops.Fleet) — never the plan-time
+// snapshot, which the plan hash has already proved equal to it.
+func (p *planner) addRegistryEffect(verb, title string, apply func(t *registry.Tenant)) {
+	name := p.tenant
+	p.add(step{
+		Kind: "registry", Title: title, Targets: []string{name},
+		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: model.NullString("")}},
+		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			save := p.op.deps.SaveFleet
+			if save == nil {
+				return "", fmt.Errorf("%w: the registry writer is not wired", jobs.ErrRefused)
+			}
+			f := sc.Ops.Fleet
+			if f == nil {
+				return "", fmt.Errorf("%w: the engine loaded no registry under the locks", jobs.ErrRefused)
+			}
+			t, ok := f.Tenants[name]
+			if !ok {
+				return "", fmt.Errorf("%w: %s is no longer in the registry", jobs.ErrRefused, name)
+			}
+			apply(t)
+			if t.LastOps == nil {
+				t.LastOps = map[string]registry.OpRecord{}
+			}
+			// The op record is the CONTRACT's three fields (job_id, at,
+			// outcome); the principal is on the job and in the audit row, which
+			// is where an "who did this" question is answered without the
+			// registry growing a second copy of it.
+			t.LastOps[verb] = registry.OpRecord{JobID: sc.Job.ID, At: p.stampRFC3339(sc), Outcome: "succeeded"}
+			if err := save(f); err != nil {
+				return "", err
+			}
+			sc.Logf("registry generation %d: %s state %s, desired_boot %s", f.Generation, name, t.State, t.DesiredBoot)
+			return fmt.Sprintf("%s state %s (generation %d)", name, t.State, f.Generation), nil
+		},
+	})
+}
+
+// stampRFC3339 is the run-time clock in the format the registry records.
+func (p *planner) stampRFC3339(sc *jobs.StepContext) string {
+	if sc != nil && sc.Ops.Now != nil {
+		return sc.Ops.Now().UTC().Format(time.RFC3339)
+	}
+	return p.op.deps.now().UTC().Format(time.RFC3339)
+}
+
+// addReadyStep plans the readiness gate: the tenant's own stores, then the API
+// port, have to be answering before the job calls itself done — because
+// "systemctl start returned" is not "the tenant answers".
 func (p *planner) addReadyStep(legs []component) {
 	port := 0
 	for _, c := range legs {
 		if c.Name == "api" && c.Managed {
 			port = c.Port
+		}
+		// The postgres leg is a TCP probe rather than pg_isready: the api unit
+		// runs `wait-ready` before it starts and the socket auth that pg_isready
+		// would use is INSIDE the container, so "the port accepts a connection"
+		// is the strongest thing an outside observer can honestly assert here.
+		if c.Name == "postgres" && c.Managed {
+			pg := c
+			p.addFor("proc", step{
+				Kind: "probe", Title: fmt.Sprintf("wait for postgres to listen on %d", pg.Port),
+				Targets: []string{strconv.Itoa(pg.Port)},
+				Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+					listening, err := sc.Ops.Drivers.Proc().Listening(ctx, pg.Port)
+					if err != nil {
+						return "", err
+					}
+					if !listening {
+						return "", fmt.Errorf("nothing is listening on %d: the tenant's postgres did not come up", pg.Port)
+					}
+					return fmt.Sprintf("port %d is listening", pg.Port), nil
+				},
+			})
 		}
 	}
 	if port == 0 {

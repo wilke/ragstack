@@ -30,7 +30,12 @@ type runner struct {
 }
 
 func newRunner(oc jobs.Context, fake *drivers.Fake) *runner {
-	return &runner{oc: oc, fake: fake, job: &model.Job{ID: "job-1"}, steps: map[int]*model.Step{}}
+	// A real ULID: the registry records last_ops[verb].job_id, and the contract
+	// gives it the ULID pattern — a placeholder id would make every registry
+	// step fail validation for a reason no real job has.
+	return &runner{oc: oc, fake: fake,
+		job:   &model.Job{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Principal: "local:3581"},
+		steps: map[int]*model.Step{}}
 }
 
 func (r *runner) ctx(s jobs.Step) *jobs.StepContext {
@@ -130,7 +135,7 @@ func TestAUnitStepReconcilesFromTheDriverState(t *testing.T) {
 	r := newRunner(oc, fake)
 	r.runAll(t, p)
 
-	start := p.Steps[3] // start the api
+	start := p.Steps[stepIndex(p, "systemd", "start ragstack-dev-api.service")]
 	got, err := start.Reconcile(context.Background(), r.ctx(start))
 	if err != nil || got != jobs.ReconcileDone {
 		t.Fatalf("reconcile of a step that ran = %v (%v), want done", got, err)

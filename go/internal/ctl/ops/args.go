@@ -214,10 +214,19 @@ const (
 	patEnvKey     = `^[A-Z][A-Z0-9_]{0,127}$`
 	patArtifactID = `^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`
 	patESHeap     = `^[1-9][0-9]*[mg]$`
+	// patGitRef is what `fleet artifact prepare --tag` accepts. Deliberately
+	// narrow: the value is handed to `git rev-parse` as one argv element, and a
+	// ref grammar that admitted spaces, `-` prefixes or shell metacharacters
+	// would be a ref grammar in which an option could be smuggled.
+	patGitRef = `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`
+	patAbsPath = `^/[A-Za-z0-9._/-]{0,255}$`
 )
 
 var (
-	components = []string{"api", "ui", "qdrant", "es"}
+	// components is `only`'s enum. `postgres` joins it with PR-D: a tenant
+	// created with `--postgres local` runs a server the ctl owns, and a leg the
+	// ctl starts and stops is a leg `--only` has to be able to name.
+	components = []string{"api", "ui", "qdrant", "es", "postgres"}
 	phases     = []string{"execute", "commit", "rollback"}
 	roles      = []string{"admin", "user"}
 )
@@ -303,6 +312,7 @@ var argSchemas = map[string]argSpec{
 		{Name: "name", Kind: argString, Required: true, Pattern: patTenantName},
 		{Name: "artifact_id", Kind: argString, Required: true, Pattern: patArtifactID},
 		{Name: "es_heap", Kind: argString, Pattern: patESHeap},
+		{Name: "postgres", Kind: argString, Enum: []string{"sqlite", "local"}},
 		{Name: "identity_provider", Kind: argString, Enum: []string{"bvbrc", "none"}},
 		{Name: "admin_subjects", Kind: argStringArray, ItemPattern: patSubjectIss, Unique: true},
 		{Name: "keys", Kind: argObjectArray},
@@ -312,6 +322,16 @@ var argSchemas = map[string]argSpec{
 		{Name: "ui_mode", Kind: argString, Enum: []string{"static", "dev", "external"}},
 		{Name: "start", Kind: argBool},
 		{Name: "gateway", Kind: argBool},
+	}},
+	// artifact-prepare is CLI-only: contracts/ctl/openapi.yaml carries it under
+	// `x-ctl-cli-op-args`, NOT `x-ctl-op-args`, because the latter is the
+	// schema list for POST /v1/tenants/{name}/ops/{verb} and this verb has no
+	// HTTP route at all (see ops/artifact.go for why).
+	"artifact-prepare": {Verb: "artifact-prepare", Fields: []argField{
+		{Name: "tag", Kind: argString, Required: true, Pattern: patGitRef},
+		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
+		{Name: "python_env", Kind: argString, Pattern: patAbsPath},
+		{Name: "schema_compatible", Kind: argBool},
 	}},
 	"gateway-apply":  {Verb: "gateway-apply"},
 	"gateway-reload": {Verb: "gateway-reload"},
@@ -334,6 +354,11 @@ var ContractVerbs = []string{
 	"sa-create", "sa-disable", "sa-enable", "env-set", "env-unset",
 	"env-normalize", "render-units", "update-code",
 }
+
+// CLIVerbs are the operations that are jobs like any other but have NO HTTP
+// route: the contract lists them under `x-ctl-cli-op-args` and the ops router
+// (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
+var CLIVerbs = []string{"artifact-prepare"}
 
 // ---------------------------------------------------------------- helpers
 

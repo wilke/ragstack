@@ -44,6 +44,7 @@
         "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
         "artifact_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$" },
         "es_heap": { "description": "JVM heap for the dedicated Elasticsearch, e.g. `1g`. Admission checks the fleet heap sum against host memory.", "type": "string", "pattern": "^[1-9][0-9]*[mg]$", "default": "1g" },
+        "postgres": { "description": "Where the tenant keeps its ACL, job and collection state. `sqlite` (the default) is files under `<data_dir>/state` and runs no server. `local` gives the tenant its OWN postgres instance on the block's +5 port, supervised by a `ragstack-<name>-postgres.service` the ctl owns: it adds `TENANT_PG_PASSWORD` and the three `*_DSN` lines to `secrets.env`, and a `postgres` leg to `start`/`stop`/`restart --only`. `external` \u2014 a database inside a server somebody else runs \u2014 is NOT offered here: it needs an admin DSN, which is a CLI-only, trusted-operator input.", "type": "string", "enum": ["sqlite", "local"], "default": "sqlite" },
         "identity_provider": { "type": "string", "enum": ["bvbrc", "none"], "default": "none" },
         "admin_subjects": {
           "type": "array",

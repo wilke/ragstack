@@ -44,6 +44,17 @@ type Deps struct {
 	// step writes a registry row). Nil refuses those steps with ErrRefused —
 	// a plan still renders, the run says the registry writer is not wired.
 	SaveFleet func(*registry.Fleet) error
+	// Mirror is the bare `git clone --mirror` every artifact worktree is
+	// checked out of (/rag/repos/ragstack.git). It is deployment
+	// configuration, not an op argument: an operation that took a repository
+	// path from a request would be an operation that chooses which code a
+	// tenant runs. `fleet artifact prepare` may name a different one, because
+	// it is CLI-only and trusted-operator; `tenant create` never can — it
+	// checks out the sha an already-prepared artifact recorded, from here.
+	//
+	// Empty means no mirror is configured: the plan still renders in full and
+	// the git step refuses at run time, saying which item is missing.
+	Mirror string
 }
 
 func (d Deps) now() time.Time {
@@ -95,6 +106,14 @@ func NewRegistry(d Deps) jobs.Registry {
 	add("render-units", false, planRenderUnits)
 	add("update-code", true, planUpdateCode)
 	add("create", false, planCreate)
+	// artifact-prepare is CLI-ONLY: it is not in the ops endpoint's verb enum
+	// (api/jobs.go's opVerbs), so POST …/ops/artifact-prepare is 422 like any
+	// other name that is not a verb. It runs `npm ci`, which is the one step in
+	// the whole control plane that reaches the network, and it decides which
+	// code a tenant may later be created from — both are trusted-operator,
+	// `--direct` decisions and neither belongs on an HTTP surface a session can
+	// reach.
+	add("artifact-prepare", false, planArtifactPrepare)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)
