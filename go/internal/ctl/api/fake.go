@@ -280,7 +280,7 @@ func (b *FakeBackend) Env(_ context.Context, name string) (*model.EnvResponse, e
 	if exec := settings.ExecutableSurfaceKeys(); len(exec) > 0 {
 		keys = append(keys, envRow(exec[0], "unused", model.SourceTenantEnv))
 	}
-	return &model.EnvResponse{Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: keys}, nil
+	return &model.EnvResponse{Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: keys, Source: model.EnvResponseSourceLive}, nil
 }
 
 // envRow builds one row, applying the contract's redaction rule: a value is

@@ -203,11 +203,30 @@ export const managedUnitsFixture: CtlTenant = {
 export const envFixture: CtlEnv = {
   tenant: "dev",
   env_layout: "legacy",
+  source: "live",
+  note: null,
   keys: [
     { key: "IDENTITY_PROVIDER", value_redacted: "bvbrc", source: "tenant.env", class: "public", drift: null },
     { key: "DEFAULT_ROLE", value_redacted: "user", source: "tenant.env", class: "public", drift: null },
     { key: "VECTOR_BACKEND", value_redacted: "qdrant", source: "tenant.env", class: "public", drift: null },
     { key: "ES_JAVA_OPTS", value_redacted: "1g", source: "tenant.env", class: "public", drift: "file_vs_live" },
+  ],
+};
+
+/**
+ * The pre-handover shape: tenant.env is 0600 and owned by the operator who
+ * provisioned it, so the daemon cannot read it and answers from the
+ * registry's own settings/secret_refs instead — `source: "registry"` and a
+ * `note` explaining why, which the Config tab must show.
+ */
+export const registrySourcedEnvFixture: CtlEnv = {
+  tenant: "dev",
+  env_layout: "legacy",
+  source: "registry",
+  note: "tenant.env is not readable by svcbvbrc (uid 1002); showing the public settings recorded in the registry at adoption (2026-09-01T00:00:00Z). The tenant is owned by wilke until its handover (PR-E); drift against the live file cannot be checked until then.",
+  keys: [
+    { key: "LOG_LEVEL", value_redacted: "info", source: "registry", class: "public", drift: null },
+    { key: "API_KEYS", value_redacted: "<redacted>", source: "registry", class: "secret", drift: null },
   ],
 };
 
@@ -222,6 +241,8 @@ export const envFixture: CtlEnv = {
 export const hostileEnvFixture: CtlEnv = {
   tenant: "dev",
   env_layout: "legacy",
+  source: "live",
+  note: null,
   keys: [
     { key: "API_KEY_FINGERPRINT", value_redacted: "sha256:1a2b3c4d5e6f7a8b", source: "registry", class: "public", drift: null },
     { key: "API_KEYS", value_redacted: "leaked-api-key-value-0001", source: "secrets.env", class: "secret", drift: null },

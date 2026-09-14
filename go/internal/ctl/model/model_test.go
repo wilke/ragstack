@@ -150,12 +150,24 @@ func TestResponsesValidateAgainstContract(t *testing.T) {
 	})
 
 	validate(t, py, "env_response", EnvResponse{
-		Tenant: "dev", EnvLayout: "legacy",
+		Tenant: "dev", EnvLayout: "legacy", Source: EnvResponseSourceLive, Note: "",
 		Keys: []EnvKey{
 			{Key: "LOG_LEVEL", ValueRedacted: "info", Source: SourceTenantEnv, Class: ClassPublic, Drift: ""},
 			{Key: "API_KEYS", ValueRedacted: EnvRedacted, Source: SourceTenantEnv, Class: ClassSecret, Drift: NullString(DriftRegistryVsFile)},
 			{Key: "PYTHONPATH", ValueRedacted: "/rag/repos/tenants/dev/python", Source: SourceUnit, Class: ClassExecutableSurface, Drift: NullString(DriftLiveOnly)},
 			{Key: "TENANT_ES_HEAP", ValueRedacted: EnvRedacted, Source: SourceProvisionEnv, Class: ClassUnsupported, Drift: ""},
+		},
+	})
+
+	// The pre-handover shape: tenant.env is not readable by the ctl account,
+	// so the response is built from the registry's settings/secret_refs
+	// instead of a live read.
+	validate(t, py, "env_response", EnvResponse{
+		Tenant: "dev", EnvLayout: "legacy", Source: EnvResponseSourceRegistry,
+		Note: "tenant.env is not readable by svcbvbrc (owner wilke); showing the public settings recorded in the registry at adoption. Drift against the live file cannot be checked until the handover (PR-E).",
+		Keys: []EnvKey{
+			{Key: "LOG_LEVEL", ValueRedacted: "info", Source: SourceRegistry, Class: ClassPublic, Drift: ""},
+			{Key: "API_KEYS", ValueRedacted: EnvRedacted, Source: SourceRegistry, Class: ClassSecret, Drift: ""},
 		},
 	})
 

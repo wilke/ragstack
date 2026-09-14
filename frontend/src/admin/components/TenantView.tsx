@@ -271,6 +271,9 @@ function Config({ name }: { name: string }) {
         <span className="font-mono">public</span> keys only, so this table is what the control plane
         was willing to show this credential — not the whole file.
       </p>
+      {env.data.source === "registry" && (
+        <p className="mb-3 text-[12.5px] text-dim">{env.data.note}</p>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full border-collapse text-left">
           <thead>

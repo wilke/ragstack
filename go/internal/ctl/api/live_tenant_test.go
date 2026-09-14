@@ -16,6 +16,7 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
+	"github.com/ragstack/ragstack/internal/ctl/logs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -349,6 +350,172 @@ func TestLiveEnvReadsTheTenantsFiles(t *testing.T) {
 	if _, ok := got["EMBEDDING_MODEL"]; ok {
 		t.Error("the live env read answered with the fixture's invented keys")
 	}
+}
+
+// mutateRegistryOnDisk rewrites b's on-disk registry via fn, so the next
+// reloadRegistry() call — which every Env/Tenant/Tenants request makes — sees
+// the change without rebuilding the backend.
+func mutateRegistryOnDisk(t *testing.T, b *liveBackend, fn func(f *registry.Fleet)) {
+	t.Helper()
+	f, err := b.reloadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn(f)
+	raw, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b.registryPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// otherOwner is a registry `owner` enum value that is not u — used to force
+// the pre-handover shape (registry owner != this account) regardless of
+// which account actually runs the test.
+func otherOwner(u string) string {
+	for _, o := range registry.Owners() {
+		if o != u {
+			return o
+		}
+	}
+	return "wilke"
+}
+
+// writeUnreadableTenantEnv writes dev's tenant.env and then strips every
+// permission bit, so a subsequent read fails with EACCES the same way a
+// pre-handover, operator-owned 0600 file does for the svcbvbrc daemon.
+func writeUnreadableTenantEnv(t *testing.T, cfgDir string) string {
+	t.Helper()
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfgDir, "tenant.env")
+	if err := os.WriteFile(path, []byte("LOG_LEVEL=DEBUG\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	// os.RemoveAll (TempDir cleanup) only needs write+exec on the parent
+	// directory, not read on this file, but put the mode back anyway so a
+	// failed test does not leave an unreadable fixture behind.
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	return path
+}
+
+// TestLiveEnvSourceIsLiveWhenFilesAreReadable is the control for the two
+// pre-handover tests below: an ordinarily readable tenant answers
+// source "live" with no note, same as before this change.
+func TestLiveEnvSourceIsLiveWhenFilesAreReadable(t *testing.T) {
+	b := liveBackendOverFixture(t, devHost(devAPIPort))
+	f, err := b.reloadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(f.Tenants["dev"].DataDir, "config")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "tenant.env"), []byte("LOG_LEVEL=DEBUG\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := b.Env(context.Background(), "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Source != model.EnvResponseSourceLive {
+		t.Errorf("source = %q, want %q", resp.Source, model.EnvResponseSourceLive)
+	}
+	if resp.Note != "" {
+		t.Errorf("note = %q, want empty for a live read", resp.Note)
+	}
+}
+
+// TestLiveEnvPreHandoverFallsBackToRegistry is the reported bug: every
+// tenant's env files are 0600 and owned by the operator who provisioned it
+// until PR-E, and liveBackend.Env answered `keys: []` for one it could not
+// read — indistinguishable from a tenant with no configuration at all. When
+// the registry's owner is not this account, GET .../env must instead answer
+// from the registry's own public settings and secret refs, marked
+// `source: "registry"` with a `note` explaining why.
+func TestLiveEnvPreHandoverFallsBackToRegistry(t *testing.T) {
+	b := liveBackendOverFixture(t, devHost(devAPIPort))
+	f, err := b.reloadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUnreadableTenantEnv(t, filepath.Join(f.Tenants["dev"].DataDir, "config"))
+
+	owner := otherOwner(logs.CtlUser())
+	mutateRegistryOnDisk(t, b, func(f *registry.Fleet) {
+		dev := f.Tenants["dev"]
+		dev.Owner = owner
+		dev.Settings = map[string]string{"LOG_LEVEL": "INFO"}
+		dev.SecretRefs = []registry.SecretRef{{Key: "API_KEYS", File: "secrets.env"}}
+		dev.AdoptedAt = "2026-09-01T00:00:00Z"
+	})
+
+	resp, err := b.Env(context.Background(), "dev")
+	if err != nil {
+		t.Fatalf("Env: %v", err)
+	}
+	if resp.Source != model.EnvResponseSourceRegistry {
+		t.Fatalf("source = %q, want %q", resp.Source, model.EnvResponseSourceRegistry)
+	}
+	if resp.Note == "" {
+		t.Error("note is empty, want an explanation naming the unreadable file and the owner")
+	}
+	got := map[string]model.EnvKey{}
+	for _, k := range resp.Keys {
+		got[k.Key] = k
+	}
+	if len(got) != 2 {
+		t.Fatalf("keys = %v, want exactly the registry's settings + secret_refs", got)
+	}
+	if lv := got["LOG_LEVEL"]; lv.ValueRedacted != "INFO" || lv.Source != model.SourceRegistry || lv.Class != model.ClassPublic {
+		t.Errorf("LOG_LEVEL = %+v, want the registry's public value, source registry", lv)
+	}
+	if ak := got["API_KEYS"]; ak.ValueRedacted != model.EnvRedacted || ak.Source != model.SourceRegistry || ak.Class != model.ClassSecret {
+		t.Errorf("API_KEYS = %+v, want <redacted>, source registry, class secret", ak)
+	}
+}
+
+// TestLiveEnvUnreadableAndOwnedByCtlAccountIs500 is the OTHER half of the
+// permission-error branch: a tenant the registry says THIS account already
+// owns should never hit the unreadable-file shape — if it does, the file's
+// mode or ownership is simply wrong, the same class of fault doctor's
+// PortOwnerMismatch treats as an error rather than the expected
+// pending-handover info. Papering over it with the registry snapshot (or
+// silence) would hide a real host misconfiguration from an operator who is
+// supposed to already have read access; it is surfaced as a request error
+// (500 internal) instead, same as any other unexplained backend fault.
+func TestLiveEnvUnreadableAndOwnedByCtlAccountIs500(t *testing.T) {
+	ctlUser := logs.CtlUser()
+	if !registry.KnownOwner(ctlUser) {
+		t.Skipf("this process's identity (%q) is not a registry `owner` enum value; cannot construct the owned-by-ctl scenario", ctlUser)
+	}
+	b := liveBackendOverFixture(t, devHost(devAPIPort))
+	f, err := b.reloadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUnreadableTenantEnv(t, filepath.Join(f.Tenants["dev"].DataDir, "config"))
+	mutateRegistryOnDisk(t, b, func(f *registry.Fleet) {
+		f.Tenants["dev"].Owner = ctlUser
+	})
+
+	if _, err := b.Env(context.Background(), "dev"); err == nil {
+		t.Fatal("Env = nil error, want a failure: this account owns dev and still cannot read its config")
+	}
+
+	// Confirm the HTTP shape too: 500 internal, not 409 refused (that code is
+	// logs.go's, for the pre-handover case) and not a silent 200.
+	h := newTestServerWith(t, b)
+	w := asOperator(t, h, http.MethodGet, "/v1/tenants/dev/env")
+	assertError(t, w, http.StatusInternalServerError, string(model.CodeInternal))
 }
 
 // TestLiveBackendEmbedsNoFixtureBackend is the regression guard for the shape
