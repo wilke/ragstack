@@ -253,6 +253,11 @@ EOF
 # your secrets is printed to the terminal — and into any scrollback, log or
 # session transcript. Verified on this host 2026-09-14 (it happened). The exit
 # status still comes through; verification is the separate command below.
+# Incomplete on its own, though: the redirect also discards stderr from the
+# base64 -d/mv/chmod chain (the child's stderr lands on the same pty stdout),
+# so a failure here is a bare non-zero exit with no reason. To diagnose,
+# re-run the same command WITHOUT `>/dev/null` using a dummy payload —
+# never the real secrets.
 base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl.env.tmp &&
@@ -308,8 +313,8 @@ than relying on it to fall over.
 Adoption runs **as wilke**, not through the wrapper: it reads every tenant's
 `tenant.env` (0600, wilke-owned) to classify keys and fingerprint secrets, which
 svcbvbrc cannot do until the handover (PR-E). The registry it writes is
-`0660 wilke:cels`, which is all the daemon needs to read it (and `manifest.tsv`
-needs `chmod 0640` once: `new-tenant.sh` leaves it 0600).
+`0660 wilke:cels`, which is all the daemon needs to read it. `adopt-all
+--commit` also rewrites `manifest.tsv` itself, at `0664`, every time it runs.
 
 Rehearse against a scratch registry first — `--preview` writes nothing at all:
 
@@ -322,7 +327,6 @@ Rehearse against a scratch registry first — `--preview` writes nothing at all:
 diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv    # projection identical
 
 /rag/bin/ragstack-ctl adopt-all --commit           # the real registry
-chmod 0640 /rag/data/tenants/manifest.tsv
 /rag/bin/ragstack-ctl doctor
 ```
 
