@@ -3,7 +3,7 @@
 // token below is used by the RAGStack UI designs. `fontFamily.sans` deliberately
 // replaces Tailwind's default stack so IBM Plex Sans is the app-wide body font.
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  content: ["./index.html", "./literature.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {

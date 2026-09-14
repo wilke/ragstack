@@ -14,7 +14,9 @@
     "gen:api": "openapi-typescript ../contracts/openapi.yaml -o src/api/schema.d.ts",
     "dev:admin": "vite --config vite.admin.config.ts",
     "build:admin": "tsc --noEmit && vite build --config vite.admin.config.ts",
-    "gen:ctl-api": "openapi-typescript ../contracts/ctl/openapi.yaml -o src/admin/api/ctlSchema.d.ts"
+    "gen:ctl-api": "openapi-typescript ../contracts/ctl/openapi.yaml -o src/admin/api/ctlSchema.d.ts",
+    "dev:literature": "vite --config vite.literature.config.ts",
+    "build:literature": "tsc --noEmit && vite build --config vite.literature.config.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.11",

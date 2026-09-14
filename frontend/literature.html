@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The LITERATURE DEMO's page. A third Vite entry (vite.literature.config.ts,
+      outDir dist-literature) rather than a route inside the tenant SPA: this app
+      is domain-specific and carries a client for a second origin (BV-BRC's
+      Copilot API), and a shared multi-entry build would ship both into every
+      tenant's bundle. See the comment at the top of that config.
+
+      CSP: like admin.html, deliberately NOT a <meta> here. A meta CSP would
+      apply to the dev server too, where @vitejs/plugin-react injects the inline
+      React-refresh preamble — the policy would be softened until it meant
+      nothing. The production bundle gets its policy from the nginx block.
+    -->
+    <title>BV-BRC Literature Search</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="literature-root"></div>
+    <script type="module" src="/src/literature/main.tsx"></script>
+  </body>
+</html>
