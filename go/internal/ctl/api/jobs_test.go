@@ -16,6 +16,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/authz"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/ops"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
 	"github.com/ragstack/ragstack/internal/ctl/session"
 )
@@ -374,6 +375,34 @@ func TestAVerbOutsideTheContractIsNotALookupMiss(t *testing.T) {
 	}
 	if eng.calls != 0 {
 		t.Fatal("an unknown verb reached the engine")
+	}
+}
+
+// A CLI-ONLY op is refused by the router exactly as a name nobody defined is.
+//
+// `artifact-prepare` is a real op — the engine's registry answers it, and
+// `ragstack-ctl --direct fleet artifact prepare` submits it — but it runs
+// `npm ci` and takes a repository path, so it has no HTTP route at all. The
+// assertion is that the route does not half-exist: the verb enum refuses it
+// before any lookup, and nothing reaches the engine.
+func TestACLIOnlyOpHasNoHTTPRoute(t *testing.T) {
+	for _, verb := range ops.CLIVerbs {
+		eng := &fakeEngine{}
+		h := newEngineServer(t, eng)
+		body := assertError(t, do(t, h, http.MethodPost, "/v1/tenants/dev/ops/"+verb,
+			opHeaders(), opBody("")), 422, "validation")
+		if fields := body["extra"].(map[string]any)["fields"].([]any); fields[0] != "verb" {
+			t.Errorf("%s: extra.fields = %v, want the verb", verb, fields)
+		}
+		if eng.calls != 0 {
+			t.Errorf("%s reached the engine over HTTP", verb)
+		}
+		// And the fleet-scoped spellings are not routes either.
+		for _, path := range []string{"/v1/fleet/artifacts", "/v1/artifacts", "/v1/tenants/ops/" + verb} {
+			if code := do(t, h, http.MethodPost, path, opHeaders(), opBody("")).Code; code != 404 && code != 405 {
+				t.Errorf("POST %s answered %d; a CLI-only op must have no route", path, code)
+			}
+		}
 	}
 }
 

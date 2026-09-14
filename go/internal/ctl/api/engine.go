@@ -71,6 +71,13 @@ type EngineConfig struct {
 	// fixture so the mutation surface is exercised end to end without a host.
 	LoadFleet func() (*registry.Fleet, error)
 	SaveFleet func(*registry.Fleet) error
+	// Mirror is the bare `git clone --mirror` every artifact worktree and every
+	// tenant checkout comes out of (/rag/repos/ragstack.git, `CTL_MIRROR`).
+	// Deployment configuration, never a request argument: an operation that
+	// took a repository path from a caller would be an operation that chooses
+	// which code a tenant runs. Empty means no mirror is configured — the
+	// plans still render and the git steps refuse at run time saying so.
+	Mirror string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -124,10 +131,25 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		if f, err := loadFleet(); err == nil {
 			files = fixtureFiles(cfg.Roots, f)
 		}
+		// The fixture host knows what a prepared artifact is: its worktree has
+		// node_modules (Build.UI refuses without them, exactly as the real
+		// driver does) and its sha resolves in the mirror. Without these, every
+		// `tenant create` against --fake-drivers would fail on a fact about the
+		// fixture rather than on anything the op did.
+		var installed []string
+		refs := map[string]string{}
+		if f, err := loadFleet(); err == nil {
+			for _, a := range f.Artifacts {
+				installed = append(installed, a.Worktree)
+				refs[a.Tag] = a.SHA
+			}
+		}
 		drv = drivers.NewFake(drivers.FakeOptions{
-			Now:   cfg.Now,
-			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
-			Files: files,
+			Now:       cfg.Now,
+			Roots:     []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir, cfg.Roots.ReposDir},
+			Files:     files,
+			Installed: installed,
+			Refs:      refs,
 		})
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
@@ -166,7 +188,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
 		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet}),
+		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,

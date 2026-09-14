@@ -924,3 +924,105 @@ func TestLoadBackfillsAMissingPostgresRow(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------- sandboxes
+//
+// A sandbox is a tenant `ragstack-ctl selftest` creates in the fixed
+// 26000–26099 port range. The whole point of the rule is that running the
+// selftest three times on a production host must leave the production
+// allocator exactly where it found it.
+
+// rowAt is the smallest tenant Validate accepts: a name and a port block.
+func rowAt(name string, ports Ports) *Tenant {
+	t := NewTenant(name, name)
+	t.Ports = ports
+	return t
+}
+
+// sandboxBlock is the i-th block of the selftest range, with its synthetic
+// index.
+func sandboxBlock(stride, i int) Ports {
+	p := paths.BlockAt(paths.SelftestBase+i*stride, 0, 0)
+	p.Index = SandboxIndexBase + i
+	return p
+}
+
+func TestAllocateIgnoresSandboxTenantsAndTheirTombstones(t *testing.T) {
+	f := NewFleet(t.TempDir())
+	f.Tenants["real"] = rowAt("real", paths.Block(0))
+	f.Tenants["ctltest-a"] = rowAt("ctltest-a", sandboxBlock(f.PortStride, 0))
+	f.Tombstones = append(f.Tombstones, Tombstone{
+		ManifestName: "ctltest-b", Index: SandboxIndexBase + 1, Base: paths.SelftestBase + f.PortStride,
+		DecommissionedAt: "2026-09-14T00:00:00Z",
+	})
+	if err := f.Validate(); err != nil {
+		t.Fatalf("a fleet with a sandbox tenant and a sandbox tombstone does not validate: %v", err)
+	}
+	index, base := Allocate(f)
+	if index != 1 || base != f.PortBase+f.PortStride {
+		t.Errorf("Allocate = (%d, %d), want the block after the one real tenant (1, %d)", index, base,
+			f.PortBase+f.PortStride)
+	}
+}
+
+func TestAllocateSandboxTakesTheLowestFreeBlock(t *testing.T) {
+	f := NewFleet(t.TempDir())
+	index, base, err := AllocateSandbox(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index != SandboxIndexBase || base != paths.SelftestBase {
+		t.Fatalf("first sandbox = (%d, %d), want (%d, %d)", index, base, SandboxIndexBase, paths.SelftestBase)
+	}
+	// Hold the first two: one as a live tenant, one as a tombstone. A tombstone
+	// in the sandbox range is an interrupted selftest's leftovers, and reusing
+	// its ports would restore into somebody else's quarantine.
+	f.Tenants["ctltest-a"] = rowAt("ctltest-a", sandboxBlock(f.PortStride, 0))
+	f.Tombstones = append(f.Tombstones, Tombstone{
+		ManifestName: "ctltest-b", Index: index + 1, Base: base + f.PortStride,
+		DecommissionedAt: "2026-09-14T00:00:00Z",
+	})
+	index, base, err = AllocateSandbox(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := paths.SelftestBase + 2*f.PortStride; base != want || index != SandboxIndexBase+2 {
+		t.Errorf("third sandbox = (%d, %d), want (%d, %d)", index, base, SandboxIndexBase+2, want)
+	}
+	// And when every block is held, the refusal says which cleanup is missing.
+	for i := 0; i < SandboxBlocks(f.PortStride); i++ {
+		f.Tombstones = append(f.Tombstones, Tombstone{
+			ManifestName: "ctltest-x", Index: SandboxIndexBase + i, Base: paths.SelftestBase + i*f.PortStride,
+			DecommissionedAt: "2026-09-14T00:00:00Z",
+		})
+	}
+	if _, _, err = AllocateSandbox(f); !errors.Is(err, ErrNoSandboxBlock) {
+		t.Errorf("a full sandbox range = %v, want ErrNoSandboxBlock", err)
+	} else if !strings.Contains(err.Error(), "decommission") {
+		t.Errorf("the refusal does not say what to do: %v", err)
+	}
+}
+
+// The two numbering schemes must never be confusable: a synthetic index on a
+// production block, or a sandbox block with a production index, is refused.
+func TestValidateRefusesAMixedUpSandboxRow(t *testing.T) {
+	mk := func(mutate func(*Tenant)) error {
+		f := NewFleet(t.TempDir())
+		tn := rowAt("ctltest-a", sandboxBlock(f.PortStride, 0))
+		mutate(tn)
+		f.Tenants["ctltest-a"] = tn
+		return f.Validate()
+	}
+	if err := mk(func(*Tenant) {}); err != nil {
+		t.Fatalf("a well-formed sandbox row is refused: %v", err)
+	}
+	if err := mk(func(tn *Tenant) { tn.Ports.Index = 4 }); err == nil {
+		t.Error("a sandbox block with a production index was accepted")
+	}
+	if err := mk(func(tn *Tenant) { tn.Ports = paths.Block(4); tn.Ports.Index = SandboxIndexBase }); err == nil {
+		t.Error("a production block with a synthetic index was accepted")
+	}
+	if err := mk(func(tn *Tenant) { tn.Ports.Base = paths.SelftestBase + 3 }); err == nil {
+		t.Error("a sandbox base that is not a whole block was accepted")
+	}
+}

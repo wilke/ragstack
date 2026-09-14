@@ -2,7 +2,9 @@ package ops
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/drivers"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -492,5 +495,395 @@ func TestGatewayApplyAndReloadGoStraightThroughTheDriver(t *testing.T) {
 	}
 	if fake.FakeGateway().Generation != 1 {
 		t.Error("a reload published a generation")
+	}
+}
+
+// ---------------------------------------------------------------- create
+
+// createRunner is `create` planned and ready to run against the fake host:
+// the artifact's node_modules are there, and the API port comes up when the
+// target starts (the fake links units to ports; a target is not a unit with a
+// port, so the fixture says so directly).
+func createRunner(t *testing.T, args map[string]any) (*jobs.Planned, *runner, jobs.Context, *drivers.Fake) {
+	t.Helper()
+	oc, fake := createFixture(t)
+	art := oc.Fleet.Artifacts["v1.5.3"]
+	fake.FakeBuild().Installed[art.Worktree] = true
+	p := plan(t, oc, "create", args)
+	// The tenant's API answers as soon as its target is started.
+	fake.FakeProc().Ports[oc.Fleet.PortBase+4*oc.Fleet.PortStride] = true
+	return p, newRunner(oc, fake), oc, fake
+}
+
+func TestCreateRunsEveryStepAgainstTheFakeHost(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3",
+		"keys":             []any{map[string]any{"label": "ops", "role": "user"}},
+		"service_accounts": []any{map[string]any{"subject": "gowe", "role": "user", "purpose": "workflows"}},
+	})
+	r.runAll(t, p)
+
+	// 1. The registry row exists, is active, and carries FINGERPRINTS.
+	row, ok := oc.Fleet.Tenants["sandbox"]
+	if !ok {
+		t.Fatal("no registry row for the tenant that was just created")
+	}
+	if row.State != "active" || row.DesiredBoot != "enabled" || row.EnvLayout != "managed" {
+		t.Errorf("row = state %q, desired_boot %q, env_layout %q", row.State, row.DesiredBoot, row.EnvLayout)
+	}
+	if row.Ports.Base != 24080 || row.Ports.PG != 24085 {
+		t.Errorf("ports = %+v", row.Ports)
+	}
+	if len(row.Keys) != 2 {
+		t.Fatalf("key ledger has %d rows, want the bootstrap admin plus the one asked for: %+v", len(row.Keys), row.Keys)
+	}
+	if row.Keys[0].ID != bootstrapAdminLabel || row.Keys[0].Role != "admin" {
+		t.Errorf("the bootstrap admin is not the first ledger row: %+v", row.Keys[0])
+	}
+	for _, k := range row.Keys {
+		if !strings.HasPrefix(k.Fingerprint, "sha256:") || len(k.Fingerprint) != len("sha256:")+16 {
+			t.Errorf("key %q fingerprint = %q", k.ID, k.Fingerprint)
+		}
+	}
+	if row.LastOps["create"].Outcome != "succeeded" || row.LastOps["create"].JobID != r.job.ID {
+		t.Errorf("last_ops.create = %+v", row.LastOps["create"])
+	}
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry the create wrote does not match the contract: %v", err)
+	}
+
+	// 2. The files. secrets.env holds the ledger; tenant.env holds none of it.
+	files := fake.FakeFiles()
+	secrets := string(files.Content("/rag/data/tenants/sandbox/config/secrets.env"))
+	if !strings.Contains(secrets, "API_KEYS=") || !strings.Contains(secrets, "API_KEY_ROLES=") {
+		t.Errorf("secrets.env has no key ledger:\n%s", secrets)
+	}
+	env := string(files.Content("/rag/data/tenants/sandbox/config/tenant.env"))
+	if strings.Contains(env, "API_KEY") {
+		t.Errorf("tenant.env carries a credential:\n%s", env)
+	}
+	if !strings.Contains(env, "QDRANT_URL=http://localhost:24081") {
+		t.Errorf("tenant.env is not this tenant's:\n%s", env)
+	}
+	if got := files.Content("/rag/data/tenants/sandbox/config/provision.env"); !strings.Contains(string(got),
+		"TENANT_STORE_KIND=sqlite") {
+		t.Errorf("provision.env = %s", got)
+	}
+	// The tree was made 2770 so the group is inherited, and the secrets file
+	// 0640 so only the ctl account and its group can read it.
+	if mode := files.Dirs["/rag/data/tenants/sandbox"]; mode != 0o2770 {
+		t.Errorf("the tenant dir was created %04o, want 2770 (setgid)", mode)
+	}
+	if mode := files.Files["/rag/data/tenants/sandbox/config/secrets.env"].Mode; mode != 0o640 {
+		t.Errorf("secrets.env mode = %04o", mode)
+	}
+
+	// 3. The units are on disk AND linked, and the target was enabled+started.
+	for _, unit := range []string{"ragstack-sandbox-qdrant.service", "ragstack-sandbox-es.service",
+		"ragstack-sandbox-api.service", "ragstack-sandbox.target"} {
+		if files.Content("/rag/config/ctl/units/"+unit) == nil {
+			t.Errorf("unit %s was not written", unit)
+		}
+		if fake.FakeSystemd().Linked[unit] != "/rag/config/ctl/units/"+unit {
+			t.Errorf("unit %s was not linked (linked = %v)", unit, fake.FakeSystemd().Linked[unit])
+		}
+	}
+	if got := fake.FakeSystemd().ActiveUnits(); strings.Join(got, ",") != "ragstack-sandbox.target" {
+		t.Errorf("active units = %v, want just the target (the ctl starts the target, not each leg)", got)
+	}
+
+	// 4. The worktree, the UI build, the service account and the gateway.
+	if sha := fake.FakeGit().Worktrees["/rag/repos/tenants/sandbox"]; sha != strings.Repeat("ab", 20) {
+		t.Errorf("worktree sha = %q", sha)
+	}
+	if got := fake.FakeBuild().Builds; len(got) != 1 ||
+		!strings.Contains(got[0], "/ragstack/sandbox/ui/ /rag/data/tenants/sandbox/ui/dist") {
+		t.Errorf("UI builds = %v", got)
+	}
+	if got := fake.FakeTenantAPI().Accounts; len(got) != 1 || !strings.Contains(got[0], "create gowe user") {
+		t.Errorf("service accounts = %v", got)
+	}
+	if fake.FakeGateway().Generation == 0 {
+		t.Error("no gateway generation was published")
+	}
+
+	// 5. The credentials are delivered ONCE, through the envelope, and the
+	// result carries fingerprints only.
+	secretsOut := p.Secrets()
+	if len(secretsOut) != 2 {
+		t.Fatalf("the envelope carries %d secrets, want 2", len(secretsOut))
+	}
+	for _, s := range secretsOut {
+		if len(s.Value) != 64 {
+			t.Errorf("secret %q is %d characters, want token_hex(32)", s.Label, len(s.Value))
+		}
+		if strings.Contains(secrets, s.Value) != true {
+			t.Errorf("the minted value for %q is not in the file that was written", s.Label)
+		}
+		// And nowhere else: not in the plan, not in the result, not in a target.
+		for _, st := range p.Steps {
+			if strings.Contains(st.Plan.Title+strings.Join(st.Plan.Targets, " "), s.Value) {
+				t.Errorf("step %d leaks the %q credential", st.Plan.N, s.Label)
+			}
+		}
+		for _, id := range r.externalIDs(3) {
+			if strings.Contains(id, s.Value) {
+				t.Errorf("a checkpoint leaks the %q credential", s.Label)
+			}
+		}
+	}
+	res := p.Result()
+	blob, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range secretsOut {
+		if strings.Contains(string(blob), s.Value) {
+			t.Fatalf("the job RESULT carries the %q credential", s.Label)
+		}
+	}
+	if len(res["keys"].([]any)) != 2 {
+		t.Errorf("result keys = %v", res["keys"])
+	}
+}
+
+// secrets.env is the only copy of credentials that are never shown again, so
+// `create` refuses to overwrite one — and refuses for the right reason, not
+// because a read failed.
+func TestCreateRefusesToOverwriteAnExistingSecretsFile(t *testing.T) {
+	p, r, _, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	fake.FakeFiles().Put("/rag/data/tenants/sandbox/config/secrets.env", []byte("API_KEYS='[]'\n"), 0o640)
+	var err error
+	for _, s := range p.Steps {
+		if _, err = r.run(s); err != nil {
+			break
+		}
+	}
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("error = %v, want a refusal naming the existing file", err)
+	}
+	if got := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env")); got != "API_KEYS='[]'\n" {
+		t.Errorf("the existing secrets file was modified: %q", got)
+	}
+}
+
+func TestCreateRollsBackEverythingItMade(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{"name": "sandbox", "artifact_id": "v1.5.3"})
+	r.runAll(t, p)
+	for i := len(p.Steps) - 1; i >= 0; i-- {
+		s := p.Steps[i]
+		if s.Rollback == nil {
+			continue
+		}
+		if _, err := s.Rollback(context.Background(), r.ctx(s)); err != nil {
+			t.Fatalf("rollback of step %d (%s): %v", s.Plan.N, s.Plan.Title, err)
+		}
+	}
+	if _, ok := oc.Fleet.Tenants["sandbox"]; ok {
+		t.Error("the registry row survived the rollback")
+	}
+	// No tombstone: nothing ever ran under this allocation, so the port block
+	// is not spent. A tombstone here would burn a block per failed create.
+	if len(oc.Fleet.Tombstones) != 0 {
+		t.Errorf("the rollback left %d tombstone(s): %+v", len(oc.Fleet.Tombstones), oc.Fleet.Tombstones)
+	}
+	if _, ok := fake.FakeGit().Worktrees["/rag/repos/tenants/sandbox"]; ok {
+		t.Error("the worktree survived the rollback")
+	}
+	if fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env") != nil {
+		t.Error("secrets.env survived the rollback")
+	}
+	if units := fake.FakeSystemd().ActiveUnits(); len(units) != 0 {
+		t.Errorf("still active after the rollback: %v", units)
+	}
+	if p.Secrets() != nil {
+		t.Error("the envelope survived a rollback: those keys are in no file")
+	}
+}
+
+func TestCreateWithPostgresLocalStartsAndRecordsTheInstance(t *testing.T) {
+	p, r, oc, fake := createRunner(t, map[string]any{
+		"name": "sandbox", "artifact_id": "v1.5.3", "postgres": "local",
+	})
+	r.runAll(t, p)
+	row := oc.Fleet.Tenants["sandbox"]
+	pg := row.Stores.Postgres
+	if pg.Kind != registry.PostgresKindLocal || int(pg.Port) != 24085 || string(pg.URL) != "postgresql://localhost:24085" {
+		t.Errorf("stores.postgres = %+v", pg)
+	}
+	if string(pg.Instance) != "postgres-sandbox" || string(pg.DataDir) != "/rag/data/tenants/sandbox/postgres" {
+		t.Errorf("stores.postgres = %+v", pg)
+	}
+	secrets := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env"))
+	for _, want := range []string{"TENANT_PG_PASSWORD=", "USER_STORE_DSN=", "POSTGRES_DSN=", "COLLECTION_STORE_DSN="} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("secrets.env lacks %s:\n%s", want, secrets)
+		}
+	}
+	env := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/tenant.env"))
+	if strings.Contains(env, "_DSN") {
+		t.Errorf("a DSN (which carries the password) stayed in tenant.env:\n%s", env)
+	}
+	if !strings.Contains(env, "USER_STORE_BACKEND=postgres") {
+		t.Errorf("tenant.env does not point at postgres:\n%s", env)
+	}
+	// Both writable paths of the instance exist, or apptainer refuses the bind.
+	for _, d := range []string{"/rag/data/tenants/sandbox/postgres/data", "/rag/data/tenants/sandbox/postgres/run"} {
+		if _, ok := fake.FakeFiles().Dirs[d]; !ok {
+			t.Errorf("%s was not created; the unit binds it", d)
+		}
+	}
+	// The registry row must still satisfy the contract with a postgres store.
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry does not match the contract: %v", err)
+	}
+	// And the readiness gate really asked postgres.
+	found := false
+	for _, k := range fake.CallKeys() {
+		if strings.HasPrefix(k, "postgres.Ready(") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the readiness gate never probed postgres: %v", fake.CallKeys())
+	}
+	_ = p
+}
+
+// ---------------------------------------------------------------- artifact
+
+func TestArtifactPrepareResolvesChecksOutInstallsAndRecords(t *testing.T) {
+	oc, fake := fixture(t, "dev", nil)
+	oc.Tenant = nil
+	sha := strings.Repeat("cd", 20)
+	fake.FakeGit().Refs["v1.6.0"] = sha
+	p := plan(t, oc, "artifact-prepare", map[string]any{"tag": "v1.6.0"})
+	r := newRunner(oc, fake)
+	r.runAll(t, p)
+
+	id := "v1.6.0-" + sha[:12]
+	a, ok := oc.Fleet.Artifacts[id]
+	if !ok {
+		t.Fatalf("no artifact %q; have %v", id, oc.Fleet.Artifacts)
+	}
+	if a.SHA != sha || a.Tag != "v1.6.0" || a.PythonEnv != "/rag/envs/ragstack" {
+		t.Errorf("artifact = %+v", a)
+	}
+	want := "/rag/data/ctl/artifacts/" + id + "/worktree"
+	if a.Worktree != want {
+		t.Errorf("worktree = %q, want %q", a.Worktree, want)
+	}
+	if fake.FakeGit().Worktrees[want] != sha {
+		t.Errorf("the worktree was not checked out at the resolved sha: %v", fake.FakeGit().Worktrees)
+	}
+	if !fake.FakeBuild().Installed[want] {
+		t.Error("npm ci did not run in the artifact's worktree")
+	}
+	if err := oc.Fleet.ValidateContract(); err != nil {
+		t.Errorf("the registry the prepare wrote does not match the contract: %v", err)
+	}
+	if got := p.Result()["artifact_id"]; got != id {
+		t.Errorf("result artifact_id = %v", got)
+	}
+
+	// An artifact is IMMUTABLE: preparing the same commit again is refused
+	// rather than silently replacing a worktree tenants are running from.
+	p2 := plan(t, oc, "artifact-prepare", map[string]any{"tag": "v1.6.0"})
+	if _, err := r.run(p2.Steps[0]); !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("re-preparing = %v, want a refusal", err)
+	}
+}
+
+func TestArtifactPrepareRefusesWithoutAMirror(t *testing.T) {
+	oc, _ := fixture(t, "dev", nil)
+	oc.Tenant = nil
+	op, ok := NewRegistry(Deps{Roots: oc.Roots, Now: oc.Now}).Lookup("artifact-prepare") // no Mirror
+	if !ok {
+		t.Fatal("no artifact-prepare op")
+	}
+	_, err := op.Plan(context.Background(), oc, map[string]any{"tag": "v1"})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "clone --mirror") {
+		t.Fatalf("error = %v, want a refusal that says how to create the mirror", err)
+	}
+}
+
+func TestArtifactIDIsSanitizedAndKeepsTheSha(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	for _, tc := range []struct{ tag, want string }{
+		{"v1.5.3", "v1.5.3-" + sha[:12]},
+		{"release/1.5", "release-1.5-" + sha[:12]},
+		{"feature/a b+c", "feature-a-b-c-" + sha[:12]},
+		{"///", "artifact-" + sha[:12]},
+		{strings.Repeat("x", 200), strings.Repeat("x", 67) + "-" + sha[:12]},
+	} {
+		got, err := ArtifactID(tc.tag, sha)
+		if err != nil {
+			t.Errorf("ArtifactID(%q) = %v", tc.tag, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("ArtifactID(%q) = %q, want %q", tc.tag, got, tc.want)
+		}
+		if !strings.HasSuffix(got, sha[:12]) {
+			t.Errorf("ArtifactID(%q) lost the sha: %q", tc.tag, got)
+		}
+	}
+	if _, err := ArtifactID("v1", "short"); err == nil {
+		t.Error("an unresolved sha was accepted")
+	}
+}
+
+// ---------------------------------------------------------------- lock safety
+//
+// The engine holds `<state>/locks/registry.lock` for the length of a job;
+// registry.Save takes `<data>/tenants/registry.json.lock` and
+// `manifest.tsv.lock` of its own. Those are different inodes, so the two
+// cannot deadlock — but "different inodes" is a fact about the path
+// derivation, and a refactor that pointed the engine's lock at the registry's
+// file would deadlock every registry-writing job forever, with no error and no
+// timeout. So it is asserted rather than reasoned about.
+func TestSaveFleetInsideAJobDoesNotDeadlockAgainstTheEngineLocks(t *testing.T) {
+	root := t.TempDir()
+	roots := paths.NewRoots(root, paths.Overrides{})
+	regPath := roots.Registry()
+	f := registry.NewFleet(root)
+	if err := registry.Save(regPath, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := jobs.NewLocks(roots).Path(model.LockRegistry, ""); got == regPath+".lock" {
+		t.Fatalf("the engine's registry lock IS registry.json.lock (%s): a job that writes the registry would "+
+			"deadlock against itself", got)
+	}
+
+	// Hold exactly what a `start` job holds, through the real flock files.
+	set, err := jobs.NewLocks(roots).Take(
+		[]model.LockName{model.LockRegistry, model.LockManifest, model.LockTenant}, "dev",
+		jobs.LockHolder{JobID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", PID: os.Getpid(), Since: "2026-09-14T09:30:00Z"},
+		time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Release()
+
+	done := make(chan error, 1)
+	go func() {
+		loaded, lerr := registry.LoadNoRepair(regPath)
+		if lerr != nil {
+			done <- lerr
+			return
+		}
+		loaded.DisplayOrder = []string{}
+		done <- registry.Save(regPath, loaded, "inside the job")
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("registry.Save under the engine's locks: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("registry.Save blocked for 10s while the engine held its own locks — the two lock sets overlap")
+	}
+	if got, err := registry.LoadNoRepair(regPath); err != nil || got.Generation != 2 {
+		t.Fatalf("after the save: generation %v (%v), want 2", got, err)
 	}
 }

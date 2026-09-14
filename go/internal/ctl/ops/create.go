@@ -254,6 +254,12 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	var minted []mintedKey
 	var envSHA, secretsSHA string
 	p.secrets = func() []model.Secret {
+		// nil, not an empty slice: a rollback clears `minted`, and the engine
+		// must then seal NO envelope at all rather than an empty one an
+		// operator would go looking for.
+		if len(minted) == 0 {
+			return nil
+		}
 		out := make([]model.Secret, 0, len(minted))
 		for _, k := range minted {
 			out = append(out, model.Secret{ID: k.Label, Label: k.Label, Role: k.Role, Value: k.Value})

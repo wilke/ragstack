@@ -218,3 +218,22 @@ func TestSafePath(t *testing.T) {
 		t.Errorf("cleaned path refused: %q %v", got, err)
 	}
 }
+
+func TestIsSelftestBlock(t *testing.T) {
+	for _, base := range []int{SelftestBase, SelftestBase + PortStride, SelftestEnd} {
+		if !IsSelftestBlock(base) {
+			t.Errorf("IsSelftestBlock(%d) = false; the selftest range is %d–%d", base, SelftestBase, SelftestEnd)
+		}
+	}
+	// Production blocks are not sandboxes, and neither is the ctl's own port.
+	for _, base := range []int{PortBase, PortBase + 99*PortStride, CtlPort, SelftestBase - 1, SelftestEnd + 1} {
+		if IsSelftestBlock(base) {
+			t.Errorf("IsSelftestBlock(%d) = true", base)
+		}
+	}
+	// And the ranges really are disjoint: the first hundred production blocks
+	// stop below the sandbox range, which is what makes "base decides" safe.
+	if Block(99).Base >= SelftestBase {
+		t.Errorf("production block 99 (%d) reaches the selftest range at %d", Block(99).Base, SelftestBase)
+	}
+}
