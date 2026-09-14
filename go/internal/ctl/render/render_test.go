@@ -331,13 +331,26 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 		"location = /ragstack/dev/ui {\n    return 301 /ragstack/dev/ui/;\n}",
 		"location ^~ /ragstack/dev/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/tenants/dev/ui/dist/;\n    try_files $uri $uri/ /ragstack/dev/ui/index.html;\n}",
 		"alias /rag/data/tenants/sandbox/ui/dist/;",
-		"location ^~ /ragstack/admin/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/ctl/ui/dist/;\n    try_files $uri $uri/ /ragstack/admin/ui/admin.html;\n}",
+		"location ^~ /ragstack/admin/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/ctl/ui/dist/;\n    try_files $uri /ragstack/admin/ui/admin.html;\n}",
 		"location = /ragstack/admin/api {\n    return 301 /ragstack/admin/api/;\n}",
 		"location ^~ /ragstack/admin/api/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    include /rag/config/proxy/snippets/proxy-common.conf;\n    proxy_set_header X-Forwarded-Prefix /ragstack/admin/api;\n    proxy_pass http://127.0.0.1:23990/;\n}",
 	} {
 		if !strings.Contains(s, w) {
 			t.Errorf("static snippet lacks %q\n%s", w, s)
 		}
+	}
+
+	// The admin UI has no index.html (admin.html is a separate Vite entry),
+	// so its try_files must not fall back to `$uri/`: nginx would match the
+	// existing dist/ directory, find no index.html there, and answer 403
+	// instead of ever reaching the admin.html fallback. Tenant static blocks
+	// DO have an index.html and must keep `$uri $uri/`.
+	adminUIBlock := namedBlock(t, s, "location ^~ /ragstack/admin/ui/ {")
+	if strings.Contains(adminUIBlock, "$uri/") {
+		t.Errorf("admin UI try_files must not include $uri/ (no index.html in dist):\n%s", adminUIBlock)
+	}
+	if !strings.Contains(s, "try_files $uri $uri/ /ragstack/dev/ui/index.html;") {
+		t.Errorf("tenant static UI try_files must keep $uri/:\n%s", s)
 	}
 
 	// The admin API block must carry EXACTLY ONE Host header, and it must be
@@ -379,14 +392,18 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 // adminAPIBlock returns the body of `location ^~ /ragstack/admin/api/ { … }`.
 func adminAPIBlock(t *testing.T, conf string) string {
 	t.Helper()
-	const head = "location ^~ /ragstack/admin/api/ {"
+	return namedBlock(t, conf, "location ^~ /ragstack/admin/api/ {")
+}
+
+func namedBlock(t *testing.T, conf, head string) string {
+	t.Helper()
 	i := strings.Index(conf, head)
 	if i < 0 {
-		t.Fatalf("no admin API block:\n%s", conf)
+		t.Fatalf("no block starting %q:\n%s", head, conf)
 	}
 	j := strings.Index(conf[i:], "\n}")
 	if j < 0 {
-		t.Fatalf("unterminated admin API block:\n%s", conf[i:])
+		t.Fatalf("unterminated block %q:\n%s", head, conf[i:])
 	}
 	return conf[i : i+j+2]
 }
