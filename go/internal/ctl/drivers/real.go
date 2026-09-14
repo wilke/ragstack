@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
@@ -52,9 +53,11 @@ type RealOptions struct {
 	// NpmCache is the npm cache `fleet artifact prepare` installs through.
 	// Default <RagRoot>/cache/npm.
 	NpmCache string
-	// Redact is applied to a program's captured stderr before it reaches an
-	// error, a job log or an audit row. Nil is the identity function; the
-	// daemon passes the engine's redactor.
+	// Redact is applied to a program's captured stderr and to everything a
+	// store says back before it reaches an error, a job log or an audit row.
+	// Nil is the identity function — which is why nothing in this package
+	// DEPENDS on it for a secret the ctl itself holds: those are kept out of
+	// the string instead. The daemon passes the engine's redactor.
 	Redact func(string) string
 	// Logger records each host program run at debug level (program, argv,
 	// duration — never the output). Nil discards.
@@ -63,6 +66,10 @@ type RealOptions struct {
 	// Empty means the two roots every op needs — the tenant data tree and the
 	// ctl config tree — never "everything".
 	ApprovedRoots []string
+	// StoreLongTimeout is the ceiling on a store call that can legitimately
+	// take a long time (a snapshot, a restore, a recover, an exact count, a
+	// pg_dump). Zero takes LongTimeout.
+	StoreLongTimeout time.Duration
 }
 
 // Default program paths. They are the ones ops/ansible installs and the ones
@@ -74,9 +81,10 @@ const (
 	defaultNpmBin       = "/rag/tools/node/current/bin/npm"
 )
 
-// Real is the real driver set: the gateway, the filesystem, the four host
-// drivers PR-D wires (systemd, proc, git, build), and an honest refusal for
-// the store drivers that are still landing.
+// Real is the real driver set: the gateway and the filesystem (PR-C), the
+// host drivers (systemd, proc, git, build) and the store drivers (qdrant,
+// elasticsearch, tenant API, postgres, sqlite, archive) PR-D wired. Nothing
+// on it is pending; Pending() is kept for the next driver that is.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
@@ -85,6 +93,12 @@ type Real struct {
 	proc    *RealProc
 	git     *RealGit
 	build   *RealBuild
+	qdrant  *RealQdrant
+	es      *RealElasticsearch
+	api     *RealTenantAPI
+	pg      *RealPostgres
+	sqlite  *RealSQLite
+	archive *RealArchive
 }
 
 var _ jobs.Drivers = (*Real)(nil)
@@ -106,6 +120,9 @@ func NewReal(o RealOptions) *Real {
 	// driver with its own exec.Cmd would be a place they could stop holding.
 	run := &runner{Redact: o.Redact, Logger: o.Logger}
 	roots := append([]string(nil), o.ApprovedRoots...)
+	// One HTTP client for the three HTTP drivers, so the connection pool, the
+	// redirect refusal and the timeouts are one decision rather than three.
+	h := newHTTPStores(o)
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
@@ -113,9 +130,15 @@ func NewReal(o RealOptions) *Real {
 		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
 		// The listener table comes from hostfacts, so this driver and
 		// `doctor` answer a port question from the same parser.
-		proc:  &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
-		git:   &RealGit{run: run, Bin: o.GitBin, Roots: roots},
-		build: &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
+		proc:    &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
+		git:     &RealGit{run: run, Bin: o.GitBin, Roots: roots},
+		build:   &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
+		qdrant:  &RealQdrant{h: h},
+		es:      &RealElasticsearch{h: h},
+		api:     &RealTenantAPI{h: h},
+		pg:      &RealPostgres{opts: o, run: run},
+		sqlite:  &RealSQLite{opts: o},
+		archive: &RealArchive{opts: o},
 	}
 }
 
@@ -139,14 +162,14 @@ func (r *Real) Systemd() jobs.Systemd             { return r.systemd }
 func (r *Real) Proc() jobs.Proc                   { return r.proc }
 func (r *Real) Gateway() jobs.GatewayDriver       { return r.gateway }
 func (r *Real) Files() jobs.Files                 { return r.files }
-func (r *Real) Qdrant() jobs.Qdrant               { return pendingQdrant{} }
-func (r *Real) Elasticsearch() jobs.Elasticsearch { return pendingES{} }
-func (r *Real) TenantAPI() jobs.TenantAPI         { return pendingTenantAPI{} }
+func (r *Real) Qdrant() jobs.Qdrant               { return r.qdrant }
+func (r *Real) Elasticsearch() jobs.Elasticsearch { return r.es }
+func (r *Real) TenantAPI() jobs.TenantAPI         { return r.api }
 func (r *Real) Git() jobs.Git                     { return r.git }
 func (r *Real) Build() jobs.Build                 { return r.build }
-func (r *Real) Postgres() jobs.Postgres           { return pendingPostgres{} }
-func (r *Real) SQLite() jobs.SQLite               { return pendingSQLite{} }
-func (r *Real) Archive() jobs.Archive             { return pendingArchive{} }
+func (r *Real) Postgres() jobs.Postgres           { return r.pg }
+func (r *Real) SQLite() jobs.SQLite               { return r.sqlite }
+func (r *Real) Archive() jobs.Archive             { return r.archive }
 
 // ---------------------------------------------------------------- gateway
 
@@ -466,103 +489,4 @@ func (f *RealFiles) Remove(_ context.Context, path string) error {
 // already reads outside the approved roots).
 func (f *RealFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return os.ReadFile(path)
-}
-
-// ---------------------------------------------------------------- PR-D
-
-// The STORE drivers PR-D is still landing; the host drivers above are wired.
-// Each method refuses with the driver and method named, so a job that reaches
-// one stops with a sentence an operator can act on rather than with a
-// nil-pointer panic. They are separate types rather than one because
-// Qdrant.Snapshot and Elasticsearch.Snapshot are different methods with the
-// same name.
-type (
-	pendingQdrant    struct{}
-	pendingES        struct{}
-	pendingTenantAPI struct{}
-	pendingPostgres  struct{}
-	pendingSQLite    struct{}
-	pendingArchive   struct{}
-)
-
-var (
-	_ jobs.Qdrant        = pendingQdrant{}
-	_ jobs.Elasticsearch = pendingES{}
-	_ jobs.TenantAPI     = pendingTenantAPI{}
-	_ jobs.Postgres      = pendingPostgres{}
-	_ jobs.SQLite        = pendingSQLite{}
-	_ jobs.Archive       = pendingArchive{}
-)
-
-func (pendingQdrant) Collections(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "qdrant", "Collections")
-}
-func (pendingQdrant) Snapshot(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "qdrant", "Snapshot")
-}
-func (pendingES) Indices(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "elasticsearch", "Indices")
-}
-func (pendingES) Snapshot(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Snapshot")
-}
-func (pendingQdrant) Ready(context.Context, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "Ready")
-}
-func (pendingQdrant) Count(context.Context, string, string) (int64, error) {
-	return 0, pending(jobs.ErrRefused, "qdrant", "Count")
-}
-func (pendingQdrant) Recover(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "Recover")
-}
-func (pendingQdrant) DeleteSnapshot(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "DeleteSnapshot")
-}
-func (pendingES) Ready(context.Context, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Ready")
-}
-func (pendingES) RegisterRepo(context.Context, string, string, string, bool) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "RegisterRepo")
-}
-func (pendingES) UnregisterRepo(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "UnregisterRepo")
-}
-func (pendingES) Restore(context.Context, string, string, string, []string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Restore")
-}
-func (pendingES) Count(context.Context, string, string) (int64, error) {
-	return 0, pending(jobs.ErrRefused, "elasticsearch", "Count")
-}
-func (pendingTenantAPI) Health(context.Context, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "Health")
-}
-func (pendingTenantAPI) ServiceAccount(context.Context, string, string, string, string, string, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "ServiceAccount")
-}
-func (pendingTenantAPI) Version(context.Context, string, string) (map[string]any, error) {
-	return nil, pending(jobs.ErrRefused, "tenantapi", "Version")
-}
-func (pendingTenantAPI) DeepHealth(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "DeepHealth")
-}
-func (pendingTenantAPI) Collections(context.Context, string, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "tenantapi", "Collections")
-}
-func (pendingPostgres) Ready(context.Context, jobs.PostgresSpec) error {
-	return pending(jobs.ErrRefused, "postgres", "Ready")
-}
-func (pendingPostgres) Dump(context.Context, jobs.PostgresSpec, string) error {
-	return pending(jobs.ErrRefused, "postgres", "Dump")
-}
-func (pendingPostgres) Restore(context.Context, jobs.PostgresSpec, string) error {
-	return pending(jobs.ErrRefused, "postgres", "Restore")
-}
-func (pendingSQLite) Backup(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "sqlite", "Backup")
-}
-func (pendingArchive) Create(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "archive", "Create")
-}
-func (pendingArchive) Extract(context.Context, string, string, jobs.ArchiveLimits) error {
-	return pending(jobs.ErrRefused, "archive", "Extract")
 }

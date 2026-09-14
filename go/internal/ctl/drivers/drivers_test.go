@@ -195,14 +195,7 @@ func pendingSurfaces(d *Real) map[string]struct {
 		typ reflect.Type
 		val reflect.Value
 	}
-	return map[string]surface{
-		"qdrant":        {reflect.TypeOf((*jobs.Qdrant)(nil)).Elem(), reflect.ValueOf(d.Qdrant())},
-		"elasticsearch": {reflect.TypeOf((*jobs.Elasticsearch)(nil)).Elem(), reflect.ValueOf(d.Elasticsearch())},
-		"tenantapi":     {reflect.TypeOf((*jobs.TenantAPI)(nil)).Elem(), reflect.ValueOf(d.TenantAPI())},
-		"postgres":      {reflect.TypeOf((*jobs.Postgres)(nil)).Elem(), reflect.ValueOf(d.Postgres())},
-		"sqlite":        {reflect.TypeOf((*jobs.SQLite)(nil)).Elem(), reflect.ValueOf(d.SQLite())},
-		"archive":       {reflect.TypeOf((*jobs.Archive)(nil)).Elem(), reflect.ValueOf(d.Archive())},
-	}
+	return map[string]surface{}
 }
 
 func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
@@ -265,6 +258,24 @@ func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
 	}
 	if _, ok := d.Build().(*RealBuild); !ok {
 		t.Error("Build() is not the real driver")
+	}
+	if _, ok := d.Qdrant().(*RealQdrant); !ok {
+		t.Error("Qdrant() is not the real driver")
+	}
+	if _, ok := d.Elasticsearch().(*RealElasticsearch); !ok {
+		t.Error("Elasticsearch() is not the real driver")
+	}
+	if _, ok := d.TenantAPI().(*RealTenantAPI); !ok {
+		t.Error("TenantAPI() is not the real driver")
+	}
+	if _, ok := d.Postgres().(*RealPostgres); !ok {
+		t.Error("Postgres() is not the real driver")
+	}
+	if _, ok := d.SQLite().(*RealSQLite); !ok {
+		t.Error("SQLite() is not the real driver")
+	}
+	if _, ok := d.Archive().(*RealArchive); !ok {
+		t.Error("Archive() is not the real driver")
 	}
 }
 
@@ -344,17 +355,14 @@ func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
 func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
 	got := strings.Join(d.Pending(), ",")
-	if got != "qdrant,elasticsearch,tenantapi,postgres,sqlite,archive" {
+	if got != "" {
 		t.Errorf("Real.Pending() = %q", got)
 	}
-	// Every name on the list is a driver that actually refuses, and no driver
-	// that WORKS is on it.
-	if _, err := d.Qdrant().Collections(context.Background(), ""); !strings.Contains(err.Error(), PendingPR) {
-		t.Errorf("qdrant refusal = %v, want it to name %s", err, PendingPR)
-	}
+	// No driver that WORKS is on the list — and every one of them works now,
+	// so a name here means a driver was unwired without saying so.
 	for _, name := range d.Pending() {
 		switch name {
-		case "gateway", "files", "systemd", "proc", "git", "build":
+		case "gateway", "files", "systemd", "proc", "git", "build", "qdrant", "elasticsearch", "tenantapi", "postgres", "sqlite", "archive":
 			t.Errorf("%s is wired; it must not be reported as pending", name)
 		}
 	}
