@@ -334,6 +334,25 @@ func TestESUnregisterRepoTreatsAbsenceAsSuccess(t *testing.T) {
 	}
 }
 
+func TestESSnapshotsListsARepositorySorted(t *testing.T) {
+	// The verify leg of a backup re-registers the COPIED repo directory
+	// read-only and lists it: a listing that names the snapshot is the proof
+	// that the copy is a repository ES can read.
+	s := newStubStore(t)
+	s.on("GET /_snapshot/verify-b1/_all", 200,
+		`{"snapshots":[{"snapshot":"20260914T100000Z-backup","state":"SUCCESS"},{"snapshot":"20260913T100000Z-backup","state":"SUCCESS"}]}`)
+	got, err := realStores(t).Elasticsearch().Snapshots(context.Background(), s.url(), "verify-b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "20260913T100000Z-backup,20260914T100000Z-backup" {
+		t.Errorf("Snapshots = %v, want both, sorted", got)
+	}
+	if _, err := realStores(t).Elasticsearch().Snapshots(context.Background(), s.url(), "../etc"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("Snapshots of a repo name outside the pattern = %v, want a refusal", err)
+	}
+}
+
 func TestESReadyWaitsForYellow(t *testing.T) {
 	s := newStubStore(t)
 	s.on("GET /_cluster/health", 200, `{"status":"yellow"}`)

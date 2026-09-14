@@ -2,8 +2,11 @@ package drivers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -489,4 +492,70 @@ func (f *RealFiles) Remove(_ context.Context, path string) error {
 // already reads outside the approved roots).
 func (f *RealFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return os.ReadFile(path)
+}
+
+// ReadDir lists one directory level, sorted by name (os.ReadDir's order).
+// Like ReadFile it is a read and so is not root-checked; an absent directory
+// comes back as fs.ErrNotExist for callers that tell absence from failure.
+func (f *RealFiles) ReadDir(_ context.Context, dir string) ([]jobs.DirEntry, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]jobs.DirEntry, 0, len(ents))
+	for _, e := range ents {
+		// A symlink is reported as neither: it is not a directory this driver
+		// will descend into, and a caller that copies it would be copying
+		// whatever it points at, which may be outside the tenant tree
+		// entirely. IsDir() is false for a symlink here (ReadDir does not
+		// follow), so the entry lands as a plain name and the copy step's own
+		// open decides.
+		out = append(out, jobs.DirEntry{Name: e.Name(), IsDir: e.IsDir()})
+	}
+	return out, nil
+}
+
+// Sha256 streams path through sha256 and reports the digest and the size.
+//
+// Streaming rather than ReadFile: a bundle's SHA256SUMS covers elasticsearch
+// segment files of several gigabytes each, and hashing them by first loading
+// them into the daemon's heap is how a backup takes the host down.
+func (f *RealFiles) Sha256(_ context.Context, path string) (string, int64, error) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return "", 0, err
+	}
+	defer fh.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, fh)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// DiskFree is the bytes available to THIS account on the filesystem holding
+// path — statfs f_bavail, not f_bfree: the difference is the reserved blocks
+// only root may use, and a precheck that counted those would approve a backup
+// that then filled the filesystem for everything else on the host.
+//
+// The deepest existing ancestor is measured, because the bundle directory
+// itself does not exist yet when the precheck runs.
+func (f *RealFiles) DiskFree(_ context.Context, path string) (int64, error) {
+	dir := path
+	for {
+		var st syscall.Statfs_t
+		err := syscall.Statfs(dir, &st)
+		if err == nil {
+			return int64(st.Bavail) * int64(st.Bsize), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return 0, err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return 0, err
+		}
+		dir = parent
+	}
 }

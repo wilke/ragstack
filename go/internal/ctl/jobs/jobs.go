@@ -332,6 +332,35 @@ type Files interface {
 	// so a driver that "fixed" the mode of a parent it did not create would be
 	// changing a directory nobody asked it to touch.
 	MkdirAll(ctx context.Context, path string, mode uint32) error
+	// ReadDir lists ONE directory (not recursively), sorted by name. It is a
+	// read, so it is not root-checked; an absent directory is fs.ErrNotExist,
+	// which callers tell apart from "unreadable" with errors.Is exactly as
+	// they do for ReadFile.
+	//
+	// A backup needs it because two of the things it copies are named by the
+	// host rather than by the ctl — the per-collection `manifests/*.json` and
+	// the `secrets.env.bak-*` siblings — and a step that guessed those names
+	// would silently leave files out of a bundle that claims to be complete.
+	ReadDir(ctx context.Context, dir string) ([]DirEntry, error)
+	// Sha256 is the hex digest and the size of one file, computed by STREAMING
+	// it. The bundle's SHA256SUMS covers elasticsearch segment files that are
+	// gigabytes each; a checksum built on ReadFile would load every one of them
+	// into the daemon's heap.
+	Sha256(ctx context.Context, path string) (hex string, size int64, err error)
+	// DiskFree is the bytes available to this account on the filesystem
+	// holding path (statfs f_bavail × f_bsize). The backup's precheck refuses
+	// to start a bundle onto a filesystem that cannot hold it, which is the
+	// one failure mode that leaves a half-written bundle AND a full disk for
+	// every other tenant on the host.
+	DiskFree(ctx context.Context, path string) (int64, error)
+}
+
+// DirEntry is one entry of Files.ReadDir: the base name and whether it is a
+// directory. Nothing else — a step that wanted a mode or an mtime would be
+// making a decision the registry should already have recorded.
+type DirEntry struct {
+	Name  string
+	IsDir bool
 }
 
 // Qdrant is the store driver subset the ctl talks to over loopback.
@@ -372,6 +401,14 @@ type Elasticsearch interface {
 	// only — the snapshot files stay where they are, which is what lets the
 	// backup move the directory into the bundle afterwards.
 	UnregisterRepo(ctx context.Context, baseURL, repo string) error
+	// Snapshots is GET _snapshot/{repo}/_all, the names the repository holds.
+	//
+	// It is how a backup VERIFIES its own snapshot: `_restore` has no dry run,
+	// so the bundle's proof is that the directory, re-registered read-only
+	// under a second name, is a repository elasticsearch can open and that the
+	// snapshot this job took is in it. A repository ES cannot read answers an
+	// error; an empty repository answers an empty list.
+	Snapshots(ctx context.Context, baseURL, repo string) ([]string, error)
 	// Restore is POST _snapshot/{repo}/{name}/_restore?wait_for_completion=true
 	// for the named indices (all of the snapshot's when indices is empty).
 	Restore(ctx context.Context, baseURL, repo, name string, indices []string) error

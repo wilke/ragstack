@@ -178,6 +178,35 @@ func (e *RealElasticsearch) UnregisterRepo(ctx context.Context, baseURL, repo st
 	return err
 }
 
+// Snapshots lists the snapshot names a repository holds (GET
+// _snapshot/{repo}/_all), sorted. A backup registers the copied repo
+// read-only and lists it to prove the copy is a repository ES can read —
+// the closest thing to a restore dry run ES offers.
+func (e *RealElasticsearch) Snapshots(ctx context.Context, baseURL, repo string) ([]string, error) {
+	if err := checkESRepo("repository", repo); err != nil {
+		return nil, err
+	}
+	var body struct {
+		Snapshots []struct {
+			Snapshot string `json:"snapshot"`
+		} `json:"snapshots"`
+	}
+	if err := e.h.doJSON(ctx, baseURL, storeOrigin, request{
+		method: http.MethodGet,
+		path:   "/_snapshot/" + url.PathEscape(repo) + "/_all",
+	}, &body); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(body.Snapshots))
+	for _, sn := range body.Snapshots {
+		if sn.Snapshot != "" {
+			out = append(out, sn.Snapshot)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // esShards is the shard tally ES reports for a completed snapshot or restore.
 type esShards struct {
 	Total      int `json:"total"`
