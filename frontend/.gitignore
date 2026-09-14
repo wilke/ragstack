@@ -1,4 +1,7 @@
-node_modules/
+# No trailing slash: a git worktree borrows the main checkout's install via a
+# SYMLINK named node_modules, which `node_modules/` (directories only) did not
+# match — so it got committed as a link.
+node_modules
 dist/
 *.local
 .env
@@ -8,3 +11,5 @@ dist/
 src/api/schema.d.ts
 # The admin bundle's build output (frontend/vite.admin.config.ts, outDir dist-admin)
 dist-admin/
+# The literature demo's build output (frontend/vite.literature.config.ts, outDir dist-literature)
+dist-literature/

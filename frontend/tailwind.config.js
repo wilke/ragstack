@@ -3,7 +3,13 @@
 // token below is used by the RAGStack UI designs. `fontFamily.sans` deliberately
 // replaces Tailwind's default stack so IBM Plex Sans is the app-wide body font.
 export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // `src/literature/**` is EXCLUDED and carried by tailwind.literature.config.js
+  // instead. Without the negation the tenant and admin bundles pick up the
+  // literature app's utilities through this glob — ~1 KB of rules they can never
+  // use, and a changed asset hash (a full cache-bust) on all four deployed
+  // tenants every time an unrelated demo page changes. Verified: with this
+  // negation the tenant CSS is byte-identical to main's.
+  content: ["./index.html", "./src/**/*.{ts,tsx}", "!./src/literature/**"],
   theme: {
     extend: {
       colors: {
