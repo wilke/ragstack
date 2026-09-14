@@ -827,7 +827,16 @@ func (p *planner) postgresSpec() jobs.PostgresSpec {
 	if sif == "" {
 		sif = filepath.Join(p.oc.Roots.ImagesDir, "postgres.sif")
 	}
-	return jobs.PostgresSpec{SIF: sif, RunDir: p.tpaths.PostgresRun, DB: p.t.Name, User: p.t.Name}
+	return jobs.PostgresSpec{SIF: sif, RunDir: p.tpaths.PostgresRun, DB: p.t.Name, User: p.t.Name, Port: pgPortOf(p.t)}
+}
+
+// pgPortOf is the port a local postgres instance listens on: the row's
+// stores.postgres.port, else the block's +5.
+func pgPortOf(t *registry.Tenant) int {
+	if port := int(t.Stores.Postgres.Port); port > 0 {
+		return port
+	}
+	return t.Ports.PG
 }
 
 // ---------------------------------------------------------------- config

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,16 @@ func (p *RealPostgres) check(spec jobs.PostgresSpec) (string, error) {
 // --no-home because the tenant's postgres tools have no business reading the
 // ctl account's home directory, and because a $HOME/.psqlrc or .pgpass picked
 // up from it would change what these commands do.
+// pgConn is the connection half of every tool's argv: the socket directory,
+// the port (which also names the socket file), the role and the database.
+func pgConn(spec jobs.PostgresSpec) []string {
+	args := []string{"-h", pgSocketDir}
+	if spec.Port > 0 {
+		args = append(args, "-p", strconv.Itoa(spec.Port))
+	}
+	return append(args, "-U", spec.User, "-d", spec.DB)
+}
+
 func argvFor(bin string, spec jobs.PostgresSpec, bindCtl, tool string, toolArgs ...string) []string {
 	argv := []string{bin, "exec", "--no-home", "--bind", spec.RunDir + ":" + pgSocketDir}
 	if bindCtl != "" {
@@ -96,7 +107,7 @@ func (p *RealPostgres) Ready(ctx context.Context, spec jobs.PostgresSpec) error 
 	if err != nil {
 		return err
 	}
-	argv := argvFor(bin, spec, "", "pg_isready", "-h", pgSocketDir, "-U", spec.User, "-d", spec.DB)
+	argv := argvFor(bin, spec, "", "pg_isready", pgConn(spec)...)
 	if out, err := p.exec(ctx, argv, 30*time.Second); err != nil {
 		return fmt.Errorf("pg_isready for %s: %w%s", spec.DB, err, detail(out))
 	}
@@ -119,8 +130,7 @@ func (p *RealPostgres) Dump(ctx context.Context, spec jobs.PostgresSpec, out str
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("%w: %s is not an existing directory to write the dump into", jobs.ErrRefused, dir)
 	}
-	argv := argvFor(bin, spec, dir, "pg_dump",
-		"-h", pgSocketDir, "-U", spec.User, "-d", spec.DB, "-Fc", "-f", pgCtlDir+"/"+base)
+	argv := argvFor(bin, spec, dir, "pg_dump", append(pgConn(spec), "-Fc", "-f", pgCtlDir+"/"+base)...)
 	if o, err := p.exec(ctx, argv, p.longTimeout()); err != nil {
 		// A partial dump is worse than none: it opens, it restores, and it is
 		// short. Remove it so the bundle's checksum step cannot record it.
@@ -156,14 +166,13 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 		}
 		return fmt.Errorf("the dump to restore is not readable: %w", err)
 	}
-	argv := argvFor(bin, spec, dir, "pg_restore",
-		"-h", pgSocketDir, "-U", spec.User, "-d", spec.DB,
+	argv := argvFor(bin, spec, dir, "pg_restore", append(pgConn(spec),
 		// --no-owner + --role: the bundle's dump belongs to whichever role
 		// wrote it, and `restore --as` creates a tenant with a different one.
 		// --exit-on-error because pg_restore's default is to log an error,
 		// carry on, and exit 0 — which would report a half-restored database
 		// as a success.
-		"--no-owner", "--role="+spec.User, "--exit-on-error", pgCtlDir+"/"+base)
+		"--no-owner", "--role="+spec.User, "--exit-on-error", pgCtlDir+"/"+base)...)
 	if o, err := p.exec(ctx, argv, p.longTimeout()); err != nil {
 		return fmt.Errorf("pg_restore into %s: %w%s", spec.DB, err, detail(o))
 	}

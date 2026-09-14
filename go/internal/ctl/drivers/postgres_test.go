@@ -64,7 +64,7 @@ func pgFixture(t *testing.T, stub string) (*Real, jobs.PostgresSpec, string) {
 		t.Fatal(err)
 	}
 	d := NewReal(RealOptions{ApprovedRoots: []string{root}, Apptainer: stub})
-	return d, jobs.PostgresSpec{SIF: sif, RunDir: runDir, DB: "ctltest", User: "ctltest"}, root
+	return d, jobs.PostgresSpec{SIF: sif, RunDir: runDir, DB: "ctltest", User: "ctltest", Port: 26005}, root
 }
 
 func TestPostgresReadyExecsPgIsreadyOverTheSocketBind(t *testing.T) {
@@ -77,7 +77,7 @@ func TestPostgresReadyExecsPgIsreadyOverTheSocketBind(t *testing.T) {
 	for _, want := range []string{
 		"exec", "--no-home",
 		spec.RunDir + ":/var/run/postgresql",
-		spec.SIF, "pg_isready", "-h /var/run/postgresql",
+		spec.SIF, "pg_isready", "-h /var/run/postgresql", "-p 26005",
 		"-U ctltest", "-d ctltest",
 	} {
 		// The socket bind is the whole authentication story: `local all all

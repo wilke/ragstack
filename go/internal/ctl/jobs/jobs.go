@@ -525,6 +525,11 @@ type PostgresSpec struct {
 	// DB is the database name, User the role.
 	DB   string
 	User string
+	// Port is the server's port — the tenant's +5 — which names the socket
+	// file too (`.s.PGSQL.<port>`): pg_isready, pg_dump and pg_restore dial
+	// 5432 by default and answered "no response" to every local instance
+	// until they were told. Zero means the tools' default.
+	Port int
 }
 
 // Postgres is `apptainer exec` against the tenant's own image, over the socket

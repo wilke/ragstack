@@ -794,6 +794,7 @@ func (p *planner) addReadyGate(spec createSpec) {
 	if spec.postgresLocal() {
 		pgSpec := jobs.PostgresSpec{
 			SIF: string(t.Stores.Postgres.SIF), RunDir: p.tpaths.PostgresRun, DB: spec.Name, User: spec.Name,
+			Port: pgPortOf(t),
 		}
 		checks = append(checks, readyCheck{"postgres", func(c context.Context, sc *jobs.StepContext) error {
 			return sc.Ops.Drivers.Postgres().Ready(c, pgSpec)

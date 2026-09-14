@@ -790,6 +790,7 @@ func (p *planner) addStoreReadyGate(spec createSpec) {
 	t := spec.Tenant
 	pgSpec := jobs.PostgresSpec{
 		SIF: string(t.Stores.Postgres.SIF), RunDir: p.tpaths.PostgresRun, DB: spec.Name, User: spec.Name,
+		Port: pgPortOf(t),
 	}
 	local := spec.postgresLocal()
 	p.addFor("proc", step{
@@ -1000,6 +1001,7 @@ func (p *planner) addPostgresRestore(spec createSpec, bundleDir string, tp paths
 	}
 	pgSpec := jobs.PostgresSpec{
 		SIF: string(spec.Tenant.Stores.Postgres.SIF), RunDir: tp.PostgresRun, DB: spec.Name, User: spec.Name,
+		Port: pgPortOf(spec.Tenant),
 	}
 	p.addFor("postgres", step{
 		Kind: "postgres", Title: "restore the bundle's postgres dump into the fresh instance",
