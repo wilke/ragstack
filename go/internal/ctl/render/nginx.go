@@ -356,7 +356,7 @@ location = /ragstack/admin/ui {
 location ^~ /ragstack/admin/ui/ {
     include %[1]s;
     alias %[2]s/;
-    try_files $uri $uri/ /ragstack/admin/ui/admin.html;
+    try_files $uri /ragstack/admin/ui/admin.html;
 }
 
 location = /ragstack/admin/api {
