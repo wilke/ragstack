@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildFilters, buildPrompt, buildQuery, parseTable, toTsv, type QueryFields } from "./extraction";
-import type { Source } from "./api";
+import {
+  buildFilters,
+  buildPrompt,
+  buildQuery,
+  collectionDetail,
+  collectionUnavailable,
+  parseTable,
+  sortedCollections,
+  toTsv,
+  type QueryFields,
+} from "./extraction";
+import type { CollectionInfo, Source } from "./api";
 
 const fields = (overrides: Partial<QueryFields> = {}): QueryFields => ({
   organism: "",
@@ -181,5 +191,150 @@ describe("toTsv", () => {
       ],
     };
     expect(toTsv(table)).toBe("Name\tYear\nAda\t1815\nAlan\t1912");
+  });
+});
+
+const collection = (overrides: Partial<CollectionInfo> = {}): CollectionInfo => ({
+  id: "oa-dev",
+  label: "OA JATS prototype (dev) — mixed prose+table/figure units",
+  model: "Salesforce/SFR-Embedding-Mistral",
+  dim: 4096,
+  chunk_method: "fixed_token",
+  chunk_size: 512,
+  state: "active",
+  count: 24263,
+  text_count: 24263,
+  ...overrides,
+});
+
+const emptyCollection = (overrides: Partial<CollectionInfo> = {}): CollectionInfo => ({
+  id: "ragstack_salesforce_...",
+  label: "ragstack_salesforce_...",
+  model: "Salesforce/SFR-Embedding-Mistral",
+  chunk_method: "fixed",
+  chunk_size: 512,
+  state: null,
+  count: 0,
+  text_count: 0,
+  ...overrides,
+});
+
+describe("collectionUnavailable", () => {
+  it("reports 'empty' when count is exactly 0", () => {
+    expect(collectionUnavailable(emptyCollection())).toBe("empty");
+  });
+
+  it("treats count: null as available (server could not compute it, not empty)", () => {
+    expect(collectionUnavailable(collection({ count: null }))).toBeNull();
+  });
+
+  it("treats count: undefined as available (server could not compute it, not empty)", () => {
+    expect(collectionUnavailable(collection({ count: undefined }))).toBeNull();
+  });
+
+  it("is available for a real positive count", () => {
+    expect(collectionUnavailable(collection({ count: 24263 }))).toBeNull();
+  });
+
+  it("flags 'dormant' as unavailable, with a reason mentioning restoring", () => {
+    const reason = collectionUnavailable(collection({ state: "dormant" }));
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("restoring");
+  });
+
+  it("flags 'restoring' as unavailable, with a reason mentioning restoring", () => {
+    const reason = collectionUnavailable(collection({ state: "restoring" }));
+    expect(reason).not.toBeNull();
+    expect(reason).toContain("restoring");
+  });
+
+  it("flags 'lost' as unavailable with a non-null reason", () => {
+    expect(collectionUnavailable(collection({ state: "lost" }))).not.toBeNull();
+  });
+
+  it("treats state 'active' as available", () => {
+    expect(collectionUnavailable(collection({ state: "active" }))).toBeNull();
+  });
+
+  it("treats state: null as available (untracked collection, not an error)", () => {
+    expect(collectionUnavailable(collection({ state: null }))).toBeNull();
+  });
+
+  it("treats an absent state as available", () => {
+    expect(collectionUnavailable(collection({ state: undefined }))).toBeNull();
+  });
+
+  it("reports 'empty' even when state is 'active', if count is 0 (count takes precedence)", () => {
+    expect(collectionUnavailable(collection({ count: 0, state: "active" }))).toBe("empty");
+  });
+});
+
+describe("sortedCollections", () => {
+  it("puts queryable collections before unavailable ones", () => {
+    const dormant = collection({ id: "dormant", state: "dormant" });
+    const queryable = collection({ id: "queryable", state: "active", count: 5 });
+    expect(sortedCollections([dormant, queryable]).map((c) => c.id)).toEqual(["queryable", "dormant"]);
+  });
+
+  it("within the queryable group, sorts by larger count first", () => {
+    const small = collection({ id: "small", count: 10 });
+    const big = collection({ id: "big", count: 1000 });
+    const medium = collection({ id: "medium", count: 100 });
+    expect(sortedCollections([small, big, medium]).map((c) => c.id)).toEqual(["big", "medium", "small"]);
+  });
+
+  it("sorts a null-count entry (queryable) after counted ones, using -1", () => {
+    const counted = collection({ id: "counted", count: 1 });
+    const uncounted = collection({ id: "uncounted", count: null, state: "active" });
+    expect(sortedCollections([uncounted, counted]).map((c) => c.id)).toEqual(["counted", "uncounted"]);
+  });
+
+  it("does not mutate the input array", () => {
+    const a = collection({ id: "a", count: 1 });
+    const b = collection({ id: "b", count: 1000 });
+    const input = [a, b];
+    sortedCollections(input);
+    expect(input).toEqual([a, b]);
+  });
+
+  it("returns an empty array for empty input", () => {
+    expect(sortedCollections([])).toEqual([]);
+  });
+});
+
+describe("collectionDetail", () => {
+  it("includes a thousands-separated count, the model's last path segment, and chunk_method with chunk_size", () => {
+    expect(collectionDetail(collection())).toBe("24,263 chunks · SFR-Embedding-Mistral · fixed_token 512");
+  });
+
+  it("omits the count part cleanly when count is absent", () => {
+    expect(collectionDetail(collection({ count: undefined }))).toBe("SFR-Embedding-Mistral · fixed_token 512");
+  });
+
+  it("omits the model part cleanly when model is absent", () => {
+    expect(collectionDetail(collection({ model: undefined }))).toBe("24,263 chunks · fixed_token 512");
+  });
+
+  it("omits the chunk part cleanly when chunk_method is absent", () => {
+    expect(collectionDetail(collection({ chunk_method: undefined }))).toBe("24,263 chunks · SFR-Embedding-Mistral");
+  });
+
+  it("omits the chunk_size suffix (no stray space) when chunk_size is absent, keeping chunk_method", () => {
+    expect(collectionDetail(collection({ chunk_size: undefined }))).toBe(
+      "24,263 chunks · SFR-Embedding-Mistral · fixed_token",
+    );
+  });
+
+  it("produces no stray separators and no 'undefined' text anywhere", () => {
+    const detail = collectionDetail(collection({ count: undefined, model: undefined }));
+    expect(detail).toBe("fixed_token 512");
+    expect(detail).not.toContain("undefined");
+    expect(detail).not.toMatch(/·\s*·/);
+    expect(detail.startsWith("·")).toBe(false);
+    expect(detail.endsWith("·")).toBe(false);
+  });
+
+  it("returns an empty string when none of count, model, or chunk_method are present", () => {
+    expect(collectionDetail({ id: "bare", label: "Bare collection" })).toBe("");
   });
 });

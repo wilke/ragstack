@@ -123,10 +123,36 @@ export async function retrieve(req: RetrieveRequest, token: string): Promise<Ret
   return postJson<RetrieveResponse>(`${ragstackBase()}/v1/retrieve`, req, token);
 }
 
+/**
+ * A registry collection, per contracts/schemas/collection_info.json.
+ *
+ * `label` is REQUIRED by the contract and is the human name ("OA JATS prototype
+ * (dev) — mixed prose+table/figure units"). There is no `name` and no
+ * `description` field; an earlier version of this interface invented both, so
+ * the picker fell back to rendering raw ids.
+ */
 export interface CollectionInfo {
   id: string;
-  name?: string;
-  description?: string;
+  label: string;
+  model?: string;
+  dim?: number;
+  chunk_method?: string | null;
+  chunk_size?: number | null;
+  is_default?: boolean;
+  /**
+   * Lifecycle state. `active` serves reads; `dormant`/`restoring` answer 503 +
+   * Retry-After; `lost` answers 409. Null/absent for a collection the registry
+   * does not track (the settings-derived default), which is NOT an error.
+   */
+  state?: "active" | "archiving" | "dormant" | "restoring" | "lost" | null;
+  /**
+   * Tenant-scoped vector-store chunk count — and **null when unavailable**,
+   * which is emphatically not the same as zero. Only `0` means empty; treating
+   * null as empty would hide a perfectly good collection whose count the server
+   * could not compute.
+   */
+  count?: number | null;
+  text_count?: number | null;
 }
 
 /** The caller's readable collections. Needs auth, so a 401 here means the token is bad. */

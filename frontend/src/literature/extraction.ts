@@ -6,7 +6,7 @@
 // the fiddly edges (a model that fences its output, emits a markdown table
 // instead of TSV, or drops a column) and it is the part worth unit-testing.
 
-import type { Source } from "./api";
+import type { CollectionInfo, Source } from "./api";
 
 export interface DataType {
   id: string;
@@ -227,4 +227,60 @@ export function parseTable(text: string): ParsedTable | null {
 /** The table as a TSV file body, for the download button. */
 export function toTsv(table: ParsedTable): string {
   return [table.headers, ...table.rows].map((r) => r.join("\t")).join("\n");
+}
+
+// --- collection picker -------------------------------------------------------
+
+/**
+ * Why a collection cannot be queried right now, or null when it can be.
+ *
+ * ACCESS needs no rule here: `GET /v1/collections` already lists only what the
+ * caller may read — a read-deny is a 404, deliberately indistinguishable from
+ * "does not exist" (ADR-0003), so anything in the response is already permitted.
+ *
+ * The two real cases:
+ *
+ *   * **Empty.** `count === 0` means the vector store holds nothing, so every
+ *     query returns zero sources. Note `count` is `null` when the server could
+ *     not compute it, which is NOT empty — treating null as empty would hide a
+ *     working collection. Only an explicit zero counts.
+ *   * **Not servable.** `dormant`/`restoring` answer 503 + Retry-After and
+ *     `lost` answers 409; `active` and `null` (an untracked collection, e.g. the
+ *     settings-derived default) both serve reads.
+ */
+export function collectionUnavailable(c: CollectionInfo): string | null {
+  if (c.count === 0) return "empty";
+  if (c.state === "dormant" || c.state === "restoring") return "restoring — try again shortly";
+  if (c.state === "lost") return "archive lost";
+  return null;
+}
+
+/**
+ * The collections worth offering, most useful first.
+ *
+ * Empty and unservable ones are kept but flagged by `collectionUnavailable`
+ * rather than dropped: a user who knows a collection exists and cannot find it
+ * in the list has no way to discover why. Silent omission is the failure mode
+ * that made the `doc_type` placeholder bug so confusing — an empty result that
+ * looks like a bad query.
+ *
+ * Ordering puts queryable collections first, then the largest, so the picker
+ * opens on something that will actually answer.
+ */
+export function sortedCollections(cs: CollectionInfo[]): CollectionInfo[] {
+  return [...cs].sort((a, b) => {
+    const ua = collectionUnavailable(a) ? 1 : 0;
+    const ub = collectionUnavailable(b) ? 1 : 0;
+    if (ua !== ub) return ua - ub;
+    return (b.count ?? -1) - (a.count ?? -1);
+  });
+}
+
+/** One line under the picker: what this corpus is and how it was built. */
+export function collectionDetail(c: CollectionInfo): string {
+  const bits: string[] = [];
+  if (typeof c.count === "number") bits.push(`${c.count.toLocaleString()} chunks`);
+  if (c.model) bits.push(c.model.split("/").pop() as string);
+  if (c.chunk_method) bits.push(`${c.chunk_method}${c.chunk_size ? ` ${c.chunk_size}` : ""}`);
+  return bits.join(" · ");
 }

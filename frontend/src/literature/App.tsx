@@ -32,6 +32,9 @@ import {
   buildPrompt,
   buildQuery,
   dataType,
+  collectionDetail,
+  collectionUnavailable,
+  sortedCollections,
   DOC_TYPES,
   YEAR_COVERAGE_NOTE,
   parseTable,
@@ -107,9 +110,16 @@ export function App() {
         const cols = await listCollections(token);
         if (!live) return;
         setCollections(cols);
-        setCollection((cur) =>
-          cur || (cols.some((c) => c.id === PREFERRED_COLLECTION) ? PREFERRED_COLLECTION : (cols[0]?.id ?? "")),
-        );
+        // Seed with a collection that can actually answer. The preferred one
+        // wins if it is queryable; otherwise the largest queryable one; and only
+        // if nothing is queryable do we fall back to the first entry, so the
+        // picker still shows something rather than going blank.
+        setCollection((cur) => {
+          if (cur) return cur;
+          const usable = sortedCollections(cols).filter((c) => !collectionUnavailable(c));
+          const preferred = usable.find((c) => c.id === PREFERRED_COLLECTION);
+          return preferred?.id ?? usable[0]?.id ?? cols[0]?.id ?? "";
+        });
       } catch (e) {
         if (live) setDiscoveryNote(describe(e, "collections"));
       }
@@ -217,6 +227,7 @@ export function App() {
   }, [table, fields.dataTypeId]);
 
   const modelLabel = models.find((m) => m.model === model)?.label;
+  const selectedCollection = collections.find((c) => c.id === collection);
 
   // --- sign-in gate -------------------------------------------------------
   if (!token) return <LoginGate onToken={saveToken} />;
@@ -350,12 +361,22 @@ export function App() {
               onChange={(e) => setCollection(e.target.value)}
             >
               {collections.length === 0 && <option value="">default</option>}
-              {collections.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name || c.id}
-                </option>
-              ))}
+              {sortedCollections(collections).map((c) => {
+                const why = collectionUnavailable(c);
+                return (
+                  // Kept in the list but DISABLED when it cannot answer, rather
+                  // than dropped: a user who knows a collection exists and
+                  // cannot find it has no way to learn why it is missing.
+                  <option key={c.id} value={c.id} disabled={why !== null}>
+                    {c.label || c.id}
+                    {why ? ` — ${why}` : ""}
+                  </option>
+                );
+              })}
             </select>
+            {selectedCollection && (
+              <p className="mt-1 text-[11px] text-faint">{collectionDetail(selectedCollection)}</p>
+            )}
           </div>
           <div>
             <label className={LABEL} htmlFor="lit-journal">
