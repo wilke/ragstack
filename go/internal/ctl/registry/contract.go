@@ -26,14 +26,17 @@ import (
 // Patterns, byte-identical to the schema's (RE2-compatible: the contract keeps
 // them lookahead-free precisely so this mirror can exist).
 var (
-	reTenantName    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	reArtifactID    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
-	reAbsPath       = regexp.MustCompile(`^/[A-Za-z0-9._/-]*$`)
-	reSHA256Hex     = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	reGitSHA        = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	reFingerprint   = regexp.MustCompile(`^sha256:[0-9a-f]{16}$`)
-	reDigest        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	reLoopbackURL   = regexp.MustCompile(`^http://(127\.0\.0\.1|localhost):[0-9]{4,5}$`)
+	reTenantName  = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	reArtifactID  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+	reAbsPath     = regexp.MustCompile(`^/[A-Za-z0-9._/-]*$`)
+	reSHA256Hex   = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	reGitSHA      = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	reFingerprint = regexp.MustCompile(`^sha256:[0-9a-f]{16}$`)
+	reDigest      = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	reLoopbackURL = regexp.MustCompile(`^http://(127\.0\.0\.1|localhost):[0-9]{4,5}$`)
+	// Host and port only: no userinfo, no path, no query — a DSN cannot be
+	// written into stores.postgres.url by accident.
+	rePostgresURL   = regexp.MustCompile(`^postgresql://[A-Za-z0-9][A-Za-z0-9.-]*:[0-9]{1,5}$`)
 	reEnvKey        = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
 	reSecretEnvKey  = regexp.MustCompile(`^(API_KEYS|API_KEY_TENANTS|API_KEY_ROLES|NEO4J_AUTH)$|(_DSN|PASSWORD|TOKEN|_API_KEY)$`)
 	reHeap          = regexp.MustCompile(`^[1-9][0-9]*[mg]$`)
@@ -49,6 +52,8 @@ var (
 // Enums, byte-identical to the schema's.
 var (
 	enumOwnership   = []string{"exclusive", "shared", "unknown"}
+	enumPGKind      = []string{PostgresKindSQLite, PostgresKindLocal, PostgresKindExternal}
+	enumPGOwnership = []string{OwnershipExclusive, OwnershipExternal}
 	enumUIMode      = []string{UIModeStatic, UIModeDev, UIModeExternal}
 	enumSupervisor  = []string{"systemd", "manual"}
 	enumOwner       = []string{"svcbvbrc", "wilke"}
@@ -145,6 +150,57 @@ func (c *contractCheck) publicSettings(ptr string, m map[string]string) {
 		if reSecretEnvKey.MatchString(k) {
 			c.failf(ptr+"/"+k, "%q is a SECRET-class key: the registry records secrets as secret_refs[{key,file}], never their values", k)
 		}
+	}
+}
+
+// postgres checks the relational-store row. The five location fields are not
+// independent of `kind` — a `sqlite` row carrying a port describes a server
+// that does not exist, and a `local` row WITHOUT one names no socket for
+// doctor to check or for a future backup to fence — so the coherence is
+// enforced here, where the row is named, rather than left to each reader.
+func (c *contractCheck) postgres(ptr string, pg Postgres) {
+	c.enum(ptr+"/kind", pg.Kind, enumPGKind)
+	c.enum(ptr+"/ownership", pg.Ownership, enumPGOwnership)
+	c.nullable(ptr+"/url", pg.URL, rePostgresURL)
+	c.nullPort(ptr+"/port", pg.Port)
+	c.nullable(ptr+"/sif", pg.SIF, reAbsPath)
+	c.nullable(ptr+"/data_dir", pg.DataDir, reAbsPath)
+
+	mustNull := func(field string, empty bool) {
+		if !empty {
+			c.failf(ptr+"/"+field, "kind %q has no server, so it must be null", pg.Kind)
+		}
+	}
+	switch pg.Kind {
+	case PostgresKindSQLite:
+		if pg.Ownership != OwnershipExclusive {
+			c.failf(ptr+"/ownership", "kind %q keeps its files under <data_dir>/state and is always %q, got %q", pg.Kind, OwnershipExclusive, pg.Ownership)
+		}
+		mustNull("url", pg.URL == "")
+		mustNull("port", pg.Port == 0)
+		mustNull("instance", pg.Instance == "")
+		mustNull("sif", pg.SIF == "")
+		mustNull("data_dir", pg.DataDir == "")
+	case PostgresKindLocal:
+		if pg.Ownership != OwnershipExclusive {
+			c.failf(ptr+"/ownership", "kind %q runs a dedicated instance and is always %q, got %q", pg.Kind, OwnershipExclusive, pg.Ownership)
+		}
+		if pg.Port == 0 {
+			c.failf(ptr+"/port", "kind %q binds the block's +5 port; it cannot be null", pg.Kind)
+		}
+		if pg.Instance == "" {
+			c.failf(ptr+"/instance", "kind %q is the apptainer instance postgres-<name>; it cannot be null", pg.Kind)
+		}
+	case PostgresKindExternal:
+		if pg.Ownership != OwnershipExternal {
+			c.failf(ptr+"/ownership", "kind %q is a database in someone else's server and is always %q, got %q", pg.Kind, OwnershipExternal, pg.Ownership)
+		}
+		if pg.URL == "" {
+			c.failf(ptr+"/url", "kind %q records the server it talks to; url cannot be null", pg.Kind)
+		}
+		mustNull("instance", pg.Instance == "")
+		mustNull("sif", pg.SIF == "")
+		mustNull("data_dir", pg.DataDir == "")
 	}
 }
 
@@ -293,6 +349,8 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 		c.failf(ptr+"/stores/neo4j/ownership", "%q != %q (neo4j is never ctl-managed in v1)",
 			t.Stores.Neo4j.Ownership, OwnershipExternal)
 	}
+
+	c.postgres(ptr+"/stores/postgres", t.Stores.Postgres)
 
 	c.enum(ptr+"/ui/mode", t.UI.Mode, enumUIMode)
 	c.nullPort(ptr+"/ui/port", t.UI.Port)

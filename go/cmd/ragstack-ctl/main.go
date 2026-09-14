@@ -861,6 +861,17 @@ func printPreview(r previewResult) {
 	if t.Stores.Neo4j.URL != "" {
 		fmt.Fprintf(stdout, "   neo4j      external   %s\n", t.Stores.Neo4j.URL)
 	}
+	// The relational store is printed for every tenant, sqlite included: "no
+	// server" is the answer to a question an operator reading an adoption
+	// preview is asking, and a missing line reads as "not checked".
+	switch pg := t.Stores.Postgres; pg.Kind {
+	case registry.PostgresKindSQLite:
+		fmt.Fprintf(stdout, "   postgres   %-10s sqlite (files under %s/state)\n", pg.Ownership, t.DataDir)
+	case registry.PostgresKindLocal:
+		fmt.Fprintf(stdout, "   postgres   %-10s %s instance %s data %s\n", pg.Ownership, pg.URL, pg.Instance, pg.DataDir)
+	default:
+		fmt.Fprintf(stdout, "   postgres   %-10s %s\n", pg.Ownership, pg.URL)
+	}
 	fmt.Fprintf(stdout, "   settings %d · secret_refs %d · keys %d · admins %d · external_refs %d · unmanaged %d · drift %d\n",
 		len(t.Settings), len(t.SecretRefs), len(t.Keys), t.Identity.AdminSubjectsCount,
 		len(t.ExternalRefs), len(t.UnmanagedFiles), len(t.Drift))

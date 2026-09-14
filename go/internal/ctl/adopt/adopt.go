@@ -349,6 +349,14 @@ func (p *previewer) get(key string) (string, bool) {
 	return v.Value, ok
 }
 
+// value is get without the presence flag, for keys where "absent" and "empty"
+// mean the same thing (provision.env writes TENANT_PG_HOST= for a sqlite
+// tenant, so both shapes occur in the same file).
+func (p *previewer) value(key string) string {
+	v, _ := p.get(key)
+	return v
+}
+
 // classify splits every key by the settings table: public values go into the
 // registry verbatim, secret keys become {key, file} refs, executable-surface
 // and unsupported keys are recorded nowhere (they stay in the file, which the
@@ -439,6 +447,7 @@ func (p *previewer) stores(drift *[]registry.Drift) registry.Stores {
 		Qdrant:        p.qdrant(),
 		Elasticsearch: p.elasticsearch(drift),
 		Neo4j:         p.neo4j(),
+		Postgres:      p.postgres(),
 	}
 	// A tenant whose ES it owns will be started from a unit that binds
 	// <data_dir>/elasticsearch/snapshots as path.repo, and apptainer refuses
@@ -547,6 +556,88 @@ func (p *previewer) elasticsearch(drift *[]registry.Drift) registry.Elasticsearc
 		p.warn(doctor.ESHeapDrift, fmt.Sprintf("elasticsearch-%s runs with %s, provision.env says %s", p.manifest, es.Heap, es.ProvisionHeap))
 	}
 	return es
+}
+
+// postgres derives the relational-store row from provision.env, which is
+// where new-tenant.sh records the choice: TENANT_STORE_KIND is `sqlite`
+// (default), `postgres-local` (a dedicated apptainer instance on the block's
+// +5 port) or `postgres` (a database in a server somebody else runs), with
+// TENANT_PG_HOST/TENANT_PG_PORT naming the server for the latter two.
+//
+// tenant.env's USER_STORE_DSN / JOB_STORE_DSN / COLLECTION_STORE_DSN are
+// deliberately NOT read for this: they carry a password, they are already
+// classified secret-class into secret_refs, and parsing one here would be the
+// one code path that could put a credential into the registry. provision.env
+// records the same host and port in the clear, so there is nothing to gain.
+func (p *previewer) postgres() registry.Postgres {
+	pg := registry.SQLiteStore()
+	kind, _ := p.get("TENANT_STORE_KIND")
+	switch strings.TrimSpace(kind) {
+	case "", "sqlite":
+		return pg
+	case "postgres-local":
+		pg.Kind = registry.PostgresKindLocal
+	case "postgres":
+		pg.Kind, pg.Ownership = registry.PostgresKindExternal, registry.OwnershipExternal
+	default:
+		// An unknown kind is recorded as sqlite — the default the tenant
+		// would actually be running with if new-tenant.sh never rendered a
+		// postgres env block — and said out loud rather than guessed at.
+		p.warn(doctor.UnsupportedEnvKey, fmt.Sprintf(
+			"provision.env TENANT_STORE_KIND=%q is not sqlite|postgres-local|postgres; the relational store is recorded as sqlite", kind))
+		return pg
+	}
+
+	host := strings.TrimSpace(p.value("TENANT_PG_HOST"))
+	port, _ := strconv.Atoi(strings.TrimSpace(p.value("TENANT_PG_PORT")))
+
+	if pg.Kind == registry.PostgresKindExternal {
+		if host == "" || port == 0 {
+			p.err(doctor.StoreURLDisallowed, fmt.Sprintf(
+				"provision.env records TENANT_STORE_KIND=postgres but not both TENANT_PG_HOST (%q) and TENANT_PG_PORT (%q); the server this tenant's DSNs point at cannot be recorded",
+				host, p.value("TENANT_PG_PORT")))
+			return registry.SQLiteStore()
+		}
+		pg.URL = registry.NullString(fmt.Sprintf("postgresql://%s:%d", host, port))
+		pg.Port = registry.NullPort(port)
+		return pg // no instance, no SIF, no data dir: not ours to start or back up
+	}
+
+	// postgres-local. The instance binds the block's +5 port; provision.env
+	// is evidence of what was allocated, never authority over it, so a
+	// disagreement with the block is reported and the BLOCK wins (that is
+	// the port every other reader — doctor, the gateway, a future unit —
+	// computes).
+	if port != 0 && port != p.ports.PG {
+		p.warn(doctor.PostgresPortDrift, fmt.Sprintf(
+			"provision.env says TENANT_PG_PORT=%d but %s's block puts postgres on %d; recording %d",
+			port, p.manifest, p.ports.PG, p.ports.PG))
+	}
+	pg.Port = registry.NullPort(p.ports.PG)
+	pg.Instance = registry.NullString("postgres-" + p.name)
+	pg.SIF = registry.NullString(filepath.Join(p.roots.ImagesDir, "postgres.sif"))
+	pg.DataDir = registry.NullString(filepath.Join(p.dataDir, "postgres"))
+	if host == "" {
+		host = "localhost"
+	}
+	pg.URL = registry.NullString(fmt.Sprintf("postgresql://%s:%d", host, int(pg.Port)))
+
+	// Attribution. The instance is `postgres-<name>` and its argv is
+	// literally `postgres -c port=<pg> -c listen_addresses=127.0.0.1`, so
+	// either name in the cmdline (or the cwd) identifies it. An unattributed
+	// socket (Pid 0, the normal case when the ctl runs as svcbvbrc and the
+	// tenant as wilke) is still THIS tenant's port: it is claimed, not
+	// reported as a stranger.
+	l, live := p.listeners[int(pg.Port)]
+	switch {
+	case !live:
+		p.warn(doctor.PostgresNotListening, fmt.Sprintf(
+			"postgres-%s: nothing listening on %d", p.name, int(pg.Port)))
+	case l.Pid != 0 && !looksLike(l, "postgres") && !looksLike(l, "postgres-"+p.name):
+		p.warn(doctor.UnexpectedListener, fmt.Sprintf(
+			"port %d is held by pid %d (%s), which does not look like postgres", int(pg.Port), l.Pid, firstArg(l.Cmdline)))
+	}
+	return pg
 }
 
 // neo4j is never managed in v1: the constant is `external`, and the URL is

@@ -171,6 +171,26 @@ const (
 	// Warn: the tenant's API is up but half its data path is down.
 	StoreNotListening = "store_not_listening"
 
+	// PostgresPortDrift: provision.env's TENANT_PG_PORT is not the +5 port of
+	// the tenant's block. Ports in the registry are evidence of what was
+	// allocated, and the block is what every other reader computes, so the
+	// block wins and the disagreement is reported rather than silently
+	// preferred one way or the other. Warn.
+	PostgresPortDrift = "postgres_port_drift"
+
+	// PostgresNotListening: the tenant's relational store is a DEDICATED
+	// instance (stores.postgres.kind == "local", i.e. `new-tenant.sh
+	// --postgres local`) and the tenant is active, but nothing listens on
+	// stores.postgres.port. Its ACL, job and collection state all live in
+	// that server, so this is not a degraded leg — the API cannot answer.
+	// Warn rather than error for the same reason PortNotListening is a warn:
+	// an unconditional error would refuse `start`, the very op that fixes it
+	// (preconditions.go decides where it must be fatal).
+	//
+	// A `sqlite` tenant has no server to miss, and an `external` one points
+	// at a host the ctl does not manage — neither raises it.
+	PostgresNotListening = "postgres_not_listening"
+
 	// UIPortNotListening: the registry records a dev-mode UI port with no
 	// listener, so the gateway's UI route 502s. Warn.
 	UIPortNotListening = "ui_port_not_listening"

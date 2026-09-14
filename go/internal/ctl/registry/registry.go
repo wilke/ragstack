@@ -166,6 +166,7 @@ func LoadNoRepair(path string) (*Fleet, error) {
 	if f.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("%w: %s has schema_version %d, this binary reads %d", ErrSchema, path, f.SchemaVersion, SchemaVersion)
 	}
+	f.backfillPostgres()
 	// Structural first (it names the offending JSON pointer), then the
 	// cross-field invariants. A registry that does not match the published
 	// contract is refused at load: that is how a bug that wrote a secret into
@@ -178,6 +179,32 @@ func LoadNoRepair(path string) (*Fleet, error) {
 		return nil, fmt.Errorf("registry: %s: %w", path, err)
 	}
 	return &f, nil
+}
+
+// backfillPostgres fills in `stores.postgres` for a row written before the
+// field existed (#535). Such a row decodes with an empty Kind, which is not a
+// legal value, so ValidateContract would refuse the whole registry — and
+// refusing to LOAD is an outage of the entire control plane, triggered by
+// nothing worse than upgrading the binary before re-running adopt. The
+// registry is read far more often than it is rewritten, so the honest
+// migration is here rather than a hand-edit of the live file.
+//
+// It fills the SQLITE row, which is `new-tenant.sh`'s default and therefore
+// right for every tenant that was never provisioned with `--postgres`. It is
+// NOT right for a `postgres-local` tenant (hackathon on coconut): that row
+// stays wrong until `adopt` re-reads provision.env. Nothing hides the
+// difference — a sqlite row does not claim the +5 port, so doctor keeps
+// raising `unexpected_listener` on it, which is exactly the signal that says
+// "re-adopt this tenant" (docs/runbooks/ctl-deploy.md, "registry").
+//
+// Only an ABSENT row is filled: any non-empty Kind is left alone so a real
+// value (or a bad one) reaches the contract check untouched.
+func (f *Fleet) backfillPostgres() {
+	for _, t := range f.Tenants {
+		if t != nil && t.Stores.Postgres.Kind == "" {
+			t.Stores.Postgres = SQLiteStore()
+		}
+	}
 }
 
 // Validate checks the invariants Save relies on.

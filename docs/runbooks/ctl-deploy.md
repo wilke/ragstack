@@ -339,6 +339,39 @@ port block (PR-A added that `die`). Allocation happens through the ctl.
 not rewritten — and `new-tenant.sh` allocates again as soon as the registry is
 gone.
 
+### The relational store in the registry (`stores.postgres`)
+
+Every tenant row carries `stores.postgres`, the ACL / job / collection store,
+in one of the three shapes `new-tenant.sh` provisions and records in
+`config/provision.env` as `TENANT_STORE_KIND`:
+
+| `kind` | provisioned by | row |
+|---|---|---|
+| `sqlite` | the default (no `--postgres`) | `ownership: exclusive`; `url`/`port`/`instance`/`sif`/`data_dir` all null — the state is files under `<data_dir>/state`. |
+| `local` | `--postgres local` | a dedicated apptainer instance `postgres-<name>` from `postgres.sif`, bound to 127.0.0.1 on the block's **+5** port (`ports.pg`), data at rest under `<data_dir>/postgres`. `ownership: exclusive`. |
+| `external` | `--postgres <admin-dsn>` | a database and role in a server somebody else runs. `ownership: external`, `url` names the server, and nothing else is claimed. |
+
+`url` is **host and port only** (`postgresql://<host>:<port>`) — the schema's
+pattern refuses a userinfo, a database name and a query string. The three DSNs
+the tenant actually connects with (`USER_STORE_DSN`, `JOB_STORE_DSN`,
+`COLLECTION_STORE_DSN`) carry a password and stay `secret_refs` entries, name
+and file only, like every other secret-class key.
+
+Only `kind: local` binds the +5 port, so only there does `doctor` treat a
+listener on it as the tenant's own; a listener on the +5 port of a `sqlite` or
+`external` tenant is still an `unexpected_listener`. A `local` tenant that is
+`active` with nothing on that port raises `postgres_not_listening` (warn) —
+its user, job and collection stores are all in that server.
+
+**A registry written before this field existed** (anything committed before
+2026-09-14) has no `postgres` member. It still loads: the missing row is
+filled with the `sqlite` default rather than refusing the file, because
+refusing it would take the whole control plane down on a binary upgrade. That
+default is wrong for a `--postgres local` tenant, and the symptom is exactly
+the `unexpected_listener` warning on its +5 port that `doctor` was already
+raising. The fix is to re-adopt — `adopt-all --preview` shows the `postgres`
+line per tenant, `--commit` records it — after which the warning clears.
+
 ---
 
 ## 6. Publish the first gateway generation

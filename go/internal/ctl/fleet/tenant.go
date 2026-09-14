@@ -85,7 +85,14 @@ func status(t *registry.Tenant, listeners map[int]hostfacts.Listener, now time.T
 			// "listening" for every tenant that shares it.
 			QdrantHTTP: has(listeners, t.Ports.QdrantHTTP),
 			ESHTTP:     has(listeners, t.Ports.ESHTTP),
-			UI:         has(listeners, int(t.UI.Port)),
+			// PG is the same question for the +5 port. It is the tenant's own
+			// only with a dedicated instance (kind `local`); a sqlite tenant
+			// runs no server and an external one talks to somebody else's, so
+			// neither is asked at all — checking the block port for them
+			// would report whatever happened to be squatting there as this
+			// tenant's store.
+			PG: t.Stores.Postgres.Kind == registry.PostgresKindLocal && has(listeners, t.Ports.PG),
+			UI: has(listeners, int(t.UI.Port)),
 		},
 	}
 	if up && api.Pid > 0 {

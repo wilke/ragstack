@@ -67,6 +67,15 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // `external` tenant (no port is ever bound for either), so it renders the
 // registry's `ui.mode` instead of a chip derived from a port that was never
 // going to be open.
+//
+// postgres is the same shape of question again. Only a `--postgres local`
+// tenant binds the block's +5 port, so only there is `listening.pg` a verdict;
+// a `sqlite` tenant keeps its ACL/job/collection state in files and an
+// `external` one talks to a server the ctl does not run, and both render the
+// KIND instead of a chip that would sit permanently at "down". Without the
+// operator-only `registry` row the kind is unknowable (`summary.stores_mode`
+// describes qdrant and ES only), so a viewer is told `unknown` rather than
+// shown a guess.
 type ListeningRow = { name: string; value: string; port: number | null };
 
 function storeOwnership(
@@ -104,10 +113,19 @@ function listeningRows(tenant: CtlTenant): ListeningRow[] {
       ? { name: "ui", value: uiMode, port: null }
       : { name: "ui", value: st.listening.ui ? "ok" : "down", port: tenant.registry?.ui.port ?? null };
 
+  const pg = tenant.registry?.stores.postgres;
+  const pgRow: ListeningRow =
+    pg === undefined
+      ? { name: "postgres", value: "unknown", port: null }
+      : pg.kind === "local"
+        ? { name: "postgres", value: st.listening.pg ? "ok" : "down", port: pg.port }
+        : { name: "postgres", value: pg.kind, port: pg.port };
+
   return [
     { name: "api", value: st.listening.api ? "ok" : "down", port: s.ports.api },
     storeRow("qdrant", "qdrant", st.listening.qdrant_http, s.ports.qdrant_http),
     storeRow("es", "elasticsearch", st.listening.es_http, s.ports.es_http),
+    pgRow,
     uiRow,
   ];
 }

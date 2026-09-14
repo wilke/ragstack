@@ -246,12 +246,53 @@ type Neo4j struct {
 	URL       NullString `json:"url"`
 }
 
-// Stores groups the three store legs. All three are always present; a
-// tenant without a graph leg has Neo4j{Ownership: external, URL: null}.
+// Postgres store kinds — new-tenant.sh's TENANT_STORE_KIND, normalised.
+const (
+	// PostgresKindSQLite is the default: files under <data_dir>/state/, no
+	// server, every other field null.
+	PostgresKindSQLite = "sqlite"
+	// PostgresKindLocal is `--postgres local`: a dedicated apptainer
+	// instance postgres-<name> on the block's +5 port (ports.pg).
+	PostgresKindLocal = "local"
+	// PostgresKindExternal is `--postgres <admin-dsn>`: a database inside a
+	// server somebody else runs.
+	PostgresKindExternal = "external"
+)
+
+// Postgres is the tenant's RELATIONAL store (ACL / job / collection store).
+// Every tenant has one of the three kinds above, so the row is always
+// present — a `sqlite` row is the honest "no server" statement, not an
+// absence.
+//
+// URL is host+port ONLY (postgresql://<host>:<port>). The DSNs the tenant
+// connects with carry a password and stay in SecretRefs; nothing in this
+// struct may ever hold one.
+type Postgres struct {
+	Kind         string       `json:"kind"`      // sqlite|local|external
+	Ownership    string       `json:"ownership"` // sqlite,local ⇒ exclusive; external ⇒ external
+	Capabilities Capabilities `json:"capabilities"`
+	URL          NullString   `json:"url"`
+	Port         NullPort     `json:"port"`
+	Instance     NullString   `json:"instance"` // postgres-<name>, local only
+	SIF          NullString   `json:"sif"`
+	DataDir      NullString   `json:"data_dir"` // <data_dir>/postgres, local only
+}
+
+// SQLiteStore is the relational-store row of a tenant that keeps its ACL,
+// job and collection state in SQLite files under <data_dir>/state/.
+// Exclusive because those files are this tenant's alone.
+func SQLiteStore() Postgres {
+	return Postgres{Kind: PostgresKindSQLite, Ownership: OwnershipExclusive}
+}
+
+// Stores groups the four store legs. All four are always present; a
+// tenant without a graph leg has Neo4j{Ownership: external, URL: null}, and
+// one without a Postgres server has Postgres{Kind: sqlite}.
 type Stores struct {
 	Qdrant                 Qdrant        `json:"qdrant"`
 	Elasticsearch          Elasticsearch `json:"elasticsearch"`
 	Neo4j                  Neo4j         `json:"neo4j"`
+	Postgres               Postgres      `json:"postgres"`
 	DormantProvisionedDirs bool          `json:"dormant_provisioned_dirs"`
 }
 
@@ -434,6 +475,7 @@ func NewTenant(name, manifestName string) *Tenant {
 			Qdrant:        Qdrant{Ownership: OwnershipUnknown, ExtraEnv: map[string]string{}},
 			Elasticsearch: Elasticsearch{Ownership: OwnershipUnknown, ExtraEnv: map[string]string{}},
 			Neo4j:         Neo4j{Ownership: OwnershipExternal},
+			Postgres:      SQLiteStore(),
 		},
 		Identity: Identity{Provider: "none"},
 	}

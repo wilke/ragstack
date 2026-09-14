@@ -33,11 +33,15 @@
         "listening": {
           "description": "Which of the tenant's allocated ports have a listener in `/proc/net/tcp`.",
           "type": "object",
-          "required": ["api", "qdrant_http", "es_http", "ui"],
+          "required": ["api", "qdrant_http", "es_http", "pg", "ui"],
           "properties": {
             "api": { "type": "boolean" },
             "qdrant_http": { "type": "boolean" },
             "es_http": { "type": "boolean" },
+            "pg": {
+              "description": "A listener on the block's `ports.pg` (+5). Only a `stores.postgres.kind == \"local\"` tenant binds it — for `sqlite` and `external` the port is reserved and unused, and this is false. TCP LISTEN only: this PR makes no protocol probe, so there is no postgres leg in `health`.",
+              "type": "boolean"
+            },
             "ui": { "type": "boolean" }
           },
           "additionalProperties": false
