@@ -192,6 +192,44 @@ identity (`ctl.pid.meta`) matches; a mismatch is refused, not deleted. After a l
 
 ---
 
+## Fresh host (interim, before PR-D)
+
+Steps 0, 1, 5 and 6 above are coconut's migration. At the PR-B stage the ctl
+**cannot create tenants** (that is PR-D: `fleet artifact prepare`, `tenant
+create/start/stop`, units, boot persistence); it can only inventory tenants
+that already exist and publish the gateway for them. So a fresh host is:
+
+```bash
+# host prep: apptainer + store SIFs + conda env + sysctl + ctl dirs (root, then the operator)
+cd ops/ansible && ansible-playbook -i inventory/<site>.yml tenant-host.yml --check --diff -K && \
+                  ansible-playbook -i inventory/<site>.yml tenant-host.yml -K
+
+# provision EVERY tenant with the legacy script BEFORE the first adopt --commit:
+# once registry.json exists, new-tenant.sh refuses to allocate a new port block.
+apptainer/new-tenant.sh <name> --dry-run          # plan: dirs, ports, files
+apptainer/new-tenant.sh <name> [--start]          # repeat per tenant
+
+# then steps 2, 3 (dirs only; no goldens), 4, and:
+cat > /tmp/tenants.json <<'JSON'
+[{"name":"<name>","data_dir":"/rag/data/tenants/<name>","worktree":"/rag/repos/tenants/<name>","ui_port":5210}]
+JSON
+ops/coconut/ctl-as-svc.sh adopt-all --preview --spec /tmp/tenants.json
+ops/coconut/ctl-as-svc.sh adopt-all --commit  --spec /tmp/tenants.json      # or: adopt <name> --data-dir … --worktree …
+ops/coconut/ctl-as-svc.sh doctor
+
+# gateway: the proxy tree must carry the two generated include paths (coconut-proxy is
+# coconut-specific in its hand-written parts; the generated includes are host-neutral)
+ops/coconut/ctl-as-svc.sh gateway apply --dry-run
+ops/coconut/ctl-as-svc.sh gateway apply           # no --expect-bodies: the goldens are coconut's responses
+# then step 8
+```
+
+Tenants are still started by hand (or `ops/coconut/restore.sh`) until PR-D;
+adoption is read-only inventory. A real greenfield guide replaces this section
+once `tenant create` exists.
+
+---
+
 ## After
 
 | Check | Command | Expect |
