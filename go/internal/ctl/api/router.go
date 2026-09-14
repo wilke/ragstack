@@ -101,11 +101,15 @@ const mutationUnimplemented = "this mutation is in the contract's authorization 
 // contract's 409 `refused` naming the reason — never a panic, and never a
 // 200-shaped success for a mutation nothing performed.
 type Server struct {
-	Backend  Backend
-	Engine   jobs.Engine
-	Resolver *auth.Resolver
-	Sessions session.Store
-	Logger   *slog.Logger
+	Backend Backend
+	Engine  jobs.Engine
+	// EngineErr is why Engine is nil, when it is: the mutation surface
+	// answers with it, so an operator learns "the job store is read-only"
+	// rather than "not wired".
+	EngineErr error
+	Resolver  *auth.Resolver
+	Sessions  session.Store
+	Logger    *slog.Logger
 }
 
 // log returns the server's logger, which is the REDACTING one built by

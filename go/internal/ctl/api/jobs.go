@@ -82,8 +82,13 @@ type errorExtra interface{ ErrorExtra() map[string]any }
 // status per code, and the contract's own wording for an operation that
 // cannot run yet is `refused` "with `detail` saying so".
 func (s *Server) engineNotWired(w http.ResponseWriter, r *http.Request) {
+	why := ErrEngineNotWired
+	if s.EngineErr != nil {
+		why = s.EngineErr
+	}
 	writeError(w, r, model.CodeRefused,
-		"the job engine is not wired in this build: "+ErrEngineNotWired.Error(), nil)
+		"the job engine is unavailable on this daemon: "+why.Error()+
+			" — reads still answer; fix the cause and restart the daemon", nil)
 }
 
 // jobsError maps an engine error onto the contract. One code per error, one
