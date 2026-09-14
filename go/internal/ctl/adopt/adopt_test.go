@@ -1056,6 +1056,9 @@ func TestUIModeValidation(t *testing.T) {
 		UIMode:   registry.UIModeStatic, UIPort: 8090, Host: liveHost(t, roots),
 	}); err == nil {
 		t.Error("Preview accepted --ui-mode static together with a UI port")
+	}
+}
+
 // TestDisplayOrderPostDeployReadsGeneratedInclude is BUG 1 from the coconut
 // migration: once coconut-proxy's deploy has replaced the literal tenant
 // lists in snippets/routes.conf with `$tenants_names_json`/`$tenants_json`
