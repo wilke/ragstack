@@ -640,7 +640,32 @@ func planCreateSteps(p *planner, spec createSpec) error {
 				"with `ragstack-ctl sa create` once the tenant is started", origin)
 	}
 
-	// ---- 10. gateway ------------------------------------------------------
+	// ---- 10. registry: the finished row ------------------------------------
+	finalState := "active"
+	if !spec.Start {
+		finalState = "provisioned"
+	}
+	verb := spec.Verb
+	if verb == "" {
+		verb = "create"
+	}
+	p.addRegistryEffect(verb, fmt.Sprintf("record %s as %s, with the key ledger and the file hashes", name, finalState),
+		func(row *registry.Tenant) {
+			row.State = finalState
+			row.EnvFileSHA256 = envSHA
+			row.SecretsFileSHA256 = registry.NullString(secretsSHA)
+			row.Keys = ledgerRows(minted, name)
+			row.SecretRefs = secretRefsFor(spec)
+			if spec.Start {
+				row.ServiceAccounts = serviceAccountRows(spec, p.stampRFC3339Now())
+			}
+		})
+
+	// ---- 11. gateway ------------------------------------------------------
+	//
+	// AFTER the row is active: the gateway renders routes for active tenants
+	// only, so a generation published before the registry step would carry
+	// no route for the tenant it was published for.
 	if spec.Gateway {
 		p.add(step{
 			Kind: "nginx", Title: "publish the gateway generation including " + name, Targets: []string{name},
@@ -662,27 +687,6 @@ func planCreateSteps(p *planner, spec createSpec) error {
 		p.skip("nginx", "skip the gateway publish", "gateway is false: the tenant is not routed until "+
 			"`ragstack-ctl gateway apply` runs", name)
 	}
-
-	// ---- 11. registry: the finished row ------------------------------------
-	finalState := "active"
-	if !spec.Start {
-		finalState = "provisioned"
-	}
-	verb := spec.Verb
-	if verb == "" {
-		verb = "create"
-	}
-	p.addRegistryEffect(verb, fmt.Sprintf("record %s as %s, with the key ledger and the file hashes", name, finalState),
-		func(row *registry.Tenant) {
-			row.State = finalState
-			row.EnvFileSHA256 = envSHA
-			row.SecretsFileSHA256 = registry.NullString(secretsSHA)
-			row.Keys = ledgerRows(minted, name)
-			row.SecretRefs = secretRefsFor(spec)
-			if spec.Start {
-				row.ServiceAccounts = serviceAccountRows(spec, p.stampRFC3339Now())
-			}
-		})
 
 	p.result["name"] = name
 	p.result["index"] = spec.Index

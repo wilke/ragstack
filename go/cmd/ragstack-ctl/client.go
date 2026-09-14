@@ -38,7 +38,6 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
-	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
 const (
@@ -837,7 +836,10 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
 	}
-	roots := paths.NewRoots(*o.ragRoot, paths.Overrides{})
+	// The same CTL_STATE_DIR / CTL_CONFIG_DIR the daemon honours: a --direct
+	// run that ignored them would open the daemon's jobs.db and write units
+	// into the daemon's tree even when the operator pointed it elsewhere.
+	roots := api.RootsFromEnv(*o.ragRoot)
 	cfg := api.EngineConfig{
 		Roots:        roots,
 		RegistryPath: resolveRegistry(*o.registry, *o.ragRoot),

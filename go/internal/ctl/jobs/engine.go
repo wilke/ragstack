@@ -530,6 +530,14 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	defer e.recoverRun(r, req, argsRedacted, started)
 	job := r.job
 	steps := r.planned.Steps
+	// Bookkeeping runs on a context that CANNOT be cancelled, for the same
+	// reason stepContext's hooks do: a cooperative Cancel that lands after the
+	// last step has passed its checks used to reach `finish` with the cancelled
+	// run context, the terminal write and the audit row both failed with
+	// "context canceled", and the job sat in the store as `running` for ever —
+	// the exact state Cancel exists to end. The cancellation still reaches
+	// every STEP through ctx; it never reaches the record of what the steps did.
+	pctx := context.WithoutCancel(ctx)
 
 	for i := from; i < len(steps); i++ {
 		if ctx.Err() != nil {
@@ -544,7 +552,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 		st.Error = ""
 		n := st.N
 		job.CurrentStep = &n
-		e.save(ctx, job)
+		e.save(pctx, job)
 
 		sc := e.stepContext(ctx, r, i)
 		log, err := steps[i].Run(ctx, sc)
@@ -555,7 +563,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			log = "done"
 		}
 		if log != "" {
-			e.appendLog(ctx, job, st, log)
+			e.appendLog(pctx, job, st, log)
 		}
 		if err != nil || ctx.Err() != nil {
 			if err == nil {
@@ -564,7 +572,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			st.State = model.StepFailed
 			st.FinishedAt = model.NullString(e.o.Now().UTC().Format(time.RFC3339))
 			st.Error = model.NullString(e.o.Redactor.Redact(err.Error()))
-			e.save(ctx, job)
+			e.save(pctx, job)
 
 			state := model.JobFailed
 			code := "step_failed"
@@ -577,14 +585,14 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 		}
 		st.State = model.StepSucceeded
 		st.FinishedAt = model.NullString(e.o.Now().UTC().Format(time.RFC3339))
-		e.save(ctx, job)
+		e.save(pctx, job)
 
 		if steps[i].Cutover && i < len(steps)-1 {
 			// The parked state. The locks stay HELD and the run stays
 			// registered: a handover that has cut traffic over but not yet
 			// committed must not let anything else touch this tenant.
 			job.State = model.JobAwaitingCutover
-			e.save(ctx, job)
+			e.save(pctx, job)
 			e.o.Logger.Info("job parked awaiting cutover", "job", job.ID, "step", st.N)
 			return
 		}
@@ -596,7 +604,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 	}
 	if r.planned.Secrets != nil {
 		if secrets := r.planned.Secrets(); len(secrets) > 0 {
-			if err := e.putEnvelope(ctx, job, secrets); err != nil {
+			if err := e.putEnvelope(pctx, job, secrets); err != nil {
 				// A mint that cannot be delivered must not report success:
 				// job.result would say `secrets_available` for an envelope
 				// nobody can ever take, and the operator would go looking for
@@ -614,7 +622,7 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 			}
 		}
 	}
-	e.finish(ctx, r, model.JobSucceeded, nil, argsRedacted, req, started)
+	e.finish(pctx, r, model.JobSucceeded, nil, argsRedacted, req, started)
 }
 
 // stepContext builds the per-step view, including the two durability hooks a
@@ -1068,11 +1076,18 @@ func (e *engine) Continue(ctx context.Context, id string, p Principal) (*model.J
 		}
 		from = i + 1
 	}
+	// The cancel function is installed BEFORE the job is saved as running: a
+	// Cancel that reads the running state from the store takes the
+	// cooperative path and calls r.cancel, and between the save and this
+	// assignment that used to be a nil func — a panic in the one place the
+	// contract promises a refusal or an orderly stop.
+	runCtx, cancel := context.WithCancel(context.Background())
+	e.mu.Lock()
+	r.cancel = cancel
+	e.mu.Unlock()
 	job.State = model.JobRunning
 	e.save(ctx, job)
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	r.cancel = cancel
 	continued := cloneJob(job)
 	go e.runSteps(runCtx, r, req, argsRedacted, started, from)
 	return continued, nil

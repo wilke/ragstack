@@ -250,8 +250,16 @@ func TestContinueRacingCancelSettlesOnce(t *testing.T) {
 			t.Fatalf("the loser of the race failed with something other than ErrRefused: %v", err)
 		}
 	}
-	if accepted != 1 {
-		t.Fatalf("%d of Continue/Cancel were accepted, want exactly 1", accepted)
+	// Exactly one of them may own the SETTLE. Two accepted answers are still
+	// correct when Continue won and Cancel then read the job as RUNNING: that
+	// is the cooperative cancel of a running job, which starts no second
+	// goroutine. What must never happen is both refusing, or two settles —
+	// the audit-row count below is the proof of the latter.
+	if accepted == 0 {
+		t.Fatalf("both Continue and Cancel were refused: %v / %v", cerr, kerr)
+	}
+	if accepted == 2 && cerr != nil {
+		t.Fatalf("two accepted answers but Continue was refused (%v): Cancel cannot have seen a running job", cerr)
 	}
 
 	done := waitFor(t, e, job.ID, model.JobSucceeded, model.JobCancelled, model.JobFailed)

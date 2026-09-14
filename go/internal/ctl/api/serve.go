@@ -119,7 +119,7 @@ func RunServe(args []string) int {
 	// diagnoses a broken host with, and taking it down because the mutation
 	// half is unavailable would remove the only view of the problem. Every
 	// mutation then answers 409 `refused` naming the reason (jobs.go).
-	roots := paths.NewRoots(*ragRoot, paths.Overrides{CtlStateDir: strings.TrimSpace(os.Getenv(EnvStateDir))})
+	roots := RootsFromEnv(*ragRoot)
 	if *fakeDrivers && strings.TrimSpace(os.Getenv(EnvStateDir)) == "" {
 		// A fixture daemon WRITES: jobs.db, locks, gateway generations. With
 		// the default state dir those land next to the production daemon's
@@ -504,4 +504,18 @@ func splitList(raw string) ([]string, error) {
 		return nil, errors.New("is empty; an empty issuer allowlist authenticates nobody and must be stated by removing the variable, not by blanking it")
 	}
 	return out, nil
+}
+
+// RootsFromEnv is the deployment layout under ragRoot with the two
+// directories an operator may relocate through the environment applied:
+// CTL_STATE_DIR (jobs.db, locks, gateway generations, artifacts) and
+// CTL_CONFIG_DIR (ctl.env, the rendered units). The daemon and the --direct
+// CLI both build their roots here, so a selftest run as wilke with a scratch
+// state and units directory and the svcbvbrc daemon resolve every OTHER path
+// — the registry, the tenant trees, the backups — identically.
+func RootsFromEnv(ragRoot string) paths.Roots {
+	return paths.NewRoots(ragRoot, paths.Overrides{
+		CtlStateDir:  strings.TrimSpace(os.Getenv(EnvStateDir)),
+		CtlConfigDir: strings.TrimSpace(os.Getenv(EnvConfigDir)),
+	})
 }
