@@ -243,18 +243,23 @@ EOF
 # (tmp + mv, so a killed transfer never leaves a half-written file at the real
 # path) and sets its own mode. wilke never gets write access to the installed
 # path and never needs read access to svcbvbrc's copy.
+# `>/dev/null` on the wrapper is LOAD-BEARING: the pty ECHOES everything it
+# reads on stdin back out through script's stdout, so without it the base64 of
+# your secrets is printed to the terminal — and into any scrollback, log or
+# session transcript. Verified on this host 2026-09-14 (it happened). The exit
+# status still comes through; verification is the separate command below.
 base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl.env.tmp &&
     mv /rag/config/ctl/ctl.env.tmp /rag/config/ctl/ctl.env &&
     chmod 0640 /rag/config/ctl/ctl.env
-'
+' >/dev/null
 base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl-secrets.env.tmp &&
     mv /rag/config/ctl/ctl-secrets.env.tmp /rag/config/ctl/ctl-secrets.env &&
     chmod 0600 /rag/config/ctl/ctl-secrets.env
-'
+' >/dev/null
 
 # Verify WITHOUT ever printing content: ownership/mode, ACL if this host has
 # one, and a line-count / key-prefix sanity check. Asserts, so a bad install

@@ -113,8 +113,8 @@ EOF
 
 for f in ctl.env:0640 ctl-secrets.env:0600; do n=${f%%:*}; m=${f##*:}
   base64 -w76 <"$D/$n" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c "
-    umask 077; base64 -d > /rag/config/ctl/$n.tmp && mv /rag/config/ctl/$n.tmp /rag/config/ctl/$n && chmod $m /rag/config/ctl/$n"
-done
+    umask 077; base64 -d > /rag/config/ctl/$n.tmp && mv /rag/config/ctl/$n.tmp /rag/config/ctl/$n && chmod $m /rag/config/ctl/$n" >/dev/null
+done   # >/dev/null is load-bearing: the pty echoes stdin back out, i.e. your secrets, base64-encoded
 
 CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
   set -e; stat -c "%U:%G %a %n" /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
