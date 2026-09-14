@@ -138,6 +138,15 @@ func (p *planner) addUnitFileRemoval() {
 		Warnings: []string{"the files the ctl RENDERED, under its own config tree — never a unit file in the user " +
 			"manager's own search path, which the ctl does not own"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// Forget the units in the manager before their files go: a unit
+			// whose file vanished while it was `failed` stays listed as
+			// loaded/failed until reset, and the selftest's "no unit is known"
+			// post-check reads exactly that listing. Neither call is an error
+			// for a unit the manager never loaded.
+			for _, n := range names {
+				_ = sc.Ops.Drivers.Systemd().Disable(ctx, n)
+				_ = sc.Ops.Drivers.Systemd().ResetFailed(ctx, n)
+			}
 			removed := 0
 			for _, path := range unitPaths {
 				// Remove is idempotent (an absent path is not an error), which

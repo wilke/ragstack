@@ -155,6 +155,13 @@ func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
 			return nil, err
 		}
 		stores = append(stores, qdrantU)
+		// LimitNOFILE on every service: the user manager starts a service with
+		// the SOFT limit of 1024 descriptors (the hard limit is a million), while
+		// a login shell — where the hand-started instances came from — has both
+		// at a million. Qdrant starts one actix worker per CPU (383 on coconut)
+		// and died at boot with "Too many open files" the first time a sandbox
+		// tenant was started from a unit; Elasticsearch's bootstrap check wants
+		// 65535 or more. Soft and hard are set together, to the hard limit.
 		out[qdrantU] = []byte(fmt.Sprintf(`[Unit]
 Description=ragstack tenant %[1]s — qdrant (:%[2]d)
 PartOf=%[3]s
@@ -169,6 +176,7 @@ UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
 ExecStart=%[7]s run --no-home --bind %[5]s:/qdrant/storage --bind %[8]s:/qdrant/snapshots --env QDRANT__SERVICE__HTTP_PORT=%[2]d --env QDRANT__SERVICE__GRPC_PORT=%[9]d %[10]s /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
@@ -231,6 +239,7 @@ Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
 ExecStartPre=%[17]s es-seed-config %[1]s --rag-root %[18]s
 ExecStart=%[7]s run --no-home --bind %[5]s:/usr/share/elasticsearch/data --bind %[8]s:/usr/share/elasticsearch/logs --bind %[9]s:/usr/share/elasticsearch/config --bind %[10]s:%[11]s --env "ES_JAVA_OPTS=-Xms%[12]s -Xmx%[12]s" %[13]s /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=%[2]d -Etransport.port=%[14]d -Epath.repo=%[11]s
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
@@ -286,6 +295,7 @@ Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
 EnvironmentFile=%[7]s
 ExecStart=%[8]s run --no-home --bind %[5]s:/var/lib/postgresql/data --bind %[9]s:/var/run/postgresql --env POSTGRES_USER=%[1]s --env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD} --env POSTGRES_DB=%[1]s --env PGDATA=/var/lib/postgresql/data/pgdata %[10]s postgres -c port=%[2]d -c listen_addresses=127.0.0.1
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=90
 Restart=on-failure
@@ -325,6 +335,7 @@ Environment=RAGSTACK_GIT_TAG=%[10]s
 Environment=RAGSTACK_GIT_SHA=%[11]s
 ExecStartPre=%[12]s wait-ready %[1]s --timeout %[13]d
 ExecStart=%[14]s/bin/python -m uvicorn ragstack.api.main:app --host %[15]s --port %[2]d
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=60
 Restart=on-failure
@@ -362,6 +373,7 @@ UMask=0002
 WorkingDirectory=%[6]s/frontend
 Environment=VITE_API_TARGET=http://127.0.0.1:%[7]d
 ExecStart=%[6]s/frontend/node_modules/.bin/vite --host 127.0.0.1 --port %[2]d --strictPort --base %[8]s
+LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=30
 Restart=on-failure

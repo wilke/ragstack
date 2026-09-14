@@ -277,7 +277,40 @@ func (s *FakeSystemd) Enable(_ context.Context, unit string) error {
 	return s.set("Enable", unit, s.Enabled, true)
 }
 func (s *FakeSystemd) Disable(_ context.Context, unit string) error {
-	return s.set("Disable", unit, s.Enabled, false)
+	// Two things the real `systemctl disable` does that the plain setter did
+	// not: it REFUSES a unit the manager has never loaded ("Unit … does not
+	// exist"), recording nothing — so a rollback that disables every name a
+	// tenant could have does not conjure units the tenant never had — and it
+	// removes the symlink `link` made, which is how a linked-but-never-enabled
+	// unit is forgotten.
+	s.mu.Lock()
+	_, linked := s.Linked[unit]
+	_, knownActive := s.Active[unit]
+	_, knownEnabled := s.Enabled[unit]
+	failed := s.Failed[unit]
+	s.mu.Unlock()
+	if !linked && !knownActive && !knownEnabled && !failed {
+		if err := s.r.record("systemd", "Disable", unit); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: unit %s does not exist", jobs.ErrRefused, unit)
+	}
+	if err := s.set("Disable", unit, s.Enabled, false); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if linked && !s.Active[unit] {
+		// A linked unit that is not running is gone the moment its link is:
+		// the real manager reports it not-found at the next reload, and the
+		// fake collapses the two so a Show after the disable already says so.
+		delete(s.Linked, unit)
+		delete(s.Active, unit)
+		delete(s.Enabled, unit)
+		delete(s.Failed, unit)
+		delete(s.pids, unit)
+	}
+	return nil
 }
 
 func (s *FakeSystemd) set(method, unit string, m map[string]bool, v bool) error {

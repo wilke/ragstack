@@ -581,6 +581,21 @@ func planCreateSteps(p *planner, spec createSpec) error {
 				}
 				return "linked " + unit, sc.Ops.Drivers.Systemd().Link(ctx, path)
 			},
+			// The link is undone by `disable`, which is what removes the symlink
+			// `link` made (the unit was never enabled, so that is all it
+			// removes). Without this rollback coconut's first failed sandbox
+			// create left three dangling links in the user manager, listed as
+			// loaded/failed units of a tenant that no longer existed. The
+			// failed state is cleared too, so a later create of the same name
+			// does not inherit a start-limit counter; "not loaded" there is not
+			// an error, it is the state this rollback wants.
+			Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				if err := sc.Ops.Drivers.Systemd().Disable(ctx, unit); err != nil {
+					return "", err
+				}
+				_ = sc.Ops.Drivers.Systemd().ResetFailed(ctx, unit)
+				return "unlinked " + unit, nil
+			},
 		})
 	}
 	p.addFor("systemd", step{
