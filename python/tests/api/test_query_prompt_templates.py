@@ -84,7 +84,7 @@ async def test_untemplated_response_carries_no_provenance_keys(client, capturing
     resp = await client.post("/v1/query", json={"query": "spike protein", "top_k": 2})
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    for key in ("template", "template_version", "template_hash"):
+    for key in ("template", "template_version", "template_hash", "model"):
         assert key not in body, f"{key} leaked into an untemplated response"
 
 

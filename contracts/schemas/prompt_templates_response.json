@@ -84,7 +84,34 @@
             }
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "description": "`columns` is required when output is `table` and forbidden when it is `text`. Stated as a constraint rather than only in prose, so a server that emits columns on a prose template fails validation instead of quietly shipping a field a client will try to render a table from.",
+            "if": {
+              "properties": {
+                "output": {
+                  "const": "table"
+                }
+              },
+              "required": [
+                "output"
+              ]
+            },
+            "then": {
+              "required": [
+                "columns"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "columns"
+                ]
+              }
+            }
+          }
+        ]
       }
     }
   },

@@ -121,6 +121,27 @@ reads the code next:
   renders the identical empty clause, so accepting it reopens rule 3's hole through the
   front door. A template that can run without the value should declare the slot optional.
 
+### 3b. Provenance describes what produced the answer, not what was asked for
+
+The echo fields (`template`, `template_version`, `template_hash`, `model`) are
+present only when a **templated generation actually succeeded**. Three cases the
+implementation forced, all answered the same way:
+
+- A request that names a template but hits a server with **no LLM wired** gets the
+  retrieval-only fallback answer. It must not claim a template produced text the
+  template did not produce.
+- A request whose generation **fails** and falls back, likewise.
+- An **untemplated** request echoes nothing at all — including `model`. Echoing the
+  resolved model on every response would add a key that untemplated answers did
+  not carry before this ADR, which is exactly the byte-identity decision 2
+  guarantees. `model` exists to attribute a *templated* result to the model that
+  produced it; with no template there is no such question to answer.
+
+The first draft of the implementation got the last one wrong — it passed `model`
+unconditionally — and the unit test was written asserting only the other three,
+which hid it. Conformance caught it. The guarantee is worth more than the
+convenience of always knowing the model.
+
 ### 4. Identity of a template is `(id, version, content hash)`
 
 `version` must be bumped on any content change, and a content hash is computed at load and

@@ -964,6 +964,11 @@ async def query(
     with stage("expand"):
         context = await _expand_sources(targets, scored, request.context_window)
     sources = _to_sources(scored, context)
+    # Provenance describes what PRODUCED the answer, so it is set only where a
+    # templated generation actually succeeded. A request that named a template
+    # but fell back — no LLM wired, or the transport failed — must not claim the
+    # template generated the text it did not generate.
+    used_template: PromptTemplate | None = None
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:
@@ -972,6 +977,7 @@ async def query(
                 if template is None:
                     answer = await generator.generate(request.query, sources)
                 else:
+                    used_template = template
                     # Render with the SAME context text the default path builds,
                     # so a templated answer is grounded identically — same budget,
                     # same passage-first fitting.
@@ -988,12 +994,19 @@ async def query(
             # covers the transport.
             log.warning("answer generation failed; returning sources only", exc_info=True)
             answer = _fallback_answer("[answer generation failed]", request.query, sources)
+            used_template = None
     return QueryResponse(
         answer=answer,
         sources=sources,
         rewritten_queries=variants,
-        template=template.id if template else None,
-        template_version=template.version if template else None,
-        template_hash=template.hash if template else None,
-        model=_resolved_model(generator),
+        template=used_template.id if used_template else None,
+        template_version=used_template.version if used_template else None,
+        template_hash=used_template.hash if used_template else None,
+        # Only on the templated path. Echoing the model on EVERY response would
+        # add a key to untemplated answers that they did not carry before
+        # ADR-0008, which is precisely the byte-identity that decision 2
+        # guarantees and this endpoint's golden test enforces. The field exists
+        # to attribute a templated result to the model that produced it; there is
+        # no such question to answer when no template was used.
+        model=_resolved_model(generator) if used_template else None,
     )
