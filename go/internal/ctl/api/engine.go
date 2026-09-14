@@ -140,7 +140,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		// defaults to; with none, every write is a containment refusal.
 		opts := drivers.FakeOptions{
 			Now:   cfg.Now,
-			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
+			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir, cfg.Roots.ReposDir},
 		}
 		if f, err := loadFleet(); err == nil {
 			// The whole in-memory host, seeded from the fixture fleet: the env
@@ -148,7 +148,22 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 			// verb that reads a collection list or moves a snapshot is running
 			// against a host that matches the registry it planned from.
 			opts = FixtureDrivers(cfg.Roots, f, cfg.Now)
+			opts.Roots = append(opts.Roots, cfg.Roots.ReposDir)
+			// The fixture host knows what a prepared artifact is: its worktree
+			// has node_modules (Build.UI refuses without them, exactly as the
+			// real driver does) and its sha resolves in the mirror. Without
+			// these, every `tenant create` against --fake-drivers would fail on
+			// a fact about the fixture rather than on anything the op did.
+			opts.Refs = map[string]string{}
+			for _, a := range f.Artifacts {
+				opts.Installed = append(opts.Installed, a.Worktree)
+				opts.Refs[a.Tag] = a.SHA
+			}
 		}
+		// The fake systemd has no PartOf: starting a target does not bind the
+		// api port, so the readiness gate of a create would time out. The next
+		// unallocated blocks' API ports are pre-answered instead.
+		opts.Listening = append(opts.Listening, fixtureListening(loadFleet)...)
 		drv = drivers.NewFake(opts)
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
@@ -201,7 +216,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
 		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet}),
+		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet, Mirror: cfg.Mirror}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
@@ -216,6 +231,37 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	})
 	return eng, nil
 }
+
+// fixtureListening is the LISTEN set the fixture host starts with: the API
+// port of the next few port blocks.
+//
+// It exists because the fake systemd is a pair of sets and knows nothing about
+// `PartOf`: starting `ragstack-<t>.target` does not start the api unit that
+// binds the port, so `tenant create`'s readiness gate — which waits for the
+// API to answer, as it must on a real host — would wait out its whole timeout
+// against the fixture. Seeding the blocks a create would ALLOCATE is the
+// smallest honest way to say "on this fake host, a started tenant answers".
+//
+// It is deliberately the FUTURE blocks only. The fixture tenants' own ports are
+// left alone, so a plan that asserts nothing is listening on an existing
+// tenant's port still answers a fact about the fixture rather than this seed.
+func fixtureListening(loadFleet func() (*registry.Fleet, error)) []int {
+	f, err := loadFleet()
+	if err != nil {
+		return nil
+	}
+	next, _ := registry.Allocate(f)
+	out := make([]int, 0, fixtureFutureBlocks)
+	for i := 0; i < fixtureFutureBlocks; i++ {
+		out = append(out, paths.BlockAt(f.PortBase, f.PortStride, next+i).API)
+	}
+	return out
+}
+
+// fixtureFutureBlocks is how many unallocated blocks the fixture pre-answers
+// on. A conformance run creates a handful of tenants in one session; the limit
+// only has to cover that.
+const fixtureFutureBlocks = 32
 
 // engineRedactor is the jobs.Redactor the engine applies to step logs,
 // previews and audit args. Text goes through the value-seeded

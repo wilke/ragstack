@@ -194,6 +194,15 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 
 	plan, planned, oc, err := e.plan(ctx, op, req)
 	if err != nil {
+		// A retry of a mutation that already ran can fail to PLAN: `tenant
+		// create` refuses a name that is taken, `key-mint` a label that exists.
+		// Those refusals are right for a new request and wrong for a replay —
+		// and the replay is exactly what the idempotency key is for. So when a
+		// plan fails, the key is consulted: if it already names a job for the
+		// same op, tenant and principal, that job IS the answer.
+		if prior := e.priorJobFor(ctx, req); prior != nil {
+			return nil, prior, nil
+		}
 		return nil, nil, err
 	}
 	argsRedacted := oc.Redactor.RedactArgs(req.Args)
@@ -275,6 +284,46 @@ func (e *engine) Submit(ctx context.Context, req Request) (*model.Plan, *model.J
 	return plan, accepted, nil
 }
 
+// priorJobFor is the job this exact request already created, or nil.
+//
+// "Exact" is checked rather than assumed: op, tenant and PRINCIPAL must all
+// match. A key is a caller-chosen string, and handing back somebody else's job
+// because they happened to pick the same one would be an authorization hole
+// dressed as a convenience. The fingerprint is not compared — it contains the
+// plan hash, and this path exists precisely because the plan could not be
+// computed — so the three fields that identify the work are the check.
+func (e *engine) priorJobFor(ctx context.Context, req Request) *model.Job {
+	if req.DryRun || req.IdempotencyKey == "" {
+		return nil
+	}
+	ks, ok := e.o.Store.(KeyedStore)
+	if !ok {
+		return nil
+	}
+	prior, err := ks.JobForKey(ctx, req.IdempotencyKey)
+	if err != nil || prior == nil {
+		return nil
+	}
+	if prior.Op != req.Op || string(prior.Tenant) != req.Tenant || prior.Principal != req.Principal.Subject {
+		return nil
+	}
+	return prior
+}
+
+// tenantCreator is the OPTIONAL interface an Op implements to say that the
+// tenant its request names does not exist yet.
+//
+// Optional rather than a method on Op (jobs.go, the seam): an Op that does not
+// implement it makes no claim and is taken to act on a tenant that is already
+// there, which is right for every verb but one.
+type tenantCreator interface{ CreatesTenant() bool }
+
+// creatorOf reports whether op says it creates the tenant it names.
+func creatorOf(op Op) bool {
+	c, ok := op.(tenantCreator)
+	return ok && c.CreatesTenant()
+}
+
 // plan builds the Context, runs the op's planner and completes the Plan with
 // the facts the ENGINE owns (op, tenant, generation, doctor, confirm, hash) —
 // an op cannot forge them.
@@ -286,12 +335,31 @@ func (e *engine) plan(ctx context.Context, op Op, req Request) (*model.Plan, *Pl
 	var tenant *registry.Tenant
 	if req.Tenant != "" {
 		t, ok := fleet.Tenants[req.Tenant]
-		if !ok || t == nil {
+		switch {
+		case ok && t != nil:
+			tenant = t
+		case creatorOf(op):
+			// `create` names the tenant it is ABOUT TO MAKE. The name is on the
+			// request so the audit row and the tenant lock know which tenant
+			// this job is for before the plan exists — and a lookup that
+			// insisted the tenant already existed made the one verb that
+			// creates one impossible to submit. Its planner refuses a name that
+			// IS taken, which is the check that matters here.
+			tenant = nil
+		default:
 			return nil, nil, Context{}, fmt.Errorf("%w: no tenant %q in the registry", ErrNotFound, req.Tenant)
 		}
-		tenant = t
 	}
-	doctor, err := e.o.Doctor(ctx, req.Tenant, req.Op)
+	// The doctor is scoped to the tenant the op acts on — except when that
+	// tenant does not exist yet. A `create`'s op-scoped doctor is the FLEET
+	// doctor: there is no tenant tree to check, and asking for one by a name
+	// nothing knows is how this returned "not found" for a request whose whole
+	// point was that the name is free.
+	doctorTenant := req.Tenant
+	if tenant == nil {
+		doctorTenant = ""
+	}
+	doctor, err := e.o.Doctor(ctx, doctorTenant, req.Op)
 	if err != nil {
 		return nil, nil, Context{}, fmt.Errorf("running the op-scoped doctor: %w", err)
 	}

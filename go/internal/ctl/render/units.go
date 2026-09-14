@@ -15,8 +15,19 @@ type UnitConfig struct {
 	ApptainerBin string // absolute apptainer path
 	CtlStateDir  string // /rag/data/ctl → apptainer/{cache,config}
 	HFHome       string // /rag/cache
-	RagRoot      string // /rag (ConditionPathIsMountPoint)
+	RagRoot      string // /rag (path root every rendered path hangs off)
 	ReadyTimeout int    // seconds for wait-ready; default 180
+	// MountPoint is what every unit's ConditionPathIsMountPoint names.
+	// Defaults to RagRoot, which is right for the deployment.
+	//
+	// It is separate from RagRoot because the selftest runs against a SANDBOX
+	// root UNDER /rag (a scratch data dir, a scratch state dir), and
+	// `ConditionPathIsMountPoint` on such a directory is false for the same
+	// reason it is true for /rag: it is a path inside the mount, not the mount.
+	// A unit conditioned on it would silently never start, which is the least
+	// debuggable failure systemd has. So the sandbox keeps conditioning on the
+	// real mount (/rag) while every path in the unit points at its own tree.
+	MountPoint string
 	// AllowNonLoopbackBind lets Units render an api unit whose --host is not
 	// a loopback address. It is OFF by default and must stay a deliberate,
 	// per-call decision: coconut is internet-reachable, and `--host 0.0.0.0`
@@ -53,6 +64,9 @@ func (c UnitConfig) withDefaults() UnitConfig {
 	if c.ReadyTimeout <= 0 {
 		c.ReadyTimeout = 180
 	}
+	if c.MountPoint == "" {
+		c.MountPoint = c.RagRoot
+	}
 	return c
 }
 
@@ -83,10 +97,13 @@ func apiBind(t *registry.Tenant, cfg UnitConfig) (string, error) {
 }
 
 // UnitNames returns the unit file names for tenant name, in the order the
-// target wants them (stores, api, ui).
-func UnitNames(name string) (target, qdrant, es, api, ui string) {
+// target wants them (stores, api, ui). The postgres service exists only for a
+// tenant whose relational store kind is `local`; the NAME is returned for every
+// tenant so a caller can ask systemd about a unit that should not be there.
+func UnitNames(name string) (target, qdrant, es, postgres, api, ui string) {
 	p := "ragstack-" + name
-	return p + ".target", p + "-qdrant.service", p + "-es.service", p + "-api.service", p + "-ui.service"
+	return p + ".target", p + "-qdrant.service", p + "-es.service", p + "-postgres.service",
+		p + "-api.service", p + "-ui.service"
 }
 
 // Units renders the systemd --user unit files for t: the target, one
@@ -125,7 +142,7 @@ func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
 	tp := paths.TenantPaths(
 		paths.NewRoots(cfg.RagRoot, paths.Overrides{DataDir: filepath.Dir(t.DataDir)}),
 		t.Name, filepath.Base(t.DataDir))
-	target, qdrantU, esU, apiU, uiU := UnitNames(t.Name)
+	target, qdrantU, esU, pgU, apiU, uiU := UnitNames(t.Name)
 	out := map[string][]byte{}
 	var stores []string
 
@@ -158,7 +175,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:%[11]s/qdrant-%[12]s.log
 StandardError=append:%[11]s/qdrant-%[12]s.log
-`, t.Name, t.Ports.QdrantHTTP, target, cfg.RagRoot, tp.QdrantStorage, cfg.CtlStateDir, cfg.ApptainerBin,
+`, t.Name, t.Ports.QdrantHTTP, target, cfg.MountPoint, tp.QdrantStorage, cfg.CtlStateDir, cfg.ApptainerBin,
 			tp.QdrantSnapshots, t.Ports.QdrantGRPC, sif, tp.LogsDir, t.ManifestName))
 	}
 
@@ -212,7 +229,7 @@ Type=simple
 UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
-ExecStartPre=%[17]s es-seed-config %[1]s --rag-root %[4]s
+ExecStartPre=%[17]s es-seed-config %[1]s --rag-root %[18]s
 ExecStart=%[7]s run --no-home --bind %[5]s:/usr/share/elasticsearch/data --bind %[8]s:/usr/share/elasticsearch/logs --bind %[9]s:/usr/share/elasticsearch/config --bind %[10]s:%[11]s --env "ES_JAVA_OPTS=-Xms%[12]s -Xmx%[12]s" %[13]s /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=%[2]d -Etransport.port=%[14]d -Epath.repo=%[11]s
 KillMode=mixed
 TimeoutStopSec=120
@@ -220,9 +237,63 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:%[15]s/es-%[16]s.log
 StandardError=append:%[15]s/es-%[16]s.log
-`, t.Name, t.Ports.ESHTTP, target, cfg.RagRoot, tp.ESData, cfg.CtlStateDir, cfg.ApptainerBin,
+`, t.Name, t.Ports.ESHTTP, target, cfg.MountPoint, tp.ESData, cfg.CtlStateDir, cfg.ApptainerBin,
 			tp.ESLogs, tp.ESConfig, tp.ESSnapshots, repo, heap, sif, t.Ports.ESTransport, tp.LogsDir, t.ManifestName,
-			cfg.CtlBin))
+			cfg.CtlBin, cfg.RagRoot))
+	}
+
+	// The tenant's OWN postgres, when it has one. `local` is the only kind
+	// that runs a server the ctl owns: `sqlite` runs none and `external` is a
+	// database inside somebody else's.
+	//
+	// The password is NOT in this file. /rag/config/ctl/units is 0755, so a
+	// literal there is a credential every account on a 1869-member host can
+	// read; instead the unit reads the tenant's secrets.env (0640) through
+	// EnvironmentFile and hands the value to apptainer as ${TENANT_PG_PASSWORD},
+	// which systemd expands at start time from that file and nowhere else.
+	// It matters only on the FIRST start — the postgres entrypoint ignores
+	// POSTGRES_* once PGDATA is initialised — but a first start is exactly when
+	// the role is created, so getting it from the wrong place would create a
+	// role whose password nothing else knows.
+	if pgs := &t.Stores.Postgres; pgs.Kind == registry.PostgresKindLocal {
+		sif := string(pgs.SIF)
+		if sif == "" {
+			return nil, fmt.Errorf("tenant %s: postgres kind `local` has no sif", t.Name)
+		}
+		if _, err := paths.SafePath("/", sif); err != nil {
+			return nil, err
+		}
+		port := int(pgs.Port)
+		if port == 0 {
+			port = t.Ports.PG
+		}
+		if port != t.Ports.PG {
+			return nil, fmt.Errorf("tenant %s: stores.postgres.port is %d but the block's +5 port is %d", t.Name, port, t.Ports.PG)
+		}
+		stores = append(stores, pgU)
+		out[pgU] = []byte(fmt.Sprintf(`[Unit]
+Description=ragstack tenant %[1]s — postgres (:%[2]d)
+PartOf=%[3]s
+ConditionPathIsMountPoint=%[4]s
+ConditionPathIsDirectory=%[5]s
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+UMask=0002
+Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
+Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
+EnvironmentFile=%[7]s
+ExecStart=%[8]s run --no-home --bind %[5]s:/var/lib/postgresql/data --bind %[9]s:/var/run/postgresql --env POSTGRES_USER=%[1]s --env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD} --env POSTGRES_DB=%[1]s --env PGDATA=/var/lib/postgresql/data/pgdata %[10]s postgres -c port=%[2]d -c listen_addresses=127.0.0.1
+KillMode=mixed
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%[11]s/postgres-%[12]s.log
+StandardError=append:%[11]s/postgres-%[12]s.log
+`, t.Name, port, target, cfg.MountPoint, tp.PostgresData, cfg.CtlStateDir, tp.SecretsEnv, cfg.ApptainerBin,
+			tp.PostgresRun, sif, tp.LogsDir, t.ManifestName))
 	}
 
 	bind, err := apiBind(t, cfg)
@@ -260,7 +331,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:%[16]s
 StandardError=append:%[16]s
-`, t.Name, t.Ports.API, target, requires, cfg.RagRoot, t.Worktree, tp.TenantEnv, tp.SecretsEnv, cfg.HFHome,
+`, t.Name, t.Ports.API, target, requires, cfg.MountPoint, t.Worktree, tp.TenantEnv, tp.SecretsEnv, cfg.HFHome,
 		t.Code.Tag, t.Code.SHA, cfg.CtlBin, cfg.ReadyTimeout, t.PythonEnv, bind, tp.APILog))
 
 	wants := append(append([]string{}, stores...), apiU)
@@ -297,7 +368,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:%[9]s/ui-%[10]s.log
 StandardError=append:%[9]s/ui-%[10]s.log
-`, t.Name, t.UI.Port, target, apiU, cfg.RagRoot, t.Worktree, t.Ports.API, base, tp.LogsDir, t.ManifestName))
+`, t.Name, t.UI.Port, target, apiU, cfg.MountPoint, t.Worktree, t.Ports.API, base, tp.LogsDir, t.ManifestName))
 	}
 
 	install := ""
@@ -308,6 +379,6 @@ StandardError=append:%[9]s/ui-%[10]s.log
 Description=ragstack tenant %[1]s
 Wants=%[2]s
 ConditionPathIsMountPoint=%[3]s
-%[4]s`, t.Name, strings.Join(wants, " "), cfg.RagRoot, install))
+%[4]s`, t.Name, strings.Join(wants, " "), cfg.MountPoint, install))
 	return out, nil
 }

@@ -96,6 +96,25 @@ func cloneFleet(f *registry.Fleet) (*registry.Fleet, error) {
 	return &out, nil
 }
 
+// ConformanceArtifactID is the prepared artifact the fixture carries so that
+// `tenant create` can be exercised end to end against --fake-drivers.
+//
+// It is in the FIXTURE rather than in registry.LiveFixture because it is not a
+// fact about coconut on 2026-09-10: it is a fact about the fake host the
+// conformance suite runs against, and the live fixture is the reference the
+// manifest, nginx and display-order goldens are asserted against.
+const ConformanceArtifactID = "conformance-artifact"
+
+// ConformanceMirror is the bare repository the fixture daemon prepares and
+// checks out from. Nothing reads it on disk — the fake Git driver answers from
+// its ref table — but the path has to be a real, absolute one because the ops
+// refuse a mirror that is not.
+const ConformanceMirror = "/rag/repos/ragstack.git"
+
+// conformanceSHA is the commit the fixture artifact pins. Forty hex characters
+// so it matches the contract's GitSha, and recognisably not a real commit.
+const conformanceSHA = "c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0c0f0"
+
 // NewFakeBackend returns the fixture backend.
 func NewFakeBackend() *FakeBackend {
 	return &FakeBackend{fleet: FixtureFleet(), now: time.Now}
@@ -119,6 +138,14 @@ func NewFakeBackend() *FakeBackend {
 func FixtureFleet() *registry.Fleet {
 	f := registry.LiveFixture()
 	addManagedFixture(f)
+	// One prepared artifact, so `tenant create` has something to create from.
+	f.Artifacts[ConformanceArtifactID] = &registry.Artifact{
+		SHA: conformanceSHA, Tag: "conformance",
+		Worktree:   "/rag/data/ctl/artifacts/" + ConformanceArtifactID + "/worktree",
+		UIDist:     "/rag/data/ctl/artifacts/" + ConformanceArtifactID + "/worktree/frontend/dist",
+		PythonEnv:  "/rag/envs/ragstack",
+		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
+	}
 	return f
 }
 
@@ -195,7 +222,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		tp := paths.TenantPaths(roots, name, t.ManifestName)
 		// The API is up for an active tenant, and its unit moves the port, so
 		// a fence that stops the unit really frees the socket.
-		_, _, _, apiUnit, _ := render.UnitNames(name)
+		_, _, _, _, apiUnit, _ := render.UnitNames(name)
 		opts.UnitPorts[apiUnit] = t.Ports.API
 		if t.State == "active" {
 			opts.Listening = append(opts.Listening, t.Ports.API)

@@ -138,6 +138,14 @@ func NewRegistry(d Deps) jobs.Registry {
 	add("render-units", false, planRenderUnits)
 	add("update-code", true, planUpdateCode)
 	add("create", false, planCreate)
+	// artifact-prepare is CLI-ONLY: it is not in the ops endpoint's verb enum
+	// (api/jobs.go's opVerbs), so POST …/ops/artifact-prepare is 422 like any
+	// other name that is not a verb. It runs `npm ci`, which is the one step in
+	// the whole control plane that reaches the network, and it decides which
+	// code a tenant may later be created from — both are trusted-operator,
+	// `--direct` decisions and neither belongs on an HTTP surface a session can
+	// reach.
+	add("artifact-prepare", false, planArtifactPrepare)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
 	add("settings-put", false, planSettingsPut)
@@ -172,6 +180,13 @@ type op struct {
 
 func (o *op) Verb() string      { return o.verb }
 func (o *op) Destructive() bool { return o.destructive }
+
+// CreatesTenant satisfies the engine's optional tenantCreator interface:
+// `create`'s request names a tenant that does not exist yet, and every other
+// verb's names one that must. The planner is where "that name is taken" is
+// refused; the engine only needs to know not to 404 first.
+func (o *op) CreatesTenant() bool { return o.verb == "create" }
+
 func (o *op) Validate(a map[string]any) error {
 	if a == nil {
 		a = map[string]any{}

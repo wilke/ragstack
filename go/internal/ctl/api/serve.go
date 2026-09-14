@@ -154,6 +154,11 @@ func RunServe(args []string) int {
 		// The fixture daemon has no registry file: the engine plans against
 		// and saves into the same in-memory fleet the read surface serves.
 		cfg.LoadFleet, cfg.SaveFleet = fb.LoadFleet, fb.SaveFleet
+		// …and a mirror to check tenant worktrees out of. Nothing is read from
+		// disk (the fake Git driver answers from its ref table), but a create
+		// with no mirror configured refuses, which would make every conformance
+		// create a refusal about the harness rather than about the op.
+		cfg.Mirror = ConformanceMirror
 	}
 	engine, err := BuildEngine(cfg)
 	var engineErr error

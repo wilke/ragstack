@@ -102,6 +102,13 @@ type opFlags struct {
 	registry       *string
 	ragRoot        *string
 	asJSON         *bool
+
+	// wantSecrets is set by the commands that MINT credentials (`tenant
+	// create`): after a successful wait, the envelope is collected and printed
+	// once. fetchSecrets is filled in by whichever transport submitted the job,
+	// so the collection goes back the same way the submission went.
+	wantSecrets  bool
+	fetchSecrets func(jobID string) (*model.SecretsResponse, error)
 }
 
 func addOpFlags(fs *flag.FlagSet, registryPath, ragRoot string, jsonOut bool) *opFlags {
@@ -536,6 +543,20 @@ func submitOp(o *opFlags, target opTarget, args map[string]any) int {
 		return exitUsage
 	}
 	ctx := context.Background()
+	o.fetchSecrets = func(jobID string) (*model.SecretsResponse, error) {
+		r, err := c.get(ctx, "/v1/jobs/"+jobID+"/secrets", nil)
+		if err != nil {
+			return nil, err
+		}
+		if r.Status != http.StatusOK {
+			return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered %d", jobID, r.Status)
+		}
+		var out model.SecretsResponse
+		if err := json.Unmarshal(r.Body, &out); err != nil {
+			return nil, err
+		}
+		return &out, nil
+	}
 	resp, err := c.do(ctx, http.MethodPost, target.path, req)
 	if err != nil {
 		return failClient(err)
@@ -636,6 +657,11 @@ func followJob(ctx context.Context, o *opFlags, job *model.Job, interval time.Du
 	for {
 		if code, done := waitExit(job.State); done {
 			finishWait(job, o)
+			if code == exitOK && o.wantSecrets {
+				if c := deliverSecrets(o, job.ID); c != exitOK {
+					return c
+				}
+			}
 			return code
 		}
 		if time.Now().After(deadline) {
@@ -670,6 +696,38 @@ func followJob(ctx context.Context, o *opFlags, job *model.Job, interval time.Du
 		job = next
 		report(job)
 	}
+}
+
+// deliverSecrets collects the one-time envelope and prints it.
+//
+// It runs ONCE, right after the job succeeded, because that is the only moment
+// the values exist anywhere an operator can reach: the envelope is destroyed by
+// the first successful read and expires 15 minutes after it was created. A
+// failure to collect is reported as its own thing rather than as the job's —
+// the tenant was created either way, and telling an operator the create failed
+// would send them to roll back a tenant that is running.
+func deliverSecrets(o *opFlags, jobID string) int {
+	if o.fetchSecrets == nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: this transport cannot collect the credentials; "+
+			"`ragstack-ctl job show %s` names them and the envelope expires in 15 minutes\n", jobID)
+		return exitOK
+	}
+	resp, err := o.fetchSecrets(jobID)
+	if err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: the job succeeded but its credentials could not be collected: %v\n"+
+			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)
+		return exitError
+	}
+	if *o.asJSON {
+		return encode(resp)
+	}
+	fmt.Fprintf(stdout, "\ncredentials for job %s — SHOWN ONCE, they are not stored anywhere and cannot be shown again:\n",
+		resp.JobID)
+	for _, s := range resp.Secrets {
+		fmt.Fprintf(stdout, "  %-20s %-6s %s\n", s.Label, s.Role, s.Value)
+	}
+	fmt.Fprintf(stdout, "Save them now. The registry keeps fingerprints only.\n")
+	return exitOK
 }
 
 // finishWait prints the job's ending. Under --json the whole job document is
@@ -786,6 +844,7 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 		StorePath:    filepath.Join(roots.CtlStateDir, "jobs.db"),
 		Mode:         model.WorkerDirect,
 		Host:         host,
+		Mirror:       mirrorPath(*o.ragRoot),
 		SecretsTTL:   api.DefaultSecretsTTL,
 		Now:          time.Now,
 	}
@@ -823,6 +882,9 @@ func submitDirect(o *opFlags, target opTarget, req model.OpRequest) int {
 	p, err := directPrincipal()
 	if err != nil {
 		return failClient(err)
+	}
+	o.fetchSecrets = func(jobID string) (*model.SecretsResponse, error) {
+		return eng.Secrets(context.Background(), jobID, p)
 	}
 	plan, job, err := eng.Submit(context.Background(), jobs.Request{
 		Op:                  target.op,

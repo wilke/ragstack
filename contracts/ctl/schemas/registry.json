@@ -196,11 +196,11 @@
       "additionalProperties": false
     },
     "Ports": {
-      "description": "`base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them.",
+      "description": "`base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. ONE exception: a SANDBOX block — a tenant `ragstack-ctl selftest` created — takes its base from the fixed selftest range 26000–26099 rather than from the production sequence, and therefore carries the synthetic index `1000 + (base - 26000) / port_stride` (1000–1004 at the default stride of 20). The allocator skips sandbox rows and their tombstones entirely, so a selftest never advances the production index. A row with an index ≥ 1000 whose base is NOT in the selftest range is refused, and so is a selftest-range base whose index is not the synthetic one for it.",
       "type": "object",
       "required": ["index", "base", "api", "qdrant_http", "qdrant_grpc", "es_http", "es_transport", "pg"],
       "properties": {
-        "index": { "type": "integer", "minimum": 0 },
+        "index": { "description": "Allocation index: 0-based, never reused, for a production tenant; 1000-1004 for a sandbox block of the selftest (see the parent description).", "type": "integer", "minimum": 0 },
         "base": { "$ref": "#/$defs/Port" },
         "api": { "$ref": "#/$defs/Port" },
         "qdrant_http": { "$ref": "#/$defs/Port" },

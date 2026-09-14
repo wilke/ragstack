@@ -23,6 +23,13 @@ import (
 
 const contractPath = "../../../../contracts/ctl/openapi.yaml"
 
+// The two arg blocks the contract carries: the verbs with an HTTP route, and
+// the verbs that are jobs with no route at all.
+const (
+	opArgsKey    = "x-ctl-op-args:"
+	cliOpArgsKey = "x-ctl-cli-op-args:"
+)
+
 // contractProp is one property of one verb as the contract spells it.
 type contractProp struct {
 	Type      string
@@ -41,7 +48,7 @@ type contractSpec struct {
 }
 
 func TestArgSchemaMatchesContract(t *testing.T) {
-	contract := parseOpArgs(t)
+	contract := parseOpArgs(t, opArgsKey)
 
 	// 1. the verb set.
 	var have []string
@@ -114,7 +121,7 @@ func TestRegistryAnswersEveryContractVerb(t *testing.T) {
 			t.Errorf("Lookup(%q).Verb() = %q", v, op.Verb())
 		}
 	}
-	extra := []string{"create", "gateway-apply", "gateway-reload", "settings-put"}
+	extra := append([]string{"create", "gateway-apply", "gateway-reload", "settings-put"}, CLIVerbs...)
 	if got, want := len(r.Verbs()), len(ContractVerbs)+len(extra); got != want {
 		t.Errorf("registry has %d verbs, want %d (the enum plus %v)", got, want, extra)
 	}
@@ -130,7 +137,63 @@ func TestRegistryAnswersEveryContractVerb(t *testing.T) {
 
 // ---------------------------------------------------------------- the parser
 
-func parseOpArgs(t *testing.T) map[string]contractSpec {
+// TestCLIArgSchemaMatchesContract is TestArgSchemaMatchesContract for the
+// CLI-only block. It is a separate test rather than a parameter because the
+// two lists answer different questions: x-ctl-op-args is what the HTTP router
+// accepts, x-ctl-cli-op-args is what only `--direct` can submit — and a verb
+// that migrated from one to the other by accident is exactly the mistake worth
+// failing a build for.
+func TestCLIArgSchemaMatchesContract(t *testing.T) {
+	contract := parseOpArgs(t, cliOpArgsKey)
+	var have []string
+	for v := range contract {
+		have = append(have, v)
+	}
+	sort.Strings(have)
+	want := append([]string(nil), CLIVerbs...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(have, want) {
+		t.Fatalf("x-ctl-cli-op-args verbs =\n%v\nCLIVerbs =\n%v", have, want)
+	}
+	// No verb may be in both blocks: the first says "POST this", the second
+	// says "there is no route", and a reader who found it in both would have no
+	// way to know which is true.
+	http := parseOpArgs(t, opArgsKey)
+	for _, v := range have {
+		if _, dup := http[v]; dup {
+			t.Errorf("%q is in BOTH x-ctl-op-args and x-ctl-cli-op-args", v)
+		}
+	}
+	for _, verb := range have {
+		cs, spec := contract[verb], argSchemas[verb]
+		if spec.Verb == "" {
+			t.Fatalf("no argSchemas row for CLI verb %q", verb)
+		}
+		if cs.AddlOK {
+			t.Errorf("%s: the contract allows additionalProperties; the table refuses them unconditionally", verb)
+		}
+		if got, want := spec.required(), sortedCopy(cs.Required); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: required = %v, contract says %v", verb, got, want)
+		}
+		if got, want := spec.names(), propNames(cs.Props); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: properties = %v, contract says %v", verb, got, want)
+		}
+		for name, cp := range cs.Props {
+			f, ok := spec.field(name)
+			if !ok {
+				continue
+			}
+			if got := f.Kind.String(); got != cp.Type {
+				t.Errorf("%s.%s: type %q, contract says %q", verb, name, got, cp.Type)
+			}
+			if f.Pattern != cp.Pattern {
+				t.Errorf("%s.%s: pattern %q, contract says %q", verb, name, f.Pattern, cp.Pattern)
+			}
+		}
+	}
+}
+
+func parseOpArgs(t *testing.T, blockKey string) map[string]contractSpec {
 	t.Helper()
 	b, err := os.ReadFile(contractPath)
 	if err != nil {
@@ -139,13 +202,13 @@ func parseOpArgs(t *testing.T) map[string]contractSpec {
 	lines := strings.Split(string(b), "\n")
 	start := -1
 	for i, l := range lines {
-		if l == "x-ctl-op-args:" {
+		if l == blockKey {
 			start = i + 1
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatal("x-ctl-op-args not found in the contract")
+		t.Fatalf("%s not found in the contract", blockKey)
 	}
 	out := map[string]contractSpec{}
 	verb, inProps := "", false

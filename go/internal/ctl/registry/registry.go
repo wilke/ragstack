@@ -241,8 +241,8 @@ func (f *Fleet) Validate() error {
 			return fmt.Errorf("tenants %q and %q share index %d", other, key, t.Ports.Index)
 		}
 		seenIdx[t.Ports.Index] = key
-		if want := f.PortBase + t.Ports.Index*f.PortStride; t.Ports.Base != want {
-			return fmt.Errorf("tenant %q base %d != %d (index %d)", key, t.Ports.Base, want, t.Ports.Index)
+		if err := checkBlock(key, t.Ports.Index, t.Ports.Base, f.PortBase, f.PortStride); err != nil {
+			return err
 		}
 	}
 	for _, tb := range f.Tombstones {
@@ -250,6 +250,42 @@ func (f *Fleet) Validate() error {
 			return fmt.Errorf("tombstone %q and tenant %q share index %d", tb.ManifestName, other, tb.Index)
 		}
 		seenIdx[tb.Index] = "tombstone:" + tb.ManifestName
+		if err := checkBlock("tombstone:"+tb.ManifestName, tb.Index, tb.Base, f.PortBase, f.PortStride); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkBlock enforces the port arithmetic, with the SANDBOX exception.
+//
+// The ordinary rule is `base == port_base + index*stride`, which is what makes
+// the manifest projection and the index the same statement. A sandbox block
+// cannot satisfy it: its ports come from the fixed selftest range, not from the
+// production sequence. So a row whose base is a selftest block is checked the
+// other way round — its index must be the synthetic one that range assigns
+// (SandboxIndexBase + (base - SelftestBase)/stride) — and a row that claims a
+// synthetic index without a sandbox base is refused outright, because that is
+// exactly how a production tenant would quietly acquire an index Allocate
+// cannot reason about.
+func checkBlock(key string, index, base, portBase, stride int) error {
+	if paths.IsSelftestBlock(base) {
+		off := base - paths.SelftestBase
+		if stride <= 0 || off%stride != 0 {
+			return fmt.Errorf("%s base %d is in the sandbox range %d–%d but is not a whole block of stride %d",
+				key, base, paths.SelftestBase, paths.SelftestEnd, stride)
+		}
+		if want := SandboxIndexBase + off/stride; index != want {
+			return fmt.Errorf("%s is a sandbox (base %d) so its index must be %d, not %d", key, base, want, index)
+		}
+		return nil
+	}
+	if index >= SandboxIndexBase {
+		return fmt.Errorf("%s has index %d (≥ %d, the sandbox numbering) but base %d is not a sandbox block in %d–%d",
+			key, index, SandboxIndexBase, base, paths.SelftestBase, paths.SelftestEnd)
+	}
+	if want := portBase + index*stride; base != want {
+		return fmt.Errorf("tenant %q base %d != %d (index %d)", key, base, want, index)
 	}
 	return nil
 }
@@ -370,20 +406,85 @@ func ProjectManifest(f *Fleet) []byte {
 
 // Allocate returns the next free block: max(index over tenants ∪ tombstones)+1.
 // Indexes are never reused.
+//
+// SANDBOX blocks are ignored — both the tenants in them and their tombstones.
+// A sandbox lives at paths.SelftestBase..SelftestEnd with a synthetic index of
+// 1000+i (see AllocateSandbox), so counting it here would jump the production
+// allocator to 1001 the first time `selftest` ran and burn a thousand port
+// blocks nobody can ever get back. The selftest is meant to be run three times
+// in a row on a production host and leave the registry's own numbering exactly
+// where it found it.
 func Allocate(f *Fleet) (index, base int) {
 	max := -1
 	for _, t := range f.Tenants {
+		if paths.IsSelftestBlock(t.Ports.Base) {
+			continue
+		}
 		if t.Ports.Index > max {
 			max = t.Ports.Index
 		}
 	}
 	for _, tb := range f.Tombstones {
+		if paths.IsSelftestBlock(tb.Base) {
+			continue
+		}
 		if tb.Index > max {
 			max = tb.Index
 		}
 	}
 	index = max + 1
 	return index, f.PortBase + index*f.PortStride
+}
+
+// SandboxIndexBase is the first synthetic index a sandbox block carries.
+//
+// A sandbox's ports do NOT satisfy `base == port_base + index*port_stride` —
+// they come from a fixed range far above the production blocks — so it needs
+// an index that cannot collide with a real one. 1000 is that: the production
+// allocator would have to reach it by creating a thousand tenants, and
+// Validate refuses any row in 1000..1000+n whose base is not a selftest block,
+// so the two numbering schemes can never be confused for one another.
+const SandboxIndexBase = 1000
+
+// SandboxBlocks is how many whole blocks fit in the selftest range.
+func SandboxBlocks(stride int) int {
+	if stride <= 0 {
+		return 0
+	}
+	return (paths.SelftestEnd - paths.SelftestBase + 1) / stride
+}
+
+// ErrNoSandboxBlock is AllocateSandbox's refusal when every selftest block is
+// taken — a previous selftest that was interrupted before it quarantined its
+// tenants, almost always.
+var ErrNoSandboxBlock = errors.New("registry_no_free_sandbox_block")
+
+// AllocateSandbox returns the lowest FREE selftest block: index
+// SandboxIndexBase+i, base paths.SelftestBase + i*port_stride.
+//
+// Free means no tenant and no tombstone holds that base. Tombstones count here
+// even though Allocate ignores them, because a tombstone with a sandbox base is
+// a block some earlier selftest quarantined and has not cleaned up — reusing
+// its ports while its data directory is still there would restore into
+// somebody else's quarantine.
+func AllocateSandbox(f *Fleet) (index, base int, err error) {
+	taken := map[int]bool{}
+	for _, t := range f.Tenants {
+		taken[t.Ports.Base] = true
+	}
+	for _, tb := range f.Tombstones {
+		taken[tb.Base] = true
+	}
+	n := SandboxBlocks(f.PortStride)
+	for i := 0; i < n; i++ {
+		b := paths.SelftestBase + i*f.PortStride
+		if !taken[b] {
+			return SandboxIndexBase + i, b, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("%w: every sandbox block in %d–%d is held by a tenant or a tombstone; "+
+		"an earlier selftest did not clean up — `ragstack-ctl tenant decommission` the leftover ctltest-* tenants",
+		ErrNoSandboxBlock, paths.SelftestBase, paths.SelftestEnd)
 }
 
 // ManifestRow is one parsed manifest.tsv row.

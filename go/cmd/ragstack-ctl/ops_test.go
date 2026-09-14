@@ -9,9 +9,12 @@ package main
 
 import (
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
 // opArgsCase is one subverb and the args x-ctl-op-args says it produces.
@@ -226,5 +229,133 @@ func TestTenantReadsStillWorkBesideTheOperations(t *testing.T) {
 	}
 	if rc, _, _ := capture(t, "tenant", "bogus", "--registry", reg); rc != exitUsage {
 		t.Errorf("an unknown tenant verb should still be a usage error, got %d", rc)
+	}
+}
+
+// `tenant create` maps its flags onto create_request.json's CreateArgs. The
+// same rule as every other verb: a boolean nobody wrote is ABSENT, because the
+// schema gives it a default and a value nobody chose still lands in the plan
+// hash and the audit row.
+func TestTenantCreateArgsMatchTheContract(t *testing.T) {
+	runOpArgsCases(t, []opArgsCase{
+		{"the minimum", []string{"tenant", "create", "conf", "--artifact", "v1.5.3-abcdef012345"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "v1.5.3-abcdef012345"}},
+		{"postgres local and a heap", []string{"tenant", "create", "conf", "--artifact", "a1",
+			"--postgres", "local", "--es-heap", "2g"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "postgres": "local", "es_heap": "2g"}},
+		{"identity and its subjects", []string{"tenant", "create", "conf", "--artifact", "a1",
+			"--identity", "bvbrc", "--admin-subject", "bvbrc:alice@patricbrc.org,bvbrc:bob@patricbrc.org"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "identity_provider": "bvbrc",
+				"admin_subjects": []any{"bvbrc:alice@patricbrc.org", "bvbrc:bob@patricbrc.org"}}},
+		{"keys and service accounts", []string{"tenant", "create", "conf", "--artifact", "a1",
+			"--key", "ops:admin", "--key", "reader:user", "--sa", "gowe:user:workflows"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1",
+				"keys": []any{
+					map[string]any{"label": "ops", "role": "admin"},
+					map[string]any{"label": "reader", "role": "user"},
+				},
+				"service_accounts": []any{map[string]any{"subject": "gowe", "role": "user", "purpose": "workflows"}}}},
+		{"settings and a template", []string{"tenant", "create", "conf", "--artifact", "a1",
+			"--template-from", "dev", "--set", "LOG_LEVEL=DEBUG", "--set", "TOP_K=20"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "template_from": "dev",
+				"settings": map[string]any{"LOG_LEVEL": "DEBUG", "TOP_K": "20"}}},
+		{"no-start and no-gateway are sent as false", []string{"tenant", "create", "conf", "--artifact", "a1",
+			"--no-start", "--no-gateway"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "start": false, "gateway": false}},
+		{"a ui mode", []string{"tenant", "create", "conf", "--artifact", "a1", "--ui-mode", "dev"},
+			"/v1/tenants", map[string]any{"name": "conf", "artifact_id": "a1", "ui_mode": "dev"}},
+	})
+}
+
+func TestTenantCreateRefusesMalformedFlagsBeforeTheNetwork(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		argv []string
+	}{
+		{"no artifact", []string{"tenant", "create", "conf"}},
+		{"no name", []string{"tenant", "create", "--artifact", "a1"}},
+		{"a name outside the grammar", []string{"tenant", "create", "Not_Valid", "--artifact", "a1"}},
+		{"a reserved name", []string{"tenant", "create", "qdrant", "--artifact", "a1"}},
+		{"a key that is not label:role", []string{"tenant", "create", "conf", "--artifact", "a1", "--key", "ops"}},
+		{"an sa that is not subject:role:purpose", []string{"tenant", "create", "conf", "--artifact", "a1", "--sa", "gowe:user"}},
+		{"a set that is not KEY=VALUE", []string{"tenant", "create", "conf", "--artifact", "a1", "--set", "LOG_LEVEL"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("create", "conf")) })
+			argv := append(append([]string{}, c.argv...), "--server", f.srv.URL, "--dry-run")
+			rc, _, _ := capture(t, argv...)
+			if rc != exitUsage {
+				t.Errorf("rc %d, want exitUsage (%d)", rc, exitUsage)
+			}
+			if got := f.requests(); len(got) != 0 {
+				t.Errorf("a malformed command reached the daemon: %v", got)
+			}
+		})
+	}
+}
+
+// `fleet artifact prepare` has no daemon route, so --server is refused rather
+// than sent: a request would come back 422 "not a verb", which reads as a bug
+// in the CLI rather than as the deliberate design it is.
+func TestFleetArtifactPrepareRefusesServer(t *testing.T) {
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("artifact-prepare", "")) })
+	rc, _, errs := capture(t, "fleet", "artifact", "prepare", "--tag", "v1.6.0", "--server", f.srv.URL, "--dry-run")
+	if rc != exitUsage {
+		t.Fatalf("rc %d, want exitUsage; stderr %s", rc, errs)
+	}
+	if !strings.Contains(errs, "no daemon route") {
+		t.Errorf("the refusal does not say why: %s", errs)
+	}
+	if got := f.requests(); len(got) != 0 {
+		t.Errorf("the CLI called the daemon anyway: %v", got)
+	}
+}
+
+func TestFleetArtifactPrepareNeedsATag(t *testing.T) {
+	if rc, _, _ := capture(t, "fleet", "artifact", "prepare"); rc != exitUsage {
+		t.Errorf("rc %d, want exitUsage", rc)
+	}
+}
+
+// `fleet artifact list` is a plain registry read: no daemon, no engine.
+func TestFleetArtifactListReadsTheRegistry(t *testing.T) {
+	dir := t.TempDir()
+	reg := filepath.Join(dir, "registry.json")
+	if err := registry.Save(reg, registry.LiveFixture(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs := capture(t, "fleet", "artifact", "list", "--registry", reg, "--rag-root", dir)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	if !strings.Contains(out, "no artifacts are prepared") {
+		t.Errorf("an empty fleet should say so, got:\n%s", out)
+	}
+
+	// With one prepared, the row names the id, the short sha and the tenants
+	// pinned to it — the reason an artifact must never be removed while one is.
+	f := registry.LiveFixture()
+	sha := strings.Repeat("ab", 20)
+	f.Artifacts["v1.5.3-"+sha[:12]] = &registry.Artifact{
+		SHA: sha, Tag: "v1.5.3", Worktree: "/rag/data/ctl/artifacts/x/worktree",
+		UIDist: "/rag/data/ctl/artifacts/x/worktree/frontend/dist", PythonEnv: "/rag/envs/ragstack",
+		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:3581", SchemaCompatible: true,
+	}
+	f.Tenants["dev"].ArtifactID = registry.NullString("v1.5.3-" + sha[:12])
+	reg2 := filepath.Join(t.TempDir(), "registry.json")
+	if err := registry.Save(reg2, f, "test"); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs = capture(t, "fleet", "artifact", "list", "--registry", reg2, "--rag-root", dir)
+	if rc != exitOK {
+		t.Fatalf("rc %d: %s", rc, errs)
+	}
+	for _, want := range []string{"v1.5.3-" + sha[:12], sha[:12], "2026-09-14T00:00:00Z", "dev"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the listing lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, sha) {
+		t.Errorf("the listing prints the whole sha; it is a table:\n%s", out)
 	}
 }

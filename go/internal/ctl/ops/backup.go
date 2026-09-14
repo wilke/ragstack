@@ -1807,14 +1807,6 @@ func (p *planner) rowOf(sc *jobs.StepContext) *registry.Tenant {
 	return p.t
 }
 
-// stampRFC3339 is the run clock as the manifest records it.
-func (p *planner) stampRFC3339(sc *jobs.StepContext) string {
-	if sc != nil && sc.Ops.Now != nil {
-		return sc.Ops.Now().UTC().Format(time.RFC3339)
-	}
-	return p.op.deps.now().UTC().Format(time.RFC3339)
-}
-
 func jobIDOf(sc *jobs.StepContext) string {
 	if sc != nil && sc.Job != nil {
 		return sc.Job.ID

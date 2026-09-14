@@ -4,8 +4,8 @@ package ops
 //
 // Every step here is reversible by hand with `mv`, and the one irreversible
 // thing the verb could do (deleting data) it does not do at all: the data
-// directory is renamed, the registry row is marked `quarantined`, the port
-// block is tombstoned so the allocator never hands it out again, and a
+// directory is renamed, the registry row is marked `quarantined` and keeps its
+// port block (so the allocator never hands it out again), and a
 // RECOVERY.json is left inside the renamed directory saying what this used to
 // be. A live purge is v1.x and is a separately named operation, because
 // "decommission" is the word an operator types when they are tidying up and
@@ -58,8 +58,8 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 		// to prove — demanding it here would make the test depend on its own
 		// later steps.
 		p.warn("this is a selftest sandbox (ports " + strconv.Itoa(paths.SelftestBase) + "–" +
-			strconv.Itoa(paths.SelftestEnd) + "): no fenced backup is required, and no tombstone is written — the " +
-			"allocator reuses sandbox blocks, or the selftest would exhaust them")
+			strconv.Itoa(paths.SelftestEnd) + "): no fenced backup is required, and the allocator reuses sandbox blocks once the row is gone, " +
+			"or the selftest would exhaust them")
 	} else if err := p.requireFencedBackup("decommission"); err != nil {
 		return err
 	}
@@ -95,11 +95,16 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 	p.addWorktreeRemoval()
 
 	p.result["state"] = "quarantined"
-	if sandbox {
-		p.result["tombstone"] = nil
-	} else {
-		p.result["tombstone"] = map[string]any{"manifest_name": t.ManifestName, "index": t.Ports.Index, "base": t.Ports.Base}
-		p.warn("the port block is tombstoned permanently: the allocator never reuses an index that has been decommissioned")
+	// The row STAYS, at state quarantined, and keeps its index: the allocator
+	// counts every row, so the block is never handed out while the tree is
+	// recoverable. The tombstone — the registry's permanent record of an
+	// allocation whose row is gone — is written by the purge that removes the
+	// row (v1.x), never here: a tombstone beside a live row is the split-brain
+	// the registry's validator refuses.
+	p.result["tombstone"] = nil
+	if !sandbox {
+		p.warn("the row stays in the registry at state quarantined and keeps its port block; the tombstone is " +
+			"written when the row is purged (v1.x), so the block is never reused either way")
 	}
 	p.warn("nothing is deleted: the units are removed, the data directory is renamed and a " + recoveryFile +
 		" is written into it. Bringing the tenant back is a rename, a `units apply` and a registry edit")
@@ -119,9 +124,11 @@ func (p *planner) isSandbox() bool {
 // no longer exists, a `daemon-reload` would load them again, and the selftest's
 // post-check ("no ragstack-ctltest-* unit is known") could never pass.
 func (p *planner) addUnitFileRemoval() {
-	dir := filepath.Join(p.oc.Roots.UnitsDir(), p.t.Name)
-	target, qdrant, es, api, ui := render.UnitNames(p.t.Name)
-	names := []string{target, qdrant, es, api, ui}
+	// FLAT under the units dir: SYSTEMD_UNIT_PATH is not searched recursively,
+	// so that is where `create` wrote them.
+	dir := p.oc.Roots.UnitsDir()
+	target, qdrant, es, postgres, api, ui := render.UnitNames(p.t.Name)
+	names := []string{target, qdrant, es, postgres, api, ui}
 	unitPaths := make([]string, 0, len(names))
 	for _, n := range names {
 		unitPaths = append(unitPaths, filepath.Join(dir, n))
@@ -154,7 +161,7 @@ func (p *planner) addUnitFileRemoval() {
 	})
 }
 
-// addQuarantineRegistry marks the row and tombstones the block.
+// addQuarantineRegistry marks the row quarantined. The block stays the row's.
 //
 // It runs BEFORE the directory moves: the registry is the source of truth, and
 // a crash between the two leaves a row that says `quarantined` over a directory
@@ -164,7 +171,7 @@ func (p *planner) addUnitFileRemoval() {
 func (p *planner) addQuarantineRegistry(sandbox bool) {
 	t := p.t
 	p.add(step{
-		Kind: "registry", Title: "mark " + t.Name + " quarantined" + tombstoneSuffix(sandbox),
+		Kind: "registry", Title: "mark " + t.Name + " quarantined (the row keeps its port block)",
 		Destructive: true, Targets: []string{t.Name},
 		WouldWrite: []model.WouldWrite{{Path: p.oc.Roots.Registry(), Mode: "0660", Preview: ""}},
 		Run: func(_ context.Context, sc *jobs.StepContext) (string, error) {
@@ -183,37 +190,12 @@ func (p *planner) addQuarantineRegistry(sandbox bool) {
 				row.LastOps = map[string]registry.OpRecord{}
 			}
 			row.LastOps["decommission"] = registry.OpRecord{JobID: jobIDOf(sc), At: at, Outcome: "succeeded"}
-			if !sandbox && !hasTombstone(cur, row.Ports.Index) {
-				cur.Tombstones = append(cur.Tombstones, registry.Tombstone{
-					ManifestName: row.ManifestName, Index: row.Ports.Index, Base: row.Ports.Base,
-					DecommissionedAt: at,
-				})
-			}
 			if err := p.op.deps.SaveFleet(cur); err != nil {
 				return "", err
 			}
-			if sandbox {
-				return "state=quarantined (sandbox: no tombstone)", nil
-			}
-			return fmt.Sprintf("state=quarantined, index %d tombstoned", row.Ports.Index), nil
+			return fmt.Sprintf("state=quarantined, index %d kept by the row", row.Ports.Index), nil
 		},
 	})
-}
-
-func tombstoneSuffix(sandbox bool) string {
-	if sandbox {
-		return " (a sandbox block is not tombstoned)"
-	}
-	return " and tombstone its port block"
-}
-
-func hasTombstone(f *registry.Fleet, index int) bool {
-	for _, ts := range f.Tombstones {
-		if ts.Index == index {
-			return true
-		}
-	}
-	return false
 }
 
 // addQuarantineRename is the rename itself.
@@ -257,7 +239,7 @@ func (p *planner) addRecoveryNote() {
 			"decide, later, whether this tree can go"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			dir := p.quarantineDirOf(sc)
-			target, qdrant, es, api, ui := render.UnitNames(t.Name)
+			target, qdrant, es, postgres, api, ui := render.UnitNames(t.Name)
 			row := p.rowOf(sc)
 			note := map[string]any{
 				"quarantined_at": p.stampRFC3339(sc),
@@ -267,7 +249,7 @@ func (p *planner) addRecoveryNote() {
 				"original_dir":   t.DataDir,
 				"worktree":       t.Worktree,
 				"ports":          t.Ports,
-				"units":          []string{target, qdrant, es, api, ui},
+				"units":          []string{target, qdrant, es, postgres, api, ui},
 				"last_backup":    row.LastBackup,
 				"sandbox":        p.isSandbox(),
 				"registry_row":   row,

@@ -160,6 +160,21 @@ type ArgsStore interface {
 	Args(ctx context.Context, jobID string) (map[string]any, error)
 }
 
+// KeyedStore is the OPTIONAL interface a Store implements to answer "which job
+// claimed this idempotency key?" without a fingerprint.
+//
+// Store.Create already answers it WITH one, which is enough for a retry that
+// re-plans identically. It is not enough for an operation whose plan cannot be
+// computed a second time: the retry of a `tenant create` that succeeded is
+// refused at PLAN time ("that name is taken") before the key is ever consulted,
+// so the one case the idempotency key exists for — a client that lost the 202
+// of an expensive, non-repeatable mutation — was the case it did not cover.
+// The engine consults this when planning fails, and hands back the original
+// job only when the op, the tenant and the principal all match.
+type KeyedStore interface {
+	JobForKey(ctx context.Context, key string) (*model.Job, error)
+}
+
 // WorkerIdentity is who is running a job, precisely enough to survive pid
 // reuse: the pair (pid, start time) is unique for the life of the kernel, and
 // the host says which kernel.
@@ -280,6 +295,24 @@ func (s *store) Close() error { return s.db.Close() }
 func (s *store) Path() string { return s.path }
 
 // ---------------------------------------------------------------- jobs
+
+// JobForKey returns the job that claimed key, or nil when the key is unused.
+// It is a plain read: the caller decides whether the job it names is the same
+// request (see KeyedStore).
+func (s *store) JobForKey(ctx context.Context, key string) (*model.Job, error) {
+	if key == "" {
+		return nil, nil
+	}
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT job_id FROM idempotency WHERE key = ?`, key).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.Get(ctx, id)
+}
 
 // Create persists the job and claims the idempotency key in ONE transaction.
 // Either the key and the job land together or neither does: a key that named

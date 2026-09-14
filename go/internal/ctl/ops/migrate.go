@@ -177,8 +177,15 @@ func (p *planner) addSourceStop() {
 }
 
 // addUnitsWrite plans the unit files of a handover or a create.
+//
+// FLAT under UnitsDir, not in a per-tenant subdirectory: the user manager's
+// drop-in sets `SYSTEMD_UNIT_PATH=/rag/config/ctl/units:` and systemd does not
+// search a unit path recursively, so a unit written one level down is a unit
+// the manager can never find by name. The names already carry the tenant
+// (`ragstack-<name>-api.service`), which is what made a subdirectory look
+// harmless.
 func (p *planner) addUnitsWrite(units map[string][]byte) {
-	dir := filepath.Join(p.oc.Roots.UnitsDir(), p.t.Name)
+	dir := p.oc.Roots.UnitsDir()
 	for _, name := range sortedNames(units) {
 		path, body := filepath.Join(dir, name), units[name]
 		p.add(step{
