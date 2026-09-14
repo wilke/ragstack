@@ -6,7 +6,7 @@
 // the fiddly edges (a model that fences its output, emits a markdown table
 // instead of TSV, or drops a column) and it is the part worth unit-testing.
 
-import type { CollectionInfo, Source } from "./api";
+import type { CollectionInfo, PromptTemplate, Source } from "./api";
 
 export interface DataType {
   id: string;
@@ -377,4 +377,71 @@ export function collectionDetail(c: CollectionInfo): string {
   if (c.model) bits.push(c.model.split("/").pop() as string);
   if (c.chunk_method) bits.push(`${c.chunk_method}${c.chunk_size ? ` ${c.chunk_size}` : ""}`);
   return bits.join(" · ");
+}
+
+
+// --- server-side templates (ADR-0008) ----------------------------------------
+
+/**
+ * The extraction modes the form offers, from whichever source the server has.
+ *
+ * When the tenant configures prompt templates, THEY are the modes: the label,
+ * the output shape and the columns all come from the server, and the browser
+ * stops owning the domain vocabulary. That is the point of the template path —
+ * the same three assertion types, defined once, server-side, where they can be
+ * versioned and attributed.
+ *
+ * A tenant without templates falls back to the built-in DATA_TYPES, so the app
+ * keeps working against a build that predates the capability.
+ */
+export interface Mode {
+  id: string;
+  label: string;
+  columns: string[] | null;
+  /** The template to send, or null on the client-side fallback path. */
+  templateId: string | null;
+}
+
+export function modesFrom(templates: PromptTemplate[]): Mode[] {
+  if (templates.length === 0) {
+    return DATA_TYPES.map((d) => ({
+      id: d.id,
+      label: d.label,
+      columns: d.columns,
+      templateId: null,
+    }));
+  }
+  return templates.map((t) => ({
+    id: t.id,
+    label: t.label,
+    columns: t.output === "table" ? (t.columns ?? []) : null,
+    templateId: t.id,
+  }));
+}
+
+export function modeById(modes: Mode[], id: string): Mode | undefined {
+  return modes.find((m) => m.id === id);
+}
+
+/**
+ * The slot values for a template, from the form's fields.
+ *
+ * Only slots the template DECLARES are sent: an undeclared key is a 422 by
+ * design, so filtering here turns a server-side rejection into a field the form
+ * simply does not send. Empty optional values are dropped rather than sent as
+ * "" — the server treats an empty required slot as missing anyway, and sending
+ * empties would mean the request differs depending on which boxes were visited.
+ */
+export function templateVars(t: PromptTemplate, f: QueryFields): Record<string, string> {
+  const available: Record<string, string> = {
+    organism: f.organism.trim(),
+    genes: f.genes.trim(),
+    other_terms: f.otherTerms.trim(),
+  };
+  const vars: Record<string, string> = {};
+  for (const slot of t.slots) {
+    const v = available[slot.name];
+    if (v) vars[slot.name] = v;
+  }
+  return vars;
 }

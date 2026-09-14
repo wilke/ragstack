@@ -195,6 +195,69 @@ export async function listCollections(token: string): Promise<CollectionInfo[]> 
   return body.collections ?? [];
 }
 
+/**
+ * A server-side prompt template (ADR-0008), as GET /v1/prompt-templates reports
+ * it. The `system`/`user` bodies are deliberately not exposed — a caller needs
+ * to know which knobs exist, not what the server says to the model.
+ */
+export interface PromptTemplate {
+  id: string;
+  version: number;
+  hash: string;
+  label: string;
+  output: "text" | "table";
+  columns?: string[];
+  slots: { name: string; required: boolean; max_len: number; label?: string }[];
+}
+
+/**
+ * The templates this tenant offers, or [] when it offers none.
+ *
+ * An EMPTY LIST and a 404 mean the same thing to this app — "generation cannot
+ * be steered here" — and both are normal. A tenant on a build predating
+ * ADR-0008 answers 404; one that simply has no templates configured answers 200
+ * with an empty list. Either way the app falls back to the two-leg path, which
+ * is why this resolves rather than throws.
+ */
+export async function listPromptTemplates(token: string): Promise<PromptTemplate[]> {
+  try {
+    const res = await fetch(`${ragstackBase()}/v1/prompt-templates`, { headers: authHeaders(token) });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { templates?: PromptTemplate[] };
+    return body.templates ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export interface QueryRequest extends RetrieveRequest {
+  template?: string;
+  template_vars?: Record<string, string>;
+}
+
+export interface QueryResponse {
+  answer: string;
+  sources: Source[];
+  rewritten_queries: string[];
+  /** Present only on a templated request — absent, not null. */
+  template?: string;
+  template_version?: number;
+  template_hash?: string;
+  /** The model that actually generated, after the server resolves its default. */
+  model?: string;
+}
+
+/**
+ * Retrieve AND generate in one call, with the prompt rendered server-side.
+ *
+ * The whole point of the template path: no second service, no cross-origin hop,
+ * and the prompt is a named, versioned thing the server can attribute a result
+ * to — rather than a string this browser assembled and nobody can replay.
+ */
+export async function query(req: QueryRequest, token: string): Promise<QueryResponse> {
+  return postJson<QueryResponse>(`${ragstackBase()}/v1/query`, req, token);
+}
+
 // --- BV-BRC Copilot ---------------------------------------------------------
 
 /**

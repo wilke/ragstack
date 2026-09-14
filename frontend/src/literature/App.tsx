@@ -18,6 +18,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   generate,
+  listPromptTemplates,
+  query as queryApi,
+  type PromptTemplate,
   listCollections,
   listModels,
   retrieve,
@@ -27,13 +30,14 @@ import {
   type Source,
 } from "./api";
 import {
-  DATA_TYPES,
   buildFilters,
   buildPrompt,
   buildQuery,
-  dataType,
   collectionDetail,
   collectionUnavailable,
+  modeById,
+  modesFrom,
+  templateVars,
   sortedCollections,
   DOC_TYPES,
   YEAR_COVERAGE_NOTE,
@@ -85,7 +89,21 @@ export function App() {
   const [journal, setJournal] = useState("");
   const [model, setModel] = useState("");
 
-  const dt = dataType(fields.dataTypeId);
+  // Empty when this tenant configures none, or runs a build predating ADR-0008.
+  // Both mean the same thing here: generation cannot be steered server-side, so
+  // fall back to building the prompt in the browser and calling Copilot.
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+
+  const modes = useMemo(() => modesFrom(templates), [templates]);
+  const mode = modeById(modes, fields.dataTypeId) ?? modes[0];
+  const dt = { columns: mode?.columns ?? null, label: mode?.label ?? "" };
+  // When the server supplies the modes, its ids are not DATA_TYPES' ids, so a
+  // selection made before they arrived would no longer resolve. Re-seed once.
+  useEffect(() => {
+    if (modes.length && !modeById(modes, fields.dataTypeId)) {
+      setFields((f) => ({ ...f, dataTypeId: modes[0].id }));
+    }
+  }, [modes, fields.dataTypeId]);
   // A type with no columns has no table to render, so the format control is
   // meaningless — pin it to prose, exactly as the original widget does.
   useEffect(() => {
@@ -124,6 +142,12 @@ export function App() {
         if (live) setDiscoveryNote(describe(e, "collections"));
       }
       try {
+        const ts = await listPromptTemplates(token);
+        if (live) setTemplates(ts);
+      } catch {
+        /* never fatal: an absent capability is a normal state */
+      }
+      try {
         const ms = await listModels(token);
         if (!live) return;
         setModels(ms);
@@ -150,6 +174,8 @@ export function App() {
   const [answerNote, setAnswerNote] = useState("");
   // The model id that produced the current answer.
   const [answeredWith, setAnsweredWith] = useState("");
+  // "ppi-extraction v1 · <model>" on the template path — what produced this answer.
+  const [provenance, setProvenance] = useState("");
   const [prompt, setPrompt] = useState("");
   const [promptOpen, setPromptOpen] = useState(false);
   const [lastFormat, setLastFormat] = useState<Format>("raw");
@@ -230,21 +256,49 @@ export function App() {
     setAnswerError("");
     setAnswerNote("");
     setAnsweredWith("");
+    setProvenance("");
     setPrompt("");
     setSources([]);
 
     const filters = buildFilters({ year, docType, journal });
+    // The retrieval half is identical either way; only who generates differs.
+    const base = {
+      query: buildQuery(fields),
+      top_k: topK,
+      use_graph: useGraph,
+      ...(collection ? { collection } : {}),
+      ...(Object.keys(filters).length ? { filters } : {}),
+    };
+    const template = mode?.templateId
+      ? templates.find((t) => t.id === mode.templateId)
+      : undefined;
+
     try {
-      const res = await retrieve(
-        {
-          query: buildQuery(fields),
-          top_k: topK,
-          use_graph: useGraph,
-          ...(collection ? { collection } : {}),
-          ...(Object.keys(filters).length ? { filters } : {}),
-        },
-        token,
-      );
+      if (template) {
+        // ONE CALL. The server renders the prompt from a named, versioned
+        // template and generates with the model it is already configured for —
+        // no second service, no cross-origin hop, and the response says exactly
+        // what produced it. This is the whole point of ADR-0008: the browser
+        // stops assembling a prompt nobody can replay.
+        setGenerating(true);
+        const res = await queryApi(
+          { ...base, template: template.id, template_vars: templateVars(template, fields) },
+          token,
+        );
+        if (runRef.current !== run) return;
+        setSources(res.sources ?? []);
+        setAnswer(res.answer ?? "");
+        setLastFormat(template.output === "table" ? "table" : "raw");
+        setAnsweredWith(res.model ?? "");
+        setProvenance(
+          res.template ? `${res.template} v${res.template_version} · ${res.model ?? "?"}` : "",
+        );
+        setSearching(false);
+        setGenerating(false);
+        return;
+      }
+
+      const res = await retrieve(base, token);
       if (runRef.current !== run) return;
       setSources(res.sources ?? []);
       setSearching(false);
@@ -256,9 +310,10 @@ export function App() {
     } catch (e) {
       if (runRef.current !== run) return;
       setSearching(false);
+      setGenerating(false);
       setSearchError(describe(e, "retrieval"));
     }
-  }, [fields, year, docType, journal, topK, useGraph, collection, token, format, runGeneration]);
+  }, [fields, year, docType, journal, topK, useGraph, collection, token, format, runGeneration, mode, templates]);
 
   const downloadTsv = useCallback(() => {
     if (!table) return;
@@ -359,7 +414,7 @@ export function App() {
               value={fields.dataTypeId}
               onChange={(e) => setFields({ ...fields, dataTypeId: e.target.value })}
             >
-              {DATA_TYPES.map((d) => (
+              {modes.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.label}
                 </option>
@@ -525,11 +580,13 @@ export function App() {
           {table ? (
             <>
               {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              {provenance && <p className="mb-2 text-[11px] text-faint">generated by {provenance}</p>}
               <ResultsTable table={table} onDownload={downloadTsv} />
             </>
           ) : (
             <>
               {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              {provenance && <p className="mb-2 text-[11px] text-faint">generated by {provenance}</p>}
               <AnswerPanel
                 text={answer}
                 modelLabel={modelLabel}

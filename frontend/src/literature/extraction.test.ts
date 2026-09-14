@@ -5,12 +5,16 @@ import {
   buildQuery,
   collectionDetail,
   collectionUnavailable,
+  DATA_TYPES,
+  modeById,
+  modesFrom,
   parseTable,
   sortedCollections,
+  templateVars,
   toTsv,
   type QueryFields,
 } from "./extraction";
-import type { CollectionInfo, Source } from "./api";
+import type { CollectionInfo, PromptTemplate, Source } from "./api";
 
 const fields = (overrides: Partial<QueryFields> = {}): QueryFields => ({
   organism: "",
@@ -420,5 +424,142 @@ describe("buildFilters — tightened year validation", () => {
 
   it("omits journal when blank", () => {
     expect(buildFilters({ journal: "   " })).not.toHaveProperty("journal");
+  });
+});
+
+// server-side templates (ADR-0008) -------------------------------------------
+
+const template = (overrides: Partial<PromptTemplate> = {}): PromptTemplate => ({
+  id: "ppi-extraction",
+  version: 1,
+  hash: "b883138c8cc58b36",
+  label: "Protein-Protein Interaction (PPI)",
+  output: "table",
+  columns: ["Pathogen", "Protein A", "Protein B", "Interaction Type", "Method", "Assertion", "Reference"],
+  slots: [
+    { name: "organism", required: true, max_len: 120 },
+    { name: "genes", required: false, max_len: 200 },
+    { name: "other_terms", required: false, max_len: 200 },
+  ],
+  ...overrides,
+});
+
+const textTemplate = (overrides: Partial<PromptTemplate> = {}): PromptTemplate => ({
+  id: "literature-summary",
+  version: 1,
+  hash: "a1c9e6f0d2b47318",
+  label: "Literature Summary",
+  output: "text",
+  slots: [{ name: "organism", required: true, max_len: 120 }],
+  ...overrides,
+});
+
+describe("modesFrom — no server templates (fallback)", () => {
+  it("falls back to the built-in DATA_TYPES: same ids, labels, and columns", () => {
+    const modes = modesFrom([]);
+    expect(modes.map((m) => m.id)).toEqual(DATA_TYPES.map((d) => d.id));
+    expect(modes.map((m) => m.label)).toEqual(DATA_TYPES.map((d) => d.label));
+    expect(modes.map((m) => m.columns)).toEqual(DATA_TYPES.map((d) => d.columns));
+  });
+
+  it("gives every fallback mode a null templateId — that null routes the two-leg Copilot path", () => {
+    const modes = modesFrom([]);
+    expect(modes.length).toBeGreaterThan(0);
+    for (const m of modes) expect(m.templateId).toBeNull();
+  });
+});
+
+describe("modesFrom — server templates present", () => {
+  it("takes id, label, and templateId from the template, not the built-ins", () => {
+    const t = template();
+    const modes = modesFrom([t]);
+    expect(modes).toEqual([
+      { id: "ppi-extraction", label: "Protein-Protein Interaction (PPI)", columns: t.columns, templateId: "ppi-extraction" },
+    ]);
+  });
+
+  it("uses a table template's declared columns", () => {
+    const modes = modesFrom([template({ columns: ["A", "B"] })]);
+    expect(modes[0].columns).toEqual(["A", "B"]);
+  });
+
+  it("gives a text template columns: null, not []", () => {
+    const modes = modesFrom([textTemplate()]);
+    expect(modes[0].columns).toBeNull();
+  });
+
+  it("yields [] rather than undefined for a table template with no columns declared", () => {
+    const noColumns: PromptTemplate = {
+      id: "bare-table",
+      version: 1,
+      hash: "deadbeefcafef00d",
+      label: "Bare Table",
+      output: "table",
+      slots: [],
+    };
+    const modes = modesFrom([noColumns]);
+    expect(modes[0].columns).toEqual([]);
+    expect(modes[0].columns).not.toBeUndefined();
+  });
+});
+
+describe("modeById", () => {
+  it("finds a mode by id", () => {
+    const modes = modesFrom([template(), textTemplate()]);
+    expect(modeById(modes, "literature-summary")).toEqual(modes[1]);
+  });
+
+  it("returns undefined for an unknown id, so callers can fall back to modes[0]", () => {
+    const modes = modesFrom([template()]);
+    expect(modeById(modes, "no-such-id")).toBeUndefined();
+  });
+});
+
+describe("templateVars", () => {
+  it("maps organism/genes/otherTerms onto slot names organism/genes/other_terms", () => {
+    const f = fields({ organism: "E. coli", genes: "recA", otherTerms: "biofilm" });
+    expect(templateVars(template(), f)).toEqual({
+      organism: "E. coli",
+      genes: "recA",
+      other_terms: "biofilm",
+    });
+  });
+
+  it("sends only slots the template declares — a form field with no matching slot is absent", () => {
+    const t = template({ slots: [{ name: "organism", required: true, max_len: 120 }] });
+    const f = fields({ organism: "E. coli", genes: "recA", otherTerms: "biofilm" });
+    expect(templateVars(t, f)).toEqual({ organism: "E. coli" });
+  });
+
+  it("drops empty and whitespace-only values rather than sending \"\"", () => {
+    const f = fields({ organism: "E. coli", genes: "", otherTerms: "   " });
+    const vars = templateVars(template(), f);
+    expect(vars).toEqual({ organism: "E. coli" });
+    expect(vars).not.toHaveProperty("genes");
+    expect(vars).not.toHaveProperty("other_terms");
+  });
+
+  it("trims values", () => {
+    const f = fields({ organism: "  E. coli  ", genes: "", otherTerms: "" });
+    expect(templateVars(template(), f)).toEqual({ organism: "E. coli" });
+  });
+
+  it("omits a slot the template declares that the form has no matching field for, rather than sending undefined", () => {
+    const t = template({
+      slots: [
+        { name: "organism", required: true, max_len: 120 },
+        { name: "not_a_form_field", required: false, max_len: 50 },
+      ],
+    });
+    const f = fields({ organism: "E. coli" });
+    const vars = templateVars(t, f);
+    expect(vars).toEqual({ organism: "E. coli" });
+    expect(vars).not.toHaveProperty("not_a_form_field");
+    expect(Object.values(vars).every((v) => v !== undefined)).toBe(true);
+  });
+
+  it("returns {} when nothing applies", () => {
+    expect(templateVars(template(), fields())).toEqual({});
+    expect(Object.keys(templateVars(template(), fields()))).toHaveLength(0);
   });
 });
