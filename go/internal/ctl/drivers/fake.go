@@ -556,6 +556,30 @@ func (f *FakeFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	return nil
 }
 
+// CopyFile copies one in-memory file to another path, at the given mode.
+//
+// The real driver streams; this one copies the bytes, because the fake host has
+// no size. What it DOES keep is the two properties a step depends on: an absent
+// source is fs.ErrNotExist (so "the bundle does not hold that file" is
+// distinguishable from "the copy failed"), and the destination is contained by
+// the approved roots exactly as WriteAtomic's is.
+func (f *FakeFiles) CopyFile(_ context.Context, src, dst string, mode uint32) error {
+	if err := f.r.record("files", "CopyFile", src, dst, fmt.Sprintf("%04o", mode)); err != nil {
+		return err
+	}
+	if !contained(dst, f.Roots) {
+		return outsideRoots(dst, f.Roots)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.Files[src]
+	if !ok {
+		return fmt.Errorf("open %s: %w", src, fs.ErrNotExist)
+	}
+	f.Files[dst] = FakeFile{Data: append([]byte(nil), v.Data...), Mode: mode}
+	return nil
+}
+
 // MkdirAll records the directory and its mode. It honours the approved roots
 // for the same reason WriteAtomic does: creating a directory outside the
 // deployment is a mutation of somebody else's filesystem, and a fake that

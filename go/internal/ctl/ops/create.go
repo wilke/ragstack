@@ -104,6 +104,16 @@ type createSpec struct {
 	Start   bool
 	Gateway bool
 
+	// Verb is the name the registry's last_ops entry is filed under, empty
+	// meaning "create". `restore --as` lays its fresh tenant down through this
+	// same builder, and a row whose last_ops said `create` with a restore job's
+	// id would be the registry telling an operator the tenant was created by an
+	// operation that never ran. The STATE is not a field beside it: with
+	// Start false the builder records `provisioned`, which is exactly what a
+	// half-restored tenant is — the restore's own final step moves it to
+	// `active` once the data is back and the counts have been checked.
+	Verb string
+
 	// Mirror is the bare repository the worktree is checked out of.
 	Mirror string
 }
@@ -658,7 +668,11 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	if !spec.Start {
 		finalState = "provisioned"
 	}
-	p.addRegistryEffect("create", fmt.Sprintf("record %s as %s, with the key ledger and the file hashes", name, finalState),
+	verb := spec.Verb
+	if verb == "" {
+		verb = "create"
+	}
+	p.addRegistryEffect(verb, fmt.Sprintf("record %s as %s, with the key ledger and the file hashes", name, finalState),
 		func(row *registry.Tenant) {
 			row.State = finalState
 			row.EnvFileSHA256 = envSHA

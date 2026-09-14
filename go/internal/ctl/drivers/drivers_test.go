@@ -1007,3 +1007,85 @@ func TestNewRealWiresTheHostDriversWithTheirDefaults(t *testing.T) {
 		t.Errorf("an explicit configuration was not used: %+v", d.opts)
 	}
 }
+
+// ---------------------------------------------------------------- CopyFile
+
+// TestCopyFileWritesAtomicallyUnderTheApprovedRoots is the seam `restore --as`
+// copies a bundle's stores through. Both drivers answer the same four
+// questions: the bytes arrive, the mode is the one asked for, a destination
+// outside the approved roots is refused, and an absent source is fs.ErrNotExist
+// rather than a generic failure — a restore tells "the bundle does not hold
+// that file" from "the copy broke".
+func TestCopyFileWritesAtomicallyUnderTheApprovedRoots(t *testing.T) {
+	ctx := context.Background()
+	real, root := realFiles(t)
+	src := filepath.Join(root, "snapshot.bin")
+	if err := os.WriteFile(src, []byte("qdrant snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "sub", "snapshot.bin")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := real.CopyFile(ctx, src, dst, 0o640); err != nil {
+		t.Fatalf("CopyFile = %v", err)
+	}
+	body, err := os.ReadFile(dst)
+	if err != nil || string(body) != "qdrant snapshot" {
+		t.Fatalf("copied content = %q, %v", body, err)
+	}
+	st, err := os.Stat(dst)
+	if err != nil || st.Mode().Perm() != 0o640 {
+		t.Errorf("copied mode = %v, %v", st.Mode(), err)
+	}
+	// No temporary file is left behind.
+	ents, _ := os.ReadDir(filepath.Dir(dst))
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".") {
+			t.Errorf("CopyFile left %s behind", e.Name())
+		}
+	}
+	if err := real.CopyFile(ctx, src, filepath.Join(t.TempDir(), "loot"), 0o640); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("copying outside the approved roots = %v, want a refusal", err)
+	}
+	if err := real.CopyFile(ctx, filepath.Join(root, "absent"), dst, 0o640); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("copying an absent source = %v, want fs.ErrNotExist", err)
+	}
+
+	fake := NewFake(FakeOptions{Roots: []string{"/rag"}, Files: map[string][]byte{"/rag/a": []byte("bytes")}})
+	if err := fake.Files().CopyFile(ctx, "/rag/a", "/rag/b", 0o640); err != nil {
+		t.Fatalf("fake CopyFile = %v", err)
+	}
+	if got := fake.FakeFiles().Content("/rag/b"); string(got) != "bytes" {
+		t.Errorf("fake copy = %q", got)
+	}
+	if err := fake.Files().CopyFile(ctx, "/rag/absent", "/rag/c", 0o640); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("fake copy of an absent source = %v, want fs.ErrNotExist", err)
+	}
+	if err := fake.Files().CopyFile(ctx, "/rag/a", "/etc/passwd", 0o640); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("fake copy outside the roots = %v, want a refusal", err)
+	}
+}
+
+// TestRealCopyFileRefusesASymlinkedSource is the containment a bundle needs: a
+// bundle is operator input that may have been copied in from another host, and
+// a symlink inside one must not become a copy of whatever it points at inside a
+// tenant's data directory.
+func TestRealCopyFileRefusesASymlinkedSource(t *testing.T) {
+	f, root := realFiles(t)
+	secret := filepath.Join(t.TempDir(), "id_rsa")
+	if err := os.WriteFile(secret, []byte("private"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "innocent.db")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(root, "state.db")
+	if err := f.CopyFile(context.Background(), link, dst, 0o640); !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("copying through a symlink = %v, want a refusal", err)
+	}
+	if _, err := os.Stat(dst); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the copy happened anyway: %v", err)
+	}
+}

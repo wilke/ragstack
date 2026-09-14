@@ -1,7 +1,8 @@
-# Backups — `ragstack-ctl tenant backup`, `backup list|verify|prune`
+# Backups and restore — `ragstack-ctl tenant backup|restore`, `backup list|verify|prune`
 
 What a bundle is, how to take one an operator can rely on, what is in it, what
-is deliberately NOT in it, and how to check it.
+is deliberately NOT in it, how to check it, and how to rebuild a tenant from one
+(§6).
 
 **The one-sentence version:** `tenant backup <name> --fence` writes a
 self-describing directory under `/rag/backups/tenants/<name>/<ts>-backup/` that
@@ -171,7 +172,102 @@ false until a restore proves it, which is why `handover`, `migrate-local` and
 `decommission` refuse on a fresh bundle: their prerequisite is fenced **and**
 verified.
 
-## 6. When it goes wrong
+## 6. Restore — `ragstack-ctl tenant restore <source> --from <id> --as <new>`
+
+Restore is the **deep verify**. It rebuilds a whole tenant from a bundle, checks
+what came back against the manifest, and is the only operation in the control
+plane that sets `verified: true` on a backup.
+
+```bash
+ragstack-ctl tenant restore dev \
+  --from 20260914T093000Z-backup \
+  --as dev-restore \
+  --yes-destructive dev            # the confirm value is the SOURCE tenant
+```
+
+`--wait` is implied: the restored tenant's credentials are minted by the job and
+printed **once**, when it succeeds.
+
+### What it does, in order
+
+1. **Verifies the bundle.** Parses `manifest.json`, refuses anything that is not
+   `fenced` and `consistent`, re-hashes every file against `SHA256SUMS` in both
+   directions, and checks `SHA256SUMS` itself against the digest the manifest
+   records. A `.partial` where the bundle should be is named as such.
+2. **Builds the fresh tenant** with the same step builder `tenant create` uses —
+   allocation, directories, credentials, env files, worktree, UI, units — but
+   **not started and not routed**.
+3. **Copies the data in**: qdrant snapshots into `<new>/qdrant/snapshots/<c>/`,
+   the elasticsearch repository into `<new>/elasticsearch/snapshots/<bundle-id>`,
+   the SQLite state files into `<new>/state/`. Streamed, never read into memory.
+4. **Starts the stores only**, waits for them, then `Qdrant.Recover` per
+   collection, `_restore` of every index from the copied repository, and
+   `pg_restore` of the dump (read straight out of the bundle) for a
+   postgres-local tenant.
+5. **Starts the API**, waits for it, and **verifies**: every collection's point
+   count equals the manifest's `points_after`, every index's document count
+   equals `docs_after`, and `GET /v1/collections` on the restored tenant equals
+   the manifest's inventory. Any disagreement fails the job.
+6. **Records it**: `verified: true` in the bundle's own manifest, `verified:
+   true` on the source row's `last_backup` (when that record still names this
+   bundle), the fresh tenant `active` with `last_ops.restore`, and a gateway
+   generation that routes it.
+
+### What it needs before it will plan
+
+| prerequisite | why |
+|---|---|
+| the `as` name is free | v1 restores side by side; there is no in-place restore |
+| the SOURCE row has an `artifact_id`, and that artifact is **prepared on this host** | the fresh tenant is checked out and built from it. `ragstack-ctl fleet artifact prepare --tag <tag>` first |
+| the source's relational store is `sqlite` or `local`, not `external` | a bundle holds no dump of a server somebody else runs |
+
+A copy of a **selftest sandbox** (ports in the selftest range) is itself given a
+sandbox block, not the next production one: a selftest that restored its own
+tenant would otherwise spend a production index on every run, and the copy —
+living outside the sandbox range — would need a verified bundle of its own before
+`decommission` would clean it up.
+
+The artifact and the store kind are decided from the **source tenant's registry
+row**, because a plan may not read the host. The first step then refuses when the
+bundle's manifest names a different artifact or a different store kind — a tenant
+restored onto code its data never ran on is not a copy of anything. The store
+**images** are checked the same way: a bundle taken from a different pinned
+qdrant or elasticsearch digest is refused, and an unpinned digest on either side
+skips the check with a line in the job log saying so.
+
+### If it fails
+
+A failed restore rolls back completely: the fresh tenant's registry row is
+deleted, its units are stopped and their files removed, and every byte copied out
+of the bundle is removed. **No data survives and nothing is left running.** What
+can remain is the empty directory tree and the built UI that the create half laid
+down under `/rag/data/tenants/<new>/` — the ctl has no recursive delete, and a
+rollback path is the last place to give it one. Removing that tree by hand is
+safe; restoring under the same name again works without doing so.
+
+The source tenant is never touched except by the last two steps, which only set
+the flags saying the bundle has been proved.
+
+| symptom | what it means |
+|---|---|
+| refused: `bundle … is best_effort (unfenced)` | take a fenced backup; nothing stopped the tenant writing while that one was taken |
+| refused: `… SHA256SUMS hashes to … and its manifest says …` | the checksum list was edited after the manifest was written |
+| refused: `bundle … was taken from artifact …` | prepare and record that artifact on the source, or restore an older bundle |
+| refused: `collection … came back with N point(s) and bundle … recorded M` | the recovery is incomplete; the job rolled back, so nothing is half-restored |
+| refused: `the restored tenant reports collections … and bundle … recorded …` | the stores came back but the tenant's own collection registry did not — look at the `state/` copies or the postgres dump |
+
+### What it does NOT reproduce
+
+- **Service accounts.** They are registered through the tenant API, and the
+  restored tenant is not started until its data is in. `ragstack-ctl sa create`.
+- **Admin subjects.** The registry records their *count*, not the subjects.
+  `ragstack-ctl admin add`.
+- **The source's key values.** The restored tenant's keys carry the source's
+  labels and roles with **fresh** values, delivered once through the job's
+  envelope. The source's own values are in the bundle only if it was sealed to
+  an age recipient (§3), and a restore never reads them.
+
+## 7. When it goes wrong
 
 | symptom | what it means |
 |---|---|
@@ -182,5 +278,5 @@ verified.
 | a `<id>.partial` directory | an interrupted job. Re-run the backup; `prune --dry-run` lists stale ones after 24 h |
 | `secrets.included: false` and you expected otherwise | no recipient in `/rag/config/ctl/backup-recipients.txt` when the bundle was taken (§3) |
 
-Restoring is [`restore --as`](ctl-quickstart.md) — a fresh tenant beside the old
-one, never in place. There is no in-place restore in v1.
+Restoring is §6 — a fresh tenant beside the old one, never in place. There is no
+in-place restore in v1.

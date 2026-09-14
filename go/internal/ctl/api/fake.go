@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,8 +147,23 @@ func FixtureFleet() *registry.Fleet {
 		PythonEnv:  "/rag/envs/ragstack",
 		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
 	}
+	// And the artifact the managed fixture tenant was BUILT from. A row whose
+	// `artifact_id` names nothing the fleet holds is an inconsistent registry,
+	// and `restore --as` is the verb that notices: it lays the fresh tenant
+	// down from the SOURCE tenant's artifact and refuses when that artifact is
+	// not prepared on this host.
+	f.Artifacts[managedFixtureArtifactID] = &registry.Artifact{
+		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3",
+		Worktree:   "/rag/data/ctl/artifacts/" + managedFixtureArtifactID + "/worktree",
+		UIDist:     "/rag/data/ctl/artifacts/" + managedFixtureArtifactID + "/worktree/frontend/dist",
+		PythonEnv:  "/rag/envs/ragstack",
+		PreparedAt: "2026-09-14T00:00:00Z", PreparedBy: "local:0", SchemaCompatible: true,
+	}
 	return f
 }
+
+// managedFixtureArtifactID is the artifact `ctlfixture` records.
+const managedFixtureArtifactID = "v1.5.3-abababababab"
 
 // managedFixtureName is the tenant the mutation conformance acts on.
 const managedFixtureName = "ctlfixture"
@@ -158,7 +174,7 @@ func addManagedFixture(f *registry.Fleet) {
 	t := registry.NewTenant(managedFixtureName, managedFixtureName)
 	t.DataDir, t.Worktree, t.PythonEnv = tp.DataDir, tp.Worktree, "/rag/envs/ragstack"
 	t.Code = registry.Code{Tag: "v1.5.3", SHA: registry.NullString(strings.Repeat("ab", 20))}
-	t.ArtifactID = "v1.5.3-abababababab"
+	t.ArtifactID = managedFixtureArtifactID
 	t.Ports = paths.Block(9)
 	t.API = registry.API{Bind: "127.0.0.1", PidFile: tp.PidFile, Log: tp.APILog}
 	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + managedFixtureName + "/ui/"}
@@ -217,6 +233,7 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 		Collections: map[string][]string{}, Indices: map[string][]string{},
 		QdrantCounts: map[string]int64{}, ESCounts: map[string]int64{},
 		QdrantSnapshotDirs: map[string]string{}, UnitPorts: map[string]int{},
+		CollectionsByOrigin: map[string][]string{},
 	}
 	for name, t := range f.Tenants {
 		tp := paths.TenantPaths(roots, name, t.ManifestName)
@@ -243,7 +260,55 @@ func FixtureDrivers(roots paths.Roots, f *registry.Fleet, now func() time.Time) 
 			opts.ESCounts[url+"/"+name+"-chunks"] = 34000
 		}
 	}
+	fixtureRestoreTargets(f, &opts)
 	return opts
+}
+
+// fixtureRestoreTargets pre-answers, for the port blocks a `restore --as` would
+// ALLOCATE, the facts a tenant that has just been restored would present: its
+// stores holding the counts the bundle recorded, and its own API reporting the
+// collection inventory.
+//
+// It exists for the same reason fixtureListening does, and it is the same kind
+// of accommodation. The fake stores keep no data: `Qdrant.Recover` and
+// `_restore` move no points on this host, and the fake tenant API has no
+// collection store to read back. Without this seed the fixture could only ever
+// represent a FAILED restore — the verification step would ask the fresh
+// tenant's stores for the bundle's counts and be told zero — and the verb could
+// not be exercised end to end at all.
+//
+// What it does NOT fake is any of the work. The copies, the recover calls, the
+// repository registration and the counts the step asks for are all real calls
+// on this host, and they are asserted directly in
+// go/internal/ctl/ops/restore_test.go, where the target's numbers are seeded per
+// test rather than for every block.
+func fixtureRestoreTargets(f *registry.Fleet, opts *drivers.FakeOptions) {
+	next, _ := registry.Allocate(f)
+	for _, t := range f.Tenants {
+		if t.Supervisor != string(model.SupervisorSystemd) ||
+			t.Stores.Qdrant.Ownership != registry.OwnershipExclusive ||
+			!t.Stores.Qdrant.Capabilities.Snapshot {
+			continue
+		}
+		collections := append([]string(nil), opts.Collections[t.Stores.Qdrant.URL]...)
+		indices := append([]string(nil), opts.Indices[t.Stores.Elasticsearch.URL]...)
+		sort.Strings(collections)
+		for i := 0; i < fixtureFutureBlocks; i++ {
+			block := paths.BlockAt(f.PortBase, f.PortStride, next+i)
+			// `prospectiveTenant` builds the fresh tenant's URLs on 127.0.0.1;
+			// the captured tenants spell theirs `localhost`. A seed under the
+			// wrong spelling is a seed that answers nothing.
+			qURL := fmt.Sprintf("http://127.0.0.1:%d", block.QdrantHTTP)
+			esURL := fmt.Sprintf("http://127.0.0.1:%d", block.ESHTTP)
+			for _, c := range collections {
+				opts.QdrantCounts[qURL+"/"+c] = opts.QdrantCounts[t.Stores.Qdrant.URL+"/"+c]
+			}
+			for _, idx := range indices {
+				opts.ESCounts[esURL+"/"+idx] = opts.ESCounts[t.Stores.Elasticsearch.URL+"/"+idx]
+			}
+			opts.CollectionsByOrigin[fmt.Sprintf("http://127.0.0.1:%d", block.API)] = collections
+		}
+	}
 }
 
 // NewFakeBackendAt is NewFakeBackend with the clock injected, so a test can

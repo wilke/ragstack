@@ -394,6 +394,75 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	return nil
 }
 
+// CopyFile streams src to dst, atomically and under the approved roots.
+//
+// It is WriteAtomic with an io.Copy where the []byte was: the same temporary
+// file in the destination's own directory, the same mode set BEFORE the
+// rename, the same directory fsync afterwards. What it does not do is hold the
+// file in memory — a restore copies qdrant snapshots and elasticsearch
+// segments, which are gigabytes each.
+//
+// The SOURCE is opened with O_NOFOLLOW. Reading is not root-checked here (it is
+// not for ReadFile either), but a bundle is operator input that may have been
+// copied in from another host, and a symlink inside one must not become a copy
+// of whatever it points at inside a tenant's data directory.
+func (f *RealFiles) CopyFile(_ context.Context, src, dst string, mode uint32) (err error) {
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("%w: %s is a symlink; the ctl never copies through one", jobs.ErrRefused, src)
+		}
+		return err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("%w: %s is a directory, not a file to copy", jobs.ErrRefused, src)
+	}
+
+	dst, err = f.check(dst)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(dst)+".tmp-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(name)
+		}
+	}()
+	if _, err = io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(fileMode(mode)); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(name, dst); err != nil {
+		return err
+	}
+	if d, derr := os.Open(dir); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
+}
+
 // MkdirAll creates path and every missing parent under it, and is REAL: it is
 // how `tenant create` lays down a tenant tree.
 //

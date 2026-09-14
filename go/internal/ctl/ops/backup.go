@@ -18,7 +18,6 @@ import (
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
-	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 	"github.com/ragstack/ragstack/internal/ctl/render"
 	"github.com/ragstack/ragstack/internal/ctl/version"
@@ -1851,66 +1850,7 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// ---------------------------------------------------------------- restore
-
-func planRestore(_ context.Context, p *planner, args map[string]any) error {
-	p.need(model.LockRegistry, model.LockManifest, model.LockTenant, model.LockGateway)
-	from, as := argStringOf(args, "from"), argStringOf(args, "as")
-
-	// v1 restores into a FRESH tenant and nothing else. An in-place restore
-	// would have to reconcile live credentials, a live gateway row and a live
-	// store with a bundle taken at another moment; a fresh tenant has none of
-	// those problems and can be compared with the original side by side.
-	if p.oc.Fleet != nil {
-		if _, exists := p.oc.Fleet.Tenants[as]; exists {
-			return p.refuse("`as` must name a FRESH tenant; %s already exists. v1 restores side by side (in-place "+
-				"restore is v1.x) — pick a new name", as)
-		}
-	}
-	if err := paths.ValidateName(as); err != nil {
-		return fmt.Errorf("%w: %s", jobs.ErrValidation, err.Error())
-	}
-	src := filepath.Join(p.oc.Roots.BackupsDir, p.t.Name, from)
-	p.result["restored_as"] = as
-	p.result["bundle"] = from
-
-	p.add(step{
-		Kind: "fs", Title: "verify the bundle manifest and SHA256SUMS", Targets: []string{src},
-		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			b, err := sc.Ops.Drivers.Files().ReadFile(ctx, filepath.Join(src, "manifest.json"))
-			if err != nil {
-				return "", fmt.Errorf("%w: bundle %s is unreadable: %v", jobs.ErrRefused, from, err)
-			}
-			var man map[string]any
-			if err := json.Unmarshal(b, &man); err != nil {
-				return "", fmt.Errorf("%w: bundle %s has no readable manifest.json: %v", jobs.ErrRefused, from, err)
-			}
-			if fenced, _ := man["fenced"].(bool); !fenced {
-				return "", fmt.Errorf("%w: bundle %s is best-effort (unfenced), so it cannot be restored from",
-					jobs.ErrRefused, from)
-			}
-			return fmt.Sprintf("bundle %s is fenced and its manifest parses", from), nil
-		},
-	})
-	p.add(step{
-		Kind: "registry", Title: "allocate the fresh tenant " + as, Targets: []string{as},
-		Run: p.pendingRun("registry", "AllocateFromBundle"),
-	})
-	p.add(step{
-		Kind: "qdrant", Title: "recover every collection from the bundle's snapshots", Targets: []string{as},
-		Run: p.pendingRun("qdrant", "Recover"),
-	})
-	p.add(step{
-		Kind: "es", Title: "register the copied repo and _restore every index", Targets: []string{as},
-		Run: p.pendingRun("elasticsearch", "Restore"),
-	})
-	p.add(step{
-		Kind: "probe", Title: "verify counts and a fixture query against " + as, Targets: []string{as},
-		Run: p.pendingRun("tenantapi", "VerifyRestore"),
-	})
-	p.warn("restore also serves as `backup verify`: it proves the bundle by rebuilding from it")
-	return nil
-}
+// ---------------------------------------------------------------- pending
 
 // pendingRun is a step whose driver method lands in PR-D. The plan is
 // rendered in full — a dry run has to be able to SHOW the operation — and the

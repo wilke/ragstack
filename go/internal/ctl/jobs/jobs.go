@@ -332,6 +332,21 @@ type Files interface {
 	// so a driver that "fixed" the mode of a parent it did not create would be
 	// changing a directory nobody asked it to touch.
 	MkdirAll(ctx context.Context, path string, mode uint32) error
+	// CopyFile copies src to dst with mode, STREAMING: dst is written through a
+	// temporary file in its own directory whose mode is set before the rename,
+	// exactly as WriteAtomic does, and under the same approved roots.
+	//
+	// It exists because `restore --as` copies a bundle's store files into a
+	// fresh tenant, and those are the largest files this system has: a qdrant
+	// snapshot or an elasticsearch segment is gigabytes. ReadFile + WriteAtomic
+	// would be correct and would load every one of them into the daemon's heap,
+	// which is how a restore takes the host down.
+	//
+	// src is a READ and so is not root-checked (like ReadFile), but it is
+	// opened without following a final symlink: a bundle is operator input, and
+	// a link planted in one must not become a copy of whatever it points at
+	// inside the new tenant's tree.
+	CopyFile(ctx context.Context, src, dst string, mode uint32) error
 	// ReadDir lists ONE directory (not recursively), sorted by name. It is a
 	// read, so it is not root-checked; an absent directory is fs.ErrNotExist,
 	// which callers tell apart from "unreadable" with errors.Is exactly as

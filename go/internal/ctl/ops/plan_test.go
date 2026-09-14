@@ -92,6 +92,18 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 	if mutate != nil {
 		mutate(tenant)
 	}
+	// The artifact every ctl-managed fixture tenant was built from. It is in
+	// the FLEET rather than only on the row because `restore --as` lays its
+	// fresh tenant down from the source's artifact, and a row naming an
+	// artifact the fleet does not have is an inconsistent registry rather than
+	// a fixture.
+	f.Artifacts[testArtifactID] = &registry.Artifact{
+		SHA: strings.Repeat("ab", 20), Tag: "v1.5.3",
+		Worktree:  "/rag/data/ctl/artifacts/" + testArtifactID + "/worktree",
+		UIDist:    "/rag/data/ctl/artifacts/" + testArtifactID + "/worktree/frontend/dist",
+		PythonEnv: "/rag/envs/ragstack", PreparedAt: "2026-09-14T09:00:00Z", PreparedBy: "local:3581",
+		SchemaCompatible: true,
+	}
 	tp := paths.TenantPaths(roots, tenant.Name, tenant.ManifestName)
 	fake := drivers.NewFake(drivers.FakeOptions{
 		Roots: []string{"/rag"},
@@ -123,9 +135,13 @@ func fixtureEnv(t *testing.T, name string, mutate func(*registry.Tenant), env []
 	}, fake
 }
 
+// testArtifactID is the prepared artifact the fixture fleet carries.
+const testArtifactID = "v1.5.3-abababababab"
+
 // managed turns a fixture tenant into one the ctl supervises and owns.
 func managed(t *registry.Tenant) {
 	t.Supervisor, t.Owner, t.State = "systemd", "svcbvbrc", "active"
+	t.ArtifactID = testArtifactID
 	t.EnvLayout, t.API.Bind = "managed", "127.0.0.1"
 	t.UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/" + t.Name + "/ui/"}
 	caps := registry.Capabilities{Stop: true, Purge: true, Restore: true, Snapshot: true}
@@ -429,7 +445,7 @@ func TestPlanRestoreOnlyEverIntoAFreshTenant(t *testing.T) {
 		t.Fatalf("restoring over an existing tenant = %v, want a refusal", err)
 	}
 	p := plan(t, oc, "restore", map[string]any{"from": bundle, "as": "dev-copy"})
-	if !hasStep(p, "fs", "verify the bundle manifest") {
+	if !hasStep(p, "fs", "verify the bundle") {
 		t.Errorf("a restore that does not verify the bundle first: %v", titles(p))
 	}
 	if p.Result()["restored_as"] != "dev-copy" {

@@ -1066,6 +1066,151 @@ async def test_the_postgres_leg_is_planned_only_for_a_postgres_local_tenant(
     assert skipped["warnings"], skipped
 
 
+# =========================================================================== #
+# restore --as (PR-D) — the deep verify
+# =========================================================================== #
+async def fenced_bundle(
+    client: httpx.AsyncClient, schemas: dict[str, dict], tenant: str, *, fence: bool = True
+) -> str:
+    """Take a bundle of *tenant* and return its id."""
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/backup", schemas, args={"fence": fence}, timeout=60.0
+    )
+    assert job["state"] == "succeeded", json.dumps(job)[:800]
+    bundle = (job["result"] or {}).get("bundle")
+    assert isinstance(bundle, str) and bundle.endswith("-backup"), job["result"]
+    return bundle
+
+
+async def test_restore_rebuilds_a_fresh_tenant_and_marks_the_bundle_verified(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The whole verb, end to end: a fenced bundle, a tenant that did not exist
+    a moment ago built from the source's artifact, the stores recovered into it,
+    its counts checked against the manifest, and — only then — `verified` set on
+    the backup.
+
+    ``verified`` is the point. Nothing else in the control plane sets it, and
+    `decommission` and `handover` both refuse without it, so this is the
+    operation that makes a backup a recovery point rather than a directory."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source)
+    target = new_tenant_name()
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{source}/ops/restore", schemas,
+        args={"from": bundle, "as": target}, confirm=source, timeout=120.0,
+    )
+    assert job["state"] == "succeeded", (
+        f"the restore settled as {job['state']}: {json.dumps(job.get('error'))} · steps "
+        + json.dumps([{"n": s["n"], "title": s["title"], "state": s["state"], "error": s.get("error")}
+                      for s in job["steps"]])
+    )
+    result = job["result"] or {}
+    assert result.get("restored_as") == target and result.get("bundle") == bundle, result
+    assert result.get("counts"), f"the restore reports no counts: {result}"
+
+    # The fresh tenant is real, active, and the read surface serves it.
+    shown = await client.get(f"/v1/tenants/{target}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["summary"]["state"] == "active", body["summary"]
+    assert body["registry"]["last_ops"].get("restore", {}).get("outcome") == "succeeded", (
+        body["registry"]["last_ops"]
+    )
+
+    # …and the SOURCE's bundle is now proved.
+    src = await client.get(f"/v1/tenants/{source}")
+    assert src.status_code == 200, src.text
+    last = src.json()["summary"]["last_backup"]
+    assert last and last["verified"] is True, (
+        f"a succeeded restore did not mark {source}'s bundle verified: {last}"
+    )
+
+    # The restored tenant's credentials are FRESH and come back exactly once.
+    first = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert first.status_code == 200, first.text
+    validate(first.json(), "secrets_response", schemas)
+    labels = {s["label"] for s in first.json()["secrets"]}
+    assert "bootstrap-admin" in labels, labels
+    for secret in first.json()["secrets"]:
+        assert len(secret["value"]) == 64, f"{secret['label']} is not token_hex(32)"
+    second = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert_error(second, 410, "not_found", schemas)
+
+    # And the job result carries no credential, only fingerprints.
+    for key in result.get("keys") or []:
+        assert key["fingerprint"].startswith("sha256:"), key
+        assert "value" not in key, f"the restore result carries a key VALUE: {key}"
+
+
+async def test_restore_from_a_best_effort_bundle_fails_with_the_reason(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """An unfenced bundle is a copy of a moving target. The restore does not
+    discover that halfway through — the FIRST step reads the manifest and
+    refuses — and the refusal says `best_effort`, so an operator reading a failed
+    job knows to take a fenced backup rather than to go looking at the stores."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source, fence=False)
+    target = new_tenant_name()
+
+    job = await submit_and_settle(
+        client, f"/v1/tenants/{source}/ops/restore", schemas,
+        args={"from": bundle, "as": target}, confirm=source, timeout=120.0,
+    )
+    assert job["state"] == "failed", json.dumps(job)[:800]
+    detail = json.dumps(job.get("error")) + json.dumps([s.get("error") for s in job["steps"]])
+    assert "best_effort" in detail, detail
+
+    # And nothing was left behind: the name is free again.
+    after = await client.get(f"/v1/tenants/{target}")
+    assert after.status_code == 404, (
+        f"a failed restore left {target} in the registry ({after.status_code})"
+    )
+
+
+async def test_restore_is_destructive_on_the_SOURCE_and_says_so(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The plan is the approval document, and the thing being approved is an
+    operation on TWO tenants. Its confirm value is the source's name — that is
+    the row whose backup record changes and the row the lock is held on — and
+    the plan names the fresh tenant in its steps so an operator can see what is
+    about to be built."""
+    source = await managed_tenant(client)
+    bundle = await fenced_bundle(client, schemas, source)
+    target = new_tenant_name()
+
+    preview = await client.post(
+        f"/v1/tenants/{source}/ops/restore",
+        json=op_body(dry_run=True, args={"from": bundle, "as": target}),
+    )
+    assert preview.status_code == 200, preview.text
+    plan = preview.json()
+    validate(plan, "plan", schemas)
+    assert plan["requires_confirm"] is True and plan["confirm_value"] == source, plan
+
+    titles = [s["title"] for s in plan["steps"]]
+    for needle in ("verify the bundle", "allocate " + target, "recover every collection",
+                   "verify the restored tenant against the bundle"):
+        assert any(needle in t for t in titles), f"no step matching {needle!r} in {titles}"
+
+    # The fresh tenant's credential file is named and NOT previewed.
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    secrets = next((p for p in writes if p.endswith("/config/secrets.env")), None)
+    assert secrets and target in secrets, f"the plan does not name {target}'s secrets.env: {sorted(writes)}"
+    assert not writes[secrets]["preview"], writes[secrets]["preview"]
+
+    # An execute without the confirm is 428, not a restore.
+    resp = await client.post(
+        f"/v1/tenants/{source}/ops/restore",
+        json=op_body(dry_run=False, args={"from": bundle, "as": target}),
+    )
+    assert resp.status_code == 428, f"a destructive op ran without a confirm: {resp.status_code}"
+
+
 async def test_decommission_refuses_a_tenant_the_ctl_does_not_run(
     job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
 ) -> None:
