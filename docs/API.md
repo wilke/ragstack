@@ -140,7 +140,7 @@ keys are configured.
 
 ## Endpoints
 
-All **60** operations in the contract. "Gate" is the authorization the route
+All **61** operations in the contract. "Gate" is the authorization the route
 applies on top of authentication; *authenticated* means any valid credential of
 either kind. Rows without a link are covered in [Operations &
 admin](#operations--admin).
@@ -151,6 +151,7 @@ admin](#operations--admin).
 | POST | [`/v1/query`](#post-v1query) | authenticated | Full RAG: rewrite → retrieve → rerank → generate |
 | POST | [`/v1/retrieve`](#post-v1retrieve) | authenticated | Retrieve chunks only (no answer) |
 | GET | [`/v1/chunks`](#get-v1chunks) | authenticated | Fetch chunks by id (client-side context expansion) |
+| GET | [`/v1/prompt-templates`](#prompt-templates) | authenticated | The templates this tenant offers for `/v1/query` generation |
 | GET | [`/v1/collections`](#get-v1collections) | authenticated (**owner-filtered**) | List readable collections + the caller's `default` |
 | POST | [`/v1/collections`](#post-v1collections) | authenticated; **admin** for `embedding`/`chunk`, or if `ALLOW_USER_COLLECTION_CREATE=false` | Create a collection |
 | DELETE | [`/v1/collections/{id}`](#delete-v1collectionsid) | owner-or-admin | Unregister a collection, optionally purging its data |
@@ -359,6 +360,76 @@ links the ingester stamps:
 - A `filters` key `GET /v1/chunks` refuses (`doc_id`, `chunk_id`, `content`,
   `start_char`, `end_char`, `library_id`) is a `400` here too when
   `context_window > 0`.
+
+### Prompt templates
+
+Generation is **configurable, not arbitrary** ([ADR-0008](adr/0008-prompt-templates.md)).
+A caller selects a named, server-side template by id and fills the slots it
+declares; a caller can never supply prompt text of its own. That keeps the
+service from becoming an LLM proxy scoped by someone else's credential, and it
+makes a result reproducible — `(template, version, hash, model)` names the
+condition it was produced under, which is what an ablation arm or a grading
+verdict needs.
+
+**This does not solve prompt injection.** A slot value is caller text. What the
+design bounds is abuse and non-reproducibility; the ADR says so in those words.
+
+Templates are per-tenant deployment configuration, loaded and validated from
+`PROMPT_TEMPLATES_FILE` at startup — a malformed file fails the boot rather than
+answering 500 to whichever caller selects the bad template first. A tenant with
+none configured is a normal state, not an error: the list comes back empty and
+every template id 404s, which is how a client hides its picker without a version
+check. See `contracts/fixtures/prompt-templates.example.yaml`.
+
+```bash
+curl -s $BASE/v1/prompt-templates -H "X-API-Key: $KEY"
+# {"templates":[{"id":"ppi-extraction","version":1,"hash":"b883138c8cc58b36",
+#                "label":"Protein-Protein Interaction (PPI)","output":"table",
+#                "columns":["Pathogen","Protein A", …],
+#                "slots":[{"name":"organism","required":true,"max_len":120}, …]}]}
+```
+
+The response carries each template's **declaration** — never its `system`/`user`
+bodies. A caller needs to know which knobs exist and what they accept, not what
+the server will say to the model.
+
+Using one on `/v1/query`:
+
+```bash
+curl -s $BASE/v1/query -H "X-API-Key: $KEY" -H 'Content-Type: application/json' -d '{
+  "query": "SARS-CoV-2 Spike ACE2 protein interaction",
+  "collection": "oa-dev",
+  "template": "ppi-extraction",
+  "template_vars": {"organism": "SARS-CoV-2", "genes": "Spike, ACE2"}
+}'
+# {"answer":"Pathogen\tProtein A\t…","sources":[…],"rewritten_queries":[…],
+#  "template":"ppi-extraction","template_version":1,
+#  "template_hash":"b883138c8cc58b36","model":"…Llama-4-Scout…"}
+```
+
+**`query` and the template are different strings**, and this is the one thing to
+get right. `query` is what gets embedded and BM25'd; the template renders the
+*generation* prompt only, and the server never derives one from the other.
+Putting the instruction block in `query` would embed the instructions and
+retrieve noise.
+
+| Failure | Status |
+|---|---|
+| unknown `template` id | 404 |
+| a required slot left unset, an undeclared slot name, or a value over the slot's `max_len` | 422 |
+
+Both are answered **before any retrieval runs** — they are facts about the
+request, knowable up front, and answering them after a full retrieval would burn
+embedding and store work to return an error.
+
+Omitting `template` leaves the response byte-identical to a server without the
+feature: the four provenance keys are **absent**, not `null`.
+
+A template deliberately does **not** pin a model. Compare exists to vary the
+model while holding the prompt constant, so pinning would obstruct it; instead
+the response echoes the model that actually ran, which is what lets a degraded
+result be attributed to a swapped server default rather than read as a prompt
+regression.
 
 ### GET /v1/chunks
 

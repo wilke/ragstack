@@ -791,3 +791,36 @@ def test_ppi_template_does_not_let_a_value_hijack_the_instructions(tmp_path: Pat
     )
     assert "involving genes/proteins: {{context}}{{#other_terms}}." in user
     assert user.count(_PASSAGES) == 1
+
+
+def test_the_shipped_example_file_loads_and_renders() -> None:
+    """The example in contracts/fixtures is executable documentation.
+
+    It is what an operator copies to start from and what phase 3 points the
+    literature console at, so a typo in it is a broken boot for whoever follows
+    the docs. Loading it here means the example cannot rot: every validation rule
+    this module enforces is enforced against the file we ship.
+    """
+    from pathlib import Path
+
+    example = Path(__file__).resolve().parents[2] / "contracts" / "fixtures" / "prompt-templates.example.yaml"
+    templates = load_templates(example)
+
+    assert set(templates) == {"ppi-extraction", "protein-function", "mutation", "literature-summary"}
+
+    ppi = templates["ppi-extraction"]
+    assert ppi.output == "table"
+    assert ppi.columns is not None and ppi.columns[0] == "Pathogen"
+
+    system, user = render(ppi, {"organism": "SARS-CoV-2", "genes": "Spike, ACE2"}, "<<PASSAGES>>")
+    assert "{{" not in system and "{{" not in user, "an unrendered marker reached the model"
+    assert "<<PASSAGES>>" in user
+    assert "involving genes/proteins: Spike, ACE2" in user
+    # other_terms was not supplied, so its section renders away rather than
+    # leaving a dangling ", related to:" stub.
+    assert "related to:" not in user
+
+    # The prose template carries no columns, so a client renders the answer as
+    # text instead of trying to parse a table out of it.
+    assert templates["literature-summary"].output == "text"
+    assert templates["literature-summary"].columns is None

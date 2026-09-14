@@ -1,0 +1,136 @@
+# Example PROMPT_TEMPLATES_FILE (ADR-0008).
+#
+# Point a tenant at a copy of this with `PROMPT_TEMPLATES_FILE=/path/to/file.yaml`
+# in its tenant.env. Loaded and VALIDATED at startup: a malformed file fails the
+# boot rather than 500ing whichever caller selects the bad template first.
+#
+# These three are the literature console's (frontend/src/literature/extraction.ts),
+# moved server-side — they are what phase 3 of docs/plans/prompt-templates.md
+# points that app at, so it stops building prompts in the browser.
+#
+# THINGS THAT WILL FAIL THE BOOT, all deliberately:
+#   * a `{{marker}}` anywhere in `system` — an author who typed it believed it
+#     would be filled, and shipping an unfilled marker to a model is not a
+#     kindness;
+#   * a slot declared but never referenced in `user` — the server would advertise
+#     a knob in GET /v1/prompt-templates, accept a value, and change nothing;
+#   * a slot without `max_len`;
+#   * `output: table` without `columns`, or `output: text` with them.
+#
+# `version` MUST be bumped on any content change — the bytes that reach the model
+# plus the rules that decide what is accepted. `label` is display only and is not
+# content, so renaming one of these does not read as drift.
+#
+# Reserved names usable in `user`, not settable by a caller: {{context}} (the
+# retrieved passages), {{columns}} (tab-joined), {{label}}.
+
+- id: ppi-extraction
+  version: 1
+  label: Protein-Protein Interaction (PPI)
+  output: table
+  columns: [Pathogen, Protein A, Protein B, Interaction Type, Method, Assertion, Reference]
+  slots:
+    - {name: organism, required: true, max_len: 120, label: Organism of interest}
+    - {name: genes, required: false, max_len: 200, label: Genes of interest}
+    - {name: other_terms, required: false, max_len: 200, label: Other terms}
+  system: >-
+    You extract structured data from scientific literature. Use ONLY the provided
+    context passages. If the context does not support an entry, do not invent one.
+  user: |
+    Based on the literature context below, extract structured data about {{label}} for organism "{{organism}}"{{#genes}} involving genes/proteins: {{genes}}{{/genes}}{{#other_terms}}, related to: {{other_terms}}{{/other_terms}}.
+
+    Return ONLY a TSV (tab-separated values) table with these columns:
+    {{columns}}
+
+    Rules:
+    - Output the header row first, then data rows.
+    - Use tab characters to separate columns.
+    - If a value is unknown, use "N/A".
+    - Include the reference (author, year, DOI if available) for each row.
+    - Do NOT include any explanatory text before or after the table.
+    - Extract as many relevant entries as the literature supports.
+
+    --- LITERATURE CONTEXT ---
+
+    {{context}}
+
+- id: protein-function
+  version: 1
+  label: Protein Function
+  output: table
+  columns: [Organism, Gene Name, Function, Assertion, Reference]
+  slots:
+    - {name: organism, required: true, max_len: 120, label: Organism of interest}
+    - {name: genes, required: false, max_len: 200, label: Genes of interest}
+    - {name: other_terms, required: false, max_len: 200, label: Other terms}
+  system: >-
+    You extract structured data from scientific literature. Use ONLY the provided
+    context passages. If the context does not support an entry, do not invent one.
+  user: |
+    Based on the literature context below, extract structured data about {{label}} for organism "{{organism}}"{{#genes}} involving genes/proteins: {{genes}}{{/genes}}{{#other_terms}}, related to: {{other_terms}}{{/other_terms}}.
+
+    Return ONLY a TSV (tab-separated values) table with these columns:
+    {{columns}}
+
+    Rules:
+    - Output the header row first, then data rows.
+    - Use tab characters to separate columns.
+    - If a value is unknown, use "N/A".
+    - Include the reference (author, year, DOI if available) for each row.
+    - Do NOT include any explanatory text before or after the table.
+
+    --- LITERATURE CONTEXT ---
+
+    {{context}}
+
+- id: mutation
+  version: 1
+  label: Mutation
+  output: table
+  columns: [Organism, Gene Name, Mutation, Phenotype, Assertion, Reference]
+  slots:
+    - {name: organism, required: true, max_len: 120, label: Organism of interest}
+    - {name: genes, required: false, max_len: 200, label: Genes of interest}
+    - {name: other_terms, required: false, max_len: 200, label: Other terms}
+  system: >-
+    You extract structured data from scientific literature. Use ONLY the provided
+    context passages. If the context does not support an entry, do not invent one.
+  user: |
+    Based on the literature context below, extract structured data about {{label}} for organism "{{organism}}"{{#genes}} involving genes/proteins: {{genes}}{{/genes}}{{#other_terms}}, related to: {{other_terms}}{{/other_terms}}.
+
+    Return ONLY a TSV (tab-separated values) table with these columns:
+    {{columns}}
+
+    Rules:
+    - Output the header row first, then data rows.
+    - Use tab characters to separate columns.
+    - If a value is unknown, use "N/A".
+    - Include the reference (author, year, DOI if available) for each row.
+    - Do NOT include any explanatory text before or after the table.
+
+    --- LITERATURE CONTEXT ---
+
+    {{context}}
+
+# The prose counterpart. `output: text` carries no columns, so a client renders
+# the answer as prose rather than trying to parse a table out of it.
+- id: literature-summary
+  version: 1
+  label: Literature summary
+  output: text
+  slots:
+    - {name: organism, required: true, max_len: 120, label: Organism of interest}
+    - {name: genes, required: false, max_len: 200, label: Genes of interest}
+    - {name: other_terms, required: false, max_len: 200, label: Other terms}
+  system: >-
+    You answer questions about scientific literature using ONLY the provided
+    context passages. If the context does not contain the answer, say you do not
+    know rather than inventing one. Cite the passages you used as [n].
+  user: |
+    Based on the literature context below, provide a comprehensive answer about relevant findings for organism "{{organism}}"{{#genes}} involving genes/proteins: {{genes}}{{/genes}}{{#other_terms}}, related to: {{other_terms}}{{/other_terms}}.
+
+    Summarize the key findings, citing the source references where appropriate. Organize by gene/protein if multiple are discussed.
+
+    --- LITERATURE CONTEXT ---
+
+    {{context}}
