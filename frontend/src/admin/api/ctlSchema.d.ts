@@ -158,7 +158,7 @@ export interface paths {
         };
         /**
          * Configuration keys by class
-         * @description Every key in the tenant's env files with its class; values only for `public` keys, the literal `<redacted>` for everything else. A viewer receives `public` rows only and cannot enumerate which secrets exist.
+         * @description Every key in the tenant's env files with its class; values only for `public` keys, the literal `<redacted>` for everything else. A viewer receives `public` rows only and cannot enumerate which secrets exist. `source` is `registry` instead of `live` when a pre-handover tenant's env files are not readable by the ctl account; `note` then explains why.
          */
         get: operations["ctlTenantEnv"];
         put?: never;
@@ -1406,13 +1406,17 @@ export interface components {
         };
         /**
          * CtlEnvResponse
-         * @description `GET /v1/tenants/{name}/env`: the tenant's configuration keys as the settings classification table sees them. Every key found in `tenant.env`, `secrets.env` and `provision.env` is listed with its `class`; `value_redacted` is the verbatim value for a `public` key and the literal `<redacted>` for every other class — the daemon has no code path that returns a secret-class value over HTTP. A VIEWER receives `public` rows only (the other classes are filtered out entirely, so a viewer cannot enumerate which secrets exist); an OPERATOR receives all rows. `drift` is per key: the registry's `settings` value vs the file vs the live process environment.
+         * @description `GET /v1/tenants/{name}/env`: the tenant's configuration keys as the settings classification table sees them. Every key found in `tenant.env`, `secrets.env` and `provision.env` is listed with its `class`; `value_redacted` is the verbatim value for a `public` key and the literal `<redacted>` for every other class — the daemon has no code path that returns a secret-class value over HTTP. A VIEWER receives `public` rows only (the other classes are filtered out entirely, so a viewer cannot enumerate which secrets exist); an OPERATOR receives all rows. `drift` is per key: the registry's `settings` value vs the file vs the live process environment. `source` is `live` when the env files were readable; a pre-handover tenant's env files are 0600 and owned by the operator who provisioned it (every tenant, until PR-E), so an unreadable file falls back to `registry` — the public `settings` and `secret_refs` keys captured at adoption — and `note` explains why, naming the unreadable file and its owner. `note` is null except on a `registry`-sourced response.
          */
         env_response: {
             tenant: string;
             /** @enum {string} */
             env_layout: "legacy" | "managed";
             keys: components["schemas"]["EnvKey"][];
+            /** @enum {string} */
+            source: "live" | "registry";
+            /** @description Why source is registry: which file is unreadable, by whom, and that drift against the live file cannot be checked until the handover (PR-E). Null when source is live. */
+            note: string | null;
             $defs: {
                 EnvKey: {
                     key: string;

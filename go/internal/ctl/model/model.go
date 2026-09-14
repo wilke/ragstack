@@ -370,11 +370,30 @@ type EnvKey struct {
 // purpose: this is the HTTP surface's constant, not the file redactor's.
 const EnvRedacted = "<redacted>"
 
+// EnvResponseSource is where the RESPONSE was built from — as opposed to
+// Source, which is where one KEY was found. It exists because a pre-handover
+// tenant's env files are 0600 and owned by the operator who provisioned it
+// (every tenant, until PR-E): the daemon cannot read them, and answering with
+// an empty key list would be indistinguishable from "this tenant has no
+// configuration". SourceRegistry says the keys shown are the public settings
+// and secret refs the registry captured at adoption, not a live read.
+type EnvResponseSource string
+
+// Env response sources (env_response.json#/properties/source).
+const (
+	EnvResponseSourceLive     EnvResponseSource = "live"
+	EnvResponseSourceRegistry EnvResponseSource = "registry"
+)
+
 // EnvResponse is GET /v1/tenants/{name}/env (env_response.json).
 type EnvResponse struct {
-	Tenant    string   `json:"tenant"`
-	EnvLayout string   `json:"env_layout"` // legacy|managed
-	Keys      []EnvKey `json:"keys"`
+	Tenant    string            `json:"tenant"`
+	EnvLayout string            `json:"env_layout"` // legacy|managed
+	Keys      []EnvKey          `json:"keys"`
+	Source    EnvResponseSource `json:"source"`
+	// Note explains a non-"live" Source: which file is unreadable, by whom,
+	// and why. Null when Source is "live".
+	Note NullString `json:"note"`
 }
 
 // LogsResponse is GET /v1/tenants/{name}/logs (logs_response.json). The

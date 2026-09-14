@@ -528,6 +528,9 @@ paths:
         Every key in the tenant's env files with its class; values only for
         `public` keys, the literal `<redacted>` for everything else. A viewer
         receives `public` rows only and cannot enumerate which secrets exist.
+        `source` is `registry` instead of `live` when a pre-handover tenant's
+        env files are not readable by the ctl account; `note` then explains
+        why.
       tags: [Tenants]
       x-ctl-role: viewer
       security:

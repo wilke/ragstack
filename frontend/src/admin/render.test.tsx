@@ -21,6 +21,7 @@ import {
   hostileTenantFixture,
   logsFixture,
   managedUnitsFixture,
+  registrySourcedEnvFixture,
   tenantFixture,
   versionFixture,
 } from "./fixtures";
@@ -302,6 +303,23 @@ describe("TenantView", () => {
     expect(html).toContain("public");
     expect(html).toContain("tenant.env");
     expect(html).toContain("file_vs_live");
+    // A live-sourced response carries no note.
+    expect(html).not.toContain("is not readable by");
+  });
+
+  // Pre-handover: tenant.env is 0600 and owned by the operator who
+  // provisioned it, so the daemon cannot read it and answers from the
+  // registry's settings/secret_refs instead. The Config tab must say so,
+  // not render a silent "public keys only" table indistinguishable from a
+  // live read.
+  it("shows the registry-fallback note when the env response is registry-sourced", () => {
+    const html = render(section("config", "operator"), (qc) => {
+      seedTenant(qc);
+      qc.setQueryData(ctlKeys.tenantEnv("dev"), registrySourcedEnvFixture);
+    });
+    expect(html).toContain("tenant.env is not readable by svcbvbrc");
+    expect(html).toContain("PR-E");
+    expect(html).toContain("LOG_LEVEL");
   });
 
   it("renders the drift rows", () => {

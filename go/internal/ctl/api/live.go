@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -220,6 +222,24 @@ var envSources = []struct {
 // failing the request: a missing secrets.env is normal, an unparsable
 // tenant.env is a `doctor` finding (env_not_systemd_parsable), and neither is
 // a reason to refuse the classification of the files that DID read.
+//
+// Pre-handover fallback: until PR-E hands a tenant over, its env files are
+// 0600 and owned by the operator who provisioned it — the same shape
+// logs.SecretsUnreadableError and doctor.SecretsUnreadableByCtl exist for.
+// Silently reporting zero keys there would be indistinguishable from "this
+// tenant has no configuration", which is a lie. When a file is unreadable
+// with a permission error AND the registry's owner is not this account
+// (envPreHandover, the same formula as
+// logs.SecretsUnreadableError.PreHandover), the WHOLE response is rebuilt
+// from the registry's own settings/secret_refs (envFromRegistry) instead of
+// whatever subset of files happened to read: on the real host all three
+// files share one owner and one mode, so a partial merge would only invite
+// the question of why some keys are live and others are not.
+//
+// A permission error on a tenant THIS account already owns is not the
+// expected pending-handover state — it is the same class of fault doctor's
+// PortOwnerMismatch treats as an error rather than an info, so it is
+// returned as a request error (500) instead of being papered over.
 func (b *liveBackend) Env(_ context.Context, name string) (*model.EnvResponse, error) {
 	f, err := b.reloadRegistry()
 	if err != nil {
@@ -229,12 +249,19 @@ func (b *liveBackend) Env(_ context.Context, name string) (*model.EnvResponse, e
 	if !ok {
 		return nil, ErrNotFound
 	}
-	resp := &model.EnvResponse{Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: []model.EnvKey{}}
+	resp := &model.EnvResponse{Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: []model.EnvKey{}, Source: model.EnvResponseSourceLive}
 	seen := map[string]bool{}
 	for _, src := range envSources {
-		raw, rerr := os.ReadFile(filepath.Join(t.DataDir, "config", src.file))
+		path := filepath.Join(t.DataDir, "config", src.file)
+		raw, rerr := os.ReadFile(path)
 		if rerr != nil {
-			continue
+			if errors.Is(rerr, fs.ErrPermission) {
+				if !envPreHandover(t) {
+					return nil, fmt.Errorf("env: %s: %w", path, rerr)
+				}
+				return envFromRegistry(t, src.file), nil
+			}
+			continue // ENOENT (normal) or another read fault
 		}
 		parsed, _, perr := envfile.ParseLenient(raw)
 		if perr != nil {
@@ -250,6 +277,47 @@ func (b *liveBackend) Env(_ context.Context, name string) (*model.EnvResponse, e
 		}
 	}
 	return resp, nil
+}
+
+// envPreHandover is logs.SecretsUnreadableError.PreHandover's formula, reused
+// rather than re-derived: the registry records an owner other than the
+// account this process runs as.
+func envPreHandover(t *registry.Tenant) bool {
+	return t.Owner != "" && t.Owner != logs.CtlUser()
+}
+
+// envFromRegistry answers GET .../env from the registry row alone, for a
+// tenant whose env files this account cannot read yet. unreadableFile is the
+// file the failed read named, for the note's prose.
+//
+// Settings is documented as "public keys only" (registry/types.go), so every
+// entry becomes a public-class row via envRow, verbatim; SecretRefs becomes a
+// secret-class row per key, always "<redacted>" — the same values a live read
+// would have shown, just sourced from the registry snapshot taken at
+// adoption rather than the files on disk today. Keys in a class registry
+// does not capture at all (executable-surface, unsupported) are simply
+// absent: the registry never recorded them, so there is nothing to show.
+func envFromRegistry(t *registry.Tenant, unreadableFile string) *model.EnvResponse {
+	keys := make([]model.EnvKey, 0, len(t.Settings)+len(t.SecretRefs))
+	for key, value := range t.Settings {
+		keys = append(keys, envRow(key, value, model.SourceRegistry))
+	}
+	for _, ref := range t.SecretRefs {
+		keys = append(keys, envRow(ref.Key, "", model.SourceRegistry))
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Key < keys[j].Key })
+	adopted := "an unknown time"
+	if t.AdoptedAt != "" {
+		adopted = string(t.AdoptedAt)
+	}
+	note := fmt.Sprintf(
+		"%s is not readable by %s; showing the public settings recorded in the registry at adoption (%s). "+
+			"The tenant is owned by %s until its handover (PR-E); drift against the live file cannot be checked until then.",
+		unreadableFile, logs.CtlAccount(), adopted, t.Owner)
+	return &model.EnvResponse{
+		Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: keys,
+		Source: model.EnvResponseSourceRegistry, Note: model.NullString(note),
+	}
 }
 
 // Logs tails the tenant's real log, redacted with that tenant's own secret
