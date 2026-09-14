@@ -108,11 +108,11 @@ func TestPlanHashMovesWithEveryInputThatMatters(t *testing.T) {
 // one, which is why it hashes the unredacted args.
 func TestFingerprintDistinguishesRequests(t *testing.T) {
 	hash := sha256Of([]byte("plan"))
-	a, err := Fingerprint("key-mint", "dev", map[string]any{"label": "ops", "role": "admin"}, hash)
+	a, err := Fingerprint("key:ops", "key-mint", "dev", map[string]any{"label": "ops", "role": "admin"}, hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, _ := Fingerprint("key-mint", "dev", map[string]any{"role": "admin", "label": "ops"}, hash)
+	same, _ := Fingerprint("key:ops", "key-mint", "dev", map[string]any{"role": "admin", "label": "ops"}, hash)
 	if a != same {
 		t.Fatal("argument order changed the fingerprint")
 	}
@@ -121,16 +121,16 @@ func TestFingerprintDistinguishesRequests(t *testing.T) {
 		f    func() (string, error)
 	}{
 		{"a different role", func() (string, error) {
-			return Fingerprint("key-mint", "dev", map[string]any{"label": "ops", "role": "user"}, hash)
+			return Fingerprint("key:ops", "key-mint", "dev", map[string]any{"label": "ops", "role": "user"}, hash)
 		}},
 		{"a different tenant", func() (string, error) {
-			return Fingerprint("key-mint", "demo", map[string]any{"label": "ops", "role": "admin"}, hash)
+			return Fingerprint("key:ops", "key-mint", "demo", map[string]any{"label": "ops", "role": "admin"}, hash)
 		}},
 		{"a different op", func() (string, error) {
-			return Fingerprint("key-revoke", "dev", map[string]any{"label": "ops", "role": "admin"}, hash)
+			return Fingerprint("key:ops", "key-revoke", "dev", map[string]any{"label": "ops", "role": "admin"}, hash)
 		}},
 		{"a different plan", func() (string, error) {
-			return Fingerprint("key-mint", "dev", map[string]any{"label": "ops", "role": "admin"}, sha256Of([]byte("other")))
+			return Fingerprint("key:ops", "key-mint", "dev", map[string]any{"label": "ops", "role": "admin"}, sha256Of([]byte("other")))
 		}},
 	} {
 		got, err := other.f()

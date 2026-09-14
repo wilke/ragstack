@@ -640,3 +640,31 @@ func TestDirectRunsTheEngineLocally(t *testing.T) {
 		t.Error("--direct still talked to a daemon")
 	}
 }
+
+// TestJobCancelSendsTheConfirmFlags: cancelling a job that has already done
+// work rolls that work back, so the daemon demands the plan's confirm value
+// for it exactly as it does for any other destructive call. The CLI has to
+// send --yes / --yes-destructive <name> on this route too — without them a
+// cancel that needs a confirm can be issued from nowhere.
+func TestJobCancelSendsTheConfirmFlags(t *testing.T) {
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyJob(w, sampleJob(model.JobCancelled)) })
+
+	capture(t, "job", "cancel", "01JB0000000000000000000000", "--server", f.srv.URL, "--yes")
+	last := f.last(t)
+	if last.Path != "/v1/jobs/01JB0000000000000000000000/cancel" {
+		t.Fatalf("the CLI posted to %q", last.Path)
+	}
+	if got := last.envelope(t)["confirm"]; got != "yes" {
+		t.Errorf("job cancel --yes sent confirm %v", got)
+	}
+
+	capture(t, "job", "cancel", "01JB0000000000000000000000", "--server", f.srv.URL, "--yes-destructive", "dev")
+	if got := f.last(t).envelope(t)["confirm"]; got != "dev" {
+		t.Errorf("job cancel --yes-destructive dev sent confirm %v", got)
+	}
+
+	capture(t, "job", "cancel", "01JB0000000000000000000000", "--server", f.srv.URL)
+	if _, ok := f.last(t).envelope(t)["confirm"]; ok {
+		t.Error("job cancel sent a confirm without either flag")
+	}
+}

@@ -254,7 +254,7 @@ func cmdJobContinuation(verb string, args []string, registryPath, ragRoot string
 	}
 	id := pos[0]
 	if *o.direct {
-		return continueDirect(o, verb, id)
+		return continueDirect(o, verb, id, o.confirm())
 	}
 	req, err := o.envelope(map[string]any{})
 	if err != nil {
@@ -297,7 +297,7 @@ func cmdJobContinuation(verb string, args []string, registryPath, ragRoot string
 // TODO(integration): like submitDirect, this works the moment
 // api.BuildEngine stops returning api.ErrEngineNotWired. Nothing is stubbed
 // here on purpose.
-func continueDirect(o *opFlags, verb, id string) int {
+func continueDirect(o *opFlags, verb, id, confirm string) int {
 	eng, err := buildDirectEngine(o)
 	if err != nil {
 		return failClient(err)
@@ -314,7 +314,11 @@ func continueDirect(o *opFlags, verb, id string) int {
 	case "continue":
 		job, err = eng.Continue(ctx, id, p)
 	case "cancel":
-		job, err = eng.Cancel(ctx, id, p)
+		// --yes / --yes-destructive <name>, exactly as for any other call
+		// that undoes something: cancelling a job that has already done work
+		// rolls that work back, and the engine refuses without the plan's
+		// confirm value.
+		job, err = eng.Cancel(ctx, id, p, confirm)
 	}
 	if err != nil {
 		return directExit(err)

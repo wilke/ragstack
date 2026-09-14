@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,7 +96,13 @@ func (l Locks) Path(name model.LockName, tenant string) string {
 }
 
 // LockSet is a set of held locks. Always `defer s.Release()`.
+//
+// Release is idempotent and synchronised: the engine can reach it from the
+// run goroutine and from a Cancel at the same moment, and a second Release
+// that closed an already-closed descriptor would unlock whatever file the
+// kernel had since handed that number to.
 type LockSet struct {
+	mu    sync.Mutex
 	held  []*heldLock
 	names []model.LockName
 	since time.Time
@@ -153,6 +160,8 @@ func (s *LockSet) Names() []model.LockName {
 	if s == nil {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make([]model.LockName, len(s.names))
 	copy(out, s.names)
 	return out
@@ -165,6 +174,8 @@ func (s *LockSet) Release() {
 	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := len(s.held) - 1; i >= 0; i-- {
 		h := s.held[i]
 		// Clear the holder record first: the flock is gone the moment the
@@ -176,6 +187,37 @@ func (s *LockSet) Release() {
 	}
 	s.held = nil
 	s.names = nil
+}
+
+// Free reports whether every lock in want is currently UNHELD, by trying a
+// non-blocking flock on each and dropping it again. It is the second half of
+// reconcile's liveness test: a worker that is still running holds its flocks,
+// so a set that can be taken says the worker is gone no matter what the pid
+// table claims. flock(2) is a property of the open file DESCRIPTION, not of a
+// process, so this answers honestly even when the caller is the daemon that
+// would otherwise be asking about itself.
+//
+// It fails CLOSED: a lock file we cannot open is reported as held, because
+// "we could not tell" must never read as "the worker is dead".
+func (l Locks) Free(want []model.LockName, tenant string) bool {
+	for _, name := range orderLocks(want) {
+		p := l.Path(name, tenant)
+		f, err := os.OpenFile(p, os.O_RDWR, 0o660)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // no file, so nothing holds it
+			}
+			return false
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err != nil {
+			_ = f.Close()
+			return false
+		}
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}
+	return true
 }
 
 // orderLocks sorts want into LockOrder and drops duplicates and unknowns.

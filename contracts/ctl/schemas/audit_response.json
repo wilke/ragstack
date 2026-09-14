@@ -33,7 +33,7 @@
         "plan_hash": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
         "outcome": {
           "oneOf": [
-            { "type": "string", "enum": ["accepted", "refused", "succeeded", "failed", "rolled_back", "interrupted", "cancelled"] },
+            { "type": "string", "enum": ["accepted", "joined", "refused", "succeeded", "failed", "rolled_back", "interrupted", "cancelled"] },
             { "type": "null" }
           ]
         },
