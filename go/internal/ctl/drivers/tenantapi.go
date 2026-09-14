@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
 // RealTenantAPI is the ctl's client to a tenant's OWN API, and it is an exact
@@ -20,10 +22,13 @@ import (
 // loopback port; this one presents a tenant's bootstrap ADMIN key, minted
 // minutes earlier by `tenant create` and held in memory for the length of the
 // job. A client that could be pointed at an arbitrary path is a client that
-// can be made to send that key somewhere the ctl did not intend — so there are
-// five methods, each with a fixed route out of the table below, and the only
-// caller-supplied text that ever reaches a URL is a service-account subject
-// that matched a 64-character path-safe pattern first.
+// can be made to send that key somewhere the ctl did not intend — so every
+// method takes a fixed route out of the table below, and the only
+// caller-supplied text that ever reaches a URL is a service-account subject or
+// an ingest job id that matched a path-safe pattern first.
+//
+// Two of the routes — the ingest pair — are refused outright unless the origin
+// is a SANDBOX port: see the ingest section at the bottom of this file.
 //
 // The key travels in the X-API-Key HEADER and nowhere else: never a query
 // parameter (they land in the tenant's access log), never a path, and never an
@@ -75,7 +80,19 @@ var routes = map[string]route{
 		method: http.MethodPost, path: "/v1/admin/service-accounts/%s/enable", key: true,
 		ok: []int{http.StatusNoContent, http.StatusOK},
 	},
+	"ingest": {
+		method: http.MethodPost, path: "/v1/ingest", key: true,
+		// The contract documents 200; 202 is accepted as well because the
+		// upload sibling of this route answers that one.
+		ok: []int{http.StatusOK, http.StatusAccepted},
+	},
+	"ingest-status": {method: http.MethodGet, path: "/v1/ingest/%s", key: true},
 }
+
+// tenantJobIDRe is the ingest job id rule. Same reason as tenantSubjectRe: the
+// value is interpolated into a path by the ctl, so what the ctl will SEND is
+// narrower than what a tenant might answer with.
+var tenantJobIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 // call runs one allowlisted route. subject is empty unless the route has a
 // placeholder, and reaches this function already validated.
@@ -287,4 +304,115 @@ func alreadyAService(err error) bool {
 		return false
 	}
 	return strings.Contains(msg, "'service'") || strings.Contains(msg, "already exists as a service")
+}
+
+// ---------------------------------------------------------------- ingest
+//
+// The two ingest calls are the only WRITES into a tenant's corpus this driver
+// can make, and they are refused unless the origin is a SANDBOX port.
+//
+// Everything else here is a read or a service-account change: operations the
+// control plane performs on tenants it manages, for tenants it manages. Putting
+// a document into a tenant's index is a different kind of act — it changes what
+// that tenant's users retrieve — and the control plane has exactly one reason
+// to do it: `ragstack-ctl selftest` needs a corpus in the tenant it just made
+// so that the backup it takes has something in it and the restore it verifies
+// proves something. That reason applies to sandbox tenants and to no others,
+// so the refusal is in the DRIVER rather than in the selftest: a caller added
+// later cannot reach a production tenant with these, whatever it intends.
+//
+// The check is on the port because that is what `paths.IsSelftestBlock` is
+// everywhere else in the control plane — the sandbox is where its ports are,
+// not what its row says or what it is called.
+
+// sandboxOrigin reports whether origin's port belongs to a selftest block, and
+// returns the port for the refusal message.
+func sandboxOrigin(origin string) (port int, ok bool) {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return 0, false
+	}
+	port, err = strconv.Atoi(u.Port())
+	if err != nil {
+		return 0, false
+	}
+	if port < paths.SelftestBase || port > paths.SelftestEnd {
+		return port, false
+	}
+	// The block CONTAINING the port, not the port: an ingest reaches a tenant
+	// on its API port (block base + 0), and asking the question of the base is
+	// the same question every other sandbox rule asks.
+	base := paths.SelftestBase + ((port-paths.SelftestBase)/paths.PortStride)*paths.PortStride
+	return port, paths.IsSelftestBlock(base)
+}
+
+// refuseNonSandbox is the shared refusal of the two ingest calls.
+func refuseNonSandbox(origin, method string) error {
+	port, ok := sandboxOrigin(origin)
+	if ok {
+		return nil
+	}
+	return fmt.Errorf("%w: TenantAPI.%s writes into a tenant's corpus and is allowed against SANDBOX tenants only "+
+		"(ports %d–%d); %s listens on %d. The control plane does not ingest into tenants it did not create for a test",
+		jobs.ErrRefused, method, paths.SelftestBase, paths.SelftestEnd, origin, port)
+}
+
+// Ingest is POST /v1/ingest with a server-side path.
+//
+// `source` is an absolute path on the host the tenant runs on; the tenant
+// confines it under its own INGEST_ROOT and answers 503 when it has none. The
+// path is checked here as well, for the same reason every other value this
+// driver sends is: what the ctl will SEND is narrower than what the tenant will
+// accept, and a `source` carrying a newline or a quote would be a value the ctl
+// built out of something it did not check.
+func (a *RealTenantAPI) Ingest(ctx context.Context, origin, apiKey, path string) (string, error) {
+	if err := refuseNonSandbox(origin, "Ingest"); err != nil {
+		return "", err
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("%w: /v1/ingest needs an API key and none was supplied", jobs.ErrRefused)
+	}
+	if _, err := paths.SafePath("/", path); err != nil {
+		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+	}
+	var body struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := a.call(ctx, origin, apiKey, "ingest", "", map[string]any{"source": path}, &body); err != nil {
+		return "", err
+	}
+	if body.JobID == "" {
+		return "", fmt.Errorf("POST /v1/ingest accepted %s and named no job_id, so there is nothing to poll", path)
+	}
+	if !tenantJobIDRe.MatchString(body.JobID) {
+		return "", fmt.Errorf("%w: the tenant answered an ingest job id the ctl will not put in a path (want %s)",
+			jobs.ErrRefused, tenantJobIDRe)
+	}
+	return body.JobID, nil
+}
+
+// IngestStatus is GET /v1/ingest/{job_id}.
+//
+// An unknown id is NOT an error: the tenant answers 200 with status "unknown",
+// and that is a fact the caller acts on (it polls, and gives up on its own
+// clock) rather than a failure of the call.
+func (a *RealTenantAPI) IngestStatus(ctx context.Context, origin, apiKey, jobID string) (string, error) {
+	if err := refuseNonSandbox(origin, "IngestStatus"); err != nil {
+		return "", err
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("%w: /v1/ingest/{job_id} needs an API key and none was supplied", jobs.ErrRefused)
+	}
+	if !tenantJobIDRe.MatchString(jobID) {
+		return "", fmt.Errorf("%w: %q is not an ingest job id the ctl will put in a path (want %s)",
+			jobs.ErrRefused, jobID, tenantJobIDRe)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := a.call(ctx, origin, apiKey, "ingest-status", jobID, nil, &body); err != nil {
+		return "", err
+	}
+	return body.Status, nil
 }

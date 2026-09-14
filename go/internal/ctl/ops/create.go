@@ -111,7 +111,42 @@ type createSpec struct {
 // postgresLocal reports whether this tenant runs its own postgres instance.
 func (s createSpec) postgresLocal() bool { return s.StoreKind == paths.StorePostgresLocal }
 
+// blockAllocator picks the port block a create claims. There are exactly two:
+// registry.Allocate for production (tombstone-aware, sandbox-blind) and
+// registry.AllocateSandbox for the selftest's own range. Making it a parameter
+// rather than a boolean in the args is what keeps a request from choosing:
+// `create` is wired to one of them and `create-sandbox` to the other.
+type blockAllocator func(*registry.Fleet) (index, base int, err error)
+
+// productionBlock is registry.Allocate behind the allocator signature. It
+// cannot fail — the production sequence is unbounded — so the error is always
+// nil, and the shape is shared so that the sandbox allocator's refusal ("every
+// sandbox block is taken") travels the same path.
+func productionBlock(f *registry.Fleet) (int, int, error) {
+	index, base := registry.Allocate(f)
+	return index, base, nil
+}
+
 func planCreate(_ context.Context, p *planner, args map[string]any) error {
+	// A `ctltest-` name never lands on a production block.
+	//
+	// The selftest's tenants are recognised downstream by their PORTS
+	// (paths.IsSelftestBlock): that is what tells `decommission` it needs no
+	// verified bundle and what tells the sweep it may remove a directory. A
+	// tenant carrying the sandbox NAME on a production block would read as
+	// disposable to every human and as production to every one of those rules,
+	// which is the worst way round.
+	if name := argStringOf(args, "name"); strings.HasPrefix(name, sandboxPrefix) {
+		return p.refuse("%q is a selftest sandbox name (%s…) and `create` allocates PRODUCTION blocks; "+
+			"`ragstack-ctl selftest` creates these through `create-sandbox`, which allocates out of %d–%d",
+			name, sandboxPrefix, paths.SelftestBase, paths.SelftestEnd)
+	}
+	return planCreateWith(p, args, productionBlock)
+}
+
+// planCreateWith is `create` with its allocator supplied: the whole verb but
+// for the one line that decides which port block the new tenant gets.
+func planCreateWith(p *planner, args map[string]any, allocate blockAllocator) error {
 	f := p.oc.Fleet
 	if f == nil {
 		return fmt.Errorf("%w: create needs a registry snapshot", jobs.ErrValidation)
@@ -191,7 +226,10 @@ func planCreate(_ context.Context, p *planner, args map[string]any) error {
 		return fmt.Errorf("%w: create.postgres must be sqlite or local", jobs.ErrValidation)
 	}
 
-	index, base := registry.Allocate(f)
+	index, base, err := allocate(f)
+	if err != nil {
+		return fmt.Errorf("%w: %s", jobs.ErrRefused, err.Error())
+	}
 	esHeap := argStringOf(args, "es_heap")
 	if esHeap == "" {
 		esHeap = defaultESHeap
@@ -239,7 +277,13 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	if err != nil {
 		return p.refuse("%s's tenant.env cannot be rendered as requested: %v", name, err)
 	}
-	units, err := render.Units(t, render.UnitConfig{RagRoot: p.oc.Roots.RagRoot, CtlStateDir: p.oc.Roots.CtlStateDir})
+	units, err := render.Units(t, render.UnitConfig{
+		RagRoot: p.oc.Roots.RagRoot, CtlStateDir: p.oc.Roots.CtlStateDir,
+		// Empty is RagRoot (render's own default). It is non-empty only for a
+		// run against a sandbox root, where the paths move and the mount does
+		// not — see Deps.MountPoint.
+		MountPoint: p.op.deps.MountPoint,
+	})
 	if err != nil {
 		return p.refuse("%s's units cannot be rendered as requested: %v", name, err)
 	}

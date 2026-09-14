@@ -220,6 +220,14 @@ const (
 	// would be a ref grammar in which an option could be smuggled.
 	patGitRef  = `^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`
 	patAbsPath = `^/[A-Za-z0-9._/-]{0,255}$`
+	// patSandboxName is patTenantName narrowed to the selftest's own names.
+	//
+	// The prefix is part of the GRAMMAR rather than a check further down,
+	// because `create-sandbox` allocates out of the selftest port range: a
+	// request whose name does not say `ctltest-` has to be refused by the
+	// argument validator, before a plan exists at all. (The 23-character tail
+	// keeps the whole name inside patTenantName's 32.)
+	patSandboxName = `^ctltest-[a-z0-9-]{1,23}$`
 )
 
 var (
@@ -327,6 +335,25 @@ var argSchemas = map[string]argSpec{
 	// `x-ctl-cli-op-args`, NOT `x-ctl-op-args`, because the latter is the
 	// schema list for POST /v1/tenants/{name}/ops/{verb} and this verb has no
 	// HTTP route at all (see ops/artifact.go for why).
+	// create-sandbox is create's args with create's name rule replaced. The
+	// field list is kept in the same order as `create`'s and must stay equal to
+	// it but for `name`: the two verbs build the SAME createSpec and differ only
+	// in which allocator they take a port block from.
+	"create-sandbox": {Verb: "create-sandbox", Fields: []argField{
+		{Name: "name", Kind: argString, Required: true, Pattern: patSandboxName},
+		{Name: "artifact_id", Kind: argString, Required: true, Pattern: patArtifactID},
+		{Name: "es_heap", Kind: argString, Pattern: patESHeap},
+		{Name: "postgres", Kind: argString, Enum: []string{"sqlite", "local"}},
+		{Name: "identity_provider", Kind: argString, Enum: []string{"bvbrc", "none"}},
+		{Name: "admin_subjects", Kind: argStringArray, ItemPattern: patSubjectIss, Unique: true},
+		{Name: "keys", Kind: argObjectArray},
+		{Name: "service_accounts", Kind: argObjectArray},
+		{Name: "template_from", Kind: argString, Pattern: patTenantName},
+		{Name: "settings", Kind: argObject},
+		{Name: "ui_mode", Kind: argString, Enum: []string{"static", "dev", "external"}},
+		{Name: "start", Kind: argBool},
+		{Name: "gateway", Kind: argBool},
+	}},
 	"artifact-prepare": {Verb: "artifact-prepare", Fields: []argField{
 		{Name: "tag", Kind: argString, Required: true, Pattern: patGitRef},
 		{Name: "mirror", Kind: argString, Pattern: patAbsPath},
@@ -358,7 +385,7 @@ var ContractVerbs = []string{
 // CLIVerbs are the operations that are jobs like any other but have NO HTTP
 // route: the contract lists them under `x-ctl-cli-op-args` and the ops router
 // (api/jobs.go's opVerbs) does not know them, so POST …/ops/<verb> is 422.
-var CLIVerbs = []string{"artifact-prepare"}
+var CLIVerbs = []string{"artifact-prepare", "create-sandbox"}
 
 // ---------------------------------------------------------------- helpers
 

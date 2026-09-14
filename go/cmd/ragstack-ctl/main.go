@@ -171,7 +171,16 @@ flags every operation accepts:
   backup prune <tenant> --dry-run           what a retention pass WOULD remove. v1 removes nothing:
                                             --dry-run is required and deletion is an operator's own rm
 
-  selftest                                  not implemented in this PR
+  selftest [--keep] [--with-gateway] [--artifact ID] [--postgres local] [--fixture PATH]
+                                            create a SANDBOX tenant (ctltest-*, ports 26000-26099),
+                                            ingest a fixture, back it up fenced, stop it, restore it
+                                            into a second sandbox, quarantine both and prove the host
+                                            is clean. Runs the engine IN THIS PROCESS: no --server.
+  selftest --boot                           the boot checklist only: linger, the user@ drop-in,
+                                            is-enabled and default.target for every tenant whose row
+                                            says desired_boot enabled (exit 3 on any FAIL)
+  selftest --sweep                          remove the quarantined ctltest-* trees and registry rows
+                                            a previous run left behind, and nothing else
 
 adopt-all on coconut adopts, in this order (data dirs and worktrees derived
 from --rag-root, i.e. /rag by default):
@@ -268,8 +277,7 @@ func run(args []string) int {
 	case "backup":
 		return cmdBackup(rest[1:], *globalRagRoot, *jsonOut)
 	case "selftest":
-		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR\n", rest[0])
-		return exitUsage
+		return cmdSelftest(rest[1:], *registryPath, *globalRagRoot)
 	case "help", "-h", "--help":
 		usage()
 		return exitOK

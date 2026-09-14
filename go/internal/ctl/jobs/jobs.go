@@ -438,6 +438,22 @@ type TenantAPI interface {
 	// Collections is GET /v1/collections?counts=false — the inventory a
 	// restore compares against the bundle manifest.
 	Collections(ctx context.Context, origin, apiKey string) ([]string, error)
+	// Ingest is POST /v1/ingest with a SERVER-SIDE path (the tenant confines
+	// it under INGEST_ROOT), answering the ingest job's id.
+	//
+	// It exists for ONE caller: `ragstack-ctl selftest`, which has to put a
+	// document into the tenant it just created so that the backup has
+	// something to fence and the restore has something to prove. That is why
+	// the real client refuses it unless the origin's port is in the SANDBOX
+	// range: the control plane writing into a production tenant's corpus is
+	// not an operation anybody asked for, and the exact allowlist this driver
+	// is must not grow a write verb for the adopted tenants by accident.
+	Ingest(ctx context.Context, origin, apiKey, path string) (jobID string, err error)
+	// IngestStatus is GET /v1/ingest/{job_id}: the job's state — accepted,
+	// running, completed or failed, and "unknown" for an id the tenant does
+	// not have (which it answers 200). The selftest polls it; nothing else
+	// does, and it carries the same sandbox-only refusal as Ingest.
+	IngestStatus(ctx context.Context, origin, apiKey, jobID string) (state string, err error)
 }
 
 // Git is the mirror-and-worktree surface `fleet artifact prepare` and

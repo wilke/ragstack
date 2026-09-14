@@ -152,6 +152,9 @@ func NewFake(opts FakeOptions) *Fake {
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
 	}
+	// The manager and the filesystem are the SAME fixture: a daemon-reload has
+	// to be able to see that a unit file is gone.
+	f.systemd.files = f.files
 	f.qdrant = &FakeQdrant{
 		r: &f.recorder, now: now, ByURL: copyMapSlice(opts.Collections), files: f.files,
 		Snapshots: map[string][]string{}, Counts: copyMapInt64(opts.QdrantCounts),
@@ -211,9 +214,12 @@ func (f *Fake) FakeArchive() *FakeArchive             { return f.archive }
 
 // FakeSystemd is `systemctl --user` as a pair of sets.
 type FakeSystemd struct {
-	r       *recorder
-	mu      sync.Mutex
-	proc    *FakeProc
+	r    *recorder
+	mu   sync.Mutex
+	proc *FakeProc
+	// files is the in-memory filesystem the unit fragments live in, so a
+	// daemon-reload can forget a unit whose file has been removed.
+	files   *FakeFiles
 	ports   map[string]int
 	pids    map[string]int
 	nextPID int
@@ -229,6 +235,15 @@ type FakeSystemd struct {
 	Reloads int
 }
 
+// DaemonReload re-reads the unit files, and — like the real manager — FORGETS
+// every unit whose fragment is no longer on disk.
+//
+// Without that the fake remembered a unit for the life of the process: a
+// `decommission` that removed the unit files and reloaded still had `Show`
+// answering with the FragmentPath of a file that was gone, so the post-check
+// "systemd knows nothing about this tenant any more" could never pass against
+// the fixture even though it passes on a host. The manager's rule is simple and
+// worth modelling exactly: a reload drops a unit with no fragment.
 func (s *FakeSystemd) DaemonReload(context.Context) error {
 	if err := s.r.record("systemd", "DaemonReload"); err != nil {
 		return err
@@ -236,6 +251,19 @@ func (s *FakeSystemd) DaemonReload(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Reloads++
+	if s.files == nil {
+		return nil
+	}
+	for unit, path := range s.Linked {
+		if s.files.has(path) {
+			continue
+		}
+		delete(s.Linked, unit)
+		delete(s.Active, unit)
+		delete(s.Enabled, unit)
+		delete(s.Failed, unit)
+		delete(s.pids, unit)
+	}
 	return nil
 }
 
@@ -379,6 +407,24 @@ func (s *FakeSystemd) ResetFailed(_ context.Context, unit string) error {
 	defer s.mu.Unlock()
 	delete(s.Failed, unit)
 	return nil
+}
+
+// BindUnitPort tells this fake manager that starting unit binds port and
+// stopping it frees the port, for a unit the FIXTURE did not know about.
+//
+// FakeOptions.UnitPorts is built once, from the tenants in the registry at the
+// moment the driver set was made. A tenant CREATED afterwards — every sandbox
+// the selftest makes — has units nothing has heard of, so starting its target
+// moved no socket and a readiness gate waiting for its API port waited out the
+// whole timeout against a host that was never going to answer. This is how a
+// caller says "this unit exists now, and this is the port it owns".
+func (s *FakeSystemd) BindUnitPort(unit string, port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ports == nil {
+		s.ports = map[string]int{}
+	}
+	s.ports[unit] = port
 }
 
 // ActiveUnits lists the active units, sorted.
@@ -745,6 +791,16 @@ func (f *FakeFiles) DiskFree(_ context.Context, path string) (int64, error) {
 	return 1 << 40, nil
 }
 
+// has reports whether path is in the in-memory filesystem. It is not a driver
+// method and records nothing: the fake manager uses it to answer "is this
+// unit's fragment still there", which on a real host is not a call at all.
+func (f *FakeFiles) has(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.Files[path]
+	return ok
+}
+
 // Paths lists the files present, sorted.
 func (f *FakeFiles) Paths() []string {
 	f.mu.Lock()
@@ -1058,6 +1114,16 @@ type FakeTenantAPI struct {
 	Versions map[string]map[string]any
 	// CollectionsByOrigin maps an origin to the tenant API's inventory.
 	CollectionsByOrigin map[string][]string
+	// Ingests records every ingest as "<origin> <path>", in order.
+	Ingests []string
+	// IngestStates maps an ingest job id to what IngestStatus answers for it.
+	// An id with no entry answers "succeeded": the ordinary fixture is an
+	// ingest that worked, and a fake that made every caller seed a map in
+	// order to say nothing would be a fake about bookkeeping. A test that
+	// wants a failure either seeds this or fails `tenantapi.Ingest` outright.
+	IngestStates map[string]string
+	// nextIngest numbers the job ids this fake hands out.
+	nextIngest int
 }
 
 func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
@@ -1123,6 +1189,36 @@ func (a *FakeTenantAPI) Collections(_ context.Context, origin, _ string) ([]stri
 	out := append([]string(nil), a.CollectionsByOrigin[origin]...)
 	sort.Strings(out)
 	return out, nil
+}
+
+// Ingest records the ingest and hands back a job id.
+//
+// It does NOT carry the real driver's sandbox-only refusal. That rule is about
+// which HOST a credential-bearing write may reach, and this fake reaches none;
+// the tests that prove the rule exercise the real client against an httptest
+// server, where the origin is the thing under test.
+func (a *FakeTenantAPI) Ingest(_ context.Context, origin, _, path string) (string, error) {
+	if err := a.r.record("tenantapi", "Ingest", origin, path); err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Ingests = append(a.Ingests, origin+" "+path)
+	a.nextIngest++
+	return fmt.Sprintf("fake-ingest-%d", a.nextIngest), nil
+}
+
+// IngestStatus answers the seeded state, or "succeeded".
+func (a *FakeTenantAPI) IngestStatus(_ context.Context, origin, _, jobID string) (string, error) {
+	if err := a.r.record("tenantapi", "IngestStatus", origin, jobID); err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s, ok := a.IngestStates[jobID]; ok {
+		return s, nil
+	}
+	return "succeeded", nil
 }
 
 // ---------------------------------------------------------------- git
