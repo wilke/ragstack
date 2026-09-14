@@ -149,6 +149,14 @@ const (
 	// listener, so the gateway's UI route 502s. Warn.
 	UIPortNotListening = "ui_port_not_listening"
 
+	// UIDistMissing: the tenant's UI is recorded as `static`, but
+	// <data_dir>/ui/dist/index.html is not a regular file. The gateway
+	// aliases that directory and `try_files` falls back to that exact file,
+	// so every path under the UI route answers 404. Error: the row would
+	// describe a gateway mount with nothing behind it, and the build that
+	// fills it is a step the ctl does not take for the tenant.
+	UIDistMissing = "ui_dist_missing"
+
 	// UnsupportedEnvKey: a key in tenant.env that the settings classification
 	// table does not know. Recorded as drift, never rendered. Info.
 	UnsupportedEnvKey = "unsupported_env_key"

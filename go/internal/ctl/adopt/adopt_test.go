@@ -936,3 +936,121 @@ func TestMissingESSnapshotsDirIsReported(t *testing.T) {
 		t.Errorf("%d findings for a directory that exists", n)
 	}
 }
+
+// previewStaticDev previews the live `dev` tenant as a static-UI tenant: the
+// shape an operator adopts once the tenant's UI is a `vite build` nginx
+// serves rather than a Vite dev server.
+func previewStaticDev(t *testing.T, roots paths.Roots, h hostfacts.Host) (*registry.Tenant, []model.Finding) {
+	t.Helper()
+	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	tenant, findings, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIMode:   registry.UIModeStatic,
+		Host:     h, Now: func() time.Time { return at },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant, findings
+}
+
+// TestPreviewUIModeStatic: --ui-mode static records the mode the gateway's
+// alias block is keyed on, with NO port — render.NginxStatic serves the
+// tenant from <data_dir>/ui/dist and NginxTenants leaves it out of
+// $tenant_ui, so a port here would be a route to a server nobody runs. The
+// dev-server warning must not fire either: there is no port to listen on.
+func TestPreviewUIModeStatic(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	dist := filepath.Join(roots.DataDir, "dev", "ui", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tenant, findings := previewStaticDev(t, roots, h)
+	if tenant.UI.Mode != registry.UIModeStatic || tenant.UI.Port != 0 || tenant.UI.Base != "/ragstack/dev/ui/" {
+		t.Errorf("ui = %+v, want static with a null port and the /ragstack/dev/ui/ base", tenant.UI)
+	}
+	if n := countCode(findings, doctor.UIPortNotListening); n != 0 {
+		t.Errorf("%d %s findings for a UI that has no port", n, doctor.UIPortNotListening)
+	}
+	if n := countCode(findings, doctor.UIDistMissing); n != 0 {
+		t.Errorf("%d %s findings for a dist that is there", n, doctor.UIDistMissing)
+	}
+	// ui.port null is what the contract types for a static UI; a 0 that
+	// marshalled as 0 is not a Port the schema accepts.
+	b, err := json.Marshal(tenant.UI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"port":null`) {
+		t.Errorf("static ui marshals as %s, want a null port", b)
+	}
+}
+
+// TestPreviewUIModeStaticWithoutDistIsRed: nginx aliases <data_dir>/ui/dist
+// directly and try_files falls back to index.html in it, so adopting a static
+// tenant whose bundle was never built publishes a route that 404s for every
+// path. An error-level finding is what makes `--commit` refuse it.
+func TestPreviewUIModeStaticWithoutDistIsRed(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	tenant, findings := previewStaticDev(t, roots, h)
+	if tenant.UI.Mode != registry.UIModeStatic || tenant.UI.Port != 0 {
+		t.Errorf("ui = %+v, want the honest static row even when the dist is missing", tenant.UI)
+	}
+	var found *model.Finding
+	for i := range findings {
+		if findings[i].Code == doctor.UIDistMissing {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("findings %v lack %s", codes(findings), doctor.UIDistMissing)
+	}
+	if found.Level != model.LevelError {
+		t.Errorf("%s level = %s, want error (it must block --commit)", found.Code, found.Level)
+	}
+	// A directory where index.html should be is not a bundle either.
+	if err := os.MkdirAll(filepath.Join(roots.DataDir, "dev", "ui", "dist", "index.html"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, findings = previewStaticDev(t, roots, h); countCode(findings, doctor.UIDistMissing) != 1 {
+		t.Errorf("a directory named index.html was accepted as a built UI: %v", codes(findings))
+	}
+}
+
+// TestUIModeValidation: the combinations judged before any host is read.
+func TestUIModeValidation(t *testing.T) {
+	cases := []struct {
+		mode string
+		port int
+		ok   bool
+	}{
+		{"", 0, true}, {"", 8090, true},
+		{registry.UIModeStatic, 0, true},
+		{registry.UIModeStatic, 5210, false}, // a static UI has no port
+		{registry.UIModeDev, 8090, true},
+		{registry.UIModeDev, 0, false}, // NginxTenants refuses a portless dev row
+		{registry.UIModeExternal, 0, true}, {registry.UIModeExternal, 5210, true},
+		{"none", 0, false}, // not in the contract's enum
+	}
+	for _, c := range cases {
+		err := ValidateUIMode(c.mode, c.port)
+		if (err == nil) != c.ok {
+			t.Errorf("ValidateUIMode(%q, %d) = %v, want ok=%v", c.mode, c.port, err, c.ok)
+		}
+	}
+	// Preview refuses the same pair rather than recording a row for it.
+	roots := materialize(t, t.TempDir())
+	if _, _, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIMode:   registry.UIModeStatic, UIPort: 8090, Host: liveHost(t, roots),
+	}); err == nil {
+		t.Error("Preview accepted --ui-mode static together with a UI port")
+	}
+}
