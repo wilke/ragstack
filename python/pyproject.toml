@@ -21,6 +21,14 @@ dependencies = [
     # without bound. 0.133+ copies the schema per request (`schema =
     # dict(schema)`), which is what keeps the header a per-request fact.
     "fastapi>=0.133",
+    # Reading PROMPT_TEMPLATES_FILE (ADR-0008). A runtime dependency, not a dev
+    # extra, for the same reason the identity layer's crypto is: prompts.py is
+    # imported unconditionally and YAML is the format the ADR names, so leaving
+    # pyyaml in `dev` means a production install boots fine until the first
+    # deployment that configures a template — and then fails at startup with an
+    # ImportError. A capability that a missing wheel can switch off is worse than
+    # a required dependency.
+    "pyyaml>=6",
     "python-multipart>=0.0.9",  # required by POST /v1/ingest/upload (Form/File)
     "uvicorn[standard]>=0.29",
     "pydantic>=2.7",

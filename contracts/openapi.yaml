@@ -5020,17 +5020,24 @@ components:
             - slots
             properties:
               id:
-                description: The value a caller passes as `template` on /v1/query.
+                description: 'The value a caller passes as `template` on /v1/query. Bounded by the contract
+                  because it is caller-supplied and reaches logs: lowercase alphanumeric with hyphens and
+                  underscores.'
                 type: string
+                pattern: ^[a-z0-9][a-z0-9_-]{0,63}$
               version:
                 description: Bumped on ANY content change. With `id` and `hash` it names the condition a result
                   was produced under, which is what lets an ablation arm hold generation fixed.
                 type: integer
                 minimum: 1
               hash:
-                description: Content hash of the rendered template body, computed at load. Because templates
-                  are per-tenant and copied by hand, two tenants can hold the same (id, version) with bodies
-                  that have drifted apart; comparing hashes is how that is detected rather than silently mis-attributed.
+                description: 'Content hash of the template SOURCE — the bytes that reach the model plus the
+                  rules that decide what is accepted — computed at load. Not of a rendered body: rendering
+                  depends on a request''s template_vars, so a rendered hash could not be computed at load
+                  and would differ per call. Because templates are per-tenant and copied by hand, two tenants
+                  can hold the same (id, version) with bodies that have drifted apart; comparing hashes is
+                  how that is detected rather than silently mis-attributed. Display-only strings (`label`)
+                  are excluded, so renaming a picker entry does not read as drift.'
                 type: string
               label:
                 description: Human name, for a picker.

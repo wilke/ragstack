@@ -102,10 +102,35 @@ not an aspiration.
 5. **Templates validate at startup**, so a malformed file fails the boot loudly rather than
    500ing the first caller who selects it.
 
+### 3a. Three readings the implementation forced, settled here
+
+Writing `prompts.py` against decision 3 surfaced three places where the rule above
+admits more than one reading. Settled, with the reasoning, rather than left to whoever
+reads the code next:
+
+- **A `{{…}}` marker in `system` is a LOAD ERROR, not literal text.** Rule 4 says `system`
+  is rendered with no substitution; read literally that means shipping the braces to the
+  model. But an author who typed `{{focus}}` there believed it would be filled, and
+  sending their unfilled marker to a model is not a kindness. Near-misses fail the same
+  way (`{{ focus }}`, `{{Focus}}`, `{{focus`), because treating those as text is exactly
+  the silent-wrong-prompt outcome rule 3 exists to prevent.
+- **A declared-but-unreferenced slot is a load error.** It is rule 3's failure one level
+  up: the server advertises a knob in `GET /v1/prompt-templates`, accepts a value for it,
+  and changes nothing.
+- **An empty string for a required slot raises.** `""` is not strictly missing, but it
+  renders the identical empty clause, so accepting it reopens rule 3's hole through the
+  front door. A template that can run without the value should declare the slot optional.
+
 ### 4. Identity of a template is `(id, version, content hash)`
 
 `version` must be bumped on any content change, and a content hash is computed at load and
-echoed in the response. Because templates are per-tenant and copied by hand, two tenants
+echoed in the response. **Content means the bytes that reach the model plus the rules that
+decide what is accepted** — the `system` and `user` bodies, `columns`, the slot
+declarations and their order, and `version` itself. Display-only strings (`label`, a
+slot's `label`) are excluded: two tenants that renamed a picker entry still emit identical
+prompts and are still comparable, and flagging that would be a false positive in the only
+signal there is for real drift. Slot ORDER is content, deliberately conservatively — it is
+better to report drift that cannot affect output than to hide drift that can. Because templates are per-tenant and copied by hand, two tenants
 can hold `ppi-extraction` v1 with bodies that have drifted apart — both claiming the same
 identity while being mutually incomparable. The hash makes that detectable instead of
 invisible. Precedent: the ragstack-ctl gateway generation header already stamps a
