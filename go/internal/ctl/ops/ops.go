@@ -44,6 +44,10 @@ import (
 type Deps struct {
 	Roots paths.Roots
 	Now   func() time.Time
+	// SaveFleet persists a registry change (settings-put, and every op whose
+	// step writes a registry row). Nil refuses those steps with ErrRefused —
+	// a plan still renders, the run says the registry writer is not wired.
+	SaveFleet func(*registry.Fleet) error
 }
 
 func (d Deps) now() time.Time {
@@ -97,6 +101,7 @@ func NewRegistry(d Deps) jobs.Registry {
 	add("create", false, planCreate)
 	add("gateway-apply", false, planGatewayApply)
 	add("gateway-reload", false, planGatewayReload)
+	add("settings-put", false, planSettingsPut)
 	return r
 }
 

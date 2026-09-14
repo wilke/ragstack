@@ -114,7 +114,7 @@ func TestRegistryAnswersEveryContractVerb(t *testing.T) {
 			t.Errorf("Lookup(%q).Verb() = %q", v, op.Verb())
 		}
 	}
-	extra := []string{"create", "gateway-apply", "gateway-reload"}
+	extra := []string{"create", "gateway-apply", "gateway-reload", "settings-put"}
 	if got, want := len(r.Verbs()), len(ContractVerbs)+len(extra); got != want {
 		t.Errorf("registry has %d verbs, want %d (the enum plus %v)", got, want, extra)
 	}

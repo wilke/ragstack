@@ -2,10 +2,12 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -63,6 +65,17 @@ type EngineConfig struct {
 	Logger *slog.Logger
 	// Now is injected so a test can pin job timestamps.
 	Now func() time.Time
+	// LoadFleet and SaveFleet are where the engine reads and writes the
+	// registry. Nil means the file at RegistryPath (registry.LoadNoRepair /
+	// registry.Save); the --fake-drivers daemon points them at its in-memory
+	// fixture so the mutation surface is exercised end to end without a host.
+	LoadFleet func() (*registry.Fleet, error)
+	SaveFleet func(*registry.Fleet) error
+	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
+	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
+	// plan carries is the hash the dashboard shows (and, with fake drivers,
+	// the fixture's doctor rather than this host's).
+	Doctor func(ctx context.Context, tenant, op string) (model.DoctorResponse, error)
 }
 
 // DefaultSecretsTTL is secrets_response.json's "lives 15 minutes".
@@ -93,11 +106,29 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("job store %s: %w", cfg.StorePath, err)
 	}
-	loadFleet := func() (*registry.Fleet, error) { return registry.LoadNoRepair(cfg.RegistryPath) }
+	loadFleet := cfg.LoadFleet
+	if loadFleet == nil {
+		loadFleet = func() (*registry.Fleet, error) { return registry.LoadNoRepair(cfg.RegistryPath) }
+	}
+	saveFleet := cfg.SaveFleet
+	if saveFleet == nil {
+		by := fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host)
+		saveFleet = func(f *registry.Fleet) error { return registry.Save(cfg.RegistryPath, f, by) }
+	}
 
 	var drv jobs.Drivers
 	if cfg.FakeDrivers {
-		drv = drivers.NewFake(drivers.FakeOptions{Now: cfg.Now})
+		// The fake files driver honours the same approved roots the real one
+		// defaults to; with none, every write is a containment refusal.
+		files := map[string][]byte{}
+		if f, err := loadFleet(); err == nil {
+			files = fixtureFiles(cfg.Roots, f)
+		}
+		drv = drivers.NewFake(drivers.FakeOptions{
+			Now:   cfg.Now,
+			Roots: []string{cfg.Roots.DataDir, cfg.Roots.CtlConfigDir, cfg.Roots.CtlStateDir, cfg.Roots.BackupsDir},
+			Files: files,
+		})
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
 			Roots: cfg.Roots,
@@ -130,9 +161,12 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		return *resp, nil
 	}
 
+	if cfg.Doctor != nil {
+		doctorFn = cfg.Doctor
+	}
 	eng := jobs.NewEngine(jobs.EngineOptions{
 		Store:        store,
-		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now}),
+		Ops:          ops.NewRegistry(ops.Deps{Roots: cfg.Roots, Now: cfg.Now, SaveFleet: saveFleet}),
 		Roots:        cfg.Roots,
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
@@ -218,4 +252,89 @@ func isSecretArg(key string) bool {
 		}
 	}
 	return false
+}
+
+// fixtureFiles seeds the fake files driver with the env files the fixture
+// tenants would have on a host: tenant.env from the registry's public
+// settings, and every secret-class key from secret_refs with a PLACEHOLDER
+// value — the key ledger (API_KEYS / API_KEY_TENANTS / API_KEY_ROLES) is
+// rebuilt from the registry's key records so the credential ops can plan
+// and run end to end without a single real secret anywhere.
+func fixtureFiles(roots paths.Roots, f *registry.Fleet) map[string][]byte {
+	out := map[string][]byte{}
+	for name, t := range f.Tenants {
+		tp := paths.TenantPaths(roots, name, t.ManifestName)
+		byFile := map[string][]string{}
+		for _, ref := range t.SecretRefs {
+			byFile[ref.File] = append(byFile[ref.File], ref.Key)
+		}
+		// Public settings, sorted for a stable file.
+		keys := make([]string, 0, len(t.Settings))
+		for k := range t.Settings {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var tenantEnv strings.Builder
+		tenantEnv.WriteString("# fixture tenant.env rendered from the registry (--fake-drivers)\n")
+		for _, k := range keys {
+			tenantEnv.WriteString(k + "=" + envQuote(t.Settings[k]) + "\n")
+		}
+		for _, k := range byFile["tenant.env"] {
+			tenantEnv.WriteString(k + "=" + fixtureSecret(k, t) + "\n")
+		}
+		out[tp.TenantEnv] = []byte(tenantEnv.String())
+		if secretKeys := byFile["secrets.env"]; len(secretKeys) > 0 || t.SecretsFileSHA256 != "" {
+			var secrets strings.Builder
+			secrets.WriteString("# fixture secrets.env (--fake-drivers): placeholders, never real values\n")
+			for _, k := range secretKeys {
+				secrets.WriteString(k + "=" + fixtureSecret(k, t) + "\n")
+			}
+			out[tp.SecretsEnv] = []byte(secrets.String())
+		}
+	}
+	return out
+}
+
+// fixtureSecret renders one secret-class key. The API key triple is derived
+// from the registry's key records with placeholder values that carry the key
+// id, so a plan's redaction canary and a mint's ledger edit both have real
+// structure to work on.
+func fixtureSecret(key string, t *registry.Tenant) string {
+	switch key {
+	case "API_KEYS", "API_KEY_TENANTS", "API_KEY_ROLES":
+		vals := make([]string, 0, len(t.Keys))
+		tenants := map[string]string{}
+		roles := map[string]string{}
+		for _, k := range t.Keys {
+			v := "fixture-" + k.ID
+			vals = append(vals, v)
+			tenants[v] = k.TenantString
+			roles[v] = k.Role
+		}
+		var b []byte
+		switch key {
+		case "API_KEYS":
+			b, _ = json.Marshal(vals)
+		case "API_KEY_TENANTS":
+			b, _ = json.Marshal(tenants)
+		default:
+			b, _ = json.Marshal(roles)
+		}
+		return "'" + string(b) + "'"
+	default:
+		return "'fixture-" + strings.ToLower(key) + "'"
+	}
+}
+
+// envQuote writes a value in the envfile grammar: bare when it is plain,
+// single-quoted otherwise (a single quote inside is not representable and is
+// replaced, which for fixture data is acceptable).
+func envQuote(v string) string {
+	if v == "" {
+		return ""
+	}
+	if !strings.ContainsAny(v, " \t#'\"$\\") {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", "") + "'"
 }

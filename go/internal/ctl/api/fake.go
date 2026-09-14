@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -32,8 +34,63 @@ import (
 //     plausible-looking 64-hex string would fail that check exactly as a real
 //     leak would — which is the point.
 type FakeBackend struct {
+	mu    sync.RWMutex
 	fleet *registry.Fleet
 	now   func() time.Time
+}
+
+// f is the fixture fleet under the read lock: SaveFleet swaps the pointer,
+// and every projection reads through here so the race detector, not luck,
+// says the two never overlap.
+func (b *FakeBackend) f() *registry.Fleet {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.fleet
+}
+
+// LoadFleet is the job engine's fleet loader in --fake-drivers mode: a DEEP
+// COPY of the fixture, so a plan (or an op's run) can never mutate what the
+// read surface is serving.
+func (b *FakeBackend) LoadFleet() (*registry.Fleet, error) {
+	return cloneFleet(b.f())
+}
+
+// SaveFleet is the job engine's fleet saver in --fake-drivers mode: the
+// fixture is replaced by a copy of f with the generation advanced, which is
+// exactly what registry.Save does to the file in real mode — so GET
+// /v1/settings and /v1/fleet reflect a settings-put the way they would on a
+// host.
+func (b *FakeBackend) SaveFleet(f *registry.Fleet) error {
+	if err := f.Validate(); err != nil {
+		return err
+	}
+	next, err := cloneFleet(f)
+	if err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	next.Generation = b.fleet.Generation + 1
+	next.UpdatedAt = b.now().UTC().Format(time.RFC3339)
+	next.UpdatedBy = "settings-put (fake drivers)"
+	b.fleet = next
+	// Like registry.Save, the caller's copy learns the generation it became.
+	f.Generation, f.UpdatedAt, f.UpdatedBy = next.Generation, next.UpdatedAt, next.UpdatedBy
+	return nil
+}
+
+// cloneFleet is a JSON round trip: the registry types are the contract's
+// shapes, so this is exactly a Load of what a Save would write.
+func cloneFleet(f *registry.Fleet) (*registry.Fleet, error) {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil, err
+	}
+	var out registry.Fleet
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // NewFakeBackend returns the fixture backend.
@@ -52,7 +109,7 @@ func NewFakeBackendAt(now func() time.Time) *FakeBackend {
 }
 
 // Registry returns the fixture fleet.
-func (b *FakeBackend) Registry(context.Context) (*registry.Fleet, error) { return b.fleet, nil }
+func (b *FakeBackend) Registry(context.Context) (*registry.Fleet, error) { return b.f(), nil }
 
 func (b *FakeBackend) stamp() string { return b.now().UTC().Format(time.RFC3339) }
 
@@ -60,17 +117,17 @@ func (b *FakeBackend) stamp() string { return b.now().UTC().Format(time.RFC3339)
 // forgot, by name. It is fleet.Order itself, not a copy of its rule: a fake
 // that ordered tenants its own way could hide an ordering bug in the real one,
 // which is the one thing the fixture backend must never do.
-func (b *FakeBackend) order() []*registry.Tenant { return fleet.Order(b.fleet) }
+func (b *FakeBackend) order() []*registry.Tenant { return fleet.Order(b.f()) }
 
 // Fleet is the dashboard poll.
 func (b *FakeBackend) Fleet(context.Context) (*model.FleetResponse, error) {
-	rows := make([]model.FleetRow, 0, len(b.fleet.Tenants))
+	rows := make([]model.FleetRow, 0, len(b.f().Tenants))
 	for _, t := range b.order() {
 		rows = append(rows, b.row(t))
 	}
 	return &model.FleetResponse{
 		GeneratedAt:        b.stamp(),
-		RegistryGeneration: b.fleet.Generation,
+		RegistryGeneration: b.f().Generation,
 		Host: model.HostFacts{
 			// The facts the 2026-09-10 reboot made load-bearing: max_map_count
 			// is the ES prerequisite the host lost on reboot, linger and the
@@ -157,7 +214,7 @@ func fakeDisk(name string) int64 {
 
 // Tenants lists every tenant in the OPERATOR shape; the handler reduces.
 func (b *FakeBackend) Tenants(ctx context.Context) (*model.TenantsResponse, error) {
-	rows := make([]model.TenantResponse, 0, len(b.fleet.Tenants))
+	rows := make([]model.TenantResponse, 0, len(b.f().Tenants))
 	for _, t := range b.order() {
 		one, err := b.Tenant(ctx, t.Name, false)
 		if err != nil {
@@ -167,14 +224,14 @@ func (b *FakeBackend) Tenants(ctx context.Context) (*model.TenantsResponse, erro
 	}
 	return &model.TenantsResponse{
 		GeneratedAt:        b.stamp(),
-		RegistryGeneration: b.fleet.Generation,
+		RegistryGeneration: b.f().Generation,
 		Tenants:            rows,
 	}, nil
 }
 
 // Tenant is one tenant. With viewer, the registry row is not assembled at all.
 func (b *FakeBackend) Tenant(_ context.Context, name string, viewer bool) (*model.TenantResponse, error) {
-	t, ok := b.fleet.Tenants[name]
+	t, ok := b.f().Tenants[name]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -262,7 +319,7 @@ func (b *FakeBackend) fakePublicEnv(t *registry.Tenant) [][2]string {
 // same table adopt, backup and the redactors use — rather than from a second
 // list here, so a key cannot be public on this surface and secret on that one.
 func (b *FakeBackend) Env(_ context.Context, name string) (*model.EnvResponse, error) {
-	t, ok := b.fleet.Tenants[name]
+	t, ok := b.f().Tenants[name]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -305,7 +362,7 @@ func envRow(key, value string, source model.Source) model.EnvKey {
 // the shapes a redactor must survive — an assignment and a token signature —
 // so the canary is exercised on the read path too.
 func (b *FakeBackend) Logs(_ context.Context, name, file string, lines int) (*model.LogsResponse, error) {
-	t, ok := b.fleet.Tenants[name]
+	t, ok := b.f().Tenants[name]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -360,7 +417,7 @@ func (b *FakeBackend) hasLog(t *registry.Tenant, file string) bool {
 // finding is derived from the registry row, none from a clock or a probe.
 func (b *FakeBackend) Doctor(_ context.Context, tenant, op string) (*model.DoctorResponse, error) {
 	if tenant != "" {
-		if _, ok := b.fleet.Tenants[tenant]; !ok {
+		if _, ok := b.f().Tenants[tenant]; !ok {
 			return nil, ErrNotFound
 		}
 	}
@@ -370,7 +427,7 @@ func (b *FakeBackend) Doctor(_ context.Context, tenant, op string) (*model.Docto
 		Tenant: "",
 		Detail: "the daemon is running with --fake-drivers: every host probe below is a recorded fixture, not this machine",
 	}}
-	if !b.fleet.Ctl.GatewayEnabled {
+	if !b.f().Ctl.GatewayEnabled {
 		findings = append(findings, model.Finding{
 			Level:  model.LevelInfo,
 			Code:   "gateway_not_managed",

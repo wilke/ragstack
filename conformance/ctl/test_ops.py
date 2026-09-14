@@ -66,6 +66,16 @@ def idem() -> str:
     return f"conformance-{uuid.uuid4()}"
 
 
+# The generic EXECUTABLE mutation. It must plan and run on any tenant the
+# fixture holds — the four coconut tenants are hand-started (supervisor:
+# manual), on which `start` is refused by design until the handover. Setting a
+# PUBLIC env key is non-destructive, needs no confirm, and writes through the
+# files driver, so it exercises the whole engine path.
+EXEC_VERB = "env-set"
+EXEC_ARGS: dict[str, Any] = {"key": "LOG_LEVEL", "value": "info"}
+EXEC_ARGS_OTHER: dict[str, Any] = {"key": "LOG_LEVEL", "value": "debug"}
+
+
 def op_body(**over: Any) -> dict[str, Any]:
     """A minimal VALID ``op_request.json`` envelope, dry by default so that a
     body sent only to reach an authorization answer cannot mutate anything."""
@@ -146,16 +156,16 @@ def job_engine(ctl_url: str, ctl_key: str, some_tenant: str) -> None:
     than honestly reported.
     """
     status, body = _sync_post(
-        f"{ctl_url}/v1/tenants/{some_tenant}/ops/start",
+        f"{ctl_url}/v1/tenants/{some_tenant}/ops/{EXEC_VERB}",
         {"X-API-Key": ctl_key},
-        {"dry_run": True, "idempotency_key": idem(), "args": {}},
+        {"dry_run": True, "idempotency_key": idem(), "args": EXEC_ARGS},
     )
     detail = body.get("detail", "") if isinstance(body, dict) else str(body)
     code = body.get("code") if isinstance(body, dict) else None
     if status == 501 or (status == 409 and code == "refused" and "not wired" in detail):
         pytest.skip(
             f"the job engine is not wired in this daemon (POST /v1/tenants/{some_tenant}"
-            f"/ops/start answered {status} {code}: {detail}); the mutation conformance "
+            f"/ops/{EXEC_VERB} answered {status} {code}: {detail}); the mutation conformance "
             "lands with the engine"
         )
 
@@ -163,6 +173,22 @@ def job_engine(ctl_url: str, ctl_key: str, some_tenant: str) -> None:
 # --------------------------------------------------------------------------- #
 # Submit and poll (the engine-gated half's shared path)
 # --------------------------------------------------------------------------- #
+async def doctor_force(
+    client: httpx.AsyncClient, path: str, *, method: str = "POST", args: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Dry-run *path* and return the body members an execute needs to pass the
+    doctor gate: ``force_with_doctor_diff`` when the plan's doctor is yellow,
+    nothing when it is green. A red doctor is left alone — the execute must
+    then be refused, and a test that wants that refusal asserts it itself."""
+    resp = await client.request(method, path, json=op_body(dry_run=True, args=args or {}))
+    if resp.status_code != 200:
+        return {}
+    doctor = resp.json().get("doctor") or {}
+    if doctor.get("status") == "yellow" and doctor.get("hash"):
+        return {"force_with_doctor_diff": doctor["hash"]}
+    return {}
+
+
 async def submit_and_settle(
     client: httpx.AsyncClient,
     path: str,
@@ -174,10 +200,17 @@ async def submit_and_settle(
     key: str | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    """Execute *path*, then poll the job to a terminal state and return it."""
+    """Execute *path*, then poll the job to a terminal state and return it.
+
+    A dry run comes first, because the contract gates every execute on the
+    op-scoped doctor: red is never forced, and a YELLOW doctor is accepted only
+    when the caller quotes the hash it saw (``force_with_doctor_diff``) — the
+    same thing the CLI does with ``--force-with-doctor-diff``. A fixture fleet
+    has warnings, so the helper carries the hash the way an operator would."""
     body = op_body(dry_run=False, args=args or {}, idempotency_key=key or idem())
     if confirm is not None:
         body["confirm"] = confirm
+    body.update(await doctor_force(client, path, method=method, args=args or {}))
     accepted = await client.request(method, path, json=body)
     assert accepted.status_code == 202, (
         f"execute {method} {path} expected 202, got {accepted.status_code}: {accepted.text[:400]}"
@@ -508,12 +541,12 @@ async def test_a_dry_run_answers_a_plan(
     locked, nothing written. It is also the thing a client must have seen
     before it executes, so the plan hash and the confirm value have to be in
     the body rather than derivable only server-side."""
-    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/start", json=op_body())
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}", json=op_body(args=EXEC_ARGS))
     assert resp.status_code == 200, resp.text
     plan = resp.json()
     validate(plan, "plan", schemas)
     assert_request_id(resp)
-    assert plan["op"] == "start"
+    assert plan["op"] == EXEC_VERB
     assert plan["tenant"] == some_tenant
 
 
@@ -524,8 +557,8 @@ async def test_an_execute_is_accepted_and_reaches_a_terminal_state(
     at it, and the job then actually finishes. A 202 that never settles is the
     failure this poll exists to catch: the surface looks right and the fleet
     never changes."""
-    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
-    assert job["op"] == "start"
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}", schemas, args=EXEC_ARGS)
+    assert job["op"] == EXEC_VERB
     assert job["tenant"] == some_tenant
     assert job["state"] in TERMINAL_STATES
 
@@ -538,9 +571,10 @@ async def test_the_same_key_returns_the_same_job_and_a_different_body_is_409(
     dropped response safe to retry; the same key with a DIFFERENT request is
     409 ``duplicate``, which is what stops a client from quietly running a
     second operation under a key an operator already approved."""
-    path = f"/v1/tenants/{some_tenant}/ops/start"
+    path = f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}"
     key = idem()
-    body = op_body(dry_run=False, idempotency_key=key, args={})
+    body = op_body(dry_run=False, idempotency_key=key, args=EXEC_ARGS)
+    body.update(await doctor_force(client, path, args=EXEC_ARGS))
 
     first = await client.post(path, json=body)
     assert first.status_code == 202, first.text
@@ -554,7 +588,11 @@ async def test_the_same_key_returns_the_same_job_and_a_different_body_is_409(
     )
 
     different = await client.post(
-        path, json=op_body(dry_run=False, idempotency_key=key, args={"force": True})
+        path,
+        json={
+            **op_body(dry_run=False, idempotency_key=key, args=EXEC_ARGS_OTHER),
+            **await doctor_force(client, path, args=EXEC_ARGS_OTHER),
+        },
     )
     assert_error(different, 409, "duplicate", schemas)
     await poll_to_terminal(client, job_id, schemas)
@@ -630,7 +668,7 @@ async def test_a_viewer_sees_a_reduced_job(
     view of the SAME job must show at least one of them populated — otherwise
     the reduction is asserted against a job that had nothing to hide and the
     test passes for the wrong reason."""
-    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}", schemas, args=EXEC_ARGS)
     job_id = job["id"]
 
     full = (await client.get(f"/v1/jobs/{job_id}")).json()
@@ -704,7 +742,7 @@ async def test_a_mutation_writes_audit_rows(
     ``result`` row after. The intent row is what survives a crash mid-job: a
     log written only on success cannot answer "what was this daemon doing when
     it died"."""
-    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}", schemas, args=EXEC_ARGS)
     resp = await client.get("/v1/audit", params={"tenant": some_tenant})
     assert resp.status_code == 200, resp.text
     body = resp.json()

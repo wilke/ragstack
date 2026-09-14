@@ -552,6 +552,17 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, model.CodeNotFound, "no job "+id, nil)
 		return
 	}
+	if !isViewer(r) {
+		// An operator's job names each step's log: the contract's `log` is
+		// the relative path under /rag/data/ctl/jobs/<id>/ that the
+		// steps/{n}/log endpoint serves (redacted), null when the step wrote
+		// nothing; the viewer reduction nulls it always.
+		for i := range job.Steps {
+			if text, err := s.Engine.StepLog(r.Context(), id, job.Steps[i].N); err == nil && text != "" {
+				job.Steps[i].Log = model.NullString(fmt.Sprintf("steps/%d.log", job.Steps[i].N))
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, presentJob(*job, isViewer(r)))
 }
 

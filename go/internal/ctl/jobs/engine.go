@@ -443,6 +443,12 @@ func (e *engine) runSteps(ctx context.Context, r *run, req Request, argsRedacted
 
 		sc := e.stepContext(ctx, r, i)
 		log, err := steps[i].Run(ctx, sc)
+		if log == "" && err == nil {
+			// A step that says nothing still leaves a line: the operator's
+			// log is never null for a step that ran (the viewer's always is,
+			// which is the reduction the contract promises).
+			log = "done"
+		}
 		if log != "" {
 			e.appendLog(ctx, job, st, log)
 		}

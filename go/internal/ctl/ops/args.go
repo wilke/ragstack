@@ -315,6 +315,15 @@ var argSchemas = map[string]argSpec{
 	}},
 	"gateway-apply":  {Verb: "gateway-apply"},
 	"gateway-reload": {Verb: "gateway-reload"},
+	// PUT /v1/settings: the HTTP layer validates the writable subset of
+	// settings_response.json field by field; the op checks the shape again
+	// and decides what the registry can persist.
+	"settings-put": {Verb: "settings-put", Fields: []argField{
+		{Name: "retention", Kind: argObject},
+		{Name: "images", Kind: argObject},
+		{Name: "python_env_default", Kind: argString},
+		{Name: "ctl", Kind: argObject},
+	}},
 }
 
 // ContractVerbs is the ops endpoint's verb enum — exactly the keys of
