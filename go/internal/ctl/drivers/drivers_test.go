@@ -196,13 +196,9 @@ func pendingSurfaces(d *Real) map[string]struct {
 		val reflect.Value
 	}
 	return map[string]surface{
-		"systemd":       {reflect.TypeOf((*jobs.Systemd)(nil)).Elem(), reflect.ValueOf(d.Systemd())},
-		"proc":          {reflect.TypeOf((*jobs.Proc)(nil)).Elem(), reflect.ValueOf(d.Proc())},
 		"qdrant":        {reflect.TypeOf((*jobs.Qdrant)(nil)).Elem(), reflect.ValueOf(d.Qdrant())},
 		"elasticsearch": {reflect.TypeOf((*jobs.Elasticsearch)(nil)).Elem(), reflect.ValueOf(d.Elasticsearch())},
 		"tenantapi":     {reflect.TypeOf((*jobs.TenantAPI)(nil)).Elem(), reflect.ValueOf(d.TenantAPI())},
-		"git":           {reflect.TypeOf((*jobs.Git)(nil)).Elem(), reflect.ValueOf(d.Git())},
-		"build":         {reflect.TypeOf((*jobs.Build)(nil)).Elem(), reflect.ValueOf(d.Build())},
 		"postgres":      {reflect.TypeOf((*jobs.Postgres)(nil)).Elem(), reflect.ValueOf(d.Postgres())},
 		"sqlite":        {reflect.TypeOf((*jobs.SQLite)(nil)).Elem(), reflect.ValueOf(d.SQLite())},
 		"archive":       {reflect.TypeOf((*jobs.Archive)(nil)).Elem(), reflect.ValueOf(d.Archive())},
@@ -251,12 +247,24 @@ func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
 			}
 		}
 	}
-	// The two real ones are real.
+	// The wired ones are real.
 	if _, ok := d.Files().(*RealFiles); !ok {
 		t.Error("Files() is not the real driver")
 	}
 	if _, ok := d.Gateway().(*RealGateway); !ok {
 		t.Error("Gateway() is not the real driver")
+	}
+	if _, ok := d.Systemd().(*RealSystemd); !ok {
+		t.Error("Systemd() is not the real driver")
+	}
+	if _, ok := d.Proc().(*RealProc); !ok {
+		t.Error("Proc() is not the real driver")
+	}
+	if _, ok := d.Git().(*RealGit); !ok {
+		t.Error("Git() is not the real driver")
+	}
+	if _, ok := d.Build().(*RealBuild); !ok {
+		t.Error("Build() is not the real driver")
 	}
 }
 
@@ -336,16 +344,17 @@ func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
 func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
 	got := strings.Join(d.Pending(), ",")
-	if got != "systemd,proc,qdrant,elasticsearch,tenantapi,git,build,postgres,sqlite,archive" {
+	if got != "qdrant,elasticsearch,tenantapi,postgres,sqlite,archive" {
 		t.Errorf("Real.Pending() = %q", got)
 	}
 	// Every name on the list is a driver that actually refuses, and no driver
 	// that WORKS is on it.
-	if err := d.Systemd().DaemonReload(context.Background()); !strings.Contains(err.Error(), PendingPR) {
-		t.Errorf("systemd refusal = %v, want it to name %s", err, PendingPR)
+	if _, err := d.Qdrant().Collections(context.Background(), ""); !strings.Contains(err.Error(), PendingPR) {
+		t.Errorf("qdrant refusal = %v, want it to name %s", err, PendingPR)
 	}
 	for _, name := range d.Pending() {
-		if name == "gateway" || name == "files" {
+		switch name {
+		case "gateway", "files", "systemd", "proc", "git", "build":
 			t.Errorf("%s is wired; it must not be reported as pending", name)
 		}
 	}
@@ -944,5 +953,49 @@ func TestRealFilesMkdirAllRefusesOutsideTheRootsAndThroughASymlink(t *testing.T)
 	}
 	if err := f.MkdirAll(context.Background(), file, 0o770); !errors.Is(err, jobs.ErrRefused) {
 		t.Errorf("MkdirAll over a file = %v, want a refusal", err)
+	}
+}
+
+// ---------------------------------------------------------------- PR-D wiring
+
+func TestNewRealWiresTheHostDriversWithTheirDefaults(t *testing.T) {
+	root := t.TempDir()
+	d := NewReal(RealOptions{Roots: paths.NewRoots(root, paths.Overrides{})})
+
+	if got := d.systemd.Bin; got != "/usr/bin/systemctl" {
+		t.Errorf("systemctl = %q, want the default", got)
+	}
+	if got := d.git.Bin; got != "/usr/bin/git" {
+		t.Errorf("git = %q, want the default", got)
+	}
+	if got := d.build.Node; got != "/rag/tools/node/current/bin/node" {
+		t.Errorf("node = %q, want the default", got)
+	}
+	if got := d.build.Npm; got != "/rag/tools/node/current/bin/npm" {
+		t.Errorf("npm = %q, want the default", got)
+	}
+	if got, want := d.Mirror(), filepath.Join(root, "repos", "ragstack.git"); got != want {
+		t.Errorf("mirror = %q, want %q", got, want)
+	}
+	if got, want := d.NpmCache(), filepath.Join(root, "cache", "npm"); got != want {
+		t.Errorf("npm cache = %q, want %q", got, want)
+	}
+	// The worktree and build drivers are bounded by the SAME approved roots
+	// the files driver writes under: `worktree remove --force` and
+	// `vite --emptyOutDir` both delete a directory tree.
+	if len(d.git.Roots) == 0 || len(d.git.Roots) != len(d.files.Roots) || len(d.build.Roots) != len(d.files.Roots) {
+		t.Errorf("git roots %v and build roots %v do not match the files driver's %v", d.git.Roots, d.build.Roots, d.files.Roots)
+	}
+
+	// An explicit path wins over every default.
+	d = NewReal(RealOptions{
+		Roots:        paths.NewRoots(root, paths.Overrides{}),
+		SystemctlBin: "/bin/systemctl", GitBin: "/opt/git", NodeBin: "/home/u/.local/bin/node",
+		NpmBin: "/home/u/.local/bin/npm", Mirror: "/srv/ragstack.git", NpmCache: "/srv/npm",
+	})
+	if d.systemd.Bin != "/bin/systemctl" || d.git.Bin != "/opt/git" ||
+		d.build.Node != "/home/u/.local/bin/node" || d.build.Npm != "/home/u/.local/bin/npm" ||
+		d.Mirror() != "/srv/ragstack.git" || d.NpmCache() != "/srv/npm" {
+		t.Errorf("an explicit configuration was not used: %+v", d.opts)
 	}
 }

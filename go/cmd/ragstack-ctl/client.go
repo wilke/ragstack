@@ -780,7 +780,7 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 		return nil, fmt.Errorf("--direct records the worker host and this host has none: %w", err)
 	}
 	roots := paths.NewRoots(*o.ragRoot, paths.Overrides{})
-	return api.BuildEngine(api.EngineConfig{
+	cfg := api.EngineConfig{
 		Roots:        roots,
 		RegistryPath: resolveRegistry(*o.registry, *o.ragRoot),
 		StorePath:    filepath.Join(roots.CtlStateDir, "jobs.db"),
@@ -788,7 +788,13 @@ func buildDirectEngine(o *opFlags) (jobs.Engine, error) {
 		Host:         host,
 		SecretsTTL:   api.DefaultSecretsTTL,
 		Now:          time.Now,
-	})
+	}
+	// The same CTL_* variables the daemon reads, through the same helper: a
+	// --direct run and the daemon must resolve `systemctl`, `git`, node, the
+	// mirror and the npm cache identically, or an operator would be debugging
+	// two different driver sets.
+	api.SetHostToolsFromEnv(&cfg)
+	return api.BuildEngine(cfg)
 }
 
 // directPrincipal is who a --direct run is. Nothing about it comes from a

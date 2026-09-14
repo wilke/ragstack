@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -71,6 +72,17 @@ type EngineConfig struct {
 	// fixture so the mutation surface is exercised end to end without a host.
 	LoadFleet func() (*registry.Fleet, error)
 	SaveFleet func(*registry.Fleet) error
+	// The host programs and directories the real drivers use, all absolute.
+	// Empty takes drivers.NewReal's default for each. SetHostToolsFromEnv
+	// fills them from the CTL_* variables, and both the daemon and the
+	// --direct CLI call it, so the two build the same driver set.
+	Systemctl string
+	Git       string
+	Node      string
+	Npm       string
+	Apptainer string
+	Mirror    string
+	NpmCache  string
 	// Doctor is the op-scoped doctor a plan pins. Nil means the host doctor
 	// over LoadFleet; the daemon passes its Backend's Doctor so the hash a
 	// plan carries is the hash the dashboard shows (and, with fake drivers,
@@ -116,6 +128,12 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		saveFleet = func(f *registry.Fleet) error { return registry.Save(cfg.RegistryPath, f, by) }
 	}
 
+	// One redactor for the whole engine: the step logs the engine writes AND
+	// the program output the drivers capture pass through the same seeded
+	// table, so a secret cannot reach a log by arriving through the half that
+	// was built without it.
+	redactor := newEngineRedactor(cfg.Roots, loadFleet, cfg.Logger)
+
 	var drv jobs.Drivers
 	if cfg.FakeDrivers {
 		// The fake files driver honours the same approved roots the real one
@@ -131,9 +149,23 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		})
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
-			Roots: cfg.Roots,
-			Fleet: loadFleet,
-			By:    fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host),
+			Roots:        cfg.Roots,
+			Fleet:        loadFleet,
+			By:           fmt.Sprintf("ragstack-ctl %s on %s", cfg.Mode, cfg.Host),
+			SystemctlBin: cfg.Systemctl,
+			GitBin:       cfg.Git,
+			NodeBin:      cfg.Node,
+			NpmBin:       cfg.Npm,
+			Apptainer:    cfg.Apptainer,
+			Mirror:       cfg.Mirror,
+			NpmCache:     cfg.NpmCache,
+			Logger:       cfg.Logger,
+			// The drivers redact captured stderr with the same redactor the
+			// engine logs through: a `git` that quotes a URL with a token in
+			// it, or a `psql` that echoes a DSN, must not reach a job log
+			// just because it arrived as a program's output rather than as an
+			// op's string.
+			Redact: redactor.Redact,
 		})
 	}
 
@@ -171,7 +203,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 		RegistryPath: cfg.RegistryPath,
 		LoadFleet:    loadFleet,
 		Drivers:      drv,
-		Redactor:     newEngineRedactor(cfg.Roots, loadFleet, cfg.Logger),
+		Redactor:     redactor,
 		Doctor:       doctorFn,
 		Now:          cfg.Now,
 		Host:         cfg.Host,
@@ -393,4 +425,33 @@ func envQuote(v string) string {
 		return v
 	}
 	return "'" + strings.ReplaceAll(v, "'", "") + "'"
+}
+
+// SetHostToolsFromEnv fills cfg's host-program paths and directories from the
+// CTL_* environment.
+//
+// It is ONE function because the daemon and `--direct` must build the same
+// driver set: a host where `systemctl` lives somewhere unusual, or whose node
+// is not where the plan says, would otherwise work through one entry point and
+// refuse through the other, and the operator debugging that would have no
+// reason to suspect which process read which variable. An unset or blank
+// variable leaves the field empty, which is how a caller says "take
+// drivers.NewReal's default".
+func SetHostToolsFromEnv(cfg *EngineConfig) {
+	for _, f := range []struct {
+		env   string
+		field *string
+	}{
+		{EnvSystemctlBin, &cfg.Systemctl},
+		{EnvGitBin, &cfg.Git},
+		{EnvNodeBin, &cfg.Node},
+		{EnvNpmBin, &cfg.Npm},
+		{EnvApptainerBin, &cfg.Apptainer},
+		{EnvMirror, &cfg.Mirror},
+		{EnvNpmCache, &cfg.NpmCache},
+	} {
+		if v := strings.TrimSpace(os.Getenv(f.env)); v != "" {
+			*f.field = v
+		}
+	}
 }

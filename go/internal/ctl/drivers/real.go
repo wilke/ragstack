@@ -4,20 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
 
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
+	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
-// RealOptions configure the real driver set. Two drivers are real today —
-// the gateway (internal/ctl/gateway) and the filesystem — because those are
-// the two host surfaces PR-C owns end to end.
+// RealOptions configure the real driver set: the gateway
+// (internal/ctl/gateway), the filesystem, and the four host drivers that run a
+// program — systemd, proc, git and build.
 type RealOptions struct {
 	Roots paths.Roots
 	// Fleet loads the registry the gateway renders from. It is a FUNCTION,
@@ -34,18 +36,55 @@ type RealOptions struct {
 	PIDFile   string
 	NginxSIF  string
 	Apptainer string
+	// The host programs the PR-D drivers run: absolute paths, all overridable
+	// from ctl.env (CTL_SYSTEMCTL_BIN and friends). They are configuration
+	// rather than constants because coconut's node is not where a packaged one
+	// would be (plan "Host facts"), and because a test points them at stubs.
+	// Empty takes the default named beside each.
+	SystemctlBin string // /usr/bin/systemctl
+	GitBin       string // /usr/bin/git
+	NodeBin      string // /rag/tools/node/current/bin/node
+	NpmBin       string // /rag/tools/node/current/bin/npm
+	// Mirror is the bare repository artifacts are prepared from. Default
+	// <RagRoot>/repos/ragstack.git. The ctl never creates it — cloning the
+	// mirror is an operator's deploy-time act.
+	Mirror string
+	// NpmCache is the npm cache `fleet artifact prepare` installs through.
+	// Default <RagRoot>/cache/npm.
+	NpmCache string
+	// Redact is applied to a program's captured stderr before it reaches an
+	// error, a job log or an audit row. Nil is the identity function; the
+	// daemon passes the engine's redactor.
+	Redact func(string) string
+	// Logger records each host program run at debug level (program, argv,
+	// duration — never the output). Nil discards.
+	Logger *slog.Logger
 	// ApprovedRoots are the only directories the Files driver writes under.
 	// Empty means the two roots every op needs — the tenant data tree and the
 	// ctl config tree — never "everything".
 	ApprovedRoots []string
 }
 
-// Real is the real driver set: gateway and files, and an honest refusal for
-// everything that lands in PR-D.
+// Default program paths. They are the ones ops/ansible installs and the ones
+// the plan names; a host that puts them elsewhere says so in ctl.env.
+const (
+	defaultSystemctlBin = "/usr/bin/systemctl"
+	defaultGitBin       = "/usr/bin/git"
+	defaultNodeBin      = "/rag/tools/node/current/bin/node"
+	defaultNpmBin       = "/rag/tools/node/current/bin/npm"
+)
+
+// Real is the real driver set: the gateway, the filesystem, the four host
+// drivers PR-D wires (systemd, proc, git, build), and an honest refusal for
+// the store drivers that are still landing.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
 	files   *RealFiles
+	systemd *RealSystemd
+	proc    *RealProc
+	git     *RealGit
+	build   *RealBuild
 }
 
 var _ jobs.Drivers = (*Real)(nil)
@@ -55,22 +94,56 @@ func NewReal(o RealOptions) *Real {
 	if len(o.ApprovedRoots) == 0 {
 		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir}
 	}
+	o.SystemctlBin = orDefault(o.SystemctlBin, defaultSystemctlBin)
+	o.GitBin = orDefault(o.GitBin, defaultGitBin)
+	o.NodeBin = orDefault(o.NodeBin, defaultNodeBin)
+	o.NpmBin = orDefault(o.NpmBin, defaultNpmBin)
+	o.Mirror = orDefault(o.Mirror, filepath.Join(o.Roots.RagRoot, "repos", "ragstack.git"))
+	o.NpmCache = orDefault(o.NpmCache, filepath.Join(o.Roots.RagRoot, "cache", "npm"))
+
+	// ONE runner behind every host driver: the env sanitizer, the redactor
+	// and the process-group kill are rules that hold for all of them, and a
+	// driver with its own exec.Cmd would be a place they could stop holding.
+	run := &runner{Redact: o.Redact, Logger: o.Logger}
+	roots := append([]string(nil), o.ApprovedRoots...)
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
-		files:   &RealFiles{Roots: append([]string(nil), o.ApprovedRoots...)},
+		files:   &RealFiles{Roots: roots},
+		systemd: &RealSystemd{run: run, Bin: o.SystemctlBin},
+		// The listener table comes from hostfacts, so this driver and
+		// `doctor` answer a port question from the same parser.
+		proc:  &RealProc{Listeners: hostfacts.NewReal(o.Roots).Listeners, ProcRoot: func() string { return "/proc" }},
+		git:   &RealGit{run: run, Bin: o.GitBin, Roots: roots},
+		build: &RealBuild{run: run, Node: o.NodeBin, Npm: o.NpmBin, Roots: roots},
 	}
 }
 
-func (r *Real) Systemd() jobs.Systemd             { return pendingSystemd{} }
-func (r *Real) Proc() jobs.Proc                   { return pendingProc{} }
+// orDefault is the empty-means-default rule every program path follows.
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+// Mirror is the bare repository this driver set prepares artifacts from, as
+// NewReal resolved it. `fleet artifact prepare` reads it rather than
+// recomputing the default beside its own flag.
+func (r *Real) Mirror() string { return r.opts.Mirror }
+
+// NpmCache is the npm cache directory, as NewReal resolved it.
+func (r *Real) NpmCache() string { return r.opts.NpmCache }
+
+func (r *Real) Systemd() jobs.Systemd             { return r.systemd }
+func (r *Real) Proc() jobs.Proc                   { return r.proc }
 func (r *Real) Gateway() jobs.GatewayDriver       { return r.gateway }
 func (r *Real) Files() jobs.Files                 { return r.files }
 func (r *Real) Qdrant() jobs.Qdrant               { return pendingQdrant{} }
 func (r *Real) Elasticsearch() jobs.Elasticsearch { return pendingES{} }
 func (r *Real) TenantAPI() jobs.TenantAPI         { return pendingTenantAPI{} }
-func (r *Real) Git() jobs.Git                     { return pendingGit{} }
-func (r *Real) Build() jobs.Build                 { return pendingBuild{} }
+func (r *Real) Git() jobs.Git                     { return r.git }
+func (r *Real) Build() jobs.Build                 { return r.build }
 func (r *Real) Postgres() jobs.Postgres           { return pendingPostgres{} }
 func (r *Real) SQLite() jobs.SQLite               { return pendingSQLite{} }
 func (r *Real) Archive() jobs.Archive             { return pendingArchive{} }
@@ -397,61 +470,30 @@ func (f *RealFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 
 // ---------------------------------------------------------------- PR-D
 
-// The drivers PR-D ships. Each method refuses with the driver and method
-// named, so a job that reaches one stops with a sentence an operator can act
-// on rather than with a nil-pointer panic. They are five types rather than
-// one because Qdrant.Snapshot and Elasticsearch.Snapshot are different
-// methods with the same name.
+// The STORE drivers PR-D is still landing; the host drivers above are wired.
+// Each method refuses with the driver and method named, so a job that reaches
+// one stops with a sentence an operator can act on rather than with a
+// nil-pointer panic. They are separate types rather than one because
+// Qdrant.Snapshot and Elasticsearch.Snapshot are different methods with the
+// same name.
 type (
-	pendingSystemd   struct{}
-	pendingProc      struct{}
 	pendingQdrant    struct{}
 	pendingES        struct{}
 	pendingTenantAPI struct{}
-	pendingGit       struct{}
-	pendingBuild     struct{}
 	pendingPostgres  struct{}
 	pendingSQLite    struct{}
 	pendingArchive   struct{}
 )
 
 var (
-	_ jobs.Systemd       = pendingSystemd{}
-	_ jobs.Proc          = pendingProc{}
 	_ jobs.Qdrant        = pendingQdrant{}
 	_ jobs.Elasticsearch = pendingES{}
 	_ jobs.TenantAPI     = pendingTenantAPI{}
-	_ jobs.Git           = pendingGit{}
-	_ jobs.Build         = pendingBuild{}
 	_ jobs.Postgres      = pendingPostgres{}
 	_ jobs.SQLite        = pendingSQLite{}
 	_ jobs.Archive       = pendingArchive{}
 )
 
-func (pendingSystemd) DaemonReload(context.Context) error {
-	return pending(jobs.ErrRefused, "systemd", "DaemonReload")
-}
-func (pendingSystemd) Start(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Start")
-}
-func (pendingSystemd) Stop(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Stop")
-}
-func (pendingSystemd) Enable(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Enable")
-}
-func (pendingSystemd) Disable(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Disable")
-}
-func (pendingSystemd) IsActive(context.Context, string) (bool, error) {
-	return false, pending(jobs.ErrRefused, "systemd", "IsActive")
-}
-func (pendingProc) Listening(context.Context, int) (bool, error) {
-	return false, pending(jobs.ErrRefused, "proc", "Listening")
-}
-func (pendingProc) Signal(context.Context, int, string, string, string) error {
-	return pending(jobs.ErrRefused, "proc", "Signal")
-}
 func (pendingQdrant) Collections(context.Context, string) ([]string, error) {
 	return nil, pending(jobs.ErrRefused, "qdrant", "Collections")
 }
@@ -463,21 +505,6 @@ func (pendingES) Indices(context.Context, string) ([]string, error) {
 }
 func (pendingES) Snapshot(context.Context, string, string, string) error {
 	return pending(jobs.ErrRefused, "elasticsearch", "Snapshot")
-}
-func (pendingSystemd) Link(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "Link")
-}
-func (pendingSystemd) IsEnabled(context.Context, string) (bool, error) {
-	return false, pending(jobs.ErrRefused, "systemd", "IsEnabled")
-}
-func (pendingSystemd) Show(context.Context, string) (jobs.UnitInfo, error) {
-	return jobs.UnitInfo{}, pending(jobs.ErrRefused, "systemd", "Show")
-}
-func (pendingSystemd) ResetFailed(context.Context, string) error {
-	return pending(jobs.ErrRefused, "systemd", "ResetFailed")
-}
-func (pendingProc) Owner(context.Context, int) (int, int, error) {
-	return 0, 0, pending(jobs.ErrRefused, "proc", "Owner")
 }
 func (pendingQdrant) Ready(context.Context, string) error {
 	return pending(jobs.ErrRefused, "qdrant", "Ready")
@@ -520,24 +547,6 @@ func (pendingTenantAPI) DeepHealth(context.Context, string, string) error {
 }
 func (pendingTenantAPI) Collections(context.Context, string, string) ([]string, error) {
 	return nil, pending(jobs.ErrRefused, "tenantapi", "Collections")
-}
-func (pendingGit) ResolveRef(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "git", "ResolveRef")
-}
-func (pendingGit) AddWorktree(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "git", "AddWorktree")
-}
-func (pendingGit) RemoveWorktree(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "git", "RemoveWorktree")
-}
-func (pendingGit) Describe(context.Context, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "git", "Describe")
-}
-func (pendingBuild) NpmCI(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "build", "NpmCI")
-}
-func (pendingBuild) UI(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "build", "UI")
 }
 func (pendingPostgres) Ready(context.Context, jobs.PostgresSpec) error {
 	return pending(jobs.ErrRefused, "postgres", "Ready")

@@ -34,9 +34,19 @@ func TestEnvKeysMatchAnsibleTemplates(t *testing.T) {
 		secret[k] = true
 	}
 
+	// The PR-D host-program paths are read by the daemon but not templated by
+	// the role yet (see HostToolEnvKeys): they are allowed in the template and
+	// not required from it. Delete this exception in the commit that adds the
+	// rows, so the reconciliation covers them like everything else.
+	hostTool := map[string]bool{}
+	for _, k := range HostToolEnvKeys() {
+		hostTool[k] = true
+		delete(publicKeys, k)
+	}
+
 	wantPublic := []string{}
 	for _, k := range EnvKeys() {
-		if secret[k] || k == EnvIdentityKeyFetchFile {
+		if secret[k] || hostTool[k] || k == EnvIdentityKeyFetchFile {
 			continue
 		}
 		wantPublic = append(wantPublic, k)

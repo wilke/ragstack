@@ -292,6 +292,21 @@ CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
 shred -u "$D/ctl.env" "$D/ctl-secrets.env" && rmdir "$D"
 ```
 
+**Optional `ctl.env` rows: where the host programs are.** The real drivers run
+programs by absolute path and never search `PATH`. Each variable below is
+optional; unset takes the default. Add a row only when this host differs —
+coconut's node does, which is the reason these exist.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `CTL_SYSTEMCTL_BIN` | `/usr/bin/systemctl` | the `systemctl --user` the unit verbs run. |
+| `CTL_GIT_BIN` | `/usr/bin/git` | the `git` that resolves refs and manages artifact worktrees. |
+| `CTL_NODE_BIN` | `/rag/tools/node/current/bin/node` | the node that runs `vite build` for a tenant UI. |
+| `CTL_NPM_BIN` | `/rag/tools/node/current/bin/npm` | the npm `fleet artifact prepare` installs an artifact's frontend with. |
+| `CTL_APPTAINER_BIN` | `/usr/bin/apptainer` | the apptainer the gateway and the store drivers exec. |
+| `CTL_MIRROR` | `<rag-root>/repos/ragstack.git` | the BARE mirror artifacts are prepared from. The ctl never creates it — see the root items. |
+| `CTL_NPM_CACHE` | `<rag-root>/cache/npm` | the npm cache an artifact install writes through (never `~/.npm`). |
+
 Never `cat`, `echo` or `grep` `ctl-secrets.env` into a terminal afterwards.
 `ctl-daemon.sh` PARSES both files (`KEY=VALUE`, one pair of surrounding quotes
 stripped, nothing expanded — the same rule systemd's `EnvironmentFile` applies)

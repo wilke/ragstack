@@ -142,6 +142,7 @@ func RunServe(args []string) int {
 		Logger:       logger,
 		Now:          time.Now,
 	}
+	SetHostToolsFromEnv(&cfg)
 	cfg.Doctor = func(ctx context.Context, tenant, op string) (model.DoctorResponse, error) {
 		d, err := backend.Doctor(ctx, tenant, op)
 		if err != nil {
