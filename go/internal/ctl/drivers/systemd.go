@@ -100,8 +100,10 @@ func (s *RealSystemd) Disable(ctx context.Context, unit string) error {
 // notLoadedIsFine turns systemctl's "Unit X not loaded" / "does not exist"
 // (exit 5) into success for the verbs whose goal is the unit's absence.
 func notLoadedIsFine(err error) error {
+	// exit 5 for `stop` ("not loaded"), exit 1 for `disable` ("Unit file X
+	// does not exist"): the message is the fact, the code varies by verb.
 	var ee *ExecError
-	if errors.As(err, &ee) && ee.Code == 5 {
+	if errors.As(err, &ee) {
 		msg := strings.ToLower(ee.Stderr)
 		if strings.Contains(msg, "not loaded") || strings.Contains(msg, "does not exist") ||
 			strings.Contains(msg, "not found") {

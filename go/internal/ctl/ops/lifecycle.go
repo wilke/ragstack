@@ -501,14 +501,7 @@ func (p *planner) addReadyStep(legs []component) {
 				Kind: "probe", Title: fmt.Sprintf("wait for postgres to listen on %d", pg.Port),
 				Targets: []string{strconv.Itoa(pg.Port)},
 				Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-					listening, err := sc.Ops.Drivers.Proc().Listening(ctx, pg.Port)
-					if err != nil {
-						return "", err
-					}
-					if !listening {
-						return "", fmt.Errorf("nothing is listening on %d: the tenant's postgres did not come up", pg.Port)
-					}
-					return fmt.Sprintf("port %d is listening", pg.Port), nil
+					return awaitListening(ctx, sc, pg.Port, "the tenant's postgres")
 				},
 			})
 		}
@@ -520,14 +513,35 @@ func (p *planner) addReadyStep(legs []component) {
 		Kind: "probe", Title: fmt.Sprintf("wait for the API to listen on %d", port),
 		Targets: []string{strconv.Itoa(port)},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-			listening, err := sc.Ops.Drivers.Proc().Listening(ctx, port)
-			if err != nil {
-				return "", err
-			}
-			if !listening {
-				return "", fmt.Errorf("nothing is listening on %d: the API did not come up", port)
-			}
-			return fmt.Sprintf("port %d is listening", port), nil
+			return awaitListening(ctx, sc, port, "the API")
 		},
 	})
+}
+
+// awaitListening polls the LISTEN table for port until it answers or the
+// readiness timeout passes. It polls — a single probe right after
+// `systemctl start` returned is a probe of a process that has not finished
+// importing yet, and on coconut the fenced backup's API restart failed that
+// way while the API came up two seconds later. Wall clock and a real sleep,
+// for the reason create's readiness gate gives: this is a run half waiting
+// for a process, not a plan.
+func awaitListening(ctx context.Context, sc *jobs.StepContext, port int, what string) (string, error) {
+	deadline := time.Now().Add(createReadyTimeout)
+	for {
+		listening, err := sc.Ops.Drivers.Proc().Listening(ctx, port)
+		if err != nil {
+			return "", err
+		}
+		if listening {
+			return fmt.Sprintf("port %d is listening", port), nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("nothing is listening on %d after %s: %s did not come up", port, createReadyTimeout, what)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(createReadyPoll):
+		}
+	}
 }
