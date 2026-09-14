@@ -129,17 +129,25 @@ the `shred` runs only after that check passed. Never `cat` the secrets file afte
 
 ## 5. Adopt the four live tenants
 
-```bash
-ops/coconut/ctl-as-svc.sh adopt-all --preview --registry /tmp/preview.json     # writes nothing
-ops/coconut/ctl-as-svc.sh adopt-all --commit  --registry /tmp/preview.json     # scratch registry + /tmp/manifest.tsv
-diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv             # must be empty
+Adoption runs **as wilke**, not through the wrapper: it reads every tenant's
+`tenant.env` (0600, wilke-owned) to classify keys and fingerprint secrets, which
+svcbvbrc cannot do until the handover (PR-E). The registry it writes is
+group-readable (`0660 wilke:cels`), which is all the daemon needs.
 
-ops/coconut/ctl-as-svc.sh adopt-all --commit                                    # the real registry
-ops/coconut/ctl-as-svc.sh doctor
+```bash
+/rag/bin/ragstack-ctl adopt-all --preview --registry /tmp/preview.json     # writes nothing
+/rag/bin/ragstack-ctl adopt-all --commit  --registry /tmp/preview.json     # scratch registry + /tmp/manifest.tsv
+diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv         # must be empty
+
+/rag/bin/ragstack-ctl adopt-all --commit                                    # the real registry
+chmod 0640 /rag/data/tenants/manifest.tsv                                   # new-tenant.sh leaves it 0600; the daemon reads it
+/rag/bin/ragstack-ctl doctor
 ```
 
 **Expect:** empty `diff`; doctor reports **0 red** (yellow `worktree_gitdir_unreadable`
-is expected until the handover).
+is expected until the handover). On coconut doctor is red for one pre-existing
+item — demo's dormant `bin/up.sh` would start empty store instances; the ctl
+never edits that file — which does not block any step here.
 **Point of no return for `new-tenant.sh`:** once `registry.json` exists it refuses new port
 blocks; the ctl allocates from here on.
 **Undo:** `rm /rag/data/tenants/registry.json{,.lock,.generation}` — `manifest.tsv` is untouched.
@@ -155,6 +163,15 @@ ops/coconut/ctl-as-svc.sh gateway apply --dry-run     # real nginx -t on a stage
 about an **incomplete** previous publication, run `gateway repair` first — a dry run
 never repairs on its own.
 
+**Do this publish BEFORE adding a tenant.** The first `apply` adopts the proxy's
+bootstrap copies only when they are byte-identical to the generation being
+published. If the registry already holds a fifth tenant, the switch refuses
+("neither the generation being published nor the one currently published") and
+you have to move both bootstrap copies aside by hand
+(`mv …generated.conf …generated.conf.bootstrap.bak-<date>`) first. Publishing the
+no-op generation first, then adopting and publishing the new tenant as
+generation 2, avoids that entirely.
+
 ## 7. Publish (the one live change)
 
 ```bash
@@ -167,6 +184,11 @@ ops/coconut/verify.sh "$S"
 **Expect:** result `verified`; same master pid; `confirm reload` ok (new worker set,
 no `[emerg]`); four golden bodies byte-identical; both include paths are now
 **symlinks** into `/rag/data/ctl/gateway/current/`; `verify.sh` says ALL GOOD.
+**All four golden bodies embed the tenant list** (`/`, `/ragstack/tenants`, the
+unknown-tenant 404 and the catch-all 404). After the fleet changes, regenerate
+all four (append the new name to every `tenants` array) and install them as
+svcbvbrc into `/rag/data/ctl/goldens`; a stale golden fails the probe and the
+publish reverts — harmlessly, but it costs a generation number each time.
 If refused with *"nginx master is owned by uid N"* the proxy is running as wilke:
 run the apply as wilke (`CTL_USER=wilke ops/coconut/ctl-as-svc.sh gateway apply …`)
 or restart the proxy under svcbvbrc first. Nothing was written in that case.
@@ -227,6 +249,20 @@ ops/coconut/ctl-as-svc.sh gateway apply           # no --expect-bodies: the gold
 Tenants are still started by hand (or `ops/coconut/restore.sh`) until PR-D;
 adoption is read-only inventory. A real greenfield guide replaces this section
 once `tenant create` exists.
+
+**Adding a tenant to a migrated host (done 2026-09-14 for `hackathon`):**
+`new-tenant.sh <name> --postgres local --es-heap 1g` (dedicated Postgres on the
+block's +5 port; the sqlite default and the shared-server `--postgres <dsn>` mode
+still exist), edit `tenant.env` (identity, admins, GoWe ingest, limits — no
+inline comments), `git -C ~/Development/ragstack worktree add --detach
+/rag/repos/tenants/<name> <tag>`, `npm ci` + `.env` in its `frontend/`, then
+either a Vite dev server or a static bundle (`npx vite build --base
+/ragstack/<name>/ui/` copied to `<data_dir>/ui/dist`). For a static UI nginx
+(svcbvbrc) must traverse the tenant dir: `chmod 710 <data_dir>` and `chmod 700`
+its data subdirs (qdrant, elasticsearch, postgres, state, ingest, manifests) —
+no `setfacl` on coconut. Then `bin/up.sh`, start the API, `adopt <name>
+--data-dir … --worktree … --ui-mode static` (or `--ui-port N`) as wilke, refresh
+the four goldens, `gateway apply --expect-bodies /rag/data/ctl/goldens`.
 
 ---
 

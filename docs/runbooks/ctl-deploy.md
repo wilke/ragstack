@@ -61,9 +61,14 @@ curl -s localhost:9000/ragstack/tenants
 `deploy.sh` ships a committed **bootstrap copy** of each generated include, so
 the proxy loads before the ctl has ever published. Those two files arrive as
 regular files; `gateway apply` takes them over and replaces each with the
-symlink into `/rag/data/ctl/gateway/current/` (it recognises them by content
-and says so in its warnings). A regular file at either path that is *not* a ctl
-render is refused as a hand edit — move it aside first.
+symlink into `/rag/data/ctl/gateway/current/` — but only when their content is
+**byte-identical to the generation being published**, i.e. the first publish is
+the semantic no-op of step 6. A regular file at either path with any other
+content is refused as a hand edit ("neither the generation being published nor
+the one currently published"). So publish the no-op generation *before* adopting
+a new tenant; if you already adopted one, move both copies aside
+(`mv …generated.conf …generated.conf.bootstrap.bak-<date>`) and publish — that
+is what the coconut migration of 2026-09-14 had to do.
 
 **Order.** Deploy first, publish second — but the two are not a trap if you get
 them the wrong way round. Measured on this host (2026-09-12, `nginx.sif`):
@@ -300,18 +305,25 @@ than relying on it to fall over.
 
 ## 5. Adopt the four live tenants
 
+Adoption runs **as wilke**, not through the wrapper: it reads every tenant's
+`tenant.env` (0600, wilke-owned) to classify keys and fingerprint secrets, which
+svcbvbrc cannot do until the handover (PR-E). The registry it writes is
+`0660 wilke:cels`, which is all the daemon needs to read it (and `manifest.tsv`
+needs `chmod 0640` once: `new-tenant.sh` leaves it 0600).
+
 Rehearse against a scratch registry first — `--preview` writes nothing at all:
 
 ```bash
-ops/coconut/ctl-as-svc.sh adopt-all --preview --registry /tmp/preview.json
-ops/coconut/ctl-as-svc.sh adopt-all --commit  --registry /tmp/preview.json
+/rag/bin/ragstack-ctl adopt-all --preview --registry /tmp/preview.json
+/rag/bin/ragstack-ctl adopt-all --commit  --registry /tmp/preview.json
 # --commit writes the registry file named above AND its sibling projection,
 # which is always called manifest.tsv — so /tmp/manifest.tsv, not
 # /tmp/preview.tsv.
 diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv    # projection identical
 
-ops/coconut/ctl-as-svc.sh adopt-all --commit      # the real registry
-ops/coconut/ctl-as-svc.sh doctor
+/rag/bin/ragstack-ctl adopt-all --commit           # the real registry
+chmod 0640 /rag/data/tenants/manifest.tsv
+/rag/bin/ragstack-ctl doctor
 ```
 
 **This commit is the point of no return for `new-tenant.sh`:** from here the
