@@ -19,12 +19,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,6 +64,11 @@ const (
 var (
 	jobPollInterval = 2 * time.Second
 	jobWaitTimeout  = 2 * time.Hour
+	// directPollInterval is the same loop against the IN-PROCESS engine,
+	// where a poll is a map lookup rather than a request: a --direct run of a
+	// three-step op should not take six seconds because the daemon's polling
+	// interval was the only one there was.
+	directPollInterval = 25 * time.Millisecond
 )
 
 // httpTimeout bounds one request. A plan can be slow (the op-scoped doctor
@@ -91,6 +98,7 @@ type opFlags struct {
 	wait           *bool
 	forceDoctor    *string
 	idempotency    *string
+	newKey         *bool
 	registry       *string
 	ragRoot        *string
 	asJSON         *bool
@@ -107,7 +115,8 @@ func addOpFlags(fs *flag.FlagSet, registryPath, ragRoot string, jsonOut bool) *o
 		yesDestructive: fs.String("yes-destructive", "", "answer a destructive plan's confirm with this exact value (the tenant name)"),
 		wait:           fs.Bool("wait", false, "poll the job to a terminal state and exit with its outcome"),
 		forceDoctor:    fs.String("force-with-doctor-diff", "", "the doctor hash you accepted (lets a YELLOW doctor through; never a red one)"),
-		idempotency:    fs.String("idempotency-key", "", "retry key (generated and printed on stderr when absent)"),
+		idempotency:    fs.String("idempotency-key", "", "retry key (derived from the request and printed on stderr when absent)"),
+		newKey:         fs.Bool("new-key", false, "mint a RANDOM idempotency key: run this operation again on purpose"),
 		registry:       fs.String("registry", registryPath, "registry.json path (--direct)"),
 		ragRoot:        fs.String("rag-root", ragRoot, "deployment root (--direct)"),
 		asJSON:         fs.Bool("json", jsonOut, "print the raw Plan/Job JSON"),
@@ -127,6 +136,26 @@ func envOrDefault(name, dflt string) string {
 func readAPIKey(file string) (string, error) {
 	if file == "" {
 		return strings.TrimSpace(os.Getenv(envAPIKey)), nil
+	}
+	// The MODE is checked before the bytes are read.
+	//
+	// A ctl key is an operator credential: the file holding it is 0600 or it
+	// is readable by somebody who is not the operator, and on a shared host
+	// that somebody is every account on it. Reading it anyway and saying
+	// nothing is how a world-readable key survives for a year — the CLI is the
+	// only thing that ever looks at this file, so it is the only thing that
+	// can say so.
+	fi, err := os.Lstat(file)
+	if err != nil {
+		return "", fmt.Errorf("--api-key-file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("--api-key-file %s is a %s, not a regular file; a credential read through a link or a "+
+			"fifo is a credential somebody else chose", file, fi.Mode().Type())
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return "", fmt.Errorf("--api-key-file %s is mode %04o: it is readable (or writable) by group or other. "+
+			"Run `chmod 600 %s`", file, perm, file)
 	}
 	b, err := os.ReadFile(file)
 	if err != nil {
@@ -152,23 +181,48 @@ func (o *opFlags) confirm() string {
 	return ""
 }
 
-// envelope builds op_request.json. The idempotency key is GENERATED when the
-// operator gave none and announced on stderr, because the retry of a request
-// whose answer was lost has to carry the same key — a fresh key on the retry
-// is how one `tenant restore` becomes two.
-func (o *opFlags) envelope(args map[string]any) (model.OpRequest, error) {
-	key := strings.TrimSpace(*o.idempotency)
-	if key == "" {
-		var err error
-		if key, err = newIdempotencyKey(); err != nil {
-			return model.OpRequest{}, err
-		}
-		fmt.Fprintf(stderr, "ragstack-ctl: idempotency key %s (re-run with --idempotency-key %s to retry this exact request)\n", key, key)
-	} else if !idempotencyKeyPattern.MatchString(key) {
-		return model.OpRequest{}, fmt.Errorf("--idempotency-key %q is outside op_request.json's ^[A-Za-z0-9._:-]{8,128}$", key)
-	}
+// envelope builds op_request.json.
+//
+// The idempotency key, when the operator gave none, is DERIVED from the
+// request: the operation, the tenant, the canonical arguments and the local
+// user. It used to be 128 random bits, which made the key different on every
+// invocation — so the one thing an idempotency key exists to prevent was
+// exactly what a retry did. A script that re-runs `tenant restore` because the
+// first answer was lost in a dropped connection sent a NEW key with the same
+// body, and the control plane, having no way to know the two were the same
+// request, restored twice.
+//
+// Deriving it makes the default the safe one: the same command, run again,
+// carries the same key and gets the ORIGINAL job back. The dangerous thing —
+// "do that again" — is the one that has to be asked for, with `--new-key`
+// (a fresh random key) or `--idempotency-key` (your own). Either way the key
+// is printed on stderr, so an operator who wants to retry THIS request has the
+// value to quote.
+func (o *opFlags) envelope(target opTarget, args map[string]any) (model.OpRequest, error) {
 	if args == nil {
 		args = map[string]any{}
+	}
+	key := strings.TrimSpace(*o.idempotency)
+	switch {
+	case key != "":
+		if !idempotencyKeyPattern.MatchString(key) {
+			return model.OpRequest{}, fmt.Errorf("--idempotency-key %q is outside op_request.json's ^[A-Za-z0-9._:-]{8,128}$", key)
+		}
+		if *o.newKey {
+			return model.OpRequest{}, errors.New("--new-key and --idempotency-key say different things: " +
+				"pass one or the other")
+		}
+	case *o.newKey:
+		var err error
+		if key, err = randomIdempotencyKey(); err != nil {
+			return model.OpRequest{}, err
+		}
+		fmt.Fprintf(stderr, "ragstack-ctl: idempotency key %s (--new-key: this is a NEW run of the same request; "+
+			"re-run with --idempotency-key %s to retry it)\n", key, key)
+	default:
+		key = derivedIdempotencyKey(target, args)
+		fmt.Fprintf(stderr, "ragstack-ctl: idempotency key %s (derived from this request: re-running the same "+
+			"command returns the same job — pass --new-key to run it again)\n", key)
 	}
 	return model.OpRequest{
 		DryRun:              *o.dryRun,
@@ -179,11 +233,50 @@ func (o *opFlags) envelope(args map[string]any) (model.OpRequest, error) {
 	}, nil
 }
 
-// newIdempotencyKey is a random key inside op_request.json's pattern. It is
+// derivedIdempotencyKey is the default: sha256 over the request as this
+// invocation means it.
+//
+// The LOCAL USER is in the digest so that two operators typing the same
+// command are two requests — one of them retrying the other's `key mint` by
+// accident is a surprise nobody asked for — and $SUDO_USER is included because
+// `ops/coconut/ctl-as-svc.sh` runs everything as the same uid.
+//
+// json.Marshal of a map sorts its keys, so the same arguments written in a
+// different order produce the same key.
+func derivedIdempotencyKey(target opTarget, args map[string]any) string {
+	body, err := json.Marshal(struct {
+		Op        string         `json:"op"`
+		Tenant    string         `json:"tenant"`
+		Path      string         `json:"path"`
+		Args      map[string]any `json:"args"`
+		Principal string         `json:"principal"`
+	}{target.op, target.tenant, target.path, args, localPrincipal()})
+	if err != nil {
+		// An args map this CLI built cannot fail to marshal; if it somehow
+		// does, a random key is still a VALID key — it only loses the retry
+		// protection, and saying so is better than refusing the operation.
+		if k, rerr := randomIdempotencyKey(); rerr == nil {
+			return k
+		}
+	}
+	sum := sha256.Sum256(body)
+	return "ctl-" + hex.EncodeToString(sum[:])[:40]
+}
+
+// localPrincipal identifies who is typing, for the derived key only. It is
+// never sent as an identity claim: the daemon authenticates the credential.
+func localPrincipal() string {
+	if u := strings.TrimSpace(os.Getenv("SUDO_USER")); u != "" {
+		return fmt.Sprintf("local:%d:sudo:%s", os.Getuid(), u)
+	}
+	return fmt.Sprintf("local:%d", os.Getuid())
+}
+
+// randomIdempotencyKey is a random key inside op_request.json's pattern. It is
 // not a ULID: the contract only constrains the grammar, and "ctl-" plus 128
 // bits of randomness is unguessable, sortable enough for a human to compare,
 // and obviously machine-generated in an audit row.
-func newIdempotencyKey() (string, error) {
+func randomIdempotencyKey() (string, error) {
 	h, err := randomHex(16)
 	if err != nil {
 		return "", err
@@ -219,7 +312,55 @@ func newCtlClient(server, apiKeyFile string) (*ctlClient, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("--server %q is not an http(s) URL", server)
 	}
-	return &ctlClient{base: base, key: key, http: &http.Client{Timeout: httpTimeout}}, nil
+	// The ctl key travels in a header on EVERY request, so the transport has
+	// to be one that cannot hand it to somebody else.
+	//
+	// Plain http is allowed only to a loopback host, where the bytes never
+	// leave the machine — which is the conventional deployment
+	// (http://127.0.0.1:23990) and the default. Any other host over http would
+	// put an operator credential on a wire in cleartext, and $CTL_URL is an
+	// environment variable: the one place a mistake is easiest to make and
+	// hardest to see.
+	if u.Scheme == "http" && !isLoopbackHost(u.Host) {
+		return nil, fmt.Errorf("--server %q sends the ctl key over plain http to %s. Only a loopback host "+
+			"(127.0.0.1, ::1, localhost) may be http; use https:// for anything else", server, u.Hostname())
+	}
+	return &ctlClient{base: base, key: key, http: &http.Client{
+		Timeout: httpTimeout,
+		// And a redirect must not be able to take the key somewhere else. Go
+		// follows redirects by default and re-sends the headers it was given,
+		// so a control plane (or anything answering on its port) could move
+		// the credential to another host, or off https, with one 302.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			prev := via[len(via)-1].URL
+			if req.URL.Scheme != prev.Scheme || req.URL.Host != prev.Host {
+				return fmt.Errorf("refusing a redirect from %s://%s to %s://%s: the ctl key is a header on this "+
+					"request and a redirect that changes host or scheme would hand it to somebody else",
+					prev.Scheme, prev.Host, req.URL.Scheme, req.URL.Host)
+			}
+			if len(via) >= 5 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
+	}}, nil
+}
+
+// isLoopbackHost reports whether a URL host (with or without a port) names
+// this machine. A NAME other than "localhost" is not accepted: resolving it
+// here would make the decision depend on DNS, which is the thing an attacker
+// who can change the answer would change.
+func isLoopbackHost(host string) bool {
+	h := host
+	if hn, _, err := net.SplitHostPort(host); err == nil {
+		h = hn
+	}
+	h = strings.Trim(h, "[]")
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (o *opFlags) client() (*ctlClient, error) { return newCtlClient(*o.server, *o.apiKeyFile) }
@@ -381,7 +522,7 @@ type opTarget struct {
 
 // submitOp is the single path every op-submitting command takes.
 func submitOp(o *opFlags, target opTarget, args map[string]any) int {
-	req, err := o.envelope(args)
+	req, err := o.envelope(target, args)
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
 		return exitUsage
@@ -434,6 +575,45 @@ func acceptJob(ctx context.Context, c *ctlClient, o *opFlags, job *model.Job) in
 // JobState.Terminal() would sit there until the timeout on exactly the runs
 // where the operator is most needed.
 func waitForJob(ctx context.Context, c *ctlClient, o *opFlags, job *model.Job) int {
+	// A poll that fails is not the same as an operation that failed: the
+	// control plane may be restarting, or a proxy may have dropped one
+	// connection. So a transport error is RETRIED with backoff, and only a
+	// run of them gives up — a --wait that aborted on the first hiccup was a
+	// client reporting its own network as the job's outcome.
+	//
+	// A non-2xx ANSWER is not retried: the daemon said something, and saying
+	// it again will not change it.
+	fetch := func() (*model.Job, int, error) {
+		resp, err := c.get(ctx, "/v1/jobs/"+job.ID, nil)
+		if err != nil {
+			return nil, 0, err
+		}
+		if resp.Status != http.StatusOK {
+			return nil, reportHTTPError(resp), errStopPolling
+		}
+		var next model.Job
+		if err := json.Unmarshal(resp.Body, &next); err != nil {
+			return nil, 0, fmt.Errorf("polling job %s: %w", job.ID, err)
+		}
+		return &next, 0, nil
+	}
+	return followJob(ctx, o, job, jobPollInterval, fetch)
+}
+
+// errStopPolling marks a fetch failure the poller must NOT retry, because the
+// exit code it carries is already the answer.
+var errStopPolling = errors.New("stop polling")
+
+// maxPollFailures is how many consecutive transport failures --wait tolerates
+// before it reports one. Bounded: a control plane that is gone stays gone, and
+// a client that retried forever would hang in somebody's terminal.
+const maxPollFailures = 5
+
+// followJob is the poll loop both transports share: print each step as it
+// settles, stop at a state that does not advance on its own, and return this
+// CLI's exit code for it.
+func followJob(ctx context.Context, o *opFlags, job *model.Job, interval time.Duration,
+	fetch func() (*model.Job, int, error)) int {
 	deadline := time.Now().Add(jobWaitTimeout)
 	seen := map[int]model.StepState{}
 	report := func(j *model.Job) {
@@ -452,33 +632,42 @@ func waitForJob(ctx context.Context, c *ctlClient, o *opFlags, job *model.Job) i
 		fmt.Fprintf(stdout, "job %s %s state %s\n", job.ID, job.Op, job.State)
 	}
 	report(job)
+	fails, backoff := 0, interval
 	for {
 		if code, done := waitExit(job.State); done {
 			finishWait(job, o)
 			return code
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(stderr, "ragstack-ctl: job %s is still %s after %s — `ragstack-ctl job show %s`\n",
-				job.ID, job.State, jobWaitTimeout, job.ID)
-			return exitError
+			// Its own exit code: the job is still going, so this is not a
+			// failure of the operation and not a failure of the transport.
+			fmt.Fprintf(stderr, "ragstack-ctl: job %s is still %s after %s — it is still running; "+
+				"`ragstack-ctl job show %s`\n", job.ID, job.State, jobWaitTimeout, job.ID)
+			return exitWaitTimeout
 		}
 		select {
 		case <-ctx.Done():
 			return failClient(ctx.Err())
-		case <-time.After(jobPollInterval):
+		case <-time.After(backoff):
 		}
-		resp, err := c.get(ctx, "/v1/jobs/"+job.ID, nil)
-		if err != nil {
-			return failClient(err)
+		next, code, err := fetch()
+		switch {
+		case errors.Is(err, errStopPolling):
+			return code
+		case err != nil:
+			fails++
+			if fails >= maxPollFailures {
+				return failClient(fmt.Errorf("polling job %s failed %d times in a row (the job may still be "+
+					"running — `ragstack-ctl job show %s`): %w", job.ID, fails, job.ID, err))
+			}
+			fmt.Fprintf(stderr, "ragstack-ctl: polling job %s: %v (retry %d of %d)\n", job.ID, err, fails, maxPollFailures)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
 		}
-		if resp.Status != http.StatusOK {
-			return reportHTTPError(resp)
-		}
-		var next model.Job
-		if err := json.Unmarshal(resp.Body, &next); err != nil {
-			return failClient(fmt.Errorf("polling job %s: %w", job.ID, err))
-		}
-		job = &next
+		fails, backoff = 0, interval
+		job = next
 		report(job)
 	}
 }
@@ -515,9 +704,10 @@ func waitExit(s model.JobState) (int, bool) {
 	case model.JobCancelled:
 		return exitRefused, true
 	case model.JobAwaitingCutover:
-		// Not a failure: the job did exactly what handover/migrate-local
-		// plan, and the next move is the operator's.
-		return exitOK, true
+		// Not a failure — the job did exactly what handover/migrate-local plan
+		// — but not success either: the next move is the operator's, and a
+		// script that saw 0 here would call a half-done migration finished.
+		return exitJobAwaitingCutover, true
 	}
 	return 0, false
 }
@@ -651,15 +841,34 @@ func submitDirect(o *opFlags, target opTarget, req model.OpRequest) int {
 	if job == nil {
 		return failClient(errors.New("the engine accepted no job"))
 	}
-	// --direct runs the job in this process, so there is nothing to poll: the
-	// engine returns once the job has moved as far as it will.
-	if *o.wait {
-		if code, done := waitExit(job.State); done {
-			finishWait(job, o)
-			return code
+	// --direct IMPLIES --wait, whether or not the operator typed it.
+	//
+	// The engine runs a job on a goroutine and returns the accepted snapshot —
+	// state `queued` — immediately. This used to print that snapshot and
+	// return, so the process exited while its own worker was in the middle of
+	// a step: os.Exit does not wait for goroutines, so a `tenant backup
+	// --direct` reported "queued", exited 0, and left a half-written bundle
+	// and a job row nothing would ever finish. There is no daemon behind a
+	// --direct run to pick it up.
+	//
+	// So the local engine is polled to a state that does not advance on its
+	// own, exactly as the HTTP client polls the daemon, and the exit code is
+	// the job's.
+	return followDirect(eng, o, job)
+}
+
+// followDirect polls the in-process engine to a settled state.
+func followDirect(eng jobs.Engine, o *opFlags, job *model.Job) int {
+	ctx := context.Background()
+	return followJob(ctx, o, job, directPollInterval, func() (*model.Job, int, error) {
+		next, err := eng.Get(ctx, job.ID)
+		if err != nil {
+			// A local engine that cannot read back the job it just accepted is
+			// not a transient network fault; there is nothing to retry.
+			return nil, directExit(err), errStopPolling
 		}
-	}
-	return printJob(job, *o.asJSON)
+		return next, 0, nil
+	})
 }
 
 // directExit maps an engine error onto the same exit codes the HTTP statuses

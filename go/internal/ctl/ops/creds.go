@@ -314,7 +314,7 @@ func (p *planner) planSA(args map[string]any, action string, destructive bool) e
 		}
 	}
 	origin := fmt.Sprintf("http://127.0.0.1:%d", p.t.Ports.API)
-	p.add(step{
+	p.addFor("tenantapi", step{
 		Kind: "tenantapi", Title: fmt.Sprintf("%s the service account %q through the tenant API", action, subject),
 		Destructive: destructive, Targets: []string{subject, origin},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {

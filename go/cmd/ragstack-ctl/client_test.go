@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -262,13 +263,50 @@ func TestIdempotencyKeyIsGeneratedAndMatchesTheContract(t *testing.T) {
 		t.Errorf("the generated key was not announced on stderr: %s", errs)
 	}
 
-	// Two runs must not collide: a constant key would make the second request
-	// a duplicate of the first.
+	// The SAME command must carry the SAME key: that is what makes a scripted
+	// retry a retry rather than a second operation.
 	if rc, _, _ := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run"); rc != exitOK {
 		t.Fatalf("second run rc %d", rc)
 	}
-	if second, _ := f.last(t).envelope(t)["idempotency_key"].(string); second == key {
-		t.Error("two runs generated the same idempotency key")
+	if second, _ := f.last(t).envelope(t)["idempotency_key"].(string); second != key {
+		t.Errorf("re-running the same command produced key %q, want the derived %q: a fresh key on a retry is "+
+			"how one operation becomes two", second, key)
+	}
+
+	// A DIFFERENT request is a different key.
+	if rc, _, _ := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run", "--force"); rc != exitOK {
+		t.Fatalf("third run rc %d", rc)
+	}
+	if other, _ := f.last(t).envelope(t)["idempotency_key"].(string); other == key {
+		t.Error("different arguments produced the same idempotency key")
+	}
+}
+
+// --new-key is how an operator says "run that again": a fresh random key, so
+// the daemon sees a new request rather than replaying the recorded one.
+func TestNewKeyMintsAFreshKeyAndConflictsWithAnExplicitOne(t *testing.T) {
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("stop", "dev")) })
+
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run", "--new-key")
+		if rc != exitOK {
+			t.Fatalf("rc %d %s", rc, errs)
+		}
+		key, _ := f.last(t).envelope(t)["idempotency_key"].(string)
+		if seen[key] {
+			t.Fatalf("--new-key produced the same key twice (%s)", key)
+		}
+		seen[key] = true
+	}
+
+	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run",
+		"--new-key", "--idempotency-key", "ops-2026-09-14-a")
+	if rc != exitUsage {
+		t.Fatalf("--new-key with --idempotency-key: rc %d, want a usage error", rc)
+	}
+	if !strings.Contains(errs, "different things") {
+		t.Errorf("the usage error does not say why: %s", errs)
 	}
 }
 
@@ -575,8 +613,10 @@ func TestWaitExitsThreeOnACancelledJob(t *testing.T) {
 func TestWaitStopsAtAwaitingCutoverAndSaysWhatIsNext(t *testing.T) {
 	f := waitScript(t, model.JobAwaitingCutover)
 	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--yes", "--wait")
-	if rc != exitOK {
-		t.Fatalf("rc %d (want 0)", rc)
+	// Its own code: a parked job is neither a success nor a failure, and a
+	// script that read it as 0 would call a half-done handover finished.
+	if rc != exitJobAwaitingCutover {
+		t.Fatalf("rc %d (want %d)", rc, exitJobAwaitingCutover)
 	}
 	if !strings.Contains(errs, "job continue") {
 		t.Errorf("the next move was not named: %s", errs)
@@ -638,5 +678,223 @@ func TestDirectRunsTheEngineLocally(t *testing.T) {
 	}
 	if len(f.requests()) != 0 {
 		t.Error("--direct still talked to a daemon")
+	}
+}
+
+// ------------------------------------------------------- the credential file
+
+// The ctl key is an operator credential. A file holding it that anyone else
+// can read is a finding, and the CLI is the only thing that ever opens it.
+func TestAPIKeyFileMustBeAPrivateRegularFile(t *testing.T) {
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("stop", "dev")) })
+	dir := t.TempDir()
+
+	good := filepath.Join(dir, "ctl.key")
+	if err := os.WriteFile(good, []byte("k"+strings.Repeat("0", 63)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run", "--api-key-file", good)
+	if rc != exitOK {
+		t.Fatalf("a 0600 key file was refused: rc %d %s", rc, errs)
+	}
+
+	for _, tc := range []struct {
+		name, want string
+		mode       os.FileMode
+	}{
+		{"group readable", "readable", 0o640},
+		{"world readable", "readable", 0o644},
+		{"group writable", "readable", 0o660},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loose := filepath.Join(t.TempDir(), "ctl.key")
+			if err := os.WriteFile(loose, []byte("k"), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(loose, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run", "--api-key-file", loose)
+			if rc != exitUsage {
+				t.Fatalf("mode %04o was accepted: rc %d", tc.mode, rc)
+			}
+			if !strings.Contains(errs, tc.want) || !strings.Contains(errs, "chmod 600") {
+				t.Errorf("the refusal does not say what to do: %s", errs)
+			}
+		})
+	}
+
+	// A symlink or a fifo is a credential somebody else chose for you.
+	link := filepath.Join(dir, "link.key")
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run",
+		"--api-key-file", link); rc != exitUsage {
+		t.Fatalf("a symlinked key file was accepted: rc %d %s", rc, errs)
+	}
+}
+
+// ------------------------------------------------------------- the transport
+
+// The key travels in a header on every request, so http is allowed only where
+// the bytes cannot leave the machine.
+func TestPlainHTTPIsOnlyAllowedToALoopbackHost(t *testing.T) {
+	t.Setenv(envAPIKey, "")
+	t.Setenv(envServer, "")
+	for _, ok := range []string{"http://127.0.0.1:23990", "http://[::1]:23990", "http://localhost:23990",
+		"https://ctl.example.test"} {
+		if _, err := newCtlClient(ok, ""); err != nil {
+			t.Errorf("newCtlClient(%q) = %v, want it accepted", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://ctl.example.test", "http://10.0.0.5:23990", "http://coconut:23990"} {
+		err := errFrom(newCtlClient(bad, ""))
+		if err == nil {
+			t.Errorf("newCtlClient(%q) was accepted: the ctl key would go out in cleartext", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "https://") {
+			t.Errorf("the refusal for %q does not say what to use instead: %v", bad, err)
+		}
+	}
+}
+
+func errFrom(_ *ctlClient, err error) error { return err }
+
+// And a redirect must not be able to move the key to another host — Go
+// re-sends the headers it was given.
+func TestARedirectThatChangesHostOrSchemeIsRefused(t *testing.T) {
+	t.Setenv(envAPIKey, "")
+	t.Setenv(envServer, "")
+	var gotKey string
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey = r.Header.Get("X-API-Key")
+		replyPlan(w, samplePlan("stop", "dev"))
+	}))
+	t.Cleanup(elsewhere.Close)
+
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		http.Redirect(w, &http.Request{URL: &url.URL{}}, elsewhere.URL+rec.Path, http.StatusTemporaryRedirect)
+	})
+	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--dry-run",
+		"--api-key-file", writeKeyFile(t))
+	if rc == exitOK {
+		t.Fatalf("the redirect was followed: rc %d", rc)
+	}
+	if gotKey != "" {
+		t.Fatalf("the ctl key was sent to the redirect target (%s)", elsewhere.URL)
+	}
+	if !strings.Contains(errs, "refusing a redirect") {
+		t.Errorf("the failure does not say what happened: %s", errs)
+	}
+	// A same-host redirect is somebody's reverse proxy and is fine.
+	same := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		if rec.Path == "/v1/tenants/dev/ops/stop" {
+			w.Header().Set("Location", "/v1/redirected")
+			w.WriteHeader(http.StatusTemporaryRedirect)
+			return
+		}
+		replyPlan(w, samplePlan("stop", "dev"))
+	})
+	if rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", same.srv.URL, "--dry-run"); rc != exitOK {
+		t.Errorf("a same-host redirect was refused: rc %d %s", rc, errs)
+	}
+}
+
+func writeKeyFile(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "ctl.key")
+	if err := os.WriteFile(p, []byte(strings.Repeat("a", 64)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// ---------------------------------------------------------------- --wait
+
+// A --wait that ran out of time is not a --wait that could not reach the
+// control plane: the job is still running, and the two need different
+// responses from whoever is reading the exit code.
+func TestWaitTimeoutHasItsOwnExitCode(t *testing.T) {
+	f := waitScript(t, model.JobRunning)
+	old := jobWaitTimeout
+	jobWaitTimeout = 5 * time.Millisecond
+	t.Cleanup(func() { jobWaitTimeout = old })
+
+	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--yes", "--wait")
+	if rc != exitWaitTimeout {
+		t.Fatalf("rc %d, want %d (and never %d, which means the daemon said nothing)", rc, exitWaitTimeout, exitError)
+	}
+	if !strings.Contains(errs, "still running") || !strings.Contains(errs, "job show") {
+		t.Errorf("the timeout does not say the job is still going: %s", errs)
+	}
+}
+
+// A poll that fails is the network's problem, not the job's: retry it, with
+// backoff, a bounded number of times.
+func TestWaitRetriesATransientPollFailure(t *testing.T) {
+	fastPolling(t)
+	var polls int
+	var mu sync.Mutex
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		if rec.Method == http.MethodPost {
+			replyJob(w, sampleJob(model.JobRunning))
+			return
+		}
+		mu.Lock()
+		polls++
+		n := polls
+		mu.Unlock()
+		if n <= 2 {
+			// A connection dropped mid-body: a transport failure, not an answer.
+			hj, ok := w.(http.Hijacker)
+			if ok {
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+		j := sampleJob(model.JobSucceeded)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(j)
+	})
+
+	rc, _, errs := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--yes", "--wait")
+	if rc != exitOK {
+		t.Fatalf("two dropped polls ended the wait: rc %d %s", rc, errs)
+	}
+	if !strings.Contains(errs, "retry 1 of") {
+		t.Errorf("the retries were not reported: %s", errs)
+	}
+}
+
+// But a non-2xx ANSWER is not retried: the daemon said something, and saying
+// it again will not change it.
+func TestWaitDoesNotRetryARefusal(t *testing.T) {
+	fastPolling(t)
+	var polls int
+	var mu sync.Mutex
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		if rec.Method == http.MethodPost {
+			replyJob(w, sampleJob(model.JobRunning))
+			return
+		}
+		mu.Lock()
+		polls++
+		mu.Unlock()
+		replyError(w, http.StatusForbidden, "forbidden", "the operator role was revoked", nil)
+	})
+	rc, _, _ := capture(t, "tenant", "stop", "dev", "--server", f.srv.URL, "--yes", "--wait")
+	if rc != exitRefused {
+		t.Fatalf("rc %d, want a refusal", rc)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if polls != 1 {
+		t.Errorf("a 403 was polled %d times; an answer is not retried", polls)
 	}
 }

@@ -224,3 +224,90 @@ func TestRealGatewayRefusesWithoutARegistryLoader(t *testing.T) {
 		t.Fatalf("Apply without a Fleet loader = %v, want a refusal", err)
 	}
 }
+
+// ---------------------------------------------------------------- containment
+
+func TestRealFilesRefusesASymlinkedDirectoryComponent(t *testing.T) {
+	f, root := realFiles(t)
+	outside := t.TempDir()
+	// `<root>/escape` is a link to a directory nobody approved. Every
+	// character of `<root>/escape/loot` is under the root, so a LEXICAL check
+	// says yes; the file it names is not.
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	loot := filepath.Join(root, "escape", "loot")
+	err := f.WriteAtomic(context.Background(), loot, []byte("x"), 0o600)
+	if !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("writing through a symlinked directory = %v, want a refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "loot")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the write landed outside the approved roots: %v", statErr)
+	}
+	if err := f.Remove(context.Background(), loot); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("removing through a symlinked directory = %v, want a refusal", err)
+	}
+	if err := f.Rename(context.Background(), loot, loot+"2"); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("renaming through a symlinked directory = %v, want a refusal", err)
+	}
+}
+
+func TestRealFilesAcceptsASymlinkedAPPROVEDRoot(t *testing.T) {
+	// The deployment root itself may be a link (/rag/data -> /mnt/…). That is
+	// a normal host, not an escape: the resolved path is still inside it.
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "data")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	f := &RealFiles{Roots: []string{link}}
+	p := filepath.Join(link, "f")
+	if err := f.WriteAtomic(context.Background(), p, []byte("x"), 0o600); err != nil {
+		t.Fatalf("writing under a symlinked approved root = %v, want it accepted", err)
+	}
+	if _, err := os.Stat(filepath.Join(real, "f")); err != nil {
+		t.Fatalf("the file is not where the link points: %v", err)
+	}
+}
+
+func TestFilesDriversWithNoApprovedRootsRefuseEverything(t *testing.T) {
+	ctx := context.Background()
+	p := filepath.Join(t.TempDir(), "f")
+	real := &RealFiles{}
+	if err := real.WriteAtomic(ctx, p, []byte("x"), 0o600); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("RealFiles with no roots wrote %s: %v", p, err)
+	}
+	fake := NewFake(FakeOptions{})
+	if err := fake.Files().WriteAtomic(ctx, p, []byte("x"), 0o600); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("FakeFiles with no roots wrote %s: %v", p, err)
+	}
+}
+
+func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
+	f := NewFake(FakeOptions{Roots: []string{"/rag"}})
+	_, err := f.Files().ReadFile(context.Background(), "/rag/nope")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ReadFile of an absent path = %v, want an os.ErrNotExist a caller can match", err)
+	}
+}
+
+func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
+	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
+	got := strings.Join(d.Pending(), ",")
+	if got != "systemd,proc,qdrant,elasticsearch,tenantapi" {
+		t.Errorf("Real.Pending() = %q", got)
+	}
+	// Every name on the list is a driver that actually refuses, and no driver
+	// that WORKS is on it.
+	if err := d.Systemd().DaemonReload(context.Background()); !strings.Contains(err.Error(), PendingPR) {
+		t.Errorf("systemd refusal = %v, want it to name %s", err, PendingPR)
+	}
+	for _, name := range d.Pending() {
+		if name == "gateway" || name == "files" {
+			t.Errorf("%s is wired; it must not be reported as pending", name)
+		}
+	}
+	if p := NewFake(FakeOptions{}).Pending(); len(p) != 0 {
+		t.Errorf("Fake.Pending() = %v, want none: the fakes run every driver", p)
+	}
+}

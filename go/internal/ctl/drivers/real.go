@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
@@ -159,21 +160,95 @@ func describe(res *gateway.Result, err error) (int, string, error) {
 //   - the rename is within the same directory, so it is atomic;
 //   - Remove opens with O_NOFOLLOW, so a symlink planted at a path the ctl is
 //     about to delete deletes the link and never its target.
-type RealFiles struct{ Roots []string }
+type RealFiles struct {
+	Roots []string
 
-func (f *RealFiles) check(path string) error {
-	if !contained(path, f.Roots) {
-		return outsideRoots(path, f.Roots)
+	once     sync.Once
+	approved []string // Roots, plus each root as EvalSymlinks resolves it
+}
+
+// check resolves path and returns the RESOLVED path the caller must operate
+// on.
+//
+// paths.SafePath is lexical: it compares cleaned strings, so
+// `<root>/link/../../etc/passwd` is refused but `<root>/link/passwd`, where
+// `link` is a symlink to /etc, is not — nothing in the string says the
+// component is a link. Containment that a single symlinked directory defeats
+// is not containment, so the parent directory is resolved through
+// filepath.EvalSymlinks FIRST and the check is made on what came back. The
+// caller then opens THAT path, not the one it was given, so the check and the
+// syscall cannot be made to disagree by a link planted between them.
+//
+// The approved roots are resolved the same way and both spellings accepted: a
+// deployment whose /rag/data is itself a symlink is a normal host, not an
+// escape.
+func (f *RealFiles) check(path string) (string, error) {
+	if _, err := paths.SafePath("/", path); err != nil {
+		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
-	return nil
+	dir, err := resolveDir(filepath.Dir(path))
+	if err != nil {
+		return "", fmt.Errorf("%w: resolving the parent of %s: %v", jobs.ErrRefused, path, err)
+	}
+	resolved := filepath.Join(dir, filepath.Base(path))
+	if !contained(resolved, f.roots()) {
+		if resolved != path {
+			return "", fmt.Errorf("%w: %s resolves to %s, which is outside every approved root %v",
+				jobs.ErrRefused, path, resolved, f.Roots)
+		}
+		return "", outsideRoots(path, f.Roots)
+	}
+	return resolved, nil
+}
+
+// roots is Roots plus the symlink-resolved spelling of each.
+func (f *RealFiles) roots() []string {
+	f.once.Do(func() {
+		f.approved = append([]string(nil), f.Roots...)
+		for _, r := range f.Roots {
+			if real, err := resolveDir(r); err == nil && real != r {
+				f.approved = append(f.approved, real)
+			}
+		}
+	})
+	return f.approved
+}
+
+// resolveDir is filepath.EvalSymlinks for a directory that may not exist yet.
+// A component that does not exist cannot be a symlink, so the deepest EXISTING
+// ancestor is resolved and the missing tail appended unchanged.
+func resolveDir(dir string) (string, error) {
+	rest := ""
+	for {
+		real, err := filepath.EvalSymlinks(dir)
+		if err == nil {
+			if rest == "" {
+				return real, nil
+			}
+			return filepath.Join(real, rest), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", err
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
 }
 
 // WriteAtomic writes data to path via a temporary file in the same directory
 // whose mode is set before the rename.
 func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mode uint32) (err error) {
-	if err := f.check(path); err != nil {
+	path, err = f.check(path)
+	if err != nil {
 		return err
 	}
+	// The RESOLVED directory: the temporary file and the rename target have to
+	// be the same directory the check approved, or the two are different
+	// places whenever a component is a link.
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
 	if err != nil {
@@ -217,24 +292,30 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 
 // Rename moves from to to; both must be under an approved root.
 func (f *RealFiles) Rename(_ context.Context, from, to string) error {
-	if err := f.check(from); err != nil {
+	rfrom, err := f.check(from)
+	if err != nil {
 		return err
 	}
-	if err := f.check(to); err != nil {
+	rto, err := f.check(to)
+	if err != nil {
 		return err
 	}
-	return os.Rename(from, to)
+	return os.Rename(rfrom, rto)
 }
 
 // Remove deletes path, refusing to follow a symlink to get there.
 func (f *RealFiles) Remove(_ context.Context, path string) error {
-	if err := f.check(path); err != nil {
+	path, err := f.check(path)
+	if err != nil {
 		return err
 	}
 	// O_NOFOLLOW is the check, and opening is how it is made: a lstat+unlink
 	// pair can be raced, an open that refuses to follow cannot. ELOOP means
-	// the path IS a symlink, which is exactly the case to refuse, and EISDIR
-	// (a directory opened for writing) means the caller asked for a directory.
+	// the path ITSELF is a symlink, which is exactly the case to refuse (the
+	// DIRECTORY components are already resolved by check). A directory opens
+	// fine read-only, so it falls through to os.Remove, which removes it when
+	// it is empty and refuses when it is not — what a caller naming a
+	// directory asked for either way.
 	fd, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	switch {
 	case err == nil:

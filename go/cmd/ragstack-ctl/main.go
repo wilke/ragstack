@@ -1,8 +1,17 @@
 // ragstack-ctl — tenant control plane CLI (plan v3).
 //
-// Exit codes: 0 ok · 1 error · 2 usage · 3 refused · 4 job failed ·
-// 5 job interrupted. The read surface produces 0/1/2/3; the operation groups
-// (PR-C) add 4 and 5 under --wait, where the exit code IS the job's outcome.
+// Exit codes: 0 ok · 1 error · 2 usage · 3 refused (including a job that was
+// CANCELLED — an operation somebody declined to finish) · 4 job failed or
+// rolled back · 5 job interrupted · 6 job parked at its cutover · 7 --wait
+// timed out. The read surface produces 0/1/2/3; the operation groups (PR-C)
+// add 4, 5, 6 and 7 under --wait, where the exit code IS the job's outcome.
+//
+// 6 and 7 are distinct on purpose. `awaiting_cutover` is not success: the job
+// did exactly what handover and migrate-local plan, and it is now WAITING for
+// `job continue` — a script that read it as 0 would report a half-migrated
+// tenant as a finished migration. And a --wait that ran out of time is not the
+// same event as a control plane that could not be reached (1): the job is
+// still running, and the next move is `job show`, not a retry.
 package main
 
 import (
@@ -44,6 +53,14 @@ const (
 	// reservations still held) and "look at why it failed".
 	exitJobFailed      = 4
 	exitJobInterrupted = 5
+	// exitJobAwaitingCutover is a job that reached its cutover and parked.
+	// It used to be 0, which told a script that a handover waiting for
+	// `job continue` had finished.
+	exitJobAwaitingCutover = 6
+	// exitWaitTimeout is --wait giving up. The JOB is fine — this is the
+	// client's clock, not the control plane's answer — so it is not 1, which
+	// means "nothing was said at all".
+	exitWaitTimeout = 7
 )
 
 var stdout io.Writer = os.Stdout
@@ -122,7 +139,15 @@ flags every operation accepts:
   --yes-destructive NAME    answer a destructive plan's confirm with NAME
   --wait                    follow the job; the exit code is its outcome
   --force-with-doctor-diff HASH   accept a YELLOW doctor (never a red one)
-  --idempotency-key KEY     retry key; generated and printed on stderr when absent
+  --idempotency-key KEY     retry key. When absent one is DERIVED from the
+                            operation, the tenant, the arguments and the local
+                            user, and printed on stderr — so re-running the
+                            same command (a script's retry, a re-typed line)
+                            returns the ORIGINAL job instead of starting a
+                            second one
+  --new-key                 mint a random idempotency key instead: run this
+                            operation AGAIN, deliberately, with the same
+                            arguments as a run that already happened
   --json                    the raw Plan/Job document instead of the summary
 
   serve [--listen 127.0.0.1:23990] [--fake-drivers] [--registry PATH] [--rag-root DIR]
@@ -165,8 +190,10 @@ A stale projection is reported by every read and repaired only by
 
 exit: 0 ok · 1 error · 2 usage · 3 refused (doctor red, a manifest that does
 not reconcile, a stale projection, a tenant already adopted, an operation the
-daemon declined) · 4 the job failed or rolled back (--wait) · 5 the job was
-interrupted (--wait)
+daemon declined, a job that was cancelled) · 4 the job failed or rolled back
+(--wait) · 5 the job was interrupted (--wait) · 6 the job is parked at its
+cutover and needs "job continue" (--wait) · 7 --wait ran out of time and the
+job is still going ("job show <id>")
 
 Renderers print dry-run placeholders (<GENERATED:*>) — never real secrets.
 `)

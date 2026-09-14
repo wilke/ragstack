@@ -3,12 +3,20 @@ package main
 // The job surface: the three reads and the three continuations.
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"flag"
+	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 )
 
@@ -207,3 +215,148 @@ func TestJobUsage(t *testing.T) {
 		t.Error("job help")
 	}
 }
+
+// --------------------------------------------------------------- --direct
+
+// A continuation's envelope is read BEFORE the transport is chosen. It used to
+// be built after the --direct branch, so `job cancel --direct --dry-run`
+// cancelled the job: the flag that refuses it had not been looked at yet.
+func TestADirectContinuationRefusesADryRunExactlyAsTheDaemonDoes(t *testing.T) {
+	t.Setenv(envAPIKey, "")
+	t.Setenv(envServer, "")
+	for _, verb := range []string{"resume", "continue", "cancel"} {
+		t.Run(verb, func(t *testing.T) {
+			// --rag-root points at an empty directory: if this reached the
+			// engine at all it would have to build one, and the test would
+			// then be about whatever that engine did.
+			rc, out, errs := capture(t, "job", verb, "01JB0000000000000000000000",
+				"--direct", "--dry-run", "--rag-root", t.TempDir())
+			if rc != exitRefused {
+				t.Fatalf("rc %d, want %d (refused): %s%s", rc, exitRefused, out, errs)
+			}
+			for _, want := range []string{"no dry run", "01JB0000000000000000000000", "GET /v1/jobs/"} {
+				if !strings.Contains(errs, want) {
+					t.Errorf("the refusal does not mention %q: %s", want, errs)
+				}
+			}
+		})
+	}
+	// The HTTP path answers the same thing, from the daemon.
+	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) {
+		replyError(w, http.StatusConflict, "refused",
+			"a continuation has no dry run: cancel acts on job X, whose plan is already recorded", nil)
+	})
+	if rc, _, _ := capture(t, "job", "cancel", "01JB0000000000000000000000",
+		"--server", f.srv.URL, "--dry-run"); rc != exitRefused {
+		t.Errorf("the HTTP path answered rc %d, want %d", rc, exitRefused)
+	}
+}
+
+// followDirect is what makes --direct imply --wait: the engine runs the job on
+// a goroutine, so returning at the queued snapshot exits the process while the
+// worker is mid-step, and os.Exit does not wait for goroutines.
+func TestDirectFollowsTheLocalEngineToATerminalState(t *testing.T) {
+	old := directPollInterval
+	directPollInterval = time.Millisecond
+	t.Cleanup(func() { directPollInterval = old })
+
+	eng := &scriptedEngine{states: []model.JobState{
+		model.JobQueued, model.JobRunning, model.JobRunning, model.JobSucceeded,
+	}}
+	o := directFlags(t)
+	accepted := sampleJob(model.JobQueued)
+
+	var out, errb bytes.Buffer
+	stdout, stderr = &out, &errb
+	defer func() { stdout, stderr = os.Stdout, os.Stderr }()
+	rc := followDirect(eng, o, &accepted)
+
+	if rc != exitOK {
+		t.Fatalf("rc %d, want 0 — the engine finished: %s%s", rc, out.String(), errb.String())
+	}
+	if eng.gets == 0 {
+		t.Fatal("--direct never polled the engine; it printed the queued snapshot and returned")
+	}
+	if !strings.Contains(out.String(), "succeeded") {
+		t.Errorf("the outcome was not printed:\n%s", out.String())
+	}
+}
+
+// And a --direct job that parks at its cutover exits with the parked code, not
+// 0: nothing is going to release it once this process is gone.
+func TestDirectExitsWithTheParkedCodeAtACutover(t *testing.T) {
+	old := directPollInterval
+	directPollInterval = time.Millisecond
+	t.Cleanup(func() { directPollInterval = old })
+
+	eng := &scriptedEngine{states: []model.JobState{model.JobRunning, model.JobAwaitingCutover}}
+	o := directFlags(t)
+	accepted := sampleJob(model.JobQueued)
+
+	var out, errb bytes.Buffer
+	stdout, stderr = &out, &errb
+	defer func() { stdout, stderr = os.Stdout, os.Stderr }()
+	if rc := followDirect(eng, o, &accepted); rc != exitJobAwaitingCutover {
+		t.Fatalf("rc %d, want %d", rc, exitJobAwaitingCutover)
+	}
+	if !strings.Contains(errb.String(), "job continue") {
+		t.Errorf("the next move was not named: %s", errb.String())
+	}
+}
+
+// directFlags is an opFlags with the defaults every --direct run has.
+func directFlags(t *testing.T) *opFlags {
+	t.Helper()
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	o := addOpFlags(fs, "", t.TempDir(), false)
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// scriptedEngine is a jobs.Engine that hands back one state per Get. Only Get
+// is exercised: followDirect is the poll loop and nothing else.
+type scriptedEngine struct {
+	states []model.JobState
+	gets   int
+}
+
+func (e *scriptedEngine) Get(_ context.Context, id string) (*model.Job, error) {
+	i := e.gets
+	if i >= len(e.states) {
+		i = len(e.states) - 1
+	}
+	e.gets++
+	j := sampleJob(e.states[i])
+	j.ID = id
+	if e.states[i] == model.JobSucceeded {
+		j.Steps[0].State = model.StepSucceeded
+	}
+	return &j, nil
+}
+
+func (e *scriptedEngine) Submit(context.Context, jobs.Request) (*model.Plan, *model.Job, error) {
+	return nil, nil, errors.New("not used")
+}
+func (e *scriptedEngine) List(context.Context, jobs.ListFilter) ([]model.Job, bool, error) {
+	return nil, false, nil
+}
+func (e *scriptedEngine) StepLog(context.Context, string, int) (string, error) { return "", nil }
+func (e *scriptedEngine) Resume(context.Context, string, jobs.Principal) (*model.Job, error) {
+	return nil, nil
+}
+func (e *scriptedEngine) Continue(context.Context, string, jobs.Principal) (*model.Job, error) {
+	return nil, nil
+}
+func (e *scriptedEngine) Cancel(context.Context, string, jobs.Principal) (*model.Job, error) {
+	return nil, nil
+}
+func (e *scriptedEngine) Secrets(context.Context, string, jobs.Principal) (*model.SecretsResponse, error) {
+	return nil, nil
+}
+func (e *scriptedEngine) Audit(context.Context, int) ([]model.AuditRow, bool, error) {
+	return nil, false, nil
+}
+func (e *scriptedEngine) Reconcile(context.Context) ([]string, error) { return nil, nil }

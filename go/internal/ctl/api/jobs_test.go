@@ -718,14 +718,11 @@ func TestAuditFiltersByTenantAndNeverEmitsNull(t *testing.T) {
 // PUT /v1/settings
 // --------------------------------------------------------------------------
 
-// TestSettingsPutAcceptsOnlyTheWritableSubset. `recipients` decides who can
-// DECRYPT a backup and `registry_generation` is the server's own counter;
-// neither is a value a browser may send, and accepting one silently would be
-// worse than refusing it loudly.
+// TestSettingsPutAcceptsOnlyTheWritableSubset: a member that is unknown or
+// malformed is 422 `validation` — the document is wrong, and the caller can
+// fix it.
 func TestSettingsPutAcceptsOnlyTheWritableSubset(t *testing.T) {
 	refused := []struct{ name, args, field string }{
-		{"recipients", `{"recipients":{"count":2}}`, "recipients"},
-		{"registry generation", `{"registry_generation":9}`, "registry_generation"},
 		{"unknown member", `{"nope":1}`, "nope"},
 		{"auto delete is const false", `{"retention":{"auto_delete":true}}`, "retention.auto_delete"},
 		{"keep_last must be positive", `{"retention":{"keep_last":{"backup":0}}}`, "retention.keep_last.backup"},
@@ -734,7 +731,6 @@ func TestSettingsPutAcceptsOnlyTheWritableSubset(t *testing.T) {
 		{"port out of range", `{"ctl":{"port":80}}`, "ctl.port"},
 		{"ui_dist must be absolute", `{"ctl":{"ui_dist":"relative/dist"}}`, "ctl.ui_dist"},
 		{"gateway_enabled must be a boolean", `{"ctl":{"gateway_enabled":"yes"}}`, "ctl.gateway_enabled"},
-		{"python env must be absolute", `{"python_env_default":"envs/ragstack"}`, "python_env_default"},
 	}
 	for _, c := range refused {
 		t.Run(c.name, func(t *testing.T) {
@@ -742,21 +738,52 @@ func TestSettingsPutAcceptsOnlyTheWritableSubset(t *testing.T) {
 			h := newEngineServer(t, eng)
 			body := assertError(t, do(t, h, http.MethodPut, "/v1/settings", opHeaders(),
 				`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":`+c.args+`}`), 422, "validation")
-			fields := body["extra"].(map[string]any)["fields"].([]any)
-			found := false
-			for _, f := range fields {
-				if f == c.field {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatalf("extra.fields = %v; want %q", fields, c.field)
-			}
+			assertSettingsField(t, body, c.field)
 			if eng.calls != 0 {
 				t.Fatal("a settings body outside the writable subset reached the engine")
 			}
 		})
 	}
+}
+
+// TestSettingsPutRefusesTheCLIOnlyMembersWith409 is finding 7: the contract
+// makes `recipients`, `python_env_default` and `registry_generation` 409
+// `refused` over HTTP. The handler used to answer 422 for two of them — a
+// status that tells a client its document was malformed — and to ACCEPT the
+// third, which re-points the interpreter every tenant API starts with.
+func TestSettingsPutRefusesTheCLIOnlyMembersWith409(t *testing.T) {
+	for _, c := range []struct{ name, args, field string }{
+		{"recipients", `{"recipients":{"count":2}}`, "recipients"},
+		{"registry generation", `{"registry_generation":9}`, "registry_generation"},
+		{"python env default", `{"python_env_default":"/rag/envs/ragstack"}`, "python_env_default"},
+		{"python env default, malformed", `{"python_env_default":"envs/ragstack"}`, "python_env_default"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			eng := &fakeEngine{plan: samplePlan(), job: sampleJob()}
+			h := newEngineServer(t, eng)
+			body := assertError(t, do(t, h, http.MethodPut, "/v1/settings", opHeaders(),
+				`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":`+c.args+`}`), 409, "refused")
+			assertSettingsField(t, body, c.field)
+			if detail, _ := body["detail"].(string); !strings.Contains(detail, "CLI-only") {
+				t.Errorf("the detail does not say why it is refused: %q", detail)
+			}
+			if eng.calls != 0 {
+				t.Fatal("a CLI-only settings member reached the engine")
+			}
+		})
+	}
+}
+
+func assertSettingsField(t *testing.T, body map[string]any, field string) {
+	t.Helper()
+	extra, _ := body["extra"].(map[string]any)
+	fields, _ := extra["fields"].([]any)
+	for _, f := range fields {
+		if f == field {
+			return
+		}
+	}
+	t.Fatalf("extra.fields = %v; want %q", fields, field)
 }
 
 // TestSettingsPutAcceptsThePartialThatMatteredOnCoconut: flipping
@@ -768,7 +795,6 @@ func TestSettingsPutAcceptsThePartialThatMatteredOnCoconut(t *testing.T) {
 		`{"ctl":{"gateway_enabled":true}}`,
 		`{"retention":{"keep_last":{"backup":14},"keep_partial_hours":48,"auto_delete":false}}`,
 		`{"images":{"qdrant":{"sif":"/rag/apptainer/images/qdrant.sif","version":"1.12.0","digest":"sha256:` + strings.Repeat("ab", 32) + `"}}}`,
-		`{"python_env_default":"/rag/envs/ragstack"}`,
 		`{}`,
 	} {
 		eng := &fakeEngine{plan: samplePlan(), job: sampleJob()}

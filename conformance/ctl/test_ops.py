@@ -339,20 +339,32 @@ async def test_a_tenant_name_outside_the_pattern_is_422(
     [
         ({"recipients": {"file": "/etc/ragstack/recipients.txt"}}, "recipients"),
         ({"registry_generation": 99}, "registry_generation"),
+        ({"python_env_default": "/rag/envs/ragstack"}, "python_env_default"),
     ],
-    ids=["recipients", "registry_generation"],
+    ids=["recipients", "registry_generation", "python_env_default"],
 )
-async def test_settings_outside_the_writable_subset_is_422(
+async def test_settings_cli_only_members_are_409_refused(
     client: httpx.AsyncClient, schemas: dict[str, dict], args: dict[str, Any], field: str
 ) -> None:
-    """``recipients`` decides who can DECRYPT a backup and
-    ``registry_generation`` is the server's own counter. Neither is a value a
-    browser may send: accepting the first over HTTP would let a compromised
-    session read every future backup, and accepting the second would let it
-    forge the generation a plan is validated against."""
+    """``recipients`` decides who can DECRYPT a backup, ``python_env_default``
+    re-points the interpreter every tenant API is started with, and
+    ``registry_generation`` is the server's own counter. The contract makes all
+    three 409 ``refused`` over HTTP, and the status matters: 422 would tell a
+    client its document was malformed and invite it to fix the spelling, when
+    the document is fine and the CALLER is the problem."""
     resp = await client.put("/v1/settings", json=op_body(args=args))
-    err = assert_error(resp, 422, "validation", schemas)
+    err = assert_error(resp, 409, "refused", schemas)
     assert field in err.get("extra", {}).get("fields", []), err
+
+
+async def test_settings_outside_the_writable_subset_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A member settings_response.json does not have at all is a malformed
+    document: 422 ``validation``, naming the member."""
+    resp = await client.put("/v1/settings", json=op_body(args={"not_a_setting": 1}))
+    err = assert_error(resp, 422, "validation", schemas)
+    assert "not_a_setting" in err.get("extra", {}).get("fields", []), err
 
 
 async def test_a_valid_partial_settings_document_is_not_422(client: httpx.AsyncClient) -> None:
@@ -560,7 +572,15 @@ async def test_an_execute_is_accepted_and_reaches_a_terminal_state(
     job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/{EXEC_VERB}", schemas, args=EXEC_ARGS)
     assert job["op"] == EXEC_VERB
     assert job["tenant"] == some_tenant
-    assert job["state"] in TERMINAL_STATES
+    # `succeeded`, not "any terminal state". TERMINAL_STATES includes `failed`,
+    # so asserting membership passed on a job every step of which refused —
+    # which is exactly the outcome this test exists to catch, and exactly what
+    # a build with an unwired driver produces.
+    assert job["state"] == "succeeded", (
+        f"the execute settled as {job['state']}, not succeeded: "
+        f"{json.dumps(job.get('error'))} · steps "
+        + json.dumps([{"n": s["n"], "state": s["state"], "error": s.get("error")} for s in job["steps"]])
+    )
 
 
 async def test_the_same_key_returns_the_same_job_and_a_different_body_is_409(
@@ -609,18 +629,36 @@ async def test_a_destructive_op_requires_its_confirm_value(
 
     The verb is chosen by asking the daemon which of its destructive ones
     actually plans with confirmation, rather than by hard-coding a list this
-    suite would then have to keep in step with the op registry."""
-    verb, plan = None, None
-    for candidate in ("stop", "restart", "backup", "decommission"):
-        preview = await client.post(f"/v1/tenants/{some_tenant}/ops/{candidate}", json=op_body())
-        if preview.status_code == 200 and preview.json()["requires_confirm"]:
-            verb, plan = candidate, preview.json()
-            break
-    if verb is None:
-        pytest.skip("no destructive verb on this tenant plans with requires_confirm")
+    suite would then have to keep in step with the op registry.
+
+    ``env-unset`` leads the list on purpose. The four earlier candidates are
+    all refused or non-destructive on the fixture fleet, so this test used to
+    SKIP — and a confirmation gate that is never exercised is a confirmation
+    gate nobody would notice the loss of. Unsetting a PUBLIC env key is
+    destructive by the registry's own rule, plans on the fixture, and is put
+    back at the end."""
+    candidates = await destructive_candidates(client, schemas, some_tenant)
+    verb, args, plan = None, None, None
+    for candidate, candidate_args in candidates:
+        preview = await client.post(
+            f"/v1/tenants/{some_tenant}/ops/{candidate}", json=op_body(args=candidate_args)
+        )
+        if preview.status_code != 200 or not preview.json()["requires_confirm"]:
+            continue
+        if not plan_is_executable(preview.json()):
+            # A plan whose step could not be previewed is one whose RUN will
+            # refuse. Choosing it would make this test assert on the engine's
+            # refusal path rather than on the confirmation gate.
+            continue
+        verb, args, plan = candidate, candidate_args, preview.json()
+        break
+    assert verb is not None, (
+        "no destructive verb on this tenant plans with requires_confirm, so the confirmation gate went "
+        f"untested. Tried {[c for c, _ in candidates]}"
+    )
 
     path = f"/v1/tenants/{some_tenant}/ops/{verb}"
-    bare = await client.post(path, json=op_body(dry_run=False))
+    bare = await client.post(path, json=op_body(dry_run=False, args=args))
     err = assert_error(bare, 428, "confirm_required", schemas)
     confirm = err.get("extra", {}).get("confirm_value")
     assert confirm == plan["confirm_value"], (
@@ -628,8 +666,79 @@ async def test_a_destructive_op_requires_its_confirm_value(
         f"extra was {err.get('extra')!r}"
     )
 
-    job = await submit_and_settle(client, path, schemas, confirm=confirm)
-    assert job["state"] in TERMINAL_STATES
+    job = await submit_and_settle(client, path, schemas, args=args, confirm=confirm)
+    assert job["state"] == "succeeded", (
+        f"the confirmed {verb} settled as {job['state']}: {json.dumps(job.get('error'))}"
+    )
+    if verb == "env-unset":
+        # Put it back: every test in this module reads the same fixture.
+        await submit_and_settle(
+            client, f"/v1/tenants/{some_tenant}/ops/env-set", schemas,
+            args={"key": args["key"], "value": "100"},
+        )
+
+
+def plan_is_executable(plan: dict[str, Any]) -> bool:
+    """A plan every step of which could be previewed.
+
+    ``would_write[].preview`` is null and a warning says so when the step's
+    edit could not be applied to the file it read — the same thing that will
+    happen when it runs. It is the contract's own signal that a plan is not
+    going to work, so the candidate search reads it rather than guessing."""
+    for step in plan.get("steps", []):
+        for warning in step.get("warnings", []):
+            if "could not be previewed" in warning or "does not parse" in warning:
+                return False
+    return True
+
+
+async def destructive_candidates(
+    client: httpx.AsyncClient, schemas: dict[str, dict], tenant: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """The destructive verbs to try, with the arguments each one needs, best
+    first.
+
+    The fixture fleet carries no public settings and no key ledger, so the
+    first candidate is one this helper PROVISIONS: a public marker key set with
+    ``env-set`` — an operation the suite has already proved works — which
+    ``env-unset`` can then destroy. That is the point: the confirmation gate
+    has to be exercised against a plan that really runs, and waiting for a
+    fixture to happen to contain a suitable target is how this test came to
+    skip on every run.
+
+    ``key-revoke`` and the rest are read off the daemon and offered after it; a
+    verb whose target does not exist refuses at plan time and is not chosen.
+    """
+    out: list[tuple[str, dict[str, Any]]] = []
+
+    # A key the settings allowlist knows — the typed env API edits nothing
+    # else — and not the one the executable tests use.
+    marker, marker_value = "MAX_COLLECTIONS", "100"
+    seeded = await submit_and_settle(
+        client, f"/v1/tenants/{tenant}/ops/env-set", schemas,
+        args={"key": marker, "value": marker_value},
+    )
+    if seeded["state"] == "succeeded":
+        out.append(("env-unset", {"key": marker}))
+
+    env = await client.get(f"/v1/tenants/{tenant}/env")
+    if env.status_code == 200:
+        for row in env.json().get("keys", []):
+            # Every other public key is offered too; the caller drops the ones
+            # whose plan says it could not preview the edit. Not LOG_LEVEL,
+            # which the executable tests set and read.
+            if row.get("class") == "public" and row.get("key") not in (EXEC_ARGS["key"], marker):
+                out.append(("env-unset", {"key": row["key"]}))
+
+    show = await client.get(f"/v1/tenants/{tenant}")
+    if show.status_code == 200:
+        for key in show.json().get("keys") or []:
+            if not key.get("revoked_at"):
+                out.append(("key-revoke", {"id": key["id"]}))
+                break
+
+    out += [("stop", {}), ("restart", {}), ("backup", {}), ("decommission", {})]
+    return out
 
 
 async def test_an_unknown_argument_is_422(

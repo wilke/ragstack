@@ -49,7 +49,8 @@ common flags: --registry PATH --rag-root DIR --state-dir DIR --proxy-dir DIR
 reload flags: the operation flags — --server --api-key-file --direct --dry-run
               --yes --wait --idempotency-key (see `+"`ragstack-ctl help`"+`)
 
-exit: 0 ok · 1 error · 2 usage · 3 refused · 4 job failed · 5 job interrupted
+exit: 0 ok · 1 error · 2 usage · 3 refused/cancelled · 4 job failed · 5 job
+interrupted · 6 parked at the cutover (job continue) · 7 --wait timed out
 `)
 }
 
