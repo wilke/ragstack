@@ -822,6 +822,13 @@ class Settings(BaseSettings):
     graph_query_ngram_max: int = 3
     # Answer generation
     llm_max_context_chars: int = 8000          # context budget packed into the LLM prompt
+    # Path to this tenant's prompt templates (ADR-0008), YAML or JSON. Empty (the
+    # default) means no templates: GET /v1/prompt-templates answers an empty list
+    # and a request naming one gets a 404, which is how a client learns the
+    # capability is absent without a version check. Loaded and VALIDATED at
+    # startup, so a malformed file fails the boot rather than 500ing whichever
+    # caller happens to select the bad template first.
+    prompt_templates_file: str = ""
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Cross-encoder reranking (final stage over the fused candidate pool).

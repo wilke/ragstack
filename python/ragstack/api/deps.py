@@ -51,6 +51,7 @@ from ragstack.ingestion.sharded import ShardedIngestor
 from ragstack.ingestion.tokenization import make_token_counter, resolve_max_tokens
 from ragstack.jobstore import KIND_INGEST, make_job_store
 from ragstack.llm import OpenAILLM, RagGenerator
+from ragstack.prompts import PromptTemplate, load_templates
 from ragstack.protocols import QueryRewriter
 from ragstack.quota import TenantQuota
 from ragstack.ratelimit import TokenBucketLimiter
@@ -961,6 +962,21 @@ def _build_graph_store():
     return InMemoryGraphStore()
 
 
+def load_prompt_templates(path: str) -> dict[str, PromptTemplate]:
+    """Load and validate the tenant's templates, or {} when unconfigured.
+
+    Deliberately NOT tolerant of a bad file: a TemplateValidationError propagates
+    and stops the boot. The alternative — logging and continuing — means the
+    operator learns their template is broken from whichever user selects it
+    first, and the ADR's rule 5 exists to prevent exactly that.
+    """
+    if not path:
+        return {}
+    templates = load_templates(path)
+    log.info("loaded %d prompt template(s) from %s", len(templates), path)
+    return templates
+
+
 def _build_llm(http: httpx.AsyncClient) -> OpenAILLM | None:
     """The shared OpenAI-compatible LLM client (answer generation + rewriters), or
     None when no endpoint is configured."""
@@ -1713,6 +1729,10 @@ async def lifespan(app: FastAPI):
         graph_store=graph_store, collection=default_collection,
     )
 
+    # Prompt templates (ADR-0008). Loaded and validated HERE, at startup, so a
+    # malformed file fails the boot loudly; an empty setting yields {} and the
+    # capability simply reads as absent.
+    app.state.prompt_templates = load_prompt_templates(settings.prompt_templates_file)
     app.state.http_client = http_client
     app.state.embedder = embedder
     app.state.vector_store = vector_store
@@ -2021,6 +2041,16 @@ def get_kg_extractor(request: Request):
 
 def get_embedder(request: Request):
     return request.app.state.embedder
+
+
+def get_prompt_templates(request: Request) -> dict[str, Any]:
+    """This tenant's templates by id, or {} when none are configured.
+
+    Falls back to {} rather than raising when the app was assembled without a
+    lifespan (tests mount routers directly), matching how the other optional
+    state accessors behave.
+    """
+    return getattr(request.app.state, "prompt_templates", {})
 
 
 def get_generator(request: Request):

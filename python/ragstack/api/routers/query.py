@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+from pydantic.json_schema import SkipJsonSchema
 
 from ragstack.api.access import enforce_access
 from ragstack.api.collections import (
@@ -23,6 +31,7 @@ from ragstack.api.deps import (
     get_generator,
     get_http_client,
     get_model_registry,
+    get_prompt_templates,
     get_reranker,
     get_rewriters,
     get_tenant_quota,
@@ -34,6 +43,7 @@ from ragstack.config import settings
 from ragstack.models import ContextChunk, ScoredChunk, Source
 from ragstack.observability.context import current_context
 from ragstack.observability.stages import note_query_sha, stage
+from ragstack.prompts import PromptTemplate, TemplateRenderError, render, to_wire
 from ragstack.protocols import QueryRewriter
 from ragstack.retrieval.retriever import (
     STAMP_KEY,
@@ -168,6 +178,18 @@ class QueryRequest(BaseModel):
     # generation); ``reranker`` overrides the cross-encoder. Unknown id → 404;
     # wrong-task id → 400. See GET /v1/models/available.
     llm: str | None = None
+    # ADR-0008. `template` names a server-side template; `template_vars` fills the
+    # slots it declares.
+    #
+    # NOT a second query. `query` is what gets embedded and BM25'd; the template
+    # renders the GENERATION prompt only, and the server never derives one from
+    # the other. Putting an instruction block in `query` would embed the
+    # instructions and retrieve noise.
+    #
+    # Absent `template` leaves generation byte-identical to a server with no
+    # templates configured.
+    template: str | None = None
+    template_vars: dict[str, str] = Field(default_factory=dict)
     reranker: str | None = None
 
     @field_validator("top_k")
@@ -182,9 +204,40 @@ class QueryRequest(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    """The answer, its sources, and what produced it.
+
+    The four provenance fields are OMITTED from the serialized form when unset
+    rather than emitted as ``null`` — the same rule, and the same mechanism, as
+    ``Source.context``/``Source.collection`` (see ragstack/models.py). An
+    untemplated request against a server with no templates configured therefore
+    gets a response byte-identical to the one it got before these fields existed,
+    which is the compatibility guarantee ADR-0008 states and
+    test_query_context_window's golden already enforces.
+
+    ``SkipJsonSchema[None]``: the served OpenAPI shows them as optional, not
+    nullable, matching contracts/schemas/query_response.json.
+    """
+
     answer: str
     sources: list[Source]
     rewritten_queries: list[str]
+    template: str | SkipJsonSchema[None] = None
+    template_version: int | SkipJsonSchema[None] = None
+    template_hash: str | SkipJsonSchema[None] = None
+    # The model that ACTUALLY generated, after the per-request `llm` override and
+    # the server default resolve. Echoed rather than assumed: a template
+    # deliberately does not pin a model (ADR-0008 decision 5), so this is what
+    # lets a degraded result be attributed to a swapped default instead of being
+    # read as a prompt regression.
+    model: str | SkipJsonSchema[None] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_provenance(self, handler: SerializerFunctionWrapHandler):
+        data = handler(self)
+        for key in ("template", "template_version", "template_hash", "model"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class RetrieveRequest(BaseModel):
@@ -714,6 +767,31 @@ async def retrieve(
     return RetrieveResponse(sources=_to_sources(scored, context))
 
 
+class PromptTemplatesResponse(BaseModel):
+    templates: list[dict[str, Any]]
+
+
+@router.get("/prompt-templates", response_model=PromptTemplatesResponse)
+async def list_prompt_templates(
+    templates: Mapping[str, PromptTemplate] = Depends(get_prompt_templates),
+) -> PromptTemplatesResponse:
+    """The templates this tenant offers for /v1/query generation (ADR-0008).
+
+    Read-only, and it returns each template's DECLARATION — id, version, hash,
+    label, output shape, columns, slots — never its `system`/`user` bodies. The
+    prompt text is operator configuration; a caller needs to know which knobs
+    exist and what they accept, not what the server will say to the model.
+
+    A tenant with none configured answers 200 with an empty list rather than 404:
+    the capability being unconfigured is a normal state, and an empty list lets a
+    client hide its template picker without a version check. Ordered by id so the
+    response is stable across restarts.
+    """
+    return PromptTemplatesResponse(
+        templates=[to_wire(templates[k]) for k in sorted(templates)]
+    )
+
+
 @router.get("/chunks", response_model=ChunksResponse)
 async def get_chunks(
     ids: str = "",
@@ -762,6 +840,51 @@ async def get_chunks(
     )
 
 
+def _resolve_template(
+    templates: Mapping[str, PromptTemplate], name: str | None
+) -> PromptTemplate | None:
+    """The requested template, or None when the request named none.
+
+    An unknown id is a 404, matching how an unknown collection is answered: the
+    caller named something that does not exist here. A server with no templates
+    configured therefore answers 404 for every id, which is how a client learns
+    the capability is absent without a version check.
+    """
+    if name is None:
+        return None
+    template = templates.get(name)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"unknown prompt template: {name!r}")
+    return template
+
+
+def _validate_template_vars(template: PromptTemplate, vars: Mapping[str, str]) -> None:
+    """Refuse bad slot values as a 422, before any work is done.
+
+    Renders against a placeholder context purely to exercise the slot rules —
+    undeclared key, missing required slot, over-length value. The real render
+    happens later with the actual passages; doing it twice is cheap (string
+    building) and buys the fail-fast ordering above.
+    """
+    try:
+        render(template, vars, "")
+    except TemplateRenderError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _resolved_model(generator: Any) -> str | None:
+    """The model id that generation would actually use, for the response echo.
+
+    Read off the live client rather than from the request, because the request's
+    `llm` is optional and the server default is what applies when it is absent —
+    and that default is exactly what can change under a template without anyone
+    noticing (ADR-0008 decision 5).
+    """
+    llm = getattr(generator, "llm", None)
+    model = getattr(llm, "model", None)
+    return model if isinstance(model, str) else None
+
+
 def _fallback_answer(prefix: str, query_text: str, sources: list[Source]) -> str:
     """A non-generated answer (no LLM configured, or generation failed) that still
     surfaces what was retrieved so the caller gets the sources, not just an error."""
@@ -780,6 +903,7 @@ async def query(
     principal: Principal = Depends(resolve_principal),
     registry: CollectionRegistry = Depends(get_collections),
     generator=Depends(get_generator),
+    templates: Mapping[str, PromptTemplate] = Depends(get_prompt_templates),
     rewriters=Depends(get_rewriters),
     reranker=Depends(get_reranker),
     models: ModelRegistry = Depends(get_model_registry),
@@ -796,6 +920,14 @@ async def query(
     """
     note_query_sha(request.query)  # fingerprint only, never the text (#114)
     generator = _override_model(build_generator_for, models, http, request.llm, generator)
+    # Resolve and VALIDATE the template before any retrieval leg runs. A bad
+    # request should cost nothing: an unknown id or an undeclared slot is a fact
+    # about the request, knowable up front, and answering it after a full
+    # retrieval would burn embedding and store work to return an error. Same
+    # order the collection checks already use (see _resolve_retrieval).
+    template = _resolve_template(templates, request.template)
+    if template is not None:
+        _validate_template_vars(template, request.template_vars)
     reranker = _override_model(build_reranker_for, models, http, request.reranker, reranker)
     # `authz` is not an optional stage: since #419 _resolve_retrieval is a
     # batched ACL round trip to Postgres plus the lifecycle gate, i.e. an
@@ -837,14 +969,31 @@ async def query(
     else:
         try:
             with stage("generate"):
-                answer = await generator.generate(request.query, sources)
+                if template is None:
+                    answer = await generator.generate(request.query, sources)
+                else:
+                    # Render with the SAME context text the default path builds,
+                    # so a templated answer is grounded identically — same budget,
+                    # same passage-first fitting.
+                    system, user = render(
+                        template, request.template_vars, generator.format_context(sources)
+                    )
+                    answer = await generator.generate_with(system, user)
         except Exception:
             # Retrieval already succeeded — don't fail the whole query on an LLM
             # outage or a malformed/empty response. Return the sources with a note.
+            #
+            # A TemplateRenderError cannot reach here: bad `template_vars` are
+            # refused as a 422 BEFORE retrieval runs, so this branch only ever
+            # covers the transport.
             log.warning("answer generation failed; returning sources only", exc_info=True)
             answer = _fallback_answer("[answer generation failed]", request.query, sources)
     return QueryResponse(
         answer=answer,
         sources=sources,
         rewritten_queries=variants,
+        template=template.id if template else None,
+        template_version=template.version if template else None,
+        template_hash=template.hash if template else None,
+        model=_resolved_model(generator),
     )
