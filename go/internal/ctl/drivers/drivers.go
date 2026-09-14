@@ -133,7 +133,14 @@ const PendingPR = "PR-D"
 // single source both `Real.Pending` and the refusals above are read from. It
 // is named by the driver names the ops package's steps declare, which are the
 // names in the refusal text (`systemd.Start lands in PR-D`).
-var pendingReal = []string{"systemd", "proc", "qdrant", "elasticsearch", "tenantapi"}
+var pendingReal = []string{
+	"systemd", "proc", "qdrant", "elasticsearch", "tenantapi",
+	// The drivers PR-D's own seam adds. They are on the list from the day the
+	// interfaces exist, so a plan warns about them before anything can run
+	// them; a driver agent deletes a name here in the same commit that wires
+	// the driver.
+	"git", "build", "postgres", "sqlite", "archive",
+}
 
 // Pending is the drivers this set cannot run, by name.
 //
@@ -145,5 +152,5 @@ var pendingReal = []string{"systemd", "proc", "qdrant", "elasticsearch", "tenant
 // verb planned against the fakes (which run everything) carries no warning.
 func (r *Real) Pending() []string { return append([]string(nil), pendingReal...) }
 
-// Pending is empty for the fakes: every one of the seven drivers runs.
+// Pending is empty for the fakes: every one of the twelve drivers runs.
 func (f *Fake) Pending() []string { return nil }

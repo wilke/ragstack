@@ -69,6 +69,11 @@ func (r *Real) Files() jobs.Files                 { return r.files }
 func (r *Real) Qdrant() jobs.Qdrant               { return pendingQdrant{} }
 func (r *Real) Elasticsearch() jobs.Elasticsearch { return pendingES{} }
 func (r *Real) TenantAPI() jobs.TenantAPI         { return pendingTenantAPI{} }
+func (r *Real) Git() jobs.Git                     { return pendingGit{} }
+func (r *Real) Build() jobs.Build                 { return pendingBuild{} }
+func (r *Real) Postgres() jobs.Postgres           { return pendingPostgres{} }
+func (r *Real) SQLite() jobs.SQLite               { return pendingSQLite{} }
+func (r *Real) Archive() jobs.Archive             { return pendingArchive{} }
 
 // ---------------------------------------------------------------- gateway
 
@@ -290,6 +295,60 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	return nil
 }
 
+// MkdirAll creates path and every missing parent under it, and is REAL: it is
+// how `tenant create` lays down a tenant tree.
+//
+// Two rules make it different from a bare os.MkdirAll:
+//
+//   - it never chmods a directory that already existed. /rag/data/tenants is
+//     wilke 755 and its group, `cels`, has 1869 members; a driver that
+//     "corrected" the mode of a parent it did not create would be silently
+//     re-permissioning a directory shared with the whole host. Only the leaf,
+//     and only when this call is the one that made it, is chmodded.
+//   - the mode is applied with an explicit chmod rather than left to mkdir.
+//     mkdir(2) masks the mode with the process umask and does not reliably
+//     keep the setgid bit, and setgid is the whole point of a 2770 tenant
+//     tree: it is what makes every file the tenant later writes inherit the
+//     group instead of the writer's primary one.
+func (f *RealFiles) MkdirAll(_ context.Context, path string, mode uint32) error {
+	resolved, err := f.check(path)
+	if err != nil {
+		return err
+	}
+	// Lstat, not Stat: a symlink sitting where the directory should be is not
+	// a directory this driver will write through, whatever it points at.
+	if st, lerr := os.Lstat(resolved); lerr == nil {
+		if !st.IsDir() {
+			return fmt.Errorf("%w: %s already exists and is not a directory", jobs.ErrRefused, resolved)
+		}
+		return nil
+	} else if !errors.Is(lerr, os.ErrNotExist) {
+		return lerr
+	}
+	perm := fileMode(mode)
+	if err := os.MkdirAll(resolved, perm); err != nil {
+		return err
+	}
+	return os.Chmod(resolved, perm)
+}
+
+// fileMode turns a POSIX mode as the callers write it (0o2770) into the
+// os.FileMode Go wants, where setuid/setgid/sticky are flag bits outside the
+// low nine rather than the octal digits they are in a shell.
+func fileMode(mode uint32) os.FileMode {
+	perm := os.FileMode(mode & 0o777)
+	if mode&syscall.S_ISUID != 0 {
+		perm |= os.ModeSetuid
+	}
+	if mode&syscall.S_ISGID != 0 {
+		perm |= os.ModeSetgid
+	}
+	if mode&syscall.S_ISVTX != 0 {
+		perm |= os.ModeSticky
+	}
+	return perm
+}
+
 // Rename moves from to to; both must be under an approved root.
 func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	rfrom, err := f.check(from)
@@ -349,6 +408,11 @@ type (
 	pendingQdrant    struct{}
 	pendingES        struct{}
 	pendingTenantAPI struct{}
+	pendingGit       struct{}
+	pendingBuild     struct{}
+	pendingPostgres  struct{}
+	pendingSQLite    struct{}
+	pendingArchive   struct{}
 )
 
 var (
@@ -357,6 +421,11 @@ var (
 	_ jobs.Qdrant        = pendingQdrant{}
 	_ jobs.Elasticsearch = pendingES{}
 	_ jobs.TenantAPI     = pendingTenantAPI{}
+	_ jobs.Git           = pendingGit{}
+	_ jobs.Build         = pendingBuild{}
+	_ jobs.Postgres      = pendingPostgres{}
+	_ jobs.SQLite        = pendingSQLite{}
+	_ jobs.Archive       = pendingArchive{}
 )
 
 func (pendingSystemd) DaemonReload(context.Context) error {
@@ -395,9 +464,96 @@ func (pendingES) Indices(context.Context, string) ([]string, error) {
 func (pendingES) Snapshot(context.Context, string, string, string) error {
 	return pending(jobs.ErrRefused, "elasticsearch", "Snapshot")
 }
+func (pendingSystemd) Link(context.Context, string) error {
+	return pending(jobs.ErrRefused, "systemd", "Link")
+}
+func (pendingSystemd) IsEnabled(context.Context, string) (bool, error) {
+	return false, pending(jobs.ErrRefused, "systemd", "IsEnabled")
+}
+func (pendingSystemd) Show(context.Context, string) (jobs.UnitInfo, error) {
+	return jobs.UnitInfo{}, pending(jobs.ErrRefused, "systemd", "Show")
+}
+func (pendingSystemd) ResetFailed(context.Context, string) error {
+	return pending(jobs.ErrRefused, "systemd", "ResetFailed")
+}
+func (pendingProc) Owner(context.Context, int) (int, int, error) {
+	return 0, 0, pending(jobs.ErrRefused, "proc", "Owner")
+}
+func (pendingQdrant) Ready(context.Context, string) error {
+	return pending(jobs.ErrRefused, "qdrant", "Ready")
+}
+func (pendingQdrant) Count(context.Context, string, string) (int64, error) {
+	return 0, pending(jobs.ErrRefused, "qdrant", "Count")
+}
+func (pendingQdrant) Recover(context.Context, string, string, string) error {
+	return pending(jobs.ErrRefused, "qdrant", "Recover")
+}
+func (pendingQdrant) DeleteSnapshot(context.Context, string, string, string) error {
+	return pending(jobs.ErrRefused, "qdrant", "DeleteSnapshot")
+}
+func (pendingES) Ready(context.Context, string) error {
+	return pending(jobs.ErrRefused, "elasticsearch", "Ready")
+}
+func (pendingES) RegisterRepo(context.Context, string, string, string, bool) error {
+	return pending(jobs.ErrRefused, "elasticsearch", "RegisterRepo")
+}
+func (pendingES) UnregisterRepo(context.Context, string, string) error {
+	return pending(jobs.ErrRefused, "elasticsearch", "UnregisterRepo")
+}
+func (pendingES) Restore(context.Context, string, string, string, []string) error {
+	return pending(jobs.ErrRefused, "elasticsearch", "Restore")
+}
+func (pendingES) Count(context.Context, string, string) (int64, error) {
+	return 0, pending(jobs.ErrRefused, "elasticsearch", "Count")
+}
 func (pendingTenantAPI) Health(context.Context, string) error {
 	return pending(jobs.ErrRefused, "tenantapi", "Health")
 }
-func (pendingTenantAPI) ServiceAccount(context.Context, string, string, string) error {
+func (pendingTenantAPI) ServiceAccount(context.Context, string, string, string, string, string, string) error {
 	return pending(jobs.ErrRefused, "tenantapi", "ServiceAccount")
+}
+func (pendingTenantAPI) Version(context.Context, string, string) (map[string]any, error) {
+	return nil, pending(jobs.ErrRefused, "tenantapi", "Version")
+}
+func (pendingTenantAPI) DeepHealth(context.Context, string, string) error {
+	return pending(jobs.ErrRefused, "tenantapi", "DeepHealth")
+}
+func (pendingTenantAPI) Collections(context.Context, string, string) ([]string, error) {
+	return nil, pending(jobs.ErrRefused, "tenantapi", "Collections")
+}
+func (pendingGit) ResolveRef(context.Context, string, string) (string, error) {
+	return "", pending(jobs.ErrRefused, "git", "ResolveRef")
+}
+func (pendingGit) AddWorktree(context.Context, string, string, string) error {
+	return pending(jobs.ErrRefused, "git", "AddWorktree")
+}
+func (pendingGit) RemoveWorktree(context.Context, string, string) error {
+	return pending(jobs.ErrRefused, "git", "RemoveWorktree")
+}
+func (pendingGit) Describe(context.Context, string) (string, error) {
+	return "", pending(jobs.ErrRefused, "git", "Describe")
+}
+func (pendingBuild) NpmCI(context.Context, string, string) error {
+	return pending(jobs.ErrRefused, "build", "NpmCI")
+}
+func (pendingBuild) UI(context.Context, string, string, string) error {
+	return pending(jobs.ErrRefused, "build", "UI")
+}
+func (pendingPostgres) Ready(context.Context, jobs.PostgresSpec) error {
+	return pending(jobs.ErrRefused, "postgres", "Ready")
+}
+func (pendingPostgres) Dump(context.Context, jobs.PostgresSpec, string) error {
+	return pending(jobs.ErrRefused, "postgres", "Dump")
+}
+func (pendingPostgres) Restore(context.Context, jobs.PostgresSpec, string) error {
+	return pending(jobs.ErrRefused, "postgres", "Restore")
+}
+func (pendingSQLite) Backup(context.Context, string, string) (string, error) {
+	return "", pending(jobs.ErrRefused, "sqlite", "Backup")
+}
+func (pendingArchive) Create(context.Context, string, string) error {
+	return pending(jobs.ErrRefused, "archive", "Create")
+}
+func (pendingArchive) Extract(context.Context, string, string, jobs.ArchiveLimits) error {
+	return pending(jobs.ErrRefused, "archive", "Extract")
 }

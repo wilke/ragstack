@@ -227,6 +227,43 @@ type Drivers interface {
 	Qdrant() Qdrant
 	Elasticsearch() Elasticsearch
 	TenantAPI() TenantAPI
+	// PR-D adds the host surfaces `tenant create`, `backup`, `restore --as`
+	// and `decommission` need in order to RUN rather than only to plan.
+	Git() Git
+	Build() Build
+	Postgres() Postgres
+	SQLite() SQLite
+	Archive() Archive
+}
+
+// UnitInfo is `systemctl --user show -p …` for one unit. It exists because
+// IsActive answers a boolean, and a unit that failed, a unit the manager never
+// loaded and a unit an operator stopped are three different facts hiding
+// behind the same `false`.
+//
+// A unit the manager does not know is NOT an error: `systemctl show` of an
+// unknown unit succeeds and reports LoadState=not-found, so the driver returns
+// an empty FragmentPath (and an empty UnitFileState). Callers that want "this
+// unit is gone" — decommission's post-check, the selftest's — read that
+// emptiness rather than matching on an error.
+type UnitInfo struct {
+	// ActiveState is active/inactive/failed/activating/deactivating.
+	ActiveState string
+	// SubState is the per-type detail: running, dead, exited, failed.
+	SubState string
+	// Result is the last run's result: success, exit-code, timeout, signal…
+	Result string
+	// UnitFileState is enabled/disabled/linked/static, empty when unknown.
+	UnitFileState string
+	// FragmentPath is the unit file the manager resolved; empty means the
+	// manager does not know this unit.
+	FragmentPath string
+	// MainPID is 0 when nothing is running.
+	MainPID int
+	// NRestarts counts systemd's own restarts of the unit.
+	NRestarts int
+	// ExecMainStatus is the main process's exit status.
+	ExecMainStatus int
 }
 
 // Systemd is `systemctl --user` with verb and unit-name allowlists.
@@ -237,6 +274,22 @@ type Systemd interface {
 	Enable(ctx context.Context, unit string) error
 	Disable(ctx context.Context, unit string) error
 	IsActive(ctx context.Context, unit string) (bool, error)
+	// Link makes a unit file OUTSIDE the search path loadable
+	// (`systemctl --user link <abs unitPath>`), and is idempotent when the
+	// unit already resolves to that path. The ctl writes units into its own
+	// config tree, which the user manager does not search, and the drop-in
+	// that would add it (SYSTEMD_UNIT_PATH) is a root item that is not on
+	// coconut yet — so linking is how a rendered unit becomes a real one.
+	Link(ctx context.Context, unitPath string) error
+	// IsEnabled is `systemctl --user is-enabled <unit>`.
+	IsEnabled(ctx context.Context, unit string) (bool, error)
+	// Show is `systemctl --user show -p ActiveState -p SubState -p Result
+	// -p UnitFileState -p FragmentPath -p MainPID -p NRestarts
+	// -p ExecMainStatus --value <unit>`.
+	Show(ctx context.Context, unit string) (UnitInfo, error)
+	// ResetFailed is `systemctl --user reset-failed <unit>`, so that retrying
+	// a job whose unit failed is not refused by systemd's own start limit.
+	ResetFailed(ctx context.Context, unit string) error
 }
 
 // Proc is the pidfile/proc surface for supervisor: manual tenants.
@@ -245,6 +298,14 @@ type Proc interface {
 	Listening(ctx context.Context, port int) (bool, error)
 	// Signal sends sig to pid after verifying identity (cwd/cmdline match).
 	Signal(ctx context.Context, pid int, wantCwd, wantCmd string, sig string) error
+	// Owner is the pid/uid behind the LISTEN socket on port (`ss -ltnp`, or
+	// /proc when ss is absent); pid is 0 when the socket belongs to another
+	// account, because an unprivileged reader sees THAT a port is taken
+	// without seeing by whom — and that difference decides whether a port
+	// collision is the ctl's to fix or an operator's to look at. uid is
+	// meaningless when pid is 0, and an unbound port is (0, 0, nil): nothing
+	// listening is a fact, not an error.
+	Owner(ctx context.Context, port int) (pid, uid int, err error)
 }
 
 // GatewayDriver publishes and reloads the gateway (internal/ctl/gateway).
@@ -263,24 +324,179 @@ type Files interface {
 	Rename(ctx context.Context, from, to string) error
 	Remove(ctx context.Context, path string) error
 	ReadFile(ctx context.Context, path string) ([]byte, error)
+	// MkdirAll creates path and every missing parent, and is how `tenant
+	// create` lays a tenant tree down (2770, setgid, so the group is
+	// inherited). It refuses a path outside the approved roots exactly as
+	// WriteAtomic does, and it NEVER chmods a directory that already existed:
+	// /rag/data/tenants is wilke 755 and shared with 1869 members of `cels`,
+	// so a driver that "fixed" the mode of a parent it did not create would be
+	// changing a directory nobody asked it to touch.
+	MkdirAll(ctx context.Context, path string, mode uint32) error
 }
 
-// Qdrant is the store driver subset PR-C plans against (fakes only).
+// Qdrant is the store driver subset the ctl talks to over loopback.
 type Qdrant interface {
 	Collections(ctx context.Context, baseURL string) ([]string, error)
 	Snapshot(ctx context.Context, baseURL, collection string) (name string, err error)
+	// Ready is GET /readyz (falling back to /collections) answering 200.
+	Ready(ctx context.Context, baseURL string) error
+	// Count is POST /collections/{collection}/points/count with exact=true:
+	// an inexact count cannot prove a fenced backup kept every point, which
+	// is the only reason the ctl counts at all.
+	Count(ctx context.Context, baseURL, collection string) (int64, error)
+	// Recover is PUT /collections/{collection}/snapshots/recover?wait=true
+	// with {"location": "file:///qdrant/snapshots/…"} — the location is a
+	// path INSIDE the container, which is why it is the caller's to build.
+	Recover(ctx context.Context, baseURL, collection, location string) error
+	// DeleteSnapshot is DELETE /collections/{collection}/snapshots/{name};
+	// it is the rollback of Snapshot, so a failed backup leaves no file
+	// growing inside the tenant's storage.
+	DeleteSnapshot(ctx context.Context, baseURL, collection, name string) error
 }
 
-// Elasticsearch is the store driver subset PR-C plans against (fakes only).
+// Elasticsearch is the store driver subset the ctl talks to over loopback.
 type Elasticsearch interface {
 	Indices(ctx context.Context, baseURL string) ([]string, error)
+	// Snapshot is PUT _snapshot/{repo}/{name}?wait_for_completion=true; it is
+	// an error unless the response says state SUCCESS and failed == 0, because
+	// a PARTIAL snapshot that the ctl recorded as a backup is the worst
+	// outcome this whole verb has.
 	Snapshot(ctx context.Context, baseURL, repo, name string) error
+	// Ready is GET _cluster/health?wait_for_status=yellow&timeout=… → 200.
+	Ready(ctx context.Context, baseURL string) error
+	// RegisterRepo is PUT _snapshot/{repo} {type: fs, settings: {location,
+	// readonly}}; location must be under the cluster's path.repo or ES itself
+	// refuses.
+	RegisterRepo(ctx context.Context, baseURL, repo, location string, readonly bool) error
+	// UnregisterRepo is DELETE _snapshot/{repo}. It removes the registration
+	// only — the snapshot files stay where they are, which is what lets the
+	// backup move the directory into the bundle afterwards.
+	UnregisterRepo(ctx context.Context, baseURL, repo string) error
+	// Restore is POST _snapshot/{repo}/{name}/_restore?wait_for_completion=true
+	// for the named indices (all of the snapshot's when indices is empty).
+	Restore(ctx context.Context, baseURL, repo, name string, indices []string) error
+	// Count is GET /{index}/_count.
+	Count(ctx context.Context, baseURL, index string) (int64, error)
 }
 
 // TenantAPI is the exact-allowlist client to a registered tenant origin.
 type TenantAPI interface {
 	Health(ctx context.Context, origin string) error
-	ServiceAccount(ctx context.Context, origin, subject, action string) error
+	// ServiceAccount is POST /v1/admin/service-accounts with X-API-Key, for
+	// action create|disable|enable.
+	//
+	// It carries the CREDENTIAL and the RECORD: a tenant the ctl just created
+	// has exactly one admin key, minted minutes ago and held in memory for the
+	// length of the job, and role/purpose are what the registry row and the
+	// tenant's own ledger have to agree on afterwards. apiKey is a secret: it
+	// is never logged, never checkpointed and never part of a step's targets.
+	ServiceAccount(ctx context.Context, origin, apiKey, subject, role, purpose, action string) error
+	// Version is GET /v1/version, as the post-create proof that the API that
+	// answered is the artifact the ctl checked out.
+	Version(ctx context.Context, origin, apiKey string) (map[string]any, error)
+	// DeepHealth is GET /v1/health/deep → 200: the tenant's own verdict on
+	// every store it was configured with, which is a stronger post-check than
+	// a port that accepts a connection.
+	DeepHealth(ctx context.Context, origin, apiKey string) error
+	// Collections is GET /v1/collections?counts=false — the inventory a
+	// restore compares against the bundle manifest.
+	Collections(ctx context.Context, origin, apiKey string) ([]string, error)
+}
+
+// Git is the mirror-and-worktree surface `fleet artifact prepare` and
+// `tenant create` need. Every tenant runs its own checkout at a pinned sha
+// (MEMORY: "tenant code isolation"), so resolving a ref once and checking THAT
+// sha out is the whole contract.
+type Git interface {
+	// ResolveRef is `git -C <mirror> rev-parse --verify <ref>^{commit}`,
+	// returning the 40-hex sha.
+	ResolveRef(ctx context.Context, mirror, ref string) (sha string, err error)
+	// AddWorktree is `git -C <mirror> worktree add --detach <dest> <sha>`;
+	// dest must be under the approved roots, and detached because a tenant's
+	// checkout must never follow a branch somebody moves.
+	AddWorktree(ctx context.Context, mirror, sha, dest string) error
+	// RemoveWorktree is `git -C <mirror> worktree remove --force <dest>`
+	// followed by `worktree prune`, so the mirror's administrative entry goes
+	// with the directory.
+	RemoveWorktree(ctx context.Context, mirror, dest string) error
+	// Describe is `git -C <dir> describe --tags --always --dirty`, recorded in
+	// manifests so a bundle says which code wrote it.
+	Describe(ctx context.Context, dir string) (string, error)
+}
+
+// Build is the node/vite surface. It is split from Git because the two fail
+// for unrelated reasons and an operator reading a failed job should not have
+// to guess which half broke.
+type Build interface {
+	// NpmCI is `npm ci --no-audit --no-fund` in <worktree>/frontend with
+	// NPM_CONFIG_CACHE=<cacheDir>. It is the ONLY step that may reach the
+	// network, and it is CLI-only (`fleet artifact prepare`): the daemon never
+	// installs packages.
+	NpmCI(ctx context.Context, worktree, cacheDir string) error
+	// UI is `node_modules/.bin/vite build --base <base> --outDir <outDir>
+	// --emptyOutDir` in <worktree>/frontend. It refuses when node_modules is
+	// absent rather than installing them, because a tenant create that
+	// silently pulled packages from the network would be a build nobody
+	// reviewed.
+	UI(ctx context.Context, worktree, base, outDir string) error
+}
+
+// PostgresSpec names one tenant's postgres: the image to exec, the socket
+// directory bound into it, and the database and role inside. There is no
+// password here on purpose — socket auth inside the container is `trust`, and
+// the role password lives only in the tenant's secrets.env.
+type PostgresSpec struct {
+	// SIF is the absolute path of the postgres Apptainer image.
+	SIF string
+	// RunDir is <data_dir>/postgres/run, bound to /var/run/postgresql.
+	RunDir string
+	// DB is the database name, User the role.
+	DB   string
+	User string
+}
+
+// Postgres is `apptainer exec` against the tenant's own image, over the socket
+// bind — never a TCP connection with a password.
+type Postgres interface {
+	// Ready is `apptainer exec --bind <RunDir>:/var/run/postgresql <SIF>
+	// pg_isready -h /var/run/postgresql`.
+	Ready(ctx context.Context, spec PostgresSpec) error
+	// Dump is `pg_dump -Fc -h /var/run/postgresql -U <User> -d <DB> -f <out>`
+	// (out bound into the container). Custom format, so a restore can be
+	// selective and does not depend on psql parsing.
+	Dump(ctx context.Context, spec PostgresSpec, out string) error
+	// Restore is `pg_restore --no-owner --role=<User> -d <DB> <in>`: the
+	// bundle's dump belongs to whichever role wrote it, and a restore --as
+	// creates a tenant with a different one.
+	Restore(ctx context.Context, spec PostgresSpec, in string) error
+}
+
+// SQLite backs the ctl's own state files and the tenant's.
+type SQLite interface {
+	// Backup runs PRAGMA wal_checkpoint(TRUNCATE), then PRAGMA
+	// integrity_check (which must answer "ok"), then VACUUM INTO dst at 0640.
+	// VACUUM INTO rather than a file copy: copying a database with a live WAL
+	// beside it produces a file that opens and is missing the last writes.
+	Backup(ctx context.Context, src, dst string) (integrity string, err error)
+}
+
+// ArchiveLimits bound what an extraction may produce. A bundle is operator
+// input, and an archive with a million entries or a terabyte of zeroes is the
+// cheapest way to take a host down.
+type ArchiveLimits struct {
+	MaxEntries int
+	MaxBytes   int64
+}
+
+// Archive is the tar surface for `backup --tar` and `restore --from`.
+type Archive interface {
+	// Create writes a tar of dir to out with RELATIVE paths and without
+	// following symlinks.
+	Create(ctx context.Context, dir, out string) error
+	// Extract unpacks tarPath under dest, refusing absolute or traversing
+	// entry names, symlinks, hardlinks, device and other special entries, and
+	// anything over limits.
+	Extract(ctx context.Context, tarPath, dest string, limits ArchiveLimits) error
 }
 
 // ---------------------------------------------------------------- store

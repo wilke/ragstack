@@ -155,15 +155,21 @@ func planCreate(_ context.Context, p *planner, args map[string]any) error {
 		p.addReadyStep(legs)
 	}
 	origin := fmt.Sprintf("http://127.0.0.1:%d", t.Ports.API)
-	for _, sa := range serviceAccountSubjects(args) {
-		subject := sa
+	for _, sa := range serviceAccountArgs(args) {
+		sa := sa
 		p.addFor("tenantapi", step{
-			Kind: "tenantapi", Title: "register the service account " + subject, Targets: []string{subject, origin},
+			Kind: "tenantapi", Title: "register the service account " + sa.Subject, Targets: []string{sa.Subject, origin},
 			Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
-				if err := sc.Checkpoint("sa:create:" + subject); err != nil {
+				if err := sc.Checkpoint("sa:create:" + sa.Subject); err != nil {
 					return "", err
 				}
-				return "created " + subject, sc.Ops.Drivers.TenantAPI().ServiceAccount(ctx, origin, subject, "create")
+				// The API key is empty here: the bootstrap admin key is minted
+				// by the secrets step of the real create (PR-D), which holds it
+				// in memory for the length of the job and hands it to this call.
+				// Until that lands the driver refuses anyway, so an empty
+				// credential cannot reach a tenant.
+				return "created " + sa.Subject, sc.Ops.Drivers.TenantAPI().ServiceAccount(
+					ctx, origin, "", sa.Subject, sa.Role, sa.Purpose, "create")
 			},
 		})
 	}
@@ -252,20 +258,39 @@ func boolArgOrDefault(args map[string]any, name string, def bool) bool {
 	return def
 }
 
-func serviceAccountSubjects(args map[string]any) []string {
+// serviceAccountArg is one `service_accounts` entry of the create request.
+// The role and the purpose travel with the subject because the tenant API
+// records all three: a service account created with the wrong role is a
+// credential with the wrong authority, not a cosmetic difference.
+type serviceAccountArg struct {
+	Subject string
+	Role    string
+	Purpose string
+}
+
+// serviceAccountArgs reads the entries, sorted by subject so the plan is a
+// pure function of the args.
+func serviceAccountArgs(args map[string]any) []serviceAccountArg {
 	items, err := toSlice(args["service_accounts"])
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []serviceAccountArg
 	for _, it := range items {
-		if m, ok := it.(map[string]any); ok {
-			if s, ok := m["subject"].(string); ok {
-				out = append(out, s)
-			}
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
 		}
+		subject, ok := m["subject"].(string)
+		if !ok {
+			continue
+		}
+		sa := serviceAccountArg{Subject: subject}
+		sa.Role, _ = m["role"].(string)
+		sa.Purpose, _ = m["purpose"].(string)
+		out = append(out, sa)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Subject < out[j].Subject })
 	return out
 }
 

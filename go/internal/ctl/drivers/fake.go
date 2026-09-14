@@ -43,6 +43,54 @@ type FakeOptions struct {
 	Generation int
 	// Now is the clock the snapshot names are stamped from.
 	Now func() time.Time
+
+	// ---- PR-D seeds. Each names a host fact some step will read.
+
+	// Linked maps a unit to the unit file it was linked from, for a host
+	// where `systemctl --user link` has already run.
+	Linked map[string]string
+	// Failed is the set of units in the failed state. Show reports them as
+	// failed until ResetFailed clears them.
+	Failed []string
+	// Owners maps a port to the process behind its LISTEN socket. A port that
+	// is Listening with no Owners entry is one whose socket belongs to another
+	// account — the real driver reports pid 0 for those, and so does the fake.
+	Owners map[int]PortOwner
+	// QdrantCounts maps "<baseURL>/<collection>" to its exact point count.
+	QdrantCounts map[string]int64
+	// ESRepos maps a registered snapshot repository to its settings.
+	ESRepos map[string]Repo
+	// ESCounts maps "<baseURL>/<index>" to its document count.
+	ESCounts map[string]int64
+	// Versions maps a tenant origin to what GET /v1/version answers.
+	Versions map[string]map[string]any
+	// CollectionsByOrigin maps a tenant origin to what GET /v1/collections
+	// answers — the tenant API's own inventory, which is not the same thing
+	// as the collections qdrant holds.
+	CollectionsByOrigin map[string][]string
+	// Refs maps a git ref to the sha it resolves to in the mirror.
+	Refs map[string]string
+	// Worktrees maps an existing worktree directory to the sha checked out.
+	Worktrees map[string]string
+	// Installed is the set of artifact worktrees whose node_modules are there.
+	Installed []string
+	// PostgresReady maps a postgres run directory to whether pg_isready
+	// succeeds. An ABSENT entry is READY: the ordinary fixture is a store
+	// that works, and a fake defaulting to "not ready" would make every test
+	// seed a map in order to say nothing.
+	PostgresReady map[string]bool
+}
+
+// PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
+type PortOwner struct {
+	PID int
+	UID int
+}
+
+// Repo is a registered elasticsearch snapshot repository.
+type Repo struct {
+	Location string
+	ReadOnly bool
 }
 
 // Fake is the whole in-memory host. It satisfies jobs.Drivers, and every
@@ -57,6 +105,11 @@ type Fake struct {
 	qdrant  *FakeQdrant
 	es      *FakeElasticsearch
 	api     *FakeTenantAPI
+	git     *FakeGit
+	build   *FakeBuild
+	pg      *FakePostgres
+	sqlite  *FakeSQLite
+	archive *FakeArchive
 	now     func() time.Time
 }
 
@@ -69,22 +122,40 @@ func NewFake(opts FakeOptions) *Fake {
 		now = func() time.Time { return time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC) }
 	}
 	f := &Fake{now: now}
-	f.proc = &FakeProc{r: &f.recorder, Ports: map[int]bool{}}
+	f.proc = &FakeProc{r: &f.recorder, Ports: map[int]bool{}, Owners: copyMapOwners(opts.Owners)}
 	for _, p := range opts.Listening {
 		f.proc.Ports[p] = true
 	}
 	f.systemd = &FakeSystemd{
 		r: &f.recorder, Active: setOf(opts.Active), Enabled: setOf(opts.Enabled),
-		proc: f.proc, ports: opts.UnitPorts,
+		Linked: copyMapString(opts.Linked), Failed: setOf(opts.Failed),
+		proc: f.proc, ports: opts.UnitPorts, pids: map[string]int{}, nextPID: 20001,
 	}
 	f.gateway = &FakeGateway{r: &f.recorder, Generation: opts.Generation}
-	f.files = &FakeFiles{r: &f.recorder, Files: map[string]FakeFile{}, Roots: append([]string(nil), opts.Roots...)}
+	f.files = &FakeFiles{
+		r: &f.recorder, Files: map[string]FakeFile{}, Dirs: map[string]uint32{},
+		Roots: append([]string(nil), opts.Roots...),
+	}
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
 	}
-	f.qdrant = &FakeQdrant{r: &f.recorder, now: now, ByURL: copyMapSlice(opts.Collections), Snapshots: map[string][]string{}}
-	f.es = &FakeElasticsearch{r: &f.recorder, ByURL: copyMapSlice(opts.Indices), Snapshots: map[string][]string{}}
-	f.api = &FakeTenantAPI{r: &f.recorder}
+	f.qdrant = &FakeQdrant{
+		r: &f.recorder, now: now, ByURL: copyMapSlice(opts.Collections),
+		Snapshots: map[string][]string{}, Counts: copyMapInt64(opts.QdrantCounts),
+	}
+	f.es = &FakeElasticsearch{
+		r: &f.recorder, ByURL: copyMapSlice(opts.Indices), Snapshots: map[string][]string{},
+		Repos: copyMapRepo(opts.ESRepos), Counts: copyMapInt64(opts.ESCounts),
+	}
+	f.api = &FakeTenantAPI{
+		r: &f.recorder, Versions: copyMapAny(opts.Versions),
+		CollectionsByOrigin: copyMapSlice(opts.CollectionsByOrigin),
+	}
+	f.git = &FakeGit{r: &f.recorder, Refs: copyMapString(opts.Refs), Worktrees: copyMapString(opts.Worktrees)}
+	f.build = &FakeBuild{r: &f.recorder, files: f.files, Installed: setOf(opts.Installed)}
+	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady)}
+	f.sqlite = &FakeSQLite{r: &f.recorder, files: f.files}
+	f.archive = &FakeArchive{r: &f.recorder, files: f.files}
 	return f
 }
 
@@ -96,6 +167,11 @@ func (f *Fake) Files() jobs.Files                 { return f.files }
 func (f *Fake) Qdrant() jobs.Qdrant               { return f.qdrant }
 func (f *Fake) Elasticsearch() jobs.Elasticsearch { return f.es }
 func (f *Fake) TenantAPI() jobs.TenantAPI         { return f.api }
+func (f *Fake) Git() jobs.Git                     { return f.git }
+func (f *Fake) Build() jobs.Build                 { return f.build }
+func (f *Fake) Postgres() jobs.Postgres           { return f.pg }
+func (f *Fake) SQLite() jobs.SQLite               { return f.sqlite }
+func (f *Fake) Archive() jobs.Archive             { return f.archive }
 
 // Note records something that is not a driver call — a job engine
 // checkpoint, say — in the SAME log the driver calls go into. It is how a
@@ -111,6 +187,11 @@ func (f *Fake) FakeFiles() *FakeFiles                 { return f.files }
 func (f *Fake) FakeQdrant() *FakeQdrant               { return f.qdrant }
 func (f *Fake) FakeElasticsearch() *FakeElasticsearch { return f.es }
 func (f *Fake) FakeTenantAPI() *FakeTenantAPI         { return f.api }
+func (f *Fake) FakeGit() *FakeGit                     { return f.git }
+func (f *Fake) FakeBuild() *FakeBuild                 { return f.build }
+func (f *Fake) FakePostgres() *FakePostgres           { return f.pg }
+func (f *Fake) FakeSQLite() *FakeSQLite               { return f.sqlite }
+func (f *Fake) FakeArchive() *FakeArchive             { return f.archive }
 
 // ---------------------------------------------------------------- systemd
 
@@ -120,8 +201,17 @@ type FakeSystemd struct {
 	mu      sync.Mutex
 	proc    *FakeProc
 	ports   map[string]int
+	pids    map[string]int
+	nextPID int
 	Active  map[string]bool
 	Enabled map[string]bool
+	// Linked maps a unit to the unit file Link was called with. It is what
+	// makes a unit KNOWN to this fake manager even before it is started, which
+	// is the state `tenant create` leaves behind between rendering the units
+	// and starting the target.
+	Linked map[string]string
+	// Failed is the set of units in the failed state; ResetFailed clears one.
+	Failed  map[string]bool
 	Reloads int
 }
 
@@ -166,7 +256,30 @@ func (s *FakeSystemd) set(method, unit string, m map[string]bool, v bool) error 
 		}
 		s.proc.mu.Unlock()
 	}
+	// A started unit has a main process; a stopped one does not. Show reads
+	// this, so a caller that starts a unit and then asks what systemd thinks
+	// of it gets an answer that agrees with itself.
+	switch method {
+	case "Start":
+		s.assignPID(unit)
+	case "Stop":
+		delete(s.pids, unit)
+	}
 	return nil
+}
+
+// assignPID hands the unit a stable, obviously fake pid. Callers must hold mu.
+func (s *FakeSystemd) assignPID(unit string) int {
+	if pid, ok := s.pids[unit]; ok {
+		return pid
+	}
+	if s.nextPID == 0 {
+		s.nextPID = 20001
+	}
+	pid := s.nextPID
+	s.nextPID++
+	s.pids[unit] = pid
+	return pid
 }
 
 func (s *FakeSystemd) IsActive(_ context.Context, unit string) (bool, error) {
@@ -176,6 +289,82 @@ func (s *FakeSystemd) IsActive(_ context.Context, unit string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Active[unit], nil
+}
+
+// Link records the unit file the unit was linked from. It is idempotent: the
+// real `systemctl --user link` of a unit that already resolves to that path
+// succeeds, and a create that is retried after a crash must not fail here.
+func (s *FakeSystemd) Link(_ context.Context, unitPath string) error {
+	if err := s.r.record("systemd", "Link", unitPath); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Linked[filepath.Base(unitPath)] = unitPath
+	return nil
+}
+
+func (s *FakeSystemd) IsEnabled(_ context.Context, unit string) (bool, error) {
+	if err := s.r.record("systemd", "IsEnabled", unit); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Enabled[unit], nil
+}
+
+// Show derives the unit's state from what this fake manager knows, rather
+// than from a table a test has to keep in step with Start/Stop/Enable/Link.
+//
+// A unit the manager has never heard of — never linked, never started, never
+// enabled — comes back as the ZERO UnitInfo, with an empty FragmentPath. That
+// is how `systemctl show` answers for an unknown unit (LoadState=not-found,
+// exit 0), and decommission's post-check reads exactly that emptiness to say
+// "the units are gone".
+func (s *FakeSystemd) Show(_ context.Context, unit string) (jobs.UnitInfo, error) {
+	if err := s.r.record("systemd", "Show", unit); err != nil {
+		return jobs.UnitInfo{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, linked := s.Linked[unit]
+	_, knownActive := s.Active[unit]
+	_, knownEnabled := s.Enabled[unit]
+	if !linked && !knownActive && !knownEnabled && !s.Failed[unit] {
+		return jobs.UnitInfo{}, nil
+	}
+	if !linked {
+		path = "/fake/systemd/user/" + unit
+	}
+	info := jobs.UnitInfo{FragmentPath: path, ActiveState: "inactive", SubState: "dead", Result: "success"}
+	switch {
+	case s.Failed[unit]:
+		info.ActiveState, info.SubState, info.Result, info.ExecMainStatus = "failed", "failed", "exit-code", 1
+	case s.Active[unit]:
+		info.ActiveState, info.SubState = "active", "running"
+		info.MainPID = s.assignPID(unit)
+	}
+	switch {
+	case s.Enabled[unit]:
+		info.UnitFileState = "enabled"
+	case linked:
+		info.UnitFileState = "linked"
+	default:
+		info.UnitFileState = "disabled"
+	}
+	return info, nil
+}
+
+// ResetFailed clears the failed state, as `systemctl --user reset-failed`
+// does. It is not an error for a unit that never failed.
+func (s *FakeSystemd) ResetFailed(_ context.Context, unit string) error {
+	if err := s.r.record("systemd", "ResetFailed", unit); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.Failed, unit)
+	return nil
 }
 
 // ActiveUnits lists the active units, sorted.
@@ -197,6 +386,25 @@ type FakeProc struct {
 	// StopsListening, when true, clears the port of a signalled process —
 	// which is what a tenant that actually died looks like from outside.
 	StopsListening map[int]int // pid -> port cleared on signal
+	// Owners maps a port to the process behind its LISTEN socket.
+	Owners map[int]PortOwner
+}
+
+// Owner is the process behind the LISTEN socket on port.
+//
+// A bound port with no Owners entry answers (0, 0, nil), which is the real
+// driver's answer for a socket owned by another account: `ss -ltnp` shows the
+// port and withholds the process. An unbound port answers the same way,
+// because "nobody is listening" is a fact a caller reads from Listening, not
+// an error to raise here.
+func (p *FakeProc) Owner(_ context.Context, port int) (int, int, error) {
+	if err := p.r.record("proc", "Owner", strconv.Itoa(port)); err != nil {
+		return 0, 0, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	o := p.Owners[port]
+	return o.PID, o.UID, nil
 }
 
 func (p *FakeProc) Listening(_ context.Context, port int) (bool, error) {
@@ -282,6 +490,10 @@ type FakeFiles struct {
 	r     *recorder
 	mu    sync.Mutex
 	Files map[string]FakeFile
+	// Dirs maps every directory MkdirAll created to the mode it was asked
+	// for. The fake keeps no tree — a file's parents are implied by its path —
+	// so this is where a test reads back "the tenant dir was made 2770".
+	Dirs  map[string]uint32
 	Roots []string
 }
 
@@ -325,6 +537,29 @@ func (f *FakeFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Files[path] = FakeFile{Data: append([]byte(nil), data...), Mode: mode}
+	return nil
+}
+
+// MkdirAll records the directory and its mode. It honours the approved roots
+// for the same reason WriteAtomic does: creating a directory outside the
+// deployment is a mutation of somebody else's filesystem, and a fake that
+// allowed it would let a step that does so pass its tests.
+//
+// Re-creating a directory is not an error — MkdirAll is idempotent on a real
+// host — but the RECORDED mode stays the first one, so a test can tell that
+// the second call did not re-mode a directory it did not create.
+func (f *FakeFiles) MkdirAll(_ context.Context, path string, mode uint32) error {
+	if err := f.r.record("files", "MkdirAll", path, fmt.Sprintf("%04o", mode)); err != nil {
+		return err
+	}
+	if !contained(path, f.Roots) {
+		return outsideRoots(path, f.Roots)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Dirs[path]; !ok {
+		f.Dirs[path] = mode
+	}
 	return nil
 }
 
@@ -429,6 +664,11 @@ type FakeQdrant struct {
 	ByURL map[string][]string
 	// Snapshots maps a collection to the snapshot names taken of it, in order.
 	Snapshots map[string][]string
+	// Counts maps "<baseURL>/<collection>" to its exact point count; an
+	// absent key counts zero.
+	Counts map[string]int64
+	// Recovered records every recovery as "<baseURL> <collection> <location>".
+	Recovered []string
 	n         int
 }
 
@@ -456,6 +696,65 @@ func (q *FakeQdrant) Snapshot(_ context.Context, base, collection string) (strin
 	return name, nil
 }
 
+// Ready is the readiness probe; it has no state of its own, so a test makes
+// a store un-ready through the failure table ("qdrant.Ready:<url>").
+func (q *FakeQdrant) Ready(_ context.Context, base string) error {
+	return q.r.record("qdrant", "Ready", base)
+}
+
+// Count is the exact point count of a collection; an unknown collection
+// counts zero rather than failing, because a collection with no points and a
+// collection that is not there look the same to a count.
+func (q *FakeQdrant) Count(_ context.Context, base, collection string) (int64, error) {
+	if err := q.r.record("qdrant", "Count", collection, base); err != nil {
+		return 0, err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.Counts[base+"/"+collection], nil
+}
+
+// Recover restores a collection from a snapshot location.
+//
+// It also REGISTERS the collection on the target URL, because after a real
+// recover the collection exists: a restore whose verification step then asks
+// for Collections would otherwise be checking a fixture rather than the
+// effect of the step it just ran.
+func (q *FakeQdrant) Recover(_ context.Context, base, collection, location string) error {
+	if err := q.r.record("qdrant", "Recover", collection, location, base); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.Recovered = append(q.Recovered, base+" "+collection+" "+location)
+	for _, c := range q.ByURL[base] {
+		if c == collection {
+			return nil
+		}
+	}
+	q.ByURL[base] = append(q.ByURL[base], collection)
+	return nil
+}
+
+// DeleteSnapshot drops the snapshot from the ledger. It is Snapshot's
+// rollback, so an absent snapshot is not an error: a rollback that runs twice
+// must not fail the second time.
+func (q *FakeQdrant) DeleteSnapshot(_ context.Context, base, collection, name string) error {
+	if err := q.r.record("qdrant", "DeleteSnapshot", collection, name, base); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	kept := q.Snapshots[collection][:0]
+	for _, s := range q.Snapshots[collection] {
+		if s != name {
+			kept = append(kept, s)
+		}
+	}
+	q.Snapshots[collection] = kept
+	return nil
+}
+
 // FakeElasticsearch is an ES with an index list and a snapshot ledger.
 type FakeElasticsearch struct {
 	r  *recorder
@@ -464,6 +763,12 @@ type FakeElasticsearch struct {
 	ByURL map[string][]string
 	// Snapshots maps a repo to the snapshot names taken into it, in order.
 	Snapshots map[string][]string
+	// Repos maps a registered repository to its settings.
+	Repos map[string]Repo
+	// Restored records every restore as "<repo> <name> <index,index>".
+	Restored []string
+	// Counts maps "<baseURL>/<index>" to its document count.
+	Counts map[string]int64
 }
 
 // Indices lists the indices of base, sorted.
@@ -488,14 +793,103 @@ func (e *FakeElasticsearch) Snapshot(_ context.Context, base, repo, name string)
 	return nil
 }
 
+// Ready is the readiness probe; a test makes a cluster un-ready through the
+// failure table ("es.Ready:<url>").
+func (e *FakeElasticsearch) Ready(_ context.Context, base string) error {
+	return e.r.record("es", "Ready", base)
+}
+
+// RegisterRepo registers a filesystem snapshot repository.
+//
+// Registering the SAME repo at a DIFFERENT location is refused, which is what
+// ES does and what the backup depends on: two bundles that reused one repo
+// name would each believe the other's directory was theirs. Re-registering at
+// the same location is idempotent (the readonly flag may change — that is how
+// the verify leg re-opens a copied directory read-only).
+func (e *FakeElasticsearch) RegisterRepo(_ context.Context, base, repo, location string, readonly bool) error {
+	if err := e.r.record("es", "RegisterRepo", repo, location, strconv.FormatBool(readonly), base); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if have, ok := e.Repos[repo]; ok && have.Location != location {
+		return fmt.Errorf("%w: repository %q is already registered at %s; it cannot also be %s",
+			jobs.ErrRefused, repo, have.Location, location)
+	}
+	e.Repos[repo] = Repo{Location: location, ReadOnly: readonly}
+	return nil
+}
+
+// UnregisterRepo drops the registration and leaves the files alone — the
+// backup moves the directory into the bundle afterwards. An unknown repo is
+// not an error: this is the rollback half of RegisterRepo.
+func (e *FakeElasticsearch) UnregisterRepo(_ context.Context, base, repo string) error {
+	if err := e.r.record("es", "UnregisterRepo", repo, base); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.Repos, repo)
+	return nil
+}
+
+// Restore restores indices from a snapshot, and refuses when the repository
+// is not registered or holds no such snapshot — the two ways a restore
+// against the wrong bundle fails on a real cluster, and the two a restore
+// test has to be able to reach.
+func (e *FakeElasticsearch) Restore(_ context.Context, base, repo, name string, indices []string) error {
+	if err := e.r.record("es", "Restore", repo, name, strings.Join(indices, ","), base); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.Repos[repo]; !ok {
+		return fmt.Errorf("%w: no snapshot repository %q is registered", jobs.ErrRefused, repo)
+	}
+	found := false
+	for _, s := range e.Snapshots[repo] {
+		if s == name {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: repository %q holds no snapshot %q", jobs.ErrRefused, repo, name)
+	}
+	e.Restored = append(e.Restored, repo+" "+name+" "+strings.Join(indices, ","))
+	for _, idx := range indices {
+		if !containsString(e.ByURL[base], idx) {
+			e.ByURL[base] = append(e.ByURL[base], idx)
+		}
+	}
+	return nil
+}
+
+// Count is the document count of an index; an unknown index counts zero.
+func (e *FakeElasticsearch) Count(_ context.Context, base, index string) (int64, error) {
+	if err := e.r.record("es", "Count", index, base); err != nil {
+		return 0, err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.Counts[base+"/"+index], nil
+}
+
 // ---------------------------------------------------------------- tenant API
 
-// FakeTenantAPI records the two allowlisted calls.
+// FakeTenantAPI records the allowlisted calls to a tenant's own API.
 type FakeTenantAPI struct {
 	r        *recorder
 	mu       sync.Mutex
 	Healths  []string
-	Accounts []string // "<origin> <action> <subject>"
+	Accounts []string // "<origin> <action> <subject> <role>"
+	// DeepHealths records every deep health check, by origin.
+	DeepHealths []string
+	// Versions maps an origin to what GET /v1/version answers; an origin with
+	// no entry answers {"version": "fake"} rather than failing, so a post-check
+	// on a tenant the fixture did not describe still runs.
+	Versions map[string]map[string]any
+	// CollectionsByOrigin maps an origin to the tenant API's inventory.
+	CollectionsByOrigin map[string][]string
 }
 
 func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
@@ -508,13 +902,328 @@ func (a *FakeTenantAPI) Health(_ context.Context, origin string) error {
 	return nil
 }
 
-func (a *FakeTenantAPI) ServiceAccount(_ context.Context, origin, subject, action string) error {
-	if err := a.r.record("tenantapi", "ServiceAccount", subject, action, origin); err != nil {
+// ServiceAccount records the account change.
+//
+// The API KEY is deliberately absent from both the call log and the ledger: it
+// is a secret, and a fake that recorded it would put a live credential into
+// every test's failure output and into the golden files that are read from
+// them.
+func (a *FakeTenantAPI) ServiceAccount(_ context.Context, origin, _, subject, role, purpose, action string) error {
+	if err := a.r.record("tenantapi", "ServiceAccount", subject, action, role, purpose, origin); err != nil {
 		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.Accounts = append(a.Accounts, origin+" "+action+" "+subject)
+	a.Accounts = append(a.Accounts, origin+" "+action+" "+subject+" "+role)
+	return nil
+}
+
+// Version answers the seeded version document, or a recognisably fake one.
+func (a *FakeTenantAPI) Version(_ context.Context, origin, _ string) (map[string]any, error) {
+	if err := a.r.record("tenantapi", "Version", origin); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if v, ok := a.Versions[origin]; ok {
+		out := make(map[string]any, len(v))
+		for k, vv := range v {
+			out[k] = vv
+		}
+		return out, nil
+	}
+	return map[string]any{"version": "fake"}, nil
+}
+
+func (a *FakeTenantAPI) DeepHealth(_ context.Context, origin, _ string) error {
+	if err := a.r.record("tenantapi", "DeepHealth", origin); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.DeepHealths = append(a.DeepHealths, origin)
+	return nil
+}
+
+// Collections is the tenant API's inventory, sorted.
+func (a *FakeTenantAPI) Collections(_ context.Context, origin, _ string) ([]string, error) {
+	if err := a.r.record("tenantapi", "Collections", origin); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := append([]string(nil), a.CollectionsByOrigin[origin]...)
+	sort.Strings(out)
+	return out, nil
+}
+
+// ---------------------------------------------------------------- git
+
+// FakeGit is a mirror with a ref table and the worktrees checked out of it.
+type FakeGit struct {
+	r  *recorder
+	mu sync.Mutex
+	// Refs maps a ref to the sha it resolves to.
+	Refs map[string]string
+	// Worktrees maps a checked-out directory to the sha in it.
+	Worktrees map[string]string
+	// Removed records every worktree removal, in order.
+	Removed []string
+}
+
+// ResolveRef resolves a ref through the table. A 40-hex ref resolves to
+// ITSELF without a table entry, because that is what `rev-parse` does with a
+// sha and because `fleet artifact prepare --tag <sha>` is a documented way to
+// pin an artifact. An unknown ref is an error: silently resolving it to
+// something would check out code nobody named.
+func (g *FakeGit) ResolveRef(_ context.Context, mirror, ref string) (string, error) {
+	if err := g.r.record("git", "ResolveRef", ref, mirror); err != nil {
+		return "", err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if sha, ok := g.Refs[ref]; ok {
+		return sha, nil
+	}
+	if isSHA(ref) {
+		return ref, nil
+	}
+	return "", fmt.Errorf("%w: %s is not a ref this mirror (%s) knows", jobs.ErrRefused, ref, mirror)
+}
+
+func (g *FakeGit) AddWorktree(_ context.Context, mirror, sha, dest string) error {
+	if err := g.r.record("git", "AddWorktree", dest, sha, mirror); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.Worktrees[dest] = sha
+	return nil
+}
+
+// RemoveWorktree forgets the worktree. An unknown directory is not an error:
+// this is a rollback, and `worktree remove` of something already gone is the
+// state the rollback wanted.
+func (g *FakeGit) RemoveWorktree(_ context.Context, mirror, dest string) error {
+	if err := g.r.record("git", "RemoveWorktree", dest, mirror); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.Worktrees, dest)
+	g.Removed = append(g.Removed, dest)
+	return nil
+}
+
+// Describe names the code in dir: the short sha of the worktree when this
+// fake checked it out, and an obviously fake string when it did not.
+func (g *FakeGit) Describe(_ context.Context, dir string) (string, error) {
+	if err := g.r.record("git", "Describe", dir); err != nil {
+		return "", err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if sha, ok := g.Worktrees[dir]; ok && len(sha) >= 12 {
+		return sha[:12], nil
+	}
+	return "fake-describe", nil
+}
+
+// isSHA reports whether s is a 40-character hex object name.
+func isSHA(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
+}
+
+// ---------------------------------------------------------------- build
+
+// FakeBuild is npm and vite as two sets and a ledger.
+type FakeBuild struct {
+	r     *recorder
+	files *FakeFiles
+	mu    sync.Mutex
+	// Installed is the set of worktrees whose node_modules are present.
+	Installed map[string]bool
+	// Builds records every UI build as "<worktree> <base> <outDir>".
+	Builds []string
+	// AllowUninstalled lets UI build without node_modules. It exists for the
+	// tests that are about something else and should not have to run an npm
+	// install they are not testing.
+	AllowUninstalled bool
+}
+
+func (b *FakeBuild) NpmCI(_ context.Context, worktree, cacheDir string) error {
+	if err := b.r.record("build", "NpmCI", worktree, cacheDir); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.Installed[worktree] = true
+	return nil
+}
+
+// UI builds the tenant UI into outDir.
+//
+// It refuses when the worktree has no node_modules, exactly as the real driver
+// does: a `tenant create` that quietly installed packages from the network
+// would be running code nobody reviewed, on a host whose artifacts are
+// supposed to be prepared in advance. The built index.html is written into the
+// in-memory filesystem, so a later step that reads the dist tree — a
+// checksum, a bundle — is reading the effect of this step.
+func (b *FakeBuild) UI(_ context.Context, worktree, base, outDir string) error {
+	if err := b.r.record("build", "UI", worktree, base, outDir); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.Installed[worktree] && !b.AllowUninstalled {
+		return fmt.Errorf("%w: %s has no node_modules; run the artifact's npm ci first", jobs.ErrRefused, worktree)
+	}
+	b.Builds = append(b.Builds, worktree+" "+base+" "+outDir)
+	b.files.Put(filepath.Join(outDir, "index.html"),
+		[]byte("<!doctype html><!-- fake vite build of "+worktree+" at base "+base+" -->\n"), 0o644)
+	return nil
+}
+
+// ---------------------------------------------------------------- postgres
+
+// FakePostgres is pg_isready/pg_dump/pg_restore over a socket that is not
+// there.
+type FakePostgres struct {
+	r     *recorder
+	files *FakeFiles
+	mu    sync.Mutex
+	// Readiness maps a run directory to whether pg_isready succeeds. An
+	// ABSENT entry is ready — see FakeOptions.PostgresReady. It is not called
+	// `Ready` because the driver's METHOD is, and Go lets a type have one or
+	// the other.
+	Readiness map[string]bool
+	// Dumps records every dump as "<runDir> <db> <out>", Restores likewise.
+	Dumps    []string
+	Restores []string
+}
+
+func (p *FakePostgres) pgReady(runDir string) bool {
+	if v, ok := p.Readiness[runDir]; ok {
+		return v
+	}
+	return true
+}
+
+func (p *FakePostgres) Ready(_ context.Context, spec jobs.PostgresSpec) error {
+	if err := p.r.record("postgres", "Ready", spec.RunDir, spec.DB); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.pgReady(spec.RunDir) {
+		return fmt.Errorf("pg_isready: no response on the socket in %s", spec.RunDir)
+	}
+	return nil
+}
+
+// Dump writes a placeholder where pg_dump would have written the archive, so
+// the steps that follow — the checksum, the manifest, the free-space check —
+// find a file rather than a gap.
+func (p *FakePostgres) Dump(_ context.Context, spec jobs.PostgresSpec, out string) error {
+	if err := p.r.record("postgres", "Dump", spec.RunDir, spec.DB, out); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Dumps = append(p.Dumps, spec.RunDir+" "+spec.DB+" "+out)
+	p.files.Put(out, []byte("fake pg_dump -Fc of "+spec.DB+"\n"), 0o640)
+	return nil
+}
+
+func (p *FakePostgres) Restore(_ context.Context, spec jobs.PostgresSpec, in string) error {
+	if err := p.r.record("postgres", "Restore", spec.RunDir, spec.DB, in); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Restores = append(p.Restores, spec.RunDir+" "+spec.DB+" "+in)
+	return nil
+}
+
+// ---------------------------------------------------------------- sqlite
+
+// FakeSQLite copies one in-memory file to another.
+type FakeSQLite struct {
+	r     *recorder
+	files *FakeFiles
+	mu    sync.Mutex
+	// Backups records every backup as "<src> <dst>".
+	Backups []string
+}
+
+// Backup copies src to dst at 0640 and reports integrity "ok".
+//
+// An absent src is fs.ErrNotExist, the same error FakeFiles.ReadFile gives,
+// because the backup's rule is that it copies only the state files that exist
+// and that anything else is an error the operator has to see — a caller
+// telling those two apart with errors.Is must be able to do so here too.
+func (s *FakeSQLite) Backup(_ context.Context, src, dst string) (string, error) {
+	if err := s.r.record("sqlite", "Backup", src, dst); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data := s.files.Content(src)
+	if data == nil {
+		return "", fmt.Errorf("open %s: %w", src, fs.ErrNotExist)
+	}
+	s.files.Put(dst, data, 0o640)
+	s.Backups = append(s.Backups, src+" "+dst)
+	return "ok", nil
+}
+
+// ---------------------------------------------------------------- archive
+
+// FakeArchive is tar without a tar.
+type FakeArchive struct {
+	r     *recorder
+	files *FakeFiles
+	mu    sync.Mutex
+	// Created records every archive as "<dir> <out>", Extracted every
+	// extraction as "<tarPath> <dest>".
+	Created   []string
+	Extracted []string
+}
+
+// Create writes a placeholder at out. The bundle's own checksum step reads
+// it, so it has to exist; what is IN it is not something a fake can be honest
+// about, and pretending otherwise would invite a test to assert on invented
+// tar bytes.
+func (a *FakeArchive) Create(_ context.Context, dir, out string) error {
+	if err := a.r.record("archive", "Create", dir, out); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Created = append(a.Created, dir+" "+out)
+	a.files.Put(out, []byte("fake tar of "+dir+"\n"), 0o640)
+	return nil
+}
+
+// Extract records the extraction and writes NOTHING: the real driver's whole
+// job is deciding which entries it refuses, and a fake that invented files
+// would be asserting on a policy it does not implement.
+func (a *FakeArchive) Extract(_ context.Context, tarPath, dest string, limits jobs.ArchiveLimits) error {
+	if err := a.r.record("archive", "Extract", tarPath, dest,
+		strconv.Itoa(limits.MaxEntries), strconv.FormatInt(limits.MaxBytes, 10)); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Extracted = append(a.Extracted, tarPath+" "+dest)
 	return nil
 }
 
@@ -547,4 +1256,68 @@ func copyMapSlice(m map[string][]string) map[string][]string {
 		out[k] = append([]string(nil), v...)
 	}
 	return out
+}
+
+// The seeds are COPIED rather than kept: a fixture map shared between the
+// options a test builds and the fake it builds them into is a fixture the
+// fake can rewrite under the test.
+func copyMapString(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapBool(m map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapInt64(m map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapOwners(m map[int]PortOwner) map[int]PortOwner {
+	out := make(map[int]PortOwner, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapRepo(m map[string]Repo) map[string]Repo {
+	out := make(map[string]Repo, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapAny(m map[string]map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(m))
+	for k, v := range m {
+		inner := make(map[string]any, len(v))
+		for ik, iv := range v {
+			inner[ik] = iv
+		}
+		out[k] = inner
+	}
+	return out
+}
+
+func containsString(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }
