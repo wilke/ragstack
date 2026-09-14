@@ -170,9 +170,12 @@ func planArtifactPrepare(_ context.Context, p *planner, args map[string]any) err
 			if err := sc.Ops.Drivers.Files().MkdirAll(ctx, dir, dirMode); err != nil {
 				return "", err
 			}
-			if err := sc.Ops.Drivers.Files().MkdirAll(ctx, cache, dirMode); err != nil {
-				return "", err
-			}
+			// The npm cache is NOT created here: it lives under <RagRoot>/cache,
+			// outside every approved root on purpose (it is a download cache,
+			// not state the ctl owns), so the Files driver refuses it — and npm
+			// creates its own cache directory on first use anyway. On coconut
+			// this step failed every artifact preparation until the cache
+			// mkdir was removed.
 			return dir, nil
 		},
 	})
