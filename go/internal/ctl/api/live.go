@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"regexp"
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
+	"github.com/ragstack/ragstack/internal/ctl/envfile"
 	"github.com/ragstack/ragstack/internal/ctl/fleet"
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
@@ -23,16 +26,20 @@ import (
 // large one — which is exactly why the cache must OUTLIVE a request.
 const diskCacheTTL = time.Hour
 
-// liveBackend serves the real registry and probes the real host.
+// liveBackend serves the real registry and probes the real host. EVERY
+// Backend method is implemented here, over fleet/logs/doctor and the probes
+// below.
 //
-// Three of its six reads are the production implementations already:
-// fleet.Build, logs.Read and doctor.Run each take their host probes through a
-// seam and default to the live one. The other three — Tenants, Tenant and Env
-// — still project from the registry row alone (see FakeBackend), because the
-// per-tenant status/units/env-classification builders land with adopt's
-// remaining half. The difference is visible rather than hidden: a projected
-// row reports `n/a` and null where it has not looked, never a value it did not
-// observe.
+// It deliberately embeds nothing. It used to embed *FakeBackend "for the
+// registry→response projections", and the three methods it did not override —
+// Tenant, Tenants and Env — therefore answered a real-driver caller with
+// FIXTURE data: GET /v1/tenants/dev reported `listening.qdrant_http: false`
+// and `units.services[*].active_state: "n/a"` as constants (fake.go's
+// `Listening{API: t.State == "active", QdrantHTTP: false, …}` and
+// fakeServices), while /v1/fleet from the SAME daemon showed those same units
+// active. An embedded fallback cannot be audited by the compiler: a method
+// nobody wrote is a method that silently exists. Without the embedding, a
+// Backend method this type does not implement fails to BUILD.
 //
 // The probes and the doctor options are built ONCE, here, and reused by every
 // request. Constructing them per request gave each `/v1/fleet` poll a brand
@@ -40,7 +47,10 @@ const diskCacheTTL = time.Hour
 // — so a dashboard polling every few seconds re-ran `du -s -B1` over every
 // tenant directory forever, and the cache never once hit.
 type liveBackend struct {
-	*FakeBackend // the registry→response projections, over the REAL registry
+	// fleet is the registry as it was read at start-up. Fleet, Logs, Doctor
+	// and Registry answer from it; the per-tenant reads reload the file (see
+	// reloadRegistry).
+	fleet        *registry.Fleet
 	roots        paths.Roots
 	registryPath string
 	probes       fleet.Probes
@@ -50,6 +60,12 @@ type liveBackend struct {
 	// construct one per request.
 	signaller gateway.Signaller
 }
+
+// The live daemon's backend is the WHOLE read surface, stated here so that
+// removing a method — or adding one to Backend and implementing it only on
+// the fixture — is a build failure rather than a fixture served to an
+// operator.
+var _ Backend = (*liveBackend)(nil)
 
 func newLiveBackend(ragRoot, registryPath string) (*liveBackend, error) {
 	return newLiveBackendWithLogger(ragRoot, registryPath, slog.Default())
@@ -86,7 +102,7 @@ func newLiveBackendWithLogger(ragRoot, registryPath string, logger *slog.Logger)
 	// below must be built from the one the CLI uses or the hashes part again.
 	ctlUser := doctor.DefaultCtlUser
 	return &liveBackend{
-		FakeBackend:  &FakeBackend{fleet: f, now: time.Now},
+		fleet:        f,
 		roots:        roots,
 		registryPath: registryPath,
 		probes: fleet.Probes{
@@ -125,6 +141,115 @@ func ctlUID(username string) int {
 // columns, through the process-lifetime probes built in newLiveBackend.
 func (b *liveBackend) Fleet(ctx context.Context) (*model.FleetResponse, error) {
 	return fleet.Build(ctx, b.roots, b.fleet, b.probes), nil
+}
+
+// Registry is the fleet record the gateway and settings projections read.
+//
+// It answers from the start-up snapshot rather than re-reading, unlike the
+// per-tenant reads below. That is deliberate: handleDoctor takes the registry
+// here to PATH-REDACT findings for a viewer and skips the redaction when the
+// read fails (router.go), so a Registry that can fail per request is a
+// Registry that can leak the host layout on the request where the file is
+// briefly unavailable. The gateway reads that must see the registry as it is
+// NOW (pending_diff) reload it themselves.
+func (b *liveBackend) Registry(context.Context) (*registry.Fleet, error) { return b.fleet, nil }
+
+// Tenant is one tenant as the HOST has it right now: the listener scan, the
+// unit states, the live drift — fleet.TenantView, the same builder the CLI's
+// `tenant show` uses, through the same process-lifetime probes /v1/fleet uses.
+//
+// viewer is the contract's reduction for ctlTenantShow ("summary, status,
+// units, drift; registry is null"): the registry row is not assembled at all
+// rather than assembled and dropped, because the row carries secret refs, key
+// fingerprints and the rollback descriptor.
+//
+// The registry is reloaded: an adopt run from the CLI moves it, and a tenant
+// that exists on the host but not in this process's start-up snapshot is a
+// 404 nobody can explain.
+func (b *liveBackend) Tenant(ctx context.Context, name string, viewer bool) (*model.TenantResponse, error) {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	t, ok := f.Tenants[name]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	view := fleet.TenantView(ctx, b.roots, t, b.probes, !viewer)
+	return &view, nil
+}
+
+// Tenants is every tenant in display order, in the OPERATOR shape — the
+// handler applies the viewer reduction for ctlTenantsList. One /proc scan is
+// shared across the rows (fleet.TenantsView), so the four answers are taken
+// at one instant rather than four.
+func (b *liveBackend) Tenants(ctx context.Context) (*model.TenantsResponse, error) {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	view := fleet.TenantsView(ctx, b.roots, f, b.probes, true)
+	return &view, nil
+}
+
+// envSources are the three files a tenant's configuration lives in, in the
+// order the api unit's EnvironmentFile= lines load them: a key defined twice
+// is reported once, attributed to the file that defines it first.
+var envSources = []struct {
+	file   string
+	source model.Source
+}{
+	{"tenant.env", model.SourceTenantEnv},
+	{"secrets.env", model.SourceSecretsEnv},
+	{"provision.env", model.SourceProvisionEnv},
+}
+
+// Env is the tenant's real configuration keys, classified.
+//
+// env_response.json: "every key found in tenant.env, secrets.env and
+// provision.env is listed with its class". The fixture backend INVENTS that
+// list from the registry row, which is right for the conformance suite and
+// wrong for an operator — it showed keys a tenant does not have and hid the
+// ones it does.
+//
+// Values: envRow shows the verbatim value for a `public` key and the literal
+// `<redacted>` for every other class, so no secret-class value has a path out
+// of this process — the same rule, through the same helper, as the fake.
+//
+// A file that cannot be read or parsed contributes no keys rather than
+// failing the request: a missing secrets.env is normal, an unparsable
+// tenant.env is a `doctor` finding (env_not_systemd_parsable), and neither is
+// a reason to refuse the classification of the files that DID read.
+func (b *liveBackend) Env(_ context.Context, name string) (*model.EnvResponse, error) {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		return nil, err
+	}
+	t, ok := f.Tenants[name]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	resp := &model.EnvResponse{Tenant: t.Name, EnvLayout: t.EnvLayout, Keys: []model.EnvKey{}}
+	seen := map[string]bool{}
+	for _, src := range envSources {
+		raw, rerr := os.ReadFile(filepath.Join(t.DataDir, "config", src.file))
+		if rerr != nil {
+			continue
+		}
+		parsed, _, perr := envfile.ParseLenient(raw)
+		if perr != nil {
+			continue
+		}
+		for _, key := range parsed.Keys() {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			value, _ := parsed.Get(key)
+			resp.Keys = append(resp.Keys, envRow(key, value, src.source))
+		}
+	}
+	return resp, nil
 }
 
 // Logs tails the tenant's real log, redacted with that tenant's own secret
