@@ -277,7 +277,26 @@ Then `bin/up.sh`, start the API, `adopt <name> --data-dir … --worktree …
 --ui-mode static` (or `--ui-port N`) as wilke, refresh the four goldens,
 `gateway apply --expect-bodies /rag/data/ctl/goldens`.
 
-<!-- ESCAPE-HATCH: pending verification -->
+**Escape hatch on an already-migrated host (verified in a scratch root 2026-09-14).**
+`new-tenant.sh` reuses a manifest row that already exists, so hand-append the row
+the registry would allocate (next index, `24000 + 20*index`), provision, then adopt
+with `--repair-projection` (the hand edit makes the projection stale until then):
+
+```bash
+cp -a /rag/data/tenants/{registry.json,registry.json.generation,manifest.tsv} ~/ctl-undo/   # undo copies first
+printf '<name>\t<index>\t<base>\n' >> /rag/data/tenants/manifest.tsv
+apptainer/new-tenant.sh <name> --postgres local --es-heap 1g          # "[manifest] reusing index N, base P"
+# … tenant.env, worktree, UI build, bin/up.sh, start the API (as below) …
+/rag/bin/ragstack-ctl adopt <name> --data-dir /rag/data/tenants/<name> --worktree /rag/repos/tenants/<name> \
+    --ui-mode static --commit --repair-projection
+```
+
+Registry generation advances by one; the daemon needs no restart (it re-reads the
+registry per request). Do **not** use `adopt-all --commit --repair-projection` for
+this: it repairs the projection first and then refuses ("already in registry.json"),
+which deletes the row you just appended. `ragstack-ctl tenant create` (PR-D) replaces
+this whole dance. Undo: restore the three copies from `~/ctl-undo/`, `bin/down.sh`,
+kill the API listener, `git worktree remove /rag/repos/tenants/<name>`, remove the data dir.
 
 **Undo:** `bin/down.sh`; kill the API listener; remove the worktree
 (`git worktree remove`). There is no removal for the registry/manifest row
