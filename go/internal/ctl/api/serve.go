@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
+	"github.com/ragstack/ragstack/internal/ctl/model"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
 	"github.com/ragstack/ragstack/internal/ctl/session"
 	"github.com/ragstack/ragstack/internal/ctl/settings"
@@ -112,9 +114,45 @@ func RunServe(args []string) int {
 		return exitError
 	}
 
+	// The job engine. A daemon whose engine cannot be built still SERVES:
+	// the read surface is what a dashboard polls and what an operator
+	// diagnoses a broken host with, and taking it down because the mutation
+	// half is unavailable would remove the only view of the problem. Every
+	// mutation then answers 409 `refused` naming the reason (jobs.go).
+	roots := paths.NewRoots(*ragRoot, paths.Overrides{CtlStateDir: strings.TrimSpace(os.Getenv(EnvStateDir))})
+	engine, err := BuildEngine(EngineConfig{
+		Roots:        roots,
+		RegistryPath: *registryPath,
+		StorePath:    filepath.Join(roots.CtlStateDir, "jobs.db"),
+		Mode:         model.WorkerDaemon,
+		Host:         hostname(),
+		FakeDrivers:  *fakeDrivers,
+		SecretsTTL:   DefaultSecretsTTL,
+		Logger:       logger,
+		Now:          time.Now,
+	})
+	if err != nil {
+		logger.Warn("job engine unavailable; the mutation surface will refuse",
+			"store", filepath.Join(roots.CtlStateDir, "jobs.db"), "err", err.Error())
+		engine = nil
+	} else {
+		// Reconcile-on-start, before the listener opens: a job whose worker
+		// died becomes `interrupted` and KEEPS its reservations, and nothing
+		// is resumed. Doing it after the bind would let a caller resume a job
+		// the daemon had not yet decided the state of.
+		interrupted, rerr := engine.Reconcile(context.Background())
+		if rerr != nil {
+			logger.Error("reconcile", "err", rerr.Error())
+		} else if len(interrupted) > 0 {
+			logger.Warn("jobs interrupted by a previous exit; resume or cancel them",
+				"count", len(interrupted), "jobs", strings.Join(interrupted, ","))
+		}
+	}
+
 	sessions := session.NewMemoryStore()
 	srv := &Server{
 		Backend: backend,
+		Engine:  engine,
 		Resolver: &auth.Resolver{
 			Keys:     keys,
 			Verifier: verifier,
@@ -199,6 +237,17 @@ func RunServe(args []string) int {
 		}
 		return exitOK
 	}
+}
+
+// hostname is what job.worker.host records. An unresolvable hostname is not
+// a reason to refuse to serve; "unknown" is the honest value and the pid and
+// mode still identify the worker on this machine.
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown"
+	}
+	return h
 }
 
 // writePIDFile writes this process's pid via a temp file and a rename, so a

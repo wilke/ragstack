@@ -263,8 +263,8 @@ func TestResponsesValidateAgainstContract(t *testing.T) {
 		},
 	})
 
-	validate(t, py, "jobs_response", JobsResponse{Jobs: []json.RawMessage{}, Limit: 50, Truncated: false})
-	validate(t, py, "audit_response", AuditResponse{Rows: []json.RawMessage{}, Limit: 100, Truncated: false})
+	validate(t, py, "jobs_response", JobsResponse{Jobs: []Job{}, Limit: 50, Truncated: false})
+	validate(t, py, "audit_response", AuditResponse{Rows: []AuditRow{}, Limit: 100, Truncated: false})
 
 	uiPort := 24044
 	validate(t, py, "gateway_status", GatewayStatus{

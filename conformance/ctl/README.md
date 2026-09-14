@@ -65,8 +65,34 @@ are distinct). See `conftest.py`.
 | `test_fleet.py` | schema; **no field name matching `(?i)(api_key|password|secret|token|dsn)` anywhere**; no credential-shaped value; same shape for a viewer |
 | `test_tenants.py` | list/show/env schemas; same name check (allowlist: `secret_refs`, `secrets_file_sha256`); `settings` never carries a forbidden key; keys are fingerprints; viewer gets `registry: null`; 404/422 |
 | `test_doctor.py` | schema; status = max(findings); hash stability; scoped runs; 404/422 |
-| `test_authz_matrix.py` | parametrized from `x-ctl-role`: anonymous → 401 on everything; **viewer → 403 on every operator operation**, GET and mutation; viewer reaches every viewer operation |
-| `test_ops.py` | module-level skip — mutations are PR-C |
+| `test_authz_matrix.py` | parametrized from `x-ctl-role`: anonymous → 401 on everything; **viewer → 403 on every operator operation**, GET and mutation; viewer reaches every viewer operation; the operator rows the contract must carry are also named explicitly, so a dropped row fails rather than shrinking the parametrization |
+| `test_ops.py` | the mutation surface. **Ungated half:** viewer → 403 on every mutation; unknown body member → 422 naming it; `idempotency_key` pattern; verb enum; tenant-name pattern; the writable subset of `PUT /v1/settings`; a session must re-present a ctl key; a continuation has no dry run; `/v1/jobs` + `/v1/audit` schemas and their 422s; secrets are key-only and `no-store`; every mutation answers in the `error.json` + `X-Request-Id` envelope. **Engine-gated half:** plan, execute → 202 + `Location` → terminal state, idempotency (same key → same job, different body → 409 `duplicate`), 428 `confirm_required`, unknown arg → 422, `update-code` → 409, the viewer job reduction, deliver-once secrets, audit rows, the gateway plans, the settings round trip |
+
+## The engine gate in `test_ops.py`
+
+The job engine is built by `api.BuildEngine`. Until it is wired that returns
+"job engine not wired", `serve` logs it and runs with a nil engine, and every
+mutation answers **409 `refused`** with that text in `detail` (`GET /v1/jobs`
+and `/v1/audit` still answer 200 with empty lists — a read is not where an
+unwired engine changes an answer a caller would act on).
+
+`test_ops.py` therefore splits in two. Everything the HTTP layer answers on its
+own — authorization, the envelope, the refusal shape — runs unconditionally and
+must pass on any daemon. Everything that needs the engine takes the session-
+scoped `job_engine` fixture, which probes once with a dry run and calls
+`pytest.skip` naming what it found:
+
+```
+the job engine is not wired in this daemon (POST /v1/tenants/<t>/ops/start
+answered 409 refused: the job engine is not wired in this build: job engine
+not wired); the mutation conformance lands with the engine
+```
+
+That skip is **not** tagged `RAGSTACK_CREDENTIAL_SKIP`: nothing is missing from
+the harness, so `run_ctl_local.sh`'s vacuity check must not fail the run for it.
+A module-level skip is equally wrong here — it would take the authorization
+assertions down with the engine-dependent ones, on the branch where the
+mutation surface is most likely to be got wrong.
 
 ## Against a real-driver daemon
 

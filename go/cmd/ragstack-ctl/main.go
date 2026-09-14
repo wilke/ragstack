@@ -1,7 +1,8 @@
-// ragstack-ctl — tenant control plane CLI (plan v3, PR-A skeleton).
+// ragstack-ctl — tenant control plane CLI (plan v3).
 //
 // Exit codes: 0 ok · 1 error · 2 usage · 3 refused · 4 job failed ·
-// 5 job interrupted. Only 0/1/2 are produced by this PR.
+// 5 job interrupted. The read surface produces 0/1/2/3; the operation groups
+// (PR-C) add 4 and 5 under --wait, where the exit code IS the job's outcome.
 package main
 
 import (
@@ -37,6 +38,12 @@ const (
 	exitError   = 1
 	exitUsage   = 2
 	exitRefused = 3
+	// exitJobFailed and exitJobInterrupted are only ever produced by --wait:
+	// they are the JOB's outcome, not the request's, and a script that
+	// distinguishes them is the difference between "retry it" (interrupted,
+	// reservations still held) and "look at why it failed".
+	exitJobFailed      = 4
+	exitJobInterrupted = 5
 )
 
 var stdout io.Writer = os.Stdout
@@ -82,6 +89,42 @@ func usage() {
   tenant logs <name> --file api|qdrant|es|ui [--lines N]
                                             bounded, redacted tail (never the on-disk path)
 
+  tenant start|restart <name> [--only api,ui,qdrant,es] [--force]
+  tenant stop <name> [--only …] [--keep-enabled] [--force]
+  tenant backup <name> [--fence] [--tar]    only a FENCED bundle can be verified
+  tenant restore <name> --from <bundle-id> --as <fresh-tenant>
+  tenant decommission <name>
+                                            the tenant operations. Each posts one
+                                            op_request to the daemon and is answered
+                                            with a Plan (--dry-run) or a Job.
+
+  key mint <tenant> <label> --role admin|user [--restart]
+  key revoke <tenant> <id> [--restart]
+  admin add|remove <tenant> <subject>
+  sa create <tenant> <subject> --role admin|user [--purpose TEXT]
+  sa disable|enable <tenant> <subject>
+  env set <tenant> KEY VALUE                a PUBLIC-class key only
+  env unset <tenant> KEY
+  env normalize <tenant>
+  units render|diff|apply <tenant>          render|diff plan only; apply writes + daemon-reload
+
+  job list [--tenant T] [--state S] [--limit N]
+  job show <id>
+  job log <id> <n> [--lines N]
+  job resume|continue|cancel <id>
+
+flags every operation accepts:
+  --server URL              default http://127.0.0.1:23990 (or $CTL_URL)
+  --api-key-file F          the ctl key, sent as X-API-Key (or $RAGSTACK_CTL_API_KEY)
+  --direct                  run the engine in this process instead of calling the daemon
+  --dry-run                 print the Plan and change nothing
+  --yes                     answer a plan's confirm with "yes"
+  --yes-destructive NAME    answer a destructive plan's confirm with NAME
+  --wait                    follow the job; the exit code is its outcome
+  --force-with-doctor-diff HASH   accept a YELLOW doctor (never a red one)
+  --idempotency-key KEY     retry key; generated and printed on stderr when absent
+  --json                    the raw Plan/Job document instead of the summary
+
   serve [--listen 127.0.0.1:23990] [--fake-drivers] [--registry PATH] [--rag-root DIR]
                                             the read-only control-plane HTTP API (PR-A)
 
@@ -93,8 +136,7 @@ func usage() {
   gateway rollback [--to N]                 switch back + HUP + probe
   gateway repair                            put the current pointer back on the last verified generation
 
-  key | admin | sa | env | units | job | backup | selftest
-                                            not implemented in this PR
+  backup | selftest                         not implemented in this PR
 
 adopt-all on coconut adopts, in this order (data dirs and worktrees derived
 from --rag-root, i.e. /rag by default):
@@ -122,7 +164,9 @@ A stale projection is reported by every read and repaired only by
 "registry repair" (or "adopt-all --commit --repair-projection").
 
 exit: 0 ok · 1 error · 2 usage · 3 refused (doctor red, a manifest that does
-not reconcile, a stale projection, a tenant already adopted)
+not reconcile, a stale projection, a tenant already adopted, an operation the
+daemon declined) · 4 the job failed or rolled back (--wait) · 5 the job was
+interrupted (--wait)
 
 Renderers print dry-run placeholders (<GENERATED:*>) — never real secrets.
 `)
@@ -172,8 +216,20 @@ func run(args []string) int {
 		return api.RunServe(rest[1:])
 	case "gateway":
 		return cmdGateway(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
-	case "key", "admin", "sa", "env", "units", "job", "backup", "selftest":
-		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR (PR-A ships the read surface)\n", rest[0])
+	case "key":
+		return cmdKey(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "admin":
+		return cmdAdmin(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "sa":
+		return cmdSA(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "env":
+		return cmdEnv(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "units":
+		return cmdUnits(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "job":
+		return cmdJob(rest[1:], *registryPath, *globalRagRoot, *jsonOut)
+	case "backup", "selftest":
+		fmt.Fprintf(stderr, "ragstack-ctl %s: not implemented in this PR\n", rest[0])
 		return exitUsage
 	case "help", "-h", "--help":
 		usage()
@@ -887,7 +943,15 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 func cmdTenant(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl tenant list|show <name>|logs <name> --file api|qdrant|es|ui [--lines N]")
+		fmt.Fprintln(stderr, "       ragstack-ctl tenant start|stop|restart|backup|restore|decommission <name> [op args]")
 		return exitUsage
+	}
+	// The operation verbs take the op envelope (--dry-run/--yes/--wait/…) and
+	// a different flag set from the three reads, so they are their own
+	// command rather than more cases in the switch below. Splitting here
+	// keeps `tenant list|show|logs` byte-for-byte what it was.
+	if tenantOpVerbs[args[0]] {
+		return cmdTenantOp(args[0], args[1:], registryPath, ragRoot, jsonOut)
 	}
 	verb, args := args[0], args[1:]
 	var name string

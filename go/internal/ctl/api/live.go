@@ -61,6 +61,11 @@ type liveBackend struct {
 	// probes: it is a value, not a connection, and the handler must not
 	// construct one per request.
 	signaller gateway.Signaller
+	// logger is the daemon's REDACTING logger, kept so a failed per-request
+	// reload can say so. A backend that reached for slog.Default() here would
+	// be logging a registry parse error — host text quoting the line it
+	// failed on — past the redactor.
+	logger *slog.Logger
 }
 
 // The live daemon's backend is the WHOLE read surface, stated here so that
@@ -116,6 +121,7 @@ func newLiveBackendWithLogger(ragRoot, registryPath string, logger *slog.Logger)
 			SudoersGroup: fleet.DefaultSudoersGroup,
 		},
 		signaller: gateway.NewRealSignaller(),
+		logger:    logger,
 		doctorOpts: doctor.Options{
 			RegistryPath: registryPath,
 			// CtlUID is what the `user_dropin_missing` and
@@ -141,20 +147,51 @@ func ctlUID(username string) int {
 
 // Fleet probes the host: listeners, units, disk, linger, the store health
 // columns, through the process-lifetime probes built in newLiveBackend.
+//
+// It RELOADS the registry, like Tenant and Tenants (#541). It used to answer
+// from the snapshot this process read at start-up, which made the dashboard
+// the one view that never saw an adopt, a create or a decommission: a daemon
+// up for a week showed the fleet of the week before, and the per-tenant page
+// showed a tenant the fleet page did not list. A failed reload falls back to
+// the snapshot rather than failing the poll — a dashboard that goes blank
+// because the registry was being replaced at that instant is worse than one
+// that is a second stale.
 func (b *liveBackend) Fleet(ctx context.Context) (*model.FleetResponse, error) {
-	return fleet.Build(ctx, b.roots, b.fleet, b.probes), nil
+	return fleet.Build(ctx, b.roots, b.fleetNow(), b.probes), nil
 }
 
-// Registry is the fleet record the gateway and settings projections read.
+// Registry is the fleet record the gateway and settings projections read, and
+// the one handleDoctor path-redacts a viewer's findings from.
 //
-// It answers from the start-up snapshot rather than re-reading, unlike the
-// per-tenant reads below. That is deliberate: handleDoctor takes the registry
-// here to PATH-REDACT findings for a viewer and skips the redaction when the
-// read fails (router.go), so a Registry that can fail per request is a
-// Registry that can leak the host layout on the request where the file is
-// briefly unavailable. The gateway reads that must see the registry as it is
-// NOW (pending_diff) reload it themselves.
-func (b *liveBackend) Registry(context.Context) (*registry.Fleet, error) { return b.fleet, nil }
+// It reloads too (#541), with the same fallback: settings and the gateway
+// projection answered from a start-up snapshot reported the generation of
+// whenever the daemon last restarted, so `registry_generation` — the number a
+// plan pins and `plan_stale` is decided against — was the one field on the
+// settings page guaranteed to be wrong after any mutation.
+//
+// The fallback is what keeps handleDoctor's viewer redaction SAFE. The
+// redaction needs a fleet to know which absolute paths to replace; on a
+// failed read the handler skips it, and skipping it leaks the host layout
+// into a viewer's finding details. Answering from the snapshot means the
+// handler always has a fleet, and the redaction has no path that silently
+// does nothing.
+func (b *liveBackend) Registry(context.Context) (*registry.Fleet, error) {
+	return b.fleetNow(), nil
+}
+
+// fleetNow is the registry as it is on disk, or the start-up snapshot when it
+// cannot be read. The failure is logged once per occurrence rather than
+// swallowed: a registry that stops loading is a host fault an operator must
+// see, even while the daemon keeps answering from the last good copy.
+func (b *liveBackend) fleetNow() *registry.Fleet {
+	f, err := b.reloadRegistry()
+	if err != nil {
+		b.logger.Warn("registry reload failed; answering from the start-up snapshot",
+			"registry", b.registryPath, "err", err.Error())
+		return b.fleet
+	}
+	return f
+}
 
 // Tenant is one tenant as the HOST has it right now: the listener scan, the
 // unit states, the live drift — fleet.TenantView, the same builder the CLI's
@@ -325,7 +362,9 @@ func envFromRegistry(t *registry.Tenant, unreadableFile string) *model.EnvRespon
 // empty tail — a `ui` log for a static-UI tenant, a store log for a shared
 // store.
 func (b *liveBackend) Logs(_ context.Context, name, file string, lines int) (*model.LogsResponse, error) {
-	t, ok := b.fleet.Tenants[name]
+	// Reloaded (#541): a tenant adopted after this daemon started had no log
+	// at all — a 404 on a file that was on disk and readable.
+	t, ok := b.fleetNow().Tenants[name]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -416,12 +455,18 @@ func (b *liveBackend) reloadRegistry() (*registry.Fleet, error) {
 // doctor hash is what a plan pins, so two callers that disagree about the
 // option set disagree about whether a plan is still valid.
 func (b *liveBackend) Doctor(ctx context.Context, tenant, op string) (*model.DoctorResponse, error) {
+	// Reloaded (#541). The doctor HASH is what a plan pins and what
+	// `force_with_doctor_diff` quotes, so a doctor computed against a stale
+	// registry produces a hash the CLI — which reads the file every run —
+	// never reproduces, and every plan taken over HTTP goes stale for a
+	// reason no operator can see.
+	f := b.fleetNow()
 	if tenant != "" {
-		if _, ok := b.fleet.Tenants[tenant]; !ok {
+		if _, ok := f.Tenants[tenant]; !ok {
 			return nil, ErrNotFound
 		}
 	}
 	opts := b.doctorOpts
 	opts.Tenant, opts.Op = tenant, op
-	return doctor.Run(ctx, b.roots, b.fleet, opts), nil
+	return doctor.Run(ctx, b.roots, f, opts), nil
 }

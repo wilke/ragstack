@@ -120,6 +120,8 @@ func TestKnownOperations(t *testing.T) {
 		{"POST", "/v1/tenants/{name}/ops/{verb}", auth.RoleOperator, true},
 		{"POST", "/v1/gateway/render", auth.RoleViewer, true}, // a READ despite the verb
 		{"POST", "/v1/gateway/apply", auth.RoleViewer, false},
+		{"POST", "/v1/gateway/reload", auth.RoleViewer, false},
+		{"POST", "/v1/gateway/reload", auth.RoleOperator, true},
 		{"get", "/v1/fleet", auth.RoleViewer, true}, // method compared case-insensitively
 	}
 	for _, c := range cases {
@@ -143,6 +145,45 @@ func TestSessionsAreReadsOnlyWhereTheContractSaysSo(t *testing.T) {
 	}
 	if !SessionAllowed("DELETE", "/v1/session") {
 		t.Error("a session was refused its own revocation")
+	}
+}
+
+// TestEveryMutationIsMarkedMutating pins the derivation the generator does
+// rather than the list it reads: `Mutating` comes from "not a GET, and the
+// request body carries ctl_api_key", and the guard's whole session rule keys
+// off it. A new mutation whose contract body forgot `ctl_api_key` would ship
+// with that rule silently off for exactly that route, so the expected set is
+// written out here — including ctlGatewayReload, the row this PR adds.
+func TestEveryMutationIsMarkedMutating(t *testing.T) {
+	want := map[string]bool{
+		"ctlTenantCreate": true, "ctlTenantOp": true,
+		"ctlGatewayApply": true, "ctlGatewayReload": true,
+		"ctlJobResume": true, "ctlJobContinue": true, "ctlJobCancel": true,
+		"ctlSettingsPut": true,
+	}
+	got := map[string]bool{}
+	for _, r := range Matrix {
+		if r.Mutating {
+			got[r.OperationID] = true
+		}
+	}
+	for id := range want {
+		if !got[id] {
+			t.Errorf("%s is not marked Mutating; the guard's ctl_api_key rule never runs for it", id)
+		}
+	}
+	for id := range got {
+		if !want[id] {
+			t.Errorf("%s is marked Mutating and is not in this test's list; if that is right, add it here", id)
+		}
+	}
+	// A non-GET READ must NOT be caught: demanding a ctl key from a session
+	// for the dry render, or for a session logging itself out, would
+	// contradict the contract's own answers for them.
+	for _, id := range []string{"ctlGatewayRender", "ctlSessionRevoke", "ctlSessionCreate"} {
+		if got[id] {
+			t.Errorf("%s is a non-GET READ and must not be marked Mutating", id)
+		}
 	}
 }
 

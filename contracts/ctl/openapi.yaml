@@ -127,6 +127,7 @@ x-ctl-authorization-matrix:
   - { operationId: ctlGatewayStatus,   method: GET,    path: /v1/gateway,                        role: viewer,    session: true,  viewer_fields: all }
   - { operationId: ctlGatewayRender,   method: POST,   path: /v1/gateway/render,                 role: viewer,    session: true,  viewer_fields: all }
   - { operationId: ctlGatewayApply,    method: POST,   path: /v1/gateway/apply,                  role: operator,  session: true,  viewer_fields: n/a }
+  - { operationId: ctlGatewayReload,   method: POST,   path: /v1/gateway/reload,                 role: operator,  session: true,  viewer_fields: n/a }
   - { operationId: ctlAudit,           method: GET,    path: /v1/audit,                          role: operator,  session: true,  viewer_fields: n/a }
   - { operationId: ctlJobsList,        method: GET,    path: /v1/jobs,                           role: viewer,    session: true,  viewer_fields: "jobs[] with worker, lock null; reservations, steps[].external_ids empty; steps[].log null" }
   - { operationId: ctlJobShow,         method: GET,    path: "/v1/jobs/{id}",                      role: viewer,    session: true,  viewer_fields: "as ctlJobsList" }
@@ -790,6 +791,42 @@ paths:
         verify the master's identity → `HUP` → probes from desired state →
         revert on failure. `requires_confirm` is true (confirm value
         `gateway`).
+      tags: [Gateway, Operations]
+      x-ctl-role: operator
+      security:
+        - ApiKeyAuth: []
+        - BearerIdentity: []
+        - SessionAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OpRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/PlanResponse" }
+        "202": { $ref: "#/components/responses/JobAccepted" }
+        "400": { $ref: "#/components/responses/BothCredentials" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/Validation" }
+        "428": { $ref: "#/components/responses/ConfirmRequired" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/gateway/reload:
+    post:
+      operationId: ctlGatewayReload
+      summary: Reload the gateway that is already published
+      description: >-
+        OPERATOR. Test the LIVE tree, HUP, confirm, probe — no new generation;
+        for hand-written proxy changes. `args` is `{}`. The job takes the
+        gateway lock, runs `nginx -t` against the tree nginx is actually
+        serving, verifies the master's identity, sends `HUP`, confirms the
+        master survived and probes the routes from desired state. Nothing is
+        rendered and the `current` pointer does not move, so a reload can
+        never publish a generation an operator has not previewed — which is
+        also why it is the only way to adopt a change made by hand in the
+        proxy tree. `requires_confirm` is true (confirm value `gateway`).
       tags: [Gateway, Operations]
       x-ctl-role: operator
       security:

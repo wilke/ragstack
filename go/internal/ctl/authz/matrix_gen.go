@@ -15,6 +15,7 @@ var Matrix = []Row{
 	{OperationID: "ctlFleet", Method: "GET", Path: "/v1/fleet", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all"},
 	{OperationID: "ctlGatewayStatus", Method: "GET", Path: "/v1/gateway", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all"},
 	{OperationID: "ctlGatewayApply", Method: "POST", Path: "/v1/gateway/apply", Role: "operator", Session: true, Mutating: true, ViewerFields: "n/a"},
+	{OperationID: "ctlGatewayReload", Method: "POST", Path: "/v1/gateway/reload", Role: "operator", Session: true, Mutating: true, ViewerFields: "n/a"},
 	{OperationID: "ctlGatewayRender", Method: "POST", Path: "/v1/gateway/render", Role: "viewer", Session: true, Mutating: false, ViewerFields: "all"},
 	{OperationID: "ctlJobsList", Method: "GET", Path: "/v1/jobs", Role: "viewer", Session: true, Mutating: false, ViewerFields: "jobs[] with worker, lock null; reservations, steps[].external_ids empty; steps[].log null"},
 	{OperationID: "ctlJobShow", Method: "GET", Path: "/v1/jobs/{id}", Role: "viewer", Session: true, Mutating: false, ViewerFields: "as ctlJobsList"},
