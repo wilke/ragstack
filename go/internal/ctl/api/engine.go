@@ -150,6 +150,7 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 			Files:     files,
 			Installed: installed,
 			Refs:      refs,
+			Listening: fixtureListening(loadFleet),
 		})
 	} else {
 		drv = drivers.NewReal(drivers.RealOptions{
@@ -203,6 +204,37 @@ func BuildEngine(cfg EngineConfig) (jobs.Engine, error) {
 	})
 	return eng, nil
 }
+
+// fixtureListening is the LISTEN set the fixture host starts with: the API
+// port of the next few port blocks.
+//
+// It exists because the fake systemd is a pair of sets and knows nothing about
+// `PartOf`: starting `ragstack-<t>.target` does not start the api unit that
+// binds the port, so `tenant create`'s readiness gate — which waits for the
+// API to answer, as it must on a real host — would wait out its whole timeout
+// against the fixture. Seeding the blocks a create would ALLOCATE is the
+// smallest honest way to say "on this fake host, a started tenant answers".
+//
+// It is deliberately the FUTURE blocks only. The fixture tenants' own ports are
+// left alone, so a plan that asserts nothing is listening on an existing
+// tenant's port still answers a fact about the fixture rather than this seed.
+func fixtureListening(loadFleet func() (*registry.Fleet, error)) []int {
+	f, err := loadFleet()
+	if err != nil {
+		return nil
+	}
+	next, _ := registry.Allocate(f)
+	out := make([]int, 0, fixtureFutureBlocks)
+	for i := 0; i < fixtureFutureBlocks; i++ {
+		out = append(out, paths.BlockAt(f.PortBase, f.PortStride, next+i).API)
+	}
+	return out
+}
+
+// fixtureFutureBlocks is how many unallocated blocks the fixture pre-answers
+// on. A conformance run creates a handful of tenants in one session; the limit
+// only has to cover that.
+const fixtureFutureBlocks = 32
 
 // engineRedactor is the jobs.Redactor the engine applies to step logs,
 // previews and audit args. Text goes through the value-seeded

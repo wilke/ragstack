@@ -148,6 +148,13 @@ type op struct {
 
 func (o *op) Verb() string      { return o.verb }
 func (o *op) Destructive() bool { return o.destructive }
+
+// CreatesTenant satisfies the engine's optional tenantCreator interface:
+// `create`'s request names a tenant that does not exist yet, and every other
+// verb's names one that must. The planner is where "that name is taken" is
+// refused; the engine only needs to know not to 404 first.
+func (o *op) CreatesTenant() bool { return o.verb == "create" }
+
 func (o *op) Validate(a map[string]any) error {
 	if a == nil {
 		a = map[string]any{}

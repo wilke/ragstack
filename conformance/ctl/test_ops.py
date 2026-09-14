@@ -906,3 +906,278 @@ async def test_settings_round_trip_bumps_the_registry_generation(
         f"the generation did not move: {was['registry_generation']} -> "
         f"{now['registry_generation']}"
     )
+
+
+# =========================================================================== #
+# `tenant create` — the verb that makes a tenant (#537)
+#
+# Every case runs against the FIXTURE host (--fake-drivers), which carries one
+# prepared artifact. The tenant names are unique per run because a create that
+# succeeded is a registry row that stays there for the life of the daemon: a
+# fixed name would make the second test in the session assert against the first
+# test's tenant.
+# =========================================================================== #
+
+#: The artifact the fixture daemon has prepared (go/internal/ctl/api/fake.go).
+CONFORMANCE_ARTIFACT = "conformance-artifact"
+
+
+def new_tenant_name() -> str:
+    """A fresh tenant name matching ``^[a-z][a-z0-9-]{0,31}$``."""
+    return f"conf-{uuid.uuid4().hex[:8]}"
+
+
+async def test_create_dry_run_plans_every_driver_it_will_touch(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A create's dry run is the approval document for the whole operation, so
+    it has to name every kind of work the job will do — the allocation, the
+    directories, the credential file, the env files, the checkout, the UI build,
+    the units, the start, the tenant-API calls and the gateway publish. A plan
+    that showed only the steps whose drivers happen to be wired would be an
+    approval for something other than what runs."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": name, "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    assert plan["op"] == "create" and plan["tenant"] == name, plan
+    kinds = {s["kind"] for s in plan["steps"]}
+    for want in {"registry", "fs", "envfile", "git", "apptainer", "systemd", "probe", "nginx"}:
+        assert want in kinds, f"no {want!r} step in the create plan: {sorted(kinds)}"
+
+    # The whole tenant is visible: its env file and its units are previewed…
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    env = next((p for p in writes if p.endswith("/config/tenant.env")), None)
+    assert env, f"the plan previews no tenant.env: {sorted(writes)}"
+    assert writes[env]["preview"], "tenant.env was previewed as null"
+    unit = next((p for p in writes if p.endswith("-api.service")), None)
+    assert unit, f"the plan previews no api unit: {sorted(writes)}"
+
+    # …and the credential file is named WITHOUT a preview. plan.json makes the
+    # preview null for secret-bearing content, and a create's secrets.env is the
+    # one file in the fleet whose whole content is credentials.
+    secrets = next((p for p in writes if p.endswith("/config/secrets.env")), None)
+    assert secrets, f"the plan does not name secrets.env: {sorted(writes)}"
+    assert not writes[secrets]["preview"], (
+        f"secrets.env was previewed: {writes[secrets]['preview'][:200]!r}"
+    )
+
+    # A dry run writes nothing: the tenant does not exist afterwards.
+    after = await client.get(f"/v1/tenants/{name}")
+    assert after.status_code == 404, f"the dry run created the tenant: {after.status_code}"
+
+
+async def test_create_executes_and_delivers_the_credentials_once(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The end-to-end case: a create that succeeds produces a tenant the read
+    surface serves, a result that carries FINGERPRINTS, and an envelope that
+    carries the values exactly once."""
+    name = new_tenant_name()
+    job = await submit_and_settle(
+        client, "/v1/tenants", schemas,
+        args={
+            "name": name, "artifact_id": CONFORMANCE_ARTIFACT,
+            "keys": [{"label": "ops", "role": "user"}],
+        },
+        timeout=60.0,
+    )
+    assert job["state"] == "succeeded", json.dumps(job)[:1200]
+
+    result = job["result"] or {}
+    assert result.get("name") == name, result
+    assert isinstance(result.get("ports"), dict), result
+    assert result.get("artifact_id") == CONFORMANCE_ARTIFACT, result
+    keys = result.get("keys") or []
+    labels = {k["label"] for k in keys}
+    assert "bootstrap-admin" in labels, (
+        f"create must always mint the bootstrap admin the ctl itself uses: {labels}"
+    )
+    assert "ops" in labels, labels
+    for k in keys:
+        assert k["fingerprint"].startswith("sha256:"), k
+        assert "value" not in k, f"the job result carries a key VALUE: {k}"
+
+    # The tenant is real: the read surface serves it, with no secret in it.
+    shown = await client.get(f"/v1/tenants/{name}")
+    assert shown.status_code == 200, shown.text
+    body = shown.json()
+    validate(body, "tenant_response", schemas)
+    assert body["summary"]["state"] in {"active", "provisioned"}, body["summary"]
+    assert body["registry"]["ports"]["base"] == result["ports"]["base"], (
+        "the tenant the read surface serves is not the one the job reported"
+    )
+    # Fingerprints, never values: the registry is not a place a key lives.
+    for k in body["registry"]["keys"]:
+        assert k["fingerprint"].startswith("sha256:"), k
+        assert "value" not in k, k
+
+    # The values come back once, and only once.
+    first = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert first.status_code == 200, first.text
+    validate(first.json(), "secrets_response", schemas)
+    delivered = {s["label"]: s["value"] for s in first.json()["secrets"]}
+    assert set(delivered) == labels, f"envelope {sorted(delivered)} != ledger {sorted(labels)}"
+    for label, value in delivered.items():
+        assert len(value) == 64, f"{label} is {len(value)} characters, want token_hex(32)"
+    second = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert_error(second, 410, "not_found", schemas)
+
+
+async def test_create_is_idempotent_under_one_key(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The same create sent twice under the same idempotency key is ONE tenant.
+    Without this, a client that retried after a dropped response would allocate
+    a second port block and a second set of credentials for a tenant that
+    already exists."""
+    name = new_tenant_name()
+    key = idem()
+    args = {"name": name, "artifact_id": CONFORMANCE_ARTIFACT}
+    body = op_body(dry_run=False, args=args, idempotency_key=key)
+    body.update(await doctor_force(client, "/v1/tenants", args=args))
+
+    first = await client.post("/v1/tenants", json=body)
+    assert first.status_code == 202, first.text
+    job = await poll_to_terminal(client, first.json()["id"], schemas, timeout=60.0)
+    assert job["state"] == "succeeded", json.dumps(job)[:800]
+
+    again = await client.post("/v1/tenants", json=body)
+    assert again.status_code == 202, again.text
+    assert again.json()["id"] == job["id"], (
+        f"a replay minted a second job ({again.json()['id']} != {job['id']}) — and therefore "
+        "a second tenant"
+    )
+
+    # A DIFFERENT request under the same key is a conflict, not a silent
+    # substitution of one operation for another.
+    other = dict(body, args={"name": new_tenant_name(), "artifact_id": CONFORMANCE_ARTIFACT})
+    assert_error(await client.post("/v1/tenants", json=other), 409, "duplicate", schemas)
+
+
+async def test_create_with_postgres_local_adds_the_unit_and_the_pg_secrets(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """``postgres: local`` is the PR-D addition to CreateArgs. It changes three
+    things an operator can see in the plan: a postgres unit, the instance's two
+    writable directories, and the provision record that says which kind this
+    tenant was built as."""
+    name = new_tenant_name()
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(
+            dry_run=True,
+            args={"name": name, "artifact_id": CONFORMANCE_ARTIFACT, "postgres": "local"},
+        ),
+    )
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+
+    writes = {w["path"]: w for s in plan["steps"] for w in s["would_write"]}
+    pg_unit = next((p for p in writes if p.endswith("-postgres.service")), None)
+    assert pg_unit, f"postgres: local planned no postgres unit: {sorted(writes)}"
+    body = writes[pg_unit]["preview"] or ""
+    assert "EnvironmentFile=" in body and "/config/secrets.env" in body, body
+    # The password is a REFERENCE, never a literal: /rag/config/ctl/units is
+    # world-readable. (The plan redactor flattens the reference too, so what is
+    # asserted here is the absence of an assignment.)
+    assert "TENANT_PG_PASSWORD=" not in body, f"the unit assigns the password:\n{body}"
+
+    provision = next((p for p in writes if p.endswith("/config/provision.env")), None)
+    assert provision, sorted(writes)
+    assert "TENANT_STORE_KIND=postgres-local" in (writes[provision]["preview"] or ""), (
+        writes[provision]["preview"]
+    )
+
+    targets = {t for s in plan["steps"] for t in s["targets"]}
+    for want in ("postgres/data", "postgres/run"):
+        assert any(want in t for t in targets), (
+            f"the instance's {want} directory is never created; apptainer refuses a missing bind"
+        )
+
+    # The default is sqlite, and it plans none of that.
+    plain = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": new_tenant_name(), "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    assert plain.status_code == 200, plain.text
+    plain_writes = {w["path"] for s in plain.json()["steps"] for w in s["would_write"]}
+    assert not any(p.endswith("-postgres.service") for p in plain_writes), plain_writes
+
+
+@pytest.mark.parametrize(
+    "args,why",
+    [
+        ({"artifact_id": "not-prepared"}, "an artifact nobody prepared"),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "identity_provider": "none",
+             "admin_subjects": ["bvbrc:alice@patricbrc.org"]},
+            "admin subjects with no identity provider to issue them",
+        ),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "identity_provider": "bvbrc",
+             "admin_subjects": ["oidc:alice@example.com"]},
+            "an admin subject issued by somebody other than the provider",
+        ),
+        (
+            {"artifact_id": CONFORMANCE_ARTIFACT, "template_from": "zz-not-a-tenant"},
+            "a template tenant that does not exist",
+        ),
+    ],
+    ids=["unknown-artifact", "subjects-without-provider", "foreign-issuer", "unknown-template"],
+)
+async def test_create_refusals_are_409_with_a_reason(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict],
+    args: dict[str, Any], why: str,
+) -> None:
+    """Each of these is a policy refusal, answered 409 ``refused`` at PLAN time
+    — before a lock is taken and before anything is written. A 422 would tell
+    the caller its document was malformed and invite it to fix the spelling; it
+    is not malformed, it is asking for something the control plane will not do."""
+    resp = await client.post(
+        "/v1/tenants", json=op_body(dry_run=True, args=dict(args, name=new_tenant_name()))
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "not wired" not in err["detail"], f"{why}: refused for the wrong reason: {err['detail']}"
+
+
+async def test_create_refuses_a_name_that_is_taken(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """A tenant name is a directory, a gateway segment and a set of instance
+    names. Creating a second tenant with one that is taken would have two
+    tenants writing the same tree."""
+    resp = await client.post(
+        "/v1/tenants",
+        json=op_body(dry_run=True, args={"name": some_tenant, "artifact_id": CONFORMANCE_ARTIFACT}),
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    assert some_tenant in err["detail"], err["detail"]
+
+
+@pytest.mark.parametrize("verb", ["artifact-prepare"])
+async def test_a_cli_only_op_has_no_http_route(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str, verb: str
+) -> None:
+    """``fleet artifact prepare`` is a job like any other — planned, locked,
+    audited — and it has NO route. It runs ``npm ci`` (the one step in the
+    control plane that reaches the network) and it takes a repository path, so
+    it is a trusted-operator, ``--direct`` operation. The router refuses it as a
+    verb outside the enum, which is the same answer a name nobody defined gets:
+    a CLI-only op must not be half-reachable.
+
+    Not gated on the engine: the verb enum is the router's own, so this holds on
+    any daemon that answers."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/{verb}", json=op_body())
+    body = assert_error(resp, 422, "validation", schemas)
+    assert body.get("extra", {}).get("fields") == ["verb"], body
+    for path in (f"/v1/fleet/artifacts", "/v1/artifacts"):
+        other = await client.post(path, json=op_body())
+        assert other.status_code in (404, 405), (
+            f"POST {path} answered {other.status_code}; a CLI-only op must have no route"
+        )
