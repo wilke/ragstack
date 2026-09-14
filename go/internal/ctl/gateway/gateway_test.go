@@ -1912,6 +1912,125 @@ func TestSemanticDiffComparesTheTenantLists(t *testing.T) {
 	}
 }
 
+// coconutProxyDeploy mutates a testRoots() copy of the pre-deploy proxy tree
+// into the post-deploy shape the coconut-proxy repo change produces: the
+// tenant maps and the two JSON lists move out of conf.d/00-maps.conf and
+// snippets/routes.conf into conf.d/05-tenants.generated.conf (here, the
+// bootstrap fixture's own regular-file copy — deploy.sh has not been replaced
+// by a publish yet), and routes.conf is left only interpolating the
+// variables, with no literal list of its own.
+func coconutProxyDeploy(t *testing.T, roots paths.Roots) {
+	t.Helper()
+	maps := filepath.Join(roots.ProxyDir, "conf.d", "00-maps.conf")
+	b, err := os.ReadFile(maps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range []*regexp.Regexp{
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_api \{.*?\n\}\n`),
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_ui \{.*?\n\}\n`),
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_readonly \{.*?\n\}\n`),
+	} {
+		edited := block.ReplaceAllString(string(b), "")
+		if edited == string(b) {
+			t.Fatalf("00-maps.conf no longer carries the block %s", block)
+		}
+		b = []byte(edited)
+	}
+	if err := os.WriteFile(maps, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	routes := filepath.Join(roots.ProxyDir, "snippets", "routes.conf")
+	rb, err := os.ReadFile(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.NewReplacer(
+		`["dev","demo","lucid-next","asm-next"]`, `$tenants_names_json`,
+		`[{"name":"dev","api":"/ragstack/dev/api/v1/...","ui":"/ragstack/dev/ui/"},{"name":"demo","api":"/ragstack/demo/api/v1/...","ui":"/ragstack/demo/ui/"},{"name":"lucid-next","api":"/ragstack/lucid-next/api/v1/...","ui":"/ragstack/lucid-next/ui/"},{"name":"asm-next","api":"/ragstack/asm-next/api/v1/...","ui":"/ragstack/asm-next/ui/"}]`, `$tenants_json`,
+	).Replace(string(rb))
+	if edited == string(rb) {
+		t.Fatal("routes.conf no longer carries the literal tenant lists this test replaces")
+	}
+	if err := os.WriteFile(routes, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixture, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shipped as a REGULAR file by deploy.sh, ahead of any `gateway apply`.
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf"), gen, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDiffDetailUsesTheGeneratedIncludeAsTheLiveMapsSourcePostDeploy is BUG 2
+// from the coconut migration: once coconut-proxy's deploy has moved the
+// tenant maps and JSON lists into conf.d/05-tenants.generated.conf, DiffDetail
+// used to compare against conf.d/00-maps.conf directly — now emptied of
+// tenant maps — and report every tenant as "new in the render", plus a note
+// that routes.conf "carries neither tenant list — NOT compared". The live-maps
+// source has to be wherever the live tree actually carries the routing: the
+// generated include (regular file or a published-generation symlink) ahead of
+// the legacy 00-maps.conf/routes.conf pair.
+func TestDiffDetailUsesTheGeneratedIncludeAsTheLiveMapsSourcePostDeploy(t *testing.T) {
+	roots := testRoots(t)
+	coconutProxyDeploy(t, roots)
+	f := registry.LiveFixture()
+
+	d, err := DiffDetail(roots, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSource := filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf")
+	if d.ComparedTo != wantSource {
+		t.Errorf("compared_to = %q, want %q", d.ComparedTo, wantSource)
+	}
+	if !d.SemanticNoop {
+		t.Errorf("the four coconut tenants against their own generated include should be a semantic no-op: %v", d.Notes)
+	}
+	for _, n := range d.Notes {
+		if strings.Contains(n, "NOT compared") {
+			t.Errorf("the JSON lists come from the generated include and should have been compared: %v", d.Notes)
+		}
+	}
+
+	// A fifth tenant changes the render without touching what is live: it
+	// must be reported, and only it.
+	f.Tenants["newco"] = registry.NewTenant("newco", "newco")
+	f.Tenants["newco"].Ports.API = 24100
+	f.Tenants["newco"].UI = registry.UI{Mode: registry.UIModeExternal, Port: registry.NullPort(5300), Base: "/ragstack/newco/ui/"}
+	f.DisplayOrder = append(f.DisplayOrder, "newco")
+
+	d, err = DiffDetail(roots, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SemanticNoop {
+		t.Fatal("a fifth tenant absent from the live gateway was reported as a semantic no-op")
+	}
+	var newAPI, newUI bool
+	for _, n := range d.Notes {
+		if strings.Contains(n, "$tenant_api") && strings.Contains(n, "newco") && strings.Contains(n, "is new in the render") {
+			newAPI = true
+		}
+		if strings.Contains(n, "$tenant_ui") && strings.Contains(n, "newco") && strings.Contains(n, "is new in the render") {
+			newUI = true
+		}
+		for _, old := range []string{"dev", "demo", "lucid-next", "asm-next"} {
+			if strings.Contains(n, "$tenant_api: "+old) || strings.Contains(n, "$tenant_ui: "+old) {
+				t.Errorf("existing tenant %s was reported as changed, want only newco: %q", old, n)
+			}
+		}
+	}
+	if !newAPI || !newUI {
+		t.Errorf("newco should be the only tenant reported as new (api=%v ui=%v): %v", newAPI, newUI, d.Notes)
+	}
+}
+
 func TestUnifiedDiffShape(t *testing.T) {
 	a := "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"
 	b := "one\ntwo\nthree\nFOUR\nfive\nsix\nseven\n"

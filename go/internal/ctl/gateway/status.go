@@ -241,26 +241,33 @@ func DiffDetail(roots paths.Roots, f *registry.Fleet) (*DiffResult, error) {
 	}
 	out.Response.Changed = true
 
-	live := filepath.Join(roots.ProxyDir, "conf.d", "00-maps.conf")
-	b, err := os.ReadFile(live)
-	if err != nil {
-		out.ComparedTo = "nothing published yet; " + live + " is unreadable"
-		out.Notes = append(out.Notes, err.Error())
+	// The live routing lives in whichever file the proxy tree actually carries
+	// it: the generated include (conf.d/05-tenants.generated.conf) once
+	// coconut-proxy's deploy has landed — a regular bootstrap file before the
+	// first `gateway apply`, or a symlink into a published generation after
+	// one — and the hand-written conf.d/00-maps.conf before that deploy.
+	// doctor.GatewayMaps already tries them in that order and reads straight
+	// through a symlink, so this one call is the same "vs published
+	// generation" comparison whether or not the ctl itself did the publishing.
+	liveMaps, ok := doctor.GatewayMaps(roots.ProxyDir)
+	if !ok {
+		out.ComparedTo = "nothing published yet; no live tenant maps found under " + roots.ProxyDir
 		return out, nil
 	}
-	out.ComparedTo = live
-	liveMaps := doctor.ParseTenantMaps(b, live)
-	// The two JSON lists are not in 00-maps.conf: before the first publication
-	// they are `return 200 '…'` literals inside routes.conf, and they only
-	// become `$tenants_names_json` / `$tenants_json` when the generated include
-	// takes over. Both halves of the comparison have to come from wherever they
-	// live today, or the check silently compares a list against nothing.
-	routes := filepath.Join(roots.ProxyDir, "snippets", "routes.conf")
-	names, tenants, rerr := liveTenantLists(routes)
-	if rerr != nil {
-		out.Notes = append(out.Notes, fmt.Sprintf("%s: %v — the two tenant JSON lists were NOT compared", routes, rerr))
+	out.ComparedTo = liveMaps.Source
+	if liveMaps.NamesJSON == "" && liveMaps.TenantsJSON == "" {
+		// The generated include carries both JSON lists itself. Only the
+		// legacy conf.d/00-maps.conf needs the routes.conf fallback: before
+		// the generated include exists, the two lists are `return 200 '…'`
+		// literals inside routes.conf rather than `$tenants_names_json` /
+		// `$tenants_json` map values.
+		routes := filepath.Join(roots.ProxyDir, "snippets", "routes.conf")
+		names, tenants, rerr := liveTenantLists(routes)
+		if rerr != nil {
+			out.Notes = append(out.Notes, fmt.Sprintf("%s: %v — the two tenant JSON lists were NOT compared", routes, rerr))
+		}
+		liveMaps.NamesJSON, liveMaps.TenantsJSON = names, tenants
 	}
-	liveMaps.NamesJSON, liveMaps.TenantsJSON = names, tenants
 	noop, notes := semanticEqual(liveMaps,
 		doctor.ParseTenantMaps(gen.Files[FileTenants], fmt.Sprintf("gen-%d/%s", gen.N, FileTenants)))
 	out.SemanticNoop, out.Notes = noop, append(out.Notes, notes...)

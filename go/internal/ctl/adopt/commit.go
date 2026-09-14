@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -123,7 +122,7 @@ func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roo
 		order = append(order, name)
 	}
 	if created {
-		for _, n := range doctor.DisplayOrderFromRoutes(filepath.Join(roots.ProxyDir, "snippets", "routes.conf")) {
+		for _, n := range doctor.DisplayOrder(roots.ProxyDir) {
 			keep(n)
 		}
 	}
