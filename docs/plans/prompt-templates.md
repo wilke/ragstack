@@ -34,7 +34,7 @@ records a deliberate pass to make retrieval knobs real ("declared **and read** a
 construction… the phantom `.env` no-ops are removed"). `_SYSTEM_PROMPT` never got that pass:
 it is a module constant with one reference and no config surface, and there is no ADR
 recording a choice to freeze it. This repo writes ADRs for decisions of consequence
-(0003–0006); a deliberate "generation is unsteerable" would be written down.
+(0003–0007); a deliberate "generation is unsteerable" would be written down.
 
 ## 3. Why level 2 and not level 3
 
