@@ -151,6 +151,31 @@ async def test_viewer_reaches_every_viewer_operation(
         assert resp.status_code < 400, f"{opid}: {resp.status_code}: {resp.text[:300]}"
 
 
+#: The operations that MUST be parametrized as operator mutations. The lists
+#: above are generated from the contract, which is what keeps them honest — and
+#: is also how a row that disappeared from the contract would silently shrink
+#: the parametrization instead of failing anything. A dropped
+#: ``ctlGatewayReload`` would take its 401 and its viewer-403 with it and the
+#: suite would still report green, so the rows are named here once.
+REQUIRED_OPERATOR_OPS = frozenset({
+    "ctlTenantCreate", "ctlTenantLogs", "ctlTenantOp", "ctlGatewayApply",
+    "ctlGatewayReload", "ctlAudit", "ctlJobStepLog", "ctlJobSecrets",
+    "ctlJobResume", "ctlJobContinue", "ctlJobCancel", "ctlSettingsPut",
+})
+
+
+async def test_every_operator_operation_is_parametrized() -> None:
+    """The mutation surface is in the parametrization, by name. This is the
+    test that fails when the contract loses a row rather than when a server
+    loses a check."""
+    present = {o[0] for o in OPERATOR_OPS}
+    missing = sorted(REQUIRED_OPERATOR_OPS - present)
+    assert not missing, (
+        f"operations missing from x-ctl-role: operator — every assertion about "
+        f"them silently stopped running: {missing}"
+    )
+
+
 async def test_matrix_and_x_ctl_role_agree(openapi: dict) -> None:
     """The extension table and the per-operation annotation are one fact."""
     rows = {r["operationId"]: r for r in openapi["x-ctl-authorization-matrix"]}

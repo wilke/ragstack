@@ -49,6 +49,7 @@ import (
 	"github.com/ragstack/ragstack/internal/ctl/authz"
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
 	"github.com/ragstack/ragstack/internal/ctl/fleet"
+	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/logs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
@@ -74,17 +75,34 @@ var logFiles = map[string]bool{"api": true, "qdrant": true, "es": true, "ui": tr
 // an unbounded reader on a publicly mounted surface is a memory lever.
 const maxBodyBytes = 1 << 20
 
-// mutationsArriveInPRC is the detail of every mutating route's refusal. The
-// contract's own wording for a verb that is not implemented yet is 409
-// `refused` "with `detail` saying so" (see the ctlTenantOp description on
-// `update-code`), so that is the status and code used here rather than a 501:
-// error.json promises one status per code, and a 501 would make the code
-// unreconstructable from the status for every logger downstream.
-const mutationsArriveInPRC = "mutations arrive in PR-C: this daemon serves the read surface only"
+// mutationUnimplemented is the detail of a mutating row that has a matrix
+// entry and no handler. The contract's own wording for an operation that
+// cannot run yet is 409 `refused` "with `detail` saying so" (see the
+// ctlTenantOp description on `update-code`), so that is the status and code
+// used here rather than a 501: error.json promises one status per code, and a
+// 501 would make the code unreconstructable from the status for every logger
+// downstream.
+const mutationUnimplemented = "this mutation is in the contract's authorization matrix but has no handler in this build"
 
 // Server is the daemon's handler state.
+//
+// Engine is a FIELD here rather than a method on Backend, and that is the
+// whole point of backend.go's first paragraph: "Every method is a READ.
+// Nothing here writes, starts, stops or reloads — and keeping the interface
+// read-only is what makes that statement checkable rather than aspirational."
+// Adding a mutation engine to Backend would have made the read surface's own
+// invariant unprovable, and made every fixture backend responsible for
+// something it has no business owning. The two seams stay separate: Backend
+// answers reads of host and registry state, Engine performs mutations, and
+// nothing reaches across.
+//
+// A nil Engine is a daemon whose engine failed to build. Reads answer
+// truthfully (no jobs, no audit rows) and every mutation answers the
+// contract's 409 `refused` naming the reason — never a panic, and never a
+// 200-shaped success for a mutation nothing performed.
 type Server struct {
 	Backend  Backend
+	Engine   jobs.Engine
 	Resolver *auth.Resolver
 	Sessions session.Store
 	Logger   *slog.Logger
@@ -141,20 +159,33 @@ func NewRouter(s *Server) http.Handler {
 	s.route(r, http.MethodGet, "/v1/jobs/{id}/steps/{n}/log", s.handleJobStepLog)
 	s.route(r, http.MethodGet, "/v1/jobs/{id}/secrets", s.handleJobSecrets)
 
-	// ---- mutations, refused --------------------------------------------
-	// Registered, not omitted: an unregistered route would answer 404, and the
-	// conformance matrix asserts that a viewer hitting an operator mutation
-	// gets 403 — the authorization answer, before anything is looked up. The
-	// refusal is what a caller sees only once it IS authorized.
-	//
-	// Derived from the matrix's `Mutating` rows rather than listed here. A
-	// hand-kept list is a second place a mutation can be added to and, when it
-	// is forgotten there, the route 404s instead of answering the contract's
-	// 409 — and the guard's "a session may not mutate" rule, which keys off
-	// the same flag, never runs for it.
+	// ---- mutations ------------------------------------------------------
+	// Every one of these goes through the SAME submit path (jobs.go): the
+	// envelope is validated, a jobs.Request is built with the authenticated
+	// principal, and the engine answers 200 Plan or 202 Job.
+	handled := map[string]bool{}
+	mutation := func(method, pattern string, h http.HandlerFunc) {
+		handled[method+" "+pattern] = true
+		s.route(r, method, pattern, h)
+	}
+	mutation(http.MethodPost, "/v1/tenants", s.handleTenantCreate)
+	mutation(http.MethodPost, "/v1/tenants/{name}/ops/{verb}", s.handleTenantOp)
+	mutation(http.MethodPost, "/v1/gateway/apply", s.handleGatewayApply)
+	mutation(http.MethodPost, "/v1/gateway/reload", s.handleGatewayReload)
+	mutation(http.MethodPost, "/v1/jobs/{id}/resume", s.handleJobContinuation(opJobResume))
+	mutation(http.MethodPost, "/v1/jobs/{id}/continue", s.handleJobContinuation(opJobContinue))
+	mutation(http.MethodPost, "/v1/jobs/{id}/cancel", s.handleJobContinuation(opJobCancel))
+	mutation(http.MethodPut, "/v1/settings", s.handleSettingsPut)
+
+	// The derived backstop, kept from PR-A: a mutating row the list above
+	// forgot is REGISTERED and refused, never 404. An unregistered route
+	// would answer 404 to a viewer — the lookup answer where the contract
+	// promises the authorization one — and the guard's session rule, which
+	// keys off the same flag, would never run for it. It is a loud failure
+	// on the surface rather than a silent hole in it.
 	for _, row := range authz.Matrix {
-		if row.Mutating {
-			s.route(r, row.Method, row.Path, s.handleMutationRefused)
+		if row.Mutating && !handled[row.Method+" "+row.Path] {
+			s.route(r, row.Method, row.Path, s.handleMutationUnimplemented)
 		}
 	}
 	return r
@@ -853,23 +884,11 @@ func settingsCtl(roots paths.Roots, c registry.Ctl) model.SettingsCtl {
 }
 
 // --------------------------------------------------------------------------
-// Jobs and audit — empty until the engine lands in PR-C
+// Job path and query parameters
+//
+// The handlers themselves live in jobs.go, with the mutation surface they
+// share an engine and an error map with.
 // --------------------------------------------------------------------------
-
-func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
-	limit, ok := intQuery(w, r, "limit", 50, 1, 500)
-	if !ok {
-		return
-	}
-	if state := r.URL.Query().Get("state"); state != "" && !jobStates[state] {
-		writeError(w, r, model.CodeValidation, fmt.Sprintf("state %q is not a job state", state),
-			map[string]any{"fields": []string{"state"}})
-		return
-	}
-	writeJSON(w, http.StatusOK, model.JobsResponse{
-		Jobs: []json.RawMessage{}, Limit: limit, Truncated: false,
-	})
-}
 
 var jobStates = map[string]bool{
 	"queued": true, "running": true, "awaiting_cutover": true, "succeeded": true,
@@ -887,56 +906,12 @@ func jobID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
-func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
-	id, ok := jobID(w, r)
-	if !ok {
-		return
-	}
-	writeError(w, r, model.CodeNotFound, "no job "+id+": the job engine lands in PR-C", nil)
-}
-
-func (s *Server) handleJobStepLog(w http.ResponseWriter, r *http.Request) {
-	id, ok := jobID(w, r)
-	if !ok {
-		return
-	}
-	if _, ok := intQuery(w, r, "lines", 200, 1, model.MaxLogLines); !ok {
-		return
-	}
-	writeError(w, r, model.CodeNotFound, "no job "+id+": the job engine lands in PR-C", nil)
-}
-
-func (s *Server) handleJobSecrets(w http.ResponseWriter, r *http.Request) {
-	id, ok := jobID(w, r)
-	if !ok {
-		return
-	}
-	// The one response in this API that would ever carry a secret value.
-	// There is nothing to deliver, and the header is set anyway so the
-	// no-store property is not something a later PR has to remember.
-	w.Header().Set("Cache-Control", "no-store")
-	writeError(w, r, model.CodeNotFound, "no job "+id+": the delivery envelope lands in PR-C", nil)
-}
-
-func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	limit, ok := intQuery(w, r, "limit", 100, 1, 1000)
-	if !ok {
-		return
-	}
-	if tenant := r.URL.Query().Get("tenant"); tenant != "" && !tenantNameRE.MatchString(tenant) {
-		writeError(w, r, model.CodeValidation, fmt.Sprintf("tenant %q is outside ^[a-z][a-z0-9-]{0,31}$", tenant),
-			map[string]any{"fields": []string{"tenant"}})
-		return
-	}
-	// A read never produces an audit row, so an empty log is the truth here:
-	// this daemon has performed no mutation.
-	writeJSON(w, http.StatusOK, model.AuditResponse{
-		Rows: []json.RawMessage{}, Limit: limit, Truncated: false,
-	})
-}
-
 // --------------------------------------------------------------------------
-// Mutations — registered, authorized, then refused
+// Mutations — the shared envelope, the credential rules, the backstop
+//
+// The handlers are in jobs.go; what stays here is what the GUARD needs: the
+// envelope type, the body it carries to the handler, and the ctl-key rules
+// that apply to every mutating row at once.
 // --------------------------------------------------------------------------
 
 // opRequest is the envelope every mutating body shares — the union of
@@ -971,10 +946,14 @@ func mutationBodyFromContext(ctx context.Context) (opRequest, bool) {
 	return body, ok
 }
 
-func (s *Server) handleMutationRefused(w http.ResponseWriter, r *http.Request) {
-	// The body and every credential rule about it were settled by the guard;
-	// what is left for PR-A is to say when the verb arrives.
-	writeError(w, r, model.CodeRefused, mutationsArriveInPRC, nil)
+// handleMutationUnimplemented answers a mutating row the router registered
+// from the matrix but has no handler for. Reaching it is a bug in this
+// package, not a request the caller got wrong — so it is also logged.
+func (s *Server) handleMutationUnimplemented(w http.ResponseWriter, r *http.Request) {
+	s.log().Error("mutation without a handler",
+		"request_id", observability.RequestIDFromContext(r.Context()),
+		"method", r.Method, "path", r.URL.Path)
+	writeError(w, r, model.CodeRefused, mutationUnimplemented, nil)
 }
 
 // mutationCredentialsAgree applies the contract's rules about the ctl key a
@@ -997,13 +976,28 @@ func (s *Server) handleMutationRefused(w http.ResponseWriter, r *http.Request) {
 // mutated the fleet with no ctl key anywhere in the request. The whole point
 // of `ctl_api_key` is that a long-lived read credential is not enough to
 // change anything; a bearer that skipped it was a session with better luck.
+// sessionMustRePresentKey is the refusal a mutating route gives a session
+// that sent no `ctl_api_key`. It says what to DO rather than only what was
+// refused: the browser is expected to prompt for the key per mutation and
+// never store it, and "sessions are read-only" alone read to more than one
+// operator as "the UI cannot mutate at all".
+const sessionMustRePresentKey = "mutations from a session must re-present a ctl API key"
+
+// sessionKeyMustBeOperator is the refusal for a session that re-presented a
+// key belonging to it that is NOT an operator key. The session's own role
+// passed the authorization gate — a session minted from an operator
+// credential carries the operator role — so without this check a viewer key
+// in the body would satisfy "re-present a ctl key" while authorizing nothing,
+// and the re-presentation would be a formality rather than a control.
+const sessionKeyMustBeOperator = "the ctl_api_key re-presented from a session must itself be an operator key"
+
 func (s *Server) mutationCredentialsAgree(w http.ResponseWriter, r *http.Request, p auth.Principal, body opRequest) bool {
 	if body.CtlAPIKey == "" {
 		if auth.ReadCredential(r).Kind == "api_key" {
 			return true
 		}
 		if p.AuthMethod == auth.MethodSession {
-			writeError(w, r, model.CodeForbidden, auth.SessionsAreReadsOnlyDetail, nil)
+			writeError(w, r, model.CodeForbidden, sessionMustRePresentKey, nil)
 			return false
 		}
 		writeError(w, r, model.CodeForbidden,
@@ -1042,6 +1036,14 @@ func (s *Server) bodyKeyAgrees(w http.ResponseWriter, r *http.Request, p auth.Pr
 		return true
 	}
 	keyPrincipal, err := s.Resolver.Keys.LookupKey(bodyKey)
+	if err == nil && p.AuthMethod == auth.MethodSession && !auth.RoleAtLeast(keyPrincipal.Role, auth.RoleOperator) {
+		// Counted against the presenting credential like every other body-key
+		// refusal: a session walking a list of keys it holds is exactly the
+		// traffic the budget exists to bound.
+		s.failBodyKey(r)
+		writeError(w, r, model.CodeForbidden, sessionKeyMustBeOperator, nil)
+		return false
+	}
 	if err != nil {
 		// An unusable key in the body is a credential failure like any other:
 		// unrecorded, the body is a guessing channel with no budget at all,
@@ -1108,7 +1110,13 @@ func (s *Server) readMutationBody(w http.ResponseWriter, r *http.Request) (opReq
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
-		writeError(w, r, model.CodeValidation, "the request body is not a JSON object matching this operation's schema", nil)
+		// The offending MEMBER, when the decoder named one. `extra.fields`
+		// is what the contract promises a 422 carries ("extra.fields lists
+		// the offending members"), and a caller that misspelt `ctl_api_kye`
+		// should not have to diff its body against the schema to find out.
+		writeError(w, r, model.CodeValidation,
+			"the request body is not a JSON object matching this operation's schema",
+			unknownFieldExtra(err))
 		return body, false
 	}
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
@@ -1126,6 +1134,20 @@ func (s *Server) readMutationBody(w http.ResponseWriter, r *http.Request) (opReq
 // --------------------------------------------------------------------------
 // Shared helpers
 // --------------------------------------------------------------------------
+
+// unknownFieldRE reads the member name out of encoding/json's own message for
+// a DisallowUnknownFields rejection: `json: unknown field "ctl_api_kye"`.
+var unknownFieldRE = regexp.MustCompile(`unknown field "([^"]+)"`)
+
+// unknownFieldExtra turns that message into the contract's extra.fields, or
+// nil for any other decode failure (a malformed body names no member).
+func unknownFieldExtra(err error) map[string]any {
+	m := unknownFieldRE.FindStringSubmatch(err.Error())
+	if m == nil {
+		return nil
+	}
+	return map[string]any{"fields": []string{m[1]}}
+}
 
 // intQuery reads a bounded integer query parameter. Out of range is a 422
 // `validation`, never a silent clamp: a caller that asked for 100000 lines

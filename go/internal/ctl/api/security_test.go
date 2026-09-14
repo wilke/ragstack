@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -367,7 +368,7 @@ func TestEveryMutatingRowRefusesASessionWithoutABodyKey(t *testing.T) {
 		body := `{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`
 		w := do(t, h, row.Method, path, sess, body)
 		got := assertError(t, w, 403, "forbidden")
-		if !strings.Contains(got["detail"].(string), "read-only") {
+		if !strings.Contains(got["detail"].(string), "re-present a ctl API key") {
 			t.Errorf("%s: detail = %v", row.OperationID, got["detail"])
 		}
 
@@ -375,7 +376,8 @@ func TestEveryMutatingRowRefusesASessionWithoutABodyKey(t *testing.T) {
 		assertError(t, do(t, h, row.Method, path, sess, wrong), 403, "forbidden")
 
 		// The same session WITH the key it was minted from gets past the rule
-		// and lands on PR-A's refusal — the rule gates, it does not block.
+		// and lands on the engine-less refusal — the rule gates, it does not
+		// block.
 		right := `{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"` + opKey + `"}`
 		assertError(t, do(t, h, row.Method, path, sess, right), 409, "refused")
 	}
@@ -761,26 +763,37 @@ func TestSettingsResponseIsNormalisedForTheContract(t *testing.T) {
 
 // countingDU records every Usage call, so a test can tell whether the backend
 // reused the probe it was built with or made a new one per request.
-type countingDU struct{ calls int }
+// countingDU counts through an atomic: fleet.Build probes every tenant
+// CONCURRENTLY, so a plain int here is a data race the moment the fixture has
+// more than one tenant — which it does now that the test reads the registry
+// file rather than a hand-built one-row fleet.
+type countingDU struct{ calls atomic.Int64 }
 
 func (c *countingDU) Usage(context.Context, string) (int64, error) {
-	c.calls++
+	c.calls.Add(1)
 	return 0, nil
 }
 
-func liveBackendForTest(t *testing.T) *liveBackend {
+// writeFleet replaces the registry FILE a live backend reads. Every live read
+// reloads it (#541), so this — not assignment to b.fleet — is how a test
+// changes what the backend sees.
+func writeFleet(t *testing.T, path string, f *registry.Fleet) {
 	t.Helper()
-	dir := t.TempDir()
-	f := registry.NewFleet(dir)
 	f.UpdatedAt, f.UpdatedBy = "2026-09-11T08:00:00Z", "test"
 	raw, err := json.Marshal(f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "registry.json")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func liveBackendForTest(t *testing.T) *liveBackend {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "registry.json")
+	writeFleet(t, path, registry.NewFleet(dir))
 	b, err := newLiveBackendWithLogger(dir, path, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	if err != nil {
 		t.Fatalf("newLiveBackend: %v", err)
@@ -815,14 +828,16 @@ func TestLiveBackendReusesOneSetOfProbes(t *testing.T) {
 	}
 	// The fixture fleet has no tenants, so Usage may legitimately be called 0
 	// times; what must hold is that the backend's own probe is the one in use.
-	f := registry.NewFleet(b.roots.RagRoot)
-	f.Tenants["dev"] = registry.NewTenant("dev", "dev")
-	f.DisplayOrder = []string{"dev"}
-	b.fleet = f
+	// Written to the registry FILE, not poked into the snapshot: Fleet
+	// reloads per request now (#541), so a tenant that exists only in this
+	// process's start-up copy is a tenant Fleet correctly does not see. The
+	// fixture fleet is used rather than a hand-built one because the loader
+	// validates every row against registry.json and refuses a partial tenant.
+	writeFleet(t, b.registryPath, registry.LiveFixture())
 	if _, err := b.Fleet(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if du.calls == 0 {
+	if du.calls.Load() == 0 {
 		t.Fatal("the backend's disk probe was never consulted; Fleet built its own")
 	}
 }
@@ -1020,21 +1035,25 @@ func TestBearerMutationWithoutABodyKeyIsRefused(t *testing.T) {
 	bearer := map[string]string{auth.HeaderAuthorization: "Bearer " + token}
 	const op = "/v1/tenants/dev/ops/start"
 
-	body := assertError(t, do(t, h, http.MethodPost, op, bearer, `{"dry_run":false,"args":{}}`), 403, "forbidden")
+	body := assertError(t, do(t, h, http.MethodPost, op, bearer,
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`), 403, "forbidden")
 	if d, _ := body["detail"].(string); !strings.Contains(d, "ctl_api_key") {
 		t.Fatalf("detail %q does not say what is missing", d)
 	}
 	// An empty member is not a present one.
-	assertError(t, do(t, h, http.MethodPost, op, bearer, `{"dry_run":false,"ctl_api_key":""}`), 403, "forbidden")
-
-	// With the key it IS accepted, and only then refused for PR-A reasons —
-	// so the 403 above is about the missing key, not about bearer callers.
 	assertError(t, do(t, h, http.MethodPost, op, bearer,
-		`{"dry_run":false,"ctl_api_key":"`+opKey+`"}`), 409, "refused")
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":""}`), 403, "forbidden")
+
+	// With the key it IS accepted, and only then refused because this server
+	// has no engine — so the 403 above is about the missing key, not about
+	// bearer callers.
+	assertError(t, do(t, h, http.MethodPost, op, bearer,
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"`+opKey+`"}`), 409, "refused")
 
 	// The one exemption still stands: the header itself.
 	assertError(t, do(t, h, http.MethodPost, op,
-		map[string]string{auth.HeaderAPIKey: opKey}, `{"dry_run":false}`), 409, "refused")
+		map[string]string{auth.HeaderAPIKey: opKey},
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`), 409, "refused")
 }
 
 // --------------------------------------------------------------------------
@@ -1110,7 +1129,8 @@ func TestEveryMutatingRowIsRegistered(t *testing.T) {
 		}
 		mutating++
 		path := concretePath(row.Path)
-		w := do(t, h, row.Method, path, map[string]string{auth.HeaderAPIKey: opKey}, `{"dry_run":true,"args":{}}`)
+		w := do(t, h, row.Method, path, map[string]string{auth.HeaderAPIKey: opKey},
+			`{"dry_run":true,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`)
 		if w.Code == http.StatusNotFound || w.Code == http.StatusMethodNotAllowed {
 			t.Errorf("%s %s (%s) is not registered: %d", row.Method, path, row.OperationID, w.Code)
 			continue
