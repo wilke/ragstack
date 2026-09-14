@@ -252,16 +252,66 @@ ops/coconut/ctl-as-svc.sh gateway apply           # no --expect-bodies: the gold
 ```
 
 Tenants are still started by hand (or `ops/coconut/restore.sh`) until PR-D;
-adoption is read-only inventory. A real greenfield guide replaces this section
-once `tenant create` exists.
+adoption is read-only inventory. Adding a tenant is `tenant create` (below).
 
-**Adding a tenant to a migrated host:**
-**Not yet supported once the registry exists.** `new-tenant.sh` refuses to
-allocate a port block after `adopt-all --commit`; the ctl's own `tenant
-create` lands in PR-D. On 2026-09-14 the hackathon tenant was provisioned
-BEFORE the first registry commit, which is the only sequence this recipe has
-been proven for. (Escape hatch for an already-migrated host: see the note
-below once verified.)
+**Adding a tenant to a migrated host: `fleet artifact prepare` + `tenant create`.**
+This is what PR-D added, and it replaces the whole hand dance below. Two
+commands: one that decides which code may run, one that makes the tenant.
+
+```bash
+# Once per host (wilke, deploy-time): the bare mirror artifacts come out of.
+git clone --mirror ~/Development/ragstack /rag/repos/ragstack.git
+export CTL_MIRROR=/rag/repos/ragstack.git        # or leave it: <rag-root>/repos/ragstack.git
+
+# 1. Prepare the code. CLI-only (--direct is implied): it runs `npm ci`, the one
+#    step in the control plane that reaches the network, and it takes a
+#    repository path. The daemon has no route for it.
+/rag/bin/ragstack-ctl fleet artifact prepare --tag v1.5.3 [--schema-compatible]
+/rag/bin/ragstack-ctl fleet artifact list        # id = <tag>-<sha[:12]>
+
+# 2. Make the tenant. Allocate → dirs (2770) → mint keys into secrets.env →
+#    tenant.env + provision.env → worktree at the artifact's sha → vite build →
+#    units written, linked, enabled → start the target → wait for the stores and
+#    the API → service accounts → /health, /v1/health/deep, /v1/version →
+#    gateway publish → registry row `active`. One job, rollback per step.
+/rag/bin/ragstack-ctl --direct tenant create <name> --artifact v1.5.3-d4c07047753d \
+    --postgres local --es-heap 1g --identity bvbrc \
+    --admin-subject bvbrc:alice@patricbrc.org \
+    --key ops:admin --sa gowe:user:workflows --dry-run     # read the plan first
+```
+
+Drop `--dry-run` to run it. The minted keys are printed **once**, when the job
+succeeds, and are in no file the ctl can read back — the registry keeps
+`sha256:<hex[:16]>` fingerprints. `--wait` is implied for an execute, because
+the delivery envelope is destroyed by the first read and expires after fifteen
+minutes; collect them then or mint replacements with `key mint`.
+
+Flags worth knowing:
+
+| Flag | Effect |
+|---|---|
+| `--artifact ID` | required; a PREPARED artifact, never a ref or a path |
+| `--postgres local` | the tenant's own postgres on the block's `+5` port, as a unit the ctl owns (default: sqlite files under `state/`) |
+| `--identity bvbrc` + `--admin-subject S` | bearer admins; subjects must be issued by the provider, and are refused outright when it is `none` |
+| `--key label:role` | an extra API key; an admin key `bootstrap-admin` is ALWAYS minted (the ctl authenticates with it to register the service accounts) |
+| `--template-from T` | copy T's PUBLIC settings only |
+| `--no-start` / `--no-gateway` | provision without starting / without routing |
+
+Closes #537. `doctor` should stay 0 red afterwards; the registry generation
+advances twice (the allocation and the finished row), and `gateway apply` has
+already run unless `--no-gateway`.
+
+**Before PR-D (kept for the record).** Until `tenant create` existed, adding a
+tenant to a migrated host meant the sequence below. It is superseded — use it
+only to read a tenant that was made that way.
+
+<details>
+<summary>The pre-PR-D recipe</summary>
+
+**Not supported once the registry exists.** `new-tenant.sh` refuses to
+allocate a port block after `adopt-all --commit`. On 2026-09-14 the hackathon
+tenant was provisioned BEFORE the first registry commit, which is the only
+sequence that recipe was proven for.
 
 The sequence that worked pre-registry: `new-tenant.sh <name> --postgres local
 --es-heap 1g` (dedicated Postgres on the block's +5 port; the sqlite default
@@ -279,26 +329,27 @@ Then `bin/up.sh`, start the API, `adopt <name> --data-dir … --worktree …
 --ui-mode static` (or `--ui-port N`) as wilke, refresh the four goldens,
 `gateway apply --expect-bodies /rag/data/ctl/goldens`.
 
-**Escape hatch on an already-migrated host (verified in a scratch root 2026-09-14).**
-`new-tenant.sh` reuses a manifest row that already exists, so hand-append the row
-the registry would allocate (next index, `24000 + 20*index`), provision, then adopt
-with `--repair-projection` (the hand edit makes the projection stale until then):
+*Escape hatch on an already-migrated host (verified in a scratch root
+2026-09-14).* `new-tenant.sh` reuses a manifest row that already exists, so
+hand-append the row the registry would allocate (next index, `24000 +
+20*index`), provision, then adopt with `--repair-projection`:
 
 ```bash
 cp -a /rag/data/tenants/{registry.json,registry.json.generation,manifest.tsv} ~/ctl-undo/   # undo copies first
 printf '<name>\t<index>\t<base>\n' >> /rag/data/tenants/manifest.tsv
 apptainer/new-tenant.sh <name> --postgres local --es-heap 1g          # "[manifest] reusing index N, base P"
-# … tenant.env, worktree, UI build, bin/up.sh, start the API (as below) …
+# … tenant.env, worktree, UI build, bin/up.sh, start the API …
 /rag/bin/ragstack-ctl adopt <name> --data-dir /rag/data/tenants/<name> --worktree /rag/repos/tenants/<name> \
     --ui-mode static --commit --repair-projection
 ```
 
-Registry generation advances by one; the daemon needs no restart (it re-reads the
-registry per request). Do **not** use `adopt-all --commit --repair-projection` for
-this: it repairs the projection first and then refuses ("already in registry.json"),
-which deletes the row you just appended. `ragstack-ctl tenant create` (PR-D) replaces
-this whole dance. Undo: restore the three copies from `~/ctl-undo/`, `bin/down.sh`,
-kill the API listener, `git worktree remove /rag/repos/tenants/<name>`, remove the data dir.
+Do **not** use `adopt-all --commit --repair-projection` for this: it repairs the
+projection first and then refuses ("already in registry.json"), which deletes
+the row you just appended. Undo: restore the three copies from `~/ctl-undo/`,
+`bin/down.sh`, kill the API listener, `git worktree remove
+/rag/repos/tenants/<name>`, remove the data dir.
+
+</details>
 
 **Undo:** `bin/down.sh`; kill the API listener; remove the worktree
 (`git worktree remove`). There is no removal for the registry/manifest row
