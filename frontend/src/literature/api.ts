@@ -185,7 +185,12 @@ export async function listCollections(token: string): Promise<CollectionInfo[]> 
   } catch (e) {
     throw new ApiError(0, String(e));
   }
-  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  if (!res.ok) {
+    // Same envelope handling as postJson — this path used to surface a bare
+    // status text while every other call gave a readable message.
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, humanError(text) || res.statusText);
+  }
   const body = (await res.json()) as { collections?: CollectionInfo[] };
   return body.collections ?? [];
 }

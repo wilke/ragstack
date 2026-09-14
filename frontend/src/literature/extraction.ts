@@ -192,15 +192,33 @@ export interface ParsedTable {
 const FENCE_LINE = /^\s*```[a-z]*\s*$/i;
 
 /**
- * A markdown separator row — `|---|:---:|`.
+ * A table separator row, judged PER DELIMITER — the two branches genuinely differ.
  *
- * Requires a run of THREE dashes. A two-column TSV data row of `-\t-` (models
- * routinely write `-` for "unknown" despite being asked for "N/A") matches the
- * character class but has no such run, and must survive: dropping it silently
- * removed a whole row of extracted data with no gap in the UI.
+ * Pipe mode: `| --- |`, `| - |`, `| :-: |` are all valid GFM delimiter rows, so
+ * any all-punctuation row carrying both a pipe and a dash is one. An earlier
+ * version demanded three dashes here and turned `| - | - |` into a junk first
+ * data row.
+ *
+ * Tab mode: a row of `-\t-` is DATA. Models routinely write `-` for "unknown"
+ * despite being asked for "N/A", and dropping it silently removed a whole row of
+ * extracted data with no gap in the UI. So a tab-mode separator must show a run
+ * of three dashes, which `-\t-` does not have.
  */
-function isSeparatorRow(line: string): boolean {
+function isSeparatorRow(line: string, delimiter: "\t" | "|"): boolean {
+  if (delimiter === "|") return /^[\s|:-]+$/.test(line) && line.includes("|") && line.includes("-");
   return /^[\s|:=-]+$/.test(line) && /-{3,}/.test(line);
+}
+
+/**
+ * A separator that proves a PIPE TABLE, for the anti-prose guard below.
+ *
+ * Must itself contain a pipe. A bare `---` is a markdown horizontal rule, and
+ * accepting it let two prose lines containing an incidental "|" through the very
+ * guard added to stop them — the more so because `formatContext` puts `---`
+ * between passages in the prompt, so models echo it back.
+ */
+function isPipeSeparator(line: string): boolean {
+  return isSeparatorRow(line, "|");
 }
 
 /** Split on `|` that is not backslash-escaped, then unescape. `\|` is the standard
@@ -245,11 +263,17 @@ function splitRow(line: string, delimiter: "\t" | "|"): string[] {
  * count was previously invisible on screen but present in the file.
  */
 export function parseTable(text: string): ParsedTable | null {
+  // Trim SPACES only, never tabs. `.trim()` here destroyed a leading empty TSV
+  // cell — "\thuman\t2020" became ["human","2020"] and every value in the row
+  // shifted one column left, on screen and in the downloaded file. That is the
+  // silent mis-attribution this parser exists to avoid; it was preserved for the
+  // pipe branch and lost for the tab branch. Indentation is still handled,
+  // because leading spaces do go.
   const lines = text
     .split("\n")
+    .map((l) => l.replace(/\r$/, "").replace(/^[ ]+/, "").replace(/[ \t]+$/, ""))
     .filter((l) => !FENCE_LINE.test(l))
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.trim().length > 0);
 
   if (lines.length < 2) return null;
 
@@ -267,13 +291,20 @@ export function parseTable(text: string): ParsedTable | null {
   // table is not.
   const tabbed = lines.filter((l) => l.includes("\t")).length;
   const bounded = lines.filter((l) => l.startsWith("|") && l.endsWith("|")).length;
-  const hasSeparator = lines.some(isSeparatorRow);
+  const hasSeparator = lines.some(isPipeSeparator);
   const pipedTable = bounded >= 2 || (hasSeparator && lines.filter((l) => l.includes("|")).length >= 2);
   const delimiter: "\t" | "|" | null = tabbed >= 2 ? "\t" : pipedTable ? "|" : null;
   if (delimiter === null) return null; // prose — the caller renders it as text
 
-  const parsed = lines
-    .filter((l) => !isSeparatorRow(l))
+  // A separator is POSITIONAL: in GFM the delimiter row is the second line of the
+  // table and nothing else. Removing every separator-shaped line anywhere was
+  // wrong in both directions — it dropped a legitimate `| - | - |` DATA row lower
+  // down, and the three-dash workaround that protected it then let a real
+  // `| - | - |` delimiter row through as junk data. Drop at most one, and only
+  // where a delimiter row can actually be.
+  const body = lines.filter((l, i) => !(i === 1 && isSeparatorRow(l, delimiter)));
+
+  const parsed = body
     .map((l) => splitRow(l, delimiter))
     // Drop lead-in and trailing prose: a line that does not split into at least
     // two cells is not part of the table.

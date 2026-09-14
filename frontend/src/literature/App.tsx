@@ -148,6 +148,8 @@ export function App() {
   const [answerError, setAnswerError] = useState("");
   // Set when generation succeeded, but not on the model the user picked.
   const [answerNote, setAnswerNote] = useState("");
+  // The model id that produced the current answer.
+  const [answeredWith, setAnsweredWith] = useState("");
   const [prompt, setPrompt] = useState("");
   const [promptOpen, setPromptOpen] = useState(false);
   const [lastFormat, setLastFormat] = useState<Format>("raw");
@@ -186,16 +188,23 @@ export function App() {
       const fallback = models.find((m) => m.isDefault);
       try {
         const out = await generate(text, model, token, subject);
-        if (runRef.current === run) setAnswer(out);
+        if (runRef.current === run) {
+          setAnswer(out);
+          setAnsweredWith(model);
+        }
       } catch (e) {
         const retryable = e instanceof ApiError && e.status >= 500 && fallback && fallback.model !== model;
         if (!retryable) {
           if (runRef.current === run) setAnswerError(describe(e, "generation"));
         } else {
           try {
+            // Nothing to retry for if this run was already superseded — a newer
+            // search is in flight and this answer would be discarded anyway.
+            if (runRef.current !== run) return;
             const out = await generate(text, fallback.model, token, subject);
             if (runRef.current === run) {
               setAnswer(out);
+              setAnsweredWith(fallback.model);
               setAnswerNote(
                 `${models.find((m) => m.model === model)?.label ?? model} is not responding; ` +
                   `answered with ${fallback.label} instead.`,
@@ -220,6 +229,7 @@ export function App() {
     setAnswer("");
     setAnswerError("");
     setAnswerNote("");
+    setAnsweredWith("");
     setPrompt("");
     setSources([]);
 
@@ -267,7 +277,12 @@ export function App() {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [table, fields.dataTypeId]);
 
-  const modelLabel = models.find((m) => m.model === model)?.label;
+  // The model that actually answered, which is not always the selected one: a
+  // 5xx falls back to the default. Naming the picked model here while the note
+  // says another one answered made the two disagree on screen.
+  const modelLabel = answeredWith
+    ? models.find((m) => m.model === answeredWith)?.label
+    : models.find((m) => m.model === model)?.label;
   const selectedCollection = collections.find((c) => c.id === collection);
 
   // --- sign-in gate -------------------------------------------------------
@@ -629,7 +644,7 @@ function describe(e: unknown, what: string): string {
     // read-deny (ADR-0003), but a Copilot 404 is a missing route and rendering
     // "No such collection…(models)" was actively misleading.
     if (e.status === 404)
-      return what === "retrieval" || what === "collections"
+      return what === "retrieval"
         ? `No such collection, or it is not readable by this account.`
         : `The ${what} service did not recognise that request (404).`;
     if (e.status === 0) return `Could not reach the ${what} service: ${e.message}`;
