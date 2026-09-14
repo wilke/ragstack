@@ -1,6 +1,7 @@
 # Server-side prompt templates for `/v1/query` — plan
 
-*2026-09-14. Status: `OPEN`. Raised by the BV-BRC literature demo (PR #544), which had to route
+*2026-09-14. Status: `IN PROGRESS` — phase 0 (**[ADR-0008](../adr/0008-prompt-templates.md)**, accepted
+form of §3 and §9) and phase 1 (the contract) are on `feat/prompt-templates`; phase 2 next. Raised by the BV-BRC literature demo (PR #544), which had to route
 generation through a second service because RAGStack's generation prompt cannot be steered at
 all. Owner framing, and the constraint this plan is built around: **RAGStack is text and
 information retrieval, not answer interpretation.** That is an argument for making generation
@@ -144,8 +145,10 @@ These are the rules that keep §3's bound real. All of them are cheap; none is o
 
 ### 5.4 The response
 
-**Unchanged in phase 1.** `answer` carries the model's raw text; `sources` and
-`rewritten_queries` as today. Clients parse the table.
+**No structured block in phase 1.** `answer` carries the model's raw text; `sources` and
+`rewritten_queries` as today, and clients parse the table. The response *does* gain the
+self-describing echo fields below — those are additive and are what make a result
+attributable.
 
 This is deliberate restraint. `query_response.json` is `additionalProperties: false` and
 `/v1/query` is the most conformance-covered endpoint in the repo; a `columns`/`rows` block is
@@ -163,8 +166,8 @@ diagnosable instead of invisible.
 
 | phase | what | gate |
 |---|---|---|
-| 0 | **ADR.** Records: level 2 not 3 (§3); templates are deployment config, not user content; slots never reach the system message; the response stays unchanged in phase 1. | owner sign-off |
-| 1 | Contract: `template`/`template_vars` on `query_request.json`, `GET /v1/prompt-templates`, fixtures. Conformance including **"no `template` ⇒ byte-identical to today"**. | contract review |
+| 0 | **ADR.** Level 2 not 3 (§3); templates are deployment config, not user content; slots never reach the system message; no structured rows block in phase 1. | **DONE** — [ADR-0008](../adr/0008-prompt-templates.md) |
+| 1 | Contract: `template`/`template_vars` on `query_request.json`, echo fields on `query_response.json`, `prompt_templates_response.json` + `GET /v1/prompt-templates`. | **DONE** — fixtures and the conformance case (**"no `template` ⇒ byte-identical to today"**) still to write |
 | 2 | Python: loader, validator, renderer, wiring in `deps.py`/`llm.py`. Go stays a stub (ADR-0006 §4). | conformance green |
 | 3 | Port the demo's three templates server-side; the app drops the Copilot leg and calls `/v1/query`. Removes a cross-origin dependency and a whole service. | demo still works |
 | 4 | *Optional, on evidence:* `structured` response block; admin CRUD; per-template model pinning. | a second consumer exists |
@@ -201,7 +204,7 @@ from a registry row that is not currently blocking anything.
 | Scope creep into a prompt-management product (versioning UI, per-user prompts, A/B assignment) | phase 4 is gated on a second consumer existing; a file, not a store |
 | Reproducibility claimed but not real — a template edited in place, or copied to another tenant and then diverged, invalidates old results while still claiming the same `(id, version)` | `version` MUST be bumped on any content change, and a **content hash** is carried on the record and echoed in the response (§9.1). Cross-tenant drift is detectable by comparing hashes; a single process can also refuse two same-`(id, version)` templates with different hashes |
 | The `query`-vs-template confusion of §5.1 reaching a client | conformance test that a template request with a long `query` is not silently truncated; document it at the top of the schema |
-| Level 2 read as "injection is handled" | §3 says otherwise in the plan, and should say so in the ADR and the schema description too |
+| Level 2 read as "injection is handled" | **Done in all three places**: §3 here, ADR-0008 "What this decision explicitly does NOT do", and the `template_vars` description in `query_request.json` ("does NOT make a value trusted") |
 | Go divergence | Go is a frozen scaffold; contract + conformance keep the path open (ADR-0006 §4) |
 
 ## 9. Decisions (owner, 2026-09-14)
