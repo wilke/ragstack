@@ -565,7 +565,11 @@ func (p *planner) addESSnapshots(bundleDir string, fence bool) {
 			// one this job's other legs and its manifest name.
 			id := p.bundleID(sc)
 			stamp := bundleStamp(id)
-			repo, verifyRepo, name := "ctl-"+stamp, "verify-"+id, id
+			// The snapshot NAME is the bundle id lowercased: ES refuses a
+			// snapshot name with an uppercase letter, and the stamp carries
+			// two (T and Z). The repository keeps the manifest schema's
+			// `ctl-<ts>` form, which ES accepts.
+			repo, verifyRepo, name := "ctl-"+stamp, "verify-"+id, strings.ToLower(id)
 			hostDir, containerDir := filepath.Join(hostRepos, id), containerRepos+"/"+id
 			// Both names are the ctl's own, so — unlike qdrant's — a crash
 			// leaves the exact repo a cleanup has to unregister; they are

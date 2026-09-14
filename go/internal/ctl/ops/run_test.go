@@ -231,7 +231,7 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 		"job.checkpoint(qdrant:pending:docs)\nqdrant.Snapshot(docs,http://localhost:24041)",
 		// The repository name the contract spells is `ctl-<ts>`; the snapshot
 		// inside it is the whole bundle id.
-		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z/20260914T093000Z-backup)",
+		"job.checkpoint(bundle:20260914T093000Z-backup,es:ctl-20260914T093000Z/20260914t093000z-backup)",
 		// The verification: the same directory, re-registered READ-ONLY under
 		// a second name, listed, and both registrations dropped again.
 		"es.RegisterRepo(verify-20260914T093000Z-backup,/usr/share/elasticsearch/snapshots/20260914T093000Z-backup,true,http://localhost:24043)",

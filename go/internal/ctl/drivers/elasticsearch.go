@@ -31,6 +31,12 @@ var (
 	// (`ctl-<bundle-id>`, `verify-<bundle-id>`) and both become directory
 	// names under path.repo, so they are lowercase and path-safe.
 	esRepoRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	// A REPOSITORY name may carry uppercase (ES restricts only the file-name
+	// characters); the ctl's `ctl-<ts>` repos carry the stamp's T and Z, and
+	// the bundle manifest's schema pins that form. A SNAPSHOT name must be
+	// lowercase — ES refuses "Invalid snapshot name, must be lowercase" — so
+	// snapshots keep the stricter esRepoRe.
+	esRepoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 	// esIndexRe is looser only in length: an index name is the tenant's, not
 	// the ctl's, and ragstack's are already of the form `<tenant>-chunks`.
 	esIndexRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,254}$`)
@@ -44,9 +50,13 @@ var (
 const esRepoRoot = "/usr/share/elasticsearch/snapshots/"
 
 func checkESRepo(kind, name string) error {
-	if !esRepoRe.MatchString(name) {
+	re := esRepoRe
+	if kind == "repository" {
+		re = esRepoNameRe
+	}
+	if !re.MatchString(name) {
 		return fmt.Errorf("%w: %q is not a %s name the ctl will put in a path (want %s)",
-			jobs.ErrRefused, name, kind, esRepoRe)
+			jobs.ErrRefused, name, kind, re)
 	}
 	return nil
 }

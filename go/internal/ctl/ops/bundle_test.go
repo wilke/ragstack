@@ -138,7 +138,9 @@ func TestTheBundleManifestMatchesItsContract(t *testing.T) {
 		t.Errorf("collection file = %v, want a path inside the bundle", first["file"])
 	}
 	es := stores["elasticsearch"].(map[string]any)
-	if es["repo"] != "ctl-20260914T093000Z" || es["snapshot"] != "20260914T093000Z-backup" || es["complete"] != true {
+	// The snapshot name is the bundle id LOWERCASED: ES refuses uppercase in
+	// a snapshot name, and the stamp carries T and Z.
+	if es["repo"] != "ctl-20260914T093000Z" || es["snapshot"] != "20260914t093000z-backup" || es["complete"] != true {
 		t.Errorf("elasticsearch = %v", es)
 	}
 	if pg := stores["postgres"].(map[string]any); pg["kind"] != "sqlite" || pg["included"] != false {

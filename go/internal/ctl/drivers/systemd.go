@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -80,12 +81,34 @@ func (s *RealSystemd) DaemonReload(ctx context.Context) error {
 func (s *RealSystemd) Start(ctx context.Context, unit string) error {
 	return s.verb(ctx, "start", unit)
 }
-func (s *RealSystemd) Stop(ctx context.Context, unit string) error { return s.verb(ctx, "stop", unit) }
+
+// Stop is idempotent over absence: a unit the manager does not have loaded
+// is a unit that is not running, which is the state Stop wants. `systemctl
+// stop` answers exit 5 "not loaded" for it, and a decommission that stops
+// units an earlier, interrupted decommission had already removed used to
+// fail right there.
+func (s *RealSystemd) Stop(ctx context.Context, unit string) error {
+	return notLoadedIsFine(s.verb(ctx, "stop", unit))
+}
 func (s *RealSystemd) Enable(ctx context.Context, unit string) error {
 	return s.verb(ctx, "enable", unit)
 }
 func (s *RealSystemd) Disable(ctx context.Context, unit string) error {
-	return s.verb(ctx, "disable", unit)
+	return notLoadedIsFine(s.verb(ctx, "disable", unit))
+}
+
+// notLoadedIsFine turns systemctl's "Unit X not loaded" / "does not exist"
+// (exit 5) into success for the verbs whose goal is the unit's absence.
+func notLoadedIsFine(err error) error {
+	var ee *ExecError
+	if errors.As(err, &ee) && ee.Code == 5 {
+		msg := strings.ToLower(ee.Stderr)
+		if strings.Contains(msg, "not loaded") || strings.Contains(msg, "does not exist") ||
+			strings.Contains(msg, "not found") {
+			return nil
+		}
+	}
+	return err
 }
 
 // ResetFailed clears a unit's failed state and its start-rate counter.
