@@ -112,9 +112,31 @@ async function postJson<T>(url: string, body: unknown, token: string): Promise<T
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new ApiError(res.status, text.slice(0, 400) || res.statusText);
+    throw new ApiError(res.status, humanError(text) || res.statusText);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * A readable message out of an error body, instead of pasting raw JSON at the user.
+ *
+ * Handles both envelopes we actually see: RAGStack's FastAPI `{"detail": ...}`
+ * and Copilot's `{"message": ..., "error": {"name": ...}}`. Falls back to the
+ * raw text, truncated.
+ */
+function humanError(text: string): string {
+  if (!text) return "";
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    if (typeof j.detail === "string") return j.detail;
+    const err = j.error as Record<string, unknown> | undefined;
+    const name = err && typeof err.name === "string" ? err.name : "";
+    const msg = typeof j.message === "string" ? j.message : "";
+    if (name && msg) return `${msg} (${name})`;
+    return name || msg || text.slice(0, 300);
+  } catch {
+    return text.slice(0, 300);
+  }
 }
 
 // --- ragstack ---------------------------------------------------------------

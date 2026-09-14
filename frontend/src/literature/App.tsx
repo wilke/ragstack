@@ -146,6 +146,8 @@ export function App() {
   const [answer, setAnswer] = useState("");
   const [generating, setGenerating] = useState(false);
   const [answerError, setAnswerError] = useState("");
+  // Set when generation succeeded, but not on the model the user picked.
+  const [answerNote, setAnswerNote] = useState("");
   const [prompt, setPrompt] = useState("");
   const [promptOpen, setPromptOpen] = useState(false);
   const [lastFormat, setLastFormat] = useState<Format>("raw");
@@ -165,17 +167,49 @@ export function App() {
       }
       setGenerating(true);
       setAnswerError("");
+      setAnswerNote("");
       setLastFormat(fmt);
+
+      // A model can be ADVERTISED AND BROKEN. The Copilot list marks every model
+      // `active: true`, but a model whose registry row names an endpoint that now
+      // serves something else 500s on every call — as of 2026-09-14 that is
+      // Llama-4-Scout non-FP8, whose mango:8004 endpoint runs Qwen3.6-35B-A3B.
+      // Seeding the form with the default (api.ts listModels) keeps that out of
+      // the common path, but the model is still SELECTABLE, and picking it is a
+      // guaranteed failure that looks like the app is broken.
+      //
+      // So a 5xx on a non-default model falls back to the default once and says
+      // it did. Deliberately not a hardcoded list of known-bad ids: which model
+      // is broken is a deployment fact that changes without us, and the fallback
+      // works whichever one it is. Only 5xx — a 401 is a credential problem and
+      // retrying on another model would just produce a second, confusing 401.
+      const fallback = models.find((m) => m.isDefault);
       try {
         const out = await generate(text, model, token, subject);
         if (runRef.current === run) setAnswer(out);
       } catch (e) {
-        if (runRef.current === run) setAnswerError(describe(e, "generation"));
+        const retryable = e instanceof ApiError && e.status >= 500 && fallback && fallback.model !== model;
+        if (!retryable) {
+          if (runRef.current === run) setAnswerError(describe(e, "generation"));
+        } else {
+          try {
+            const out = await generate(text, fallback.model, token, subject);
+            if (runRef.current === run) {
+              setAnswer(out);
+              setAnswerNote(
+                `${models.find((m) => m.model === model)?.label ?? model} is not responding; ` +
+                  `answered with ${fallback.label} instead.`,
+              );
+            }
+          } catch (e2) {
+            if (runRef.current === run) setAnswerError(describe(e2, "generation"));
+          }
+        }
       } finally {
         if (runRef.current === run) setGenerating(false);
       }
     },
-    [model, token, subject],
+    [model, token, subject, models],
   );
 
   const search = useCallback(async () => {
@@ -185,6 +219,7 @@ export function App() {
     setSearchError("");
     setAnswer("");
     setAnswerError("");
+    setAnswerNote("");
     setPrompt("");
     setSources([]);
 
@@ -467,14 +502,20 @@ export function App() {
       {(generating || answer || answerError) && (
         <div className="mt-6">
           {table ? (
-            <ResultsTable table={table} onDownload={downloadTsv} />
+            <>
+              {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              <ResultsTable table={table} onDownload={downloadTsv} />
+            </>
           ) : (
-            <AnswerPanel
-              text={answer}
-              modelLabel={modelLabel}
-              pending={generating}
-              error={answerError}
-            />
+            <>
+              {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              <AnswerPanel
+                text={answer}
+                modelLabel={modelLabel}
+                pending={generating}
+                error={answerError}
+              />
+            </>
           )}
         </div>
       )}
