@@ -217,9 +217,9 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 	fs.SetOutput(stderr)
 	index := fs.Int("index", 0, "port-block index (base 24000 + 20*index)")
 	root := fs.String("rag-root", ragRoot, "deployment root")
-	store := fs.String("store", render.StoreSQLite, "sqlite|postgres")
-	pgHost := fs.String("pg-host", "", "postgres host (store=postgres)")
-	pgPort := fs.String("pg-port", "5432", "postgres port (store=postgres)")
+	store := fs.String("store", render.StoreSQLite, "sqlite|postgres|postgres-local")
+	pgHost := fs.String("pg-host", "", "postgres host (store=postgres; postgres-local is always localhost)")
+	pgPort := fs.String("pg-port", "5432", "postgres port (store=postgres; postgres-local uses the block's +5)")
 	images := fs.String("images", "", "RAG_IMAGES (default <rag-root>/apptainer/images)")
 	esHeap := fs.String("es-heap", "512m", "Elasticsearch heap")
 	reg := fs.String("registry", registryPath, "registry.json path")
@@ -288,9 +288,12 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 		case "tenant-env":
 			out, err = render.TenantEnv(t, render.EnvOptions{DryRun: true, StoreKind: *store, PGHost: *pgHost, PGPort: *pgPort})
 		case "up-sh":
-			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: heap})
+			// DryRun: the CLI never has the tenant's real secrets, so the
+			// dedicated instance's POSTGRES_PASSWORD renders as the same
+			// <GENERATED:…> placeholder the script's --dry-run prints.
+			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: heap, StoreKind: *store, DryRun: true})
 		case "down-sh":
-			out, err = render.DownSh(t)
+			out, err = render.DownSh(t, render.StoreOptions{StoreKind: *store})
 		}
 		if err != nil {
 			return fail(err)

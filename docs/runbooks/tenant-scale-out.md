@@ -136,9 +136,27 @@ mode runs no `psql` and needs no admin credentials** — the password is the sam
 same postgres store block as the DSN mode (`USER_STORE_*`, `JOB_STORE_*` +
 `POSTGRES_DSN`, `COLLECTION_STORE_*`), pointed at `localhost:<base+5>`.
 `provision.env` records `TENANT_STORE_KIND=postgres-local`, so a flagless
-re-run keeps the kind; passing the other `--postgres` form switches it.
+re-run keeps the kind.
 Preview with `--dry-run` as always — the plan shows the instance start line,
 with `<GENERATED:PG_PASSWORD>` placeholders.
+
+#### Switching a provisioned tenant's store kind
+
+Re-running with flags that resolve to a **different** kind than
+`provision.env` records is **refused**, naming both kinds. Switching kinds
+re-points every DSN in `tenant.env` but moves no data: the ACL, collection and
+job rows stay in the old store, and nothing copies or deletes them. Since the
+switch used to be silent and one-way, the refusal is the guard rail.
+
+- `--force` performs the switch and prints what is orphaned: the per-tenant
+  DATABASE and ROLE on the shared server (leaving `postgres`), the tenant's
+  own `postgres/data/pgdata` and its `postgres-<tenant>` instance (leaving
+  `postgres-local`), or the sqlite files under `state/` (leaving `sqlite`).
+  Migrate or drop the old store by hand — the script does neither.
+- A `--dry-run` is never refused; it warns and shows the plan, which is how
+  you decide whether to `--force`.
+- A flagless re-run is not a switch: it reads the kind back from
+  `provision.env` and keeps it.
 
 ### What the script writes
 
@@ -170,6 +188,31 @@ with `<GENERATED:PG_PASSWORD>` placeholders.
   - `secrets.env` — API keys and (with `--postgres`) the tenant's DB password,
     generated once. Deleting it rotates every secret on the next run. **Never
     read or print this file's contents** — it holds live credentials.
+
+    **Caveat — deleting it is NOT a rotation for `--postgres local` once the
+    database exists.** The postgres image applies `POSTGRES_PASSWORD` only
+    when it *initialises* `PGDATA` and ignores it thereafter, and this kind
+    has no admin DSN to correct it with. A regenerated `TENANT_PG_PASSWORD`
+    would land in `tenant.env` and `bin/up.sh` while the server still holds
+    the old one, and the tenant's API would fail to authenticate against its
+    own store. The script refuses it: with `postgres/data/pgdata` present and
+    `secrets.env` gone, a real run dies (a `--dry-run` warns) unless `--force`
+    is passed. Rotate through the running instance instead, over the unix
+    socket in `postgres/run` — no password needed, and none reaches
+    `/proc/*/cmdline`:
+
+    ```bash
+    T=$RAG_DATA/tenants/<tenant>
+    NEW=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    apptainer exec --bind "$T/postgres/run:/var/run/postgresql" "$RAG_IMAGES/postgres.sif" \
+      psql -h /var/run/postgresql -U <tenant> -d <tenant> -v ON_ERROR_STOP=1 \
+      -c "ALTER ROLE \"<tenant>\" PASSWORD '$NEW'"
+    ```
+
+    then write `TENANT_PG_PASSWORD=$NEW` (with the two unchanged API keys)
+    back into `secrets.env` and re-run the script with `--force` so
+    `tenant.env` and `bin/up.sh` pick it up. To rotate only the API keys,
+    edit the two `TENANT_API_KEY_*` lines in place — do not delete the file.
   - `provision.env` — persists the provisioning choices (`--es-heap`, and the
     store kind: `sqlite` / `postgres` / `postgres-local`) so a flagless re-run
     doesn't silently revert them.

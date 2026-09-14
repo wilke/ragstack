@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,7 +114,7 @@ func TestUpDownGoldens(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "up.sh", up)
-	down, err := DownSh(tn)
+	down, err := DownSh(tn, StoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +127,89 @@ func TestUpDownGoldens(t *testing.T) {
 	}
 	if _, err := UpSh(tn, StoreOptions{Images: "/rag/$(id)"}); err == nil {
 		t.Error("shell-expanding images path accepted")
+	}
+}
+
+// TestUpDownPostgresLocal: the dedicated-instance kind is the only store kind
+// whose up.sh/down.sh differ — the shared-server kind (--postgres <dsn>)
+// starts nothing, exactly as sqlite starts nothing. parity_test.go holds the
+// rendered bytes to new-tenant.sh; this checks the refusals and that the
+// other two kinds are unaffected.
+func TestUpDownPostgresLocal(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	pg := StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "s3cret"}
+	up, err := UpSh(tn, pg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		fmt.Sprintf("#            postgres-sandbox (:%d, loopback only)", tn.Ports.PG),
+		`start postgres-sandbox "$IMG/postgres.sif"`,
+		`--bind "$TDIR/postgres/data:/var/lib/postgresql/data"`,
+		`--bind "$TDIR/postgres/run:/var/run/postgresql"`,
+		"--env POSTGRES_PASSWORD=s3cret",
+		"--env PGDATA=/var/lib/postgresql/data/pgdata",
+		fmt.Sprintf("-- postgres -c port=%d -c listen_addresses=127.0.0.1", tn.Ports.PG),
+	} {
+		if !strings.Contains(string(up), w) {
+			t.Errorf("up.sh lacks %q:\n%s", w, up)
+		}
+	}
+	down, err := DownSh(tn, pg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(down), "for name in qdrant-sandbox elasticsearch-sandbox postgres-sandbox; do") {
+		t.Errorf("down.sh does not stop the instance:\n%s", down)
+	}
+	// The shared-server kind starts and stops nothing extra.
+	shared := StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgres}
+	up2, err := UpSh(tn, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(up2), "postgres-sandbox") {
+		t.Errorf("--postgres <dsn> must start no instance:\n%s", up2)
+	}
+	down2, err := DownSh(tn, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteDown, err := DownSh(tn, StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(down2) != string(sqliteDown) {
+		t.Errorf("shared-server down.sh differs from sqlite's:\n%s", down2)
+	}
+	// A password is required, must be shell-safe, and DryRun substitutes the
+	// placeholder new-tenant.sh prints.
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal}); err == nil {
+		t.Error("postgres-local without a password accepted")
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "a b"}); err == nil {
+		t.Error("password with whitespace accepted")
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "$(id)"}); err == nil {
+		t.Error("shell-expanding password accepted")
+	}
+	dry, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dry), "--env POSTGRES_PASSWORD="+PlaceholderPGPassword) {
+		t.Errorf("dry run did not render the placeholder:\n%s", dry)
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: "mongo"}); err == nil {
+		t.Error("unknown store kind accepted")
+	}
+	// tenant.env renders the same postgres block for both kinds.
+	env, err := TenantEnv(tn, EnvOptions{DryRun: true, StoreKind: StorePostgresLocal, PGHost: "localhost", PGPort: fmt.Sprint(tn.Ports.PG)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), fmt.Sprintf("USER_STORE_DSN=postgresql://sandbox:%s@localhost:%d/sandbox", PlaceholderPGPassword, tn.Ports.PG)) {
+		t.Errorf("tenant.env postgres-local DSN:\n%s", env)
 	}
 }
 
