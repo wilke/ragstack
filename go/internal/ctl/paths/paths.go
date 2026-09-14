@@ -24,6 +24,17 @@ const (
 	SelftestEnd  = 26099
 )
 
+// Store kinds for a tenant's ACL/registry/job stores, spelled exactly as
+// new-tenant.sh writes TENANT_STORE_KIND into provision.env. They live here
+// rather than in render because the list of directories provisioning creates
+// depends on the kind (postgres-local adds the instance's writable paths);
+// render re-exports them for its callers.
+const (
+	StoreSQLite        = "sqlite"
+	StorePostgres      = "postgres"       // a database in an EXISTING server (--postgres <dsn>)
+	StorePostgresLocal = "postgres-local" // the tenant's OWN instance on the block's +5 port
+)
+
 // namePattern is the tenant-name grammar shared with new-tenant.sh: the name
 // feeds instance names, directory paths, env-file tokens, gateway segments and
 // (with --postgres) SQL identifiers. No ':' (subject strings are issuer:sub),
@@ -142,6 +153,13 @@ type Tenant struct {
 	ESSnapshots     string // …/elasticsearch/snapshots (ES path.repo)
 	UIDist          string // …/ui/dist (static vite build)
 
+	// postgres-local only: the dedicated instance's writable paths. PGDATA is
+	// a SUBDIR of the data bind (…/postgres/data/pgdata) — the postgres
+	// entrypoint refuses a bind-mount root holding anything else — and
+	// PostgresRun is the unix socket dir (/var/run/postgresql).
+	PostgresData string // …/postgres/data
+	PostgresRun  string // …/postgres/run
+
 	Worktree string // <ReposDir>/<name>
 	PidFile  string // <DataDir>/api-<name>.pid (ops/coconut/restore.sh convention)
 	APILog   string // <DataDir>/logs/api-<name>.log
@@ -173,6 +191,8 @@ func TenantPaths(root Roots, name, manifestName string) Tenant {
 		ESConfig:        filepath.Join(d, "elasticsearch", "config"),
 		ESSnapshots:     filepath.Join(d, "elasticsearch", "snapshots"),
 		UIDist:          filepath.Join(d, "ui", "dist"),
+		PostgresData:    filepath.Join(d, "postgres", "data"),
+		PostgresRun:     filepath.Join(d, "postgres", "run"),
 		Worktree:        filepath.Join(root.ReposDir, name),
 		PidFile:         filepath.Join(d, "api-"+name+".pid"),
 		APILog:          filepath.Join(d, "logs", "api-"+name+".log"),
@@ -188,12 +208,23 @@ func TenantPaths(root Roots, name, manifestName string) Tenant {
 // so a tenant provisioned by the script got a unit that could not start: the
 // list of directories provisioning makes and the list of directories the unit
 // requires have to be the same list.
-func (t Tenant) ProvisionDirs() []string {
-	return []string{
+func (t Tenant) ProvisionDirs() []string { return t.ProvisionDirsFor(StoreSQLite) }
+
+// ProvisionDirsFor is ProvisionDirs for a given store kind. The script appends
+// the dedicated instance's two writable paths to TENANT_DIRS when (and only
+// when) the kind is postgres-local, so the Go side has to as well: the unit
+// binds both, and apptainer refuses a bind whose source is missing. The other
+// two kinds run no local server and keep the eleven shared entries.
+func (t Tenant) ProvisionDirsFor(kind string) []string {
+	dirs := []string{
 		t.QdrantStorage, t.QdrantSnapshots,
 		t.ESData, t.ESLogs, t.ESConfig, t.ESSnapshots,
 		t.StateDir, t.ManifestsDir, t.IngestDir, t.ConfigDir, t.BinDir,
 	}
+	if kind == StorePostgresLocal {
+		dirs = append(dirs, t.PostgresData, t.PostgresRun)
+	}
+	return dirs
 }
 
 // Ports is one tenant's port block.

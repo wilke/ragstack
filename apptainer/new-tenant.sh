@@ -332,9 +332,17 @@ if (( PG_LOCAL )); then
     PG_HOST=localhost
     PG_PORT="$PORT_PG"
 fi
+PREV_STORE_KIND=""
+PREV_PG_HOST=""
+PREV_PG_PORT=""
 if [[ -f "$PROVISION_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$PROVISION_FILE"
+    # Capture what the tenant IS before the readback below decides what it
+    # will be — the kind-switch guard needs both halves.
+    PREV_STORE_KIND="${TENANT_STORE_KIND:-}"
+    PREV_PG_HOST="${TENANT_PG_HOST:-}"
+    PREV_PG_PORT="${TENANT_PG_PORT:-}"
     if (( ! ES_HEAP_SET )) && [[ -n "${TENANT_ES_HEAP:-}" ]]; then
         ES_HEAP="$TENANT_ES_HEAP"
     fi
@@ -357,6 +365,43 @@ if [[ -f "$PROVISION_FILE" ]]; then
         STORE_KIND=postgres-local
         PG_HOST=localhost
         PG_PORT="$PORT_PG"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# Kind-switch guard. Switching a provisioned tenant's store kind is a DATA
+# MOVE, not a re-render: the old store keeps the ACL/collection/job rows and
+# nothing copies them. Before this guard the switch was silent and one-way —
+# `--postgres <dsn>` on a postgres-local tenant re-pointed every DSN at the
+# other server, left the tenant's own instance holding the only copy of its
+# data, and printed nothing. Refuse it; --force performs it and names what is
+# left behind so the operator can migrate or drop it deliberately.
+#
+# A --dry-run is never refused (house rule above): it writes nothing, and
+# seeing the plan is exactly how an operator decides whether to --force.
+# --------------------------------------------------------------------------
+orphan_note() {  # $1 = the kind being left behind
+    case "$1" in
+        postgres)
+            echo "the per-tenant DATABASE and ROLE '$NAME' on the shared server ${PREV_PG_HOST:-?}:${PREV_PG_PORT:-5432} are ORPHANED (nothing drops them; their rows are the tenant's only ACL/collection/job state)" ;;
+        postgres-local)
+            echo "the dedicated instance's data at rest is ORPHANED: $TDIR/postgres/data/pgdata (nothing copies or deletes it; postgres-$NAME will also stop being started by bin/up.sh)" ;;
+        *)
+            echo "the sqlite stores in $TDIR/state are ORPHANED (ragstack_users.db, ragstack_jobs.db, ragstack_collections.db — nothing copies or deletes them)" ;;
+    esac
+}
+if [[ -n "$PREV_STORE_KIND" && "$PREV_STORE_KIND" != "$STORE_KIND" ]]; then
+    if (( DRY_RUN )); then
+        warn "store kind switch: tenant '$NAME' is provisioned as '$PREV_STORE_KIND' and this run would make it '$STORE_KIND'."
+        warn "A real run is REFUSED without --force. With --force, $(orphan_note "$PREV_STORE_KIND")."
+    elif (( FORCE )); then
+        warn "store kind switch (--force): '$PREV_STORE_KIND' -> '$STORE_KIND' for tenant '$NAME'."
+        warn "$(orphan_note "$PREV_STORE_KIND")"
+    else
+        die "store kind switch refused for tenant '$NAME': $PROVISION_FILE records TENANT_STORE_KIND=$PREV_STORE_KIND but this run resolves to '$STORE_KIND'.
+    Switching kinds MOVES no data — $(orphan_note "$PREV_STORE_KIND").
+    Re-run with the flags matching '$PREV_STORE_KIND' (or no --postgres flag at all, which keeps it),
+    or re-run with --force to switch anyway and migrate/drop the old store by hand."
     fi
 fi
 
@@ -415,6 +460,39 @@ EOF
 # byte-stable. Dry-run always uses placeholders (reproducible, leak-free).
 # --------------------------------------------------------------------------
 gen_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# The rotation trap, and why deleting secrets.env is NOT a rotation for a
+# postgres-local tenant: the postgres image creates role/database from
+# POSTGRES_* on the FIRST start only and ignores them once PGDATA is
+# initialised. So a regenerated TENANT_PG_PASSWORD lands in tenant.env and
+# bin/up.sh while the running server still holds the OLD password — and there
+# is no admin DSN to ALTER ROLE with, because the whole point of this kind is
+# that no admin credentials exist. The tenant's API then fails to authenticate
+# against its own store, and the only recovery is the ALTER ROLE below.
+# Rotating the API keys alone is fine — but secrets.env carries all three, so
+# the file cannot be deleted for one without rotating the other.
+PGDATA_DIR="$TDIR/postgres/data/pgdata"
+if [[ "$STORE_KIND" == postgres-local && ! -f "$SECRETS_FILE" && -d "$PGDATA_DIR" ]]; then
+    rotate_msg="secrets.env is missing for postgres-local tenant '$NAME' but $PGDATA_DIR is already initialised.
+    Regenerating TENANT_PG_PASSWORD here would NOT change the database password: the postgres image
+    reads POSTGRES_PASSWORD only when it initialises PGDATA, and this kind has no admin DSN to fix it
+    with. tenant.env would then hold a password the DB never had.
+    Rotate through the instance instead (it must be running; the unix socket dir is the bind):
+      NEW=\$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n')
+      apptainer exec --bind \"$TDIR/postgres/run:/var/run/postgresql\" \"$IMG/postgres.sif\" \\
+        psql -h /var/run/postgresql -U $NAME -d $NAME -v ON_ERROR_STOP=1 \\
+        -c \"ALTER ROLE \\\"$NAME\\\" PASSWORD '\$NEW'\"
+    then write TENANT_PG_PASSWORD=\$NEW (with the two API keys) back into $SECRETS_FILE and re-run with --force
+    so tenant.env and bin/up.sh pick it up.
+    To accept a NEW, unreachable password anyway (e.g. you are about to delete $PGDATA_DIR), re-run with --force."
+    if (( DRY_RUN )); then
+        warn "$rotate_msg"
+    elif (( ! FORCE )); then
+        die "$rotate_msg"
+    else
+        warn "generating a fresh TENANT_PG_PASSWORD (--force) — the initialised $PGDATA_DIR still holds the OLD one"
+    fi
+fi
 
 if (( DRY_RUN )); then
     KEY_USER="<GENERATED:API_KEY_USER>"

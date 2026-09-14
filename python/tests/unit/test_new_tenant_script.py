@@ -462,15 +462,124 @@ def test_postgres_local_persists_kind_across_flagless_rerun(tmp_path):
         tdir / "config" / "provision.env"
     ).read_text()
 
-    # Passing the other --postgres form DOES switch kinds: the tenant moves to
-    # a database in the named server and stops starting its own instance.
-    # (Checked through --dry-run: a real run of the shared-server mode would
-    # try to reach dbhost with psql, which no offline test can do.)
+    # Passing the other --postgres form WOULD switch kinds: the tenant moves
+    # to a database in the named server and stops starting its own instance.
+    # A real run is refused (see the kind-switch tests below); a --dry-run is
+    # never refused, so the plan still shows what the switch would do.
     plan = dry_run("acme", tmp_path, "--postgres", "postgresql://admin:pw@dbhost:5433/postgres")
     assert "acl/registry store: postgres\n" in plan
     assert "@dbhost:5433/acme" in plan
     assert "start postgres-acme" not in plan
     assert "for name in qdrant-acme elasticsearch-acme; do" in plan
+
+
+# --------------------------------------------------------------------------
+# Kind switches, and the postgres-local secrets-rotation trap
+# --------------------------------------------------------------------------
+
+
+def provision_postgres_local(tmp_path: Path, name: str = "acme") -> Path:
+    """Provision `name` as postgres-local and return its tenant dir."""
+    p = run_script([name, "--postgres", "local"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    return tmp_path / "tenants" / name
+
+
+@pytest.mark.parametrize(
+    "first,second,orphan",
+    [
+        # sqlite -> dedicated instance: the sqlite ACL/job/collection DBs stay.
+        ([], ["--postgres", "local"], "state"),
+        # dedicated instance -> shared server: the instance's data at rest stays.
+        (["--postgres", "local"], ["--postgres", "postgresql://a:b@dbhost:5433/postgres"],
+         "postgres/data/pgdata"),
+    ],
+)
+def test_store_kind_switch_refused_without_force(tmp_path, first, second, orphan):
+    """Switching a provisioned tenant's store kind re-points every DSN in
+    tenant.env but MOVES NO DATA — the old store keeps the only copy of the
+    ACL/collection/job rows and nothing copies or deletes them. The switch
+    used to be silent and one-way; now a real run is refused, naming both
+    kinds and what would be orphaned."""
+    p = run_script(["acme", *first], tmp_path)
+    assert p.returncode == 0, p.stderr
+    provision_file = tmp_path / "tenants" / "acme" / "config" / "provision.env"
+    provision = provision_file.read_text()
+    before_kind = [
+        line.split("=", 1)[1]
+        for line in provision.splitlines()
+        if line.startswith("TENANT_STORE_KIND=")
+    ][0]
+
+    p = run_script(["acme", *second], tmp_path)
+    assert p.returncode != 0
+    assert "store kind switch refused" in p.stderr
+    assert f"TENANT_STORE_KIND={before_kind}" in p.stderr  # the kind it IS
+    assert "resolves to" in p.stderr  # and the kind it would become
+    assert orphan in p.stderr
+    # Refused before anything was written: the kind on disk is unchanged.
+    assert provision_file.read_text() == provision
+
+    # A --dry-run is never refused — it writes nothing, and seeing the plan is
+    # how an operator decides whether to --force.
+    p = run_script(["acme", "--dry-run", *second], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "store kind switch" in p.stderr
+    assert "REFUSED without --force" in p.stderr
+    assert orphan in p.stderr
+
+    # --force performs it and names what is left behind. (The shared-server
+    # target then needs psql, which an offline test has no business running —
+    # the warnings are emitted long before that step.)
+    p = run_script(["acme", "--force", *second], tmp_path)
+    assert "store kind switch (--force)" in p.stderr
+    assert "ORPHANED" in p.stderr
+    assert orphan in p.stderr
+
+
+def test_postgres_local_secrets_deletion_is_not_a_rotation(tmp_path):
+    """`--postgres local` has no admin DSN, and the postgres image applies
+    POSTGRES_PASSWORD only when it INITIALISES PGDATA. So deleting secrets.env
+    — documented as rotating every secret — would stamp tenant.env and up.sh
+    with a password the database never had, with no way to fix it. Refuse it
+    once pgdata exists, and point at the ALTER ROLE that does work."""
+    tdir = provision_postgres_local(tmp_path)
+    secrets = tdir / "config" / "secrets.env"
+    pgdata = tdir / "postgres" / "data" / "pgdata"
+    pgdata.mkdir(parents=True)  # stand in for a started, initialised instance
+    old = secrets.read_text()
+    secrets.unlink()
+
+    p = run_script(["acme"], tmp_path)
+    assert p.returncode != 0
+    assert "secrets.env is missing for postgres-local tenant 'acme'" in p.stderr
+    assert "already initialised" in p.stderr
+    # The message must carry the recovery: ALTER ROLE through the instance,
+    # over the unix socket dir this script binds.
+    assert "ALTER ROLE" in p.stderr
+    assert f'--bind "{tdir}/postgres/run:/var/run/postgresql"' in p.stderr
+    assert "psql -h /var/run/postgresql -U acme -d acme" in p.stderr
+    assert not secrets.exists()  # nothing regenerated
+
+    # A --dry-run warns instead of dying (it writes nothing either way).
+    p = run_script(["acme", "--dry-run"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "secrets.env is missing for postgres-local tenant 'acme'" in p.stderr
+
+    # --force accepts the new, unreachable password deliberately.
+    p = run_script(["acme", "--force"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "still holds the OLD one" in p.stderr
+    assert secrets.exists()
+    assert secrets.read_text() != old
+
+    # Without an initialised pgdata there is nothing to be out of step with,
+    # so deleting secrets.env rotates exactly as documented.
+    tdir2 = provision_postgres_local(tmp_path, "acme2")
+    (tdir2 / "config" / "secrets.env").unlink()
+    p = run_script(["acme2"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert (tdir2 / "config" / "secrets.env").is_file()
 
 
 # --------------------------------------------------------------------------

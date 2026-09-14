@@ -18,11 +18,31 @@ import (
 // its output defines tenant.env, up.sh, down.sh, the port math and the
 // manifest row; these tests hold the Go renderers to it byte-for-byte.
 const (
-	scriptRel   = "../../../../apptainer/new-tenant.sh"
-	dryRunGold  = "../testdata/live-2026-09-10/new-tenant-dryrun/ctltest.txt"
-	parityBase  = 41000
-	parityImage = "images"
+	scriptRel = "../../../../apptainer/new-tenant.sh"
+	// Captured by testdata/capture.sh (step 5): the sqlite default and the
+	// dedicated-instance kind, the two shapes the ctl renders itself. The
+	// shared-server kind (--postgres <dsn>) has no golden — its plan would
+	// carry an operator's admin DSN, and its up.sh/down.sh are sqlite's.
+	dryRunGold        = "../testdata/live-2026-09-10/new-tenant-dryrun/ctltest.txt"
+	dryRunGoldPGLocal = "../testdata/live-2026-09-10/new-tenant-dryrun/ctltest-postgres-local.txt"
+	parityBase        = 41000
+	parityImage       = "images"
 )
+
+// goldenFor is the offline replay for a set of script flags, or "" when that
+// combination was never captured.
+func goldenFor(name string, extra []string) string {
+	if name != "ctltest" {
+		return ""
+	}
+	switch strings.Join(extra, " ") {
+	case "":
+		return dryRunGold
+	case "--postgres local":
+		return dryRunGoldPGLocal
+	}
+	return ""
+}
 
 var sectionHeader = regexp.MustCompile(`^-- (.*) --$`)
 
@@ -149,10 +169,11 @@ func oracle(t *testing.T, name string, extra ...string) (*plan, string) {
 	if out, ok := runScript(t, ragData, name, extra...); ok {
 		return parsePlan(t, out), ragData
 	}
-	if name != "ctltest" || len(extra) > 0 {
-		skipOrFail(t, "bash or new-tenant.sh unavailable; only the ctltest golden is replayable offline")
+	gold := goldenFor(name, extra)
+	if gold == "" {
+		skipOrFail(t, "bash or new-tenant.sh unavailable; %s %v was never captured as a golden", name, extra)
 	}
-	b, err := os.ReadFile(dryRunGold)
+	b, err := os.ReadFile(gold)
 	if err != nil {
 		skipOrFail(t, "no oracle: %v", err)
 	}
@@ -176,18 +197,31 @@ func assertParity(t *testing.T, p *plan, ragData, name string, index int, extra 
 	t.Helper()
 	tn := parityTenant(name, index, ragData)
 	tdir := tn.DataDir
+	kind := extra.StoreKind
+	if kind == "" {
+		kind = StoreSQLite
+	}
 	if got := p.header["tenant dir"]; got != tdir {
 		t.Errorf("tenant dir: script %q paths %q", got, tdir)
 	}
+	if got := p.header["acl/registry store"]; got != kind {
+		t.Errorf("acl/registry store: script %q, rendering %q", got, kind)
+	}
 	// Ports.
 	ports := p.sections["ports"]
+	// +5 is only BOUND by the dedicated-instance kind; the other two leave it
+	// reserved-but-unused (the script does not even probe it).
+	pgLine := fmt.Sprintf("postgres:       %d (reserved", tn.Ports.PG)
+	if kind == StorePostgresLocal {
+		pgLine = fmt.Sprintf("postgres:       %d (dedicated instance postgres-%s)", tn.Ports.PG, name)
+	}
 	for _, w := range []string{
 		fmt.Sprintf("api:            %d", tn.Ports.API),
 		fmt.Sprintf("qdrant http:    %d", tn.Ports.QdrantHTTP),
 		fmt.Sprintf("qdrant grpc:    %d", tn.Ports.QdrantGRPC),
 		fmt.Sprintf("es http:        %d", tn.Ports.ESHTTP),
 		fmt.Sprintf("es transport:   %d", tn.Ports.ESTransport),
-		fmt.Sprintf("postgres:       %d (reserved", tn.Ports.PG),
+		pgLine,
 	} {
 		if !strings.Contains(ports, w) {
 			t.Errorf("ports section lacks %q:\n%s", w, ports)
@@ -199,8 +233,9 @@ func assertParity(t *testing.T, p *plan, ragData, name string, index int, extra 
 	}
 	// Directories == paths.ProvisionDirs, same order.
 	tp := paths.TenantPaths(paths.NewRoots(ragData, paths.Overrides{DataDir: filepath.Join(ragData, "tenants")}), name, name)
-	if got := p.sections["directories (mkdir -p; every writable path enumerated — house rule: no tmpfs overlays)"]; got != strings.Join(tp.ProvisionDirs(), "\n")+"\n" {
-		t.Errorf("directories:\n got %q\nwant %q", got, tp.ProvisionDirs())
+	wantDirs := tp.ProvisionDirsFor(kind)
+	if got := p.sections["directories (mkdir -p; every writable path enumerated — house rule: no tmpfs overlays)"]; got != strings.Join(wantDirs, "\n")+"\n" {
+		t.Errorf("directories:\n got %q\nwant %q", got, wantDirs)
 	}
 	// Files.
 	images := filepath.Join(ragData, parityImage)
@@ -211,14 +246,15 @@ func assertParity(t *testing.T, p *plan, ragData, name string, index int, extra 
 	if want := normalizeGenerator(p.file(t, tp.TenantEnv)); string(env) != want {
 		t.Errorf("tenant.env parity:\n%s", diffLines(want, string(env)))
 	}
-	up, err := UpSh(tn, StoreOptions{Images: images})
+	store := StoreOptions{Images: images, StoreKind: kind, DryRun: extra.DryRun}
+	up, err := UpSh(tn, store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := p.file(t, filepath.Join(tdir, "bin", "up.sh")); string(up) != want {
 		t.Errorf("up.sh parity:\n%s", diffLines(want, string(up)))
 	}
-	down, err := DownSh(tn)
+	down, err := DownSh(tn, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +329,33 @@ func TestParityPostgres(t *testing.T) {
 	assertParity(t, p, ragData, "ctltest", 0, EnvOptions{DryRun: true, StoreKind: StorePostgres, PGHost: "h", PGPort: "5"})
 }
 
+// TestParityPostgresLocal holds the ctl to the script for `--postgres local`:
+// the ADR-0005 shape, and the only store kind whose provisioned directories,
+// up.sh and down.sh differ from sqlite's. The Go side rendered no postgres
+// branch at all until this case existed, so a tenant the ctl provisioned with
+// that kind got eleven of its thirteen directories, an up.sh that never
+// started postgres-<name>, and a tenant.env whose DSNs pointed at a server
+// nothing ran.
+func TestParityPostgresLocal(t *testing.T) {
+	p, ragData := oracle(t, "ctltest", "--postgres", "local")
+	if p.header["acl/registry store"] != StorePostgresLocal {
+		t.Fatalf("store: %q", p.header["acl/registry store"])
+	}
+	// The dedicated kind runs no psql: it has no admin DSN at all.
+	for _, s := range p.order {
+		if strings.HasPrefix(s, "postgres provisioning") {
+			t.Errorf("postgres-local must plan no psql, got section %q", s)
+		}
+	}
+	if !strings.Contains(p.sections["required images (shared SIFs, reused — run apptainer/pull.sh if missing)"], "postgres.sif") {
+		t.Error("plan does not require postgres.sif")
+	}
+	pg := paths.BlockAt(parityBase, paths.PortStride, 0).PG
+	assertParity(t, p, ragData, "ctltest", 0, EnvOptions{
+		DryRun: true, StoreKind: StorePostgresLocal, PGHost: "localhost", PGPort: fmt.Sprint(pg),
+	})
+}
+
 func TestParityReservedNames(t *testing.T) {
 	b, err := os.ReadFile(scriptRel)
 	if err != nil {
@@ -315,14 +378,25 @@ func TestParityReservedNames(t *testing.T) {
 }
 
 func TestParityGoldenReplayParses(t *testing.T) {
-	b, err := os.ReadFile(dryRunGold)
-	if err != nil {
-		t.Fatal(err)
+	pgPort := fmt.Sprint(paths.BlockAt(parityBase, paths.PortStride, 0).PG)
+	for _, tc := range []struct {
+		gold string
+		env  EnvOptions
+	}{
+		{dryRunGold, EnvOptions{DryRun: true}},
+		{dryRunGoldPGLocal, EnvOptions{DryRun: true, StoreKind: StorePostgresLocal, PGHost: "localhost", PGPort: pgPort}},
+	} {
+		t.Run(filepath.Base(tc.gold), func(t *testing.T) {
+			b, err := os.ReadFile(tc.gold)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := parsePlan(t, string(b))
+			ragData := p.header["RAG_DATA"]
+			if !strings.HasPrefix(ragData, "/tmp/ctl-capture-") {
+				t.Fatalf("golden RAG_DATA = %q", ragData)
+			}
+			assertParity(t, p, ragData, "ctltest", 0, tc.env)
+		})
 	}
-	p := parsePlan(t, string(b))
-	ragData := p.header["RAG_DATA"]
-	if !strings.HasPrefix(ragData, "/tmp/ctl-capture-") {
-		t.Fatalf("golden RAG_DATA = %q", ragData)
-	}
-	assertParity(t, p, ragData, "ctltest", 0, EnvOptions{DryRun: true})
 }
