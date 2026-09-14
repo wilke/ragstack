@@ -32,6 +32,8 @@ import {
   buildPrompt,
   buildQuery,
   dataType,
+  DOC_TYPES,
+  YEAR_COVERAGE_NOTE,
   parseTable,
   toTsv,
   type Format,
@@ -77,6 +79,7 @@ export function App() {
   const [collection, setCollection] = useState("");
   const [year, setYear] = useState("");
   const [docType, setDocType] = useState("");
+  const [journal, setJournal] = useState("");
   const [model, setModel] = useState("");
 
   const dt = dataType(fields.dataTypeId);
@@ -175,7 +178,7 @@ export function App() {
     setPrompt("");
     setSources([]);
 
-    const filters = buildFilters({ year, docType });
+    const filters = buildFilters({ year, docType, journal });
     try {
       const res = await retrieve(
         {
@@ -200,7 +203,7 @@ export function App() {
       setSearching(false);
       setSearchError(describe(e, "retrieval"));
     }
-  }, [fields, year, docType, topK, useGraph, collection, token, format, runGeneration]);
+  }, [fields, year, docType, journal, topK, useGraph, collection, token, format, runGeneration]);
 
   const downloadTsv = useCallback(() => {
     if (!table) return;
@@ -355,6 +358,36 @@ export function App() {
             </select>
           </div>
           <div>
+            <label className={LABEL} htmlFor="lit-journal">
+              Journal
+            </label>
+            <input
+              id="lit-journal"
+              className={INPUT}
+              value={journal}
+              onChange={(e) => setJournal(e.target.value)}
+              placeholder="e.g. Viruses, PLoS Pathogens"
+            />
+          </div>
+          <div>
+            <label className={LABEL} htmlFor="lit-doctype">
+              Document type
+            </label>
+            <select
+              id="lit-doctype"
+              className={INPUT}
+              value={docType}
+              onChange={(e) => setDocType(e.target.value)}
+            >
+              <option value="">any</option>
+              {DOC_TYPES.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
             <label className={LABEL} htmlFor="lit-year">
               Year
             </label>
@@ -364,20 +397,9 @@ export function App() {
               value={year}
               inputMode="numeric"
               onChange={(e) => setYear(e.target.value)}
-              placeholder="e.g. 2024"
+              placeholder="e.g. 2021"
             />
-          </div>
-          <div>
-            <label className={LABEL} htmlFor="lit-doctype">
-              Document type
-            </label>
-            <input
-              id="lit-doctype"
-              className={INPUT}
-              value={docType}
-              onChange={(e) => setDocType(e.target.value)}
-              placeholder="e.g. research-article"
-            />
+            {year.trim() && <p className="mt-1 text-[11px] text-faint">{YEAR_COVERAGE_NOTE}</p>}
           </div>
         </fieldset>
 

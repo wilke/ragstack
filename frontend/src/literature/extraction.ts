@@ -71,7 +71,11 @@ export function buildQuery(f: QueryFields): string {
  * numeric field must be converted here, and a value that is not a clean integer
  * is DROPPED rather than sent as text.
  */
-export function buildFilters(raw: { year?: string; docType?: string }): Record<string, string | number> {
+export function buildFilters(raw: {
+  year?: string;
+  docType?: string;
+  journal?: string;
+}): Record<string, string | number> {
   const filters: Record<string, string | number> = {};
   const year = (raw.year ?? "").trim();
   if (year) {
@@ -80,8 +84,32 @@ export function buildFilters(raw: { year?: string; docType?: string }): Record<s
   }
   const docType = (raw.docType ?? "").trim();
   if (docType) filters.doc_type = docType;
+  const journal = (raw.journal ?? "").trim();
+  if (journal) filters.journal = journal;
   return filters;
 }
+
+/**
+ * The `doc_type` values that actually occur in the corpus.
+ *
+ * Measured, not guessed: a 100-chunk sample of oa-dev on 2026-09-14 held
+ * `article` (97) and `short` (3). The plausible-looking "research-article" —
+ * which this form offered as a placeholder first — occurs ZERO times and
+ * returns an empty result set, which is indistinguishable from a bad query on
+ * stage. A closed list beats a free-text box the user can only get wrong.
+ */
+export const DOC_TYPES = ["article", "short"];
+
+/**
+ * `year` is present on only about a QUARTER of oa-dev chunks (72 of a 100-chunk
+ * sample had no `year` key at all). Filters are equality constraints on
+ * metadata, so a year filter does not merely narrow the results — it excludes
+ * every chunk that never carried the field. The form says so next to the input;
+ * without that, "why did my search collapse to two hits?" has no answer on
+ * screen.
+ */
+export const YEAR_COVERAGE_NOTE =
+  "About a quarter of this corpus carries a year; filtering hides the rest.";
 
 /** One numbered context block per source, carrying the citation metadata. */
 function formatContext(sources: Source[]): string {

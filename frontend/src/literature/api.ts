@@ -173,6 +173,7 @@ export async function generate(
 export interface ModelInfo {
   model: string;
   label: string;
+  isDefault: boolean;
 }
 
 const MODEL_LABELS: Record<string, string> = {
@@ -194,6 +195,20 @@ function parseList(value: unknown): unknown[] {
   return [];
 }
 
+/**
+ * The chat models, DEFAULT FIRST.
+ *
+ * The ordering is not cosmetic. The service advertises several models with
+ * `active: true`, but they are not equally usable — as of 2026-09-14 the dev
+ * list holds two Llama-4-Scout builds and only the `is_default` one answers;
+ * the other returns 500 LLMServiceError on every call. Picking the first
+ * element of the raw array to seed the form would therefore be luck, not a
+ * choice, so the default is hoisted and the caller can seed from index 0
+ * deterministically.
+ *
+ * The payload's `models` is a JSON STRING rather than an array (see parseList),
+ * and the key has been seen as both `models` and `model_list`.
+ */
 export async function listModels(token: string): Promise<ModelInfo[]> {
   const r = await postJson<Record<string, unknown>>(
     `${COPILOT_DB}/get-model-list`,
@@ -201,13 +216,15 @@ export async function listModels(token: string): Promise<ModelInfo[]> {
     token,
   );
   const raw = parseList(r.model_list ?? r.models);
-  return raw
+  const models = raw
     .map((m) => {
-      const full =
-        typeof m === "string" ? m : ((m as Record<string, unknown>)?.model ?? (m as Record<string, unknown>)?.name);
+      const rec = m as Record<string, unknown>;
+      const full = typeof m === "string" ? m : (rec?.model ?? rec?.name);
       if (typeof full !== "string" || !full) return null;
+      if (typeof m !== "string" && rec.active === false) return null;
       const short = full.split("/").pop() as string;
-      return { model: full, label: MODEL_LABELS[short] ?? short };
+      return { model: full, label: MODEL_LABELS[short] ?? short, isDefault: rec?.is_default === true };
     })
     .filter((m): m is ModelInfo => m !== null);
+  return [...models.filter((m) => m.isDefault), ...models.filter((m) => !m.isDefault)];
 }
