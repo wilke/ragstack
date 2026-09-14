@@ -111,6 +111,35 @@ existing Postgres server, the ADR-0004 amendment):
 <RAG_DATA>/tenants/<new-tenant>/bin/up.sh
 ```
 
+#### `--postgres local` — a dedicated Postgres per tenant
+
+`--postgres local` (the literal word `local`, not a DSN) is the third store
+kind, and the only one that keeps Postgres in the ADR-0005 shape: **data at
+rest inside the tenant dir, on a tenant-owned port**, exactly like the tenant's
+Qdrant and Elasticsearch. The shared-server DSN mode puts the tenant's data in
+somebody else's server; this one does not.
+
+```bash
+./new-tenant.sh <new-tenant> --postgres local
+```
+
+It provisions an apptainer instance `postgres-<new-tenant>` from
+`$RAG_IMAGES/postgres.sif` listening on the block's **`+5`** port, bound to
+`127.0.0.1`, with `postgres/{data,run}` under the tenant dir and
+`PGDATA=/var/lib/postgresql/data/pgdata` — a *subdir* of the data bind, or the
+image entrypoint chokes on the bind-mount root. The generated `bin/up.sh`
+starts it and `bin/down.sh` stops it alongside Qdrant and ES, with the same
+idempotency. The entrypoint creates role and database `<new-tenant>` on the
+first start from `POSTGRES_USER`/`POSTGRES_PASSWORD`/`POSTGRES_DB`, so **this
+mode runs no `psql` and needs no admin credentials** — the password is the same
+`TENANT_PG_PASSWORD` generated once into `secrets.env`. `tenant.env` gets the
+same postgres store block as the DSN mode (`USER_STORE_*`, `JOB_STORE_*` +
+`POSTGRES_DSN`, `COLLECTION_STORE_*`), pointed at `localhost:<base+5>`.
+`provision.env` records `TENANT_STORE_KIND=postgres-local`, so a flagless
+re-run keeps the kind; passing the other `--postgres` form switches it.
+Preview with `--dry-run` as always — the plan shows the instance start line,
+with `<GENERATED:PG_PASSWORD>` placeholders.
+
 ### What the script writes
 
 - **A manifest row** — `<new-tenant>\t<index>\t<base_port>`, appended to
@@ -118,16 +147,19 @@ existing Postgres server, the ADR-0004 amendment):
   write is `flock`-serialized). The row is allocated once and reused verbatim
   on every re-run — never hand-edit it.
 - **A port block** — `<base_port>` plus fixed offsets: `+0` API, `+1` Qdrant
-  HTTP, `+2` Qdrant gRPC, `+3` ES HTTP, `+4` ES transport, `+5` Postgres
-  (reserved, unused unless `--postgres` names an external server). The script
-  probes every port for real before writing anything, so a manifest that
+  HTTP, `+2` Qdrant gRPC, `+3` ES HTTP, `+4` ES transport, `+5` Postgres —
+  bound by the tenant's own `postgres-<new-tenant>` instance with
+  `--postgres local`, otherwise reserved and unused (sqlite by default;
+  `--postgres <admin-dsn>` uses the named external server). The script
+  probes every port it will bind for real before writing anything, so a manifest that
   doesn't know about a live deployment's ports can't silently hand out a
   block that's actually occupied.
 - **Data directories**, every writable path enumerated under
   `<RAG_DATA>/tenants/<new-tenant>/` (no `--writable-tmpfs`, per house
   convention): `qdrant/storage`, `qdrant/snapshots`, `elasticsearch/{data,logs,config}`,
   `state/` (sqlite DBs when not using `--postgres`), `manifests/`, `ingest/`,
-  `config/`, `bin/`. The tenant directory is `chmod 700`.
+  `config/`, `bin/`, plus `postgres/{data,run}` with `--postgres local`. The
+  tenant directory is `chmod 700`.
 - **Three env/config files under `config/`:**
   - `tenant.env` — the operator-editable file. Generated API keys
     (`API_KEYS`, `API_KEY_TENANTS`, `API_KEY_ROLES`), `MAX_COLLECTIONS`
@@ -138,8 +170,9 @@ existing Postgres server, the ADR-0004 amendment):
   - `secrets.env` — API keys and (with `--postgres`) the tenant's DB password,
     generated once. Deleting it rotates every secret on the next run. **Never
     read or print this file's contents** — it holds live credentials.
-  - `provision.env` — persists the provisioning choices (`--es-heap`, sqlite
-    vs. postgres) so a flagless re-run doesn't silently revert them.
+  - `provision.env` — persists the provisioning choices (`--es-heap`, and the
+    store kind: `sqlite` / `postgres` / `postgres-local`) so a flagless re-run
+    doesn't silently revert them.
 - **`bin/up.sh` / `bin/down.sh`** — derived, regenerated deterministically on
   every run. Do not hand-edit; re-run the script to regenerate them.
 
