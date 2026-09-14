@@ -158,30 +158,14 @@ func TestEmittedDocumentsValidateAgainstTheContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := []json.RawMessage{}
-	for i := range list {
-		b, err := json.Marshal(list[i])
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw = append(raw, b)
-	}
-	validateDoc(t, py, "jobs_response", model.JobsResponse{Jobs: raw, Limit: 50, Truncated: truncated})
+	validateDoc(t, py, "jobs_response", model.JobsResponse{Jobs: list, Limit: 50, Truncated: truncated})
 
 	// 8. The audit rows — intent and result, from a real run.
 	rows, tr2, err := e.Audit(ctx, 100)
 	if err != nil || len(rows) < 4 {
 		t.Fatalf("audit rows = %d, %v", len(rows), err)
 	}
-	rawRows := []json.RawMessage{}
-	for i := range rows {
-		b, err := json.Marshal(rows[i])
-		if err != nil {
-			t.Fatal(err)
-		}
-		rawRows = append(rawRows, b)
-	}
-	validateDoc(t, py, "audit_response", model.AuditResponse{Rows: rawRows, Limit: 100, Truncated: tr2})
+	validateDoc(t, py, "audit_response", model.AuditResponse{Rows: rows, Limit: 100, Truncated: tr2})
 
 	// 9. The secrets envelope.
 	_, minted, err := e.Submit(ctx, req("key-mint", "dev", "m1"))
