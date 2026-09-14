@@ -225,10 +225,17 @@ PYEOF
 # --------------------------------------------------------------------------
 # 5. new-tenant.sh dry-run oracle (offline replay for render/parity_test.go)
 # --------------------------------------------------------------------------
+# Two kinds are captured, because they are the two the ctl renders itself and
+# they differ in the directory list, up.sh and down.sh. The shared-server kind
+# (--postgres <dsn>) is deliberately NOT captured: its plan would embed an
+# operator's admin DSN, and its scripts are sqlite's.
 TMP="/tmp/ctl-capture-$$"
 mkdir -p "$TMP/images"
 RAG_DATA="$TMP" RAG_IMAGES="$TMP/images" TENANT_PORT_BASE=41000 \
     bash "$REPO/apptainer/new-tenant.sh" ctltest --dry-run > "$OUT/new-tenant-dryrun/ctltest.txt"
+RAG_DATA="$TMP" RAG_IMAGES="$TMP/images" TENANT_PORT_BASE=41000 \
+    bash "$REPO/apptainer/new-tenant.sh" ctltest --dry-run --postgres local \
+    > "$OUT/new-tenant-dryrun/ctltest-postgres-local.txt"
 rm -rf "$TMP"
 
 # --------------------------------------------------------------------------
@@ -250,14 +257,27 @@ CANARY_PATS=(
     '-----BEGIN [A-Z ]*PRIVATE KEY-----'
     '[A-Za-z0-9+/]{48,}={0,2}'
 )
+# A --dry-run plan legitimately contains DSNs whose password is the script's
+# OWN placeholder (postgres-local renders postgresql://t:<GENERATED:PG_PASSWORD>@…),
+# and a capture with the DSN lines cut would not be the plan the script prints.
+# Neutralise exactly that shape — a password that is a <GENERATED:…> or
+# <REDACTED…> token and nothing else — on a COPY, then sweep the copy: every
+# other credential shape, placeholder-looking or not, still trips the canary.
+# (settings/canary_test.go makes the same single exemption.)
+SCAN="$(mktemp -d)"
+trap 'rm -rf "$SCAN"' EXIT
+cp -R "$OUT/." "$SCAN/"
+find "$SCAN" -type f -exec \
+    sed -i -E 's#://[^:/@[:space:]]+:<(GENERATED|REDACTED)[^>@[:space:]]*>@#://<placeholder>/#g' {} +
 for i in "${!CANARY_NAMES[@]}"; do
     name="${CANARY_NAMES[$i]}"; pat="${CANARY_PATS[$i]}"
-    if grep -rEn "$pat" "$OUT" >/dev/null; then
+    if grep -rEn "$pat" "$SCAN" >/dev/null; then
         echo "[capture] CANARY HIT for $name (/$pat/):" >&2
-        grep -rEn "$pat" "$OUT" | sed -E 's/^([^:]+:[0-9]+:).{0,40}.*/\1 …/' >&2
+        grep -rEn "$pat" "$SCAN" | sed -E -e "s|^$SCAN|$OUT|" -e 's/^([^:]+:[0-9]+:).{0,40}.*/\1 …/' >&2
         bad=1
     fi
 done
+rm -rf "$SCAN"; trap - EXIT
 (( bad == 0 )) || die "secret-shaped text found in $OUT — fix the redaction before committing"
 
 # And the three keyed-by-secret values must be placeholders in EVERY captured

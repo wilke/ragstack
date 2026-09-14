@@ -162,11 +162,11 @@ func TestRenderedGenerationIsASemanticNoop(t *testing.T) {
 	live := doctor.ParseTenantMaps(b, liveMaps)
 	// The two JSON lists live in routes.conf until the generated include takes
 	// over, so the live half of the comparison is assembled from both files.
-	names, tenants, err := liveTenantLists(filepath.Join(liveProxy, "snippets", "routes.conf"))
+	lists, err := doctor.LiveTenantLists(liveProxy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	live.NamesJSON, live.TenantsJSON = names, tenants
+	live.NamesJSON, live.TenantsJSON = lists.NamesJSON, lists.TenantsJSON
 	rendered := doctor.ParseTenantMaps(gen.Files[FileTenants], "rendered")
 	if ok, notes := semanticEqual(live, rendered); !ok {
 		t.Errorf("rendered maps differ from the live ones:\n  %s", strings.Join(notes, "\n  "))
@@ -564,15 +564,35 @@ func TestFirstPublishProbeFailureLeavesLoadableIncludes(t *testing.T) {
 	})
 }
 
+// Once a generation HAS been published the ctl owns both include paths, so a
+// regular file at one of them is a hand edit and the publish refuses it.
+//
+// The refusal cannot be tested on a FIRST publish any more, and must not be:
+// before anything is published there is no ctl-owned content a hand edit could
+// have replaced, so the same regular file is the coconut-proxy bootstrap copy
+// by definition (see TestFirstPublishAdoptsABootstrapCopyItCannotVerify).
 func TestSwitchRefusesAHandEditedRegularFile(t *testing.T) {
 	roots := testRoots(t)
 	f := registry.LiveFixture()
 	opts, _, sig, pr := testOpts(t, roots)
+
+	// Generation 1: the ctl now owns both paths.
+	publishOnce(t, f, opts, pr)
+	before := sig.Count()
+
 	hand := filepath.Join(roots.ProxyDir, FileStatic)
+	if err := os.Remove(hand); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(hand, []byte("# someone's hand edit\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	gen, _ := Render(f, roots)
+
+	f.Generation++ // something to publish
+	gen, err := Render(f, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
 	answerDesiredState(t, pr, gen, f)
 	res, err := Publish(context.Background(), f, opts)
 	if !errors.Is(err, ErrRefused) {
@@ -581,7 +601,7 @@ func TestSwitchRefusesAHandEditedRegularFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "hand edit") {
 		t.Errorf("the refusal does not explain itself: %v", err)
 	}
-	if sig.Count() != 0 {
+	if sig.Count() != before {
 		t.Error("the master was signalled although the switch was refused")
 	}
 	b, _ := os.ReadFile(hand)
@@ -1909,6 +1929,125 @@ func TestSemanticDiffComparesTheTenantLists(t *testing.T) {
 	}
 	if !said {
 		t.Errorf("the notes do not name the list that changed: %v", d.Notes)
+	}
+}
+
+// coconutProxyDeploy mutates a testRoots() copy of the pre-deploy proxy tree
+// into the post-deploy shape the coconut-proxy repo change produces: the
+// tenant maps and the two JSON lists move out of conf.d/00-maps.conf and
+// snippets/routes.conf into conf.d/05-tenants.generated.conf (here, the
+// bootstrap fixture's own regular-file copy — deploy.sh has not been replaced
+// by a publish yet), and routes.conf is left only interpolating the
+// variables, with no literal list of its own.
+func coconutProxyDeploy(t *testing.T, roots paths.Roots) {
+	t.Helper()
+	maps := filepath.Join(roots.ProxyDir, "conf.d", "00-maps.conf")
+	b, err := os.ReadFile(maps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range []*regexp.Regexp{
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_api \{.*?\n\}\n`),
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_ui \{.*?\n\}\n`),
+		regexp.MustCompile(`(?s)map \$tenant \$tenant_readonly \{.*?\n\}\n`),
+	} {
+		edited := block.ReplaceAllString(string(b), "")
+		if edited == string(b) {
+			t.Fatalf("00-maps.conf no longer carries the block %s", block)
+		}
+		b = []byte(edited)
+	}
+	if err := os.WriteFile(maps, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	routes := filepath.Join(roots.ProxyDir, "snippets", "routes.conf")
+	rb, err := os.ReadFile(routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.NewReplacer(
+		`["dev","demo","lucid-next","asm-next"]`, `$tenants_names_json`,
+		`[{"name":"dev","api":"/ragstack/dev/api/v1/...","ui":"/ragstack/dev/ui/"},{"name":"demo","api":"/ragstack/demo/api/v1/...","ui":"/ragstack/demo/ui/"},{"name":"lucid-next","api":"/ragstack/lucid-next/api/v1/...","ui":"/ragstack/lucid-next/ui/"},{"name":"asm-next","api":"/ragstack/asm-next/api/v1/...","ui":"/ragstack/asm-next/ui/"}]`, `$tenants_json`,
+	).Replace(string(rb))
+	if edited == string(rb) {
+		t.Fatal("routes.conf no longer carries the literal tenant lists this test replaces")
+	}
+	if err := os.WriteFile(routes, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixture, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shipped as a REGULAR file by deploy.sh, ahead of any `gateway apply`.
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf"), gen, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDiffDetailUsesTheGeneratedIncludeAsTheLiveMapsSourcePostDeploy is BUG 2
+// from the coconut migration: once coconut-proxy's deploy has moved the
+// tenant maps and JSON lists into conf.d/05-tenants.generated.conf, DiffDetail
+// used to compare against conf.d/00-maps.conf directly — now emptied of
+// tenant maps — and report every tenant as "new in the render", plus a note
+// that routes.conf "carries neither tenant list — NOT compared". The live-maps
+// source has to be wherever the live tree actually carries the routing: the
+// generated include (regular file or a published-generation symlink) ahead of
+// the legacy 00-maps.conf/routes.conf pair.
+func TestDiffDetailUsesTheGeneratedIncludeAsTheLiveMapsSourcePostDeploy(t *testing.T) {
+	roots := testRoots(t)
+	coconutProxyDeploy(t, roots)
+	f := registry.LiveFixture()
+
+	d, err := DiffDetail(roots, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSource := filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf")
+	if d.ComparedTo != wantSource {
+		t.Errorf("compared_to = %q, want %q", d.ComparedTo, wantSource)
+	}
+	if !d.SemanticNoop {
+		t.Errorf("the four coconut tenants against their own generated include should be a semantic no-op: %v", d.Notes)
+	}
+	for _, n := range d.Notes {
+		if strings.Contains(n, "NOT compared") {
+			t.Errorf("the JSON lists come from the generated include and should have been compared: %v", d.Notes)
+		}
+	}
+
+	// A fifth tenant changes the render without touching what is live: it
+	// must be reported, and only it.
+	f.Tenants["newco"] = registry.NewTenant("newco", "newco")
+	f.Tenants["newco"].Ports.API = 24100
+	f.Tenants["newco"].UI = registry.UI{Mode: registry.UIModeExternal, Port: registry.NullPort(5300), Base: "/ragstack/newco/ui/"}
+	f.DisplayOrder = append(f.DisplayOrder, "newco")
+
+	d, err = DiffDetail(roots, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.SemanticNoop {
+		t.Fatal("a fifth tenant absent from the live gateway was reported as a semantic no-op")
+	}
+	var newAPI, newUI bool
+	for _, n := range d.Notes {
+		if strings.Contains(n, "$tenant_api") && strings.Contains(n, "newco") && strings.Contains(n, "is new in the render") {
+			newAPI = true
+		}
+		if strings.Contains(n, "$tenant_ui") && strings.Contains(n, "newco") && strings.Contains(n, "is new in the render") {
+			newUI = true
+		}
+		for _, old := range []string{"dev", "demo", "lucid-next", "asm-next"} {
+			if strings.Contains(n, "$tenant_api: "+old) || strings.Contains(n, "$tenant_ui: "+old) {
+				t.Errorf("existing tenant %s was reported as changed, want only newco: %q", old, n)
+			}
+		}
+	}
+	if !newAPI || !newUI {
+		t.Errorf("newco should be the only tenant reported as new (api=%v ui=%v): %v", newAPI, newUI, d.Notes)
 	}
 }
 

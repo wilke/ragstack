@@ -17,9 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/ragstack/ragstack/internal/ctl/envfile"
@@ -48,6 +51,95 @@ const (
 // static-UI tenant, a store log for a shared store, a file that was never
 // created. The HTTP layer answers 404 with it.
 var ErrNoLog = errors.New("no such tenant log")
+
+// SecretsUnreadableError is "this account cannot read the file whose values
+// seed the redactor" — which on a pre-handover host is the EXPECTED state and
+// not a fault of the control plane.
+//
+// Until PR-E hands a tenant over, its tenant.env and secrets.env are 0600
+// files owned by the operator who provisioned it, while the daemon runs as
+// its own service account. Seeding then fails with EACCES — and the ctl must
+// still refuse to answer, because `redacted` is the constant true in the
+// contract and an answer built from an unseeded redactor would be a lie.
+// What was wrong was the CLASSIFICATION: this reached the router as an
+// anonymous error, so it was logged as an internal fault and the operator was
+// told "the control plane had a problem, please retry", which is both untrue
+// and unactionable — no retry changes a file mode. The HTTP layer answers 409
+// `refused` with Detail() instead, naming the account, the file and the owner.
+//
+// It is NOT a 403: the CALLER's credential is fine. `forbidden` is about the
+// ctl's principal list, and reusing it here would tell an operator to fix
+// their own key.
+type SecretsUnreadableError struct {
+	Tenant string // the tenant whose logs were asked for
+	Path   string // the file that could not be read
+	Owner  string // registry `owner` of the tenant
+	Err    error  // the underlying EACCES
+}
+
+func (e *SecretsUnreadableError) Error() string { return e.Detail() }
+
+func (e *SecretsUnreadableError) Unwrap() error { return e.Err }
+
+// Detail is the operator-facing sentence: the account, the path, WHY that
+// path is needed, and who owns the tenant — the four facts an operator needs
+// to choose between waiting for the handover and fixing a mode.
+func (e *SecretsUnreadableError) Detail() string {
+	d := fmt.Sprintf(
+		"logs for %s are unavailable: the ctl runs as %s and cannot read %s, whose values seed the log redactor",
+		e.Tenant, CtlAccount(), e.Path)
+	if e.PreHandover() {
+		return d + fmt.Sprintf("; the tenant is owned by %s until its handover (PR-E)", e.Owner)
+	}
+	// The same refusal for a different cause: the tenant is already this
+	// account's, so nothing is pending and the file's mode is simply wrong.
+	return d + fmt.Sprintf("; the tenant is owned by %s, which is this account — the file's mode or ownership is wrong", e.Owner)
+}
+
+// PreHandover reports whether the tenant is still owned by another account,
+// which is the expected state this refusal exists for.
+func (e *SecretsUnreadableError) PreHandover() bool { return e.Owner != "" && e.Owner != CtlUser() }
+
+// Extra is the typed payload of the contract error body.
+func (e *SecretsUnreadableError) Extra() map[string]any {
+	return map[string]any{
+		"path":         e.Path,
+		"owner":        e.Owner,
+		"tenant":       e.Tenant,
+		"ctl_user":     CtlUser(),
+		"pre_handover": e.PreHandover(),
+	}
+}
+
+// ctlIdentity resolves the account this process runs as. It is a variable so
+// a test can pin it, and it reads the EFFECTIVE uid rather than $USER — a
+// daemon under systemd has no reliable one.
+var ctlIdentity = func() (name string, uid int) {
+	uid = os.Geteuid()
+	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil && u.Username != "" {
+		return u.Username, uid
+	}
+	return "", uid
+}
+
+// CtlAccount is the account for prose: "svcbvbrc (uid 1002)", or "uid 1002"
+// when the name cannot be resolved.
+func CtlAccount() string {
+	name, uid := ctlIdentity()
+	if name == "" {
+		return fmt.Sprintf("uid %d", uid)
+	}
+	return fmt.Sprintf("%s (uid %d)", name, uid)
+}
+
+// CtlUser is the bare account name, for comparison against the registry's
+// `owner` enum (svcbvbrc|wilke). Empty when it cannot be resolved — it then
+// compares unequal to every owner, which only ever changes the tail of the
+// sentence, never whether the request is refused.
+func CtlUser() string {
+	name, _ := ctlIdentity()
+	return name
+}
 
 // Tail returns the last n lines of path, redacted, and whether anything was
 // cut (more lines existed, or a line was longer than MaxLineBytes).
@@ -173,7 +265,8 @@ func Read(roots paths.Roots, t *registry.Tenant, file model.LogFile, lines int) 
 	}
 	// Seeding first, and failing when it fails: `redacted: true` is a
 	// constant in the contract, so an answer built from an unseeded redactor
-	// would be a lie. The caller turns this into a 500.
+	// would be a lie. The caller turns a permission failure into the 409
+	// `refused` (SecretsUnreadableError) and anything else into a 500.
 	red, err := NewRedactor(t)
 	if err != nil {
 		return nil, err
@@ -196,10 +289,16 @@ func Read(roots paths.Roots, t *registry.Tenant, file model.LogFile, lines int) 
 // are ignored by it, so a port or a boolean never shreds a log line.
 //
 // It fails rather than returning a half-seeded redactor: see
-// envfile.SeedRedactor.
+// envfile.SeedRedactor. A file this account cannot READ is returned as a
+// *SecretsUnreadableError — still a failure, still no log line, but a
+// classified one the HTTP layer can explain instead of a 500.
 func NewRedactor(t *registry.Tenant) (*settings.Redactor, error) {
 	r := settings.NewRedactor()
 	if err := envfile.SeedRedactor(filepath.Join(t.DataDir, "config"), r); err != nil {
+		var se *envfile.SeedError
+		if errors.As(err, &se) && errors.Is(err, fs.ErrPermission) {
+			return nil, &SecretsUnreadableError{Tenant: t.Name, Path: se.Path, Owner: t.Owner, Err: err}
+		}
 		return nil, err
 	}
 	return r, nil

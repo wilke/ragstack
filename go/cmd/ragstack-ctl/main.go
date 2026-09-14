@@ -61,10 +61,17 @@ func usage() {
                                             rendered include lines name — the same flag, and the
                                             same meaning, as gateway render.
 
-  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-port P] [--force] --preview|--commit
-                                            read a hand-started tenant into a registry row
+  adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode M] [--ui-port P] [--force] --preview|--commit
+                                            read a hand-started tenant into a registry row.
+                                            --ui-mode is static|dev|external and defaults to dev when
+                                            --ui-port is given, external when it is not. static is a
+                                            vite build nginx serves from <data-dir>/ui/dist and takes
+                                            NO --ui-port (the pair is a usage error); its dist has to
+                                            exist, or the preview raises ui_dist_missing (error).
   adopt-all --preview|--commit [--spec FILE] [--force] [--repair-projection]
-                                            the four live coconut tenants in one batch (see below)
+                                            the four live coconut tenants in one batch (see below).
+                                            --spec entries take an optional ui_mode field with the same
+                                            meaning as --ui-mode.
   registry repair [--registry PATH]         rewrite manifest.tsv FROM the registry (explicit, destructive)
   doctor [<name>] [--op VERB] [--json]      diagnose the host/a tenant (exit 3 when red)
   wait-ready <name> [--timeout S]           block until the tenant's own stores answer (unit ExecStartPre)
@@ -210,9 +217,9 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 	fs.SetOutput(stderr)
 	index := fs.Int("index", 0, "port-block index (base 24000 + 20*index)")
 	root := fs.String("rag-root", ragRoot, "deployment root")
-	store := fs.String("store", render.StoreSQLite, "sqlite|postgres")
-	pgHost := fs.String("pg-host", "", "postgres host (store=postgres)")
-	pgPort := fs.String("pg-port", "5432", "postgres port (store=postgres)")
+	store := fs.String("store", render.StoreSQLite, "sqlite|postgres|postgres-local")
+	pgHost := fs.String("pg-host", "", "postgres host (store=postgres; postgres-local is always localhost)")
+	pgPort := fs.String("pg-port", "5432", "postgres port (store=postgres; postgres-local uses the block's +5)")
 	images := fs.String("images", "", "RAG_IMAGES (default <rag-root>/apptainer/images)")
 	esHeap := fs.String("es-heap", "512m", "Elasticsearch heap")
 	reg := fs.String("registry", registryPath, "registry.json path")
@@ -281,9 +288,12 @@ func cmdRender(args []string, registryPath, ragRoot string) int {
 		case "tenant-env":
 			out, err = render.TenantEnv(t, render.EnvOptions{DryRun: true, StoreKind: *store, PGHost: *pgHost, PGPort: *pgPort})
 		case "up-sh":
-			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: heap})
+			// DryRun: the CLI never has the tenant's real secrets, so the
+			// dedicated instance's POSTGRES_PASSWORD renders as the same
+			// <GENERATED:…> placeholder the script's --dry-run prints.
+			out, err = render.UpSh(t, render.StoreOptions{Images: *images, ESHeap: heap, StoreKind: *store, DryRun: true})
 		case "down-sh":
-			out, err = render.DownSh(t)
+			out, err = render.DownSh(t, render.StoreOptions{StoreKind: *store})
 		}
 		if err != nil {
 			return fail(err)
@@ -541,6 +551,26 @@ type adoptSpec struct {
 	Worktree     string `json:"worktree"`
 	ManifestName string `json:"manifest_name,omitempty"`
 	UIPort       int    `json:"ui_port,omitempty"`
+	// UIMode is static|dev|external; empty keeps the historical inference
+	// (dev when ui_port > 0, external when it is 0). `static` is a UI nginx
+	// serves from <data_dir>/ui/dist and takes no port.
+	UIMode string `json:"ui_mode,omitempty"`
+}
+
+// validateSpecs judges the arguments that can be judged without reading the
+// host, so a bad one is a usage error (exit 2) from either verb rather than a
+// failed read halfway through a batch.
+func validateSpecs(specs []adoptSpec) error {
+	for _, s := range specs {
+		if err := adopt.ValidateUIMode(s.UIMode, s.UIPort); err != nil {
+			name := s.Name
+			if name == "" {
+				name = "(unnamed)"
+			}
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // liveSpecs is the coconut fleet as `adopt-all` adopts it: display order
@@ -571,6 +601,7 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	worktree := fs.String("worktree", "", "the checkout its API runs from (required)")
 	manifestName := fs.String("manifest-name", "", "manifest.tsv row / data-dir basename (default: the name)")
 	uiPort := fs.Int("ui-port", 0, "the Vite dev server's port")
+	uiMode := fs.String("ui-mode", "", "how the UI is served: static|dev|external (default: dev with --ui-port, external without)")
 	preview := fs.Bool("preview", false, "print the row that would be written")
 	commit := fs.Bool("commit", false, "write the row to --registry")
 	force := fs.Bool("force", false, "commit even when the preview raised error-level findings")
@@ -586,14 +617,18 @@ func cmdAdopt(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return exitUsage
 	}
 	if name == "" {
-		fmt.Fprintln(stderr, "usage: ragstack-ctl adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-port P] --preview|--commit")
+		fmt.Fprintln(stderr, "usage: ragstack-ctl adopt <name> --data-dir D --worktree W [--manifest-name M] [--ui-mode static|dev|external] [--ui-port P] --preview|--commit")
 		return exitUsage
 	}
 	if *preview == *commit {
 		fmt.Fprintln(stderr, "adopt: choose exactly one of --preview and --commit")
 		return exitUsage
 	}
-	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName, UIPort: *uiPort}
+	spec := adoptSpec{Name: name, DataDir: *dataDir, Worktree: *worktree, ManifestName: *manifestName, UIPort: *uiPort, UIMode: *uiMode}
+	if err := validateSpecs([]adoptSpec{spec}); err != nil {
+		fmt.Fprintf(stderr, "adopt: %v\n", err)
+		return exitUsage
+	}
 	return runAdopt([]adoptSpec{spec}, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, jsonOut)
 }
 
@@ -604,7 +639,7 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 	commit := fs.Bool("commit", false, "write the rows to --registry as one generation")
 	force := fs.Bool("force", false, "commit even when a preview raised error-level findings")
 	repair := fs.Bool("repair-projection", false, "rewrite a stale manifest.tsv FROM the registry before committing")
-	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port} (default: the four live tenants)")
+	specFile := fs.String("spec", "", "JSON array of {name,data_dir,worktree,manifest_name,ui_port,ui_mode} (default: the four live tenants)")
 	reg := fs.String("registry", registryPath, "registry.json path")
 	root := fs.String("rag-root", ragRoot, "deployment root")
 	if err := fs.Parse(args); err != nil {
@@ -624,6 +659,10 @@ func cmdAdoptAll(args []string, registryPath, ragRoot string, jsonOut bool) int 
 		if err := json.Unmarshal(b, &specs); err != nil {
 			return fail(fmt.Errorf("%s: %w", *specFile, err))
 		}
+	}
+	if err := validateSpecs(specs); err != nil {
+		fmt.Fprintf(stderr, "adopt-all: %v\n", err)
+		return exitUsage
 	}
 	return runAdopt(specs, resolveRegistry(*reg, *root), *root, *commit, *force, *repair, jsonOut)
 }
@@ -665,7 +704,7 @@ func runAdopt(specs []adoptSpec, registryPath, ragRoot string, commit, force, re
 	for _, s := range specs {
 		t, findings, err := adopt.Preview(roots, s.Name, adopt.Options{
 			DataDir: s.DataDir, Worktree: s.Worktree,
-			ManifestName: s.ManifestName, UIPort: s.UIPort,
+			ManifestName: s.ManifestName, UIPort: s.UIPort, UIMode: s.UIMode,
 		})
 		if err != nil {
 			return fail(fmt.Errorf("adopt %s: %w", s.Name, err))

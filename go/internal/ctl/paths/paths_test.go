@@ -133,6 +133,34 @@ func TestRootsAndTenantPaths(t *testing.T) {
 	}
 }
 
+// TestProvisionDirsPostgresLocal: new-tenant.sh appends the dedicated
+// instance's two writable paths to TENANT_DIRS for `--postgres local` and for
+// no other kind. bin/up.sh BINDS both, and apptainer refuses a bind whose
+// source is missing, so a Go-provisioned postgres-local tenant that got only
+// the eleven shared dirs could not start its own store.
+func TestProvisionDirsPostgresLocal(t *testing.T) {
+	tp := TenantPaths(NewRoots("/rag", Overrides{}), "dev", "dev")
+	if tp.PostgresData != "/rag/data/tenants/dev/postgres/data" || tp.PostgresRun != "/rag/data/tenants/dev/postgres/run" {
+		t.Fatalf("postgres paths: %q %q", tp.PostgresData, tp.PostgresRun)
+	}
+	pg := tp.ProvisionDirsFor(StorePostgresLocal)
+	if len(pg) != 13 {
+		t.Fatalf("ProvisionDirsFor(postgres-local) = %d entries, want 13", len(pg))
+	}
+	// Appended, in the script's order, after the eleven shared entries.
+	if pg[11] != tp.PostgresData || pg[12] != tp.PostgresRun {
+		t.Errorf("appended dirs = %q %q", pg[11], pg[12])
+	}
+	for _, kind := range []string{StoreSQLite, StorePostgres, ""} {
+		if n := len(tp.ProvisionDirsFor(kind)); n != 11 {
+			t.Errorf("ProvisionDirsFor(%q) = %d entries, want 11 (only the local instance adds dirs)", kind, n)
+		}
+	}
+	if len(tp.ProvisionDirs()) != len(tp.ProvisionDirsFor(StoreSQLite)) {
+		t.Error("ProvisionDirs() must stay the sqlite list")
+	}
+}
+
 // TestProvisionDirsIncludesESSnapshots: the rendered ES unit binds
 // <data_dir>/elasticsearch/snapshots as ES's path.repo, and apptainer refuses
 // a bind whose source does not exist. Nothing else ever created that

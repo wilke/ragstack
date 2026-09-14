@@ -19,6 +19,14 @@
 #                     instead of the default per-tenant sqlite files. The DSN is
 #                     an admin connection, e.g.
 #                     postgresql://ragstack:pw@localhost:5432/postgres
+#   --postgres local  the literal word 'local' instead of a DSN: give the tenant
+#                     its OWN Postgres instance (postgres-<name>, from
+#                     postgres.sif) on the block's +5 port, with its data at rest
+#                     inside the tenant dir — the ADR-0005 shape, unlike a shared
+#                     server. Started/stopped by the generated bin/up.sh and
+#                     bin/down.sh next to Qdrant and ES; the image entrypoint
+#                     creates the role and database on first start, so this mode
+#                     runs no psql and needs no admin credentials.
 #   --es-heap <size>  Elasticsearch heap (ES_JAVA_OPTS -Xms/-Xmx). Default 512m.
 #                     ADR-0005: the ES JVM heap is the dominant per-tenant cost.
 #   --start           start the tenant's store instances after provisioning
@@ -46,8 +54,10 @@
 #     shell-sources it), bypassing /bin/tini which eats -E flags
 #   - qdrant CMD is CWD-relative and apptainer has no --cwd: wrap with
 #     /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
-#   - postgres PGDATA must be a SUBDIR of the bind (not used here: the default
-#     store is sqlite; --postgres targets an existing server)
+#   - postgres PGDATA must be a SUBDIR of the bind — with `--postgres local`
+#     the bind is <tenant>/postgres/data and PGDATA is .../data/pgdata
+#     (the default store is sqlite; `--postgres <dsn>` targets an existing
+#     server and starts nothing)
 #
 # Verified only manually on the deploy host (not in CI): instance startup,
 # ES green health on the allocated port, DSN reachability, persistence across
@@ -77,6 +87,7 @@ warn() { echo "WARN: $*" >&2; }
 NAME=""
 DRY_RUN=0
 PG_ADMIN_DSN=""
+PG_LOCAL=0
 ES_HEAP="512m"
 ES_HEAP_SET=0
 START=0
@@ -86,8 +97,13 @@ while (( $# )); do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --postgres)
-            [[ $# -ge 2 ]] || die "--postgres requires a DSN argument"
-            PG_ADMIN_DSN="$2"; shift ;;
+            [[ $# -ge 2 ]] || die "--postgres requires a DSN argument (or the word 'local')"
+            if [[ "$2" == local ]]; then
+                PG_LOCAL=1; PG_ADMIN_DSN=""
+            else
+                PG_LOCAL=0; PG_ADMIN_DSN="$2"
+            fi
+            shift ;;
         --es-heap)
             [[ $# -ge 2 ]] || die "--es-heap requires a size argument (e.g. 512m)"
             ES_HEAP="$2"; ES_HEAP_SET=1; shift ;;
@@ -251,23 +267,10 @@ port_in_use() {  # 0 = occupied
     fi
     return 1
 }
-busy=()
-for p in "$PORT_API" "$PORT_QDRANT_HTTP" "$PORT_QDRANT_GRPC" "$PORT_ES_HTTP" "$PORT_ES_TRANSPORT"; do
-    port_in_use "$p" && busy+=("$p")
-done
-if (( ${#busy[@]} )); then
-    # A re-run of an already-STARTED tenant legitimately finds its own ports
-    # listening; that is the only benign case, and it requires the manifest row
-    # to already be ours.
-    if [[ "$ALLOC_SOURCE" == "from manifest" ]]; then
-        warn "ports already listening (${busy[*]}) — assuming this tenant's own running instances"
-    else
-        die "port(s) ${busy[*]} in block $BASE are already in use by something this manifest does not know about.
-    The manifest at $MANIFEST only tracks tenants provisioned under RAG_DATA=$DATA.
-    If this host runs a deployment with its own RAG_DATA, source its rag.env first
-    (so this script sees the real manifest), or pass TENANT_PORT_BASE=<free base>."
-    fi
-fi
+# The probe itself runs below, once the store kind is resolved: which ports this
+# tenant will actually BIND depends on it (+5 only with `--postgres local`), and
+# the kind can come from provision.env on a flagless re-run. Nothing is written
+# between here and there.
 
 # --------------------------------------------------------------------------
 # Paths — extends the apptainer/data/<service>/<purpose>/ enumeration one
@@ -322,13 +325,28 @@ fi
 PROVISION_FILE="$TDIR/config/provision.env"
 STORE_KIND=sqlite
 [[ -n "$PG_ADMIN_DSN" ]] && STORE_KIND=postgres
+if (( PG_LOCAL )); then
+    # Dedicated per-tenant instance on the block's own +5 port: host and port
+    # are ours, not an operator's to supply.
+    STORE_KIND=postgres-local
+    PG_HOST=localhost
+    PG_PORT="$PORT_PG"
+fi
+PREV_STORE_KIND=""
+PREV_PG_HOST=""
+PREV_PG_PORT=""
 if [[ -f "$PROVISION_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$PROVISION_FILE"
+    # Capture what the tenant IS before the readback below decides what it
+    # will be — the kind-switch guard needs both halves.
+    PREV_STORE_KIND="${TENANT_STORE_KIND:-}"
+    PREV_PG_HOST="${TENANT_PG_HOST:-}"
+    PREV_PG_PORT="${TENANT_PG_PORT:-}"
     if (( ! ES_HEAP_SET )) && [[ -n "${TENANT_ES_HEAP:-}" ]]; then
         ES_HEAP="$TENANT_ES_HEAP"
     fi
-    if [[ -z "$PG_ADMIN_DSN" && "${TENANT_STORE_KIND:-}" == "postgres" ]]; then
+    if [[ -z "$PG_ADMIN_DSN" ]] && (( ! PG_LOCAL )) && [[ "${TENANT_STORE_KIND:-}" == "postgres" ]]; then
         # Postgres tenant re-run without --postgres: keep rendering the
         # postgres env (the tenant's own role/password come from secrets.env);
         # the guarded psql steps are skipped — they need the admin DSN and
@@ -339,6 +357,91 @@ if [[ -f "$PROVISION_FILE" ]]; then
         [[ -n "$PG_HOST" ]] || \
             die "corrupt $PROVISION_FILE: TENANT_STORE_KIND=postgres but no TENANT_PG_HOST"
     fi
+    if [[ -z "$PG_ADMIN_DSN" ]] && (( ! PG_LOCAL )) && [[ "${TENANT_STORE_KIND:-}" == "postgres-local" ]]; then
+        # Same for the dedicated-instance kind. Host/port are NOT read back from
+        # provision.env: the instance listens on the block's +5 port by
+        # construction (bin/up.sh renders that port), so the block is the truth
+        # and a stale persisted port would only split tenant.env from up.sh.
+        STORE_KIND=postgres-local
+        PG_HOST=localhost
+        PG_PORT="$PORT_PG"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+# Kind-switch guard. Switching a provisioned tenant's store kind is a DATA
+# MOVE, not a re-render: the old store keeps the ACL/collection/job rows and
+# nothing copies them. Before this guard the switch was silent and one-way —
+# `--postgres <dsn>` on a postgres-local tenant re-pointed every DSN at the
+# other server, left the tenant's own instance holding the only copy of its
+# data, and printed nothing. Refuse it; --force performs it and names what is
+# left behind so the operator can migrate or drop it deliberately.
+#
+# A --dry-run is never refused (house rule above): it writes nothing, and
+# seeing the plan is exactly how an operator decides whether to --force.
+# --------------------------------------------------------------------------
+orphan_note() {  # $1 = the kind being left behind
+    case "$1" in
+        postgres)
+            echo "the per-tenant DATABASE and ROLE '$NAME' on the shared server ${PREV_PG_HOST:-?}:${PREV_PG_PORT:-5432} are ORPHANED (nothing drops them; their rows are the tenant's only ACL/collection/job state)" ;;
+        postgres-local)
+            echo "the dedicated instance's data at rest is ORPHANED: $TDIR/postgres/data/pgdata (nothing copies or deletes it; postgres-$NAME will also stop being started by bin/up.sh)" ;;
+        *)
+            echo "the sqlite stores in $TDIR/state are ORPHANED (ragstack_users.db, ragstack_jobs.db, ragstack_collections.db — nothing copies or deletes them)" ;;
+    esac
+}
+if [[ -n "$PREV_STORE_KIND" && "$PREV_STORE_KIND" != "$STORE_KIND" ]]; then
+    if (( DRY_RUN )); then
+        warn "store kind switch: tenant '$NAME' is provisioned as '$PREV_STORE_KIND' and this run would make it '$STORE_KIND'."
+        warn "A real run is REFUSED without --force. With --force, $(orphan_note "$PREV_STORE_KIND")."
+    elif (( FORCE )); then
+        warn "store kind switch (--force): '$PREV_STORE_KIND' -> '$STORE_KIND' for tenant '$NAME'."
+        warn "$(orphan_note "$PREV_STORE_KIND")"
+    else
+        die "store kind switch refused for tenant '$NAME': $PROVISION_FILE records TENANT_STORE_KIND=$PREV_STORE_KIND but this run resolves to '$STORE_KIND'.
+    Switching kinds MOVES no data — $(orphan_note "$PREV_STORE_KIND").
+    Re-run with the flags matching '$PREV_STORE_KIND' (or no --postgres flag at all, which keeps it),
+    or re-run with --force to switch anyway and migrate/drop the old store by hand."
+    fi
+fi
+
+# Both postgres kinds render the same tenant.env store block; they differ only
+# in who runs the server.
+PG_STORE=0
+[[ "$STORE_KIND" == postgres || "$STORE_KIND" == postgres-local ]] && PG_STORE=1
+
+# --------------------------------------------------------------------------
+# Preflight port probe (see port_in_use above) — the manifest is NOT the
+# universe of port owners, so probe for real before writing anything.
+# --------------------------------------------------------------------------
+probe_ports=("$PORT_API" "$PORT_QDRANT_HTTP" "$PORT_QDRANT_GRPC" "$PORT_ES_HTTP" "$PORT_ES_TRANSPORT")
+# +5 is only ours to bind in postgres-local mode (the dedicated instance binds
+# it for real). In the other modes it stays reserved-but-unused, and probing it
+# would refuse a block over a port this tenant never opens.
+[[ "$STORE_KIND" == postgres-local ]] && probe_ports+=("$PORT_PG")
+busy=()
+for p in "${probe_ports[@]}"; do
+    port_in_use "$p" && busy+=("$p")
+done
+if (( ${#busy[@]} )); then
+    # A re-run of an already-STARTED tenant legitimately finds its own ports
+    # listening; that is the only benign case, and it requires the manifest row
+    # to already be ours.
+    if [[ "$ALLOC_SOURCE" == "from manifest" ]]; then
+        warn "ports already listening (${busy[*]}) — assuming this tenant's own running instances"
+    else
+        die "port(s) ${busy[*]} in block $BASE are already in use by something this manifest does not know about.
+    The manifest at $MANIFEST only tracks tenants provisioned under RAG_DATA=$DATA.
+    If this host runs a deployment with its own RAG_DATA, source its rag.env first
+    (so this script sees the real manifest), or pass TENANT_PORT_BASE=<free base>."
+    fi
+fi
+
+# The dedicated instance needs its own enumerated writable paths (house rule:
+# no tmpfs overlays). PGDATA is a SUBDIR of the data bind — the postgres
+# entrypoint chokes on a bind-mount root holding anything else (MEMORY.md).
+if [[ "$STORE_KIND" == postgres-local ]]; then
+    TENANT_DIRS+=("$TDIR/postgres/data" "$TDIR/postgres/run")
 fi
 
 render_provision() {
@@ -357,6 +460,39 @@ EOF
 # byte-stable. Dry-run always uses placeholders (reproducible, leak-free).
 # --------------------------------------------------------------------------
 gen_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+# The rotation trap, and why deleting secrets.env is NOT a rotation for a
+# postgres-local tenant: the postgres image creates role/database from
+# POSTGRES_* on the FIRST start only and ignores them once PGDATA is
+# initialised. So a regenerated TENANT_PG_PASSWORD lands in tenant.env and
+# bin/up.sh while the running server still holds the OLD password — and there
+# is no admin DSN to ALTER ROLE with, because the whole point of this kind is
+# that no admin credentials exist. The tenant's API then fails to authenticate
+# against its own store, and the only recovery is the ALTER ROLE below.
+# Rotating the API keys alone is fine — but secrets.env carries all three, so
+# the file cannot be deleted for one without rotating the other.
+PGDATA_DIR="$TDIR/postgres/data/pgdata"
+if [[ "$STORE_KIND" == postgres-local && ! -f "$SECRETS_FILE" && -d "$PGDATA_DIR" ]]; then
+    rotate_msg="secrets.env is missing for postgres-local tenant '$NAME' but $PGDATA_DIR is already initialised.
+    Regenerating TENANT_PG_PASSWORD here would NOT change the database password: the postgres image
+    reads POSTGRES_PASSWORD only when it initialises PGDATA, and this kind has no admin DSN to fix it
+    with. tenant.env would then hold a password the DB never had.
+    Rotate through the instance instead (it must be running; the unix socket dir is the bind):
+      NEW=\$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n')
+      apptainer exec --bind \"$TDIR/postgres/run:/var/run/postgresql\" \"$IMG/postgres.sif\" \\
+        psql -h /var/run/postgresql -U $NAME -d $NAME -v ON_ERROR_STOP=1 \\
+        -c \"ALTER ROLE \\\"$NAME\\\" PASSWORD '\$NEW'\"
+    then write TENANT_PG_PASSWORD=\$NEW (with the two API keys) back into $SECRETS_FILE and re-run with --force
+    so tenant.env and bin/up.sh pick it up.
+    To accept a NEW, unreachable password anyway (e.g. you are about to delete $PGDATA_DIR), re-run with --force."
+    if (( DRY_RUN )); then
+        warn "$rotate_msg"
+    elif (( ! FORCE )); then
+        die "$rotate_msg"
+    else
+        warn "generating a fresh TENANT_PG_PASSWORD (--force) — the initialised $PGDATA_DIR still holds the OLD one"
+    fi
+fi
 
 if (( DRY_RUN )); then
     KEY_USER="<GENERATED:API_KEY_USER>"
@@ -416,7 +552,7 @@ IDENTITY_PROVIDER=none
 # IDENTITY_PROVIDER=bvbrc    # issuer allowlist is pinned in config.py
 MAX_COLLECTIONS=100
 EOF
-    if [[ "$STORE_KIND" == postgres ]]; then
+    if (( PG_STORE )); then
         cat <<EOF
 USER_STORE_BACKEND=postgres
 USER_STORE_DSN=postgresql://$NAME:$PG_PASSWORD@$PG_HOST:$PG_PORT/$NAME
@@ -437,7 +573,7 @@ TEXT_BACKEND=elasticsearch
 ELASTICSEARCH_URL=http://localhost:$PORT_ES_HTTP
 GRAPH_BACKEND=disabled
 EOF
-    if [[ "$STORE_KIND" == postgres ]]; then
+    if (( PG_STORE )); then
         cat <<EOF
 JOB_STORE_BACKEND=postgres
 POSTGRES_DSN=postgresql+asyncpg://$NAME:$PG_PASSWORD@$PG_HOST:$PG_PORT/$NAME
@@ -485,6 +621,13 @@ render_up_sh() {
 #
 # Instances: qdrant-$NAME (http :$PORT_QDRANT_HTTP, grpc :$PORT_QDRANT_GRPC)
 #            elasticsearch-$NAME (http :$PORT_ES_HTTP, transport :$PORT_ES_TRANSPORT)
+EOF
+    if [[ "$STORE_KIND" == postgres-local ]]; then
+        cat <<EOF
+#            postgres-$NAME (:$PORT_PG, loopback only)
+EOF
+    fi
+    cat <<EOF
 set -euo pipefail
 IMG="$IMG"
 TDIR="$TDIR"
@@ -561,6 +704,27 @@ start elasticsearch-$NAME "\$IMG/elasticsearch.sif" \\
         -Expack.security.enabled=false \\
         -Ehttp.port=$PORT_ES_HTTP \\
         -Etransport.port=$PORT_ES_TRANSPORT
+EOF
+    if [[ "$STORE_KIND" == postgres-local ]]; then
+        cat <<EOF
+
+# Dedicated ACL/registry/job store. PGDATA is a SUBDIR of the data bind: the
+# postgres entrypoint refuses a bind-mount root that holds anything else
+# (lost+found, apptainer's own bits). The trailing args after the entrypoint
+# are the server command line, so the port and listen address are -c settings
+# rather than envs. The entrypoint creates role '$NAME' and database '$NAME'
+# on the FIRST start only — it ignores POSTGRES_* once PGDATA is initialised.
+start postgres-$NAME "\$IMG/postgres.sif" \\
+    --bind "\$TDIR/postgres/data:/var/lib/postgresql/data" \\
+    --bind "\$TDIR/postgres/run:/var/run/postgresql" \\
+    --env POSTGRES_USER=$NAME \\
+    --env POSTGRES_PASSWORD=$PG_PASSWORD \\
+    --env POSTGRES_DB=$NAME \\
+    --env PGDATA=/var/lib/postgresql/data/pgdata \\
+    -- postgres -c port=$PORT_PG -c listen_addresses=127.0.0.1
+EOF
+    fi
+    cat <<EOF
 
 echo
 apptainer instance list
@@ -568,12 +732,14 @@ EOF
 }
 
 render_down_sh() {
+    local instances="qdrant-$NAME elasticsearch-$NAME"
+    [[ "$STORE_KIND" == postgres-local ]] && instances="$instances postgres-$NAME"
     cat <<EOF
 #!/usr/bin/env bash
 # Stop the dedicated stores for tenant '$NAME'. Idempotent.
 # Generated by apptainer/new-tenant.sh — do not edit; re-run it to regenerate.
 set -euo pipefail
-for name in qdrant-$NAME elasticsearch-$NAME; do
+for name in $instances; do
     if apptainer instance stop "\$name" 2>/dev/null; then
         echo "[\$name] stopped"
     else
@@ -613,7 +779,11 @@ print_plan() {
     echo "qdrant grpc:    $PORT_QDRANT_GRPC"
     echo "es http:        $PORT_ES_HTTP"
     echo "es transport:   $PORT_ES_TRANSPORT"
-    echo "postgres:       $PORT_PG (reserved, unused — sqlite default / shared server via --postgres)"
+    if [[ "$STORE_KIND" == postgres-local ]]; then
+        echo "postgres:       $PORT_PG (dedicated instance postgres-$NAME)"
+    else
+        echo "postgres:       $PORT_PG (reserved, unused — sqlite default / shared server via --postgres)"
+    fi
     echo
     echo "-- manifest row ($MANIFEST) --"
     printf '%s\t%s\t%s\n' "$NAME" "$IDX" "$BASE"
@@ -624,6 +794,7 @@ print_plan() {
     echo "-- required images (shared SIFs, reused — run apptainer/pull.sh if missing) --"
     echo "$IMG/qdrant.sif"
     echo "$IMG/elasticsearch.sif"
+    [[ "$STORE_KIND" == postgres-local ]] && echo "$IMG/postgres.sif"
     if [[ -n "$PG_ADMIN_DSN" ]]; then
         echo
         echo "-- postgres provisioning (server $PG_HOST:$PG_PORT via --postgres DSN) --"
@@ -785,7 +956,9 @@ if [[ -n "$PG_ADMIN_DSN" ]]; then
 fi
 
 # 9. Preflight warnings (never fatal — provisioning is complete without them).
-for sif in "$IMG/qdrant.sif" "$IMG/elasticsearch.sif"; do
+REQUIRED_SIFS=("$IMG/qdrant.sif" "$IMG/elasticsearch.sif")
+[[ "$STORE_KIND" == postgres-local ]] && REQUIRED_SIFS+=("$IMG/postgres.sif")
+for sif in "${REQUIRED_SIFS[@]}"; do
     [[ -f "$sif" ]] || warn "missing $sif — run apptainer/pull.sh before starting (SIFs are shared across tenants)"
 done
 mmc="$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)"

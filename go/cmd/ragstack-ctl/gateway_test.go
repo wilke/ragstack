@@ -306,7 +306,9 @@ func TestRenderNginxAndGatewayRenderAgreeOnTheProxyDir(t *testing.T) {
 	// `include <ProxyDir>/snippets/…` lines at all.
 	f := registry.LiveFixture()
 	f.Ctl.GatewayEnabled = true
-	f.Tenants["demo"].UI.Mode = registry.UIModeStatic
+	// static ⇒ no port: nginx serves it from <data_dir>/ui/dist, and the
+	// registry contract now refuses the pair.
+	f.Tenants["demo"].UI.Mode, f.Tenants["demo"].UI.Port = registry.UIModeStatic, 0
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "registry.json")
 	if err := registry.Save(reg, f, "test"); err != nil {

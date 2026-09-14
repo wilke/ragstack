@@ -53,6 +53,18 @@ const (
 	// read from this account. Expected for svcbvbrc before handover, so warn.
 	WorktreeGitdirUnreadable = "worktree_gitdir_unreadable"
 
+	// SecretsUnreadableByCtl: a secret-class env file of the tenant
+	// (secrets.env, tenant.env, provision.env, or a historical copy of one
+	// beside them) cannot be read by the account the ctl runs as, while the
+	// registry records a different `owner`. The pre-handover shape of
+	// worktree_gitdir_unreadable, one directory over — and INFO rather than
+	// warn, because it is the DESIGNED state until PR-E, not a defect.
+	//
+	// It is reported rather than left implicit because it is the reason
+	// GET /v1/tenants/<t>/logs answers 409 `refused`: those values seed the
+	// log redactor, and the ctl returns no log line it could not redact.
+	SecretsUnreadableByCtl = "secrets_unreadable_by_ctl"
+
 	// WorktreeOutsideMirror: the worktree's gitdir is neither in the bare
 	// mirror nor in a prepared artifact — the running code is not traceable
 	// to a reviewed tag. Warn until PR-E moves tenants onto artifacts.
@@ -148,6 +160,14 @@ const (
 	// UIPortNotListening: the registry records a dev-mode UI port with no
 	// listener, so the gateway's UI route 502s. Warn.
 	UIPortNotListening = "ui_port_not_listening"
+
+	// UIDistMissing: the tenant's UI is recorded as `static`, but
+	// <data_dir>/ui/dist/index.html is not a regular file. The gateway
+	// aliases that directory and `try_files` falls back to that exact file,
+	// so every path under the UI route answers 404. Error: the row would
+	// describe a gateway mount with nothing behind it, and the build that
+	// fills it is a step the ctl does not take for the tenant.
+	UIDistMissing = "ui_dist_missing"
 
 	// UnsupportedEnvKey: a key in tenant.env that the settings classification
 	// table does not know. Recorded as drift, never rendered. Info.

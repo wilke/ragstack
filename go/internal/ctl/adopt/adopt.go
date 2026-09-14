@@ -55,6 +55,15 @@ type Options struct {
 	ManifestName string
 	// UIPort is the Vite dev server's port (0 ⇒ no UI row).
 	UIPort int
+	// UIMode is how the tenant's UI is served: registry.UIModeStatic (a
+	// `vite build` nginx serves from <data_dir>/ui/dist, no port),
+	// UIModeDev (a Vite dev server on UIPort) or UIModeExternal (served by
+	// something the ctl does not manage). Empty keeps the historical
+	// inference: dev when UIPort > 0, external when it is 0.
+	//
+	// ValidateUIMode is the one place the combinations are judged, so the
+	// CLI can reject a bad pair as a usage error before any host is read.
+	UIMode string
 	// PublicName is the gateway path segment when it differs from the
 	// registry name. Defaults to the name.
 	PublicName string
@@ -162,6 +171,9 @@ func newPreviewer(roots paths.Roots, name string, opts Options) (*previewer, err
 	}
 	if opts.DataDir == "" || opts.Worktree == "" {
 		return nil, errors.New("adopt: --data-dir and --worktree are required")
+	}
+	if err := ValidateUIMode(opts.UIMode, opts.UIPort); err != nil {
+		return nil, fmt.Errorf("adopt: %w", err)
 	}
 	dataDir, err := paths.SafePath(roots.RagRoot, opts.DataDir)
 	if err != nil {
@@ -677,17 +689,73 @@ func (p *previewer) code() registry.Code {
 	return c
 }
 
-// ui records the dev-mode Vite server every adopted tenant runs today. The
-// SHA of a `vite build` is not in play: mode `dev` is the honest answer until
-// PR-D builds static bundles.
+// ValidateUIMode judges the (mode, port) pair on its own, before any host is
+// read, so `adopt` and `adopt-all --spec` reject the same combinations the
+// same way and can report them as a usage error rather than a failed read.
+//
+// The empty mode is the historical inference and is always legal: dev when a
+// port was given, external when it was not.
+func ValidateUIMode(mode string, port int) error {
+	switch mode {
+	case "":
+		return nil
+	case registry.UIModeStatic:
+		if port != 0 {
+			return fmt.Errorf("ui mode %s is served by nginx from <data_dir>/ui/dist and has no port; drop --ui-port %d", registry.UIModeStatic, port)
+		}
+	case registry.UIModeDev:
+		// render.NginxTenants REFUSES a dev row without a port in range, and
+		// it refuses it for the whole fleet's gateway file, not just this
+		// tenant. Catch it here, where it is one operator's typo.
+		if port == 0 {
+			return fmt.Errorf("ui mode %s is a Vite dev server the ctl renders a unit for; it needs --ui-port", registry.UIModeDev)
+		}
+	case registry.UIModeExternal:
+	default:
+		return fmt.Errorf("ui mode %q is not one of %s|%s|%s", mode,
+			registry.UIModeStatic, registry.UIModeDev, registry.UIModeExternal)
+	}
+	return nil
+}
+
+// ui records how the tenant's UI is served. Three shapes, and which one is
+// recorded is the operator's statement (--ui-mode), not a guess:
+//
+//   - static: a `vite build` nginx serves from <data_dir>/ui/dist. No port —
+//     the contract types ui.port nullable for exactly this — and
+//     render.NginxStatic emits the alias block while NginxTenants leaves the
+//     tenant out of $tenant_ui. The dist has to BE there, so an absent
+//     index.html is an error-level finding rather than a mount that 404s.
+//   - dev: the Vite dev server on UIPort, which the ctl renders a unit for.
+//   - external: served by something the ctl does not manage. "external with
+//     port 0" is also how "no UI the ctl can see" is recorded, because the
+//     contract's mode enum is static|dev|external with no `none` — and
+//     NginxTenants skips such a tenant's $tenant_ui row rather than failing
+//     the whole fleet's gateway file.
 func (p *previewer) ui() registry.UI {
-	ui := registry.UI{Mode: registry.UIModeDev, Base: "/ragstack/" + p.public + "/ui/"}
+	// The base is built from the REGISTRY KEY, not from --public-name: the
+	// gateway renderer keys every location block, every map row and every
+	// try_files fallback on t.Name, so a base derived from a different name
+	// described a mount nginx does not serve. (render.NginxStatic now takes
+	// t.UI.Base when it is set, which is the other half of the same fix: the
+	// two cannot disagree because only one of them is authoritative.)
+	ui := registry.UI{Mode: p.opts.UIMode, Base: "/ragstack/" + p.name + "/ui/"}
+	if ui.Mode == "" {
+		ui.Mode = registry.UIModeDev
+		if p.opts.UIPort == 0 {
+			ui.Mode = registry.UIModeExternal
+		}
+	}
+	if ui.Mode == registry.UIModeStatic {
+		index := doctor.UIDistIndex(p.dataDir)
+		if !doctor.StaticUIDistOK(p.dataDir) {
+			p.err(doctor.UIDistMissing, fmt.Sprintf(
+				"ui mode static serves %s/ui/dist, but %s is not a regular file; run the tenant's `vite build --base %s` first",
+				p.dataDir, index, ui.Base))
+		}
+		return ui
+	}
 	if p.opts.UIPort == 0 {
-		// No UI the ctl can see. The contract's mode enum is
-		// static|dev|external with no `none`, so "external, port 0" is how
-		// that is recorded — and render.NginxTenants skips such a tenant's
-		// $tenant_ui row rather than failing the whole fleet's gateway file.
-		ui.Mode = registry.UIModeExternal
 		return ui
 	}
 	ui.Port = registry.NullPort(p.opts.UIPort)

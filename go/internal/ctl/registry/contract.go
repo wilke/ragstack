@@ -297,6 +297,23 @@ func (c *contractCheck) tenant(ptr, key string, t *Tenant) {
 	c.enum(ptr+"/ui/mode", t.UI.Mode, enumUIMode)
 	c.nullPort(ptr+"/ui/port", t.UI.Port)
 	c.pattern(ptr+"/ui/base", t.UI.Base, reUIBase)
+	// mode and port are not independent fields, and checking them one at a
+	// time let the contradiction through: a `static` row carrying a port
+	// describes a Vite dev server the renderer never emits a map row for
+	// (nginx serves that tenant from <data_dir>/ui/dist instead), and a `dev`
+	// row WITHOUT one is a gateway file render.NginxTenants refuses for the
+	// whole fleet, not just this tenant. Both are refusals here, where the
+	// row is named.
+	switch t.UI.Mode {
+	case UIModeStatic:
+		if t.UI.Port != 0 {
+			c.failf(ptr+"/ui/port", "ui mode %q is served by nginx from <data_dir>/ui/dist and must have a null port, got %d", UIModeStatic, int(t.UI.Port))
+		}
+	case UIModeDev:
+		if t.UI.Port == 0 {
+			c.failf(ptr+"/ui/port", "ui mode %q is a Vite dev server the ctl renders a unit for; it needs a port, got null", UIModeDev)
+		}
+	}
 
 	c.enum(ptr+"/supervisor", t.Supervisor, enumSupervisor)
 	c.enum(ptr+"/owner", t.Owner, enumOwner)

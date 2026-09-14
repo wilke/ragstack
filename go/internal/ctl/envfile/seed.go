@@ -3,7 +3,6 @@ package envfile
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -47,10 +46,17 @@ var tolerantAssign = regexp.MustCompile(`(?m)^[ \t]*(?:export[ \t]+)?([A-Za-z_][
 // rather than a silent zero-seed redactor — a caller that stamps
 // `redacted: true` on its answer has to be able to tell the difference.
 //
-// Historical copies are best-effort by design. They are whatever somebody
-// left behind (a diff, a truncated copy, a note), and a file with no
-// `KEY=value` line in it holds no env secret to seed from in the first
-// place, so it is skipped rather than made fatal.
+// Historical copies are best-effort as to their CONTENT. They are whatever
+// somebody left behind (a diff, a truncated copy, a note), and a file with no
+// `KEY=value` line in it holds no env secret to seed from in the first place,
+// so it is skipped rather than made fatal. A historical copy that cannot be
+// READ is a different thing: it exists, it sits beside secrets.env under one
+// of the history globs, and what is in it is exactly the rotated-out key a
+// long-running process still prints. That one fails closed too.
+//
+// Every read failure of either kind is a *SeedError, so a caller can recover
+// the path and the underlying errno (fs.ErrPermission in particular) instead
+// of matching on error text.
 func SeedRedactor(configDir string, r *settings.Redactor) error {
 	if r == nil {
 		return errors.New("envfile: nil redactor")
@@ -62,7 +68,7 @@ func SeedRedactor(configDir string, r *settings.Redactor) error {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return fmt.Errorf("seed redactor: %s: %w", path, err)
+			return &SeedError{Path: path, Err: err}
 		}
 		if err := seedFrom(path, b, r, true); err != nil {
 			return err
@@ -71,11 +77,36 @@ func SeedRedactor(configDir string, r *settings.Redactor) error {
 	for _, path := range history {
 		b, err := os.ReadFile(path)
 		if err != nil {
+			if errors.Is(err, fs.ErrPermission) {
+				return &SeedError{Path: path, Err: err}
+			}
 			continue
 		}
 		_ = seedFrom(path, b, r, false)
 	}
 	return nil
+}
+
+// SeedError is a file SeedRedactor could not mine. It names the path, so the
+// HTTP layer can say WHICH file it cannot read, and unwraps to the syscall
+// error, so `errors.Is(err, fs.ErrPermission)` classifies it.
+type SeedError struct {
+	Path string
+	Err  error
+}
+
+func (e *SeedError) Error() string { return "seed redactor: " + e.Path + ": " + e.Err.Error() }
+
+func (e *SeedError) Unwrap() error { return e.Err }
+
+// SeedPaths is the file set SeedRedactor mines — the live files first, then
+// the historical copies, in the order it reads them. Exported so a caller
+// that has to reason about those files WITHOUT seeding (doctor, which reports
+// the ones this account cannot read) uses this list rather than a second one
+// that could drift from it.
+func SeedPaths(configDir string) []string {
+	live, history := seedFiles(configDir)
+	return append(live, history...)
 }
 
 // seedFiles returns the live env files (stable order) and every historical
@@ -139,7 +170,7 @@ func seedFrom(path string, b []byte, r *settings.Redactor, strict bool) error {
 		add(m[1], strings.Trim(strings.TrimSpace(m[2]), `"'`))
 	}
 	if strict && len(matches) == 0 && hasContent(b) {
-		return fmt.Errorf("seed redactor: %s: %w", path, err)
+		return &SeedError{Path: path, Err: err}
 	}
 	return nil
 }

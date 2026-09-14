@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
@@ -505,4 +506,132 @@ func TestESSeedConfig(t *testing.T) {
 	if rc, _, errs := capture(t, "es-seed-config", "dev", "--registry", reg); rc != exitError || !strings.Contains(errs, cfgDir) {
 		t.Errorf("missing config dir: rc %d err %q", rc, errs)
 	}
+}
+
+// TestAdoptStaticUIIsUsageErrorWithAPort: a static UI is a `vite build` nginx
+// serves from <data_dir>/ui/dist — it has no port at all. Accepting the pair
+// would record a row whose ui.port nothing reads and whose operator believes
+// a dev server is being managed. It is judged before any host is read, so it
+// is a usage error (2) and not a failed adoption.
+func TestAdoptStaticUIIsUsageErrorWithAPort(t *testing.T) {
+	rc, _, errs := capture(t, "adopt", "acme", "--data-dir", "/rag/data/tenants/acme",
+		"--worktree", "/rag/repos/tenants/acme", "--ui-mode", "static", "--ui-port", "5210", "--preview")
+	if rc != exitUsage {
+		t.Errorf("--ui-mode static --ui-port rc = %d, want %d (usage)", rc, exitUsage)
+	}
+	if !strings.Contains(errs, "--ui-port") {
+		t.Errorf("the refusal must name the flag to drop: %q", errs)
+	}
+	// The same pair inside a --spec entry, where it is just as wrong.
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "spec.json")
+	body := `[{"name":"acme","data_dir":"/rag/data/tenants/acme","worktree":"/rag/repos/tenants/acme","ui_mode":"static","ui_port":5210}]`
+	if err := os.WriteFile(spec, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, errs := capture(t, "adopt-all", "--preview", "--spec", spec, "--rag-root", dir); rc != exitUsage {
+		t.Errorf("spec ui_mode static + ui_port rc = %d (%q), want %d", rc, errs, exitUsage)
+	}
+	// An unknown mode is refused by the same gate rather than reaching the
+	// registry as a value the contract's enum has never heard of.
+	if rc, _, _ := capture(t, "adopt", "acme", "--data-dir", "/rag/data/tenants/acme",
+		"--worktree", "/rag/repos/tenants/acme", "--ui-mode", "none", "--preview"); rc != exitUsage {
+		t.Errorf("--ui-mode none rc = %d, want %d", rc, exitUsage)
+	}
+}
+
+// TestAdoptStaticUIRendersTheGatewayMount is the end-to-end claim behind
+// --ui-mode static: the row adopt WRITES is one the gateway renderer serves
+// from disk. The tenant gets the alias block in
+// snippets/tenants-ui-static.generated.conf and NO $tenant_ui row — a row
+// there would point the gateway at a dev server nobody runs.
+//
+// It also pins the gate in front of that: a static tenant whose bundle was
+// never built is an error-level finding, so --commit refuses without --force.
+func TestAdoptStaticUIRendersTheGatewayMount(t *testing.T) {
+	ragRoot := t.TempDir()
+	dataDir := filepath.Join(ragRoot, "data", "tenants", "acme")
+	worktree := filepath.Join(ragRoot, "repos", "tenants", "acme")
+	for _, d := range []string{filepath.Join(dataDir, "config"), worktree} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config", "tenant.env"),
+		[]byte("PORT=24140\nLOG_LEVEL=info\nQDRANT_URL=http://localhost:6333\nELASTICSEARCH_URL=http://localhost:9200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := filepath.Join(ragRoot, "data", "tenants", "registry.json")
+	args := []string{"adopt", "acme", "--data-dir", dataDir, "--worktree", worktree,
+		"--ui-mode", "static", "--registry", reg, "--rag-root", ragRoot}
+
+	rc, _, errs := capture(t, append(append([]string{}, args...), "--commit")...)
+	if rc != exitRefused || !strings.Contains(errs, "ui_dist_missing") {
+		t.Fatalf("commit with no built UI: rc %d, err %q", rc, errs)
+	}
+	if _, err := os.Stat(reg); err == nil {
+		t.Fatal("a refused commit wrote the registry anyway")
+	}
+
+	dist := filepath.Join(dataDir, "ui", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, errs := capture(t, append(append([]string{}, args...), "--commit")...); rc != exitOK {
+		t.Fatalf("commit of a built static tenant: rc %d, err %q", rc, errs)
+	}
+	f, err := registry.LoadNoRepair(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn, ok := f.Tenants["acme"]
+	if !ok {
+		t.Fatal("the row was not written")
+	}
+	if tn.UI.Mode != registry.UIModeStatic || tn.UI.Port != 0 {
+		t.Fatalf("ui = %+v, want static with a null port", tn.UI)
+	}
+
+	// The whole generation, not just one renderer call: these are the bytes
+	// `gateway apply` would publish for this row.
+	gen, err := gateway.Render(f, paths.NewRoots(ragRoot, paths.Overrides{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	static := gen.Files[gateway.FileStatic]
+	for _, w := range []string{
+		"location = /ragstack/acme/ui {\n    return 301 /ragstack/acme/ui/;\n}",
+		"location ^~ /ragstack/acme/ui/ {",
+		"alias " + dist + "/;",
+		"try_files $uri $uri/ /ragstack/acme/ui/index.html;",
+	} {
+		if !strings.Contains(string(static), w) {
+			t.Errorf("the static snippet lacks %q:\n%s", w, static)
+		}
+	}
+	maps := gen.Files[gateway.FileTenants]
+	if !strings.Contains(string(maps), `acme  "127.0.0.1:24140"`) {
+		t.Errorf("the tenant has no $tenant_api row:\n%s", maps)
+	}
+	if ui := mapBlock(t, string(maps), "$tenant_ui"); strings.Contains(ui, "acme") {
+		t.Errorf("a static tenant must have no $tenant_ui row:\n%s", ui)
+	}
+}
+
+// mapBlock returns the body of `map <src> <dst> { … }` from a rendered maps
+// file, so "no row for this tenant" can be asserted about the right map.
+func mapBlock(t *testing.T, conf, dst string) string {
+	t.Helper()
+	i := strings.Index(conf, " "+dst+" {")
+	if i < 0 {
+		t.Fatalf("no %s map in:\n%s", dst, conf)
+	}
+	j := strings.Index(conf[i:], "\n}")
+	if j < 0 {
+		t.Fatalf("unterminated %s map in:\n%s", dst, conf)
+	}
+	return conf[i : i+j]
 }

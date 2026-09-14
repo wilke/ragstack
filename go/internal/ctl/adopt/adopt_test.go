@@ -21,6 +21,10 @@ import (
 
 const fixtureDir = "../testdata/live-2026-09-10"
 
+// bootstrapFixtureDir is the coconut-proxy repo's own committed generated
+// include, byte for byte — see its README.
+const bootstrapFixtureDir = "../testdata/coconut-proxy-bootstrap"
+
 // live is the four tenants as they ran on coconut on 2026-09-10, with the
 // arguments the operator passes to `adopt` for each.
 var live = []struct {
@@ -934,5 +938,274 @@ func TestMissingESSnapshotsDirIsReported(t *testing.T) {
 	}
 	if n := countCode(findings, doctor.ESSnapshotsDirMissing); n != 0 {
 		t.Errorf("%d findings for a directory that exists", n)
+	}
+}
+
+// previewStaticDev previews the live `dev` tenant as a static-UI tenant: the
+// shape an operator adopts once the tenant's UI is a `vite build` nginx
+// serves rather than a Vite dev server.
+func previewStaticDev(t *testing.T, roots paths.Roots, h hostfacts.Host) (*registry.Tenant, []model.Finding) {
+	t.Helper()
+	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	tenant, findings, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIMode:   registry.UIModeStatic,
+		Host:     h, Now: func() time.Time { return at },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tenant, findings
+}
+
+// TestPreviewUIModeStatic: --ui-mode static records the mode the gateway's
+// alias block is keyed on, with NO port — render.NginxStatic serves the
+// tenant from <data_dir>/ui/dist and NginxTenants leaves it out of
+// $tenant_ui, so a port here would be a route to a server nobody runs. The
+// dev-server warning must not fire either: there is no port to listen on.
+func TestPreviewUIModeStatic(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	dist := filepath.Join(roots.DataDir, "dev", "ui", "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tenant, findings := previewStaticDev(t, roots, h)
+	if tenant.UI.Mode != registry.UIModeStatic || tenant.UI.Port != 0 || tenant.UI.Base != "/ragstack/dev/ui/" {
+		t.Errorf("ui = %+v, want static with a null port and the /ragstack/dev/ui/ base", tenant.UI)
+	}
+	if n := countCode(findings, doctor.UIPortNotListening); n != 0 {
+		t.Errorf("%d %s findings for a UI that has no port", n, doctor.UIPortNotListening)
+	}
+	if n := countCode(findings, doctor.UIDistMissing); n != 0 {
+		t.Errorf("%d %s findings for a dist that is there", n, doctor.UIDistMissing)
+	}
+	// ui.port null is what the contract types for a static UI; a 0 that
+	// marshalled as 0 is not a Port the schema accepts.
+	b, err := json.Marshal(tenant.UI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"port":null`) {
+		t.Errorf("static ui marshals as %s, want a null port", b)
+	}
+}
+
+// TestPreviewUIModeStaticWithoutDistIsRed: nginx aliases <data_dir>/ui/dist
+// directly and try_files falls back to index.html in it, so adopting a static
+// tenant whose bundle was never built publishes a route that 404s for every
+// path. An error-level finding is what makes `--commit` refuse it.
+func TestPreviewUIModeStaticWithoutDistIsRed(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	tenant, findings := previewStaticDev(t, roots, h)
+	if tenant.UI.Mode != registry.UIModeStatic || tenant.UI.Port != 0 {
+		t.Errorf("ui = %+v, want the honest static row even when the dist is missing", tenant.UI)
+	}
+	var found *model.Finding
+	for i := range findings {
+		if findings[i].Code == doctor.UIDistMissing {
+			found = &findings[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("findings %v lack %s", codes(findings), doctor.UIDistMissing)
+	}
+	if found.Level != model.LevelError {
+		t.Errorf("%s level = %s, want error (it must block --commit)", found.Code, found.Level)
+	}
+	// A directory where index.html should be is not a bundle either.
+	if err := os.MkdirAll(filepath.Join(roots.DataDir, "dev", "ui", "dist", "index.html"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, findings = previewStaticDev(t, roots, h); countCode(findings, doctor.UIDistMissing) != 1 {
+		t.Errorf("a directory named index.html was accepted as a built UI: %v", codes(findings))
+	}
+}
+
+// TestUIModeValidation: the combinations judged before any host is read.
+func TestUIModeValidation(t *testing.T) {
+	cases := []struct {
+		mode string
+		port int
+		ok   bool
+	}{
+		{"", 0, true}, {"", 8090, true},
+		{registry.UIModeStatic, 0, true},
+		{registry.UIModeStatic, 5210, false}, // a static UI has no port
+		{registry.UIModeDev, 8090, true},
+		{registry.UIModeDev, 0, false}, // NginxTenants refuses a portless dev row
+		{registry.UIModeExternal, 0, true}, {registry.UIModeExternal, 5210, true},
+		{"none", 0, false}, // not in the contract's enum
+	}
+	for _, c := range cases {
+		err := ValidateUIMode(c.mode, c.port)
+		if (err == nil) != c.ok {
+			t.Errorf("ValidateUIMode(%q, %d) = %v, want ok=%v", c.mode, c.port, err, c.ok)
+		}
+	}
+	// Preview refuses the same pair rather than recording a row for it.
+	roots := materialize(t, t.TempDir())
+	if _, _, err := Preview(roots, "dev", Options{
+		DataDir:  filepath.Join(roots.DataDir, "dev"),
+		Worktree: filepath.Join(roots.ReposDir, "dev"),
+		UIMode:   registry.UIModeStatic, UIPort: 8090, Host: liveHost(t, roots),
+	}); err == nil {
+		t.Error("Preview accepted --ui-mode static together with a UI port")
+	}
+}
+
+// TestDisplayOrderPostDeployReadsGeneratedInclude is BUG 1 from the coconut
+// migration: once coconut-proxy's deploy has replaced the literal tenant
+// lists in snippets/routes.conf with `$tenants_names_json`/`$tenants_json`
+// interpolation, routes.conf carries no literal for displayOrder to read, and
+// it fell back to manifest-index order — reordering the landing page on
+// `adopt-all --commit` even though the gateway's own advertised order had not
+// changed. displayOrder must fall back to the generated include's
+// `$tenants_names_json`, wherever the live tree actually carries the list.
+func TestDisplayOrderPostDeployReadsGeneratedInclude(t *testing.T) {
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Post-deploy routes.conf: no literal "tenants":[...] anywhere, only the
+	// interpolated variable — DisplayOrderFromRoutes must see nothing here.
+	routes := `location = / { return 200 '{"tenants":$tenants_names_json}\n'; }` + "\n"
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "snippets", "routes.conf"), []byte(routes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The shipped bootstrap copy of the generated include, byte for byte. Its
+	// $tenants_names_json is ["dev","demo","lucid-next","asm-next"].
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixtureDir, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf"), gen, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := registry.NewFleet(roots.RagRoot)
+	var added []*registry.Tenant
+	// ADOPTION order, deliberately NOT the include's order and not the answer.
+	// Built the same way round as the include, this test passed without ever
+	// reading the include at all.
+	for _, name := range []string{"newco", "asm-next", "dev", "demo", "lucid-next"} {
+		tenant := registry.NewTenant(name, name)
+		f.Tenants[name] = tenant
+		added = append(added, tenant)
+	}
+
+	got, err := displayOrder(f, added, true, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"dev", "demo", "lucid-next", "asm-next", "newco"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("display_order = %v, want %v (the live $tenants_names_json order, the adopted tenant appended)", got, want)
+	}
+}
+
+// The negative half: with NOTHING to read — no generated include and a
+// routes.conf carrying no literal — there is no live order to keep, and the
+// fleet must fall back to adoption (manifest-index) order rather than to some
+// order invented by the map iteration.
+func TestDisplayOrderWithNoLiveListKeepsAdoptionOrder(t *testing.T) {
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(roots.ProxyDir, "snippets", "routes.conf"),
+		[]byte(`location = / { return 200 '{"tenants":$tenants_names_json}\n'; }`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := registry.NewFleet(roots.RagRoot)
+	var added []*registry.Tenant
+	order := []string{"newco", "asm-next", "dev", "demo", "lucid-next"}
+	for _, name := range order {
+		tenant := registry.NewTenant(name, name)
+		f.Tenants[name] = tenant
+		added = append(added, tenant)
+	}
+	got, err := displayOrder(f, added, true, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != strings.Join(order, ",") {
+		t.Errorf("display_order = %v, want the adoption order %v", got, order)
+	}
+}
+
+// TestDisplayOrderRefusesAnUnreadableProxyTree: "the file could not be read"
+// must not become "the gateway advertises nothing". That silently reordered
+// the landing page on the next publish, from an `adopt-all --commit` that
+// reported success.
+func TestDisplayOrderRefusesAnUnreadableProxyTree(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads an 0000 file")
+	}
+	roots := paths.NewRoots(t.TempDir(), paths.Overrides{})
+	for _, d := range []string{"conf.d", "snippets"} {
+		if err := os.MkdirAll(filepath.Join(roots.ProxyDir, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inc := filepath.Join(roots.ProxyDir, "conf.d", "05-tenants.generated.conf")
+	gen, err := os.ReadFile(filepath.Join(bootstrapFixtureDir, "conf.d", "05-tenants.generated.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inc, gen, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(inc, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(inc, 0o600) })
+
+	f := registry.NewFleet(roots.RagRoot)
+	tenant := registry.NewTenant("dev", "dev")
+	f.Tenants["dev"] = tenant
+	if _, err := displayOrder(f, []*registry.Tenant{tenant}, true, roots); err == nil {
+		t.Fatal("an unreadable proxy tree produced an order instead of an error")
+	}
+}
+
+// TestPreviewUIBaseIsTheRegistryKeyNotThePublicName.
+//
+// ui.base and render.NginxStatic's location prefix are the SAME path, derived
+// in two places: adopt built it from --public-name while the renderer keyed
+// every location block, map row and try_files fallback on t.Name. A tenant
+// adopted under a public name therefore carried a registry row describing a
+// mount nginx does not serve — and it is the registry row the operator reads,
+// the docs quote and `vite build --base` is copied from.
+//
+// One authority: the registry key. (render.NginxStatic then takes t.UI.Base
+// when it is set, so the two cannot drift apart again.)
+func TestPreviewUIBaseIsTheRegistryKeyNotThePublicName(t *testing.T) {
+	roots := materialize(t, t.TempDir())
+	h := liveHost(t, roots)
+	at := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	tenant, _, err := Preview(roots, "dev", Options{
+		DataDir:    filepath.Join(roots.DataDir, "dev"),
+		Worktree:   filepath.Join(roots.ReposDir, "dev"),
+		UIMode:     registry.UIModeDev,
+		UIPort:     8090,
+		PublicName: "pretty-name",
+		Host:       h, Now: func() time.Time { return at },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tenant.UI.Base != "/ragstack/dev/ui/" {
+		t.Errorf("ui.base = %q, want /ragstack/dev/ui/ — the name the gateway renderer keys on", tenant.UI.Base)
 	}
 }

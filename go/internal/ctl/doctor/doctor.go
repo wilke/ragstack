@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -266,7 +267,15 @@ func (d *run) manifestChecks() {
 
 // gatewayChecks compare the live routing table with the registry's ports.
 func (d *run) gatewayChecks() {
-	maps, ok := GatewayMaps(d.roots.ProxyDir)
+	maps, ok, err := GatewayMaps(d.roots.ProxyDir)
+	if err != nil {
+		// Not "no gateway yet": the live routing table is THERE and
+		// unreadable, so every port comparison below is one this run silently
+		// did not make.
+		d.add(model.LevelError, GatewayMapMismatch, "", fmt.Sprintf(
+			"%s: the live routing table could not be read, so no tenant's gateway port was checked: %v", d.roots.ProxyDir, err))
+		return
+	}
 	if !ok {
 		return
 	}
@@ -305,11 +314,33 @@ func (d *run) tenantChecks(_ context.Context, t *registry.Tenant) {
 		d.add(model.LevelError, PortOwnerMismatch, t.Name, fmt.Sprintf(":%d is held by pid %d running as %s, the registry records owner %s", t.Ports.API, api.Pid, api.User, t.Owner))
 	}
 	d.unexpectedListeners(t)
+	d.uiCheck(t)
 	d.envCheck(t)
 	d.codeChecks(t)
 	d.storeChecks(t)
 	d.permissionChecks(t)
 	d.add(model.LevelInfo, CapabilitiesUnconfirmed, t.Name, "store capabilities are all false: stop, purge, snapshot and restore refuse until an operator confirms process identity, backing path and exclusive ownership")
+}
+
+// uiCheck re-runs adoption's static-UI precondition on EVERY pass.
+//
+// adopt checks <data_dir>/ui/dist/index.html once, at adoption. The dist is a
+// build artifact: it is deleted by a `git clean`, replaced by a rebuild, and
+// moved by a handover — long after adoption, and with no finding to say so.
+// nginx's alias block keeps pointing at it either way, so the tenant's UI
+// answers 404 while doctor reports a clean fleet. Same code, same finding,
+// re-asked.
+func (d *run) uiCheck(t *registry.Tenant) {
+	if t.UI.Mode != registry.UIModeStatic || StaticUIDistOK(t.DataDir) {
+		return
+	}
+	base := t.UI.Base
+	if base == "" {
+		base = "/ragstack/" + t.Name + "/ui/"
+	}
+	d.add(model.LevelError, UIDistMissing, t.Name, fmt.Sprintf(
+		"ui mode static serves %s/ui/dist, but %s is not a regular file; the gateway answers %s with 404 until `vite build --base %s` is run",
+		t.DataDir, UIDistIndex(t.DataDir), base, base))
 }
 
 // unexpectedListeners looks at the six allocated service ports of a tenant's
@@ -357,6 +388,14 @@ func (d *run) envCheck(t *registry.Tenant) {
 		if err != nil {
 			if name == "secrets.env" && errors.Is(err, os.ErrNotExist) {
 				continue // the unit loads it with `-`: absence is legal
+			}
+			if errors.Is(err, fs.ErrPermission) && d.preHandover(t) {
+				// Not a grammar finding, and not this account's business
+				// yet: the file belongs to the tenant's owner until PR-E.
+				// secrets_unreadable_by_ctl states it once, at info, instead
+				// of this check reporting an unreadable file as a broken one
+				// (at ERROR for a systemd tenant) on every doctor run.
+				continue
 			}
 			d.add(level, EnvNotSystemdParsable, t.Name, fmt.Sprintf("%s: %v", path, err))
 			continue
@@ -434,8 +473,11 @@ func (d *run) storeChecks(t *registry.Tenant) {
 	d.add(model.LevelWarn, DormantProvisionedDirs, t.Name, fmt.Sprintf("%s has provisioned store directories it does not use", t.Name))
 }
 
-// permissionChecks walk the paths the ctl has to trust for this tenant.
+// permissionChecks walk the paths the ctl has to trust for this tenant: the
+// ones nobody else may WRITE, and the ones the ctl itself must be able to
+// READ.
 func (d *run) permissionChecks(t *registry.Tenant) {
+	d.secretsReadable(t)
 	d.writable(t.Name, t.DataDir)
 	d.writable(t.Name, filepath.Join(t.DataDir, "config", "secrets.env"))
 	for _, sif := range []string{string(t.Stores.Qdrant.SIF), string(t.Stores.Elasticsearch.SIF)} {
@@ -443,6 +485,66 @@ func (d *run) permissionChecks(t *registry.Tenant) {
 			d.writable(t.Name, sif)
 		}
 	}
+}
+
+// secretsReadable reports the secret-class env files this account cannot
+// read for a tenant it does not own — the state every tenant is in until PR-E
+// hands it over, and the reason its logs endpoint answers 409 `refused`
+// rather than serving a tail the ctl could not redact.
+//
+// The file list comes from envfile.SeedPaths, the same list the redactor
+// actually mines (live files AND the historical copies beside them), so this
+// finding cannot describe a different set of files than the one that refuses
+// the request.
+//
+// Bounded to an owner mismatch on purpose: when the tenant is already this
+// account's, an unreadable secrets.env is a real defect rather than a pending
+// handover, and it is not softened to info here — it surfaces through
+// env_not_systemd_parsable with that tenant's supervisor level.
+func (d *run) secretsReadable(t *registry.Tenant) {
+	if !d.preHandover(t) {
+		return
+	}
+	var blocked []string
+	for _, p := range envfile.SeedPaths(filepath.Join(t.DataDir, "config")) {
+		if unreadable(p) {
+			blocked = append(blocked, filepath.Base(p))
+		}
+	}
+	if len(blocked) == 0 {
+		return
+	}
+	d.add(model.LevelInfo, SecretsUnreadableByCtl, t.Name, fmt.Sprintf(
+		"%s cannot read %s in %s (owner %s): those values seed the log redactor, so GET /v1/tenants/%s/logs answers 409 refused until the handover (PR-E)",
+		d.ctlAccount(), strings.Join(blocked, ", "), filepath.Join(t.DataDir, "config"), t.Owner, t.Name))
+}
+
+// preHandover: the tenant's registry owner is not the account this process
+// runs as.
+func (d *run) preHandover(t *registry.Tenant) bool {
+	return t.Owner != "" && t.Owner != d.ctlAccount()
+}
+
+// ctlAccount is the account this process actually runs as — the host's answer,
+// not the configured expectation, falling back to the option when the host
+// cannot say.
+func (d *run) ctlAccount() string {
+	if u := d.host.Username(); u != "" {
+		return u
+	}
+	return d.opts.CtlUser
+}
+
+// unreadable reports whether path exists but this account is refused it. An
+// absent path is not unreadable (the redactor skips it), and any other error
+// is another check's problem.
+func unreadable(path string) bool {
+	f, err := os.Open(path)
+	if err == nil {
+		_ = f.Close()
+		return false
+	}
+	return errors.Is(err, fs.ErrPermission)
 }
 
 func (d *run) writable(tenant, path string) {

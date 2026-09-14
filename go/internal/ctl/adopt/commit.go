@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/ragstack/ragstack/internal/ctl/doctor"
@@ -56,9 +55,17 @@ func CommitAll(registryPath string, tenants []*registry.Tenant, opts CommitOptio
 		}
 		f.Tenants[t.Name] = t
 	}
-	f.DisplayOrder = displayOrder(f, tenants, created, opts.Roots)
+	order, err := displayOrder(f, tenants, created, opts.Roots)
+	if err != nil {
+		return err
+	}
+	f.DisplayOrder = order
 	if created {
-		f.LegacyRoutes = legacyRoutes(f, opts.Roots)
+		routes, err := legacyRoutes(f, opts.Roots)
+		if err != nil {
+			return err
+		}
+		f.LegacyRoutes = routes
 	}
 	if err := reconcile(registryPath, f); err != nil {
 		return err
@@ -112,7 +119,7 @@ func loadOrCreate(registryPath string, opts CommitOptions) (*registry.Fleet, boo
 // does not reorder itself the day the ctl takes over) and anything not listed
 // there is appended in adoption order; on an existing registry the new names
 // are appended.
-func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roots paths.Roots) []string {
+func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roots paths.Roots) ([]string, error) {
 	var order []string
 	seen := map[string]bool{}
 	keep := func(name string) {
@@ -123,7 +130,13 @@ func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roo
 		order = append(order, name)
 	}
 	if created {
-		for _, n := range doctor.DisplayOrderFromRoutes(filepath.Join(roots.ProxyDir, "snippets", "routes.conf")) {
+		live, err := doctor.DisplayOrder(roots.ProxyDir)
+		if err != nil {
+			// An unreadable proxy tree must NOT be read as "the gateway
+			// advertises nothing": that silently reorders the landing page.
+			return nil, fmt.Errorf("adopt: %w", err)
+		}
+		for _, n := range live {
 			keep(n)
 		}
 	}
@@ -143,7 +156,7 @@ func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roo
 		}
 	}
 	sort.Strings(rest)
-	return append(order, rest...)
+	return append(order, rest...), nil
 }
 
 // legacyRoutes carries over the gateway rows that are NOT registry tenants —
@@ -152,10 +165,15 @@ func displayOrder(f *registry.Fleet, added []*registry.Tenant, created bool, roo
 // when the map gives it both an API and a UI port (the renderer needs both).
 // Without this, the first generated gateway file would silently drop two
 // live routes instead of being the semantic no-op PR-B requires.
-func legacyRoutes(f *registry.Fleet, roots paths.Roots) []registry.LegacyRoute {
-	maps, ok := doctor.GatewayMaps(roots.ProxyDir)
+func legacyRoutes(f *registry.Fleet, roots paths.Roots) ([]registry.LegacyRoute, error) {
+	maps, ok, err := doctor.GatewayMaps(roots.ProxyDir)
+	if err != nil {
+		// Same reason as displayOrder: an unreadable live routing table would
+		// otherwise DROP the legacy rows from the first generated gateway file.
+		return nil, fmt.Errorf("adopt: reading the live routing table under %s: %w", roots.ProxyDir, err)
+	}
 	if !ok {
-		return f.LegacyRoutes
+		return f.LegacyRoutes, nil
 	}
 	out := append([]registry.LegacyRoute(nil), f.LegacyRoutes...)
 	known := map[string]bool{}
@@ -181,7 +199,7 @@ func legacyRoutes(f *registry.Fleet, roots paths.Roots) []registry.LegacyRoute {
 			Note: "carried over from " + maps.Source + " at adoption; not a registry tenant",
 		})
 	}
-	return out
+	return out, nil
 }
 
 // reconcile refuses a write whose manifest.tsv holds rows the registry would

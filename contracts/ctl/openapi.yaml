@@ -592,6 +592,21 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: >-
+            `refused`: the daemon cannot READ the tenant's secret files, whose
+            values seed the log redactor. `redacted` is the constant true, so
+            an unseeded redactor means NO line is returned rather than an
+            unredacted one — and until a tenant's handover those env files
+            belong to its `owner`, not to the daemon's account, which makes
+            this an ownership refusal and not an internal error. `detail`
+            names the account, the file and the owner; `extra` carries `path`,
+            `owner`, `tenant`, `ctl_user` and `pre_handover`.
+          headers:
+            X-Request-Id: { $ref: "#/components/headers/XRequestId" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "422": { $ref: "#/components/responses/Validation" }
         "429": { $ref: "#/components/responses/RateLimited" }
 

@@ -113,8 +113,11 @@ EOF
 
 for f in ctl.env:0640 ctl-secrets.env:0600; do n=${f%%:*}; m=${f##*:}
   base64 -w76 <"$D/$n" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c "
-    umask 077; base64 -d > /rag/config/ctl/$n.tmp && mv /rag/config/ctl/$n.tmp /rag/config/ctl/$n && chmod $m /rag/config/ctl/$n"
-done
+    umask 077; base64 -d > /rag/config/ctl/$n.tmp && mv /rag/config/ctl/$n.tmp /rag/config/ctl/$n && chmod $m /rag/config/ctl/$n" >/dev/null
+done   # >/dev/null is load-bearing: the pty echoes stdin back out, i.e. your secrets, base64-encoded
+       # (it also swallows every base64 -d/mv/chmod error, so a failure here is a bare
+       # non-zero exit with no reason; to diagnose, re-run without >/dev/null using a
+       # dummy payload, never the real secrets)
 
 CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
   set -e; stat -c "%U:%G %a %n" /rag/config/ctl/ctl.env /rag/config/ctl/ctl-secrets.env
@@ -129,17 +132,24 @@ the `shred` runs only after that check passed. Never `cat` the secrets file afte
 
 ## 5. Adopt the four live tenants
 
-```bash
-ops/coconut/ctl-as-svc.sh adopt-all --preview --registry /tmp/preview.json     # writes nothing
-ops/coconut/ctl-as-svc.sh adopt-all --commit  --registry /tmp/preview.json     # scratch registry + /tmp/manifest.tsv
-diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv             # must be empty
+Adoption runs **as wilke**, not through the wrapper: it reads every tenant's
+`tenant.env` (0600, wilke-owned) to classify keys and fingerprint secrets, which
+svcbvbrc cannot do until the handover (PR-E). The registry it writes is
+group-readable (`0660 wilke:cels`), which is all the daemon needs.
 
-ops/coconut/ctl-as-svc.sh adopt-all --commit                                    # the real registry
-ops/coconut/ctl-as-svc.sh doctor
+```bash
+/rag/bin/ragstack-ctl adopt-all --preview --registry /tmp/preview.json     # writes nothing
+/rag/bin/ragstack-ctl adopt-all --commit  --registry /tmp/preview.json     # scratch registry + /tmp/manifest.tsv
+diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv         # must be empty
+
+/rag/bin/ragstack-ctl adopt-all --commit                                    # the real registry
+/rag/bin/ragstack-ctl doctor
 ```
 
 **Expect:** empty `diff`; doctor reports **0 red** (yellow `worktree_gitdir_unreadable`
-is expected until the handover).
+is expected until the handover). On coconut doctor is red for one pre-existing
+item — demo's dormant `bin/up.sh` would start empty store instances; the ctl
+never edits that file — which does not block any step here.
 **Point of no return for `new-tenant.sh`:** once `registry.json` exists it refuses new port
 blocks; the ctl allocates from here on.
 **Undo:** `rm /rag/data/tenants/registry.json{,.lock,.generation}` — `manifest.tsv` is untouched.
@@ -155,6 +165,15 @@ ops/coconut/ctl-as-svc.sh gateway apply --dry-run     # real nginx -t on a stage
 about an **incomplete** previous publication, run `gateway repair` first — a dry run
 never repairs on its own.
 
+**Do this publish BEFORE adding a tenant.** The first `apply` adopts the proxy's
+bootstrap copies only when they are byte-identical to the generation being
+published. If the registry already holds a fifth tenant, the switch refuses
+("neither the generation being published nor the one currently published") and
+you have to move both bootstrap copies aside by hand
+(`mv …generated.conf …generated.conf.bootstrap.bak-<date>`) first. Publishing the
+no-op generation first, then adopting and publishing the new tenant as
+generation 2, avoids that entirely.
+
 ## 7. Publish (the one live change)
 
 ```bash
@@ -167,6 +186,14 @@ ops/coconut/verify.sh "$S"
 **Expect:** result `verified`; same master pid; `confirm reload` ok (new worker set,
 no `[emerg]`); four golden bodies byte-identical; both include paths are now
 **symlinks** into `/rag/data/ctl/gateway/current/`; `verify.sh` says ALL GOOD.
+**All four golden bodies embed the tenant list** (`/`, `/ragstack/tenants`, the
+unknown-tenant 404 and the catch-all 404). After the fleet changes, regenerate
+all four — `root.json`, `api-unknown-404.json` and `catchall-404.json` carry a
+bare `tenants` name array to append the new name to; `tenants.json` carries a
+`tenants` array of `{name,api,ui}` objects, so add a matching object instead —
+and install them as svcbvbrc into `/rag/data/ctl/goldens`; a stale golden fails
+the probe and the publish reverts — harmlessly, but it costs a generation
+number each time.
 If refused with *"nginx master is owned by uid N"* the proxy is running as wilke:
 run the apply as wilke (`CTL_USER=wilke ops/coconut/ctl-as-svc.sh gateway apply …`)
 or restart the proxy under svcbvbrc first. Nothing was written in that case.
@@ -189,6 +216,92 @@ the registry sets `ctl.gateway_enabled: true`.
 **Undo:** `ops/coconut/ctl-daemon.sh stop`. It signals only the process whose recorded
 identity (`ctl.pid.meta`) matches; a mismatch is refused, not deleted. After a later
 `make install-ctl`, `status` says "installed binary changed since launch; restart".
+
+---
+
+## Fresh host (interim, before PR-D)
+
+Steps 0, 1, 5 and 6 above are coconut's migration. At the PR-B stage the ctl
+**cannot create tenants** (that is PR-D: `fleet artifact prepare`, `tenant
+create/start/stop`, units, boot persistence); it can only inventory tenants
+that already exist and publish the gateway for them. So a fresh host is:
+
+```bash
+# host prep: apptainer + store SIFs + conda env + sysctl + ctl dirs (root, then the operator)
+cd ops/ansible && ansible-playbook -i inventory/<site>.yml tenant-host.yml --check --diff -K && \
+                  ansible-playbook -i inventory/<site>.yml tenant-host.yml -K
+
+# provision EVERY tenant with the legacy script BEFORE the first adopt --commit:
+# once registry.json exists, new-tenant.sh refuses to allocate a new port block.
+apptainer/new-tenant.sh <name> --dry-run          # plan: dirs, ports, files
+apptainer/new-tenant.sh <name> [--start]          # repeat per tenant
+
+# then steps 2, 3 (dirs only; no goldens), 4, and:
+cat > /tmp/tenants.json <<'JSON'
+[{"name":"<name>","data_dir":"/rag/data/tenants/<name>","worktree":"/rag/repos/tenants/<name>","ui_port":5210}]
+JSON
+/rag/bin/ragstack-ctl adopt-all --preview --spec /tmp/tenants.json
+/rag/bin/ragstack-ctl adopt-all --commit  --spec /tmp/tenants.json      # or: adopt <name> --data-dir … --worktree …
+/rag/bin/ragstack-ctl doctor
+
+# gateway: the proxy tree must carry the two generated include paths (coconut-proxy is
+# coconut-specific in its hand-written parts; the generated includes are host-neutral)
+ops/coconut/ctl-as-svc.sh gateway apply --dry-run
+ops/coconut/ctl-as-svc.sh gateway apply           # no --expect-bodies: the goldens are coconut's responses
+# then step 8
+```
+
+Tenants are still started by hand (or `ops/coconut/restore.sh`) until PR-D;
+adoption is read-only inventory. A real greenfield guide replaces this section
+once `tenant create` exists.
+
+**Adding a tenant to a migrated host:**
+**Not yet supported once the registry exists.** `new-tenant.sh` refuses to
+allocate a port block after `adopt-all --commit`; the ctl's own `tenant
+create` lands in PR-D. On 2026-09-14 the hackathon tenant was provisioned
+BEFORE the first registry commit, which is the only sequence this recipe has
+been proven for. (Escape hatch for an already-migrated host: see the note
+below once verified.)
+
+The sequence that worked pre-registry: `new-tenant.sh <name> --postgres local
+--es-heap 1g` (dedicated Postgres on the block's +5 port; the sqlite default
+and the shared-server `--postgres <dsn>` mode still exist), edit `tenant.env`
+(identity, admins, GoWe ingest, limits — no inline comments), `git -C
+~/Development/ragstack worktree add --detach /rag/repos/tenants/<name>
+<tag>`, `npm ci` + `.env` in its `frontend/`, then either a Vite dev server or
+a static bundle (`npx vite build --base /ragstack/<name>/ui/` copied to
+`<data_dir>/ui/dist`). For a static UI nginx (svcbvbrc) must traverse the
+tenant dir: `chmod 710 <data_dir>` and `chmod 700` its data subdirs (qdrant,
+elasticsearch, postgres, state, ingest, manifests) — no `setfacl` on coconut.
+Then `bin/up.sh`, start the API, `adopt <name> --data-dir … --worktree …
+--ui-mode static` (or `--ui-port N`) as wilke, refresh the four goldens,
+`gateway apply --expect-bodies /rag/data/ctl/goldens`.
+
+**Escape hatch on an already-migrated host (verified in a scratch root 2026-09-14).**
+`new-tenant.sh` reuses a manifest row that already exists, so hand-append the row
+the registry would allocate (next index, `24000 + 20*index`), provision, then adopt
+with `--repair-projection` (the hand edit makes the projection stale until then):
+
+```bash
+cp -a /rag/data/tenants/{registry.json,registry.json.generation,manifest.tsv} ~/ctl-undo/   # undo copies first
+printf '<name>\t<index>\t<base>\n' >> /rag/data/tenants/manifest.tsv
+apptainer/new-tenant.sh <name> --postgres local --es-heap 1g          # "[manifest] reusing index N, base P"
+# … tenant.env, worktree, UI build, bin/up.sh, start the API (as below) …
+/rag/bin/ragstack-ctl adopt <name> --data-dir /rag/data/tenants/<name> --worktree /rag/repos/tenants/<name> \
+    --ui-mode static --commit --repair-projection
+```
+
+Registry generation advances by one; the daemon needs no restart (it re-reads the
+registry per request). Do **not** use `adopt-all --commit --repair-projection` for
+this: it repairs the projection first and then refuses ("already in registry.json"),
+which deletes the row you just appended. `ragstack-ctl tenant create` (PR-D) replaces
+this whole dance. Undo: restore the three copies from `~/ctl-undo/`, `bin/down.sh`,
+kill the API listener, `git worktree remove /rag/repos/tenants/<name>`, remove the data dir.
+
+**Undo:** `bin/down.sh`; kill the API listener; remove the worktree
+(`git worktree remove`). There is no removal for the registry/manifest row
+alone — dropping it means deleting `registry.json` and re-running `adopt-all
+--commit` for the whole fleet.
 
 ---
 

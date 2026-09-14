@@ -356,6 +356,233 @@ def test_postgres_dry_run_idempotent(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Dedicated per-tenant Postgres (--postgres local)
+# --------------------------------------------------------------------------
+
+
+def test_postgres_local_plan_starts_a_dedicated_instance(tmp_path):
+    """`--postgres local` is the ADR-0005 shape: the tenant's own instance on
+    its own block port, data at rest inside the tenant dir — not a database in
+    somebody else's server."""
+    plan = dry_run("acme", tmp_path, "--postgres", "local")
+    assert "acl/registry store: postgres-local" in plan
+    # +5 stops being "reserved, unused": it is the tenant's own listener.
+    assert "postgres:       41005 (dedicated instance postgres-acme)" in plan
+    assert "reserved, unused" not in plan
+    # The instance: image, binds, entrypoint envs, server args.
+    assert 'start postgres-acme "$IMG/postgres.sif"' in plan
+    assert f"{tmp_path}/images/postgres.sif" in plan
+    assert '--bind "$TDIR/postgres/data:/var/lib/postgresql/data"' in plan
+    assert '--bind "$TDIR/postgres/run:/var/run/postgresql"' in plan
+    # PGDATA must be a SUBDIR of the data bind (MEMORY.md) — the entrypoint
+    # refuses a bind-mount root holding anything else.
+    assert "--env PGDATA=/var/lib/postgresql/data/pgdata" in plan
+    assert "--env POSTGRES_USER=acme" in plan
+    assert "--env POSTGRES_DB=acme" in plan
+    assert "--env POSTGRES_PASSWORD=<GENERATED:PG_PASSWORD>" in plan
+    # Port/listen address are server args after the entrypoint, not envs.
+    assert "-- postgres -c port=41005 -c listen_addresses=127.0.0.1" in plan
+    # Its writable paths are enumerated like every other bind (no tmpfs).
+    assert f"{tmp_path}/tenants/acme/postgres/data" in plan
+    assert f"{tmp_path}/tenants/acme/postgres/run" in plan
+    assert "--writable-tmpfs" not in plan
+    # down.sh stops it alongside the other two.
+    assert "for name in qdrant-acme elasticsearch-acme postgres-acme; do" in plan
+
+
+def test_postgres_local_dsns_point_at_the_block_port_and_run_no_psql(tmp_path):
+    plan = dry_run("acme", tmp_path, "--postgres", "local")
+    assert "USER_STORE_BACKEND=postgres" in plan
+    assert (
+        "USER_STORE_DSN=postgresql://acme:<GENERATED:PG_PASSWORD>@localhost:41005/acme"
+        in plan
+    )
+    assert "JOB_STORE_BACKEND=postgres" in plan
+    assert (
+        "POSTGRES_DSN=postgresql+asyncpg://acme:<GENERATED:PG_PASSWORD>@localhost:41005/acme"
+        in plan
+    )
+    assert "COLLECTION_STORE_BACKEND=postgres" in plan
+    assert (
+        "COLLECTION_STORE_DSN=postgresql://acme:<GENERATED:PG_PASSWORD>@localhost:41005/acme"
+        in plan
+    )
+    assert "USER_STORE_BACKEND=sqlite" not in plan
+    # The image entrypoint creates role+db on first start: no admin DSN, so
+    # none of the guarded psql steps of the shared-server mode appear.
+    assert "psql" not in plan
+    assert "CREATE ROLE" not in plan
+    assert "CREATE DATABASE" not in plan
+    assert "postgres provisioning (server" not in plan
+
+
+def test_postgres_local_dry_run_idempotent(tmp_path):
+    args = ("--postgres", "local")
+    assert dry_run("acme", tmp_path, *args) == dry_run("acme", tmp_path, *args)
+
+
+def test_postgres_local_persists_kind_across_flagless_rerun(tmp_path):
+    """The store kind lives in provision.env: a flagless re-run must not
+    silently revert a postgres-local tenant to sqlite (which would leave the
+    API dialing files while its own instance holds the data)."""
+    p = run_script(["acme", "--postgres", "local"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    tdir = tmp_path / "tenants" / "acme"
+    provision = (tdir / "config" / "provision.env").read_text()
+    assert "TENANT_STORE_KIND=postgres-local" in provision
+    assert "TENANT_PG_HOST=localhost" in provision
+    assert "TENANT_PG_PORT=41005" in provision
+    env_before = (tdir / "config" / "tenant.env").read_text()
+    up_before = (tdir / "bin" / "up.sh").read_text()
+    assert "USER_STORE_BACKEND=postgres" in env_before
+    assert "start postgres-acme" in up_before
+    # The generated password is the one in secrets.env, not a fresh one.
+    secrets = (tdir / "config" / "secrets.env").read_text()
+    pw = [
+        line.split("=", 1)[1]
+        for line in secrets.splitlines()
+        if line.startswith("TENANT_PG_PASSWORD=")
+    ][0]
+    assert len(pw) >= 16
+    assert f"--env POSTGRES_PASSWORD={pw}" in up_before
+    assert "@localhost:41005/acme" in env_before
+
+    p = run_script(["acme"], tmp_path)  # no flags at all
+    assert p.returncode == 0, p.stderr
+    assert "reusing index 0, base 41000" in p.stdout
+    assert (tdir / "config" / "tenant.env").read_text() == env_before
+    assert (tdir / "bin" / "up.sh").read_text() == up_before  # still starts it
+
+    # Even --force does not silently drop the kind (same as the DSN mode):
+    # persistence exists precisely so a flagless run cannot revert it.
+    p = run_script(["acme", "--force"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "USER_STORE_BACKEND=postgres" in (tdir / "config" / "tenant.env").read_text()
+    assert "TENANT_STORE_KIND=postgres-local" in (
+        tdir / "config" / "provision.env"
+    ).read_text()
+
+    # Passing the other --postgres form WOULD switch kinds: the tenant moves
+    # to a database in the named server and stops starting its own instance.
+    # A real run is refused (see the kind-switch tests below); a --dry-run is
+    # never refused, so the plan still shows what the switch would do.
+    plan = dry_run("acme", tmp_path, "--postgres", "postgresql://admin:pw@dbhost:5433/postgres")
+    assert "acl/registry store: postgres\n" in plan
+    assert "@dbhost:5433/acme" in plan
+    assert "start postgres-acme" not in plan
+    assert "for name in qdrant-acme elasticsearch-acme; do" in plan
+
+
+# --------------------------------------------------------------------------
+# Kind switches, and the postgres-local secrets-rotation trap
+# --------------------------------------------------------------------------
+
+
+def provision_postgres_local(tmp_path: Path, name: str = "acme") -> Path:
+    """Provision `name` as postgres-local and return its tenant dir."""
+    p = run_script([name, "--postgres", "local"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    return tmp_path / "tenants" / name
+
+
+@pytest.mark.parametrize(
+    "first,second,orphan",
+    [
+        # sqlite -> dedicated instance: the sqlite ACL/job/collection DBs stay.
+        ([], ["--postgres", "local"], "state"),
+        # dedicated instance -> shared server: the instance's data at rest stays.
+        (["--postgres", "local"], ["--postgres", "postgresql://a:b@dbhost:5433/postgres"],
+         "postgres/data/pgdata"),
+    ],
+)
+def test_store_kind_switch_refused_without_force(tmp_path, first, second, orphan):
+    """Switching a provisioned tenant's store kind re-points every DSN in
+    tenant.env but MOVES NO DATA — the old store keeps the only copy of the
+    ACL/collection/job rows and nothing copies or deletes them. The switch
+    used to be silent and one-way; now a real run is refused, naming both
+    kinds and what would be orphaned."""
+    p = run_script(["acme", *first], tmp_path)
+    assert p.returncode == 0, p.stderr
+    provision_file = tmp_path / "tenants" / "acme" / "config" / "provision.env"
+    provision = provision_file.read_text()
+    before_kind = [
+        line.split("=", 1)[1]
+        for line in provision.splitlines()
+        if line.startswith("TENANT_STORE_KIND=")
+    ][0]
+
+    p = run_script(["acme", *second], tmp_path)
+    assert p.returncode != 0
+    assert "store kind switch refused" in p.stderr
+    assert f"TENANT_STORE_KIND={before_kind}" in p.stderr  # the kind it IS
+    assert "resolves to" in p.stderr  # and the kind it would become
+    assert orphan in p.stderr
+    # Refused before anything was written: the kind on disk is unchanged.
+    assert provision_file.read_text() == provision
+
+    # A --dry-run is never refused — it writes nothing, and seeing the plan is
+    # how an operator decides whether to --force.
+    p = run_script(["acme", "--dry-run", *second], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "store kind switch" in p.stderr
+    assert "REFUSED without --force" in p.stderr
+    assert orphan in p.stderr
+
+    # --force performs it and names what is left behind. (The shared-server
+    # target then needs psql, which an offline test has no business running —
+    # the warnings are emitted long before that step.)
+    p = run_script(["acme", "--force", *second], tmp_path)
+    assert "store kind switch (--force)" in p.stderr
+    assert "ORPHANED" in p.stderr
+    assert orphan in p.stderr
+
+
+def test_postgres_local_secrets_deletion_is_not_a_rotation(tmp_path):
+    """`--postgres local` has no admin DSN, and the postgres image applies
+    POSTGRES_PASSWORD only when it INITIALISES PGDATA. So deleting secrets.env
+    — documented as rotating every secret — would stamp tenant.env and up.sh
+    with a password the database never had, with no way to fix it. Refuse it
+    once pgdata exists, and point at the ALTER ROLE that does work."""
+    tdir = provision_postgres_local(tmp_path)
+    secrets = tdir / "config" / "secrets.env"
+    pgdata = tdir / "postgres" / "data" / "pgdata"
+    pgdata.mkdir(parents=True)  # stand in for a started, initialised instance
+    old = secrets.read_text()
+    secrets.unlink()
+
+    p = run_script(["acme"], tmp_path)
+    assert p.returncode != 0
+    assert "secrets.env is missing for postgres-local tenant 'acme'" in p.stderr
+    assert "already initialised" in p.stderr
+    # The message must carry the recovery: ALTER ROLE through the instance,
+    # over the unix socket dir this script binds.
+    assert "ALTER ROLE" in p.stderr
+    assert f'--bind "{tdir}/postgres/run:/var/run/postgresql"' in p.stderr
+    assert "psql -h /var/run/postgresql -U acme -d acme" in p.stderr
+    assert not secrets.exists()  # nothing regenerated
+
+    # A --dry-run warns instead of dying (it writes nothing either way).
+    p = run_script(["acme", "--dry-run"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "secrets.env is missing for postgres-local tenant 'acme'" in p.stderr
+
+    # --force accepts the new, unreachable password deliberately.
+    p = run_script(["acme", "--force"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "still holds the OLD one" in p.stderr
+    assert secrets.exists()
+    assert secrets.read_text() != old
+
+    # Without an initialised pgdata there is nothing to be out of step with,
+    # so deleting secrets.env rotates exactly as documented.
+    tdir2 = provision_postgres_local(tmp_path, "acme2")
+    (tdir2 / "config" / "secrets.env").unlink()
+    p = run_script(["acme2"], tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert (tdir2 / "config" / "secrets.env").is_file()
+
+
+# --------------------------------------------------------------------------
 # Real (sqlite) provisioning — apptainer-free, so it can run offline
 # --------------------------------------------------------------------------
 

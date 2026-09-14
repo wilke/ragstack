@@ -69,14 +69,16 @@ const seedTenant = (qc: QueryClient) => {
 function seedQueryError(
   qc: QueryClient,
   key: readonly unknown[],
-  opts: { data?: unknown; dataUpdatedAt?: number } = {},
+  opts: { data?: unknown; dataUpdatedAt?: number; error?: CtlError } = {},
 ): CtlError {
-  const error = new CtlError({
-    status: 500,
-    code: "internal",
-    detail: "the daemon had a problem",
-    requestId: "dddddddd11112222",
-  });
+  const error =
+    opts.error ??
+    new CtlError({
+      status: 500,
+      code: "internal",
+      detail: "the daemon had a problem",
+      requestId: "dddddddd11112222",
+    });
   const query = qc.getQueryCache().build(qc, { queryKey: key as unknown[] });
   query.setState({
     status: "error",
@@ -302,6 +304,41 @@ describe("TenantView", () => {
     // rather than hiding that the key was there.
     expect(html).toContain("API_KEYS=&lt;redacted&gt;");
     expect(html).toContain("redacted by the daemon");
+  });
+
+  // The live defect: before a tenant's handover the daemon cannot read its
+  // secrets.env, so the redactor cannot be seeded and the tail is refused.
+  // That came back as the generic "had a problem, please retry", which sent
+  // an operator after a daemon bug over a file mode.
+  it("explains a refused log read instead of showing the generic retry banner", () => {
+    const refusal = new CtlError({
+      status: 409,
+      code: "refused",
+      detail:
+        "logs for dev are unavailable: the ctl runs as svcbvbrc (uid 1002) and cannot read " +
+        "/rag/data/tenants/dev/config/secrets.env, whose values seed the log redactor; " +
+        "the tenant is owned by wilke until its handover (PR-E)",
+      requestId: "aaaabbbbccccdddd",
+      extra: { path: "/rag/data/tenants/dev/config/secrets.env", owner: "wilke" },
+    });
+    const html = render(section("logs", "operator"), (qc) => {
+      seedTenant(qc);
+      // A tail this operator read BEFORE the refusal, retained by query-core.
+      seedQueryError(qc, ctlKeys.tenantLogs("dev", "api", 200), {
+        error: refusal,
+        data: logsFixture,
+        dataUpdatedAt: Date.parse("2026-09-10T11:00:00Z"),
+      });
+    });
+    // The server's own sentence, not the generic banner.
+    expect(html).toContain("Logs are unavailable for this tenant");
+    expect(html).toContain("whose values seed the log redactor");
+    expect(html).toContain("owned by wilke until its handover");
+    expect(html).toContain("aaaabbbbccccdddd");
+    expect(html).not.toContain("The control plane had a problem");
+    expect(html).not.toContain("Retry");
+    // And the retained tail is NOT presented as a current answer.
+    expect(html).not.toContain("ragstack v1.5.3 starting (tenant=dev)");
   });
 
   it("renders a hostile log line as text, not as markup", () => {

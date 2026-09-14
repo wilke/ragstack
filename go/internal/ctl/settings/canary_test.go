@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+// placeholderDSN matches a credential URL whose password is a bare
+// <GENERATED:…> / <REDACTED…> token — the shape new-tenant.sh --dry-run
+// prints, and the only DSN shape exempt from the dsn-with-pw canary.
+var placeholderDSN = regexp.MustCompile(`(://[^:/@\s]+:)<(GENERATED|REDACTED)[^>@\s]*>@`)
+
 // TestTestdataHasNoSecretShapes re-runs capture.sh's canary sweep over the
 // committed goldens on every test run: a 64-hex string (API key, sha256 of
 // a key, token signature), a BV-BRC `sig=`, a DSN with credentials, or a
@@ -41,7 +46,14 @@ func TestTestdataHasNoSecretShapes(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		text := string(b)
+		// One exemption, mirrored in capture.sh: a --dry-run plan renders
+		// DSNs whose password is the script's OWN placeholder
+		// (postgresql://t:<GENERATED:PG_PASSWORD>@… for the postgres-local
+		// kind), and a golden with those lines cut would not be the plan the
+		// script prints. A password that is a <GENERATED:…>/<REDACTED…> token
+		// and nothing else is neutralised; every other credential shape,
+		// placeholder-looking or not, still trips the sweep below.
+		text := placeholderDSN.ReplaceAllString(string(b), "://<placeholder>/")
 		for name, re := range canaries {
 			if loc := re.FindStringIndex(text); loc != nil {
 				t.Errorf("%s: canary %s at byte %d (context redacted)", path, name, loc[0])

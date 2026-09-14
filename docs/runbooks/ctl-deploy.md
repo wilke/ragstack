@@ -61,9 +61,14 @@ curl -s localhost:9000/ragstack/tenants
 `deploy.sh` ships a committed **bootstrap copy** of each generated include, so
 the proxy loads before the ctl has ever published. Those two files arrive as
 regular files; `gateway apply` takes them over and replaces each with the
-symlink into `/rag/data/ctl/gateway/current/` (it recognises them by content
-and says so in its warnings). A regular file at either path that is *not* a ctl
-render is refused as a hand edit — move it aside first.
+symlink into `/rag/data/ctl/gateway/current/` — but only when their content is
+**byte-identical to the generation being published**, i.e. the first publish is
+the semantic no-op of step 6. A regular file at either path with any other
+content is refused as a hand edit ("neither the generation being published nor
+the one currently published"). So publish the no-op generation *before* adopting
+a new tenant; if you already adopted one, move both copies aside
+(`mv …generated.conf …generated.conf.bootstrap.bak-<date>`) and publish — that
+is what the coconut migration of 2026-09-14 had to do.
 
 **Order.** Deploy first, publish second — but the two are not a trap if you get
 them the wrong way round. Measured on this host (2026-09-12, `nginx.sif`):
@@ -243,18 +248,28 @@ EOF
 # (tmp + mv, so a killed transfer never leaves a half-written file at the real
 # path) and sets its own mode. wilke never gets write access to the installed
 # path and never needs read access to svcbvbrc's copy.
+# `>/dev/null` on the wrapper is LOAD-BEARING: the pty ECHOES everything it
+# reads on stdin back out through script's stdout, so without it the base64 of
+# your secrets is printed to the terminal — and into any scrollback, log or
+# session transcript. Verified on this host 2026-09-14 (it happened). The exit
+# status still comes through; verification is the separate command below.
+# Incomplete on its own, though: the redirect also discards stderr from the
+# base64 -d/mv/chmod chain (the child's stderr lands on the same pty stdout),
+# so a failure here is a bare non-zero exit with no reason. To diagnose,
+# re-run the same command WITHOUT `>/dev/null` using a dummy payload —
+# never the real secrets.
 base64 -w76 <"$D/ctl.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl.env.tmp &&
     mv /rag/config/ctl/ctl.env.tmp /rag/config/ctl/ctl.env &&
     chmod 0640 /rag/config/ctl/ctl.env
-'
+' >/dev/null
 base64 -w76 <"$D/ctl-secrets.env" | CTL_BIN=/bin/bash ops/coconut/ctl-as-svc.sh -c '
     umask 077
     base64 -d > /rag/config/ctl/ctl-secrets.env.tmp &&
     mv /rag/config/ctl/ctl-secrets.env.tmp /rag/config/ctl/ctl-secrets.env &&
     chmod 0600 /rag/config/ctl/ctl-secrets.env
-'
+' >/dev/null
 
 # Verify WITHOUT ever printing content: ownership/mode, ACL if this host has
 # one, and a line-count / key-prefix sanity check. Asserts, so a bad install
@@ -295,18 +310,24 @@ than relying on it to fall over.
 
 ## 5. Adopt the four live tenants
 
+Adoption runs **as wilke**, not through the wrapper: it reads every tenant's
+`tenant.env` (0600, wilke-owned) to classify keys and fingerprint secrets, which
+svcbvbrc cannot do until the handover (PR-E). The registry it writes is
+`0660 wilke:cels`, which is all the daemon needs to read it. `adopt-all
+--commit` also rewrites `manifest.tsv` itself, at `0664`, every time it runs.
+
 Rehearse against a scratch registry first — `--preview` writes nothing at all:
 
 ```bash
-ops/coconut/ctl-as-svc.sh adopt-all --preview --registry /tmp/preview.json
-ops/coconut/ctl-as-svc.sh adopt-all --commit  --registry /tmp/preview.json
+/rag/bin/ragstack-ctl adopt-all --preview --registry /tmp/preview.json
+/rag/bin/ragstack-ctl adopt-all --commit  --registry /tmp/preview.json
 # --commit writes the registry file named above AND its sibling projection,
 # which is always called manifest.tsv — so /tmp/manifest.tsv, not
 # /tmp/preview.tsv.
 diff <(cut -f1-8 /tmp/manifest.tsv) /rag/data/tenants/manifest.tsv    # projection identical
 
-ops/coconut/ctl-as-svc.sh adopt-all --commit      # the real registry
-ops/coconut/ctl-as-svc.sh doctor
+/rag/bin/ragstack-ctl adopt-all --commit           # the real registry
+/rag/bin/ragstack-ctl doctor
 ```
 
 **This commit is the point of no return for `new-tenant.sh`:** from here the

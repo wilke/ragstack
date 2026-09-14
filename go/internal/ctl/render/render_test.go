@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -113,7 +114,7 @@ func TestUpDownGoldens(t *testing.T) {
 		t.Fatal(err)
 	}
 	golden(t, "up.sh", up)
-	down, err := DownSh(tn)
+	down, err := DownSh(tn, StoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +127,89 @@ func TestUpDownGoldens(t *testing.T) {
 	}
 	if _, err := UpSh(tn, StoreOptions{Images: "/rag/$(id)"}); err == nil {
 		t.Error("shell-expanding images path accepted")
+	}
+}
+
+// TestUpDownPostgresLocal: the dedicated-instance kind is the only store kind
+// whose up.sh/down.sh differ — the shared-server kind (--postgres <dsn>)
+// starts nothing, exactly as sqlite starts nothing. parity_test.go holds the
+// rendered bytes to new-tenant.sh; this checks the refusals and that the
+// other two kinds are unaffected.
+func TestUpDownPostgresLocal(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	pg := StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "s3cret"}
+	up, err := UpSh(tn, pg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{
+		fmt.Sprintf("#            postgres-sandbox (:%d, loopback only)", tn.Ports.PG),
+		`start postgres-sandbox "$IMG/postgres.sif"`,
+		`--bind "$TDIR/postgres/data:/var/lib/postgresql/data"`,
+		`--bind "$TDIR/postgres/run:/var/run/postgresql"`,
+		"--env POSTGRES_PASSWORD=s3cret",
+		"--env PGDATA=/var/lib/postgresql/data/pgdata",
+		fmt.Sprintf("-- postgres -c port=%d -c listen_addresses=127.0.0.1", tn.Ports.PG),
+	} {
+		if !strings.Contains(string(up), w) {
+			t.Errorf("up.sh lacks %q:\n%s", w, up)
+		}
+	}
+	down, err := DownSh(tn, pg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(down), "for name in qdrant-sandbox elasticsearch-sandbox postgres-sandbox; do") {
+		t.Errorf("down.sh does not stop the instance:\n%s", down)
+	}
+	// The shared-server kind starts and stops nothing extra.
+	shared := StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgres}
+	up2, err := UpSh(tn, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(up2), "postgres-sandbox") {
+		t.Errorf("--postgres <dsn> must start no instance:\n%s", up2)
+	}
+	down2, err := DownSh(tn, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteDown, err := DownSh(tn, StoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(down2) != string(sqliteDown) {
+		t.Errorf("shared-server down.sh differs from sqlite's:\n%s", down2)
+	}
+	// A password is required, must be shell-safe, and DryRun substitutes the
+	// placeholder new-tenant.sh prints.
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal}); err == nil {
+		t.Error("postgres-local without a password accepted")
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "a b"}); err == nil {
+		t.Error("password with whitespace accepted")
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, PGPassword: "$(id)"}); err == nil {
+		t.Error("shell-expanding password accepted")
+	}
+	dry, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: StorePostgresLocal, DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dry), "--env POSTGRES_PASSWORD="+PlaceholderPGPassword) {
+		t.Errorf("dry run did not render the placeholder:\n%s", dry)
+	}
+	if _, err := UpSh(tn, StoreOptions{Images: "/rag/apptainer/images", StoreKind: "mongo"}); err == nil {
+		t.Error("unknown store kind accepted")
+	}
+	// tenant.env renders the same postgres block for both kinds.
+	env, err := TenantEnv(tn, EnvOptions{DryRun: true, StoreKind: StorePostgresLocal, PGHost: "localhost", PGPort: fmt.Sprint(tn.Ports.PG)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(env), fmt.Sprintf("USER_STORE_DSN=postgresql://sandbox:%s@localhost:%d/sandbox", PlaceholderPGPassword, tn.Ports.PG)) {
+		t.Errorf("tenant.env postgres-local DSN:\n%s", env)
 	}
 }
 
@@ -331,13 +415,26 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 		"location = /ragstack/dev/ui {\n    return 301 /ragstack/dev/ui/;\n}",
 		"location ^~ /ragstack/dev/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/tenants/dev/ui/dist/;\n    try_files $uri $uri/ /ragstack/dev/ui/index.html;\n}",
 		"alias /rag/data/tenants/sandbox/ui/dist/;",
-		"location ^~ /ragstack/admin/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/ctl/ui/dist/;\n    try_files $uri $uri/ /ragstack/admin/ui/admin.html;\n}",
+		"location ^~ /ragstack/admin/ui/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    alias /rag/data/ctl/ui/dist/;\n    try_files $uri /ragstack/admin/ui/admin.html;\n}",
 		"location = /ragstack/admin/api {\n    return 301 /ragstack/admin/api/;\n}",
 		"location ^~ /ragstack/admin/api/ {\n    include /rag/config/proxy/snippets/cors.conf;\n    include /rag/config/proxy/snippets/proxy-common.conf;\n    proxy_set_header X-Forwarded-Prefix /ragstack/admin/api;\n    proxy_pass http://127.0.0.1:23990/;\n}",
 	} {
 		if !strings.Contains(s, w) {
 			t.Errorf("static snippet lacks %q\n%s", w, s)
 		}
+	}
+
+	// The admin UI has no index.html (admin.html is a separate Vite entry),
+	// so its try_files must not fall back to `$uri/`: nginx would match the
+	// existing dist/ directory, find no index.html there, and answer 403
+	// instead of ever reaching the admin.html fallback. Tenant static blocks
+	// DO have an index.html and must keep `$uri $uri/`.
+	adminUIBlock := namedBlock(t, s, "location ^~ /ragstack/admin/ui/ {")
+	if strings.Contains(adminUIBlock, "$uri/") {
+		t.Errorf("admin UI try_files must not include $uri/ (no index.html in dist):\n%s", adminUIBlock)
+	}
+	if !strings.Contains(s, "try_files $uri $uri/ /ragstack/dev/ui/index.html;") {
+		t.Errorf("tenant static UI try_files must keep $uri/:\n%s", s)
 	}
 
 	// The admin API block must carry EXACTLY ONE Host header, and it must be
@@ -379,14 +476,18 @@ func TestNginxStaticAndAdmin(t *testing.T) {
 // adminAPIBlock returns the body of `location ^~ /ragstack/admin/api/ { … }`.
 func adminAPIBlock(t *testing.T, conf string) string {
 	t.Helper()
-	const head = "location ^~ /ragstack/admin/api/ {"
+	return namedBlock(t, conf, "location ^~ /ragstack/admin/api/ {")
+}
+
+func namedBlock(t *testing.T, conf, head string) string {
+	t.Helper()
 	i := strings.Index(conf, head)
 	if i < 0 {
-		t.Fatalf("no admin API block:\n%s", conf)
+		t.Fatalf("no block starting %q:\n%s", head, conf)
 	}
 	j := strings.Index(conf[i:], "\n}")
 	if j < 0 {
-		t.Fatalf("unterminated admin API block:\n%s", conf[i:])
+		t.Fatalf("unterminated block %q:\n%s", head, conf[i:])
 	}
 	return conf[i : i+j+2]
 }
@@ -680,5 +781,68 @@ func TestRetiredLegacyRouteDoesNotReserveItsName(t *testing.T) {
 	}
 	if _, err := NginxTenants(f, NginxConfig{}); err == nil {
 		t.Error("an active legacy route and a tenant sharing a name must be refused")
+	}
+}
+
+// TestNginxStaticUsesTheRecordedUIBase.
+//
+// The mount prefix used to be derived here from t.Name while adopt derived
+// ui.base from --public-name, so the two could describe different mounts and
+// nothing noticed. t.UI.Base is now the single authority when it is set — the
+// location block, the slashless 301 and the try_files fallback all come from
+// it — and the name-derived path is the fallback for a row that has none.
+func TestNginxStaticUsesTheRecordedUIBase(t *testing.T) {
+	f := registry.LiveFixture()
+	f.Tenants["dev"].UI = registry.UI{Mode: registry.UIModeStatic, Base: "/ragstack/pretty-name/ui/"}
+	out, err := NginxStatic(f, NginxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, w := range []string{
+		"location = /ragstack/pretty-name/ui {\n    return 301 /ragstack/pretty-name/ui/;\n}",
+		"location ^~ /ragstack/pretty-name/ui/ {",
+		"try_files $uri $uri/ /ragstack/pretty-name/ui/index.html;",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("the snippet ignores the recorded ui.base; lacks %q\n%s", w, s)
+		}
+	}
+	if strings.Contains(s, "/ragstack/dev/ui/") {
+		t.Errorf("the name-derived mount is still rendered alongside the recorded base:\n%s", s)
+	}
+
+	// An empty base still falls back to the name.
+	f.Tenants["dev"].UI.Base = ""
+	out, err = NginxStatic(f, NginxConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "location ^~ /ragstack/dev/ui/ {") {
+		t.Errorf("a row with no ui.base lost its name-derived mount:\n%s", out)
+	}
+
+	// And a base that is not an absolute, slash-terminated safe path is a
+	// refusal, not nginx configuration.
+	f.Tenants["dev"].UI.Base = "/ragstack/$tenant/ui/"
+	if _, err := NginxStatic(f, NginxConfig{}); err == nil {
+		t.Error("a ui.base carrying an nginx variable was rendered")
+	}
+}
+
+// TestNginxTenantsRefusesAnEmptyUIMode: the contract's enum is
+// static|dev|external and "" is none of them. Folding it in with `static` was
+// wrong in both directions — NginxStatic tests for static EXACTLY, so such a
+// tenant got no $tenant_ui row AND no alias block: an invisible UI, with no
+// error to say so.
+func TestNginxTenantsRefusesAnEmptyUIMode(t *testing.T) {
+	f := registry.LiveFixture()
+	f.Tenants["demo"].UI = registry.UI{}
+	_, err := NginxTenants(f, NginxConfig{})
+	if err == nil {
+		t.Fatal("an empty ui mode was rendered as static")
+	}
+	if !strings.Contains(err.Error(), "demo") || !strings.Contains(err.Error(), "ui mode") {
+		t.Errorf("the refusal does not name the tenant and the field: %v", err)
 	}
 }

@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -118,28 +120,159 @@ func jsonMapLiteral(s, name string) string {
 	return m[1]
 }
 
+// IncludeRel and LegacyMapsRel are the two files that can carry the live
+// routing tables: the generated include coconut-proxy's deploy drops in (a
+// regular bootstrap copy at first, a symlink into a published generation
+// afterwards), and the hand-written map file that predates it.
+var (
+	IncludeRel    = filepath.Join("conf.d", "05-tenants.generated.conf")
+	LegacyMapsRel = filepath.Join("conf.d", "00-maps.conf")
+	routesRel     = filepath.Join("snippets", "routes.conf")
+)
+
 // GatewayMaps reads the live routing tables from a proxy tree: the generated
-// include when it exists, else the hand-written map file. Returns ok=false
-// when neither is readable, which is a fact (no gateway generation yet), not
-// an error.
-func GatewayMaps(proxyDir string) (TenantMaps, bool) {
-	for _, rel := range []string{
-		filepath.Join("conf.d", "05-tenants.generated.conf"),
-		filepath.Join("conf.d", "00-maps.conf"),
-	} {
+// include when it exists, else the hand-written map file. ok=false with a nil
+// error means neither file is THERE, which is a fact (no gateway generation
+// yet) rather than a problem.
+//
+// A read that fails for any OTHER reason — EACCES because the proxy tree is
+// owned by another account, a dangling symlink left by a half-finished deploy
+// — is returned. Swallowing it and falling through to the legacy file was the
+// bug: the caller could not tell "coconut-proxy has not deployed yet" from
+// "the live routing is unreadable", and both a semantic-no-op verdict and an
+// adopted display_order were being decided on a file that is not what nginx
+// serves.
+func GatewayMaps(proxyDir string) (TenantMaps, bool, error) {
+	for _, rel := range []string{IncludeRel, LegacyMapsRel} {
 		p := filepath.Join(proxyDir, rel)
 		b, err := os.ReadFile(p)
-		if err != nil {
+		switch {
+		case err == nil:
+			return ParseTenantMaps(b, resolveSource(p)), true, nil
+		case errors.Is(err, os.ErrNotExist):
 			continue
+		default:
+			return TenantMaps{}, false, err
 		}
-		return ParseTenantMaps(b, p), true
 	}
-	return TenantMaps{}, false
+	return TenantMaps{}, false, nil
 }
 
-// tenantsLiteral finds the `"tenants":[ … ]` list routes.conf serves from its
-// `location = /` block — the live landing-page order.
-var tenantsLiteral = regexp.MustCompile(`"tenants"\s*:\s*(\[[^\]]*\])`)
+// resolveSource names the file a report should cite. The generated include is
+// a SYMLINK into a published generation once the ctl has published; naming the
+// link tells the operator nothing they did not already know, while the
+// generation directory it points at is the answer to "compared against what?".
+func resolveSource(p string) string {
+	fi, err := os.Lstat(p)
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return p
+	}
+	target, err := os.Readlink(p)
+	if err != nil {
+		return p
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(p), target)
+	}
+	return target
+}
+
+// liveTenantsNames matches the bare `"tenants":["a","b"]` list the landing
+// page and the 404 bodies carry; liveTenantsObjects matches the table
+// `location = /ragstack/tenants` returns. Both live inside a single-quoted
+// nginx `return` body, which cannot contain a quote of its own.
+var (
+	liveTenantsNames   = regexp.MustCompile(`"tenants"\s*:\s*(\["[^\]]*"\]|\[\])`)
+	liveTenantsObjects = regexp.MustCompile(`return\s+200\s+'\{"tenants":(\[\{.*?\}\])\}`)
+)
+
+// TenantLists is the pair of tenant-list literals the gateway serves today,
+// and where each was read from.
+type TenantLists struct {
+	NamesJSON   string // $tenants_names_json / the bare `"tenants":[…]` list
+	TenantsJSON string // $tenants_json / the `[{name,api,ui}]` table
+
+	// NamesSource and TenantsSource name the file each list came from. They
+	// are separate because a MIXED tree is real: routes.conf can still carry
+	// one hand-written literal while the generated include already supplies
+	// the other.
+	NamesSource   string
+	TenantsSource string
+}
+
+// Source is the one file to cite for the pair.
+func (l TenantLists) Source() string {
+	if l.NamesSource != "" {
+		return l.NamesSource
+	}
+	return l.TenantsSource
+}
+
+// LiveTenantLists is the single answer to "where does the tenant list nginx
+// serves actually live?", and both doctor.DisplayOrder and the gateway's
+// DiffDetail go through it so the two cannot disagree.
+//
+// Precedence is what nginx SERVES, not what looks newest:
+//
+//  1. A literal list inside snippets/routes.conf. Pre-deploy the two lists are
+//     hand-written `return 200 '…'` bodies, and a `return` body is served
+//     verbatim — it wins over any map, in a mixed tree too.
+//  2. Otherwise the generated include, whose `$tenants_names_json` /
+//     `$tenants_json` maps are what a post-deploy routes.conf interpolates.
+//     It is read through a symlink, because after the first publish that is
+//     what it is.
+//  3. Otherwise nothing.
+//
+// An EMPTY list is "nothing here", not an answer: a routes.conf whose literal
+// is `[]` is a tree that advertises no tenants, and the include — which does
+// carry them — is what the next reload will serve.
+func LiveTenantLists(proxyDir string) (TenantLists, error) {
+	var out TenantLists
+	routes := filepath.Join(proxyDir, routesRel)
+	b, err := readIfPresent(routes)
+	if err != nil {
+		return out, err
+	}
+	if b != nil {
+		if m := liveTenantsNames.FindSubmatch(b); m != nil && !emptyList(string(m[1])) {
+			out.NamesJSON, out.NamesSource = string(m[1]), routes
+		}
+		if m := liveTenantsObjects.FindSubmatch(b); m != nil && !emptyList(string(m[1])) {
+			out.TenantsJSON, out.TenantsSource = string(m[1]), routes
+		}
+	}
+	if out.NamesJSON != "" && out.TenantsJSON != "" {
+		return out, nil
+	}
+	inc := filepath.Join(proxyDir, IncludeRel)
+	b, err = readIfPresent(inc)
+	if err != nil || b == nil {
+		return out, err
+	}
+	m := ParseTenantMaps(b, resolveSource(inc))
+	if out.NamesJSON == "" && !emptyList(m.NamesJSON) {
+		out.NamesJSON, out.NamesSource = m.NamesJSON, m.Source
+	}
+	if out.TenantsJSON == "" && !emptyList(m.TenantsJSON) {
+		out.TenantsJSON, out.TenantsSource = m.TenantsJSON, m.Source
+	}
+	return out, nil
+}
+
+// emptyList is true for a list that advertises nothing — absent, `[]`, or
+// whitespace around the two brackets.
+func emptyList(s string) bool {
+	s = strings.TrimSpace(s)
+	return s == "" || s == "[]" || s == "[ ]"
+}
+
+func readIfPresent(p string) ([]byte, error) {
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
 
 // DisplayOrderFromRoutes reads the tenant order the gateway currently
 // advertises, so an adopted fleet's display_order matches what users already
@@ -149,7 +282,7 @@ func DisplayOrderFromRoutes(routesConf string) []string {
 	if err != nil {
 		return nil
 	}
-	m := tenantsLiteral.FindSubmatch(b)
+	m := liveTenantsNames.FindSubmatch(b)
 	if m == nil {
 		return nil
 	}
@@ -158,4 +291,45 @@ func DisplayOrderFromRoutes(routesConf string) []string {
 		return nil
 	}
 	return names
+}
+
+// DisplayOrder reads the tenant order the gateway currently advertises, from
+// whichever file LiveTenantLists says is serving it. Returns nil, nil when no
+// source has an order to give.
+//
+// An unreadable proxy tree is an ERROR, not an empty order: `adopt-all
+// --commit` writes display_order from this, and "the file could not be read"
+// silently became "the fleet has no order", which reorders the landing page
+// on the next publish. Fail loudly instead.
+func DisplayOrder(proxyDir string) ([]string, error) {
+	lists, err := LiveTenantLists(proxyDir)
+	if err != nil {
+		return nil, fmt.Errorf("reading the live tenant list under %s: %w", proxyDir, err)
+	}
+	if lists.NamesJSON == "" {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(lists.NamesJSON), &names); err != nil {
+		return nil, fmt.Errorf("%s: the live tenant list is not a JSON array of names: %w", lists.NamesSource, err)
+	}
+	return names, nil
+}
+
+// UIDistIndex is the file nginx serves a static tenant's UI from:
+// <data_dir>/ui/dist/index.html, the `vite build` output the alias block in
+// tenants-ui-static.generated.conf points at.
+func UIDistIndex(dataDir string) string {
+	return filepath.Join(dataDir, "ui", "dist", "index.html")
+}
+
+// StaticUIDistOK reports whether that index is a REGULAR file. A directory, a
+// dangling symlink or an unreadable parent all mean the same thing to nginx:
+// the mount 404s. adopt and doctor both ask through here so a tenant cannot
+// pass adoption and then be judged by a different rule afterwards — the dist
+// is built once and deleted or rebuilt many times, which is exactly why the
+// check has to run again on every doctor pass.
+func StaticUIDistOK(dataDir string) bool {
+	fi, err := os.Stat(UIDistIndex(dataDir))
+	return err == nil && fi.Mode().IsRegular()
 }

@@ -1,16 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/auth"
 	"github.com/ragstack/ragstack/internal/ctl/authz"
+	"github.com/ragstack/ragstack/internal/ctl/logs"
+	"github.com/ragstack/ragstack/internal/ctl/model"
 	"github.com/ragstack/ragstack/internal/ctl/ratelimit"
 	"github.com/ragstack/ragstack/internal/ctl/session"
 )
@@ -23,6 +28,14 @@ const (
 var ridRE = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 func newTestServer(t *testing.T) http.Handler {
+	t.Helper()
+	return newTestServerWith(t, NewFakeBackend())
+}
+
+// newTestServerWith is newTestServer over a backend a test supplies, for the
+// failure shapes the fixture backend cannot produce (it has no files, so it
+// can never be refused one).
+func newTestServerWith(t *testing.T, backend Backend) http.Handler {
 	t.Helper()
 	envs := map[string]string{
 		auth.EnvAPIKeys:     `["` + opKey + `","` + viewerKey + `"]`,
@@ -39,7 +52,7 @@ func newTestServer(t *testing.T) http.Handler {
 	}
 	sessions := session.NewMemoryStore()
 	return NewRouter(&Server{
-		Backend: NewFakeBackend(),
+		Backend: backend,
 		Resolver: &auth.Resolver{
 			Keys: keys, Verifier: verifier, Sessions: sessions,
 			// Off for the router tests: they deliberately produce dozens of
@@ -487,6 +500,66 @@ func TestValidationAndLookupAnswers(t *testing.T) {
 			continue
 		}
 		assertErrorNamed(t, c.path, w, c.status, c.code)
+	}
+}
+
+// unreadableSecretsBackend is the fixture backend with one failure grafted
+// on: the logs read fails the way it does on a host where the tenants have
+// not been handed over yet — the redactor cannot be seeded because this
+// account cannot READ the tenant's secrets.env.
+type unreadableSecretsBackend struct {
+	*FakeBackend
+}
+
+func (b *unreadableSecretsBackend) Logs(context.Context, string, string, int) (*model.LogsResponse, error) {
+	return nil, &logs.SecretsUnreadableError{
+		Tenant: "dev",
+		Path:   "/rag/data/tenants/dev/config/secrets.env",
+		Owner:  "someone-else",
+		Err:    &fs.PathError{Op: "open", Path: "/rag/data/tenants/dev/config/secrets.env", Err: syscall.EACCES},
+	}
+}
+
+// TestLogsRefusedWhenSecretsAreUnreadable: the live defect. A secrets file
+// this account cannot read is an OWNERSHIP fact, not an internal fault, and
+// answering 500 "the control plane could not answer this request" sent an
+// operator chasing a daemon bug over a 0600 file. The seeding requirement is
+// unchanged — no line is returned — but the answer explains itself.
+func TestLogsRefusedWhenSecretsAreUnreadable(t *testing.T) {
+	h := newTestServerWith(t, &unreadableSecretsBackend{NewFakeBackend()})
+	w := asOperator(t, h, http.MethodGet, "/v1/tenants/dev/logs?file=api&lines=200")
+	assertErrorNamed(t, "ctlTenantLogs", w, http.StatusConflict, "refused")
+
+	body := decode(t, w)
+	detail, _ := body["detail"].(string)
+	for _, want := range []string{
+		"logs for dev are unavailable",
+		"/rag/data/tenants/dev/config/secrets.env",
+		"whose values seed the log redactor",
+		"the tenant is owned by someone-else until its handover (PR-E)",
+	} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail %q does not carry %q", detail, want)
+		}
+	}
+	if !strings.Contains(detail, "the ctl runs as ") {
+		t.Errorf("detail %q does not name the account this daemon runs as", detail)
+	}
+	// The typed payload: a client (and the doctor tab) branches on these
+	// rather than on the prose.
+	extra, ok := body["extra"].(map[string]any)
+	if !ok {
+		t.Fatalf("no extra in %s", w.Body.String())
+	}
+	if extra["path"] != "/rag/data/tenants/dev/config/secrets.env" || extra["owner"] != "someone-else" {
+		t.Errorf("extra = %v, want the path and the owner", extra)
+	}
+	if extra["pre_handover"] != true {
+		t.Errorf("extra.pre_handover = %v, want true for a tenant owned by another account", extra["pre_handover"])
+	}
+	// No log line escapes on the refusal path.
+	if strings.Contains(w.Body.String(), "\"lines\"") {
+		t.Errorf("a refused read returned log lines: %s", w.Body.String())
 	}
 }
 
