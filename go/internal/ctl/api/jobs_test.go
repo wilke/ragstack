@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"fmt"
+	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -846,13 +849,24 @@ func TestAContinuationHasNoDryRun(t *testing.T) {
 // TestBuildEngineReportsThatItIsNotWired pins the integration seam: the stub
 // returns an ERROR rather than a nil engine, so `serve` can say so once at
 // start-up instead of every handler discovering it independently.
-func TestBuildEngineReportsThatItIsNotWired(t *testing.T) {
-	eng, err := BuildEngine(EngineConfig{})
-	if eng != nil {
-		t.Fatal("BuildEngine returned an engine it has not been wired to build")
+func TestBuildEngineBuildsAFakeDriverEngine(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := BuildEngine(EngineConfig{
+		Roots:        paths.NewRoots(dir, paths.Overrides{}),
+		RegistryPath: filepath.Join(dir, "registry.json"), // absent: plans refuse, the engine still builds
+		StorePath:    filepath.Join(dir, "jobs.db"),
+		Mode:         model.WorkerDaemon,
+		Host:         "test",
+		FakeDrivers:  true,
+	})
+	if err != nil || eng == nil {
+		t.Fatalf("BuildEngine = %v, %v; want an engine", eng, err)
 	}
-	if err == nil || !strings.Contains(err.Error(), "not wired") {
-		t.Fatalf("err = %v; want the not-wired seam error", err)
+	if _, err := os.Stat(filepath.Join(dir, "jobs.db")); err != nil {
+		t.Fatalf("the store was not created: %v", err)
+	}
+	if _, _, err := eng.List(context.Background(), jobs.ListFilter{Limit: 5}); err != nil {
+		t.Fatalf("List on a fresh engine: %v", err)
 	}
 }
 

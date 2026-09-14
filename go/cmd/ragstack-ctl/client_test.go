@@ -625,14 +625,16 @@ func TestJSONPrintsTheRawPlan(t *testing.T) {
 // --direct builds the SAME engine the daemon does (api.BuildEngine) and must
 // report honestly that it is not wired yet. A CLI that stubbed an engine of
 // its own would take locks the daemon does not honour.
-func TestDirectReportsTheUnwiredEngine(t *testing.T) {
+func TestDirectRunsTheEngineLocally(t *testing.T) {
 	f := newFakeCtl(t, func(w http.ResponseWriter, rec recorded) { replyPlan(w, samplePlan("stop", "dev")) })
+	// No registry under this rag root: the engine builds, the plan refuses
+	// with the registry error, and no daemon is consulted.
 	rc, _, errs := capture(t, "tenant", "stop", "dev", "--direct", "--dry-run", "--rag-root", t.TempDir())
-	if rc != exitError {
-		t.Fatalf("rc %d (want 1) %s", rc, errs)
+	if rc == exitOK {
+		t.Fatalf("rc 0 with no registry; stderr: %s", errs)
 	}
-	if !strings.Contains(errs, "not wired") {
-		t.Errorf("the reason was not printed: %s", errs)
+	if strings.Contains(errs, "not wired") {
+		t.Errorf("the engine is wired now; stderr still says otherwise: %s", errs)
 	}
 	if len(f.requests()) != 0 {
 		t.Error("--direct still talked to a daemon")
