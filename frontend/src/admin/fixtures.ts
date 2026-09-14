@@ -232,6 +232,75 @@ export const hostileEnvFixture: CtlEnv = {
 };
 
 /** The same hostile values arriving as a DRIFT row, which prints two values per key. */
+const demoRow: FleetRow = fleetFixture.tenants[1];
+
+/**
+ * An OPERATOR body for `demo`: shared stores (qdrant/es `ownership: shared`,
+ * so `status.listening.qdrant_http/es_http` — which is this tenant's OWN
+ * port block — is correctly false; the registry row is what tells the
+ * dashboard to render "shared" instead of a down chip) and a `static` UI
+ * (built once, served by nginx — never a port of its own, so
+ * `status.listening.ui` is not a real fact about it either).
+ */
+export const demoTenantFixture: CtlTenant = {
+  summary: demoRow,
+  registry: {
+    name: "demo",
+    manifest_name: "demo",
+    data_dir: "/rag/data/tenants/demo",
+    worktree: "/rag/repos/ragstack",
+    artifact_id: null,
+    code: { tag: "v1.5.3", sha: null, previous_artifact_id: null },
+    python_env: "/rag/envs/ragstack",
+    ports: { index: 3, base: 24060, api: 24060, qdrant_http: 24061, qdrant_grpc: 24062, es_http: 24063, es_transport: 24064, pg: 24065 },
+    api: { bind: "0.0.0.0", pidfile: "/rag/data/tenants/demo/api.pid", log: "/rag/data/tenants/demo/logs/api.log" },
+    stores: {
+      qdrant: { ownership: "shared", capabilities: { stop: false, purge: false, restore: false, snapshot: false }, url: "http://localhost:6333", instance: null, sif: null, extra_env: {} },
+      elasticsearch: { ownership: "shared", capabilities: { stop: false, purge: false, restore: false, snapshot: false }, url: "http://localhost:9200", instance: null, sif: null, heap: null, provision_heap: null, path_repo: null, extra_env: {} },
+      neo4j: { ownership: "external", url: null },
+      dormant_provisioned_dirs: true,
+    },
+    ui: { mode: "static", port: null, base: "/ragstack/demo/ui/" },
+    supervisor: "manual",
+    owner: "wilke",
+    state: "active",
+    desired_boot: "disabled",
+    env_layout: "legacy",
+    settings: {},
+    secret_refs: [],
+    env_file_sha256: `sha256:${"a".repeat(64)}`,
+    secrets_file_sha256: null,
+    identity: { provider: "bvbrc", admin_subjects_count: 1 },
+    keys: [],
+    service_accounts: [],
+    external_refs: [],
+    unmanaged_files: [],
+    drift: [],
+    restart_pending: false,
+    release_generation: null,
+    rollback_descriptor: null,
+    last_ops: {},
+    last_backup: { bundle: "/rag/backups/demo/2026-09-09.tar.zst", at: "2026-09-09T03:00:00Z", kind: "backup", fenced: true, verified: true },
+    adopted_at: "2026-08-01T00:00:00Z",
+  },
+  status: {
+    observed_at: AT,
+    api_pid: 7654321,
+    api_pid_owner: "wilke",
+    listening: { api: true, qdrant_http: false, es_http: false, ui: false },
+    restart_pending: false,
+    running_jobs: [],
+  },
+  units: {
+    supervisor: "manual",
+    target: null,
+    services: [
+      { kind: "api", name: "manual:api", active_state: "active", sub_state: "running", main_pid: 7654321, since: "2026-09-09T22:10:00Z" },
+    ],
+  },
+  drift: [],
+};
+
 export const hostileTenantFixture: CtlTenant = {
   ...tenantFixture,
   drift: [

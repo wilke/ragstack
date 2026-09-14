@@ -49,6 +49,69 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+// listeningRows turns the four raw `status.listening` booleans into what an
+// operator actually needs per leg: its name, a chip value, and (when one
+// applies) the port it was checked on.
+//
+// qdrant/es get a special case: `listening.qdrant_http`/`es_http` answer "is
+// a socket open on THIS tenant's own port block", which for a store this
+// tenant shares with others (stores_mode `shared`) is not its port to report
+// on at all — the shared instance is up or down for every tenant sharing it,
+// not this one specifically. Ownership comes from the operator-only
+// `registry` row when present; a viewer falls back to the coarser
+// `summary.stores_mode` (a `mixed` tenant — one store shared, one exclusive,
+// today only lucid-next — can't be told apart per-store without `registry`,
+// so a viewer sees the port chip there rather than a guess).
+//
+// The UI leg is meaningless as a listening check at all for a `static` or
+// `external` tenant (no port is ever bound for either), so it renders the
+// registry's `ui.mode` instead of a chip derived from a port that was never
+// going to be open.
+type ListeningRow = { name: string; value: string; port: number | null };
+
+function storeOwnership(
+  tenant: CtlTenant,
+  store: "qdrant" | "elasticsearch",
+): "exclusive" | "shared" | "unknown" | undefined {
+  if (tenant.registry) return tenant.registry.stores[store].ownership;
+  switch (tenant.summary.stores_mode) {
+    case "dedicated":
+      return "exclusive";
+    case "shared":
+      return "shared";
+    default:
+      return undefined; // "mixed" or "unknown": can't attribute without registry
+  }
+}
+
+function listeningRows(tenant: CtlTenant): ListeningRow[] {
+  const s = tenant.summary;
+  const st = tenant.status;
+
+  const storeRow = (
+    name: string,
+    store: "qdrant" | "elasticsearch",
+    listening: boolean,
+    port: number,
+  ): ListeningRow =>
+    storeOwnership(tenant, store) === "shared"
+      ? { name, value: "shared", port: null }
+      : { name, value: listening ? "ok" : "down", port };
+
+  const uiMode = tenant.registry?.ui.mode;
+  const uiRow: ListeningRow =
+    uiMode === "static" || uiMode === "external"
+      ? { name: "ui", value: uiMode, port: null }
+      : { name: "ui", value: st.listening.ui ? "ok" : "down", port: tenant.registry?.ui.port ?? null };
+
+  return [
+    { name: "api", value: st.listening.api ? "ok" : "down", port: s.ports.api },
+    storeRow("qdrant", "qdrant", st.listening.qdrant_http, s.ports.qdrant_http),
+    storeRow("es", "elasticsearch", st.listening.es_http, s.ports.es_http),
+    uiRow,
+  ];
+}
+
 function Overview({ tenant }: { tenant: CtlTenant }) {
   const s = tenant.summary;
   const st = tenant.status;
@@ -112,21 +175,20 @@ function Overview({ tenant }: { tenant: CtlTenant }) {
       <h3 className="mb-2 mt-7 font-mono text-[11px] font-medium uppercase tracking-[.14em] text-strong">
         Listening
       </h3>
-      <div className="flex flex-wrap gap-2">
-        {(
-          [
-            ["api", st.listening.api],
-            ["qdrant", st.listening.qdrant_http],
-            ["es", st.listening.es_http],
-            ["ui", st.listening.ui],
-          ] as [string, boolean][]
-        ).map(([k, v]) => (
-          <StateChip key={k} kind="health" value={v ? "ok" : "down"} title={`${k} port`} />
+      <div className="grid w-fit grid-cols-[auto_auto_auto] items-center gap-x-3 gap-y-1.5">
+        {listeningRows(tenant).map((row) => (
+          <div key={row.name} className="contents">
+            <span className="font-mono text-[10px] font-medium uppercase tracking-[.12em] text-muted">
+              {row.name}
+            </span>
+            <StateChip kind="health" value={row.value} title={`${row.name} port`} />
+            <span className="font-mono text-[11px] text-dim tabular-nums">
+              {row.port !== null ? `:${row.port}` : ""}
+            </span>
+          </div>
         ))}
-        <span className="font-mono text-[11px] text-dim">
-          api · qdrant · es · ui (from /proc/net/tcp)
-        </span>
       </div>
+      <span className="mt-1.5 block font-mono text-[11px] text-dim">(from /proc/net/tcp)</span>
 
       <h3 className="mb-2 mt-7 font-mono text-[11px] font-medium uppercase tracking-[.14em] text-strong">
         Units
