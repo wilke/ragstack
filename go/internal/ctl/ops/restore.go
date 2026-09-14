@@ -305,6 +305,19 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 		Warnings: []string{"the gateway renders ACTIVE tenants, so this runs after the registry step that made " +
 			as + " active"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			// The copy inherits the SOURCE's exposure: a source the live
+			// gateway routes gets its restored twin routed too; a source that
+			// was never published — a sandbox without --with-gateway — gets a
+			// twin that is not, and nothing is published for it. On a host
+			// where this account cannot signal the proxy, that is also the
+			// difference between a restore that verifies and one that fails
+			// at the last step for a route nobody asked for.
+			if routed, why, err := gatewayRoutes(ctx, sc, srcName); err != nil {
+				return "", err
+			} else if !routed {
+				sc.Logf("%s", why)
+				return "skipped: " + why, nil
+			}
 			if err := sc.Checkpoint("gateway:apply:pending"); err != nil {
 				return "", err
 			}
@@ -315,6 +328,9 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 			return detail, sc.Checkpoint("gateway:gen:" + strconv.Itoa(gen))
 		},
 		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if len(sc.Step.ExternalIDs) == 0 {
+				return "nothing was published", nil
+			}
 			return sc.Ops.Drivers.Gateway().Rollback(ctx, 0)
 		},
 	})

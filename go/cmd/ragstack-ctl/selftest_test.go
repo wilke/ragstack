@@ -301,14 +301,22 @@ func TestSweepRefusesEveryPathItWasNotBuiltToRemove(t *testing.T) {
 	}
 	good := "ctltest-20260914t123000z.quarantined-20260914t124500z"
 	mk(good)
-	if _, err := sweepPath(root, good); err != nil {
+	// live is the sandbox rows the registry still holds: a bare-named tree
+	// with a row is a tenant; without one it is an orphan a rolled-back create
+	// left behind, and sweepable.
+	live := map[string]bool{"ctltest-20260914t123000z": true}
+	if _, err := sweepPath(root, good, live); err != nil {
 		t.Fatalf("sweepPath refused a real quarantined sandbox: %v", err)
+	}
+	mk("ctltest-20260914t111111z")
+	if _, err := sweepPath(root, "ctltest-20260914t111111z", live); err != nil {
+		t.Fatalf("sweepPath refused an orphan sandbox tree with no registry row: %v", err)
 	}
 
 	refused := []string{
 		"dev.quarantined-20260914t124500z",         // a production tenant's quarantine
 		"asm",                                      // a live tenant
-		"ctltest-20260914t123000z",                 // a sandbox that is NOT quarantined
+		"ctltest-20260914t123000z",                 // a sandbox that still has a registry row
 		"ctltest-20260914t123000z.quarantined",     // no timestamp: not the shape decommission writes
 		"ctltest.quarantined-20260914t124500z",     // no stamp after the prefix
 		"..",                                       // the parent directory
@@ -317,7 +325,7 @@ func TestSweepRefusesEveryPathItWasNotBuiltToRemove(t *testing.T) {
 		"CTLTEST-20260914t1.quarantined-20260914t", // the prefix is lowercase, like the names
 	}
 	for _, name := range refused {
-		if p, err := sweepPath(root, name); err == nil {
+		if p, err := sweepPath(root, name, live); err == nil {
 			t.Errorf("sweepPath(%q) returned %q; it must refuse everything but a quarantined sandbox tree", name, p)
 		}
 	}
@@ -328,7 +336,7 @@ func TestSweepRefusesEveryPathItWasNotBuiltToRemove(t *testing.T) {
 	if err := os.Symlink(victim, link); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sweepPath(root, filepath.Base(link)); err == nil {
+	if _, err := sweepPath(root, filepath.Base(link), live); err == nil {
 		t.Error("sweepPath followed a symlink out of the sandbox and would have removed a production tree")
 	}
 	if _, err := os.Stat(victim); err != nil {

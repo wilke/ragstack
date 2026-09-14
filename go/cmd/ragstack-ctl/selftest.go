@@ -1157,8 +1157,15 @@ var sweepable = regexp.MustCompile(`^ctltest-[0-9a-z-]+\.quarantined-[0-9A-Za-z-
 // AFTERWARDS, because the name is not the thing being deleted: a symlink named
 // `ctltest-x.quarantined-y` pointing at /rag/data/tenants/asm matches every
 // pattern in the world and is not a sandbox.
-func sweepPath(root, name string) (string, error) {
-	if !sweepable.MatchString(name) {
+func sweepPath(root, name string, live map[string]bool) (string, error) {
+	switch {
+	case sweepable.MatchString(name):
+	case orphanSandbox.MatchString(name) && !live[name]:
+		// An orphan: the registry has no row of this name, so nothing can be
+		// running under it and nothing can bring it back.
+	case orphanSandbox.MatchString(name) && live[name]:
+		return "", fmt.Errorf("%q still has a registry row: decommission it first", name)
+	default:
 		return "", fmt.Errorf("%q is not a quarantined sandbox tree (want %s)", name, sweepable)
 	}
 	candidate := filepath.Join(root, name)
@@ -1175,8 +1182,8 @@ func sweepPath(root, name string) (string, error) {
 	if filepath.Dir(resolved) != filepath.Clean(root) {
 		return "", fmt.Errorf("%s resolves to %s, which is not directly under %s", candidate, resolved, root)
 	}
-	if !sweepable.MatchString(filepath.Base(resolved)) {
-		return "", fmt.Errorf("%s resolves to %s, whose name is not a quarantined sandbox tree", candidate, resolved)
+	if base := filepath.Base(resolved); !sweepable.MatchString(base) && !(orphanSandbox.MatchString(base) && !live[base]) {
+		return "", fmt.Errorf("%s resolves to %s, whose name is not a sweepable sandbox tree", candidate, resolved)
 	}
 	return resolved, nil
 }
@@ -1185,7 +1192,20 @@ func sweepPath(root, name string) (string, error) {
 // sandbox rows from the registry. It is the ONLY deletion in v1, which is why
 // it is the most defensive function in the package.
 func (s *selftest) sweep(ctx context.Context) (removed, refused []string, err error) {
-	for _, root := range []string{s.roots.DataDir, s.roots.ReposDir} {
+	// The registry rows come first: a tree whose row is gone is an orphan a
+	// rolled-back create left behind (create's directory step has no
+	// rollback), and it is only knowable as one once the rows are settled.
+	rows, rowRefusals, rerr := s.sweepRows()
+	refused = append(refused, rowRefusals...)
+	removed = append(removed, rows...)
+	if rerr != nil {
+		return removed, refused, rerr
+	}
+	live, lerr := s.sandboxRows()
+	if lerr != nil {
+		return removed, refused, lerr
+	}
+	for _, root := range []string{s.roots.DataDir, s.roots.ReposDir, s.roots.BackupsDir} {
 		entries, rerr := os.ReadDir(root)
 		if rerr != nil {
 			if os.IsNotExist(rerr) {
@@ -1200,7 +1220,7 @@ func (s *selftest) sweep(ctx context.Context) (removed, refused []string, err er
 				// bury the one line that matters.
 				continue
 			}
-			path, perr := sweepPath(root, e.Name())
+			path, perr := sweepPath(root, e.Name(), live)
 			if perr != nil {
 				refused = append(refused, perr.Error())
 				continue
@@ -1211,12 +1231,32 @@ func (s *selftest) sweep(ctx context.Context) (removed, refused []string, err er
 			removed = append(removed, path)
 		}
 	}
-	rows, rowRefusals, rerr := s.sweepRows()
-	refused = append(refused, rowRefusals...)
-	removed = append(removed, rows...)
 	_ = ctx
-	return removed, refused, rerr
+	return removed, refused, nil
 }
+
+// sandboxRows is the set of sandbox names that still have a registry row.
+func (s *selftest) sandboxRows() (map[string]bool, error) {
+	f, err := loadForRead(s.registryPath)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for name := range f.Tenants {
+		if ops.IsSandboxName(name) {
+			out[name] = true
+		}
+	}
+	return out, nil
+}
+
+// orphanSandbox is a sandbox tree named by a bare sandbox name — no
+// `.quarantined-` infix — which is what a rolled-back create, or a restore
+// whose create half was undone, leaves behind: the row is gone, the units are
+// gone, only the directory tree remains. Such a tree is sweepable when NO
+// registry row of that name exists; with a row it is a tenant, and the sweep
+// refuses it.
+var orphanSandbox = regexp.MustCompile(`^ctltest-[0-9a-z-]+$`)
 
 // sweepRows deletes the sandbox tenants' registry rows.
 //
