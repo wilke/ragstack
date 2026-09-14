@@ -89,3 +89,8 @@ docs/*.html
 # Stage-0 judge run logs and pid files — per-run scratch, not source.
 docs/plans/results/stage0/run/
 !go/internal/ctl/render/testdata/golden/*.sqlite
+
+# ragstack-ctl job store (tests must use a temp dir; the daemon writes under /rag/data/ctl)
+jobs.db
+jobs.db-shm
+jobs.db-wal

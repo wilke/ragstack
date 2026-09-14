@@ -602,19 +602,28 @@ func TestDoctorHashIsStableAndScoped(t *testing.T) {
 	}
 }
 
+// TestMutationsAreRefusedAfterAuthorization: on a server with NO engine —
+// which is what newTestServer builds — every mutation is 409 `refused` with
+// the reason named, and a viewer never reaches that refusal at all because
+// the role answer comes first.
 func TestMutationsAreRefusedAfterAuthorization(t *testing.T) {
 	h := newTestServer(t)
 	// The operator gets the refusal…
 	w := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start",
-		map[string]string{auth.HeaderAPIKey: opKey}, `{"dry_run":true,"args":{}}`)
+		map[string]string{auth.HeaderAPIKey: opKey}, validOpBody)
 	body := assertError(t, w, 409, "refused")
-	if !strings.Contains(body["detail"].(string), "PR-C") {
-		t.Fatalf("detail does not say when mutations arrive: %v", body["detail"])
+	if !strings.Contains(body["detail"].(string), "not wired") {
+		t.Fatalf("detail does not say why the mutation was refused: %v", body["detail"])
 	}
 	// …and the viewer never reaches it: the role answer comes first.
 	assertError(t, do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start",
-		map[string]string{auth.HeaderAPIKey: viewerKey}, `{"dry_run":true,"args":{}}`), 403, "forbidden")
+		map[string]string{auth.HeaderAPIKey: viewerKey}, validOpBody), 403, "forbidden")
 }
+
+// validOpBody is a well-formed op_request.json envelope: the tests below are
+// about credentials and routing, and an envelope the 422 would reject first
+// would make every one of them assert the wrong thing.
+const validOpBody = `{"dry_run":true,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`
 
 func TestBodyKeyRules(t *testing.T) {
 	h := newTestServer(t)
@@ -623,35 +632,37 @@ func TestBodyKeyRules(t *testing.T) {
 	// two headers.
 	w := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start",
 		map[string]string{auth.HeaderAPIKey: opKey},
-		`{"dry_run":false,"ctl_api_key":"`+viewerKey+`"}`)
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"`+viewerKey+`"}`)
 	assertError(t, w, 400, "both_credentials")
 
-	// The same key in both places is fine (and then refused for PR-A reasons).
+	// The same key in both places is fine (and then refused because this
+	// server has no engine).
 	same := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start",
 		map[string]string{auth.HeaderAPIKey: opKey},
-		`{"dry_run":false,"ctl_api_key":"`+opKey+`"}`)
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"`+opKey+`"}`)
 	assertError(t, same, 409, "refused")
 
 	// A session with no body key cannot mutate at all.
 	created := do(t, h, http.MethodPost, "/v1/session", map[string]string{auth.HeaderAPIKey: opKey}, "")
 	sid := decode(t, created)["session_id"].(string)
 	sess := map[string]string{auth.HeaderAuthorization: "Session " + sid}
-	nokey := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start", sess, `{"dry_run":false}`)
+	nokey := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start", sess,
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{}}`)
 	body := assertError(t, nokey, 403, "forbidden")
-	if !strings.Contains(body["detail"].(string), "read-only") {
+	if !strings.Contains(body["detail"].(string), "re-present a ctl API key") {
 		t.Fatalf("detail = %v", body["detail"])
 	}
 
 	// A session plus a key bound to ANOTHER principal is an escalation with
 	// two owners: 403.
 	wrong := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start", sess,
-		`{"dry_run":false,"ctl_api_key":"`+viewerKey+`"}`)
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"`+viewerKey+`"}`)
 	assertError(t, wrong, 403, "forbidden")
 
-	// A session plus the key it was minted from is accepted, then refused for
-	// PR-A reasons.
+	// A session plus the key it was minted from is accepted, then refused
+	// because this server has no engine.
 	right := do(t, h, http.MethodPost, "/v1/tenants/dev/ops/start", sess,
-		`{"dry_run":false,"ctl_api_key":"`+opKey+`"}`)
+		`{"dry_run":false,"idempotency_key":"01ARZ3NDEKTSV4RR","args":{},"ctl_api_key":"`+opKey+`"}`)
 	assertError(t, right, 409, "refused")
 }
 

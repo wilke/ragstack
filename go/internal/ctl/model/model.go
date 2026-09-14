@@ -22,8 +22,6 @@
 package model
 
 import (
-	"encoding/json"
-
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -557,21 +555,39 @@ type SettingsResponse struct {
 	Recipients         SettingsRecipients `json:"recipients"`
 }
 
-// JobsResponse is GET /v1/jobs (jobs_response.json). Jobs is typed as raw
-// documents until the job engine lands in PR-C; the schema validates their
-// shape either way, and an empty list is the truthful answer today.
+// JobsResponse is GET /v1/jobs (jobs_response.json).
+//
+// Jobs is a TYPED list, not []json.RawMessage as it was while the engine was
+// a stub: the viewer reduction (worker and lock null, reservations and
+// steps[].external_ids empty, steps[].log null) is a field-level rewrite, and
+// applying it to raw documents would mean re-encoding them by hand in the
+// handler — which is how a reduction comes to cover four of the five members.
 type JobsResponse struct {
-	Jobs      []json.RawMessage `json:"jobs"`
-	Limit     int               `json:"limit"`
-	Truncated bool              `json:"truncated"`
+	Jobs      []Job `json:"jobs"`
+	Limit     int   `json:"limit"`
+	Truncated bool  `json:"truncated"`
 }
 
 // AuditResponse is GET /v1/audit (audit_response.json). A read produces no
-// audit row, so an empty log is the truth on a read-only daemon.
+// audit row, so an empty log is the truth on a daemon that has run none.
 type AuditResponse struct {
-	Rows      []json.RawMessage `json:"rows"`
-	Limit     int               `json:"limit"`
-	Truncated bool              `json:"truncated"`
+	Rows      []AuditRow `json:"rows"`
+	Limit     int        `json:"limit"`
+	Truncated bool       `json:"truncated"`
+}
+
+// StepLogResponse is GET /v1/jobs/{id}/steps/{n}/log — the contract's one
+// inline schema, a projection of LogsResponse keyed by job and step. Redacted
+// is the constant true: the engine redacts every line before it is stored, so
+// an unredacted tail is not a state this endpoint can be in.
+type StepLogResponse struct {
+	JobID     string   `json:"job_id"`
+	Step      int      `json:"step"`
+	Lines     []string `json:"lines"`
+	Requested int      `json:"requested"`
+	Returned  int      `json:"returned"`
+	Truncated bool     `json:"truncated"`
+	Redacted  bool     `json:"redacted"`
 }
 
 // GatewayRoute is one published route (gateway_status.json#/$defs/Route).

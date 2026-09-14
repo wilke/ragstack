@@ -36,14 +36,20 @@ func gatewayUsage() {
   apply    [--dry-run] [--yes] [--expect-bodies DIR]
                                            publish: stage + nginx -t, switch, HUP, probe, revert on failure
                                            --dry-run stops after the staged nginx -t (no switch, no HUP)
+  reload   [--dry-run] [--yes] [--wait]    test the LIVE tree, HUP, confirm, probe — nothing is
+                                           rendered and `+"`current`"+` does not move, so it is the only
+                                           way to adopt a hand-written proxy change. Submitted to
+                                           the daemon as an operation (POST /v1/gateway/reload).
   status   [--json]                        published generation, txn state, nginx master, routes
   rollback [--to N]                        switch back + HUP + probe (refuses without a previous generation)
   repair                                   put `+"`current`"+` back on the last verified generation and acknowledge it
 
 common flags: --registry PATH --rag-root DIR --state-dir DIR --proxy-dir DIR
               --base-url URL --pidfile PATH --nginx-sif PATH
+reload flags: the operation flags — --server --api-key-file --direct --dry-run
+              --yes --wait --idempotency-key (see `+"`ragstack-ctl help`"+`)
 
-exit: 0 ok · 1 error · 2 usage · 3 refused
+exit: 0 ok · 1 error · 2 usage · 3 refused · 4 job failed · 5 job interrupted
 `)
 }
 
@@ -132,6 +138,8 @@ func cmdGateway(args []string, registryPath, ragRoot string, jsonOut bool) int {
 		return cmdGatewayDiff(rest, registryPath, ragRoot, jsonOut)
 	case "apply":
 		return cmdGatewayApply(rest, registryPath, ragRoot, jsonOut)
+	case "reload":
+		return cmdGatewayReload(rest, registryPath, ragRoot, jsonOut)
 	case "status":
 		return cmdGatewayStatus(rest, registryPath, ragRoot, jsonOut)
 	case "rollback":
@@ -422,6 +430,31 @@ func confirmed() bool {
 		return true
 	}
 	return false
+}
+
+// cmdGatewayReload is the one gateway verb that is an OPERATION rather than a
+// local action: POST /v1/gateway/reload, planned, locked and audited by the
+// daemon like every other mutation.
+//
+// It is here, beside the local verbs, because an operator reaches for it in
+// the same breath as `gateway apply` — and putting it in another group would
+// mean the two ways to make nginx pick up a change live in two places. What
+// it does NOT share is the local flag set: a reload takes the gateway lock in
+// the daemon, so it carries the op envelope (--dry-run/--yes/--wait) and not
+// --proxy-dir.
+func cmdGatewayReload(args []string, registryPath, ragRoot string, jsonOut bool) int {
+	fs := flag.NewFlagSet("gateway reload", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	o := addOpFlags(fs, registryPath, ragRoot, jsonOut)
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() > 0 {
+		return usageErr("usage: ragstack-ctl gateway reload %s", opFlagSummary)
+	}
+	// args is `{}`: the contract gives gateway-reload no arguments at all,
+	// which is what makes it unable to publish a generation nobody previewed.
+	return submitOp(o, opTarget{path: "/v1/gateway/reload", op: "gateway-reload"}, map[string]any{})
 }
 
 func cmdGatewayStatus(args []string, registryPath, ragRoot string, jsonOut bool) int {

@@ -530,10 +530,15 @@ RAGSTACK_CTL_URL=http://127.0.0.1:23998 RAGSTACK_CTL_API_KEY=<operator> \
 RAGSTACK_CTL_API_KEY_VIEWER=<viewer> pytest -q conformance/ctl
 ```
 
-Expected: everything passes except two skips (the unlisted-bearer case needs
-the fixture key server, which only `--fake-drivers` provides, and the mutation
-module lands in PR-C). Verified 2026-09-12 on coconut over a scratch registry
-adopted from the four live tenants: 105 passed, 2 skipped.
+Expected: everything passes except the unlisted-bearer case, which needs the
+fixture key server that only `--fake-drivers` provides, and — until the job
+engine is wired — the engine-gated half of `conformance/ctl/test_ops.py`. That
+half skips with a reason naming the probe it made: on a daemon whose engine
+did not build, every mutation answers `409 refused` with "not wired" in the
+detail, and the suite says so rather than asserting against a surface that
+performs nothing. The authorization, envelope-validation and viewer-reduction
+tests in that module run either way. Verified 2026-09-12 on coconut over a
+scratch registry adopted from the four live tenants: 105 passed, 2 skipped.
 
 ## Verification summary
 

@@ -1,15 +1,761 @@
-"""Mutation conformance (``POST /v1/tenants/{name}/ops/{verb}`` and friends).
+"""Conformance: the mutation surface — ``POST /v1/tenants/{name}/ops/{verb}``,
+``POST /v1/tenants``, the two gateway mutations, the three job continuations,
+``PUT /v1/settings``, and the job and audit reads they produce.
 
-Lands with the job engine in PR-C (idempotency keys, locks, plan re-validation,
-confirm, doctor gate, delivery envelope) against ``ragstack-ctl serve
---fake-drivers``. PR-A ships the contract and the read surface only, so this
-module skips as a whole rather than asserting against a surface that answers
-nothing yet — a file that never asserts is indistinguishable from a wrong one,
-and this skip says so by name.
+The file has two halves, and the split is the point.
+
+The first half asserts what the HTTP layer owns on its own: who may mutate (a
+viewer may not, and a session may not without re-presenting a ctl key), what a
+well-formed envelope is (unknown members, the ``idempotency_key`` pattern, the
+verb enum, the tenant-name pattern, the writable subset of settings), and the
+shape of every answer (``error.json`` plus an ``X-Request-Id``). None of that
+needs a job engine, so none of it is gated: it runs, and must pass, on any
+daemon that answers at all.
+
+The second half asserts what only the ENGINE can answer — a plan, a job that
+reaches a terminal state, idempotency, confirm, the deliver-once secrets
+envelope, the audit rows, the viewer reduction of a job that actually ran. On
+this branch ``api.BuildEngine`` returns "job engine not wired" and ``serve``
+carries on with a nil engine, so every mutation answers 409 ``refused``. The
+:func:`job_engine` fixture probes for exactly that, once per session, and skips
+the second half by name when it finds it. It is a plain :func:`pytest.skip` and
+NOT a credential skip: nothing is missing from the harness, the daemon under
+test simply has no engine, and tagging it would make
+``conformance/run_ctl_local.sh`` fail a run that is behaving as designed.
+
+A module-level skip would have taken the authorization assertions down with the
+engine-dependent ones, which is how a suite comes to prove nothing on the
+branch where the surface is most likely to be got wrong.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+import urllib.error
+import urllib.request
+import uuid
+from typing import Any
+
+import httpx
 import pytest
 
-pytest.skip("PR-C: mutation conformance lands with the job engine", allow_module_level=True)
+from ctl.helpers import assert_error, assert_request_id, validate
+
+pytestmark = pytest.mark.asyncio
+
+#: A ULID that is syntactically valid and names no job. Authorization and
+#: envelope validation both precede lookup, so every assertion in the first
+#: half reaches its answer without a real job existing.
+NO_SUCH_JOB = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+#: A tenant name that matches ``^[a-z][a-z0-9-]{0,31}$`` and names nothing.
+NO_SUCH_TENANT = "zz-conformance-ops"
+
+#: The states a job stops moving in. ``awaiting_cutover`` and ``interrupted``
+#: are parked, not finished: a poll that treated them as terminal would report
+#: a hung job as a passing one.
+TERMINAL_STATES = frozenset({"succeeded", "failed", "rolled_back", "cancelled"})
+
+
+def idem() -> str:
+    """A fresh idempotency key. Every test mints its own: a key reused across
+    tests would make the second test read the first one's job back and assert
+    against a mutation it never submitted."""
+    return f"conformance-{uuid.uuid4()}"
+
+
+def op_body(**over: Any) -> dict[str, Any]:
+    """A minimal VALID ``op_request.json`` envelope, dry by default so that a
+    body sent only to reach an authorization answer cannot mutate anything."""
+    body: dict[str, Any] = {"dry_run": True, "idempotency_key": idem(), "args": {}}
+    body.update(over)
+    return body
+
+
+def create_body(**over: Any) -> dict[str, Any]:
+    """The same envelope with ``create``'s typed args."""
+    return op_body(args={"name": NO_SUCH_TENANT, "artifact_id": "conformance-none"}, **over)
+
+
+def mutations() -> list[tuple[str, str, str, dict[str, Any]]]:
+    """Every mutating operation as ``(operationId, method, path, body)``.
+
+    ``test_authz_matrix.py`` parametrizes itself from the contract; this table
+    is written out because these tests care about the BODY each route takes,
+    which the contract expresses as a schema rather than as a value.
+    """
+    return [
+        ("ctlTenantOp", "POST", f"/v1/tenants/{NO_SUCH_TENANT}/ops/start", op_body()),
+        ("ctlTenantCreate", "POST", "/v1/tenants", create_body()),
+        ("ctlGatewayApply", "POST", "/v1/gateway/apply", op_body()),
+        ("ctlGatewayReload", "POST", "/v1/gateway/reload", op_body()),
+        ("ctlJobResume", "POST", f"/v1/jobs/{NO_SUCH_JOB}/resume", op_body()),
+        ("ctlJobContinue", "POST", f"/v1/jobs/{NO_SUCH_JOB}/continue", op_body()),
+        ("ctlJobCancel", "POST", f"/v1/jobs/{NO_SUCH_JOB}/cancel", op_body()),
+        ("ctlSettingsPut", "PUT", "/v1/settings", op_body(args={"ctl": {"gateway_enabled": True}})),
+    ]
+
+
+MUTATIONS = mutations()
+MUTATION_IDS = [m[0] for m in MUTATIONS]
+
+
+# --------------------------------------------------------------------------- #
+# The engine gate
+# --------------------------------------------------------------------------- #
+def _sync_post(url: str, headers: dict[str, str], payload: dict[str, Any]) -> tuple[int, Any]:
+    """One blocking POST, stdlib only. A session-scoped fixture cannot use the
+    event-loop-bound async client, which is the same reason
+    ``conftest._sync_get`` exists."""
+    req = urllib.request.Request(
+        url,
+        method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read()
+            return resp.status, (json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return e.code, raw.decode("utf-8", "replace")
+
+
+@pytest.fixture(scope="session")
+def job_engine(ctl_url: str, ctl_key: str, some_tenant: str) -> None:
+    """Skip, once per session and by name, when the daemon under test has no
+    job engine.
+
+    The probe is the cheapest real mutation there is — a dry run, which locks
+    nothing and writes nothing — and its answer is read the way the handler
+    writes it: ``api.BuildEngine`` failing leaves the server's engine nil, and
+    every mutation then answers 409 ``refused`` with ``ErrEngineNotWired``'s
+    text in the detail. A 501 is accepted as the same answer from a daemon that
+    reports it that way instead.
+
+    Deliberately NOT a credential skip. ``run_ctl_local.sh`` fails a run that
+    skipped for want of a credential, because on a daemon it provisioned itself
+    that is a harness bug; an unwired engine is a fact about the build under
+    test, and failing the run for it would make the branch untestable rather
+    than honestly reported.
+    """
+    status, body = _sync_post(
+        f"{ctl_url}/v1/tenants/{some_tenant}/ops/start",
+        {"X-API-Key": ctl_key},
+        {"dry_run": True, "idempotency_key": idem(), "args": {}},
+    )
+    detail = body.get("detail", "") if isinstance(body, dict) else str(body)
+    code = body.get("code") if isinstance(body, dict) else None
+    if status == 501 or (status == 409 and code == "refused" and "not wired" in detail):
+        pytest.skip(
+            f"the job engine is not wired in this daemon (POST /v1/tenants/{some_tenant}"
+            f"/ops/start answered {status} {code}: {detail}); the mutation conformance "
+            "lands with the engine"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Submit and poll (the engine-gated half's shared path)
+# --------------------------------------------------------------------------- #
+async def submit_and_settle(
+    client: httpx.AsyncClient,
+    path: str,
+    schemas: dict[str, dict],
+    *,
+    method: str = "POST",
+    args: dict[str, Any] | None = None,
+    confirm: str | None = None,
+    key: str | None = None,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Execute *path*, then poll the job to a terminal state and return it."""
+    body = op_body(dry_run=False, args=args or {}, idempotency_key=key or idem())
+    if confirm is not None:
+        body["confirm"] = confirm
+    accepted = await client.request(method, path, json=body)
+    assert accepted.status_code == 202, (
+        f"execute {method} {path} expected 202, got {accepted.status_code}: {accepted.text[:400]}"
+    )
+    assert_request_id(accepted)
+    job = accepted.json()
+    validate(job, "job", schemas)
+    assert accepted.headers.get("Location") == f"/v1/jobs/{job['id']}", (
+        "the 202 must point at the job it accepted; Location was "
+        f"{accepted.headers.get('Location')!r} for job {job['id']}"
+    )
+    return await poll_to_terminal(client, job["id"], schemas, timeout=timeout)
+
+
+async def poll_to_terminal(
+    client: httpx.AsyncClient, job_id: str, schemas: dict[str, dict], *, timeout: float = 30.0
+) -> dict[str, Any]:
+    """Poll one job until it settles. Bounded on purpose: a job that never
+    settles is a failure with the last body attached, not a suite that hangs
+    until CI kills it and prints nothing about which job was stuck."""
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        resp = await client.get(f"/v1/jobs/{job_id}")
+        assert resp.status_code == 200, (
+            f"GET /v1/jobs/{job_id}: {resp.status_code}: {resp.text[:300]}"
+        )
+        last = resp.json()
+        validate(last, "job", schemas)
+        if last["state"] in TERMINAL_STATES:
+            return last
+        await asyncio.sleep(0.25)
+    pytest.fail(
+        f"job {job_id} did not reach a terminal state within {timeout:.0f}s; "
+        f"last body: {json.dumps(last)[:800]}"
+    )
+
+
+# =========================================================================== #
+# Engine-independent — these run on every daemon, engine or not
+# =========================================================================== #
+@pytest.mark.parametrize("opid,method,path,body", MUTATIONS, ids=MUTATION_IDS)
+async def test_a_viewer_is_403_on_every_mutation(
+    viewer_client: httpx.AsyncClient, schemas: dict[str, dict],
+    opid: str, method: str, path: str, body: dict[str, Any],
+) -> None:
+    """Every mutating route refuses a viewer with 403 ``forbidden`` — not 404
+    (authorization precedes lookup), not 422 (the body is a valid dry-run
+    envelope), not 409 (the engine is never consulted). The body is well formed
+    precisely so that authorization is the only reason the request could be
+    refused; a 422 here would mean the envelope check ran first, and a viewer
+    could map the contract with it."""
+    resp = await viewer_client.request(method, path, json=dict(body, idempotency_key=idem()))
+    assert_error(resp, 403, "forbidden", schemas)
+
+
+async def test_an_unknown_body_member_is_422_naming_the_member(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``ctl_api_kye`` used to be DROPPED by the decoder, so a request that
+    meant to carry a credential read as one that carried none and the
+    misspelling was invisible. It is now a 422 whose ``extra.fields`` names the
+    member, so the caller does not have to diff its body against the schema to
+    find the typo."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/start",
+        json={"dry_run": True, "idempotency_key": idem(), "args": {}, "ctl_api_kye": "x"},
+    )
+    body = assert_error(resp, 422, "validation", schemas)
+    assert body.get("extra", {}).get("fields") == ["ctl_api_kye"], body
+
+
+@pytest.mark.parametrize(
+    "key,why",
+    [
+        (None, "absent"),
+        ("short", "shorter than the schema's eight characters"),
+        ("has spaces in it", "outside ^[A-Za-z0-9._:-]{8,128}$"),
+        ("", "empty"),
+    ],
+    ids=["absent", "too-short", "bad-characters", "empty"],
+)
+async def test_a_missing_or_malformed_idempotency_key_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str,
+    key: str | None, why: str,
+) -> None:
+    """The idempotency key is what makes a retry safe, so a request without a
+    usable one is refused before planning rather than executed once per click.
+    The offending member is named in ``extra.fields``."""
+    body: dict[str, Any] = {"dry_run": True, "args": {}}
+    if key is not None:
+        body["idempotency_key"] = key
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/start", json=body)
+    err = assert_error(resp, 422, "validation", schemas)
+    assert "idempotency_key" in err.get("extra", {}).get("fields", []), (
+        f"a key {why} must be reported against idempotency_key: {err}"
+    )
+
+
+async def test_a_verb_outside_the_contract_enum_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """An unknown verb is a path parameter outside its schema and never reaches
+    the engine, which is what keeps "I mistyped the verb" from arriving as
+    "that tenant does not exist"."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/frobnicate", json=op_body())
+    err = assert_error(resp, 422, "validation", schemas)
+    # `extra.fields` is sorted and may name more than one member, so every
+    # assertion on it here is a membership one.
+    assert "verb" in err.get("extra", {}).get("fields", []), err
+
+
+async def test_a_tenant_name_outside_the_pattern_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """Outside ``^[a-z][a-z0-9-]{0,31}$`` the name never reaches the registry: a
+    validation answer, not a lookup miss, so a name that could not exist is
+    never confused with one that merely does not."""
+    resp = await client.post("/v1/tenants/Not_A_Valid_Name/ops/start", json=op_body())
+    err = assert_error(resp, 422, "validation", schemas)
+    assert "name" in err.get("extra", {}).get("fields", []), err
+
+
+@pytest.mark.parametrize(
+    "args,field",
+    [
+        ({"recipients": {"file": "/etc/ragstack/recipients.txt"}}, "recipients"),
+        ({"registry_generation": 99}, "registry_generation"),
+    ],
+    ids=["recipients", "registry_generation"],
+)
+async def test_settings_outside_the_writable_subset_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict], args: dict[str, Any], field: str
+) -> None:
+    """``recipients`` decides who can DECRYPT a backup and
+    ``registry_generation`` is the server's own counter. Neither is a value a
+    browser may send: accepting the first over HTTP would let a compromised
+    session read every future backup, and accepting the second would let it
+    forge the generation a plan is validated against."""
+    resp = await client.put("/v1/settings", json=op_body(args=args))
+    err = assert_error(resp, 422, "validation", schemas)
+    assert field in err.get("extra", {}).get("fields", []), err
+
+
+async def test_a_valid_partial_settings_document_is_not_422(client: httpx.AsyncClient) -> None:
+    """``PUT /v1/settings {"ctl": {"gateway_enabled": true}}`` is the flip that
+    mattered on coconut. A partial must be accepted as a partial: demanding the
+    whole document would turn every settings change into a read-modify-write
+    race against the registry generation. What happens next depends on the
+    engine (200 or 202 with one, 409 ``refused`` without), so the assertion
+    here is only that the envelope itself was not rejected."""
+    resp = await client.put("/v1/settings", json=op_body(args={"ctl": {"gateway_enabled": True}}))
+    assert resp.status_code != 422, (
+        f"a valid partial settings document was rejected as invalid: {resp.text[:400]}"
+    )
+    assert_request_id(resp)
+
+
+async def test_a_session_must_re_present_a_ctl_key_to_mutate(
+    anon_client: httpx.AsyncClient, schemas: dict[str, dict], ctl_key: str, some_tenant: str
+) -> None:
+    """A session authenticates READS. It is a credential a browser holds for
+    hours, so on its own it may not change anything: the UI prompts for the ctl
+    key per mutation and sends it in the body, never storing it. Without this
+    rule a stolen session id would mutate the fleet.
+
+    The second half proves the rule is a gate and not a wall — the same session
+    WITH the operator key in ``ctl_api_key`` gets past it, and whatever answers
+    next is not a 403."""
+    created = await anon_client.post("/v1/session", headers={"X-API-Key": ctl_key})
+    assert created.status_code == 201, created.text
+    session = {"Authorization": f"Session {created.json()['session_id']}"}
+    try:
+        bare = await anon_client.post(
+            f"/v1/tenants/{some_tenant}/ops/start", headers=session, json=op_body()
+        )
+        err = assert_error(bare, 403, "forbidden", schemas)
+        assert "ctl_api_key" in err["detail"] or "ctl API key" in err["detail"], (
+            "the refusal must tell the browser what to DO — re-present the ctl "
+            f"key: {err['detail']}"
+        )
+
+        with_key = await anon_client.post(
+            f"/v1/tenants/{some_tenant}/ops/start",
+            headers=session,
+            json=op_body(ctl_api_key=ctl_key),
+        )
+        assert with_key.status_code != 403, (
+            "a session that re-presented the operator ctl key must get PAST the "
+            f"session rule; it was still refused: {with_key.text[:400]}"
+        )
+        assert_request_id(with_key)
+    finally:
+        await anon_client.delete("/v1/session", headers=session)
+
+
+async def test_jobs_list_conforms(client: httpx.AsyncClient, schemas: dict[str, dict]) -> None:
+    """The list is a READ, so it answers on a daemon with no engine too: an
+    empty list is the honest answer to "what has this daemon run", and
+    reporting "not wired" here would make a caller treat a working read as a
+    broken one."""
+    resp = await client.get("/v1/jobs")
+    assert resp.status_code == 200, resp.text
+    validate(resp.json(), "jobs_response", schemas)
+    assert_request_id(resp)
+
+
+@pytest.mark.parametrize(
+    "params,field",
+    [({"state": "nonsense"}, "state"), ({"limit": 9999}, "limit")],
+    ids=["unknown-state", "limit-over-the-cap"],
+)
+async def test_jobs_list_rejects_a_query_outside_the_contract(
+    client: httpx.AsyncClient, schemas: dict[str, dict], params: dict[str, Any], field: str
+) -> None:
+    """Out of range is a 422 and never a silent clamp: a caller that asked for
+    9999 jobs should learn the cap, not receive 500 and believe that was
+    everything."""
+    resp = await client.get("/v1/jobs", params=params)
+    err = assert_error(resp, 422, "validation", schemas)
+    assert err.get("extra", {}).get("fields") == [field], err
+
+
+async def test_a_malformed_job_id_is_422(
+    client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A job id that is not a ULID is a validation answer, not a 404: "no such
+    job" and "that could not be a job id" are different facts, and only the
+    first tells a caller its id was real and is gone."""
+    resp = await client.get("/v1/jobs/not-a-ulid")
+    err = assert_error(resp, 422, "validation", schemas)
+    assert "id" in err.get("extra", {}).get("fields", []), err
+
+
+@pytest.mark.parametrize(
+    "op", ["resume", "continue", "cancel"], ids=["resume", "continue", "cancel"]
+)
+async def test_a_continuation_has_no_dry_run(
+    client: httpx.AsyncClient, schemas: dict[str, dict], op: str
+) -> None:
+    """The contract lists a 200 Plan for the three continuations, but the
+    engine seam gives them no way to produce one: they act on a job that
+    already carries its plan. Rather than invent a second planning path that
+    would answer with a plan the engine would never execute, the dry run is
+    refused and the detail says where the plan actually is. The refusal is
+    written before the engine is consulted, so it is the answer with or without
+    a wired engine — which is why this test is not gated."""
+    resp = await client.post(f"/v1/jobs/{NO_SUCH_JOB}/{op}", json=op_body())
+    err = assert_error(resp, 409, "refused", schemas)
+    assert f"GET /v1/jobs/{NO_SUCH_JOB}" in err["detail"], (
+        f"the refusal must point at the job whose plan the caller wanted: {err['detail']}"
+    )
+
+
+async def test_job_secrets_are_key_only_and_never_cached(
+    anon_client: httpx.AsyncClient, client: httpx.AsyncClient,
+    schemas: dict[str, dict], ctl_key: str,
+) -> None:
+    """``GET /v1/jobs/{id}/secrets`` is the one read the matrix marks ``session:
+    false``: the caller must present the ctl key itself, because a session is a
+    credential a browser can hold and this response carries a secret VALUE.
+    Authorization precedes lookup, so a job id that names nothing still gets
+    the credential answer rather than a 404.
+
+    The ``Cache-Control: no-store`` claim is asserted on the operator's own
+    call, which is the one that reaches the handler — the handler sets the
+    header before it consults the engine, so its refusals are no-store too. The
+    session refusal comes from the authorization gate, before any handler runs,
+    and the contract attaches the header to the responses the handler writes;
+    asserting it on the gate's 403 would pin behaviour the contract does not
+    promise."""
+    created = await anon_client.post("/v1/session", headers={"X-API-Key": ctl_key})
+    assert created.status_code == 201, created.text
+    session = {"Authorization": f"Session {created.json()['session_id']}"}
+    try:
+        refused = await anon_client.get(f"/v1/jobs/{NO_SUCH_JOB}/secrets", headers=session)
+        assert_error(refused, 403, "forbidden", schemas)
+    finally:
+        await anon_client.delete("/v1/session", headers=session)
+
+    handled = await client.get(f"/v1/jobs/{NO_SUCH_JOB}/secrets")
+    assert handled.headers.get("Cache-Control") == "no-store", (
+        "every answer from the secrets handler — the 404 and the 410 included — "
+        f"must be no-store; headers were {dict(handled.headers)}"
+    )
+    assert_request_id(handled)
+
+
+async def test_audit_is_operator_only_and_conforms(
+    client: httpx.AsyncClient, viewer_client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """The audit log names principals and their redacted arguments, so a viewer
+    may not read it at all. For an operator it conforms even when empty."""
+    assert_error(await viewer_client.get("/v1/audit"), 403, "forbidden", schemas)
+    resp = await client.get("/v1/audit")
+    assert resp.status_code == 200, resp.text
+    validate(resp.json(), "audit_response", schemas)
+    assert_request_id(resp)
+
+
+@pytest.mark.parametrize("opid,method,path,body", MUTATIONS, ids=MUTATION_IDS)
+async def test_every_mutation_answers_in_the_contract_envelope(
+    client: httpx.AsyncClient, schemas: dict[str, dict],
+    opid: str, method: str, path: str, body: dict[str, Any],
+) -> None:
+    """Whatever a mutation answers — a plan, a job, or a refusal — it carries a
+    correlation id, and every refusal is an ``error.json`` whose ``request_id``
+    equals the header. A route that answered a bare string, or one that lost
+    the header on the error path, would leave an operator with a failure they
+    cannot find in the log."""
+    resp = await client.request(method, path, json=dict(body, idempotency_key=idem()))
+    rid = assert_request_id(resp)
+    if resp.status_code >= 400:
+        err = resp.json()
+        validate(err, "error", schemas)
+        assert err["request_id"] == rid, err
+    else:
+        assert resp.status_code in (200, 202), f"{opid}: {resp.status_code}: {resp.text[:300]}"
+
+
+# =========================================================================== #
+# Engine-gated — the mutation conformance proper
+# =========================================================================== #
+async def test_a_dry_run_answers_a_plan(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``dry_run: true`` is the contract's preview: 200 ``plan.json``, nothing
+    locked, nothing written. It is also the thing a client must have seen
+    before it executes, so the plan hash and the confirm value have to be in
+    the body rather than derivable only server-side."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/start", json=op_body())
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    assert_request_id(resp)
+    assert plan["op"] == "start"
+    assert plan["tenant"] == some_tenant
+
+
+async def test_an_execute_is_accepted_and_reaches_a_terminal_state(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``dry_run: false`` answers 202 with the job and a ``Location`` pointing
+    at it, and the job then actually finishes. A 202 that never settles is the
+    failure this poll exists to catch: the surface looks right and the fleet
+    never changes."""
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
+    assert job["op"] == "start"
+    assert job["tenant"] == some_tenant
+    assert job["state"] in TERMINAL_STATES
+
+
+async def test_the_same_key_returns_the_same_job_and_a_different_body_is_409(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """The idempotency key is persisted with the request it was used for. A
+    retry of the SAME request returns the original job, which is what makes a
+    dropped response safe to retry; the same key with a DIFFERENT request is
+    409 ``duplicate``, which is what stops a client from quietly running a
+    second operation under a key an operator already approved."""
+    path = f"/v1/tenants/{some_tenant}/ops/start"
+    key = idem()
+    body = op_body(dry_run=False, idempotency_key=key, args={})
+
+    first = await client.post(path, json=body)
+    assert first.status_code == 202, first.text
+    job_id = first.json()["id"]
+
+    retry = await client.post(path, json=body)
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["id"] == job_id, (
+        "a retry with the same key and the same body must return the ORIGINAL "
+        f"job; got {retry.json()['id']} for {job_id}"
+    )
+
+    different = await client.post(
+        path, json=op_body(dry_run=False, idempotency_key=key, args={"force": True})
+    )
+    assert_error(different, 409, "duplicate", schemas)
+    await poll_to_terminal(client, job_id, schemas)
+
+
+async def test_a_destructive_op_requires_its_confirm_value(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """A plan that says ``requires_confirm`` is refused with 428 until the
+    caller quotes the plan's own ``confirm_value`` — the tenant name for a
+    tenant op, exactly like the CLI's ``--yes-destructive <name>``. The 428
+    carries that value in ``extra`` because a caller that cannot see it has a
+    refusal it can never satisfy.
+
+    The verb is chosen by asking the daemon which of its destructive ones
+    actually plans with confirmation, rather than by hard-coding a list this
+    suite would then have to keep in step with the op registry."""
+    verb, plan = None, None
+    for candidate in ("stop", "restart", "backup", "decommission"):
+        preview = await client.post(f"/v1/tenants/{some_tenant}/ops/{candidate}", json=op_body())
+        if preview.status_code == 200 and preview.json()["requires_confirm"]:
+            verb, plan = candidate, preview.json()
+            break
+    if verb is None:
+        pytest.skip("no destructive verb on this tenant plans with requires_confirm")
+
+    path = f"/v1/tenants/{some_tenant}/ops/{verb}"
+    bare = await client.post(path, json=op_body(dry_run=False))
+    err = assert_error(bare, 428, "confirm_required", schemas)
+    confirm = err.get("extra", {}).get("confirm_value")
+    assert confirm == plan["confirm_value"], (
+        f"the 428 must carry the plan's own confirm_value ({plan['confirm_value']!r}); "
+        f"extra was {err.get('extra')!r}"
+    )
+
+    job = await submit_and_settle(client, path, schemas, confirm=confirm)
+    assert job["state"] in TERMINAL_STATES
+
+
+async def test_an_unknown_argument_is_422(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``args`` is validated against the verb's own schema before planning, so
+    a misspelt argument is refused rather than ignored — an ignored ``force``
+    is an operation that did something other than what was approved."""
+    resp = await client.post(f"/v1/tenants/{some_tenant}/ops/start", json=op_body(args={"nope": 1}))
+    assert_error(resp, 422, "validation", schemas)
+
+
+async def test_update_code_is_refused_until_v1_1(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """``update-code`` is contracted for v1.1 and answers 409 ``refused`` with a
+    detail saying so. It is in the verb enum on purpose: a client that can see
+    the verb and gets a 422 would conclude the verb does not exist."""
+    resp = await client.post(
+        f"/v1/tenants/{some_tenant}/ops/update-code",
+        json=op_body(args={"artifact_id": "conformance-none"}),
+    )
+    err = assert_error(resp, 409, "refused", schemas)
+    assert "not wired" not in err["detail"], (
+        "update-code must be refused as a v1.1 operation, not as an unwired "
+        f"engine: {err['detail']}"
+    )
+
+
+async def test_a_viewer_sees_a_reduced_job(
+    job_engine: None, client: httpx.AsyncClient, viewer_client: httpx.AsyncClient,
+    schemas: dict[str, dict], some_tenant: str,
+) -> None:
+    """``ctlJobsList``'s ``viewer_fields``: worker and lock null, reservations
+    and every step's external ids empty, every step log null. The operator's
+    view of the SAME job must show at least one of them populated — otherwise
+    the reduction is asserted against a job that had nothing to hide and the
+    test passes for the wrong reason."""
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
+    job_id = job["id"]
+
+    full = (await client.get(f"/v1/jobs/{job_id}")).json()
+    populated = (
+        full["worker"] is not None
+        or full["lock"] is not None
+        or bool(full["reservations"])
+        or any(s["external_ids"] for s in full["steps"])
+        or any(s["log"] for s in full["steps"])
+    )
+    assert populated, (
+        f"job {job_id} carries nothing a viewer could be denied — worker, lock, "
+        "reservations, external_ids and step logs are all empty for the OPERATOR "
+        "too, so the reduction asserted below would pass vacuously"
+    )
+
+    reduced = await viewer_client.get(f"/v1/jobs/{job_id}")
+    assert reduced.status_code == 200, reduced.text
+    row = reduced.json()
+    validate(row, "job", schemas)
+    assert row["worker"] is None, row["worker"]
+    assert row["lock"] is None, row["lock"]
+    assert row["reservations"] == [], row["reservations"]
+    for step in row["steps"]:
+        assert step["external_ids"] == [], step
+        assert step["log"] is None, step
+
+    listed = await viewer_client.get("/v1/jobs", params={"tenant": some_tenant})
+    assert listed.status_code == 200, listed.text
+    validate(listed.json(), "jobs_response", schemas)
+    for listed_row in listed.json()["jobs"]:
+        assert listed_row["worker"] is None and listed_row["lock"] is None, listed_row
+        assert listed_row["reservations"] == [], listed_row
+        for step in listed_row["steps"]:
+            assert step["external_ids"] == [] and step["log"] is None, step
+
+
+async def test_minted_secrets_are_delivered_exactly_once(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """The delivery envelope is the only response in this API that carries a
+    secret value, and the first successful read destroys it. A second read is
+    410 with code ``not_found`` — the one place the contract lets a code and a
+    status disagree — because "you already collected this" and "there was never
+    such a job" are different things to tell an operator hunting for a key they
+    lost."""
+    job = await submit_and_settle(
+        client,
+        f"/v1/tenants/{some_tenant}/ops/key-mint",
+        schemas,
+        args={"label": f"conformance-{uuid.uuid4().hex[:8]}", "role": "user"},
+    )
+    assert job["state"] == "succeeded", job
+
+    first = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert first.status_code == 200, first.text
+    validate(first.json(), "secrets_response", schemas)
+    assert first.headers.get("Cache-Control") == "no-store", dict(first.headers)
+    assert first.json()["job_id"] == job["id"]
+    assert first.json()["secrets"], "a key-mint that succeeded delivered no secret"
+
+    second = await client.get(f"/v1/jobs/{job['id']}/secrets")
+    assert_error(second, 410, "not_found", schemas)
+    assert second.headers.get("Cache-Control") == "no-store", dict(second.headers)
+
+
+async def test_a_mutation_writes_audit_rows(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], some_tenant: str
+) -> None:
+    """Every mutation writes an ``intent`` row before anything runs and a
+    ``result`` row after. The intent row is what survives a crash mid-job: a
+    log written only on success cannot answer "what was this daemon doing when
+    it died"."""
+    job = await submit_and_settle(client, f"/v1/tenants/{some_tenant}/ops/start", schemas)
+    resp = await client.get("/v1/audit", params={"tenant": some_tenant})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    validate(body, "audit_response", schemas)
+    mine = [row for row in body["rows"] if row["job_id"] == job["id"]]
+    assert mine, f"no audit row for job {job['id']} among {len(body['rows'])} rows"
+    assert "intent" in {row["phase"] for row in mine}, mine
+
+
+@pytest.mark.parametrize(
+    "path", ["/v1/gateway/reload", "/v1/gateway/apply"], ids=["reload", "apply"]
+)
+async def test_the_gateway_mutations_plan(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict], path: str
+) -> None:
+    """Both gateway mutations are ordinary operations with the ordinary
+    envelope, so a dry run previews them. ``reload`` exists separately from
+    ``apply`` because adopting a hand-written proxy change through ``apply``
+    would first overwrite it with a fresh render, so a reload plan that named a
+    new generation would be publishing something nobody previewed."""
+    resp = await client.post(path, json=op_body())
+    assert resp.status_code == 200, resp.text
+    plan = resp.json()
+    validate(plan, "plan", schemas)
+    assert plan["tenant"] is None, plan["tenant"]
+    assert_request_id(resp)
+
+
+async def test_settings_round_trip_bumps_the_registry_generation(
+    job_engine: None, client: httpx.AsyncClient, schemas: dict[str, dict]
+) -> None:
+    """A settings write is a job like any other, and what proves it landed is
+    the READ afterwards plus a higher generation — the counter every plan is
+    validated against. A write that changed the document without moving the
+    generation would leave a plan computed before it still executable."""
+    before = await client.get("/v1/settings")
+    assert before.status_code == 200, before.text
+    was = before.json()
+    validate(was, "settings_response", schemas)
+    flipped = not was["ctl"]["gateway_enabled"]
+
+    await submit_and_settle(
+        client, "/v1/settings", schemas, method="PUT", args={"ctl": {"gateway_enabled": flipped}}
+    )
+
+    after = await client.get("/v1/settings")
+    assert after.status_code == 200, after.text
+    now = after.json()
+    validate(now, "settings_response", schemas)
+    assert now["ctl"]["gateway_enabled"] is flipped, now["ctl"]
+    assert now["registry_generation"] > was["registry_generation"], (
+        f"the generation did not move: {was['registry_generation']} -> "
+        f"{now['registry_generation']}"
+    )

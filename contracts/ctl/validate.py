@@ -68,6 +68,7 @@ PLAN_PATHS: dict[str, set[str]] = {
     "/v1/gateway": {"get"},
     "/v1/gateway/render": {"post"},
     "/v1/gateway/apply": {"post"},
+    "/v1/gateway/reload": {"post"},
     "/v1/audit": {"get"},
     "/v1/jobs": {"get"},
     "/v1/jobs/{id}": {"get"},

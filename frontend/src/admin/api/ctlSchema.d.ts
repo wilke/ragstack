@@ -286,6 +286,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/gateway/reload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reload the gateway that is already published
+         * @description OPERATOR. Test the LIVE tree, HUP, confirm, probe — no new generation; for hand-written proxy changes. `args` is `{}`. The job takes the gateway lock, runs `nginx -t` against the tree nginx is actually serving, verifies the master's identity, sends `HUP`, confirms the master survived and probes the routes from desired state. Nothing is rendered and the `current` pointer does not move, so a reload can never publish a generation an operator has not previewed — which is also why it is the only way to adopt a change made by hand in the proxy tree. `requires_confirm` is true (confirm value `gateway`).
+         */
+        post: operations["ctlGatewayReload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/audit": {
         parameters: {
             query?: never;
@@ -2730,6 +2750,30 @@ export interface operations {
         };
     };
     ctlGatewayApply: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["op_request"];
+            };
+        };
+        responses: {
+            200: components["responses"]["PlanResponse"];
+            202: components["responses"]["JobAccepted"];
+            400: components["responses"]["BothCredentials"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["Validation"];
+            428: components["responses"]["ConfirmRequired"];
+            429: components["responses"]["RateLimited"];
+        };
+    };
+    ctlGatewayReload: {
         parameters: {
             query?: never;
             header?: never;

@@ -233,7 +233,7 @@ their first minutes and restarted; the new attempts reported `already_done=98` (
 `already_done=21` (qwen) and continued from there, and no `s0c_label.py` process survived
 the stop.
 
-### 4.3 Status, as handed off
+### 4.3 Status at handoff time (superseded by §4.5)
 
 Measured **after** both judges had been running concurrently for ~12 minutes each — this
 is the sustained rate with both on the same host, and it is *faster* than the smoke, so the
@@ -287,6 +287,48 @@ python3 s0c_span_filter.py \
 The #513 filter must be applied to the confirmation labels **before** they are used, with
 the same code that produced §3's dev verification. It is deliberately not run inside the
 labeling loop, so that the raw instrument output stays on disk unmodified.
+
+### 4.5 Completed, and the filter applied — 2026-09-14
+
+**Both judges finished. `LABELING COMPLETE — 112,140 readings over 3,738 pairs.`**
+
+| judge | records | = pairs × readings | finished (UTC) | bad lines | duplicate keys | presentations present |
+|---|---|---|---|---|---|---|
+| scout | **74,760** | 3,738 × 20 | 2026-09-09 08:58 | 0 | 0 | 0..19, each 3,738 |
+| qwen | **37,380** | 3,738 × 10 | 2026-09-11 02:13 | 0 | 0 | 0..9, each 3,738 |
+
+Qwen's run spanned the host's 2026-09-10 patch reboot: it stopped at **33,238** records,
+resumed from its per-record checkpoint under `ops/coconut/restore.sh --only labelers`, re-ran
+the remaining **4,142** and exited `rc=0`. The resume re-asserted the instrument hashes before
+its first call, and the merged manifest records `concurrency: 5` for that segment (the server
+admits four sequences; see #527). No partial line had to be truncated — both files ended on a
+record boundary.
+
+**The #513 post-filter, applied** with the same code and the same selftest that produced §3's
+dev verification (`s0c_span_filter.py --selftest`: all seven synthetic cases pass, four of them
+cases where the filter must *not* fire; `--verify-dev` re-run here and still `PASS`, Δ
+Spearman–Brown **−0.0013**, reproducing the committed 0.9205):
+
+| judge | records | filtered | groups collapsed | fill spans dropped | sentences dropped | blow-ups flagged |
+|---|---|---|---|---|---|---|
+| scout | 74,760 | 1,050 (1.40 %) | 1,080 | 1,441 | 33,721 | 2 |
+| qwen | 37,380 | **9** (0.02 %) | 9 | **1,653** | 8,060 | 3 |
+
+Outputs `labels-conf-{scout,qwen}-filtered.jsonl` beside the originals; **the unfiltered files
+are not written by this step** and both their sha256 are recorded. Record counts are preserved
+exactly (74,760 and 37,380, all keys distinct), and the output hashes were re-verified after the
+run. Counts, hashes and provenance: [`artifacts/conf-a/span-filter-conf.json`](artifacts/conf-a/span-filter-conf.json).
+
+**One thing the confirmation set shows that the development set could not.** Qwen filtered
+**zero** records on the 308 dev pairs and **nine** here — and those nine carry 1,653 of the
+dropped spans, about 184 each. The #513 cross-unit fill fires on long documents, and the dev
+pairs did not contain them. Scout's rate is essentially unchanged (1.40 % here against 1.33 %
+on dev), so the filter's behaviour is stable where it was already exercised and newly
+load-bearing where it was not. This is an argument for the filter having been written as a
+post-filter over both sets rather than tuned on the dev set alone.
+
+**Still counts only.** Nothing in this step computed, printed or stored an endpoint value; the
+quarantine guard in `s0c_common.py` is untouched and the pools and contexts remain sealed.
 
 ---
 
@@ -351,7 +393,8 @@ client — no Qdrant, Elasticsearch, Neo4j or tenant API — is constructed anyw
   that can say *which* "where" is right, it gates step 6, and it is 32–48 person-hours of
   human work. Nothing in this task substitutes for it, and no κ appears anywhere above.
 * **Label freeze** (r2 §P.9 step 3): the labels hashed, the §8.5.6 / r3 §3.8 exclusion list
-  fixed, the PREREG hash recorded. The #513 post-filter must be applied first (§4.4).
+  fixed, the PREREG hash recorded. The #513 post-filter is **done** (§4.5, 2026-09-14), so the
+  freeze is now waiting only on the human read's κ.
 * **Unblinding** (r2 §P.9 step 4): only then may the quarantined pools and contexts be
   opened, the §7.6 manipulation checks run, and the confirmatory analysis computed — with
   the **projected power printed beside every contrast**, which is the whole point of option
