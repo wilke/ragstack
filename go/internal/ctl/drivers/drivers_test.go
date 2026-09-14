@@ -196,16 +196,10 @@ func pendingSurfaces(d *Real) map[string]struct {
 		val reflect.Value
 	}
 	return map[string]surface{
-		"systemd":       {reflect.TypeOf((*jobs.Systemd)(nil)).Elem(), reflect.ValueOf(d.Systemd())},
-		"proc":          {reflect.TypeOf((*jobs.Proc)(nil)).Elem(), reflect.ValueOf(d.Proc())},
-		"qdrant":        {reflect.TypeOf((*jobs.Qdrant)(nil)).Elem(), reflect.ValueOf(d.Qdrant())},
-		"elasticsearch": {reflect.TypeOf((*jobs.Elasticsearch)(nil)).Elem(), reflect.ValueOf(d.Elasticsearch())},
-		"tenantapi":     {reflect.TypeOf((*jobs.TenantAPI)(nil)).Elem(), reflect.ValueOf(d.TenantAPI())},
-		"git":           {reflect.TypeOf((*jobs.Git)(nil)).Elem(), reflect.ValueOf(d.Git())},
-		"build":         {reflect.TypeOf((*jobs.Build)(nil)).Elem(), reflect.ValueOf(d.Build())},
-		"postgres":      {reflect.TypeOf((*jobs.Postgres)(nil)).Elem(), reflect.ValueOf(d.Postgres())},
-		"sqlite":        {reflect.TypeOf((*jobs.SQLite)(nil)).Elem(), reflect.ValueOf(d.SQLite())},
-		"archive":       {reflect.TypeOf((*jobs.Archive)(nil)).Elem(), reflect.ValueOf(d.Archive())},
+		"systemd": {reflect.TypeOf((*jobs.Systemd)(nil)).Elem(), reflect.ValueOf(d.Systemd())},
+		"proc":    {reflect.TypeOf((*jobs.Proc)(nil)).Elem(), reflect.ValueOf(d.Proc())},
+		"git":     {reflect.TypeOf((*jobs.Git)(nil)).Elem(), reflect.ValueOf(d.Git())},
+		"build":   {reflect.TypeOf((*jobs.Build)(nil)).Elem(), reflect.ValueOf(d.Build())},
 	}
 }
 
@@ -251,12 +245,30 @@ func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
 			}
 		}
 	}
-	// The two real ones are real.
+	// The wired ones are real.
 	if _, ok := d.Files().(*RealFiles); !ok {
 		t.Error("Files() is not the real driver")
 	}
 	if _, ok := d.Gateway().(*RealGateway); !ok {
 		t.Error("Gateway() is not the real driver")
+	}
+	if _, ok := d.Qdrant().(*RealQdrant); !ok {
+		t.Error("Qdrant() is not the real driver")
+	}
+	if _, ok := d.Elasticsearch().(*RealElasticsearch); !ok {
+		t.Error("Elasticsearch() is not the real driver")
+	}
+	if _, ok := d.TenantAPI().(*RealTenantAPI); !ok {
+		t.Error("TenantAPI() is not the real driver")
+	}
+	if _, ok := d.Postgres().(*RealPostgres); !ok {
+		t.Error("Postgres() is not the real driver")
+	}
+	if _, ok := d.SQLite().(*RealSQLite); !ok {
+		t.Error("SQLite() is not the real driver")
+	}
+	if _, ok := d.Archive().(*RealArchive); !ok {
+		t.Error("Archive() is not the real driver")
 	}
 }
 
@@ -336,7 +348,7 @@ func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
 func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
 	got := strings.Join(d.Pending(), ",")
-	if got != "systemd,proc,qdrant,elasticsearch,tenantapi,git,build,postgres,sqlite,archive" {
+	if got != "systemd,proc,git,build" {
 		t.Errorf("Real.Pending() = %q", got)
 	}
 	// Every name on the list is a driver that actually refuses, and no driver
@@ -345,7 +357,8 @@ func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 		t.Errorf("systemd refusal = %v, want it to name %s", err, PendingPR)
 	}
 	for _, name := range d.Pending() {
-		if name == "gateway" || name == "files" {
+		switch name {
+		case "gateway", "files", "qdrant", "elasticsearch", "tenantapi", "postgres", "sqlite", "archive":
 			t.Errorf("%s is wired; it must not be reported as pending", name)
 		}
 	}

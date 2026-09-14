@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ragstack/ragstack/internal/ctl/gateway"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -38,14 +39,29 @@ type RealOptions struct {
 	// Empty means the two roots every op needs — the tenant data tree and the
 	// ctl config tree — never "everything".
 	ApprovedRoots []string
+	// StoreLongTimeout is the ceiling on a store call that can legitimately
+	// take a long time (a snapshot, a restore, a recover, an exact count, a
+	// pg_dump). Zero takes LongTimeout.
+	StoreLongTimeout time.Duration
+	// Redact is the engine's seeded redactor, applied to everything a store
+	// says back before it becomes an error a step log carries. Nil is the
+	// identity — which is why nothing in this package DEPENDS on it for a
+	// secret the ctl itself holds: those are kept out of the string instead.
+	Redact func(string) string
 }
 
-// Real is the real driver set: gateway and files, and an honest refusal for
-// everything that lands in PR-D.
+// Real is the real driver set: the gateway, the filesystem and the store
+// drivers, and an honest refusal for everything still to land.
 type Real struct {
 	opts    RealOptions
 	gateway *RealGateway
 	files   *RealFiles
+	qdrant  *RealQdrant
+	es      *RealElasticsearch
+	api     *RealTenantAPI
+	pg      *RealPostgres
+	sqlite  *RealSQLite
+	archive *RealArchive
 }
 
 var _ jobs.Drivers = (*Real)(nil)
@@ -55,10 +71,19 @@ func NewReal(o RealOptions) *Real {
 	if len(o.ApprovedRoots) == 0 {
 		o.ApprovedRoots = []string{o.Roots.DataDir, o.Roots.CtlConfigDir, o.Roots.CtlStateDir, o.Roots.BackupsDir}
 	}
+	// One HTTP client for the three HTTP drivers, so the connection pool, the
+	// redirect refusal and the timeouts are one decision rather than three.
+	h := newHTTPStores(o)
 	return &Real{
 		opts:    o,
 		gateway: &RealGateway{opts: o},
 		files:   &RealFiles{Roots: append([]string(nil), o.ApprovedRoots...)},
+		qdrant:  &RealQdrant{h: h},
+		es:      &RealElasticsearch{h: h},
+		api:     &RealTenantAPI{h: h},
+		pg:      &RealPostgres{opts: o},
+		sqlite:  &RealSQLite{opts: o},
+		archive: &RealArchive{opts: o},
 	}
 }
 
@@ -66,14 +91,14 @@ func (r *Real) Systemd() jobs.Systemd             { return pendingSystemd{} }
 func (r *Real) Proc() jobs.Proc                   { return pendingProc{} }
 func (r *Real) Gateway() jobs.GatewayDriver       { return r.gateway }
 func (r *Real) Files() jobs.Files                 { return r.files }
-func (r *Real) Qdrant() jobs.Qdrant               { return pendingQdrant{} }
-func (r *Real) Elasticsearch() jobs.Elasticsearch { return pendingES{} }
-func (r *Real) TenantAPI() jobs.TenantAPI         { return pendingTenantAPI{} }
+func (r *Real) Qdrant() jobs.Qdrant               { return r.qdrant }
+func (r *Real) Elasticsearch() jobs.Elasticsearch { return r.es }
+func (r *Real) TenantAPI() jobs.TenantAPI         { return r.api }
 func (r *Real) Git() jobs.Git                     { return pendingGit{} }
 func (r *Real) Build() jobs.Build                 { return pendingBuild{} }
-func (r *Real) Postgres() jobs.Postgres           { return pendingPostgres{} }
-func (r *Real) SQLite() jobs.SQLite               { return pendingSQLite{} }
-func (r *Real) Archive() jobs.Archive             { return pendingArchive{} }
+func (r *Real) Postgres() jobs.Postgres           { return r.pg }
+func (r *Real) SQLite() jobs.SQLite               { return r.sqlite }
+func (r *Real) Archive() jobs.Archive             { return r.archive }
 
 // ---------------------------------------------------------------- gateway
 
@@ -397,35 +422,23 @@ func (f *RealFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
 
 // ---------------------------------------------------------------- PR-D
 
-// The drivers PR-D ships. Each method refuses with the driver and method
+// The drivers still to land. Each method refuses with the driver and method
 // named, so a job that reaches one stops with a sentence an operator can act
-// on rather than with a nil-pointer panic. They are five types rather than
-// one because Qdrant.Snapshot and Elasticsearch.Snapshot are different
-// methods with the same name.
+// on rather than with a nil-pointer panic. They are separate types rather than
+// one because two interfaces may declare the same method name with different
+// signatures.
 type (
-	pendingSystemd   struct{}
-	pendingProc      struct{}
-	pendingQdrant    struct{}
-	pendingES        struct{}
-	pendingTenantAPI struct{}
-	pendingGit       struct{}
-	pendingBuild     struct{}
-	pendingPostgres  struct{}
-	pendingSQLite    struct{}
-	pendingArchive   struct{}
+	pendingSystemd struct{}
+	pendingProc    struct{}
+	pendingGit     struct{}
+	pendingBuild   struct{}
 )
 
 var (
-	_ jobs.Systemd       = pendingSystemd{}
-	_ jobs.Proc          = pendingProc{}
-	_ jobs.Qdrant        = pendingQdrant{}
-	_ jobs.Elasticsearch = pendingES{}
-	_ jobs.TenantAPI     = pendingTenantAPI{}
-	_ jobs.Git           = pendingGit{}
-	_ jobs.Build         = pendingBuild{}
-	_ jobs.Postgres      = pendingPostgres{}
-	_ jobs.SQLite        = pendingSQLite{}
-	_ jobs.Archive       = pendingArchive{}
+	_ jobs.Systemd = pendingSystemd{}
+	_ jobs.Proc    = pendingProc{}
+	_ jobs.Git     = pendingGit{}
+	_ jobs.Build   = pendingBuild{}
 )
 
 func (pendingSystemd) DaemonReload(context.Context) error {
@@ -452,18 +465,6 @@ func (pendingProc) Listening(context.Context, int) (bool, error) {
 func (pendingProc) Signal(context.Context, int, string, string, string) error {
 	return pending(jobs.ErrRefused, "proc", "Signal")
 }
-func (pendingQdrant) Collections(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "qdrant", "Collections")
-}
-func (pendingQdrant) Snapshot(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "qdrant", "Snapshot")
-}
-func (pendingES) Indices(context.Context, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "elasticsearch", "Indices")
-}
-func (pendingES) Snapshot(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Snapshot")
-}
 func (pendingSystemd) Link(context.Context, string) error {
 	return pending(jobs.ErrRefused, "systemd", "Link")
 }
@@ -478,48 +479,6 @@ func (pendingSystemd) ResetFailed(context.Context, string) error {
 }
 func (pendingProc) Owner(context.Context, int) (int, int, error) {
 	return 0, 0, pending(jobs.ErrRefused, "proc", "Owner")
-}
-func (pendingQdrant) Ready(context.Context, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "Ready")
-}
-func (pendingQdrant) Count(context.Context, string, string) (int64, error) {
-	return 0, pending(jobs.ErrRefused, "qdrant", "Count")
-}
-func (pendingQdrant) Recover(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "Recover")
-}
-func (pendingQdrant) DeleteSnapshot(context.Context, string, string, string) error {
-	return pending(jobs.ErrRefused, "qdrant", "DeleteSnapshot")
-}
-func (pendingES) Ready(context.Context, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Ready")
-}
-func (pendingES) RegisterRepo(context.Context, string, string, string, bool) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "RegisterRepo")
-}
-func (pendingES) UnregisterRepo(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "UnregisterRepo")
-}
-func (pendingES) Restore(context.Context, string, string, string, []string) error {
-	return pending(jobs.ErrRefused, "elasticsearch", "Restore")
-}
-func (pendingES) Count(context.Context, string, string) (int64, error) {
-	return 0, pending(jobs.ErrRefused, "elasticsearch", "Count")
-}
-func (pendingTenantAPI) Health(context.Context, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "Health")
-}
-func (pendingTenantAPI) ServiceAccount(context.Context, string, string, string, string, string, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "ServiceAccount")
-}
-func (pendingTenantAPI) Version(context.Context, string, string) (map[string]any, error) {
-	return nil, pending(jobs.ErrRefused, "tenantapi", "Version")
-}
-func (pendingTenantAPI) DeepHealth(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "tenantapi", "DeepHealth")
-}
-func (pendingTenantAPI) Collections(context.Context, string, string) ([]string, error) {
-	return nil, pending(jobs.ErrRefused, "tenantapi", "Collections")
 }
 func (pendingGit) ResolveRef(context.Context, string, string) (string, error) {
 	return "", pending(jobs.ErrRefused, "git", "ResolveRef")
@@ -538,22 +497,4 @@ func (pendingBuild) NpmCI(context.Context, string, string) error {
 }
 func (pendingBuild) UI(context.Context, string, string, string) error {
 	return pending(jobs.ErrRefused, "build", "UI")
-}
-func (pendingPostgres) Ready(context.Context, jobs.PostgresSpec) error {
-	return pending(jobs.ErrRefused, "postgres", "Ready")
-}
-func (pendingPostgres) Dump(context.Context, jobs.PostgresSpec, string) error {
-	return pending(jobs.ErrRefused, "postgres", "Dump")
-}
-func (pendingPostgres) Restore(context.Context, jobs.PostgresSpec, string) error {
-	return pending(jobs.ErrRefused, "postgres", "Restore")
-}
-func (pendingSQLite) Backup(context.Context, string, string) (string, error) {
-	return "", pending(jobs.ErrRefused, "sqlite", "Backup")
-}
-func (pendingArchive) Create(context.Context, string, string) error {
-	return pending(jobs.ErrRefused, "archive", "Create")
-}
-func (pendingArchive) Extract(context.Context, string, string, jobs.ArchiveLimits) error {
-	return pending(jobs.ErrRefused, "archive", "Extract")
 }

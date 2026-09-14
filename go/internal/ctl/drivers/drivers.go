@@ -8,9 +8,9 @@
 //     and every one can be told to fail a specific call, which is what lets
 //     the engine and API tests exercise failure, rollback and reconcile
 //     without a host. `serve --fake-drivers` runs on these.
-//   - NewReal: the REAL gateway and filesystem drivers — the two whose host
-//     surface PR-C already owns (internal/ctl/gateway, and atomic writes
-//     under approved roots). Every other real method answers
+//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), and
+//     the stores PR-D adds: qdrant, elasticsearch, the tenant API, postgres,
+//     sqlite and tar. Every method still to land answers
 //     `jobs.ErrRefused: <driver>.<method> lands in PR-D` rather than
 //     pretending, so an op planned today runs as far as it honestly can and
 //     stops with a sentence that says why.
@@ -134,12 +134,11 @@ const PendingPR = "PR-D"
 // is named by the driver names the ops package's steps declare, which are the
 // names in the refusal text (`systemd.Start lands in PR-D`).
 var pendingReal = []string{
-	"systemd", "proc", "qdrant", "elasticsearch", "tenantapi",
-	// The drivers PR-D's own seam adds. They are on the list from the day the
-	// interfaces exist, so a plan warns about them before anything can run
-	// them; a driver agent deletes a name here in the same commit that wires
-	// the driver.
-	"git", "build", "postgres", "sqlite", "archive",
+	// A driver agent deletes a name here in the same commit that wires the
+	// driver. PR-D's store drivers — qdrant, elasticsearch, tenantapi,
+	// postgres, sqlite, archive — are wired and gone from this list; what is
+	// left is the host surface (systemctl, /proc, git, node).
+	"systemd", "proc", "git", "build",
 }
 
 // Pending is the drivers this set cannot run, by name.
