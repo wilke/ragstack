@@ -590,8 +590,13 @@ func planCreateSteps(p *planner, spec createSpec) error {
 			// does not inherit a start-limit counter; "not loaded" there is not
 			// an error, it is the state this rollback wants.
 			Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+				// A refusal here means the manager already forgot the unit — the
+				// enable step's own rollback (disable, in reverse order before
+				// this one) does that for the target — and "already gone" is
+				// this rollback's goal, not its failure.
 				if err := sc.Ops.Drivers.Systemd().Disable(ctx, unit); err != nil {
-					return "", err
+					sc.Logf("disable %s: %v (treated as already unlinked)", unit, err)
+					return "already unlinked " + unit, nil
 				}
 				_ = sc.Ops.Drivers.Systemd().ResetFailed(ctx, unit)
 				return "unlinked " + unit, nil

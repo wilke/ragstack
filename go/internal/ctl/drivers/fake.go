@@ -264,6 +264,25 @@ func (s *FakeSystemd) DaemonReload(context.Context) error {
 		delete(s.Failed, unit)
 		delete(s.pids, unit)
 	}
+	// A unit that is neither linked nor running has no file this manager
+	// could find (the fake's only notion of a unit file is a linked path), so
+	// a reload forgets it — which is what the real manager does with a unit
+	// whose file was removed after it was stopped and disabled. A unit the
+	// fixture seeded as active keeps running and stays known.
+	forget := func(m map[string]bool) {
+		for unit := range m {
+			if _, linked := s.Linked[unit]; linked || s.Active[unit] {
+				continue
+			}
+			delete(s.Active, unit)
+			delete(s.Enabled, unit)
+			delete(s.Failed, unit)
+			delete(s.pids, unit)
+		}
+	}
+	forget(s.Active)
+	forget(s.Enabled)
+	forget(s.Failed)
 	return nil
 }
 
