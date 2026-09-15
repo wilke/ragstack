@@ -91,15 +91,18 @@ Same tab, with your collection selected: drop files into the upload area.
 *A real job mid-flight: the job id, a `running` badge, and the counts — 3 total, 0
 completed, 0 failed, 3 pending. This is what you watch; it is not instant.*
 
-- **PDFs only, in the browser.** The picker offers nothing else. The API also
-  accepts plain text, Markdown and XML (JATS) — which is how the open-access
-  corpora were built — so for those use `POST /v1/ingest/upload` directly.
+- **PDFs only, in the browser.** The picker offers nothing else. Plain text goes
+  through `POST /v1/ingest/upload` and works properly — the text is extracted,
+  chunked, embedded and retrievable like anything else, not a degraded path.
+  **XML is the exception:** it passes the upload check and then fails during
+  processing with "no loader for .xml". The open-access corpora were built from
+  JATS offline through a separate workflow, not through this endpoint.
 - **Three separate limits:** up to 50 files per upload, 50 MB per document, and
   500 MB total per upload. A single oversized file and an oversized batch are
   refused for different reasons.
 - **One ingest job at a time**, per person. Start a second while one is running
-  and you get a refusal with a retry hint — wait. (Admin principals are exempt,
-  so an operator demoing may not see this.)
+  and the upload is refused — wait for the first to finish. (Admin principals are
+  exempt, so an operator demoing may not see this.)
 
 Progress appears as the job runs, per document. Ingest is not instant: the files
 are uploaded, then chunked and embedded in the background.
@@ -107,10 +110,17 @@ are uploaded, then chunked and embedded in the background.
 **If it ends in `failed`,** the app cannot tell you why — the reason is only
 visible to an operator. Note the time and ask one.
 
-**Retrying with the same file needs a new name.** A filename already present in the
-collection's sources is refused rather than replaced — *"'X.pdf' already exists in
-the collection's sources … it was left untouched"* — and the message names the API
-remedy. Rename the file, or use a fresh collection, when retrying a failed upload.
+**The app reports upload problems as a bare status code** — `Upload failed (error
+409).` and the like, with no explanation attached. The two you are likely to see:
+
+- **409** — a file of that name is already in the collection's sources. It is
+  **refused, never overwritten**; the existing file is left untouched. Rename your
+  copy, or use a different collection, and retry.
+- **429** — an ingest of yours is already running, or you have hit the hourly cap.
+  Wait and try again.
+
+The API returns a fuller explanation for both; the browser does not currently show
+it.
 
 On deployments that run ingest through BV-BRC (including the hackathon tenant),
 your uploads are written into **your own BV-BRC Workspace**, not onto the RAGStack
@@ -213,8 +223,9 @@ account roughly half the panels — deep health, model status, configuration, jo
 show a dim **admin-only** note instead of data, and the section list marks them.
 That is expected, not a fault.
 
-The parts that work for any signed-in user: **Groups**, collection listing, and
-store statistics.
+The parts that work for any signed-in user: **Groups**, collection listing and
+store statistics — and **deleting a collection you own**, which lives under
+Ops → Collections. That is the place to go when you are at your collection limit.
 
 ## What is not in this app
 

@@ -148,8 +148,12 @@ def _rewrite_links(md_text: str, src: str) -> str:
 
     # The negative lookbehind keeps ![alt](src) out of this: an image target is a
     # site asset copied by assemble_site, not a document link, and sending it to
-    # GitHub would render a blob page where an <img> should be.
-    return re.sub(r"(?<!!)(\[[^\]]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
+    # GitHub would render a blob page where an <img> should be. Excluding "[" from
+    # the label additionally stops a nested [![alt](img)](page.md) from having its
+    # IMAGE rewritten — at the cost of leaving that shape's outer link alone, so
+    # the link would stay a raw .md path. No doc uses the nested form; if one ever
+    # does, handle it explicitly rather than widening this pattern.
+    return re.sub(r"(?<!!)(\[[^\]\[]*\])\(([^)#\s]+)(#[^)\s]*)?\)", sub, md_text)
 
 
 def gh_slug(text: str) -> str:

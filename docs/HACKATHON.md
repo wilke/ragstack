@@ -77,7 +77,7 @@ you hit a limit, the server's refusal tells you which one.
 
 | | In the browser | From the API |
 |---|---|---|
-| 1. Sign in | [UI guide § Signing in](UI-GUIDE.md#signing-in) | [cookbook-users.md § Credentials](cookbook-users.md) |
+| 1. Sign in | [UI guide § Signing in](UI-GUIDE.md#signing-in) | [cookbook-users.md](cookbook-users.md) |
 | 2. Create your own collection | [UI guide § Collections](UI-GUIDE.md#creating-a-collection) | [cookbook-users.md recipe 3](cookbook-users.md) |
 | 3. Get documents in | [UI guide § Uploading](UI-GUIDE.md#uploading-documents) | [cookbook-users.md recipe 4](cookbook-users.md) |
 | 4. Ask questions | [UI guide § Explore](UI-GUIDE.md#asking-a-question) | [cookbook-users.md recipe 6](cookbook-users.md) |
@@ -106,9 +106,6 @@ These are real and current. None of them will lose your data.
   reason attached; the detail is only visible to an operator. Ask one.
 - **Collections cannot be renamed.** The name you give at creation is permanent.
   Deleting and recreating is the only way to change it.
-- **On a collection shared *to* you**, text search returns the owner's documents
-  but the knowledge-graph leg contributes nothing. You will get answers, just not
-  graph-derived ones.
 - **Do not let someone else upload into your collection on your behalf.**
   Documents are attributed to whoever uploaded them, and your own searches will
   not match documents an organiser loaded for you. Upload them yourself.
@@ -121,8 +118,8 @@ and processed by a workflow running as you. Two consequences:
 
 - You must be signed in with a BV-BRC token. An API key alone gets a 401 on
   upload, however well-formed the request.
-- `POST /v1/ingest` here expects a Workspace reference (`ws:///u/home/…`), not a
-  path on the server.
+- `POST /v1/ingest` here expects a Workspace reference (`ws:///<user>/home/…`),
+  not a path on the server.
 
 ## Also running
 
