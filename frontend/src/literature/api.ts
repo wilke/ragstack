@@ -195,6 +195,104 @@ export async function listCollections(token: string): Promise<CollectionInfo[]> 
   return body.collections ?? [];
 }
 
+/**
+ * A server-side prompt template (ADR-0008), as GET /v1/prompt-templates reports
+ * it. The `system`/`user` bodies are deliberately not exposed — a caller needs
+ * to know which knobs exist, not what the server says to the model.
+ */
+export interface PromptTemplate {
+  id: string;
+  version: number;
+  hash: string;
+  label: string;
+  output: "text" | "table";
+  columns?: string[];
+  slots: { name: string; required: boolean; max_len: number; label?: string }[];
+}
+
+/**
+ * The templates this tenant offers, or [] when it offers none.
+ *
+ * An EMPTY LIST and a 404 mean the same thing to this app — "generation cannot
+ * be steered here" — and both are normal. A tenant on a build predating
+ * ADR-0008 answers 404; one that simply has no templates configured answers 200
+ * with an empty list. Either way the app falls back to the two-leg path, which
+ * is why this resolves rather than throws.
+ */
+export class TemplatesUnavailable extends Error {}
+
+/**
+ * The templates this tenant offers, or [] when it offers none.
+ *
+ * VALIDATES the payload rather than trusting the cast. A 200 whose `templates`
+ * is a map keyed by id, a string, or an array with a null entry used to flow
+ * straight into a `useMemo` that runs DURING RENDER — and with no error boundary
+ * above it, that is a blank page, not a fallback. A cast is a promise about a
+ * value we did not produce; at a trust boundary it has to be checked.
+ *
+ * Distinguishes ABSENT from BROKEN, which the previous version collapsed:
+ *   * 404 or an empty list — the capability is not there. Normal. Returns [].
+ *   * anything else (5xx, unparseable, wrong shape) — it IS there and is
+ *     misconfigured, e.g. a templates file the operator broke. Throws, so the
+ *     caller can say so instead of silently degrading to the two-leg path and
+ *     leaving nobody able to tell the two apart.
+ */
+export async function listPromptTemplates(token: string): Promise<PromptTemplate[]> {
+  let res: Response;
+  try {
+    res = await fetch(`${ragstackBase()}/v1/prompt-templates`, { headers: authHeaders(token) });
+  } catch (e) {
+    throw new TemplatesUnavailable(`could not reach the template service: ${String(e)}`);
+  }
+  // 404 is the documented "this build predates the capability" answer.
+  if (res.status === 404) return [];
+  if (!res.ok) throw new TemplatesUnavailable(`template service returned HTTP ${res.status}`);
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new TemplatesUnavailable("template service returned a body that is not JSON");
+  }
+  const raw = (body as { templates?: unknown } | null)?.templates;
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new TemplatesUnavailable("`templates` was not a list");
+  // Drop entries that cannot be rendered rather than letting one bad row take
+  // the page down; an id and a slot list are the minimum this app needs.
+  return raw.filter(
+    (t): t is PromptTemplate =>
+      !!t && typeof t === "object" && typeof (t as PromptTemplate).id === "string" && Array.isArray((t as PromptTemplate).slots),
+  );
+}
+
+export interface QueryRequest extends RetrieveRequest {
+  template?: string;
+  template_vars?: Record<string, string>;
+}
+
+export interface QueryResponse {
+  answer: string;
+  sources: Source[];
+  rewritten_queries: string[];
+  /** Present only on a templated request — absent, not null. */
+  template?: string;
+  template_version?: number;
+  template_hash?: string;
+  /** The model that actually generated, after the server resolves its default. */
+  model?: string;
+}
+
+/**
+ * Retrieve AND generate in one call, with the prompt rendered server-side.
+ *
+ * The whole point of the template path: no second service, no cross-origin hop,
+ * and the prompt is a named, versioned thing the server can attribute a result
+ * to — rather than a string this browser assembled and nobody can replay.
+ */
+export async function query(req: QueryRequest, token: string): Promise<QueryResponse> {
+  return postJson<QueryResponse>(`${ragstackBase()}/v1/query`, req, token);
+}
+
 // --- BV-BRC Copilot ---------------------------------------------------------
 
 /**

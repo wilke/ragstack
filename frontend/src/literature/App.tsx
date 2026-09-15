@@ -18,6 +18,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   generate,
+  listPromptTemplates,
+  query as queryApi,
+  type PromptTemplate,
   listCollections,
   listModels,
   retrieve,
@@ -31,9 +34,11 @@ import {
   buildFilters,
   buildPrompt,
   buildQuery,
-  dataType,
   collectionDetail,
   collectionUnavailable,
+  modeById,
+  modesFrom,
+  templateVars,
   sortedCollections,
   DOC_TYPES,
   YEAR_COVERAGE_NOTE,
@@ -85,7 +90,27 @@ export function App() {
   const [journal, setJournal] = useState("");
   const [model, setModel] = useState("");
 
-  const dt = dataType(fields.dataTypeId);
+  // Empty when this tenant configures none, or runs a build predating ADR-0008.
+  // Both mean the same thing here: generation cannot be steered server-side, so
+  // fall back to building the prompt in the browser and calling Copilot.
+  const [templates, setTemplates] = useState<PromptTemplate[]>([]);
+
+  const modes = useMemo(() => modesFrom(templates), [templates]);
+  const mode = modeById(modes, fields.dataTypeId) ?? modes[0];
+  const dt = { columns: mode?.columns ?? null, label: mode?.label ?? "" };
+  // When the server supplies the modes, its ids are not DATA_TYPES' ids, so a
+  // selection made before they arrived would no longer resolve. Re-seed once.
+  useEffect(() => {
+    if (!modes.length || modeById(modes, fields.dataTypeId)) return;
+    // Templates arrive after the first paint, so a selection made in between is
+    // expressed in built-in ids the server does not use. Carry the INTENT over
+    // where the label matches rather than dumping the user on modes[0] — that
+    // silently turned a deliberate "Protein Function" into PPI extraction.
+    const current = DATA_TYPES.find((d) => d.id === fields.dataTypeId);
+    const equivalent =
+      current && modes.find((m) => m.label.toLowerCase() === current.label.toLowerCase());
+    setFields((f) => ({ ...f, dataTypeId: (equivalent ?? modes[0]).id }));
+  }, [modes, fields.dataTypeId]);
   // A type with no columns has no table to render, so the format control is
   // meaningless — pin it to prose, exactly as the original widget does.
   useEffect(() => {
@@ -123,8 +148,26 @@ export function App() {
       } catch (e) {
         if (live) setDiscoveryNote(describe(e, "collections"));
       }
+      // Concurrent, not serial. Inserted between collections and models it sat on
+      // the critical path of the FALLBACK: a tenant whose gateway blackholes the
+      // unknown route left `models` empty for the duration, and generation then
+      // refused with "no model selected" — breaking the path this change
+      // promises not to touch.
+      const templatesPromise = listPromptTemplates(token);
+      const modelsPromise = listModels(token);
       try {
-        const ms = await listModels(token);
+        const ts = await templatesPromise;
+        if (live) setTemplates(ts);
+      } catch (e) {
+        // Reaching here means the capability is PRESENT and misconfigured — an
+        // absent one resolves to [] rather than throwing. Still not fatal (the
+        // two-leg path works), but it must not be invisible: silently degrading
+        // makes "templates broken" indistinguishable from "no templates", which
+        // is exactly the state an operator needs to be able to tell apart.
+        if (live) setDiscoveryNote((n) => n || `Prompt templates unavailable: ${describe(e, "templates")}`);
+      }
+      try {
+        const ms = await modelsPromise;
         if (!live) return;
         setModels(ms);
         setModel((cur) => cur || ms[0]?.model || "");
@@ -150,6 +193,10 @@ export function App() {
   const [answerNote, setAnswerNote] = useState("");
   // The model id that produced the current answer.
   const [answeredWith, setAnsweredWith] = useState("");
+  // "ppi-extraction v1 · <model>" on the template path — what produced this answer.
+  const [provenance, setProvenance] = useState("");
+  // True while the displayed answer came from the server-side template path.
+  const [usedTemplate, setUsedTemplate] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [promptOpen, setPromptOpen] = useState(false);
   const [lastFormat, setLastFormat] = useState<Format>("raw");
@@ -230,35 +277,82 @@ export function App() {
     setAnswerError("");
     setAnswerNote("");
     setAnsweredWith("");
+    setProvenance("");
+    setUsedTemplate(false);
     setPrompt("");
     setSources([]);
 
     const filters = buildFilters({ year, docType, journal });
+    // The retrieval half IS identical either way — the mode is passed so the
+    // embedded query carries the same assertion-type label on both paths. It
+    // previously did not, which made switching a tenant onto templates a silent
+    // retrieval change; see buildQuery.
+    const base = {
+      query: buildQuery(fields, mode),
+      top_k: topK,
+      use_graph: useGraph,
+      ...(collection ? { collection } : {}),
+      ...(Object.keys(filters).length ? { filters } : {}),
+    };
+    const template = mode?.templateId
+      ? templates.find((t) => t.id === mode.templateId)
+      : undefined;
+
     try {
-      const res = await retrieve(
-        {
-          query: buildQuery(fields),
-          top_k: topK,
-          use_graph: useGraph,
-          ...(collection ? { collection } : {}),
-          ...(Object.keys(filters).length ? { filters } : {}),
-        },
-        token,
-      );
+      if (template) {
+        // ONE CALL. The server renders the prompt from a named, versioned
+        // template and generates with the model it is already configured for —
+        // no second service, no cross-origin hop, and the response says exactly
+        // what produced it. This is the whole point of ADR-0008: the browser
+        // stops assembling a prompt nobody can replay.
+        setGenerating(true);
+        const res = await queryApi(
+          { ...base, template: template.id, template_vars: templateVars(template, fields) },
+          token,
+        );
+        if (runRef.current !== run) return;
+        setSources(res.sources ?? []);
+        setAnswer(res.answer ?? "");
+        setLastFormat(template.output === "table" ? "table" : "raw");
+        setUsedTemplate(true);
+        setAnsweredWith(res.model ?? "");
+        // No echo fields means the SERVER fell back — no LLM wired, or
+        // generation failed (ADR-0008 §3b). Say that, rather than attributing
+        // the text to a template and a model that did not produce it.
+        setProvenance(
+          res.template
+            ? `${res.template} v${res.template_version ?? "?"}` +
+              (res.template_hash ? ` (${res.template_hash})` : "") +
+              ` · ${res.model ?? "unknown model"}`
+            : "the server could not generate an answer; showing retrieved sources only",
+        );
+        setSearching(false);
+        setGenerating(false);
+        return;
+      }
+
+      const res = await retrieve(base, token);
       if (runRef.current !== run) return;
       setSources(res.sources ?? []);
       setSearching(false);
 
       if (!res.sources?.length) return;
-      const text = buildPrompt(fields, format, res.sources);
+      const text = buildPrompt(fields, format, res.sources, mode);
       setPrompt(text);
       void runGeneration(text, format, run);
     } catch (e) {
       if (runRef.current !== run) return;
       setSearching(false);
-      setSearchError(describe(e, "retrieval"));
+      setGenerating(false);
+      // Name the leg that actually failed. On the template path a 422 is a slot
+      // problem and a 404 is an unknown TEMPLATE — reachable without any client
+      // bug, since templates load at server startup and restarting the API with
+      // an edited file makes an open tab's cached id stale. Reporting either as
+      // "retrieval" pointed at the wrong thing; the 404 branch went as far as
+      // blaming the collection.
+      setSearchError(describe(e, template ? "query" : "retrieval"));
     }
-  }, [fields, year, docType, journal, topK, useGraph, collection, token, format, runGeneration]);
+  }, [fields, year, docType, journal, topK, useGraph, collection, token, format, runGeneration, mode, templates]);
 
   const downloadTsv = useCallback(() => {
     if (!table) return;
@@ -280,9 +374,14 @@ export function App() {
   // The model that actually answered, which is not always the selected one: a
   // 5xx falls back to the default. Naming the picked model here while the note
   // says another one answered made the two disagree on screen.
+  // On the template path the server names the model; `answeredWith` is empty
+  // only when it generated nothing, and falling back to the dropdown's value
+  // there would credit a model that did not run.
   const modelLabel = answeredWith
-    ? models.find((m) => m.model === answeredWith)?.label
-    : models.find((m) => m.model === model)?.label;
+    ? (models.find((m) => m.model === answeredWith)?.label ?? answeredWith)
+    : usedTemplate
+      ? undefined
+      : models.find((m) => m.model === model)?.label;
   const selectedCollection = collections.find((c) => c.id === collection);
 
   // --- sign-in gate -------------------------------------------------------
@@ -359,9 +458,13 @@ export function App() {
               value={fields.dataTypeId}
               onChange={(e) => setFields({ ...fields, dataTypeId: e.target.value })}
             >
-              {DATA_TYPES.map((d) => (
-                <option key={d.id} value={d.id}>
+              {modes.map((d) => (
+                // Disabled rather than hidden, with the reason — same rule as
+                // the collection picker: silently omitting something the server
+                // advertises leaves a user with no way to learn why.
+                <option key={d.id} value={d.id} disabled={!!d.unusable}>
                   {d.label}
+                  {d.unusable ? ` — ${d.unusable}` : ""}
                 </option>
               ))}
             </select>
@@ -374,7 +477,9 @@ export function App() {
               id="lit-format"
               className={INPUT}
               value={format}
-              disabled={!dt.columns}
+              // The template declares its own output shape, so the choice is
+              // not the caller's on that path.
+              disabled={!dt.columns || !!mode?.templateId}
               onChange={(e) => setFormat(e.target.value as Format)}
             >
               <option value="raw">Prose</option>
@@ -389,7 +494,9 @@ export function App() {
               id="lit-model"
               className={INPUT}
               value={model}
+              disabled={!!mode?.templateId}
               onChange={(e) => setModel(e.target.value)}
+              title={mode?.templateId ? "This mode generates server-side, with the tenant's configured model." : undefined}
             >
               {models.length === 0 && <option value="">unavailable</option>}
               {models.map((m) => (
@@ -525,11 +632,13 @@ export function App() {
           {table ? (
             <>
               {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              {provenance && <p className="mb-2 text-[11px] text-faint">generated by {provenance}</p>}
               <ResultsTable table={table} onDownload={downloadTsv} />
             </>
           ) : (
             <>
               {answerNote && <p className="mb-2 text-[11px] text-faint">{answerNote}</p>}
+              {provenance && <p className="mb-2 text-[11px] text-faint">generated by {provenance}</p>}
               <AnswerPanel
                 text={answer}
                 modelLabel={modelLabel}
@@ -643,10 +752,12 @@ function describe(e: unknown, what: string): string {
     // 404 means different things per leg: on retrieval it is the leak-safe
     // read-deny (ADR-0003), but a Copilot 404 is a missing route and rendering
     // "No such collection…(models)" was actively misleading.
-    if (e.status === 404)
-      return what === "retrieval"
-        ? `No such collection, or it is not readable by this account.`
-        : `The ${what} service did not recognise that request (404).`;
+    if (e.status === 404) {
+      if (what === "retrieval") return `No such collection, or it is not readable by this account.`;
+      if (what === "query")
+        return `That prompt template no longer exists on this server — it may have been changed since this page loaded. Reload and try again.`;
+      return `The ${what} service did not recognise that request (404).`;
+    }
     if (e.status === 0) return `Could not reach the ${what} service: ${e.message}`;
     return `${what} failed (HTTP ${e.status}). ${e.message}`;
   }
