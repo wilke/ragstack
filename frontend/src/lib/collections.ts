@@ -27,11 +27,22 @@ const CREATE_ID_TAKEN =
  * today (issue #556) and the copy must not imply a control that isn't there —
  * an owner CAN do it themselves (POST /v1/collections/{id}/owner is
  * owner-or-admin), so "ask an admin" would also be wrong.
+ *
+ * It does NOT say transfer "keeps the data", which an earlier version did.
+ * Transfer frees the quota slot and the chunks survive, but the RECIPIENT cannot
+ * retrieve them: chunks are stamped with the owner's tenant at ingest and nothing
+ * re-stamps them, while `shared_scope` — the widening that rescues a grantee — is
+ * explicitly a no-op for someone who OWNS the collection (issue #558). Promising
+ * the data comes through would be a second piece of impossible advice in the same
+ * sentence as the first one this fix removed.
+ *
+ * "delete a collection you own" names WHERE, because this message renders in the
+ * Collections view, which has no delete control — deletion lives in Ops.
  */
 const OWNER_QUOTA_REMEDY =
-  "To create another, first free one up: delete a collection you own, or transfer one to " +
-  "another owner — transferring keeps the data, but it takes an API call today (the UI has " +
-  "no transfer control yet).";
+  "To create another, first free one up: delete a collection you own (Ops → Collections), " +
+  "or transfer one to another owner — transfer is an API call today, and the new owner " +
+  "cannot search a transferred collection yet.";
 
 /**
  * The owner-quota 409 (issue #290 server-side, #555 here), or null when this

@@ -322,6 +322,13 @@ function parsedDetail(raw: string): unknown {
  * reworded sentence silently reroutes the UI — while the code is part of the
  * contract. Arrays are excluded on purpose: `typeof [] === "object"` in JS, and
  * a 422's validation list is emphatically not a structured error object.
+ *
+ * Note what actually keeps a 422 array out of `apiDetail`'s object branch: the
+ * ARRAY BRANCH'S unconditional `return ""`, not the order of the branches. A
+ * review proved it — moving the object branch above the array one
+ * non-terminally changes nothing, because a JSON array has no own `message` or
+ * `error` and falls through anyway. The `Array.isArray` guard HERE is separately
+ * load-bearing and has its own test.
  */
 export function apiDetailObject(raw: string): Record<string, unknown> | null {
   const detail = parsedDetail(raw);

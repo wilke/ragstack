@@ -252,3 +252,11 @@ describe("apiDetailObject", () => {
     expect(apiDetailObject("")).toBeNull();
   });
 });
+
+describe("apiDetail — a padded structured message", () => {
+  it("trims a message that is padded but not blank", () => {
+    // Covered only for whitespace-ONLY messages before, so dropping the .trim()
+    // survived. Cosmetic, but it is a claimed behaviour with no assertion.
+    expect(apiDetail('{"detail":{"error":"x","message":"  padded  "}}')).toBe("padded");
+  });
+});

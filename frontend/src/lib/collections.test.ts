@@ -542,3 +542,38 @@ describe("collectionCreateMessage: owner quota vs id collision", () => {
     expect(msg).toContain("pick another id");
   });
 });
+
+describe("collectionCreateMessage — gaps two reviews found in the first pass", () => {
+  const quota = (owned: unknown, limit: unknown) =>
+    collectionCreateMessage(
+      409,
+      JSON.stringify({ detail: { error: "owner_quota_exceeded", owned, limit } }),
+    );
+
+  it("does not transpose owned and limit", () => {
+    // Every earlier test used owned === limit (10/10, 1/1), so swapping the two
+    // in the template passed the whole suite. It is reachable: the server raises
+    // on owned >= quota, so owned > limit occurs whenever the cap is LOWERED
+    // after someone has already accumulated collections.
+    const msg = quota(20, 10);
+    expect(msg).toContain("already own 20 collections");
+    expect(msg).toContain("limit on this server is 10");
+  });
+
+  it("names where Delete actually lives", () => {
+    // This message renders in the Collections view, which has no delete control
+    // — deletion is in Ops. Telling someone to delete without saying where is a
+    // remedy they cannot find.
+    expect(quota(10, 10)).toContain("Ops");
+  });
+
+  it("does not promise a transferred collection arrives usable", () => {
+    // Transfer frees the slot and the chunks survive, but the recipient cannot
+    // retrieve them (issue #558): chunks carry the owner's tenant stamp, nothing
+    // re-stamps on transfer, and shared_scope is a no-op for an owner. An
+    // earlier version of this copy said "transferring keeps the data".
+    const msg = quota(10, 10);
+    expect(msg).not.toContain("keeps the data");
+    expect(msg).toContain("cannot search a transferred collection");
+  });
+});
