@@ -51,6 +51,15 @@ func planDecommission(_ context.Context, p *planner, _ map[string]any) error {
 			"selftest sandbox (ports %d–%d): v1 decommission quarantines only what the ctl runs",
 			t.Name, t.Supervisor, t.Owner, paths.SelftestBase, paths.SelftestEnd)
 	}
+	if p.sup == nil {
+		// Unreachable through `managed` above, which already requires a
+		// supervisor the ctl can start. It is stated because the OTHER way in
+		// is the sandbox exemption, and a sandbox row that somehow carried
+		// `supervisor: manual` would otherwise reach the seam with nothing
+		// behind it.
+		return p.refuse("%s is supervised by %q, which is not something the ctl can stop; there is nothing for "+
+			"`decommission` to take down", t.Name, t.Supervisor)
+	}
 	if sandbox {
 		// A sandbox needs no recovery point. It was created by the selftest
 		// minutes ago, its contents are a fixture, and the bundle a
