@@ -75,14 +75,42 @@ import httpx
 
 from ragstack.embed_pool import make_pooled_embedder
 from ragstack.embedders import make_embedder
+from ragstack.metadata_schema import KNOWN_INT_FIELDS, coerce_declared
 from ragstack.models import Chunk
 from ragstack.ops import ingest_target
 from ragstack.stores.qdrant import QdrantVectorStore
 
 
+def _typed(md: dict[str, Any]) -> dict[str, Any]:
+    """Apply the declared metadata types to a caller-supplied dict.
+
+    This script copies the input JSON's metadata onto a chunk payload verbatim,
+    which makes it the one tool in the repo that can write an UNFILTERABLE
+    document by hand. It has already done so: the ``lucid`` tenant's live
+    collection carries ``year`` as a string, ``chunk_index`` as a string and
+    ``", "``-joined authors — the fingerprint of this function, not of the
+    JATS/enrich path. A correct ``{"year": 2021}`` filter matches 129,248 chunks
+    there on the Elasticsearch leg and **0** on the Qdrant leg.
+
+    A declared-int field that cannot be coerced is DROPPED, not stamped: an
+    absent field is honestly unmatched, where a wrong-typed one is silently
+    unreachable. Nothing else is touched — this script's whole purpose is to
+    carry arbitrary corpus metadata, and the type table names only the fields
+    the filter grammar itself constrains."""
+    out: dict[str, Any] = {}
+    for k, v in md.items():
+        coerced = coerce_declared(k, v)
+        if coerced is not None or k not in KNOWN_INT_FIELDS:
+            out[k] = coerced
+    return out
+
+
 def flatten(docs: list[dict[str, Any]]) -> list[Chunk]:
     """Expand the doc-level JSON into a flat list of Chunks, copying
-    doc-level metadata + source onto every chunk's payload."""
+    doc-level metadata + source onto every chunk's payload.
+
+    Metadata passes through :func:`_typed`, so a declared-int field can never
+    reach a store as a string."""
     out: list[Chunk] = []
     for d in docs:
         doc_id = d["doc_id"]
@@ -96,7 +124,7 @@ def flatten(docs: list[dict[str, Any]]) -> list[Chunk]:
             text = raw["text"]
             idx = raw.get("chunk_index", i)
             chunk_id = raw.get("id") or f"{doc_id}:{idx}"
-            md = {**doc_md, **{k: v for k, v in raw.items() if k != "text"}}
+            md = _typed({**doc_md, **{k: v for k, v in raw.items() if k != "text"}})
             out.append(
                 Chunk(
                     id=chunk_id,

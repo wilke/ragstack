@@ -58,7 +58,13 @@ the Elasticsearch leg and **0** on the Qdrant leg — the same request, two
 answers, no error.
 
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
-carries no lxml guarantee.
+carries no lxml guarantee. The one non-stdlib import is
+``ragstack.metadata_schema``, which is a dependency-free leaf ON PURPOSE:
+``scripts/jats_extract.py`` imports this module and nothing else, once per
+document across a 1.44M-document corpus, so reaching the type table through
+``ingestion.enrich`` (pydantic) or ``stores.filters`` (which executes
+``ragstack.stores.__init__``: neo4j, qdrant-client) would put a 16x import-time
+and 3x RSS floor on every extract task.
 """
 
 from __future__ import annotations
@@ -69,7 +75,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from ragstack.ingestion.enrich import coerce_year
+from ragstack.metadata_schema import coerce_year
 
 XLINK = "{http://www.w3.org/1999/xlink}href"
 

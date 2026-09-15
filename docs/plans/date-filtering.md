@@ -145,9 +145,23 @@ divergence at data level, permanently and silently.
    as an `int` while `jats.py` produces a `str`, which suggests a different path built this
    collection. Whatever dropped the year is still in service; backfilling without fixing it
    means doing this again after the next corpus.
-1. **Correct the 8,408 future-dated chunks.** Small, bounded, and independently useful —
-   these actively corrupt any "recent" query. Find the parse path in `doi_metadata.py` that
-   produced 2049 before fixing the values, or the next ingest reintroduces them.
+1. **Correct the future-dated chunks.** Small, bounded, and independently useful —
+   these actively corrupt any "recent" query.
+
+   > **Corrected 2026-09-15.** Two things on this line were wrong. The count is not 8,408:
+   > that is `open-access` alone, and ASM's three **production** indices carry **16,176**
+   > more (`ragstack_sfr_tok256` 9,916 · `tok512` 4,980 · `semantic` 1,280, measured
+   > read-only). And the producer is not `doi_metadata.py` — it is
+   > **`enrich.derive_year`**, whose `_YEAR` regex admits `20[0-4]\d` and returned the
+   > first match in the path or DOI unbounded. Three confirmed mechanisms: a scratch
+   > **UUID** in `source_path` (`/local/scratch/03220d5a-2049-4ab5-…/` → 2049, for an
+   > article whose real year `mra.2021.10.issue-33` is further along the same path); an
+   > **ISSN inside a DOI** (`10.1186/2049-2618-*` is *Microbiome*, ISSN 2049-2618); and an
+   > **accession in a caption** (`BGS.GSE2028/9680` → 2028). The producer is fixed on
+   > `fix/metadata-type-consistency`: every arm is bounded, and the first *plausible*
+   > candidate wins rather than the first candidate, which recovers the true year instead
+   > of merely dropping the false one. The stored values are untouched — nothing was
+   > backfilled.
 2. **Write the backfill as a resumable, idempotent job** — `set_payload` by `doc_id` in
    Qdrant (indexed, so selection is cheap) plus `update_by_query` in Elasticsearch, batched,
    with a checkpoint. It must be safe to stop with SIGINT and restart, per the bulk-load

@@ -18,10 +18,18 @@ operator script (which also emits the full catalog, citations included).
 from __future__ import annotations
 
 import re
-from datetime import date as _date
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Re-exported: the coercions live in the dependency-free leaf so a CPU-only CWL
+# worker (ingestion/jats.py) can import them without pydantic. Kept importable
+# from here because this is where year handling has always lived.
+from ragstack.metadata_schema import (  # noqa: F401
+    MIN_PLAUSIBLE_YEAR,
+    coerce_year,
+    plausible_year_range,
+)
 
 # --- document classes -------------------------------------------------------
 # Tagged onto every chunk as ``doc_type`` so retrieval can filter (e.g. exclude
@@ -219,54 +227,6 @@ def _trim_text_doi(doi: str) -> str:
     return doi
 
 
-#: Oldest year a scholarly record may plausibly claim. PMC carries articles back
-#: to the early 1800s (*Med Chir Trans*, 1809), so the floor sits well below that
-#: rather than being tuned to the current corpus.
-MIN_PLAUSIBLE_YEAR = 1500
-
-
-def plausible_year_range() -> tuple[int, int]:
-    """``(min, max)`` a publication year may fall in — ``max`` is next year.
-
-    Computed per call rather than frozen at import so a long-lived process does
-    not start refusing January's ahead-of-print records. The upper bound exists
-    because parse errors produce *futures*, not pasts: the deployed
-    ``open-access`` collection carries 8,408 chunks dated 2047–2049
-    (docs/plans/date-filtering.md), which actively corrupt any "recent" query."""
-    return MIN_PLAUSIBLE_YEAR, _date.today().year + 1
-
-
-def coerce_year(value: Any) -> int | None:
-    """The one place a raw ``year`` becomes the ``int`` the filter grammar demands.
-
-    ``stores/filters.py`` declares ``year`` an integer field and matches filter
-    values **by type, never coercing** (#471) — so a producer that stores
-    ``"2019"`` builds documents that no correct filter can ever reach. Measured
-    live: the ``lucid`` tenant's collection stores ``year`` as a string, and
-    ``{"year": 2021}`` — the only form the API accepts — matches 129,248 chunks
-    on the Elasticsearch leg (ES coerces at query time) and **0** on the Qdrant
-    leg. Routing every producer's year through here is what stops that recurring.
-
-    Accepts an ``int`` or a string containing a 4-digit year (JATS ``<year>`` is
-    occasionally ``"2019 Mar"`` or ``"c2019"``); returns ``None`` — meaning
-    *omit the key*, never store a null or an empty string — for anything else,
-    including a year outside :func:`plausible_year_range`. ``bool`` is refused
-    explicitly: it is an ``int`` in Python but it is not a year."""
-    if value is None or isinstance(value, bool):
-        return None
-    lo, hi = plausible_year_range()
-    if isinstance(value, int):
-        return value if lo <= value <= hi else None
-    if isinstance(value, float):
-        # A JSON float that is exactly an integer year (2019.0) is a year; a
-        # fractional one is not a year at all.
-        return coerce_year(int(value)) if value.is_integer() else None
-    if isinstance(value, str):
-        m = re.search(r"\d{4}", value)
-        return coerce_year(int(m.group(0))) if m else None
-    return None
-
-
 def derive_year(path: str, doi: str, text: str, meta_year: Any = None) -> int | None:
     """Best-effort publication year — the record's own declared year first, then
     the issue dir / DOI / leading text.
@@ -285,17 +245,44 @@ def derive_year(path: str, doi: str, text: str, meta_year: Any = None) -> int | 
     be a measurement or count as a year, so the text fallback only fires on a
     year next to a publication-context word (copyright/received/accepted/…).
 
-    The result is an ``int`` or ``None``, never a string (:func:`coerce_year`)."""
+    EVERY arm is bounded by :func:`~ragstack.metadata_schema.coerce_year`,
+    including the two inference arms. Bounding only the declared value was the
+    original mistake and it was measurably the wrong half: ASM records declare no
+    year at all, so **all 16,176 of the future-dated chunks across ASM's three
+    production indices** (tok256 9,916 · tok512 4,980 · semantic 1,280, measured
+    read-only 2026-09-15) came out of the arms below — more than the 8,408 on
+    ``open-access``. The mechanisms are exactly what you would expect a bare
+    4-digit scan to do:
+
+    * a scratch **UUID** in the path — ``/local/scratch/03220d5a-2049-4ab5-…/``
+      yields 2049 for an article whose real year, ``mra.2021.10.issue-33``, is
+      further along the same path;
+    * an **ISSN inside a DOI** — ``10.1186/2049-2618-*`` is the journal
+      *Microbiome*, ISSN 2049-2618;
+    * an **accession in a caption** — ``BGS.GSE2028/9680`` yields 2028.
+
+    A bound cannot fix the underlying imprecision (a UUID segment reading ``2015``
+    is in range and would still win over the real year — tracked separately); it
+    does guarantee the field never holds a value that is impossible on its face.
+
+    The result is an ``int`` or ``None``, never a string."""
     declared = coerce_year(meta_year)
     if declared is not None:
         return declared
     for hay in (path, doi):
-        m = _YEAR.search(hay)
-        if m:
-            return int(m.group(1))
-    m = _YEAR_IN_TEXT.search(text[:4000])
-    if m:
-        return int(m.group(1))
+        # EVERY candidate, not just the first: the first match is routinely the
+        # wrong one (a scratch UUID's ``2049`` sits ahead of the real
+        # ``mra.2021.10.issue-33`` in the very same path), so taking the first
+        # PLAUSIBLE match recovers the true year rather than merely dropping the
+        # false one. Same rule as jats.py's first-plausible-<pub-date>.
+        for m in _YEAR.finditer(hay):
+            inferred = coerce_year(int(m.group(1)))
+            if inferred is not None:
+                return inferred
+    for m in _YEAR_IN_TEXT.finditer(text[:4000]):
+        inferred = coerce_year(int(m.group(1)))
+        if inferred is not None:
+            return inferred
     return None
 
 
