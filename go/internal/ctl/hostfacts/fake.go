@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/ragstack/ragstack/internal/ctl/acl"
 )
 
 // Fake is a Host + Prober + DiskUsage backed by recorded facts. It is the
@@ -31,6 +33,7 @@ type Fake struct {
 	Groups      map[string][]string
 	Units       map[string]UnitStatus // "<user>|<unit>" → status
 	Writables   map[string]Writability
+	ACLs        map[string]FakeACL // path → the two POSIX ACLs it carries
 	Gitdirs     map[string]Gitdir
 	Describes   map[string]string
 	Errs        map[string]error // "describe:<worktree>", "listeners", "maxmapcount", …
@@ -137,6 +140,22 @@ func (f *Fake) UnitState(user, unit string) UnitStatus {
 // writable by others).
 func (f *Fake) WritableByOthers(path string) (Writability, error) {
 	return f.Writables[path], nil
+}
+
+// FakeACL is one path's recorded pair of POSIX ACLs. The zero value is the
+// honest default for a path nobody granted anything on: an access list with
+// no named entries and no default list. Absent from Fake.ACLs entirely means
+// the same thing, so a test only states the paths it is about.
+type FakeACL struct {
+	Access  acl.ACL
+	Default acl.ACL
+	Err     error
+}
+
+// ACL returns the recorded ACLs for path.
+func (f *Fake) ACL(path string) (acl.ACL, acl.ACL, error) {
+	a := f.ACLs[path]
+	return a.Access, a.Default, a.Err
 }
 
 // Gitdir returns the recorded gitdir (default: unreadable).

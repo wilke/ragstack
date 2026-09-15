@@ -42,9 +42,12 @@ var preconditions = map[string][]string{
 	// reserve it fills the filesystem the tenants run on. It must also know
 	// which processes are the tenant's before it fences them — and must not
 	// capture a store that died mid-write as if it were a clean snapshot.
-	"backup": {DiskLow, PortOwnerMismatch, PortNotListening},
+	// It also WRITES a bundle under <backups>/tenants: an account that can
+	// neither own nor reach that root produces a half-written bundle, which
+	// is worse than a refused backup.
+	"backup": {DiskLow, PortOwnerMismatch, PortNotListening, CtlAccountNoAccess},
 	// A restore creates a fresh tenant and stages a whole bundle into it.
-	"restore": {DiskLow, StoreURLDisallowed},
+	"restore": {DiskLow, StoreURLDisallowed, CtlAccountNoAccess},
 	// Handover moves a tenant onto systemd units under the service account:
 	// the env file must be loadable by systemd, the code traceable, the
 	// paths not writable by anyone outside ragops, and boot persistence real.
@@ -82,7 +85,7 @@ var preconditions = map[string][]string{
 	"gateway-apply": {GatewayMapMismatch, RegistryManifestMismatch, ManifestUnknownRow},
 	// Creating a tenant allocates from the registry, so the projection must
 	// be coherent, and the host must have room.
-	"create": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow},
+	"create": {RegistryManifestMismatch, ManifestUnknownRow, DiskLow, VMMaxMapCountLow, CtlAccountNoAccess},
 	// Adopting RECORDS a tenant the ctl did not make; nearly everything the
 	// run finds is what adoption exists to write down, so almost nothing
 	// blocks it. Two things do: a store URL the daemon will refuse to dial
