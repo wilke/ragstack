@@ -7,6 +7,7 @@ import {
   collectionUnavailable,
   DATA_TYPES,
   modeById,
+  modeUnusable,
   modesFrom,
   parseTable,
   sortedCollections,
@@ -474,8 +475,26 @@ describe("modesFrom — server templates present", () => {
     const t = template();
     const modes = modesFrom([t]);
     expect(modes).toEqual([
-      { id: "ppi-extraction", label: "Protein-Protein Interaction (PPI)", columns: t.columns, templateId: "ppi-extraction" },
+      {
+        id: "ppi-extraction",
+        label: "Protein-Protein Interaction (PPI)",
+        columns: t.columns,
+        templateId: "ppi-extraction",
+        // Null because every required slot of this template is one the form can
+        // supply; see modeUnusable.
+        unusable: null,
+      },
     ]);
+  });
+
+  it("resolves a BUILT-IN mode, whose templateId is null", () => {
+    // The gap a mutation probe found: every modeById test used server modes, so
+    // matching on `templateId` instead of `id` passed the whole suite while
+    // breaking the fallback path — the data-type dropdown would snap back to the
+    // first entry on every change, with nothing to see it.
+    const modes = modesFrom([]);
+    expect(modeById(modes, "ppi")?.label).toBe("Protein-Protein Interaction (PPI)");
+    expect(modeById(modes, "none")).toBeDefined();
   });
 
   it("uses a table template's declared columns", () => {
@@ -561,5 +580,93 @@ describe("templateVars", () => {
   it("returns {} when nothing applies", () => {
     expect(templateVars(template(), fields())).toEqual({});
     expect(Object.keys(templateVars(template(), fields()))).toHaveLength(0);
+  });
+});
+
+describe("buildQuery with a resolved mode — retrieval must not differ by path", () => {
+  it("takes the assertion-type label from the MODE, not from a DATA_TYPES lookup", () => {
+    // The HIGH finding this closes: buildQuery used to resolve the label through
+    // dataType(f.dataTypeId), which only knows the built-in ids. With a server
+    // template id the lookup missed, fell back to `none`, and silently dropped
+    // the label from the string that gets EMBEDDED — changing retrieval quality
+    // for three of four modes the moment a tenant switched to templates.
+    const serverMode = {
+      id: "ppi-extraction",
+      label: "Protein-Protein Interaction (PPI)",
+      columns: ["Pathogen"],
+      templateId: "ppi-extraction",
+    };
+    const f = fields({ organism: "SARS-CoV-2", genes: "Spike", dataTypeId: "ppi-extraction" });
+    expect(buildQuery(f, serverMode)).toBe("SARS-CoV-2 Spike Protein-Protein Interaction (PPI)");
+    // Without the mode the server id is unknown to DATA_TYPES — the old bug.
+    expect(buildQuery(f)).toBe("SARS-CoV-2 Spike");
+  });
+
+  it("produces the SAME query for a built-in mode and its server equivalent", () => {
+    const f = fields({ organism: "SARS-CoV-2", dataTypeId: "ppi" });
+    const builtIn = buildQuery(f);
+    const viaTemplate = buildQuery(fields({ organism: "SARS-CoV-2", dataTypeId: "ppi-extraction" }), {
+      id: "ppi-extraction",
+      label: "Protein-Protein Interaction (PPI)",
+      columns: ["Pathogen"],
+      templateId: "ppi-extraction",
+    });
+    expect(viaTemplate).toBe(builtIn);
+  });
+
+  it("omits the label for a prose mode, on either path", () => {
+    const textMode = { id: "summary", label: "Literature summary", columns: null, templateId: "summary" };
+    expect(buildQuery(fields({ organism: "E. coli", dataTypeId: "summary" }), textMode)).toBe("E. coli");
+  });
+});
+
+describe("templateVars honours the declared cap", () => {
+  it("truncates a value to the slot's max_len rather than letting the server 422", () => {
+    const t = template({ slots: [{ name: "organism", required: true, max_len: 10 }] });
+    const vars = templateVars(t, fields({ organism: "A".repeat(500) }));
+    expect(vars.organism).toHaveLength(10);
+  });
+
+  it("leaves a value within the cap untouched", () => {
+    const t = template({ slots: [{ name: "organism", required: true, max_len: 120 }] });
+    expect(templateVars(t, fields({ organism: "SARS-CoV-2" })).organism).toBe("SARS-CoV-2");
+  });
+
+  it("does not resolve a slot name off Object.prototype", () => {
+    // `slots[].name` carries no pattern in the contract, so the server may
+    // legitimately advertise one of these. A prototype lookup returned a
+    // FUNCTION where a string was declared.
+    const t = template({ slots: [{ name: "constructor", required: false, max_len: 50 }] });
+    expect(templateVars(t, fields({ organism: "E. coli" }))).toEqual({});
+  });
+});
+
+describe("modeUnusable", () => {
+  it("flags a template whose REQUIRED slot this form cannot supply", () => {
+    // Such a mode would 422 on every single search, so it must not be offered
+    // as though it worked.
+    const t = template({
+      slots: [
+        { name: "organism", required: true, max_len: 120 },
+        { name: "focus", required: true, max_len: 80 },
+      ],
+    });
+    expect(modeUnusable(t)).toContain("focus");
+    expect(modesFrom([t])[0].unusable).toContain("focus");
+  });
+
+  it("does not flag an unsuppliable slot that is OPTIONAL", () => {
+    const t = template({
+      slots: [
+        { name: "organism", required: true, max_len: 120 },
+        { name: "focus", required: false, max_len: 80 },
+      ],
+    });
+    expect(modeUnusable(t)).toBeNull();
+  });
+
+  it("does not flag a template whose required slots the form supplies", () => {
+    expect(modeUnusable(template())).toBeNull();
+    expect(modesFrom([template()])[0].unusable).toBeNull();
   });
 });

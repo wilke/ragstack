@@ -219,15 +219,50 @@ export interface PromptTemplate {
  * with an empty list. Either way the app falls back to the two-leg path, which
  * is why this resolves rather than throws.
  */
+export class TemplatesUnavailable extends Error {}
+
+/**
+ * The templates this tenant offers, or [] when it offers none.
+ *
+ * VALIDATES the payload rather than trusting the cast. A 200 whose `templates`
+ * is a map keyed by id, a string, or an array with a null entry used to flow
+ * straight into a `useMemo` that runs DURING RENDER — and with no error boundary
+ * above it, that is a blank page, not a fallback. A cast is a promise about a
+ * value we did not produce; at a trust boundary it has to be checked.
+ *
+ * Distinguishes ABSENT from BROKEN, which the previous version collapsed:
+ *   * 404 or an empty list — the capability is not there. Normal. Returns [].
+ *   * anything else (5xx, unparseable, wrong shape) — it IS there and is
+ *     misconfigured, e.g. a templates file the operator broke. Throws, so the
+ *     caller can say so instead of silently degrading to the two-leg path and
+ *     leaving nobody able to tell the two apart.
+ */
 export async function listPromptTemplates(token: string): Promise<PromptTemplate[]> {
+  let res: Response;
   try {
-    const res = await fetch(`${ragstackBase()}/v1/prompt-templates`, { headers: authHeaders(token) });
-    if (!res.ok) return [];
-    const body = (await res.json()) as { templates?: PromptTemplate[] };
-    return body.templates ?? [];
-  } catch {
-    return [];
+    res = await fetch(`${ragstackBase()}/v1/prompt-templates`, { headers: authHeaders(token) });
+  } catch (e) {
+    throw new TemplatesUnavailable(`could not reach the template service: ${String(e)}`);
   }
+  // 404 is the documented "this build predates the capability" answer.
+  if (res.status === 404) return [];
+  if (!res.ok) throw new TemplatesUnavailable(`template service returned HTTP ${res.status}`);
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new TemplatesUnavailable("template service returned a body that is not JSON");
+  }
+  const raw = (body as { templates?: unknown } | null)?.templates;
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new TemplatesUnavailable("`templates` was not a list");
+  // Drop entries that cannot be rendered rather than letting one bad row take
+  // the page down; an id and a slot list are the minimum this app needs.
+  return raw.filter(
+    (t): t is PromptTemplate =>
+      !!t && typeof t === "object" && typeof (t as PromptTemplate).id === "string" && Array.isArray((t as PromptTemplate).slots),
+  );
 }
 
 export interface QueryRequest extends RetrieveRequest {

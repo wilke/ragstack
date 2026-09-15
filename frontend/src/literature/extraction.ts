@@ -53,12 +53,29 @@ export interface QueryFields {
  * FILTERS (below); retrieval itself still gets one natural-language string,
  * because that is what a dense retriever is good at.
  */
-export function buildQuery(f: QueryFields): string {
-  const dt = dataType(f.dataTypeId);
-  return [f.organism, f.genes, dt.columns ? dt.label : "", f.otherTerms]
+export function buildQuery(f: QueryFields, mode?: Mode): string {
+  // The label comes from the RESOLVED MODE, not from a DATA_TYPES lookup.
+  //
+  // It used to call dataType(f.dataTypeId), which only knows the built-in ids.
+  // Once the modes come from the server (ADR-0008) those ids are template ids,
+  // the lookup missed, and it silently fell back to `none` — dropping the
+  // assertion-type label from the string that gets EMBEDDED. So switching a
+  // tenant onto templates quietly changed retrieval quality, and inconsistently:
+  // `mutation` happens to collide with a built-in id and kept its label, while
+  // `ppi-extraction`, `protein-function` and `literature-summary` lost theirs.
+  // Retrieval must be identical on both paths — that is what makes the template
+  // change a generation change and nothing else.
+  const resolved = mode ?? dataTypeAsMode(f.dataTypeId);
+  return [f.organism, f.genes, resolved.columns ? resolved.label : "", f.otherTerms]
     .map((p) => p.trim())
     .filter(Boolean)
     .join(" ");
+}
+
+/** The built-in data type as a Mode, for callers without a resolved one. */
+function dataTypeAsMode(id: string): Mode {
+  const d = dataType(id);
+  return { id: d.id, label: d.label, columns: d.columns, templateId: null };
 }
 
 /**
@@ -143,8 +160,17 @@ export type Format = "raw" | "table";
  * accident: retrieval is contract-governed and reproducible; prompt shaping
  * belongs with the service that owns the model.
  */
-export function buildPrompt(f: QueryFields, format: Format, sources: Source[]): string {
-  const dt = dataType(f.dataTypeId);
+export function buildPrompt(
+  f: QueryFields,
+  format: Format,
+  sources: Source[],
+  mode?: Mode,
+): string {
+  // Same seam as buildQuery, for the same reason — this is only reached on the
+  // fallback path today, but it carried the identical DATA_TYPES dependency and
+  // would have become a second instance of that bug the moment a server id
+  // reached it.
+  const dt = mode ?? dataTypeAsMode(f.dataTypeId);
   const organism = f.organism.trim();
   const genes = f.genes.trim();
   const other = f.otherTerms.trim();
@@ -400,6 +426,26 @@ export interface Mode {
   columns: string[] | null;
   /** The template to send, or null on the client-side fallback path. */
   templateId: string | null;
+  /** Set when this mode cannot work here; see modeUnusable. */
+  unusable?: string | null;
+}
+
+/** The form fields this app can supply, by slot name. */
+export const SUPPLIABLE_SLOTS = ["organism", "genes", "other_terms"] as const;
+
+/**
+ * Why this mode cannot be used, or null when it can.
+ *
+ * A template may declare a REQUIRED slot this form has no field for. The server
+ * rejects a missing required slot with a 422 (ADR-0008 rule 3), so such a mode
+ * would fail on every single search. Better to disable it with a reason than to
+ * offer a button that cannot work.
+ */
+export function modeUnusable(t: PromptTemplate): string | null {
+  const missing = t.slots
+    .filter((s) => s.required && !SUPPLIABLE_SLOTS.includes(s.name as (typeof SUPPLIABLE_SLOTS)[number]))
+    .map((s) => s.name);
+  return missing.length ? `needs ${missing.join(", ")}, which this form cannot supply` : null;
 }
 
 export function modesFrom(templates: PromptTemplate[]): Mode[] {
@@ -416,6 +462,7 @@ export function modesFrom(templates: PromptTemplate[]): Mode[] {
     label: t.label,
     columns: t.output === "table" ? (t.columns ?? []) : null,
     templateId: t.id,
+    unusable: modeUnusable(t),
   }));
 }
 
@@ -433,15 +480,24 @@ export function modeById(modes: Mode[], id: string): Mode | undefined {
  * empties would mean the request differs depending on which boxes were visited.
  */
 export function templateVars(t: PromptTemplate, f: QueryFields): Record<string, string> {
-  const available: Record<string, string> = {
+  // Object.create(null): `available[slot.name]` would otherwise walk
+  // Object.prototype, so a slot legitimately named `constructor` or `toString`
+  // (nothing in the contract forbids it — `slots[].name` carries no pattern,
+  // unlike `id`) yielded a FUNCTION where a string was declared.
+  const available: Record<string, string> = Object.assign(Object.create(null), {
     organism: f.organism.trim(),
     genes: f.genes.trim(),
     other_terms: f.otherTerms.trim(),
-  };
+  });
   const vars: Record<string, string> = {};
   for (const slot of t.slots) {
     const v = available[slot.name];
-    if (v) vars[slot.name] = v;
+    if (!v) continue;
+    // Honour the declared cap rather than letting the server 422. A pasted gene
+    // list over the fixture's 200-char limit is an ordinary user action, and
+    // failing the whole search for it — with the error blamed on retrieval —
+    // is a worse answer than sending what fits.
+    vars[slot.name] = v.length > slot.max_len ? v.slice(0, slot.max_len) : v;
   }
   return vars;
 }
