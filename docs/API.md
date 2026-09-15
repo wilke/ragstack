@@ -413,6 +413,14 @@ get right. `query` is what gets embedded and BM25'd; the template renders the
 Putting the instruction block in `query` would embed the instructions and
 retrieve noise.
 
+**Output length.** A template may declare `max_output_tokens`; otherwise the
+server's `LLM_MAX_OUTPUT_TOKENS` (default 512) applies, to templated and plain
+answers alike. This matters most for a table: the cap bounds TOTAL output, so
+how many rows survive tracks how verbose the model is per row — which is why
+raising `top_k` could once *reduce* the rows returned. When the model is cut off
+the response carries `truncated: true` (absent otherwise), so a short table is
+never mistaken for a complete one. The shipped table templates declare 2500.
+
 | Failure | Status |
 |---|---|
 | unknown `template` id | 404 |

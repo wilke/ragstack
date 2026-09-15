@@ -1,4 +1,6 @@
 """Unit tests for the RAG answer generator."""
+import json
+
 import httpx
 import pytest
 
@@ -104,3 +106,71 @@ async def test_extra_body_merged_into_request():
         await llm.complete([{"role": "user", "content": "hi"}])
     assert seen["chat_template_kwargs"] == {"enable_thinking": False}
     assert seen["model"] == "m"  # base fields still present
+
+
+# --- the two hops that actually carry the token-cap fix ----------------------
+#
+# Both of these test the HTTP BOUNDARY, not a collaborator's signature. The
+# first version of these guarantees was covered only by a fake whose
+# `complete_detailed` recorded its own argument — which stops one hop short of
+# "sent", and a review proved it: replacing `"max_tokens": max_tokens` with a
+# literal 512, and `finish_reason = choices[0].get(...)` with `""`, each left
+# the entire 3880-test suite green while fully restoring the reported defect.
+
+
+@pytest.mark.asyncio
+async def test_max_tokens_reaches_the_request_body():
+    """The ceiling must appear in the JSON posted to the model."""
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http)
+        await llm.complete([{"role": "user", "content": "hi"}], max_tokens=2500)
+
+    assert seen["max_tokens"] == 2500, "the caller's ceiling never reached the model"
+
+
+@pytest.mark.asyncio
+async def test_the_default_ceiling_is_still_512_for_callers_that_do_not_ask():
+    """Opt-in only: an unchanged caller must post exactly what it always did."""
+    seen: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(req.content))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http)
+        await llm.complete([{"role": "user", "content": "hi"}])
+
+    assert seen["max_tokens"] == 512
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reason, expected",
+    [("length", "length"), ("stop", "stop"), (None, ""), ("content_filter", "content_filter")],
+)
+async def test_finish_reason_is_read_from_the_real_response_body(reason, expected):
+    """Extracted from the RESPONSE, not supplied by a fake.
+
+    `truncated` on /v1/query is derived from this value, so a server that
+    stopped reporting it would silently make every truncated table look complete.
+    """
+    choice: dict[str, object] = {"message": {"content": "A\tB"}}
+    if reason is not None:
+        choice["finish_reason"] = reason
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [choice]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        llm = OpenAILLM(base_url="http://llm", model="m", http=http)
+        text, got = await llm.complete_detailed([{"role": "user", "content": "hi"}])
+
+    assert text == "A\tB"
+    assert got == expected

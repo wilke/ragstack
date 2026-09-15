@@ -9,7 +9,7 @@ class _FakeGenerator:
         self.answer = answer
         self.seen_query: str | None = None
 
-    async def generate(self, query: str, sources) -> str:
+    async def generate(self, query: str, sources, max_tokens: int = 512) -> str:
         self.seen_query = query
         return self.answer
 
@@ -39,7 +39,7 @@ async def test_query_placeholder_without_generator(client):
 
 
 class _BoomGenerator:
-    async def generate(self, query, sources) -> str:
+    async def generate(self, query, sources, max_tokens: int = 512) -> str:
         raise RuntimeError("LLM endpoint is down")
 
 

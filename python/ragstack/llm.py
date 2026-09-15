@@ -94,10 +94,17 @@ class OpenAILLM:
         choices = data.get("choices") or []
         if not choices:
             raise ValueError("LLM response contained no choices")
+        finish_reason = choices[0].get("finish_reason") or ""
         content = (choices[0].get("message") or {}).get("content")
         if not content:
-            raise ValueError("LLM returned an empty answer")
-        finish_reason = choices[0].get("finish_reason") or ""
+            # Read the reason FIRST so it can be named. `length` with an empty
+            # body is the worst truncation case — the model produced nothing
+            # usable because the ceiling was too low — and it used to surface as
+            # a generic failure, i.e. the one case the truncation signal most
+            # needed to describe was the one it could not reach.
+            raise ValueError(
+                f"LLM returned an empty answer (finish_reason={finish_reason or 'unset'!s})"
+            )
         return content, finish_reason
 
     async def complete_text(
@@ -236,16 +243,14 @@ class RagGenerator:
         """
         return self._format_context(sources) if sources else "(no relevant passages found)"
 
-    async def generate(self, query: str, sources: list[Source]) -> str:
+    async def generate(self, query: str, sources: list[Source], max_tokens: int = 512) -> str:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": f"Context:\n{self.format_context(sources)}\n\nQuestion: {query}"},
         ]
-        return await self._llm.complete(messages)
+        return await self._llm.complete(messages, max_tokens=max_tokens)
 
-    async def generate_with(
-        self, system: str, user: str, max_tokens: int = 512
-    ) -> tuple[str, bool]:
+    async def generate_with(self, system: str, user: str, max_tokens: int) -> tuple[str, bool]:
         """``(answer, truncated)`` from an already-rendered pair of messages.
 
         Takes rendered STRINGS rather than a template, so this module stays

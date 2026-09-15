@@ -60,6 +60,11 @@ RESERVED_NAMES = frozenset({"context", "columns", "label"})
 #: Kept in step with `id` in contracts/schemas/prompt_templates_response.json.
 _ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
+#: Sanity bound on a template's declared output ceiling. Not a model limit —
+#: models differ — just wide enough for any real table and narrow enough to
+#: catch a fat-fingered extra zero at load rather than at request time.
+_MAX_OUTPUT_TOKENS_CEILING = 100_000
+
 #: Slot names are lowercase identifiers. Narrow on purpose: the name appears in
 #: a JSON request body, in the marker syntax, and in error messages, and a
 #: charset that admits ``{{ foo-bar }}`` invites the reader to guess which of
@@ -278,8 +283,11 @@ def content_hash(
 
     **What counts as content.** Anything that can change the bytes sent to the
     model (``system``, ``user``, ``columns``, ``output``, slot ``name``, and
-    **``label``**) or change which requests are accepted (slot ``required`` and
-    ``max_len``), plus ``version`` so a bump is visible in the hash too. ``id``
+    **``label``**), change which requests are accepted (slot ``required`` and
+    ``max_len``), or change **how much of the answer survives**
+    (``max_output_tokens`` — two tenants differing only there produce materially
+    different tables from one corpus), plus ``version`` so a bump is visible in
+    the hash too. ``id``
     is excluded because hashes are only ever compared *within* an id.
 
     **``label`` IS content, and an earlier version of this had it wrong.** It
@@ -308,9 +316,7 @@ def content_hash(
     payload = {
         "version": version,
         "label": label,
-        # Content: it changes how much of the answer survives, so two tenants
-        # whose templates differ only here can produce different tables.
-        "max_output_tokens": max_output_tokens,
+
         "output": output,
         "columns": list(columns) if columns is not None else None,
         "system": system,
@@ -319,6 +325,15 @@ def content_hash(
             {"name": s.name, "required": s.required, "max_len": s.max_len} for s in slots
         ],
     }
+    # OMITTED WHEN UNSET, not serialized as null. Including the key
+    # unconditionally moved the hash of every template that does NOT declare a
+    # ceiling — `literature-summary` went b6a671b3a40015cf -> e1f00e1ba9444840
+    # while its bytes were untouched and it stayed v1. Two tenants either side of
+    # that upgrade would serve the same (id, version) with different hashes: the
+    # drift detector firing where nothing drifted, which is the false positive
+    # decision 4 exists to avoid.
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
@@ -451,6 +466,16 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
         or max_output_tokens < 1
     ):
         raise _fail(where, "max_output_tokens", f"must be an integer >= 1, got {max_output_tokens!r}")
+    if max_output_tokens is not None and max_output_tokens > _MAX_OUTPUT_TOKENS_CEILING:
+        # An authoring slip (an extra zero) otherwise reaches the model server as
+        # a verbatim request and comes back a 400, which this app degrades into a
+        # generic "[answer generation failed]" — the fault named nowhere near
+        # where it was made. Caught at load, like every other authoring error.
+        raise _fail(
+            where,
+            "max_output_tokens",
+            f"{max_output_tokens} exceeds the sanity ceiling of {_MAX_OUTPUT_TOKENS_CEILING}",
+        )
     label = raw.get("label")
     if not isinstance(label, str) or not label:
         raise _fail(where, "label", f"must be a non-empty string, got {label!r}")
@@ -727,6 +752,12 @@ def to_wire(t: PromptTemplate) -> dict[str, Any]:
     # false with `columns` optional, and `"columns": null` fails its `type: array`.
     if t.columns is not None:
         item["columns"] = list(t.columns)
+    # Same rule. The contract declared this and to_wire did not emit it, so the
+    # schema advertised a field no caller could ever see — and the schema-
+    # validation test could not catch it, because a missing OPTIONAL field is
+    # valid. A caller needs it to know why one template's table runs longer.
+    if t.max_output_tokens is not None:
+        item["max_output_tokens"] = t.max_output_tokens
     slots: list[dict[str, Any]] = []
     for s in t.slots:
         entry: dict[str, Any] = {"name": s.name, "required": s.required, "max_len": s.max_len}

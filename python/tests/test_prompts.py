@@ -928,3 +928,30 @@ def test_the_shipped_table_templates_all_raise_the_ceiling(tmp_path: Path) -> No
             )
         else:
             assert t.max_output_tokens is None
+
+
+def test_an_absurd_token_ceiling_is_refused_at_load(tmp_path: Path) -> None:
+    """A fat-fingered extra zero must fail where it was typed.
+
+    Unbounded, it reaches the model server verbatim, comes back a 400, and this
+    app degrades that into a generic "[answer generation failed]" — the fault
+    reported nowhere near where it was made.
+    """
+    with pytest.raises(TemplateValidationError, match="sanity ceiling"):
+        _load_one(tmp_path, max_output_tokens=25_000_000)
+
+
+def test_a_template_without_a_ceiling_keeps_its_hash(tmp_path: Path) -> None:
+    """`max_output_tokens` is omitted from the hash payload when unset.
+
+    Including the key unconditionally moved the hash of every template that does
+    not declare one — the shipped `literature-summary` changed while its bytes
+    were untouched and it stayed v1, so two tenants either side of the upgrade
+    would serve the same (id, version) with different hashes. That is the drift
+    detector firing where nothing drifted.
+    """
+    from ragstack.prompts import content_hash
+
+    kw = dict(version=1, label="L", output="text", columns=None, slots=(), system="s", user="u")
+    assert content_hash(**kw) == content_hash(**kw, max_output_tokens=None)
+    assert content_hash(**kw) != content_hash(**kw, max_output_tokens=2500)

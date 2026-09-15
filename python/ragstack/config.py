@@ -830,11 +830,16 @@ class Settings(BaseSettings):
     # caller happens to select the bad template first.
     prompt_templates_file: str = ""
 
-    # Ceiling on GENERATED tokens. 512 was a hardcoded default in llm.py with no
-    # setting behind it, which is fine for a prose answer and wrong for a table:
-    # an extraction template asks for as many rows as the literature supports and
-    # then loses the ones that do not fit, silently. A template may raise it for
-    # itself (`max_output_tokens`); this is the floor everything else uses.
+    # Ceiling on GENERATED tokens for BOTH /v1/query paths — the templated one and
+    # the plain answer. 512 was a hardcoded default in llm.py with no setting
+    # behind it, which is fine for a prose answer and wrong for a table: an
+    # extraction template asks for as many rows as the literature supports and
+    # then loses the ones that do not fit, silently.
+    #
+    # A template may raise it for itself (`max_output_tokens`), which takes
+    # precedence. NOT honoured by the query rewriters, the models benchmark probe
+    # or KG extraction: those have their own short, bounded outputs and are not
+    # what this is for.
     llm_max_output_tokens: int = 512
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 

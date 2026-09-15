@@ -193,7 +193,7 @@ export function App() {
   const [answerNote, setAnswerNote] = useState("");
   // The model id that produced the current answer.
   const [answeredWith, setAnsweredWith] = useState("");
-  // "ppi-extraction v1 · <model>" on the template path — what produced this answer.
+  // "ppi-extraction v2 · <model>" on the template path — what produced this answer.
   const [provenance, setProvenance] = useState("");
   // True while the displayed answer came from the server-side template path.
   const [usedTemplate, setUsedTemplate] = useState(false);
@@ -319,12 +319,15 @@ export function App() {
         // No echo fields means the SERVER fell back — no LLM wired, or
         // generation failed (ADR-0008 §3b). Say that, rather than attributing
         // the text to a template and a model that did not produce it.
-        // A truncated table has lost ROWS, and nothing in the text says so — the
+        // A truncated TABLE has lost ROWS, and nothing in the text says so — the
         // row count otherwise tracks how verbose the model was per row, which is
-        // why raising the source count could REDUCE the rows shown. Say it.
+        // why raising the source count could REDUCE the rows shown. A prose
+        // template loses sentences instead, so it gets different wording.
         setAnswerNote(
           res.truncated
-            ? "The model hit its length limit, so this table is cut short — there may be more rows in the sources than are shown."
+            ? template.output === "table"
+              ? "The model hit its length limit, so this table is cut short — there may be more rows in the sources than are shown."
+              : "The model hit its length limit, so this answer is cut short."
             : "",
         );
         setProvenance(

@@ -982,7 +982,16 @@ async def query(
         try:
             with stage("generate"):
                 if template is None:
-                    answer = await generator.generate(request.query, sources)
+                    # The server setting applies here too. It previously did not:
+                    # llm_max_output_tokens was read at exactly ONE site and only
+                    # when a template omitted its own ceiling, so the untemplated
+                    # answer kept the hardcoded 512 the fix was written to remove,
+                    # while the setting's own comment claimed to be "the floor
+                    # everything else uses". Default is still 512, so a deployment
+                    # that does not raise it is unchanged.
+                    answer = await generator.generate(
+                        request.query, sources, max_tokens=settings.llm_max_output_tokens
+                    )
                 else:
                     used_template = template
                     # Render with the SAME context text the default path builds,

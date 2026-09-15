@@ -281,7 +281,7 @@ async def test_no_llm_configured_claims_no_template(client, templates, monkeypat
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "[LLM not configured]" in body["answer"]
-    for key in ("template", "template_version", "template_hash", "model"):
+    for key in ("template", "template_version", "template_hash", "model", "truncated"):
         assert key not in body, f"{key} claimed a template ran when generation did not"
 
 
@@ -311,7 +311,7 @@ async def test_generation_failure_claims_no_template(client, templates, monkeypa
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "[answer generation failed]" in body["answer"]
-    for key in ("template", "template_version", "template_hash", "model"):
+    for key in ("template", "template_version", "template_hash", "model", "truncated"):
         assert key not in body, f"{key} claimed a template ran when generation failed"
 
 
