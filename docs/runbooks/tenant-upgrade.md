@@ -38,9 +38,12 @@ now**, so that is the tag the commands below use.
 
 Code references are `file:line` against the tree at the tag named above.
 
-- A path is relative to **`python/ragstack/`** — `api/security.py:990`.
-- Unless it starts with `go/`, `ops/coconut/`, `frontend/` or `contracts/`, which
-  are relative to the **repository root**.
+- A path starting `python/`, `go/`, `ops/coconut/`, `frontend/` or `contracts/`
+  is relative to the **repository root** — `python/ragstack/tenancy.py:36`. This
+  form is always unambiguous and is the one to prefer.
+- Any other path is relative to **`python/ragstack/`** — `api/security.py:990`,
+  `ops/evict.py:158` (which is `python/ragstack/ops/evict.py`, not the repo's
+  `ops/`).
 - A **bare filename** — `collections.py:1569` — means the file the surrounding
   section is about.
 
