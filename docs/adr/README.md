@@ -18,6 +18,7 @@ Format follows [Michael Nygard's ADR pattern](https://cognitect.com/blog/2011/11
 | [0005](0005-tenant-anatomy.md) | Anatomy of a tenant: dedicated stateful stores, scripted provisioning | Accepted |
 | [0006](0006-execution-topology-revised.md) | Execution topology, revised from the production build: one ingest plane, Python online plane, Go by measured trigger | Proposed |
 | [0007](0007-tenant-control-plane.md) | Tenant control plane: `ragstack-ctl` owns tenant lifecycle, credentials, gateway and supervision | Proposed |
+| [0008](0008-prompt-templates.md) | Generation is configurable, not arbitrary: named server-side prompt templates | Proposed |
 
 ## Conventions
 

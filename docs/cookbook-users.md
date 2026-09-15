@@ -146,6 +146,13 @@ Only the owner (or an admin) can share, upload into, or delete the collection;
 someone with a `read` share can query it. `POST …/owner` transfers ownership —
 and takes your own access with it. Details: [API.md → Collection shares](API.md#collection-shares).
 
+> **Transfer moves ownership, not searchability — prefer sharing.** Chunks are
+> stamped with the owner's subject at ingest and nothing re-stamps them on
+> transfer, and the widening that lets a *grantee* read an owner's chunks is
+> deliberately a no-op for someone who owns the collection. So the new owner
+> receives a collection they cannot query. A `read` share has no such problem.
+> Tracked as [#558](https://github.com/wilke/ragstack/issues/558).
+
 ## 6. Ask a question
 
 Full RAG — answer plus the sources it was grounded on:

@@ -16,12 +16,35 @@ import html
 import os
 import re
 import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 import markdown
 
 HERE = Path(__file__).resolve().parent
 REPO = "https://github.com/wilke/ragstack"
+
+
+def _build_stamp() -> str:
+    """What this site was built from — tag-or-sha plus the build date, UTC.
+
+    A published page that does not say which commit produced it cannot be checked
+    against the code it documents, and a reader has no way to tell a current site
+    from one built months ago. Degrades to the date alone outside a git checkout.
+    """
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        rev = subprocess.run(
+            ["git", "-C", str(HERE), "describe", "--tags", "--always", "--dirty"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return date
+    return f"{rev} · {date}" if rev else date
+
+
+BUILD = _build_stamp()
 MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
 
 # The docs to publish, in nav order. `card`/`blurb` drive the index landing page.
@@ -207,6 +230,7 @@ def render_page(page: dict) -> None:
         .replace("__BODY__", body_html)
         .replace("__MERMAID__", mermaid_script)
         .replace("__REPO__", REPO)
+        .replace("__BUILD__", html.escape(BUILD))
     )
     (HERE / page["out"]).write_text(out, encoding="utf-8")
     print(f"  {page['out']:32} {len(diagrams)} diagrams, {(HERE / page['out']).stat().st_size // 1024} KB")
@@ -240,7 +264,9 @@ def build_index() -> None:
             f'<p>{html.escape(p["blurb"])}</p>'
             f'<span class="card-go">Read &rarr;</span></a>'
         )
-    out = _INDEX.replace("__CARDS__", "\n      ".join(cards)).replace("__REPO__", REPO)
+    out = (_INDEX.replace("__CARDS__", "\n      ".join(cards))
+           .replace("__REPO__", REPO)
+           .replace("__BUILD__", html.escape(BUILD)))
     (HERE / "index.html").write_text(out, encoding="utf-8")
     print(f"  {'index.html':32} landing ({len(PAGES)} docs)")
 
@@ -438,7 +464,8 @@ _PAGE = (
     '  <nav class="side" id="side"><div class="side-title">Contents</div>\n__NAV__\n  </nav>\n'
     '  <main><article class="content" id="content">\n__BODY__\n  </article></main>\n'
     "</div>\n\n"
-    '<footer><div class="foot-inner">Generated from the repo markdown via '
+    '<footer><div class="foot-inner">Built from <code>__BUILD__</code> · '
+    'generated from the repo markdown via '
     '<code>docs/build_docs.py</code> · <a href="__REPO__">__REPO__</a></div></footer>\n'
     "__MERMAID__\n" + _SPY_SCRIPT + "\n</body>\n</html>\n"
 )
@@ -474,7 +501,8 @@ _INDEX = (
     '  <div class="chips"><span class="chip"><a href="__REPO__">github.com/wilke/ragstack &rarr;</a></span></div>\n'
     "</div></header>\n\n"
     '<div class="index-wrap"><div class="cards">\n      __CARDS__\n</div></div>\n\n'
-    '<footer><div class="foot-inner">Generated from the repo markdown via '
+    '<footer><div class="foot-inner">Built from <code>__BUILD__</code> · '
+    'generated from the repo markdown via '
     '<code>docs/build_docs.py</code> · <a href="__REPO__">__REPO__</a></div></footer>\n'
     "</body>\n</html>\n"
 )
