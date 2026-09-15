@@ -597,7 +597,9 @@ func (p *planner) addESSnapshots(bundleDir string, fence bool) {
 				}
 				before[i] = n
 			}
-			if err := drv.Snapshot(ctx, url, repo, name); err != nil {
+			// The inventory, not `*`: the snapshot covers exactly the indices
+			// this part's manifest lists.
+			if err := drv.Snapshot(ctx, url, repo, name, idx); err != nil {
 				return "", err
 			}
 			for _, i := range idx {

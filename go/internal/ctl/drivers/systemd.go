@@ -88,25 +88,46 @@ func (s *RealSystemd) Start(ctx context.Context, unit string) error {
 // units an earlier, interrupted decommission had already removed used to
 // fail right there.
 func (s *RealSystemd) Stop(ctx context.Context, unit string) error {
-	return notLoadedIsFine(s.verb(ctx, "stop", unit))
+	return notLoadedIsFine(unit, s.verb(ctx, "stop", unit))
 }
 func (s *RealSystemd) Enable(ctx context.Context, unit string) error {
 	return s.verb(ctx, "enable", unit)
 }
 func (s *RealSystemd) Disable(ctx context.Context, unit string) error {
-	return notLoadedIsFine(s.verb(ctx, "disable", unit))
+	return notLoadedIsFine(unit, s.verb(ctx, "disable", unit))
 }
 
-// notLoadedIsFine turns systemctl's "Unit X not loaded" / "does not exist"
-// (exit 5) into success for the verbs whose goal is the unit's absence.
-func notLoadedIsFine(err error) error {
+// notLoadedIsFine turns systemctl's "Unit <unit> not loaded" / "Unit file
+// <unit> does not exist" into success for the verbs whose goal is the unit's
+// absence.
+//
+// The message has to NAME the unit that was acted on. Matching the phrases
+// anywhere in stderr swallowed a different failure entirely: systemd refuses a
+// stop whose transaction would break another unit with
+//
+//	Transaction for X.service/stop is destructive (Y.service has 'not found' job queued).
+//
+// which contains "not found", is exit 1, and means the unit was NOT stopped —
+// so a decommission reported every unit gone while one of them was still
+// running. The phrases below are the ones systemd writes with the unit's own
+// name in them, which the destructive-transaction message is not.
+func notLoadedIsFine(unit string, err error) error {
 	// exit 5 for `stop` ("not loaded"), exit 1 for `disable` ("Unit file X
 	// does not exist"): the message is the fact, the code varies by verb.
 	var ee *ExecError
-	if errors.As(err, &ee) {
-		msg := strings.ToLower(ee.Stderr)
-		if strings.Contains(msg, "not loaded") || strings.Contains(msg, "does not exist") ||
-			strings.Contains(msg, "not found") {
+	if !errors.As(err, &ee) {
+		return err
+	}
+	msg := strings.ToLower(ee.Stderr)
+	u := strings.ToLower(unit)
+	for _, absent := range []string{
+		"unit " + u + " not loaded",
+		"unit " + u + " could not be found",
+		"unit " + u + " not found",
+		"unit file " + u + " does not exist",
+		"unit " + u + " does not exist",
+	} {
+		if strings.Contains(msg, absent) {
 			return nil
 		}
 	}

@@ -116,11 +116,13 @@ func (b *RealBuild) UI(ctx context.Context, worktree, base, outDir string) error
 	if !filepath.IsAbs(outDir) || filepath.Clean(outDir) != outDir {
 		return fmt.Errorf("%w: the output directory %q must be absolute and clean", jobs.ErrRefused, outDir)
 	}
-	if !contained(outDir, b.Roots) {
-		// --emptyOutDir DELETES the directory's contents before writing. A
-		// build whose outDir was not checked is a delete of any path the
-		// caller named.
-		return outsideRoots(outDir, b.Roots)
+	// --emptyOutDir DELETES the directory's contents before writing, so the
+	// check is made on the RESOLVED path and vite is handed that path. A
+	// lexical check passed `<root>/dist` when `dist` — or any component above
+	// it — was a symlink, and the build then emptied whatever it pointed at.
+	outDir, err = resolvedContainedNoLeafLink(outDir, b.Roots)
+	if err != nil {
+		return err
 	}
 	// node runs the vite entry point directly rather than through the shebang
 	// of node_modules/.bin/vite: that shebang names whichever node is first on

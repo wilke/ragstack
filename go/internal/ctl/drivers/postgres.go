@@ -120,7 +120,7 @@ func (p *RealPostgres) Dump(ctx context.Context, spec jobs.PostgresSpec, out str
 	if err != nil {
 		return err
 	}
-	dir, base, err := p.ctlFile(out)
+	out, dir, base, err := p.ctlFile(out)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 	if err != nil {
 		return err
 	}
-	dir, base, err := p.ctlFile(in)
+	in, dir, base, err := p.ctlFile(in)
 	if err != nil {
 		return err
 	}
@@ -179,17 +179,22 @@ func (p *RealPostgres) Restore(ctx context.Context, spec jobs.PostgresSpec, in s
 	return nil
 }
 
-// ctlFile splits a host path into the directory to bind and the base name to
-// name inside the container, after checking containment.
-func (p *RealPostgres) ctlFile(path string) (dir, base string, err error) {
-	if _, err := paths.SafePath("/", path); err != nil {
-		return "", "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+// ctlFile splits a host path into the RESOLVED path itself, the directory to
+// bind and the base name to name inside the container, after checking
+// containment.
+//
+// The check is made on the resolved path and the resolved directory is what
+// gets bound, for a reason particular to this driver: the directory is handed
+// to apptainer as a bind SOURCE, and apptainer resolves it. A dump path under
+// a symlinked component therefore passed the lexical check and then bound
+// whatever the link pointed at into the container, where pg_dump writes with
+// this account's privileges.
+func (p *RealPostgres) ctlFile(path string) (resolved, dir, base string, err error) {
+	resolved, err = resolvedContained(path, p.opts.ApprovedRoots)
+	if err != nil {
+		return "", "", "", err
 	}
-	dir = filepath.Dir(path)
-	if !contained(path, p.opts.ApprovedRoots) {
-		return "", "", outsideRoots(path, p.opts.ApprovedRoots)
-	}
-	return dir, filepath.Base(path), nil
+	return resolved, filepath.Dir(resolved), filepath.Base(resolved), nil
 }
 
 func (p *RealPostgres) longTimeout() time.Duration {

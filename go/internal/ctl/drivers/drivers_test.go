@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
@@ -404,8 +405,17 @@ func seededFake(t *testing.T) *Fake {
 	if err := f.Elasticsearch().RegisterRepo(ctx, esURL, "ctl-b1", "/rag/data/tenants/dev/elasticsearch/snapshots/b1", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Elasticsearch().Snapshot(ctx, esURL, "ctl-b1", "snap-1"); err != nil {
+	if err := f.Elasticsearch().Snapshot(ctx, esURL, "ctl-b1", "snap-1", []string{"dev-chunks"}); err != nil {
 		t.Fatal(err)
+	}
+	// The bundle tree a backup lays down before it dumps anything. The sqlite
+	// and postgres fakes require the destination directory to exist, exactly
+	// as the real drivers do — neither creates one, because a driver that did
+	// would create it outside the Files driver's mode and containment rules.
+	for _, dir := range []string{"/rag/backups/dev/b1/postgres", "/rag/backups/dev/b1/state"} {
+		if err := f.Files().MkdirAll(ctx, dir, 0o2770); err != nil {
+			t.Fatal(err)
+		}
 	}
 	f.Clear()
 	return f
@@ -815,6 +825,10 @@ func TestFakePostgresReadinessAndDump(t *testing.T) {
 		t.Error("a run directory seeded not-ready answered ready")
 	}
 	out := "/rag/backups/dev/b1/postgres/dev.dump"
+	// The bundle directory, made by the step before the dump on a real backup.
+	if err := f.Files().MkdirAll(ctx, filepath.Dir(out), 0o2770); err != nil {
+		t.Fatal(err)
+	}
 	if err := f.Postgres().Dump(ctx, pgSpec(), out); err != nil {
 		t.Fatal(err)
 	}
@@ -961,6 +975,104 @@ func TestRealFilesMkdirAllRefusesOutsideTheRootsAndThroughASymlink(t *testing.T)
 	}
 	if err := f.MkdirAll(context.Background(), file, 0o770); !errors.Is(err, jobs.ErrRefused) {
 		t.Errorf("MkdirAll over a file = %v, want a refusal", err)
+	}
+}
+
+// MkdirAll used to chmod the LEAF alone and leave every intermediate level at
+// mkdir's mode-minus-umask: `MkdirAll(<root>/a/b/c, 0o2770)` under the
+// ordinary 022 umask produced a/ and b/ at 0750 with no setgid, and a tenant
+// tree whose upper levels are neither group-writable nor setgid is one where
+// the next step's writes land with the wrong group.
+func TestRealFilesMkdirAllSetsTheModeOnEveryLevelItCreated(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+
+	f, root := realFiles(t)
+	// `a` exists ALREADY, at a mode this call must not touch: on the host that
+	// is /rag/data/tenants, owned 0755 by a group with 1869 members.
+	existing := filepath.Join(root, "a")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.MkdirAll(context.Background(), filepath.Join(existing, "b", "c"), 0o2770); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(existing, "b"), filepath.Join(existing, "b", "c")} {
+		st, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o770 {
+			t.Errorf("%s is %v, want 0770 on every level this call created", dir, st.Mode().Perm())
+		}
+		if st.Mode()&os.ModeSetgid == 0 {
+			t.Errorf("%s has no setgid bit; it is what makes the tree inherit its group", dir)
+		}
+	}
+	st, err := os.Stat(existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o755 || st.Mode()&os.ModeSetgid != 0 {
+		t.Errorf("the pre-existing %s is now %v; a directory this call did not create is never re-moded", existing, st.Mode())
+	}
+}
+
+// WriteAtomic took os.FileMode(mode), which keeps only the low nine bits: a
+// caller asking for 0o2750 got 0o750 and no setgid. CopyFile already used
+// fileMode; the two write paths now agree.
+func TestRealFilesWriteAtomicKeepsSetgidAndFriends(t *testing.T) {
+	f, root := realFiles(t)
+	path := filepath.Join(root, "shared.env")
+	if err := f.WriteAtomic(context.Background(), path, []byte("x\n"), 0o2640); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o640 {
+		t.Errorf("perm = %v, want 0640", st.Mode().Perm())
+	}
+	if st.Mode()&os.ModeSetgid == 0 {
+		t.Errorf("mode = %v, want the setgid bit the caller asked for", st.Mode())
+	}
+}
+
+// Rename is the one write path that used to overwrite silently: rename(2)
+// replaces an existing destination. `decommission` moves a tenant tree aside
+// and `restore` moves a staged one into place; landing on top of something
+// already there is data loss no step asked for.
+func TestRealFilesRenameRefusesAnExistingDestination(t *testing.T) {
+	ctx := context.Background()
+	f, root := realFiles(t)
+	from, to := filepath.Join(root, "from"), filepath.Join(root, "to")
+	if err := os.WriteFile(from, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(to, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename(ctx, from, to); !errors.Is(err, jobs.ErrRefused) {
+		t.Fatalf("Rename onto an existing path = %v, want a refusal", err)
+	}
+	if got, _ := os.ReadFile(to); string(got) != "precious" {
+		t.Errorf("the destination was overwritten: %q", got)
+	}
+	if _, err := os.Stat(from); err != nil {
+		t.Errorf("the source was moved anyway: %v", err)
+	}
+	// A destination that is a dangling SYMLINK is still an existing path.
+	dangling := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(root, "nowhere"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Rename(ctx, from, dangling); !errors.Is(err, jobs.ErrRefused) {
+		t.Errorf("Rename onto a dangling symlink = %v, want a refusal", err)
+	}
+	// And the ordinary move still works.
+	if err := f.Rename(ctx, from, filepath.Join(root, "moved")); err != nil {
+		t.Fatalf("Rename to a free path = %v", err)
 	}
 }
 

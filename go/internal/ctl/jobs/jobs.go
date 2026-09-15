@@ -405,11 +405,17 @@ type Qdrant interface {
 // Elasticsearch is the store driver subset the ctl talks to over loopback.
 type Elasticsearch interface {
 	Indices(ctx context.Context, baseURL string) ([]string, error)
-	// Snapshot is PUT _snapshot/{repo}/{name}?wait_for_completion=true; it is
-	// an error unless the response says state SUCCESS and failed == 0, because
-	// a PARTIAL snapshot that the ctl recorded as a backup is the worst
-	// outcome this whole verb has.
-	Snapshot(ctx context.Context, baseURL, repo, name string) error
+	// Snapshot is PUT _snapshot/{repo}/{name}?wait_for_completion=true over
+	// EXACTLY the given indices; it is an error unless the response says state
+	// SUCCESS and failed == 0, because a PARTIAL snapshot that the ctl
+	// recorded as a backup is the worst outcome this whole verb has.
+	//
+	// The list is a parameter rather than a `*` inside the driver because the
+	// caller's inventory (Indices) already excludes the cluster's own
+	// dot-prefixed system indices: a snapshot of `*` covered indices the
+	// manifest did not list, and on a shared node that means another tenant's
+	// .security landing in this tenant's bundle.
+	Snapshot(ctx context.Context, baseURL, repo, name string, indices []string) error
 	// Ready is GET _cluster/health?wait_for_status=yellow&timeout=… → 200.
 	Ready(ctx context.Context, baseURL string) error
 	// RegisterRepo is PUT _snapshot/{repo} {type: fs, settings: {location,

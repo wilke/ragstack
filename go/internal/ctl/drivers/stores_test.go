@@ -142,11 +142,59 @@ func TestQdrantReadyFallsBackToCollectionsWhenReadyzIsAbsent(t *testing.T) {
 
 func TestQdrantReadyFailsWhenBothProbesFail(t *testing.T) {
 	s := newStubStore(t)
-	s.on("GET /readyz", 503, `not ready`)
+	// A 404 is the only answer that means "this store has no /readyz", so it
+	// is the only one that reaches the fallback — and the fallback failing is
+	// what makes this an error that names both.
+	s.on("GET /readyz", 404, `{"status":{"error":"Not found"}}`)
 	s.on("GET /collections", 503, `still not ready`)
 	err := realStores(t).Qdrant().Ready(context.Background(), s.url())
 	if err == nil || !strings.Contains(err.Error(), "fallback") {
 		t.Fatalf("Ready = %v, want an error naming both probes", err)
+	}
+}
+
+// A store that says 503 "not ready" IS not ready, whatever /collections
+// thinks. The fallback used to run on ANY /readyz error, and qdrant serves
+// /collections while it is still loading segments — so the probe reported
+// ready for a store that had just said, on the one endpoint whose whole job is
+// to say it, that it was not.
+func TestQdrantReadyTrustsA503FromReadyzAndDoesNotFallBack(t *testing.T) {
+	s := newStubStore(t)
+	s.on("GET /readyz", 503, `not ready`)
+	// /collections is deliberately NOT registered: the stub fails the test if
+	// the driver reaches for it, which is the assertion.
+	s.routes["GET /collections"] = func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("Ready consulted /collections after a 503 from /readyz")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{"result":{"collections":[]}}`)
+	}
+	err := realStores(t).Qdrant().Ready(context.Background(), s.url())
+	if err == nil {
+		t.Fatal("Ready with a 503 /readyz = nil, want it to report the store not ready")
+	}
+	if strings.Contains(err.Error(), "fallback") {
+		t.Errorf("Ready = %v, want the /readyz answer alone", err)
+	}
+	for _, called := range s.got {
+		if called.path == "/collections" {
+			t.Fatalf("the driver requested /collections; requests = %v", s.got)
+		}
+	}
+}
+
+// A /readyz that cannot be reached at all is likewise the answer: there is no
+// older-qdrant story for a connection that failed, so nothing is asked of
+// /collections.
+func TestQdrantReadyTrustsATransportFailureFromReadyz(t *testing.T) {
+	s := newStubStore(t)
+	s.on("GET /readyz", 500, `boom`)
+	s.routes["GET /collections"] = func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("Ready consulted /collections after a 500 from /readyz")
+		w.WriteHeader(200)
+		_, _ = io.WriteString(w, `{"result":{"collections":[]}}`)
+	}
+	if err := realStores(t).Qdrant().Ready(context.Background(), s.url()); err == nil {
+		t.Fatal("Ready with a 500 /readyz = nil, want an error")
 	}
 }
 
@@ -243,7 +291,7 @@ func TestESSnapshotRefusesAPartialSnapshot(t *testing.T) {
 	s := newStubStore(t)
 	s.on("PUT /_snapshot/ctl-b1/snap", 200,
 		`{"snapshot":{"snapshot":"snap","state":"PARTIAL","indices":["alpha-chunks"],"shards":{"total":4,"failed":1,"successful":3}}}`)
-	err := realStores(t).Elasticsearch().Snapshot(context.Background(), s.url(), "ctl-b1", "snap")
+	err := realStores(t).Elasticsearch().Snapshot(context.Background(), s.url(), "ctl-b1", "snap", []string{"alpha-chunks"})
 	if err == nil {
 		t.Fatal("a PARTIAL snapshot was accepted")
 	}
@@ -258,7 +306,8 @@ func TestESSnapshotAcceptsSuccessAndSendsTheDocumentedBody(t *testing.T) {
 	s := newStubStore(t)
 	s.on("PUT /_snapshot/ctl-b1/snap", 200,
 		`{"snapshot":{"snapshot":"snap","state":"SUCCESS","indices":["alpha-chunks"],"shards":{"total":4,"failed":0,"successful":4}}}`)
-	if err := realStores(t).Elasticsearch().Snapshot(context.Background(), s.url(), "ctl-b1", "snap"); err != nil {
+	if err := realStores(t).Elasticsearch().Snapshot(context.Background(), s.url(), "ctl-b1", "snap",
+		[]string{"alpha-chunks", "alpha-docs"}); err != nil {
 		t.Fatal(err)
 	}
 	last := s.last()
@@ -269,7 +318,11 @@ func TestESSnapshotAcceptsSuccessAndSendsTheDocumentedBody(t *testing.T) {
 	if err := json.Unmarshal([]byte(last.body), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["indices"] != "*" || body["ignore_unavailable"] != false || body["include_global_state"] != false {
+	// The INDICES the caller named, never "*": `*` covers the cluster's own
+	// dot-prefixed system indices, which the caller's inventory excludes.
+	if fmt.Sprint(body["indices"]) != "[alpha-chunks alpha-docs]" ||
+		body["ignore_unavailable"] != false || body["include_global_state"] != false ||
+		body["expand_wildcards"] != "open" {
 		t.Errorf("snapshot body = %s", last.body)
 	}
 }

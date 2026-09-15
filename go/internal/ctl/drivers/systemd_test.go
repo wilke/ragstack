@@ -301,3 +301,57 @@ func TestSystemdReportsAFailedVerbWithTheProgramAndTheStderr(t *testing.T) {
 		t.Errorf("the error does not say what happened: %v", err)
 	}
 }
+
+// Stop and Disable forgive the unit's ABSENCE — a decommission re-run must not
+// fail on units an interrupted one already removed — and nothing else.
+//
+// The forgiveness used to be a substring search for "not loaded", "does not
+// exist" or "not found" anywhere in stderr, which swallowed a completely
+// different failure: systemd refuses a stop whose transaction would break
+// another unit with "Transaction … is destructive (X has 'not found' job
+// queued)", exit 1, the unit still running. A decommission then reported every
+// unit gone while one of them was up. The message now has to NAME the unit
+// that was acted on.
+func TestSystemdStopAndDisableForgiveOnlyTheNamedUnitsAbsence(t *testing.T) {
+	ctx := context.Background()
+	const unit = "ragstack-dev-api.service"
+
+	forgiven := []string{
+		"Failed to stop " + unit + ": Unit " + unit + " not loaded.",
+		"Failed to disable unit: Unit file " + unit + " does not exist.",
+		"Failed to stop " + unit + ": Unit " + unit + " not found.",
+	}
+	for _, stderr := range forgiven {
+		d, stub := newSystemd(t)
+		stub.respond("stop", "", stderr, 5)
+		stub.respond("disable", "", stderr, 1)
+		if err := d.Stop(ctx, unit); err != nil {
+			t.Errorf("Stop with stderr %q = %v, want the absence forgiven", stderr, err)
+		}
+		if err := d.Disable(ctx, unit); err != nil {
+			t.Errorf("Disable with stderr %q = %v, want the absence forgiven", stderr, err)
+		}
+	}
+
+	kept := []string{
+		// The one that used to be swallowed: the unit is NOT stopped.
+		"Transaction for " + unit + "/stop is destructive (ragstack-dev-qdrant.service has 'not found' job queued).",
+		// Another unit's absence says nothing about this one's.
+		"Failed to stop " + unit + ": Unit ragstack-other-api.service not loaded.",
+		"Failed to stop " + unit + ": Connection timed out.",
+		"Interactive authentication required.",
+	}
+	for _, stderr := range kept {
+		d, stub := newSystemd(t)
+		stub.respond("stop", "", stderr, 1)
+		stub.respond("disable", "", stderr, 1)
+		if err := d.Stop(ctx, unit); err == nil {
+			t.Errorf("Stop with stderr %q = nil; that failure is not the unit's absence", stderr)
+		} else if !strings.Contains(err.Error(), "systemctl") && !strings.Contains(err.Error(), stderr) {
+			t.Errorf("Stop error %v does not carry the program's own words", err)
+		}
+		if err := d.Disable(ctx, unit); err == nil {
+			t.Errorf("Disable with stderr %q = nil; that failure is not the unit's absence", stderr)
+		}
+	}
+}

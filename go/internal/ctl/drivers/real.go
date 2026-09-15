@@ -297,22 +297,28 @@ type RealFiles struct {
 	approved []string // Roots, plus each root as EvalSymlinks resolves it
 }
 
-// check resolves path and returns the RESOLVED path the caller must operate
-// on.
+// check resolves path against this driver's approved roots (both spellings:
+// a deployment whose /rag/data is itself a symlink is a normal host, not an
+// escape) and returns the RESOLVED path the caller must operate on.
+func (f *RealFiles) check(path string) (string, error) {
+	return resolvedContained(path, f.roots())
+}
+
+// resolvedContained is the containment check every driver that writes,
+// deletes or binds a host path uses, and the path it returns is the one the
+// caller must then operate on.
 //
-// paths.SafePath is lexical: it compares cleaned strings, so
+// paths.SafePath is LEXICAL: it compares cleaned strings, so
 // `<root>/link/../../etc/passwd` is refused but `<root>/link/passwd`, where
 // `link` is a symlink to /etc, is not — nothing in the string says the
-// component is a link. Containment that a single symlinked directory defeats
-// is not containment, so the parent directory is resolved through
-// filepath.EvalSymlinks FIRST and the check is made on what came back. The
-// caller then opens THAT path, not the one it was given, so the check and the
-// syscall cannot be made to disagree by a link planted between them.
-//
-// The approved roots are resolved the same way and both spellings accepted: a
-// deployment whose /rag/data is itself a symlink is a normal host, not an
-// escape.
-func (f *RealFiles) check(path string) (string, error) {
+// component is a link. Five drivers used to check the path they were given
+// and then operate on another (or on the same string, having resolved it only
+// for a Stat), which is containment a single symlinked directory defeats. So
+// the parent directory is resolved through filepath.EvalSymlinks FIRST, the
+// check is made on what came back, and the RESOLVED path is what is returned:
+// the check and the syscall cannot then be made to disagree by a link planted
+// between them.
+func resolvedContained(path string, roots []string) (string, error) {
 	if _, err := paths.SafePath("/", path); err != nil {
 		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
@@ -321,26 +327,60 @@ func (f *RealFiles) check(path string) (string, error) {
 		return "", fmt.Errorf("%w: resolving the parent of %s: %v", jobs.ErrRefused, path, err)
 	}
 	resolved := filepath.Join(dir, filepath.Base(path))
-	if !contained(resolved, f.roots()) {
+	// Both spellings of every root are accepted: a deployment whose /rag/data
+	// is itself reached through a symlink is a normal host, not an escape, and
+	// resolving the PATH without resolving the roots would refuse it.
+	if !contained(resolved, resolveRoots(roots)) {
 		if resolved != path {
 			return "", fmt.Errorf("%w: %s resolves to %s, which is outside every approved root %v",
-				jobs.ErrRefused, path, resolved, f.Roots)
+				jobs.ErrRefused, path, resolved, roots)
 		}
-		return "", outsideRoots(path, f.Roots)
+		return "", outsideRoots(path, roots)
 	}
 	return resolved, nil
 }
 
-// roots is Roots plus the symlink-resolved spelling of each.
-func (f *RealFiles) roots() []string {
-	f.once.Do(func() {
-		f.approved = append([]string(nil), f.Roots...)
-		for _, r := range f.Roots {
-			if real, err := resolveDir(r); err == nil && real != r {
-				f.approved = append(f.approved, real)
-			}
+// resolveRoots is roots plus the symlink-resolved spelling of each. A root
+// that does not resolve (it is not there yet) is kept as written.
+func resolveRoots(roots []string) []string {
+	out := append([]string(nil), roots...)
+	for _, r := range roots {
+		if real, err := resolveDir(r); err == nil && real != r {
+			out = append(out, real)
 		}
-	})
+	}
+	return out
+}
+
+// resolvedContainedNoLeafLink is resolvedContained for a path whose LEAF is
+// about to be written through or deleted: an extraction directory, a vite
+// `--emptyOutDir`, a `git worktree remove --force`.
+//
+// Resolving the parent is not enough for those. `<root>/dist`, where `dist` is
+// a symlink to /etc, is lexically inside the root AND its parent resolves
+// inside the root — and `vite build --emptyOutDir` then empties /etc. A
+// symlink at the leaf is therefore refused outright rather than followed:
+// nothing the ctl creates is a symlink, so one sitting where a destructive
+// operation is about to happen is not a layout, it is a plant.
+func resolvedContainedNoLeafLink(path string, roots []string) (string, error) {
+	resolved, err := resolvedContained(path, roots)
+	if err != nil {
+		return "", err
+	}
+	st, lerr := os.Lstat(resolved)
+	switch {
+	case lerr == nil && st.Mode()&os.ModeSymlink != 0:
+		return "", fmt.Errorf("%w: %s is a symlink; the ctl never writes or deletes through one",
+			jobs.ErrRefused, resolved)
+	case lerr != nil && !errors.Is(lerr, os.ErrNotExist):
+		return "", lerr
+	}
+	return resolved, nil
+}
+
+// roots is Roots plus the symlink-resolved spelling of each, resolved once.
+func (f *RealFiles) roots() []string {
+	f.once.Do(func() { f.approved = resolveRoots(f.Roots) })
 	return f.approved
 }
 
@@ -397,7 +437,11 @@ func (f *RealFiles) WriteAtomic(_ context.Context, path string, data []byte, mod
 	// Mode BEFORE the rename: CreateTemp makes 0600, and a chmod after the
 	// rename would leave the final path at the wrong mode for as long as the
 	// two syscalls are apart — on a secrets file, that window is the bug.
-	if err = tmp.Chmod(os.FileMode(mode)); err != nil {
+	//
+	// fileMode, not os.FileMode: a caller asking for 0o2770 means setgid, and
+	// os.FileMode(0o2770) silently drops it (Go keeps setuid/setgid/sticky in
+	// flag bits outside the low nine) — the same bug CopyFile already avoided.
+	if err = tmp.Chmod(fileMode(mode)); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -497,13 +541,22 @@ func (f *RealFiles) CopyFile(_ context.Context, src, dst string, mode uint32) (e
 //   - it never chmods a directory that already existed. /rag/data/tenants is
 //     wilke 755 and its group, `cels`, has 1869 members; a driver that
 //     "corrected" the mode of a parent it did not create would be silently
-//     re-permissioning a directory shared with the whole host. Only the leaf,
-//     and only when this call is the one that made it, is chmodded.
+//     re-permissioning a directory shared with the whole host. Only the
+//     directories THIS call created are chmodded.
 //   - the mode is applied with an explicit chmod rather than left to mkdir.
 //     mkdir(2) masks the mode with the process umask and does not reliably
 //     keep the setgid bit, and setgid is the whole point of a 2770 tenant
 //     tree: it is what makes every file the tenant later writes inherit the
 //     group instead of the writer's primary one.
+//
+// The second rule used to hold for the LEAF alone: os.MkdirAll created every
+// intermediate level and only the leaf was chmodded, so `MkdirAll(<tenant>/a/b,
+// 0o2770)` left `a` at 0750 under the ordinary 022 umask — no setgid, no group
+// write. A tenant tree is created a level at a time by different steps, so the
+// missing levels are real ones. Each component is therefore created here, one
+// mkdir at a time, and chmodded only when THIS call is the one whose mkdir
+// succeeded; a component another process won the race for is left exactly as
+// an existing directory would be.
 func (f *RealFiles) MkdirAll(_ context.Context, path string, mode uint32) error {
 	resolved, err := f.check(path)
 	if err != nil {
@@ -519,11 +572,46 @@ func (f *RealFiles) MkdirAll(_ context.Context, path string, mode uint32) error 
 	} else if !errors.Is(lerr, os.ErrNotExist) {
 		return lerr
 	}
-	perm := fileMode(mode)
-	if err := os.MkdirAll(resolved, perm); err != nil {
-		return err
+	// The missing components, deepest first, down to the first existing
+	// ancestor.
+	var missing []string
+	for p := resolved; ; {
+		if _, lerr := os.Lstat(p); lerr == nil {
+			break
+		} else if !errors.Is(lerr, os.ErrNotExist) {
+			return lerr
+		}
+		missing = append(missing, p)
+		parent := filepath.Dir(p)
+		if parent == p {
+			break // reached the filesystem root without finding one
+		}
+		p = parent
 	}
-	return os.Chmod(resolved, perm)
+	perm := fileMode(mode)
+	for i := len(missing) - 1; i >= 0; i-- {
+		dir := missing[i]
+		if err := os.Mkdir(dir, perm); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				// Somebody else created it between the scan and now: it is
+				// not a directory this call made, so its mode is not this
+				// call's to set.
+				continue
+			}
+			return err
+		}
+		// A component ABOVE the approved root — /rag/data itself, when a
+		// fixture's tree starts empty — is created because MkdirAll must, but
+		// its mode is not this call's business either: it is the deployment's,
+		// not the tenant's. Only what is strictly inside a root is chmodded.
+		if !contained(dir, f.roots()) {
+			continue
+		}
+		if err := os.Chmod(dir, perm); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // fileMode turns a POSIX mode as the callers write it (0o2770) into the
@@ -543,7 +631,16 @@ func fileMode(mode uint32) os.FileMode {
 	return perm
 }
 
-// Rename moves from to to; both must be under an approved root.
+// Rename moves from to to; both must be under an approved root, and `to` must
+// not exist.
+//
+// rename(2) REPLACES an existing destination silently — a file, or an empty
+// directory — which in this package would be the one write path that
+// overwrites without saying so: every other refuses (WriteAtomic is atomic
+// over its own target, Archive.Create, SQLite.Backup and Extract all refuse an
+// existing name). `decommission` renames a tenant tree aside and `restore`
+// moves a staged one into place; both would rather fail than land on top of
+// something that is already there.
 func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	rfrom, err := f.check(from)
 	if err != nil {
@@ -551,6 +648,11 @@ func (f *RealFiles) Rename(_ context.Context, from, to string) error {
 	}
 	rto, err := f.check(to)
 	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(rto); err == nil {
+		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, rto)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return os.Rename(rfrom, rto)

@@ -47,7 +47,11 @@ func (s *RealSQLite) Backup(ctx context.Context, src, dst string) (string, error
 	if _, err := paths.SafePath("/", src); err != nil {
 		return "", fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
-	if err := s.checkDst(dst); err != nil {
+	// The RESOLVED destination is what SQLite is told to write and what is
+	// chmodded afterwards, so the path the check approved and the path VACUUM
+	// INTO creates are one path whatever the parent directory is a link to.
+	dst, err := s.checkDst(dst)
+	if err != nil {
 		return "", err
 	}
 	// The source has to exist BEFORE the open: sqlite creates an empty
@@ -153,31 +157,36 @@ func integrityCheck(ctx context.Context, db *sql.DB, src string) (string, error)
 	return verdict, nil
 }
 
-// checkDst enforces every rule on the destination: shape, containment, an
-// existing parent, and — the one that matters — that nothing is there yet.
-func (s *RealSQLite) checkDst(dst string) error {
-	if _, err := paths.SafePath("/", dst); err != nil {
-		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
+// checkDst enforces every rule on the destination — shape, containment, an
+// existing parent, and, the one that matters, that nothing is there yet — and
+// returns the RESOLVED path the backup must be written to.
+//
+// Containment is checked AFTER the symlinks in the parent are resolved: a
+// `dst` under a symlinked component is lexically inside an approved root and
+// writes wherever the link points, and VACUUM INTO would follow it.
+func (s *RealSQLite) checkDst(dst string) (string, error) {
+	resolved, err := resolvedContained(dst, s.opts.ApprovedRoots)
+	if err != nil {
+		return "", err
 	}
-	if !sqliteDstRe.MatchString(dst) {
-		return fmt.Errorf("%w: %q is not a path this driver will interpolate into a VACUUM INTO statement (want %s)",
-			jobs.ErrRefused, dst, sqliteDstRe)
+	// The pattern is checked on the RESOLVED path: that is the string this
+	// driver interpolates into the statement.
+	if !sqliteDstRe.MatchString(resolved) {
+		return "", fmt.Errorf("%w: %q is not a path this driver will interpolate into a VACUUM INTO statement (want %s)",
+			jobs.ErrRefused, resolved, sqliteDstRe)
 	}
-	if !contained(dst, s.opts.ApprovedRoots) {
-		return outsideRoots(dst, s.opts.ApprovedRoots)
-	}
-	if st, err := os.Stat(filepath.Dir(dst)); err != nil || !st.IsDir() {
-		return fmt.Errorf("%w: %s is not an existing directory to write the backup into", jobs.ErrRefused, filepath.Dir(dst))
+	if st, err := os.Stat(filepath.Dir(resolved)); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: %s is not an existing directory to write the backup into", jobs.ErrRefused, filepath.Dir(resolved))
 	}
 	// VACUUM INTO refuses an existing file itself, but with SQLite's message
 	// rather than the ctl's — and refusing here means the ctl never even
 	// reaches for a path a previous bundle is using.
-	if _, err := os.Lstat(dst); err == nil {
-		return fmt.Errorf("%w: %s already exists; a backup never overwrites", jobs.ErrRefused, dst)
+	if _, err := os.Lstat(resolved); err == nil {
+		return "", fmt.Errorf("%w: %s already exists; a backup never overwrites", jobs.ErrRefused, resolved)
 	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+		return "", err
 	}
-	return nil
+	return resolved, nil
 }
 
 // quoteSQLite escapes a string literal the only way SQLite defines: a single

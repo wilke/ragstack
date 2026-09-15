@@ -56,11 +56,12 @@ func (a *RealArchive) Create(ctx context.Context, dir, out string) error {
 	if _, err := paths.SafePath("/", dir); err != nil {
 		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
-	if _, err := paths.SafePath("/", out); err != nil {
-		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
-	}
-	if !contained(out, a.opts.ApprovedRoots) {
-		return outsideRoots(out, a.opts.ApprovedRoots)
+	// The RESOLVED out path, and the one every syscall below uses: an `out`
+	// whose parent is a symlink pointing out of the deployment is a tar
+	// written outside every approved root, and a lexical check cannot see it.
+	out, err := resolvedContained(out, a.opts.ApprovedRoots)
+	if err != nil {
+		return err
 	}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("%w: %s is not an existing directory to archive", jobs.ErrRefused, dir)
@@ -182,21 +183,21 @@ func (a *RealArchive) Extract(ctx context.Context, tarPath, dest string, limits 
 	if _, err := paths.SafePath("/", tarPath); err != nil {
 		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
 	}
-	if _, err := paths.SafePath("/", dest); err != nil {
-		return fmt.Errorf("%w: %v", jobs.ErrRefused, err)
-	}
-	if !contained(dest, a.opts.ApprovedRoots) {
-		return outsideRoots(dest, a.opts.ApprovedRoots)
+	// The containment check is made on the RESOLVED destination and the
+	// extraction then happens under exactly that path. It used to check the
+	// string it was given and afterwards EvalSymlinks it for the staging
+	// directory without re-checking, so a `dest` whose own name — or whose
+	// parent — was a symlink out of the deployment passed the check and was
+	// written to anyway.
+	realDest, err := resolvedContainedNoLeafLink(dest, a.opts.ApprovedRoots)
+	if err != nil {
+		return err
 	}
 	// dest must EXIST: creating it here would create it with the wrong mode
 	// and outside the Files driver's rules, and an extraction into a directory
 	// nobody made is an extraction nobody scoped.
-	realDest, err := filepath.EvalSymlinks(dest)
-	if err != nil {
-		return fmt.Errorf("%w: %s is not an existing directory to extract into: %v", jobs.ErrRefused, dest, err)
-	}
 	if st, err := os.Stat(realDest); err != nil || !st.IsDir() {
-		return fmt.Errorf("%w: %s is not a directory", jobs.ErrRefused, dest)
+		return fmt.Errorf("%w: %s is not an existing directory to extract into", jobs.ErrRefused, dest)
 	}
 	maxEntries := limits.MaxEntries
 	if maxEntries <= 0 {

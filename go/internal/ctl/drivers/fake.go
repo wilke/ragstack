@@ -298,6 +298,12 @@ func (s *FakeSystemd) Enable(_ context.Context, unit string) error {
 	return s.set("Enable", unit, s.Enabled, true)
 }
 func (s *FakeSystemd) Disable(_ context.Context, unit string) error {
+	if err := checkUnit(unit); err != nil {
+		if rerr := s.r.record("systemd", "Disable", unit); rerr != nil {
+			return rerr
+		}
+		return err
+	}
 	// Two things the real `systemctl disable` does that the plain setter did
 	// not: it REFUSES a unit the manager has never loaded ("Unit … does not
 	// exist"), recording nothing — so a rollback that disables every name a
@@ -334,8 +340,20 @@ func (s *FakeSystemd) Disable(_ context.Context, unit string) error {
 	return nil
 }
 
-func (s *FakeSystemd) set(method, unit string, m map[string]bool, v bool) error {
+// check records the call and applies the REAL driver's unit-name allowlist.
+//
+// The fake used to take any name at all, so a step that named `ssh-agent` (or
+// a registry row that did) passed every test and was refused only on the host
+// — which is the one place the refusal cannot be read as a test failure.
+func (s *FakeSystemd) check(method, unit string) error {
 	if err := s.r.record("systemd", method, unit); err != nil {
+		return err
+	}
+	return checkUnit(unit)
+}
+
+func (s *FakeSystemd) set(method, unit string, m map[string]bool, v bool) error {
+	if err := s.check(method, unit); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -379,7 +397,7 @@ func (s *FakeSystemd) assignPID(unit string) int {
 }
 
 func (s *FakeSystemd) IsActive(_ context.Context, unit string) (bool, error) {
-	if err := s.r.record("systemd", "IsActive", unit); err != nil {
+	if err := s.check("IsActive", unit); err != nil {
 		return false, err
 	}
 	s.mu.Lock()
@@ -394,6 +412,14 @@ func (s *FakeSystemd) Link(_ context.Context, unitPath string) error {
 	if err := s.r.record("systemd", "Link", unitPath); err != nil {
 		return err
 	}
+	// The real driver's two rules: an absolute, clean path, whose base name is
+	// a unit this control plane may touch.
+	if !filepath.IsAbs(unitPath) || filepath.Clean(unitPath) != unitPath {
+		return fmt.Errorf("%w: %q must be an absolute, clean path to link", jobs.ErrRefused, unitPath)
+	}
+	if err := checkUnit(filepath.Base(unitPath)); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Linked[filepath.Base(unitPath)] = unitPath
@@ -401,7 +427,7 @@ func (s *FakeSystemd) Link(_ context.Context, unitPath string) error {
 }
 
 func (s *FakeSystemd) IsEnabled(_ context.Context, unit string) (bool, error) {
-	if err := s.r.record("systemd", "IsEnabled", unit); err != nil {
+	if err := s.check("IsEnabled", unit); err != nil {
 		return false, err
 	}
 	s.mu.Lock()
@@ -418,7 +444,7 @@ func (s *FakeSystemd) IsEnabled(_ context.Context, unit string) (bool, error) {
 // exit 0), and decommission's post-check reads exactly that emptiness to say
 // "the units are gone".
 func (s *FakeSystemd) Show(_ context.Context, unit string) (jobs.UnitInfo, error) {
-	if err := s.r.record("systemd", "Show", unit); err != nil {
+	if err := s.check("Show", unit); err != nil {
 		return jobs.UnitInfo{}, err
 	}
 	s.mu.Lock()
@@ -454,7 +480,7 @@ func (s *FakeSystemd) Show(_ context.Context, unit string) (jobs.UnitInfo, error
 // ResetFailed clears the failed state, as `systemctl --user reset-failed`
 // does. It is not an error for a unit that never failed.
 func (s *FakeSystemd) ResetFailed(_ context.Context, unit string) error {
-	if err := s.r.record("systemd", "ResetFailed", unit); err != nil {
+	if err := s.check("ResetFailed", unit); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -731,6 +757,16 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// An existing destination is refused, as the real driver refuses it:
+	// rename(2) REPLACES a file (and an empty directory) silently, and a
+	// decommission or a restore that landed on top of something already there
+	// is data loss no step asked for.
+	if _, taken := f.Files[to]; taken {
+		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, to)
+	}
+	if _, taken := f.Dirs[to]; taken {
+		return fmt.Errorf("%w: %s already exists; the ctl never renames over an existing path", jobs.ErrRefused, to)
+	}
 	if v, ok := f.Files[from]; ok {
 		f.Files[to] = v
 		delete(f.Files, from)
@@ -766,6 +802,13 @@ func (f *FakeFiles) Rename(_ context.Context, from, to string) error {
 	return nil
 }
 
+// Remove deletes one file or one EMPTY directory.
+//
+// A directory with anything under it is refused, as os.Remove refuses one:
+// the real driver's Remove is not a recursive delete, and a fake that quietly
+// swallowed a whole subtree would let a step which removes a directory it
+// thought was empty pass its tests and leave a tenant's data behind (or,
+// worse, read as having deleted it) on the host.
 func (f *FakeFiles) Remove(_ context.Context, path string) error {
 	if err := f.r.record("files", "Remove", path); err != nil {
 		return err
@@ -775,8 +818,42 @@ func (f *FakeFiles) Remove(_ context.Context, path string) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	prefix := strings.TrimSuffix(path, "/") + "/"
+	for p := range f.Files {
+		if strings.HasPrefix(p, prefix) {
+			return fmt.Errorf("remove %s: directory not empty (it holds %s)", path, p)
+		}
+	}
+	for d := range f.Dirs {
+		if strings.HasPrefix(d, prefix) {
+			return fmt.Errorf("remove %s: directory not empty (it holds %s)", path, d)
+		}
+	}
 	delete(f.Files, path)
+	delete(f.Dirs, path)
 	return nil
+}
+
+// hasDir reports whether dir is a directory of this in-memory filesystem:
+// one MkdirAll recorded, or one implied by a path stored under it.
+func (f *FakeFiles) hasDir(dir string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Dirs[dir]; ok {
+		return true
+	}
+	prefix := strings.TrimSuffix(dir, "/") + "/"
+	for p := range f.Files {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	for d := range f.Dirs {
+		if strings.HasPrefix(d, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *FakeFiles) ReadFile(_ context.Context, path string) ([]byte, error) {
@@ -982,15 +1059,22 @@ func (q *FakeQdrant) Ready(_ context.Context, base string) error {
 	return q.r.record("qdrant", "Ready", base)
 }
 
-// Count is the exact point count of a collection; an unknown collection
-// counts zero rather than failing, because a collection with no points and a
-// collection that is not there look the same to a count.
+// Count is the exact point count of a collection.
+//
+// An UNKNOWN collection is an error, because that is what the store answers:
+// POST /collections/<name>/points/count on a collection that is not there is a
+// 404, not a zero. The fake used to answer zero, which made "the collection
+// vanished between the inventory and the count" — the exact thing a fenced
+// backup is checking for — indistinguishable from an empty collection.
 func (q *FakeQdrant) Count(_ context.Context, base, collection string) (int64, error) {
 	if err := q.r.record("qdrant", "Count", collection, base); err != nil {
 		return 0, err
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if !containsString(q.ByURL[base], collection) {
+		return 0, fmt.Errorf("qdrant at %s has no collection %q (HTTP 404)", base, collection)
+	}
 	return q.Counts[base+"/"+collection], nil
 }
 
@@ -1052,8 +1136,10 @@ type FakeElasticsearch struct {
 	Taken map[string][]string
 	// Repos maps a registered repository to its settings.
 	Repos map[string]Repo
-	// Restored records every restore as "<repo> <name> <index,index>".
-	Restored []string
+	// Restored records every restore as "<repo> <name> <index,index>", and
+	// SnapshotIndices every snapshot the same way.
+	Restored        []string
+	SnapshotIndices []string
 	// Counts maps "<baseURL>/<index>" to its document count.
 	Counts map[string]int64
 }
@@ -1070,13 +1156,18 @@ func (e *FakeElasticsearch) Indices(_ context.Context, base string) ([]string, e
 	return out, nil
 }
 
-func (e *FakeElasticsearch) Snapshot(_ context.Context, base, repo, name string) error {
-	if err := e.r.record("es", "Snapshot", repo, name, base); err != nil {
+// Snapshot records the snapshot and the index list it was given. The list is
+// recorded because it is the fix for a real bug — the driver used to snapshot
+// `*` while the caller's inventory excluded the cluster's system indices — and
+// a fake that dropped it would let that come back untested.
+func (e *FakeElasticsearch) Snapshot(_ context.Context, base, repo, name string, indices []string) error {
+	if err := e.r.record("es", "Snapshot", repo, name, strings.Join(indices, ","), base); err != nil {
 		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.Taken[repo] = append(e.Taken[repo], name)
+	e.SnapshotIndices = append(e.SnapshotIndices, repo+" "+name+" "+strings.Join(indices, ","))
 	return nil
 }
 
@@ -1350,12 +1441,25 @@ func (g *FakeGit) ResolveRef(_ context.Context, mirror, ref string) (string, err
 	return "", fmt.Errorf("%w: %s is not a ref this mirror (%s) knows", jobs.ErrRefused, ref, mirror)
 }
 
+// AddWorktree checks sha out into dest, refusing what the real driver refuses:
+// a ref that is not a resolved 40-hex commit (a worktree pinned to a branch
+// would move under the tenant — MEMORY "tenant code isolation"), and a dest
+// that already exists (the ctl never checks out over a directory it did not
+// make).
 func (g *FakeGit) AddWorktree(_ context.Context, mirror, sha, dest string) error {
 	if err := g.r.record("git", "AddWorktree", dest, sha, mirror); err != nil {
 		return err
 	}
+	if !isSHA(sha) {
+		return fmt.Errorf("%w: %q is not a 40-hex commit; a worktree is only ever checked out at a resolved sha",
+			jobs.ErrRefused, sha)
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if _, ok := g.Worktrees[dest]; ok {
+		return fmt.Errorf("%w: %s already exists; the ctl never checks out over an existing directory",
+			jobs.ErrRefused, dest)
+	}
 	g.Worktrees[dest] = sha
 	return nil
 }
@@ -1445,6 +1549,17 @@ func (b *FakeBuild) UI(_ context.Context, worktree, base, outDir string) error {
 	if !b.Installed[worktree] && !b.AllowUninstalled {
 		return fmt.Errorf("%w: %s has no node_modules; run the artifact's npm ci first", jobs.ErrRefused, worktree)
 	}
+	// The real driver's other two rules. The base is hard-coded into every
+	// asset URL of the built bundle, so a base that does not match the route
+	// the gateway publishes is a UI that loads a blank page; and the build runs
+	// `vite --emptyOutDir`, which DELETES the directory's contents first, so an
+	// unchecked outDir is a delete of any path the caller named.
+	if !baseRE.MatchString(base) {
+		return fmt.Errorf("%w: %q is not a UI base path (/ragstack/<tenant>/ui/)", jobs.ErrRefused, base)
+	}
+	if !contained(outDir, b.files.Roots) {
+		return outsideRoots(outDir, b.files.Roots)
+	}
 	b.Builds = append(b.Builds, worktree+" "+base+" "+outDir)
 	b.files.Put(filepath.Join(outDir, "index.html"),
 		[]byte("<!doctype html><!-- fake vite build of "+worktree+" at base "+base+" -->\n"), 0o644)
@@ -1497,6 +1612,12 @@ func (p *FakePostgres) Dump(_ context.Context, spec jobs.PostgresSpec, out strin
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	// The DIRECTORY must already exist, as it must for the real driver: it is
+	// what gets bound at /mnt/ctl, and pg_dump writes the file inside it.
+	if !p.files.hasDir(filepath.Dir(out)) {
+		return fmt.Errorf("%w: %s is not an existing directory to write the dump into",
+			jobs.ErrRefused, filepath.Dir(out))
+	}
 	p.Dumps = append(p.Dumps, spec.RunDir+" "+spec.DB+" "+out)
 	p.files.Put(out, []byte("fake pg_dump -Fc of "+spec.DB+"\n"), 0o640)
 	return nil
@@ -1539,6 +1660,16 @@ func (s *FakeSQLite) Backup(_ context.Context, src, dst string) (string, error) 
 	if data == nil {
 		return "", fmt.Errorf("open %s: %w", src, fs.ErrNotExist)
 	}
+	// The real driver's two destination rules, which a backup depends on: the
+	// bundle directory is made by an earlier step (a driver that created it
+	// would create it with the wrong mode), and a backup never overwrites.
+	if !s.files.hasDir(filepath.Dir(dst)) {
+		return "", fmt.Errorf("%w: %s is not an existing directory to write the backup into",
+			jobs.ErrRefused, filepath.Dir(dst))
+	}
+	if s.files.Content(dst) != nil {
+		return "", fmt.Errorf("%w: %s already exists; a backup never overwrites", jobs.ErrRefused, dst)
+	}
 	s.files.Put(dst, data, 0o640)
 	s.Backups = append(s.Backups, src+" "+dst)
 	return "ok", nil
@@ -1567,6 +1698,9 @@ func (a *FakeArchive) Create(_ context.Context, dir, out string) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.files.Content(out) != nil {
+		return fmt.Errorf("%w: %s already exists; an archive never overwrites", jobs.ErrRefused, out)
+	}
 	a.Created = append(a.Created, dir+" "+out)
 	a.files.Put(out, []byte("fake tar of "+dir+"\n"), 0o640)
 	return nil

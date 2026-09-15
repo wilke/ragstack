@@ -103,7 +103,8 @@ func (g *RealGit) AddWorktree(ctx context.Context, mirror, sha, dest string) err
 	if !shaRE.MatchString(sha) {
 		return fmt.Errorf("%w: %q is not a 40-hex commit; a worktree is only ever checked out at a resolved sha", jobs.ErrRefused, sha)
 	}
-	if err := g.checkDest(dest); err != nil {
+	dest, err := g.checkDest(dest)
+	if err != nil {
 		return err
 	}
 	if _, err := os.Lstat(dest); err == nil {
@@ -116,7 +117,7 @@ func (g *RealGit) AddWorktree(ctx context.Context, mirror, sha, dest string) err
 	}
 	// --detach: a worktree on a branch would move when the branch does, and
 	// two tenants on the same branch cannot both hold its checkout anyway.
-	_, err := g.git(ctx, "-C", mirror, "worktree", "add", "--detach", dest, sha)
+	_, err = g.git(ctx, "-C", mirror, "worktree", "add", "--detach", dest, sha)
 	return err
 }
 
@@ -128,7 +129,8 @@ func (g *RealGit) AddWorktree(ctx context.Context, mirror, sha, dest string) err
 // worktree whose directory vanished and a later `worktree add` at the same
 // path would be refused by it.
 func (g *RealGit) RemoveWorktree(ctx context.Context, mirror, dest string) error {
-	if err := g.checkDest(dest); err != nil {
+	dest, err := g.checkDest(dest)
+	if err != nil {
 		return err
 	}
 	if err := g.checkMirror(ctx, mirror); err != nil {
@@ -141,7 +143,7 @@ func (g *RealGit) RemoveWorktree(ctx context.Context, mirror, dest string) error
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	_, err := g.git(ctx, "-C", mirror, "worktree", "prune")
+	_, err = g.git(ctx, "-C", mirror, "worktree", "prune")
 	return err
 }
 
@@ -157,13 +159,18 @@ func (g *RealGit) Describe(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// checkDest bounds the two methods that create and delete directory trees.
-func (g *RealGit) checkDest(dest string) error {
+// checkDest bounds the two methods that create and delete directory trees,
+// and returns the RESOLVED path they must name to git.
+//
+// `git worktree remove --force` deletes a directory tree, so the containment
+// check cannot be lexical: `<root>/worktrees/x`, where `worktrees` is a
+// symlink out of the deployment, is inside every approved root as a string and
+// nowhere near one on disk. The parent is resolved, the check is made on the
+// result, and a symlink AT the leaf is refused rather than followed — deleting
+// through one would delete what it points at.
+func (g *RealGit) checkDest(dest string) (string, error) {
 	if !filepath.IsAbs(dest) || filepath.Clean(dest) != dest {
-		return fmt.Errorf("%w: the worktree path %q must be absolute and clean", jobs.ErrRefused, dest)
+		return "", fmt.Errorf("%w: the worktree path %q must be absolute and clean", jobs.ErrRefused, dest)
 	}
-	if !contained(dest, g.Roots) {
-		return outsideRoots(dest, g.Roots)
-	}
-	return nil
+	return resolvedContainedNoLeafLink(dest, g.Roots)
 }

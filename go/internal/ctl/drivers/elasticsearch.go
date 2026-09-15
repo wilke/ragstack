@@ -224,13 +224,28 @@ type esShards struct {
 	Successful int `json:"successful"`
 }
 
-// Snapshot takes a snapshot of every (non-system) index into repo.
-func (e *RealElasticsearch) Snapshot(ctx context.Context, baseURL, repo, name string) error {
+// Snapshot takes a snapshot of exactly the named indices into repo.
+//
+// The list is the caller's — the one Indices() returned and the one the
+// manifest records. It used to be the literal `*`, which does not mean the
+// same thing: `*` covers every index the CLUSTER holds, and Indices()
+// deliberately leaves out ES's own dot-prefixed system indices (.security,
+// .kibana, .geoip_databases). So the bundle held indices its manifest did not
+// list, a restore replayed another tenant's credentials store onto a fresh
+// node, and the two counts the fence compares were taken over different sets.
+func (e *RealElasticsearch) Snapshot(ctx context.Context, baseURL, repo, name string, indices []string) error {
 	if err := checkESRepo("repository", repo); err != nil {
 		return err
 	}
 	if err := checkESRepo("snapshot", name); err != nil {
 		return err
+	}
+	// The names become part of the request body ES resolves, so each is
+	// checked exactly as one the caller supplied for a restore is.
+	for _, idx := range indices {
+		if err := checkESIndex(idx); err != nil {
+			return err
+		}
 	}
 	var body struct {
 		Snapshot struct {
@@ -246,11 +261,16 @@ func (e *RealElasticsearch) Snapshot(ctx context.Context, baseURL, repo, name st
 		path:   "/_snapshot/" + url.PathEscape(repo) + "/" + url.PathEscape(name),
 		query:  url.Values{"wait_for_completion": []string{"true"}},
 		body: map[string]any{
+			// The explicit list, as a JSON array: a comma-joined string would
+			// have to spell "no indices" as an empty string, which ES reads as
+			// a missing parameter and answers with every index in the cluster.
 			// ignore_unavailable:false so an index that vanished between the
 			// inventory and the snapshot FAILS rather than being quietly left
-			// out of a bundle the manifest says is complete.
-			"indices":              "*",
+			// out of a bundle the manifest says is complete; expand_wildcards
+			// open so a name is a name and not a pattern the cluster widens.
+			"indices":              append([]string{}, indices...),
 			"ignore_unavailable":   false,
+			"expand_wildcards":     "open",
 			"include_global_state": false,
 		},
 		timeout: e.h.long,

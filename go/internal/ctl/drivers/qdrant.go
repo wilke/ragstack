@@ -61,13 +61,21 @@ func checkSnapshotName(name string) error {
 // rename a file that is still being written.
 func waitTrue() url.Values { return url.Values{"wait": []string{"true"}} }
 
-// Ready is GET /readyz, falling back to GET /collections.
+// Ready is GET /readyz, falling back to GET /collections on a 404 and ONLY on
+// a 404.
 //
 // The fallback is not belt and braces: /readyz arrived in qdrant 1.9 and the
 // images a long-lived tenant pins may predate it, where it answers 404. A 404
 // from /readyz is therefore "this store does not have that endpoint", not
 // "this store is not ready" — and /collections answering 200 is the older
 // proof of the same fact.
+//
+// Every OTHER answer from /readyz is the answer, and nothing overrides it.
+// Falling back on any error made the probe report READY for a store that had
+// just said 503 "not ready": qdrant serves /collections while it is still
+// loading segments, so the fallback contradicted the one endpoint whose whole
+// job is to say it is not up yet, and a job gated on readiness went ahead
+// against a store that was still coming up.
 func (q *RealQdrant) Ready(ctx context.Context, baseURL string) error {
 	_, err := q.h.do(ctx, baseURL, storeOrigin, request{
 		method: http.MethodGet, path: "/readyz", timeout: listTimeout,
@@ -75,10 +83,13 @@ func (q *RealQdrant) Ready(ctx context.Context, baseURL string) error {
 	if err == nil {
 		return nil
 	}
+	if statusOf(err) != http.StatusNotFound {
+		return fmt.Errorf("qdrant is not ready: %v", err)
+	}
 	if _, fb := q.h.do(ctx, baseURL, storeOrigin, request{
 		method: http.MethodGet, path: "/collections", timeout: listTimeout,
 	}); fb != nil {
-		return fmt.Errorf("qdrant is not ready: %v (and the /collections fallback: %v)", err, fb)
+		return fmt.Errorf("qdrant is not ready: %v (and the /collections fallback, for a store too old to have /readyz: %v)", err, fb)
 	}
 	return nil
 }
