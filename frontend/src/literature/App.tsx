@@ -476,9 +476,12 @@ export function App() {
             <select
               id="lit-format"
               className={INPUT}
-              value={format}
-              // The template declares its own output shape, so the choice is
-              // not the caller's on that path.
+              // On the template path the SHAPE IS THE TEMPLATE'S, so show that
+              // rather than a stale user choice. It previously displayed "Prose"
+              // above a rendered table — a control contradicting the output it
+              // supposedly governs, which is worse than one that is merely
+              // disabled.
+              value={mode?.templateId ? (dt.columns ? "table" : "raw") : format}
               disabled={!dt.columns || !!mode?.templateId}
               onChange={(e) => setFormat(e.target.value as Format)}
             >
