@@ -17,7 +17,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -25,6 +24,7 @@ import (
 	"syscall"
 
 	"github.com/ragstack/ragstack/internal/ctl/acl"
+	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/paths"
 )
 
@@ -81,15 +81,19 @@ func cmdFleetGrant(args []string, ragRoot string, jsonOut bool) int {
 		return grantUsage()
 	}
 
-	u, err := user.Lookup(*username)
-	if err != nil {
-		return fail(fmt.Errorf("no such account %q on this host: %w", *username, err))
+	// A name or a numeric uid. The lookup goes through hostfacts, which asks
+	// NSS (getent) when Go's own /etc/passwd parser draws a blank: the ctl is
+	// a static binary, and on coconut the service account is a directory
+	// account that `user.Lookup` cannot see — the first dry run on the host
+	// refused "no such account svcbvbrc" for exactly that reason.
+	resolved := hostfacts.LookupUID(*username)
+	if n, err := strconv.Atoi(*username); err == nil && n >= 0 {
+		resolved = n
 	}
-	uid64, err := strconv.ParseUint(u.Uid, 10, 32)
-	if err != nil {
-		return fail(fmt.Errorf("account %q has an unusable uid %q: %w", *username, u.Uid, err))
+	if resolved < 0 {
+		return fail(fmt.Errorf("no such account %q on this host (neither /etc/passwd nor getent knows it)", *username))
 	}
-	uid := uint32(uid64)
+	uid := uint32(resolved)
 
 	roots, rc := grantRoots(*rootsCSV, *root)
 	if rc != exitOK {
@@ -176,8 +180,8 @@ func refuseUnowned(roots []string, self int, grantee string) int {
 }
 
 func nameOfUID(uid int) string {
-	if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
-		return u.Username
+	if name := hostfacts.UsernameOf(uid); name != "" {
+		return name
 	}
 	return "uid " + strconv.Itoa(uid)
 }
