@@ -91,6 +91,32 @@ def test_registry_dispatches_by_extension(tmp_path: Path):
     assert "pdf body text" in registry.load(str(pdf))[0].content
 
 
+def test_markdown_dispatches_to_the_text_loader_and_keeps_its_markup(tmp_path: Path):
+    """`.md` is read by the plain text loader, so the markup survives verbatim.
+
+    This is the LOCAL-backend half of a claim in ``docs/cookbook-users.md``
+    recipe 4. On a GoWe deployment the same file is handled by the PDF
+    extractor, which stores the RENDERED text — the heading marker gone,
+    ``**bold**`` gone, ``-`` bullets turned into ``\u2022``. The doc says the
+    behaviour depends on the backend; this pins the branch that is reachable
+    from the repository, and the difference is the reason the doc has to say
+    which backend it means.
+
+    Anyone planning to filter or match on literal markup depends on this.
+    """
+    md = tmp_path / "notes.md"
+    body = "# Probe\n\nA **markdown** probe file.\n\n- bullet one\n- bullet two\n"
+    md.write_text(body, encoding="utf-8")
+
+    content = default_loader_registry().load(str(md))[0].content
+
+    assert content == body, "the text loader must not transform the source"
+    assert "# Probe" in content          # heading marker intact
+    assert "**markdown**" in content     # emphasis intact
+    assert "- bullet one" in content     # list marker not rendered to a bullet glyph
+    assert "\u2022" not in content       # ...specifically, no U+2022
+
+
 def test_registry_confines_to_ingest_root(tmp_path: Path):
     root = tmp_path / "corpus"
     root.mkdir()
