@@ -121,6 +121,24 @@ const (
 	// The repair is `fleet grant`, run by the owner — not by the ctl.
 	CtlAccountNoAccess = "ctl_account_no_access"
 
+	// BootCronMissing: the account has no user manager to bring tenants back
+	// (linger_missing) AND the ctl has no record of a `@reboot` crontab line
+	// either, so nothing on this host starts a tenant after a reboot. Warn.
+	//
+	// The evidence is <CtlStateDir>/boot.json, which `fleet enable-boot
+	// --cron` writes. The doctor deliberately does NOT run `crontab -l`: a
+	// diagnostic that shells out to read another account's boot configuration
+	// is a diagnostic that fails differently on every host, and the ctl
+	// already knows what it installed. The cost is stated: a line an operator
+	// added by hand is invisible here, and `fleet enable-boot --cron` is what
+	// makes it visible.
+	BootCronMissing = "boot_cron_missing"
+
+	// BootCronPresent: the ctl recorded a `@reboot` crontab line for this
+	// deployment (<CtlStateDir>/boot.json). Info, quoting the line, so a
+	// review sees the interim boot hook stated rather than inferred.
+	BootCronPresent = "boot_cron_present"
+
 	// LingerMissing: /var/lib/systemd/linger/<ctl user> is absent, so the
 	// user manager dies at logout and nothing starts at boot. Warn (error for
 	// the ops that depend on boot persistence).

@@ -219,6 +219,15 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 		Keys:     restoreKeys(p, src),
 		Settings: publicSettings(src),
 		UIMode:   src.UI.Mode,
+		// The SOURCE's supervisor. A restored twin is supervised the way its
+		// original is, for the same reason it gets the source's artifact, UI
+		// mode and store kind: `restore --as` produces a copy, and a copy that
+		// came up under a different supervisor would be a tenant the selftest's
+		// own comparison — and an operator's — reads as not the same tenant.
+		// A `manual` source is the exception: nothing the ctl can start, so
+		// the copy is laid down under the deployment's default and the plan
+		// says so.
+		Supervisor: restoreSupervisor(p, src),
 		// Never started and never routed by the create half: the tenant is laid
 		// down EMPTY, the bundle is poured into it, and only then is it started
 		// and published — by the steps below.
@@ -295,10 +304,12 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 	// ---- 4. the stores, and only the stores --------------------------------
 	for _, c := range legs {
 		if !c.Managed {
-			p.skip("systemd", "skip "+c.Name, c.Why, c.Name)
+			p.skip(p.sup.kind(), "skip "+c.Name, c.Why, c.Name)
 			continue
 		}
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addStoreReadyGate(spec)
 
@@ -309,7 +320,9 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 
 	// ---- 6. the API, then the proof ---------------------------------------
 	for _, c := range apiLegs {
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addAPIReadyGate(target)
 	p.addRestoreVerify(target, bundleDir, from)
@@ -372,6 +385,18 @@ func restoreStoreKind(p *planner, src *registry.Tenant) (string, error) {
 	default:
 		return paths.StoreSQLite, nil
 	}
+}
+
+// restoreSupervisor is the source's, or the deployment's default when the
+// source is a hand-started tenant the ctl cannot supervise at all.
+func restoreSupervisor(p *planner, src *registry.Tenant) string {
+	if managedSupervisor(src.Supervisor) {
+		return src.Supervisor
+	}
+	sup := p.op.deps.defaultSupervisor()
+	p.warn("the source is a hand-started tenant (supervisor: " + src.Supervisor + "), which is not something the " +
+		"ctl can start; the restored tenant is laid down under this deployment's default supervisor (" + sup + ")")
+	return sup
 }
 
 // restoreESHeap is the source's provisioned heap, so the copy is sized like the

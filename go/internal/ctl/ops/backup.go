@@ -383,7 +383,9 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 			"it is down. There is no read-only mode in v1 — the registry carries no read-only flag and the gateway " +
 			"has nothing to render one from, so a fence is an outage for this tenant, not a degraded service. " +
 			"Read-only serving is v1.x")
-		p.addAPIStop()
+		if err := p.addAPIStop(); err != nil {
+			return err
+		}
 		p.addFenceVerify()
 	}
 
@@ -411,7 +413,9 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	p.addBackupRecord(fence)
 
 	if fence {
-		p.addAPIStart()
+		if err := p.addAPIStart(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -899,6 +903,11 @@ func pgPortOf(t *registry.Tenant) int {
 
 // ---------------------------------------------------------------- config
 
+// isYAMLName is the config allowlist's one suffix rule.
+func isYAMLName(name string) bool {
+	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
+}
+
 // addConfigCopies is the ALLOWLIST: the public files a bundle carries, named
 // one by one.
 //
@@ -963,6 +972,35 @@ func (p *planner) addConfigCopies(bundleDir string) {
 			}
 			if err := copyIn(tp.ProvisionEnv, filepath.Join("config", "provision.env")); err != nil {
 				return "", err
+			}
+			// Every *.yaml / *.yml under <data_dir>/config.
+			//
+			// The prompt templates live there (ADR-0008:
+			// PROMPT_TEMPLATES_FILE names a YAML file the API loads at
+			// startup, and its records are the prompts the tenant answers
+			// with). A bundle that carried the tenant's data and not its
+			// prompts would restore a tenant that answers differently from the
+			// one that was backed up — which is the kind of difference nobody
+			// notices until a user does.
+			//
+			// It stays an ALLOWLIST: a suffix, in one directory, not
+			// recursively. `secrets.env` and its `.bak-*` siblings are in that
+			// same directory and belong only inside the encrypted payload, and
+			// a rule that copied "the config directory" would carry every
+			// credential this tenant ever had the first time somebody dropped
+			// a file in it.
+			cfgDir := filepath.Dir(tp.ProvisionEnv)
+			cfgEnts, err := files.ReadDir(ctx, cfgDir)
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return "", fmt.Errorf("listing %s: %w", cfgDir, err)
+			}
+			for _, e := range cfgEnts {
+				if e.IsDir || !isYAMLName(e.Name) {
+					continue
+				}
+				if err := copyIn(filepath.Join(cfgDir, e.Name), filepath.Join("config", e.Name)); err != nil {
+					return "", err
+				}
 			}
 			// The per-collection manifests are named by the host, not by the
 			// ctl, so they are listed rather than guessed.
@@ -1691,28 +1729,33 @@ func gatewayRoutes(ctx context.Context, sc *jobs.StepContext, name string) (rout
 }
 
 // addAPIStop stops the tenant API whichever way this tenant is supervised.
-func (p *planner) addAPIStop() {
-	if p.t.Supervisor != supervisorSystemd {
-		_ = p.planManualStop(nil)
-		return
+func (p *planner) addAPIStop() error {
+	if p.sup == nil {
+		return p.planManualStop(nil)
 	}
 	legs, _ := p.legs([]string{"api"})
 	for _, c := range legs {
-		p.addUnitStep("stop", c)
+		if err := p.sup.stopLeg(p, c); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-func (p *planner) addAPIStart() {
-	if p.t.Supervisor != supervisorSystemd {
+func (p *planner) addAPIStart() error {
+	if p.sup == nil {
 		p.warn("this tenant is hand-started: the ctl stopped it for the fence but cannot start it again — " +
 			"restart it the way it was started, or hand it over first")
-		return
+		return nil
 	}
 	legs, _ := p.legs([]string{"api"})
 	for _, c := range legs {
-		p.addUnitStep("start", c)
+		if err := p.sup.startLeg(p, c); err != nil {
+			return err
+		}
 	}
 	p.addReadyStep(legs)
+	return nil
 }
 
 func (p *planner) addFenceVerify() {

@@ -103,6 +103,23 @@ type FakeOptions struct {
 	// answers a fact rather than a fixture. A tenant created AFTER the driver
 	// set was built says so with FakeInstances.BindInstancePort.
 	InstancePorts map[string]int
+	// RunningInstances are the instances already up when the fake is built —
+	// an instance-supervised tenant the fixture says is ACTIVE. Without them
+	// such a tenant looks stopped to `running`, so a fence would find nothing
+	// to stop and a start would run a second copy of a store that is already
+	// there.
+	RunningInstances []string
+	// AlivePIDs are the pids Proc.Alive answers true for without this fake
+	// having spawned them — the pid in an adopted or fixture tenant's pidfile
+	// — mapped to the port each one holds (0 for none). Spawn fills the same
+	// two tables from what it started.
+	//
+	// The PORT is half the entry because a fixture pid that dies on a TERM and
+	// goes on holding its socket is a tenant nothing can ever stop: the
+	// instance supervisor signals, then waits for the port to free, then
+	// kills, then waits again — and against such a fixture it would do all of
+	// that and time out.
+	AlivePIDs map[int]int
 	// Crontab is the account's crontab at the start. Nil is an account that
 	// has never had one — which List reports as an empty body and no error,
 	// as the real crontab(1) wrapper does.
@@ -188,7 +205,7 @@ func NewFake(opts FakeOptions) *Fake {
 		Repos: copyMapRepo(opts.ESRepos), Counts: copyMapInt64(opts.ESCounts),
 	}
 	f.api = &FakeTenantAPI{
-		r: &f.recorder, Versions: copyMapAny(opts.Versions),
+		r: &f.recorder, Versions: copyMapAny(opts.Versions), qdrant: f.qdrant,
 		CollectionsByOrigin: copyMapSlice(opts.CollectionsByOrigin),
 	}
 	f.git = &FakeGit{r: &f.recorder, Refs: copyMapString(opts.Refs), Worktrees: copyMapString(opts.Worktrees)}
@@ -200,8 +217,28 @@ func NewFake(opts FakeOptions) *Fake {
 	// the units and the LISTEN set are: a store this host started has to be a
 	// store a readiness probe can find.
 	f.instances = &FakeInstances{
-		r: &f.recorder, proc: f.proc, ports: copyMapInt(opts.InstancePorts),
+		r: &f.recorder, proc: f.proc, files: f.files, ports: copyMapInt(opts.InstancePorts),
 		Running: map[string]jobs.Instance{}, nextPID: 21001,
+	}
+	for _, name := range opts.RunningInstances {
+		f.instances.Running[name] = jobs.Instance{Name: name, PID: f.instances.nextPID, Image: "fixture.sif"}
+		f.instances.nextPID++
+		if port, ok := f.instances.ports[name]; ok {
+			f.proc.Ports[port] = true
+		}
+	}
+	for pid, port := range opts.AlivePIDs {
+		if f.proc.alive == nil {
+			f.proc.alive = map[int]bool{}
+		}
+		f.proc.alive[pid] = true
+		if port != 0 {
+			f.proc.Ports[port] = true
+			if f.proc.spawnPorts == nil {
+				f.proc.spawnPorts = map[int]int{}
+			}
+			f.proc.spawnPorts[pid] = port
+		}
 	}
 	f.crontab = &FakeCrontab{r: &f.recorder, Body: append([]byte(nil), opts.Crontab...)}
 	return f
@@ -723,11 +760,17 @@ type FakeInstances struct {
 	r    *recorder
 	mu   sync.Mutex
 	proc *FakeProc
+	// files is the in-memory filesystem SeedConfigDir copies into.
+	files *FakeFiles
 	// ports links an instance name to the port running it binds.
 	ports   map[string]int
 	nextPID int
 	// Running is the instance table, by name.
 	Running map[string]jobs.Instance
+	// Seeded records every SeedConfigDir as "<sif>:<containerDir>→<hostDir>",
+	// in order: what a test reads to see that the ES config bind was filled
+	// from the image BEFORE the instance started.
+	Seeded []string
 }
 
 var _ jobs.Instances = (*FakeInstances)(nil)
@@ -814,6 +857,32 @@ func (i *FakeInstances) Stop(_ context.Context, name string) error {
 		i.proc.mu.Lock()
 		delete(i.proc.Ports, port)
 		i.proc.mu.Unlock()
+	}
+	return nil
+}
+
+// SeedConfigDir copies the image's config directory into hostDir.
+//
+// The fake has no image to read, so it writes the ONE file whose absence is
+// the failure this seam exists to prevent: an Elasticsearch whose config bind
+// shadows the image's own and holds no jvm.options exits before it logs
+// anything useful. A caller that seeds and then lists the directory sees a
+// populated one, which is what makes the "seed only when empty" rule testable.
+func (i *FakeInstances) SeedConfigDir(_ context.Context, sif, containerDir, hostDir string) error {
+	if err := i.r.record("instances", "SeedConfigDir", sif, containerDir, hostDir); err != nil {
+		return err
+	}
+	if sif == "" || containerDir == "" || hostDir == "" {
+		return fmt.Errorf("%w: instances.SeedConfigDir needs an image, a source inside it and a host directory",
+			jobs.ErrRefused)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.Seeded = append(i.Seeded, sif+":"+containerDir+"→"+hostDir)
+	if i.files != nil {
+		for _, name := range []string{"elasticsearch.yml", "jvm.options", "log4j2.properties"} {
+			i.files.Put(strings.TrimSuffix(hostDir, "/")+"/"+name, []byte("# seeded from "+sif+"\n"), 0o644)
+		}
 	}
 	return nil
 }
@@ -1620,8 +1689,12 @@ type FakeTenantAPI struct {
 	// no entry answers {"version": "fake"} rather than failing, so a post-check
 	// on a tenant the fixture did not describe still runs.
 	Versions map[string]map[string]any
-	// CollectionsByOrigin maps an origin to the tenant API's inventory.
+	// CollectionsByOrigin maps an origin to the tenant API's inventory. An
+	// origin with NO entry falls back to the qdrant collections of the same
+	// port block — see Collections.
 	CollectionsByOrigin map[string][]string
+	// qdrant is the store behind that fallback.
+	qdrant *FakeQdrant
 	// Ingests records every ingest as "<origin> <path>", in order.
 	Ingests []string
 	// IngestStates maps an ingest job id to what IngestStatus answers for it.
@@ -1688,15 +1761,45 @@ func (a *FakeTenantAPI) DeepHealth(_ context.Context, origin, _ string) error {
 }
 
 // Collections is the tenant API's inventory, sorted.
+//
+// An origin the fixture said nothing about answers with the QDRANT collections
+// of the same port block (the api is at <base>, qdrant at <base>+1). That
+// fallback is what makes a `restore --as` verifiable against this fake: the
+// fresh tenant's origin is on a block nobody could have named in advance, and
+// `Qdrant.Recover` registers each collection as it recovers it — so the answer
+// is the effect of the steps that just ran rather than a fixture somebody
+// remembered to seed. An EXPLICIT entry, empty list included, always wins.
 func (a *FakeTenantAPI) Collections(_ context.Context, origin, _ string) ([]string, error) {
 	if err := a.r.record("tenantapi", "Collections", origin); err != nil {
 		return nil, err
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	out := append([]string(nil), a.CollectionsByOrigin[origin]...)
+	seeded, ok := a.CollectionsByOrigin[origin]
+	out := append([]string(nil), seeded...)
+	a.mu.Unlock()
+	if !ok && a.qdrant != nil {
+		if url, ok := qdrantURLForOrigin(origin); ok {
+			a.qdrant.mu.Lock()
+			out = append([]string(nil), a.qdrant.ByURL[url]...)
+			a.qdrant.mu.Unlock()
+		}
+	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// qdrantURLForOrigin is paths.BlockAt's layout, read backwards: the api is at
+// the block's base and qdrant's HTTP port one above it.
+func qdrantURLForOrigin(origin string) (string, bool) {
+	i := strings.LastIndex(origin, ":")
+	if i < 0 {
+		return "", false
+	}
+	port, err := strconv.Atoi(origin[i+1:])
+	if err != nil {
+		return "", false
+	}
+	return origin[:i+1] + strconv.Itoa(port+1), true
 }
 
 // Ingest records the ingest and hands back a job id.

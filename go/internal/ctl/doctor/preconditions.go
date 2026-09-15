@@ -181,7 +181,9 @@ func KnownOp(op string) bool {
 // applyPreconditions raises the warnings op cannot tolerate to errors. It
 // copies: the caller's findings keep their unscoped levels, so the same run
 // can be presented to several ops.
-func applyPreconditions(findings []model.Finding, op string) []model.Finding {
+// instanceTenants names the rows whose supervisor is `instance`; for those,
+// env_not_systemd_parsable is never raised (see run.instanceTenants).
+func applyPreconditions(findings []model.Finding, op string, instanceTenants map[string]bool) []model.Finding {
 	out := make([]model.Finding, len(findings))
 	copy(out, findings)
 	if op == "" {
@@ -197,6 +199,11 @@ func applyPreconditions(findings []model.Finding, op string) []model.Finding {
 		delete(red, c) // tolerating wins: a row cannot both raise and lower
 	}
 	for i := range out {
+		if out[i].Code == EnvNotSystemdParsable && instanceTenants[string(out[i].Tenant)] {
+			// There is no unit to load this file, so systemd's grammar is not
+			// what decides whether this tenant can start.
+			continue
+		}
 		switch {
 		case out[i].Level == model.LevelWarn && red[out[i].Code]:
 			out[i].Level = model.LevelError

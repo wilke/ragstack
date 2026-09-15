@@ -49,6 +49,12 @@ const (
 // host, ready to run.
 func newFixtureSelftest(t *testing.T) (*selftest, *drivers.Fake, *bytes.Buffer) {
 	t.Helper()
+	return newFixtureSelftestWith(t, "systemd")
+}
+
+// newFixtureSelftestWith is the same run under a chosen supervisor.
+func newFixtureSelftestWith(t *testing.T, supervisor string) (*selftest, *drivers.Fake, *bytes.Buffer) {
+	t.Helper()
 	root := t.TempDir()
 	roots := paths.NewRoots(root, paths.Overrides{})
 	for _, d := range []string{roots.DataDir, roots.ReposDir, roots.BackupsDir, roots.UnitsDir(),
@@ -112,7 +118,8 @@ func newFixtureSelftest(t *testing.T) (*selftest, *drivers.Fake, *bytes.Buffer) 
 
 	out := &bytes.Buffer{}
 	s := &selftest{
-		opts:         selftestOptions{ragRoot: root, fixture: fixture, artifact: fixtureArtifact},
+		opts: selftestOptions{ragRoot: root, fixture: fixture, artifact: fixtureArtifact,
+			supervisor: supervisor},
 		roots:        roots,
 		registryPath: regPath,
 		eng:          eng,
@@ -138,6 +145,13 @@ func fixtureBindPorts(fake *drivers.Fake, roots paths.Roots, names ...string) {
 		target, _, _, _, apiUnit, _ := render.UnitNames(name)
 		fake.FakeSystemd().BindUnitPort(target, block.API)
 		fake.FakeSystemd().BindUnitPort(apiUnit, block.API)
+		// And the same for the other supervisor: an instance binds the port
+		// its store listens on, so an instance-mode create's readiness gate
+		// answers a fact. The api port is not here — that one is bound by the
+		// SPAWN, off the `--port` on its own command line.
+		fake.FakeInstances().BindInstancePort("qdrant-"+name, block.QdrantHTTP)
+		fake.FakeInstances().BindInstancePort("elasticsearch-"+name, block.ESHTTP)
+		fake.FakeInstances().BindInstancePort("postgres-"+name, block.PG)
 	}
 	_ = roots
 }
@@ -741,4 +755,74 @@ func captureStderr(t *testing.T, fn func()) string {
 	defer func() { stderr = old }()
 	fn()
 	return buf.String()
+}
+
+// The same sequence under the other supervisor.
+//
+// It is a whole second run rather than an assertion bolted onto the first
+// because the supervisor is not a detail of a step — it is which half of the
+// control plane the run exercises. Under `instance` the sandbox is created
+// with no unit files, its stores come up as named apptainer instances, its
+// API is a detached process with a pidfile, and the post-checks read the
+// instance table and that pidfile instead of `systemctl show`.
+func TestSelftestRunsTheWholeSequenceUnderTheInstanceSupervisor(t *testing.T) {
+	s, fake, out := newFixtureSelftestWith(t, "instance")
+	err := s.execute(context.Background())
+	s.report()
+	if err != nil && !isLandsInPRD(err) {
+		t.Fatalf("selftest.execute: %v\n%s", err, out.String())
+	}
+
+	log := strings.Join(fake.CallKeys(), "\n")
+	if strings.Contains(log, "systemd.Link(") || strings.Contains(log, "systemd.Start(") {
+		t.Errorf("an instance-mode selftest drove systemd:\n%s", log)
+	}
+	for _, want := range []string{
+		"instances.Run(qdrant-" + fixturePrimary,
+		"instances.Run(elasticsearch-" + fixturePrimary,
+		"proc.Spawn(",
+		"instances.Stop(qdrant-" + fixturePrimary,
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("no %q in the call log:\n%s", want, log)
+		}
+	}
+	// The run says which supervisor it proved, so a report in a runbook is
+	// self-describing.
+	if !strings.Contains(out.String(), "supervisor instance") {
+		t.Errorf("the run does not name its supervisor:\n%s", out.String())
+	}
+	// The journal check is n/a — there is no unit to have one — and the
+	// post-check that replaces `systemd knows no unit` is the instance one.
+	var sawNA, sawInstanceCheck bool
+	for _, c := range s.checks {
+		if c.Name == "es journal has no SIGKILL" && c.Verdict == checkNA {
+			sawNA = true
+		}
+		if strings.HasSuffix(c.Name, ": no instance, no pidfile") {
+			sawInstanceCheck = true
+			if c.Verdict == checkFail {
+				t.Errorf("%s: %s", c.Name, c.Detail)
+			}
+		}
+		if strings.HasSuffix(c.Name, ": systemd knows no unit") {
+			t.Errorf("an instance-mode run asked systemd about units: %s", c.Detail)
+		}
+	}
+	if !sawNA {
+		t.Errorf("the journal check is not n/a under instance mode")
+	}
+	if !sawInstanceCheck {
+		t.Errorf("no instance post-check ran; checks = %v", s.checks)
+	}
+	if s.failedChecks() > 0 {
+		t.Errorf("%d check(s) failed:\n%s", s.failedChecks(), out.String())
+	}
+}
+
+// --supervisor is validated before anything is built.
+func TestSelftestRefusesAnUnknownSupervisor(t *testing.T) {
+	if rc, _, _ := capture(t, "selftest", "--supervisor", "sysvinit"); rc != exitUsage {
+		t.Errorf("rc %d, want %d", rc, exitUsage)
+	}
 }

@@ -54,6 +54,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/ragstack/ragstack/internal/ctl/api"
 	"github.com/ragstack/ragstack/internal/ctl/hostfacts"
 	"github.com/ragstack/ragstack/internal/ctl/jobs"
 	"github.com/ragstack/ragstack/internal/ctl/model"
@@ -138,6 +139,11 @@ type selftestOptions struct {
 	ragRoot     string
 	fixture     string
 	mountPoint  string
+	// supervisor is which supervisor the sandbox is created with — and so
+	// which half of the control plane this run actually exercises. Empty means
+	// CTL_DEFAULT_SUPERVISOR, else the contract's `systemd`: a selftest must
+	// prove the path THIS deployment takes, and on coconut that is `instance`.
+	supervisor string
 }
 
 // selftest is one run. Everything it talks to is a field, so the test builds
@@ -200,6 +206,12 @@ the sandbox range is read, written, started or stopped.
   --artifact ID     the artifact to create from (default: the newest prepared)
   --postgres local  give the sandbox its own postgres instead of sqlite state
   --fixture PATH    the document to ingest (default <rag-root>/documents/test_api.md)
+  --supervisor S    systemd|instance — how the sandbox is supervised, and so
+                    which half of the control plane this run exercises.
+                    Default: $CTL_DEFAULT_SUPERVISOR, else systemd. Under
+                    instance the post-checks read the instance table and the
+                    pidfile instead of systemctl show, and the journal check
+                    is n/a (there is no unit to have a journal)
   --boot            run the BOOT CHECKLIST only and exit: linger, the user@
                     drop-in, is-enabled and default.target's dependencies for
                     every tenant whose row says desired_boot enabled
@@ -233,6 +245,7 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 		artifact    = fs.String("artifact", "", "the artifact id to create from (default: newest prepared)")
 		postgres    = fs.String("postgres", "", "`local` gives the sandbox its own postgres")
 		fixture     = fs.String("fixture", "", "the document to ingest")
+		supervisor  = fs.String("supervisor", "", "systemd|instance (default $CTL_DEFAULT_SUPERVISOR, else systemd)")
 		root        = fs.String("rag-root", ragRoot, "deployment root")
 		reg         = fs.String("registry", registryPath, "registry.json path")
 		server      = fs.String("server", "", "refused: a selftest runs on the host it tests")
@@ -257,10 +270,21 @@ func cmdSelftest(args []string, registryPath, ragRoot string) int {
 	if *boot && *sweep {
 		return usageErr("--boot and --sweep are two different runs; pass one")
 	}
+	sup := *supervisor
+	if sup == "" {
+		sup = strings.TrimSpace(os.Getenv(api.EnvDefaultSupervisor))
+	}
+	if sup == "" {
+		sup = ops.DefaultSupervisor
+	}
+	if !ops.KnownSupervisor(sup) {
+		return usageErr("--supervisor %q is not systemd or instance", sup)
+	}
 
 	s, err := newSelftest(selftestOptions{
 		keep: *keep, withGateway: *withGateway, boot: *boot, sweepOnly: *sweep,
 		artifact: *artifact, postgres: *postgres, ragRoot: *root, fixture: *fixture,
+		supervisor: sup,
 	}, *reg)
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
@@ -423,7 +447,8 @@ func (s *selftest) execute(ctx context.Context) error {
 	}
 	stamp := s.now().UTC().Format(selftestStamp)
 	s.primary, s.restored = "ctltest-"+stamp, "ctltest-"+stamp+"-r"
-	fmt.Fprintf(s.out, "selftest: artifact %s, sandbox %s (restored into %s)\n", artifact, s.primary, s.restored)
+	fmt.Fprintf(s.out, "selftest: artifact %s, supervisor %s, sandbox %s (restored into %s)\n",
+		artifact, s.supervisorKind(), s.primary, s.restored)
 
 	fixture := s.opts.fixture
 	if fixture == "" {
@@ -438,6 +463,13 @@ func (s *selftest) execute(ctx context.Context) error {
 	createArgs := map[string]any{
 		"name": s.primary, "artifact_id": artifact,
 		"start": true, "gateway": s.opts.withGateway,
+	}
+	if s.opts.supervisor != "" {
+		// Named EXPLICITLY even when it equals the deployment's default: the
+		// run's report says which supervisor was proved, and an argument the
+		// request carried is the only thing that makes that claim true of the
+		// tenant that was actually created.
+		createArgs["supervisor"] = s.opts.supervisor
 	}
 	if s.opts.postgres != "" {
 		createArgs["postgres"] = s.opts.postgres
@@ -846,6 +878,16 @@ func (s *selftest) esShutdownChecks(ctx context.Context, name string) []checkRes
 	out := []checkResult{s.esLogCheck(logPath)}
 
 	_, _, esUnit, _, _, _ := render.UnitNames(name)
+	if s.instanceMode() {
+		// There is no unit, so there is no journal to read. The LOG check
+		// above is unchanged and is the one that matters: it is Elasticsearch
+		// saying it shut itself down, which is the same evidence either way.
+		// `apptainer instance stop` sends SIGTERM exactly as systemd does.
+		out = append(out, checkResult{Name: "es journal has no SIGKILL", Verdict: checkNA,
+			Detail: "supervisor is `instance`: there is no " + esUnit + " and so no journal; " +
+				"the ES log check above is the evidence"})
+		return out
+	}
 	since := s.startedAt.Format("2006-01-02 15:04:05")
 	data, err := s.runArgv(ctx, journalctlBin, "--user", "-u", esUnit, "--since", since, "--no-pager")
 	switch {
@@ -957,7 +999,11 @@ func (s *selftest) quarantineChecks(ctx context.Context, names []string) []check
 			continue
 		}
 		out = append(out, s.portsFreeCheck(ctx, name, t.Ports))
-		out = append(out, s.unitsGoneCheck(ctx, name))
+		if s.instanceMode() {
+			out = append(out, s.instancesGoneCheck(ctx, name, t))
+		} else {
+			out = append(out, s.unitsGoneCheck(ctx, name))
+		}
 		out = append(out, s.quarantinedDirCheck(ctx, name))
 	}
 	return out
@@ -1005,6 +1051,55 @@ func (s *selftest) unitsGoneCheck(ctx context.Context, name string) checkResult 
 		return check
 	}
 	check.Verdict, check.Detail = checkPass, "6 units are unknown to the manager"
+	return check
+}
+
+// supervisorKind is which supervisor this run is proving.
+func (s *selftest) supervisorKind() string {
+	if s.opts.supervisor == "" {
+		return ops.DefaultSupervisor
+	}
+	return s.opts.supervisor
+}
+
+func (s *selftest) instanceMode() bool { return s.supervisorKind() == "instance" }
+
+// instancesGoneCheck is unitsGoneCheck's twin for the other supervisor: after
+// a decommission, no apptainer instance of this tenant is running and the API
+// pidfile is gone.
+//
+// The pidfile is half the check because it is the ctl's ONLY record of the
+// process it started: a decommissioned tenant that left one behind would hand
+// the next reader a pid to signal, and pids are reused.
+func (s *selftest) instancesGoneCheck(ctx context.Context, name string, t *registry.Tenant) checkResult {
+	check := checkResult{Name: name + ": no instance, no pidfile"}
+	list, err := s.drv.Instances().List(ctx)
+	if err != nil {
+		return checkResult{Name: check.Name, Verdict: checkNA, Detail: err.Error()}
+	}
+	want := map[string]bool{
+		"qdrant-" + t.ManifestName:        true,
+		"elasticsearch-" + t.ManifestName: true,
+		"postgres-" + t.ManifestName:      true,
+	}
+	var alive []string
+	for _, in := range list {
+		if want[in.Name] {
+			alive = append(alive, in.Name)
+		}
+	}
+	pidfile := t.API.PidFile
+	if pidfile == "" {
+		pidfile = paths.TenantPaths(s.roots, name, t.ManifestName).PidFile
+	}
+	if _, err := s.drv.Files().ReadFile(ctx, pidfile); err == nil {
+		alive = append(alive, pidfile)
+	}
+	if len(alive) > 0 {
+		check.Verdict, check.Detail = checkFail, "still there: "+strings.Join(alive, ", ")
+		return check
+	}
+	check.Verdict, check.Detail = checkPass, "3 instance names are unknown to apptainer and "+pidfile+" is gone"
 	return check
 }
 

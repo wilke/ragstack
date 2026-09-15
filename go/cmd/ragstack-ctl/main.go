@@ -109,6 +109,15 @@ func usage() {
                                             account. LOCAL action, run as the path OWNER — only an
                                             owner may set an ACL, and the daemon runs as the account
                                             being granted. There is no setfacl on this host.
+  fleet start --all                         start every tenant whose desired_boot is enabled, in
+                                            display order; idempotent, so a periodic run is the
+                                            watchdog a host without a user manager needs
+  fleet stop --all --yes-destructive all    stop every tenant the ctl supervises, in reverse order
+  fleet enable-boot --cron|--no-cron [--dry-run]
+                                            add or remove the ONE marked @reboot line in this
+                                            account's crontab (every other line is untouched).
+                                            This host's only boot hook: cron gets no logind
+                                            session, so systemctl --user cannot be driven from it
   tenant create <name> --artifact ID        allocate, provision, start and route a new tenant
   tenant list [--json]                      every tenant in display order
   tenant show <name> [--json]               one tenant: summary, live status, units, drift
@@ -975,10 +984,17 @@ func cmdFleet(args []string, registryPath, ragRoot string, jsonOut bool) int {
 	if len(args) > 0 && args[0] == "grant" {
 		return cmdFleetGrant(args[1:], ragRoot, jsonOut)
 	}
+	// The three fleet-wide lifecycle commands (PR-D2). They are CLI-only and
+	// submit one ordinary tenant job each — see cmd/ragstack-ctl/fleetops.go.
+	if len(args) > 0 && (args[0] == "start" || args[0] == "stop" || args[0] == "enable-boot") {
+		return cmdFleetOps(args[0], args[1:], registryPath, ragRoot, jsonOut)
+	}
 	if len(args) == 0 || args[0] != "status" {
 		fmt.Fprintln(stderr, "usage: ragstack-ctl fleet status [--json]")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet artifact prepare|list …")
 		fmt.Fprintln(stderr, "       ragstack-ctl fleet grant --user NAME [--dry-run] …")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet start|stop --all [--direct]")
+		fmt.Fprintln(stderr, "       ragstack-ctl fleet enable-boot --cron|--no-cron [--dry-run]")
 		return exitUsage
 	}
 	fs := flag.NewFlagSet("fleet status", flag.ContinueOnError)

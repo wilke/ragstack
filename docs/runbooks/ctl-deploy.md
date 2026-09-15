@@ -1072,6 +1072,166 @@ available. At that point `fleet grant --revoke` removes the ACLs and
 
 ---
 
+## PR-D2: Interim — the instance supervisor and crontab boot
+
+This section describes how the control plane runs tenants on coconut **as it is
+today**: no root, no `linger`, no user manager for `svcbvbrc`, and cron jobs
+that get no logind session (`common-session-noninteractive`, no `pam_systemd`)
+and therefore cannot drive `systemctl --user` at all.
+
+The systemd path is untouched and is still what
+`plan-svcbvbrc-systemd-migration-2026-09-15.md` migrates to. Everything here is
+the interim, and every part of it is reversible by a re-render.
+
+### What `supervisor: instance` is
+
+A tenant row's `supervisor` is `systemd`, `instance` or `manual`. Under
+`instance` the ctl starts and stops the tenant **itself**:
+
+| leg | systemd | instance |
+|---|---|---|
+| qdrant / elasticsearch / postgres | `apptainer run` from a unit's `ExecStart` | `apptainer instance run --no-home … <name>` |
+| instance name | n/a | `<kind>-<manifest_name>` — `qdrant-dev`, `elasticsearch-hackathon` |
+| api | a unit, `EnvironmentFile=` tenant.env + secrets.env | a detached uvicorn, pidfile `<data_dir>/api-<name>.pid`, log `<data_dir>/logs/api-<name>.log` |
+| stop | `systemctl --user stop` | `apptainer instance stop` / SIGTERM → port free → SIGKILL |
+| "is it running" | `systemctl is-active` | `apptainer instance list --json` / pidfile + `/proc` + the port's owner |
+| boot | `WantedBy=default.target` | `desired_boot: enabled` + `fleet start --all` |
+| unit files | five, written and linked | **none** |
+
+The **command is the same command**. `render.StoreArgv` renders what the unit's
+`ExecStart` renders, and the two differ in `run` versus `instance run <name>`
+and in nothing else — a golden test asserts it. A bind added to one is added to
+both.
+
+Two things the instance supervisor does that the unit got for free:
+
+* it **seeds the elasticsearch config bind** from the image before starting ES,
+  which is the unit's `ExecStartPre=… es-seed-config`. The bind shadows the
+  image's own `/usr/share/elasticsearch/config`, and an empty host directory is
+  an Elasticsearch that exits before it logs why. A directory that already
+  holds anything is left strictly alone.
+* it reads the **postgres password** out of `secrets.env` at run time and passes
+  it as `APPTAINERENV_POSTGRES_PASSWORD` in apptainer's own environment.
+  It is never in a plan, a job log, a checkpoint or an argv — `/proc/<pid>/cmdline`
+  is 0444 on a host with 1869 members in `cels`.
+
+A **`dev`-mode UI is refused** under `instance`: a Vite dev server is not
+something this supervisor watches. Use `ui_mode: static` (nginx serves
+`<data_dir>/ui/dist`) or put the tenant on units.
+
+### Making it the default
+
+```bash
+# /rag/config/ctl/ctl.env
+CTL_DEFAULT_SUPERVISOR=instance
+```
+
+Read by the daemon and by every `--direct` run, through the same helper, so the
+two create the same kind of tenant. It decides only what a `create` that names
+**no** supervisor gets; `tenant create … --supervisor systemd|instance` always
+wins, and the contract's default when the variable is unset is `systemd`.
+
+Switching an EXISTING row between supervisors is not an operation yet
+(`tenant set-supervisor` is PR-E). `handover` still lands on units.
+
+```bash
+# prove it before relying on it
+/rag/bin/ragstack-ctl selftest --supervisor instance                 # sqlite
+/rag/bin/ragstack-ctl selftest --supervisor instance --postgres local
+/rag/bin/ragstack-ctl selftest --supervisor instance --with-gateway
+```
+
+Under `--supervisor instance` the selftest's post-checks read the instance
+table and the pidfile instead of `systemctl show`, and the journal SIGKILL
+check is `n/a` — there is no unit to have a journal. The Elasticsearch **log**
+check is unchanged and is the evidence that matters: `apptainer instance stop`
+sends SIGTERM exactly as systemd does.
+
+### Starting and stopping the fleet
+
+```bash
+/rag/bin/ragstack-ctl fleet start --all --direct
+/rag/bin/ragstack-ctl fleet stop  --all --yes-destructive all --direct
+```
+
+* One ordinary tenant job per tenant — same plans, same locks, same audit rows
+  as `ragstack-ctl tenant start <name>`. There is no fleet-wide plan and no
+  lock held across tenants.
+* `start` acts on rows whose `desired_boot` is `enabled`; `stop` on every row
+  the ctl supervises, in reverse display order.
+* `supervisor: manual` rows are **skipped**, with the reason printed. The ctl
+  did not start those tenants and will not start them; `tenant handover` is
+  what changes that.
+* A tenant that fails is reported and the run **continues**; the command exits
+  `4` at the end. Leaving the four tenants behind a broken one down is not a
+  service to anybody.
+* It is **idempotent**: a running instance and a live pidfile are both no-ops
+  that say "already running". That is what makes the watchdog below safe.
+
+Each run mints a fresh idempotency key per tenant, on purpose. The derived key
+every other command uses would make the second `fleet start --all` a replay of
+the first — right for a retried command, exactly wrong for a periodic sweep
+that has to start what died since the last one.
+
+### Boot
+
+```bash
+/rag/bin/ragstack-ctl fleet enable-boot --cron --dry-run   # look first
+/rag/bin/ragstack-ctl fleet enable-boot --cron
+crontab -l                                                 # confirm by eye
+```
+
+It installs ONE line in **this account's** crontab:
+
+```cron
+@reboot /rag/bin/ctl-daemon.sh start && /rag/bin/ragstack-ctl fleet start --all --direct  # ragstack-ctl boot
+```
+
+* Every other line is copied through untouched — the gateway's own `@reboot
+  start-proxy.sh` lives in the same crontab.
+* Installing twice changes nothing; a line whose command has drifted is
+  rewritten in place; **two** lines carrying the marker is a refusal, not a
+  cleanup (remove the extra by hand with `crontab -e`).
+* `--no-cron` removes it.
+* `ctl-daemon.sh` stays the launcher. The ctl has no `--daemonize`: one way to
+  start the daemon is enough.
+
+`doctor` learns about it from `<CtlStateDir>/boot.json`, which this command
+writes — `boot_cron_present` (info) when a line is recorded, `boot_cron_missing`
+(warn) when the account has neither `linger` nor a recorded line. **doctor never
+runs `crontab -l`**: a diagnostic that shells out to read an account's boot
+configuration fails differently on every host and needs the right account to be
+asked from. The cost is stated in the finding: a line you added by hand is
+invisible to it, and `fleet enable-boot --cron` is what makes it visible.
+
+### The watchdog (suggested, not installed)
+
+There is **no restart-on-failure** in instance mode. `fleet start --all` is
+idempotent, so a periodic run of it is the watchdog — and it is a line the
+operator adds deliberately, not something the ctl installs:
+
+```cron
+*/5 * * * * /rag/bin/ragstack-ctl fleet start --all --direct >>/rag/data/ctl/boot-watchdog.log 2>&1
+```
+
+Run it only once a `fleet start --all` by hand has been seen to be clean.
+
+### What instance mode does NOT give you
+
+| systemd gives | instance mode |
+|---|---|
+| `Restart=on-failure`, `RestartSec` | nothing. A dead leg comes back at the next `fleet start --all` |
+| `StartLimitBurst` / crash-loop protection | nothing |
+| `journalctl --user -u …` | the tenant's own log files under `<data_dir>/logs` only |
+| `systemctl --user status` | `apptainer instance list`, the pidfile, and `ragstack-ctl tenant show` |
+| ordering and `Requires=` between legs | the ctl's own start order plus the readiness gate |
+| `KillMode=mixed`, cgroup cleanup | SIGTERM to the instance / the API's process group |
+
+If any of those matter for a tenant, that tenant belongs on units — which is
+what the sysadmin migration is for.
+
+---
+
 ## Verification summary
 
 | Step | Command | Expected |
@@ -1089,6 +1249,11 @@ available. At that point `fleet grant --revoke` removes the ACLs and
 | 7 | `ctl-daemon.sh status` | `running (pid …)` + `{"status":"ok",…}` |
 | PR-D2 | `fleet grant --user svcbvbrc --dry-run` (as wilke) | a before → after table; nothing written |
 | PR-D2 | `fleet grant --user svcbvbrc` then `doctor` | `acl_grant_present` info listing the three roots; no `ctl_account_no_access`, no `acl_grants_others` |
+| PR-D2 | `selftest --supervisor instance` | every step `succeeded`, no check `FAIL`; the journal check reads `n/a` |
+| PR-D2 | `fleet stop --all --yes-destructive all` then `fleet start --all` | every managed row stopped and started; `manual` rows skipped with a reason |
+| PR-D2 | `fleet start --all` a second time | the same rows, every leg "already running", exit 0 |
+| PR-D2 | `fleet enable-boot --cron --dry-run` then `crontab -l` | one marked `@reboot` line; every pre-existing line intact |
+| PR-D2 | `doctor` after `enable-boot --cron` | `boot_cron_present` (info), no `boot_cron_missing` |
 
 **Exit codes.** Every step above is checkable in a script: `0` ok, `1` error,
 `2` usage, `3` refused. `ctl-as-svc.sh` passes the ctl's status through

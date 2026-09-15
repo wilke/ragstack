@@ -378,6 +378,16 @@ Exit codes everywhere: `0` ok · `1` error · `2` usage · `3` refused. The wrap
 passes them through; its output comes off a pty, so `tr -d '\r'` before any
 line-exact comparison.
 
+Interim runtime (PR-D2): with `CTL_DEFAULT_SUPERVISOR=instance` in `ctl.env`
+the ctl starts tenants itself — apptainer instances plus a detached uvicorn
+with a pidfile — because this account has no user manager and cron gets no
+logind session. `fleet start --all` / `fleet stop --all --yes-destructive all`
+drive the fleet (idempotent, `manual` rows skipped with a reason), and `fleet
+enable-boot --cron` installs the one `@reboot` line that brings it back.
+Prove it with `selftest --supervisor instance`. What it does NOT give you —
+restart-on-failure, a journal, crash-loop protection — is listed in the full
+runbook, "PR-D2: Interim — the instance supervisor and crontab boot".
+
 Optional: a conformance run against the deployed daemon needs a second daemon
 on another port with the rate limiter off — see the full runbook, "Running the
 conformance suite against the deployed daemon".
