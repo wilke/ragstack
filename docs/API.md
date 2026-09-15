@@ -383,7 +383,7 @@ check. See `contracts/fixtures/prompt-templates.example.yaml`.
 
 ```bash
 curl -s $BASE/v1/prompt-templates -H "X-API-Key: $KEY"
-# {"templates":[{"id":"ppi-extraction","version":1,"hash":"b883138c8cc58b36",
+# {"templates":[{"id":"ppi-extraction","version":1,"hash":"78af7d5755a6983b",
 #                "label":"Protein-Protein Interaction (PPI)","output":"table",
 #                "columns":["Pathogen","Protein A", …],
 #                "slots":[{"name":"organism","required":true,"max_len":120}, …]}]}
@@ -404,7 +404,7 @@ curl -s $BASE/v1/query -H "X-API-Key: $KEY" -H 'Content-Type: application/json' 
 }'
 # {"answer":"Pathogen\tProtein A\t…","sources":[…],"rewritten_queries":[…],
 #  "template":"ppi-extraction","template_version":1,
-#  "template_hash":"b883138c8cc58b36","model":"…Llama-4-Scout…"}
+#  "template_hash":"78af7d5755a6983b","model":"…Llama-4-Scout…"}
 ```
 
 **`query` and the template are different strings**, and this is the one thing to

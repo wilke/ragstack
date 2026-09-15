@@ -340,7 +340,7 @@ def test_near_markers_are_errors_not_literal_text(tmp_path: Path, body: str) -> 
     """Rendering these as literal text is exactly the outcome rule 3 forbids:
     the prompt renders, the model answers, and nothing says the value never
     arrived."""
-    with pytest.raises(TemplateValidationError, match="'user'"):
+    with pytest.raises(TemplateValidationError, match="unparsable substitution marker"):
         _load_one(tmp_path, user=body)
 
 
@@ -586,20 +586,40 @@ def test_changing_columns_changes_the_hash(tmp_path: Path) -> None:
     assert one.hash != two.hash
 
 
-def test_label_is_not_content(tmp_path: Path) -> None:
-    """DECIDED: `label` is excluded from the hash, at both the template and the
-    slot level. It is a string for a picker; two tenants that renamed a menu
-    entry but kept identical bodies still produce identical prompts and are
-    still comparable, and flagging them as drifted would be a false positive in
-    the one signal that exists to catch real drift.
+def test_label_IS_content_because_it_renders(tmp_path: Path) -> None:
+    """`label` is in RESERVED_NAMES, so `{{label}}` renders into the USER
+    MESSAGE — three of the four templates we ship use it that way.
 
-    Note the consequence, which is real: a label-only edit is invisible to the
-    hash, so `version` alone carries it. ADR-0008 says version is bumped on any
-    content change, and by this definition a label edit is not one."""
-    base = _load_one(tmp_path)
-    relabelled = _load_one(tmp_path, label="A different picker entry")
-    assert base.label != relabelled.label
-    assert base.hash == relabelled.hash
+    This test previously asserted the opposite, and was only green because its
+    fixture's body happened not to reference `{{label}}` while `_ppi_record` in
+    this same file does. Under that definition a label edit changed the prompt
+    the model saw and left the hash identical: two tenants holding the same
+    (id, version, hash) with materially different instructions — verbatim the
+    drift ADR-0008 decision 4 exists to make visible.
+
+    A string that can reach the model is content, whatever it is called."""
+    body = "{{context}} about {{label}} {{focus}}"
+    base = _load_one(tmp_path, user=body)
+    relabelled = _load_one(tmp_path, label="A different picker entry", user=body)
+
+    system_a, user_a = render(base, {}, "CTX")
+    system_b, user_b = render(relabelled, {}, "CTX")
+    assert user_a != user_b, "the rendered prompt differs"
+    assert base.hash != relabelled.hash, "so the hash must differ too"
+
+
+def test_a_label_edit_is_caught_even_when_the_body_does_not_use_it(tmp_path: Path) -> None:
+    """Conservative on purpose: the hash covers `label` unconditionally rather
+    than only when `{{label}}` appears in the body.
+
+    Deciding per-template would mean the same field is content in one template
+    and not in another — a rule nobody can hold in their head while copying a
+    file between tenants, which is exactly when this signal has to be trusted.
+    Over-reporting drift that cannot affect output is the safe direction; the
+    slot-level `label` stays excluded because it genuinely cannot render."""
+    base = _load_one(tmp_path, user="{{context}} {{focus}}")
+    relabelled = _load_one(tmp_path, label="Renamed", user="{{context}} {{focus}}")
+    assert base.hash != relabelled.hash
 
 
 def test_slot_label_is_not_content_either(tmp_path: Path) -> None:
@@ -824,3 +844,38 @@ def test_the_shipped_example_file_loads_and_renders() -> None:
     # text instead of trying to parse a table out of it.
     assert templates["literature-summary"].output == "text"
     assert templates["literature-summary"].columns is None
+
+    # docs/API.md shows a worked example with this hash in it. Pin it here so a
+    # content change to the shipped file cannot leave the documentation quoting
+    # a value the loader no longer produces — which is exactly what happened
+    # when `label` moved into the hash.
+    docs = (Path(__file__).resolve().parents[2] / "docs" / "API.md").read_text()
+    assert ppi.hash in docs, (
+        f"docs/API.md quotes a stale hash; the shipped ppi-extraction is now {ppi.hash}"
+    )
+
+
+def test_a_column_containing_a_tab_is_refused(tmp_path: Path) -> None:
+    """`{{columns}}` renders tab-joined, so an embedded tab makes N declared
+    columns into N+1 prompt fields and mis-aligns every row a client parses
+    against the declaration. Caught at load, like the other authoring errors."""
+    with pytest.raises(TemplateValidationError, match="contains a tab"):
+        _load_one(tmp_path, output="table", columns=["A\tB", "C"], user="{{context}}{{focus}}{{columns}}")
+
+
+def test_duplicate_column_names_are_refused(tmp_path: Path) -> None:
+    with pytest.raises(TemplateValidationError, match="unique"):
+        _load_one(tmp_path, output="table", columns=["A", "A"], user="{{context}}{{focus}}{{columns}}")
+
+
+@pytest.mark.parametrize("bad", ["My Template", "a/b", "PPI", "a" * 65, "-lead"])
+def test_ids_outside_the_published_pattern_are_refused(tmp_path: Path, bad: str) -> None:
+    """The listing's `id` is bounded by contract because it is caller-supplied
+    and reaches logs. Accepting a wider one here let the BOOT succeed and then
+    made GET /v1/prompt-templates violate its own schema at runtime — inverting
+    ADR-0008 rule 5, which exists so an authoring error fails loudly at load.
+
+    The previous test for this parametrized only "", "  ", 7, None and " padded"
+    — none of which exercise the pattern."""
+    with pytest.raises(TemplateValidationError, match="does not match"):
+        _load_one(tmp_path, id=bad)

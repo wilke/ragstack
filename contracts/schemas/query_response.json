@@ -34,7 +34,7 @@
       "type": "integer"
     },
     "template_hash": {
-      "description": "Content hash of the rendered template body, computed at load. Templates are per-tenant and copied by hand, so two tenants can hold the same (id, version) with drifted bodies while claiming the same identity; the hash makes that detectable rather than invisible (ADR-0008 decision 4). Same role as the ragstack-ctl gateway header's registry sha256.",
+      "description": "Content hash of the template SOURCE, computed at load \u2014 not of a rendered body, which would depend on this request's template_vars and could not be computed at load at all. Present only when a templated generation actually produced the answer. See prompt_templates_response.json.",
       "type": "string"
     },
     "model": {

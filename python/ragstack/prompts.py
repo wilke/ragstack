@@ -57,6 +57,9 @@ log = logging.getLogger(__name__)
 #: text of its own, which is level 3 (refused) wearing a level-2 costume.
 RESERVED_NAMES = frozenset({"context", "columns", "label"})
 
+#: Kept in step with `id` in contracts/schemas/prompt_templates_response.json.
+_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
 #: Slot names are lowercase identifiers. Narrow on purpose: the name appears in
 #: a JSON request body, in the marker syntax, and in error messages, and a
 #: charset that admits ``{{ foo-bar }}`` invites the reader to guess which of
@@ -254,6 +257,7 @@ def _referenced(nodes: Iterable[_Node]) -> set[str]:
 def content_hash(
     *,
     version: int,
+    label: str,
     output: str,
     columns: Iterable[str] | None,
     slots: Iterable[Slot],
@@ -264,14 +268,21 @@ def content_hash(
     serialization of the template's content, hex, first 16 chars.
 
     **What counts as content.** Anything that can change the bytes sent to the
-    model (``system``, ``user``, ``columns``, ``output``, slot ``name``) or
-    change which requests are accepted (slot ``required`` and ``max_len``), plus
-    ``version`` so a bump is visible in the hash too. **``label`` is excluded**,
-    at both the template and the slot level: it is a string for a picker. Two
-    tenants that renamed a menu entry but kept identical bodies still produce
-    identical prompts and are still comparable, and flagging them as drifted
-    would be a false positive in the one signal that exists to catch real drift.
-    ``id`` is excluded because hashes are only ever compared *within* an id.
+    model (``system``, ``user``, ``columns``, ``output``, slot ``name``, and
+    **``label``**) or change which requests are accepted (slot ``required`` and
+    ``max_len``), plus ``version`` so a bump is visible in the hash too. ``id``
+    is excluded because hashes are only ever compared *within* an id.
+
+    **``label`` IS content, and an earlier version of this had it wrong.** It
+    was excluded as "a string for a picker" — but ``label`` is in
+    ``RESERVED_NAMES``, so ``{{label}}`` renders into the USER MESSAGE, and three
+    of the four templates we ship use it. Editing a label therefore changed the
+    prompt the model saw and left the hash identical: two tenants holding
+    ``ppi-extraction`` v1 with materially different instructions, both echoing
+    the same ``(id, version, hash)``, which is verbatim the drift ADR-0008
+    decision 4 exists to make visible. A string that can reach the model is
+    content, whatever it is called. A slot's ``label`` stays excluded — that one
+    genuinely cannot render.
 
     **Slot order is content.** Reordering slots cannot change a rendered prompt,
     so this is deliberately conservative — it reports drift that does not affect
@@ -287,6 +298,7 @@ def content_hash(
     """
     payload = {
         "version": version,
+        "label": label,
         "output": output,
         "columns": list(columns) if columns is not None else None,
         "system": system,
@@ -329,7 +341,7 @@ def _read_records(path: Path) -> list[Any]:
             # operator just wrote, reads as a bug in RAGStack rather than a missing wheel.
             raise TemplateValidationError(
                 f"{path}: reading a YAML template file needs PyYAML installed "
-                "(pip install pyyaml), or write the file as .json"
+                "(pip install pyyaml  # or reinstall ragstack, which requires it), or write the file as .json"
             ) from exc
         try:
             data = yaml.safe_load(text)
@@ -407,6 +419,13 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
     tid = raw.get("id")
     if not isinstance(tid, str) or not tid or tid != tid.strip():
         raise _fail(where, "id", f"must be a non-empty string without surrounding whitespace, got {tid!r}")
+    if not _ID_PATTERN.match(tid):
+        # The published contract bounds `id` because it is caller-supplied and
+        # reaches logs. Accepting a wider one here let the BOOT succeed and then
+        # made GET /v1/prompt-templates violate its own schema at runtime —
+        # inverting ADR-0008 rule 5, which exists so an authoring error fails
+        # loudly at load rather than becoming someone else's 500.
+        raise _fail(where, "id", f"{tid!r} does not match {_ID_PATTERN.pattern}")
     where = f"{where} template {tid!r}"
 
     version = raw.get("version")
@@ -427,6 +446,17 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
             raise _fail(where, "columns", "output 'table' requires a non-empty list of column names")
         if not all(isinstance(c, str) and c for c in columns_raw):
             raise _fail(where, "columns", f"every column must be a non-empty string, got {columns_raw!r}")
+        for c in columns_raw:
+            if "\t" in c:
+                # `{{columns}}` renders TAB-JOINED, so an embedded tab turns N
+                # declared columns into N+1 fields in the prompt — and a client
+                # parsing the answer against the declaration mis-aligns every
+                # row. Load-time detectable, so detect it at load.
+                raise _fail(where, "columns", f"column {c!r} contains a tab")
+        if len(set(columns_raw)) != len(columns_raw):
+            raise _fail(
+                where, "columns", f"column names must be unique, got {columns_raw!r}"
+            )
         columns: tuple[str, ...] | None = tuple(columns_raw)
     else:
         if columns_raw is not None:
@@ -515,6 +545,7 @@ def _load_one(where: str, raw: Any) -> PromptTemplate:
         user=user,
         hash=content_hash(
             version=version,
+            label=label,
             output=output,
             columns=columns,
             slots=slots,

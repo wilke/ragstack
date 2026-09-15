@@ -3722,6 +3722,7 @@ components:
         template:
           type: [string, "null"]
           default: null
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: >-
             Named server-side prompt template to render the GENERATION prompt
             with (ADR-0008). Per-tenant deployment config; see
@@ -3768,10 +3769,12 @@ components:
         template_hash:
           type: string
           description: >-
-            Content hash of the rendered template body. Templates are per-tenant
-            and copied by hand, so two tenants can hold the same (id, version)
-            with drifted bodies while claiming the same identity; the hash makes
-            that detectable (ADR-0008 decision 4).
+            Content hash of the template SOURCE, computed at load — not of a
+            rendered body, which would depend on this request's template_vars.
+            Templates are per-tenant and copied by hand, so two tenants can hold
+            the same (id, version) with drifted bodies while claiming the same
+            identity; the hash makes that detectable (ADR-0008 decision 4).
+            Present only when a templated generation produced the answer.
         model:
           type: string
           description: >-

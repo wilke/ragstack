@@ -134,12 +134,13 @@
       "default": null
     },
     "template": {
-      "description": "Named server-side prompt template to render the GENERATION prompt with (ADR-0008). Templates are per-tenant deployment config; see GET /v1/prompt-templates for the ids and their declared slots. Unknown id -> 404. NOT the retrieval string: `query` is what gets embedded and BM25'd, while this shapes only what the model is asked to do with the passages that come back. The server never derives one from the other, and a caller must not put an instruction block in `query`. null/absent (the default) leaves generation byte-identical to a server without templates.",
+      "description": "Named server-side prompt template to render the GENERATION prompt with (ADR-0008). Templates are per-tenant deployment config; see GET /v1/prompt-templates for the ids and their declared slots. Unknown id -> 404. NOT the retrieval string: `query` is what gets embedded and BM25'd, while this shapes only what the model is asked to do with the passages that come back. The server never derives one from the other, and a caller must not put an instruction block in `query`. null/absent (the default) leaves generation byte-identical to a server without templates. Bounded by the same pattern as `id` in prompt_templates_response.json \u2014 it is the same identifier, it is caller-supplied, and it is reflected into the 404 body and the logs.",
       "type": [
         "string",
         "null"
       ],
-      "default": null
+      "default": null,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
     },
     "template_vars": {
       "description": "Values for the slots the selected template declares. String values only, each within the slot's declared max_len; a slot the template does not declare is a 422, and a required slot left unset is a 422. Values are substituted LITERALLY and the result is not re-rendered, so template syntax inside a value is inert text, and they are never placed in the system message. This bounds abuse and keeps a request reproducible; it does NOT make a value trusted \u2014 see ADR-0008. Ignored when `template` is null.",

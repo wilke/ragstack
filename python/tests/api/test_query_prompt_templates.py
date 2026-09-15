@@ -18,6 +18,7 @@ import pytest
 
 from ragstack.api.main import app
 from ragstack.llm import RagGenerator
+from ragstack.models import Chunk
 from ragstack.prompts import load_templates
 
 pytestmark = pytest.mark.asyncio
@@ -125,12 +126,25 @@ async def test_unknown_template_is_404_and_runs_no_retrieval(client, templates, 
         ({"organism": "x" * 121}, "a value over the declared max_len"),
     ],
 )
-async def test_bad_template_vars_are_422(client, templates, vars_, why):
+async def test_bad_template_vars_are_422(client, templates, vars_, why, monkeypatch):
+    # Same tripwire as the 404 test. Bad slot values are a fact about the
+    # request, so they must cost nothing either — and without this guard the
+    # validation could move after retrieval and the suite would not see it.
+    called = False
+    original = app.state.retriever.retrieve
+
+    async def _tripwire(*a, **k):
+        nonlocal called
+        called = True
+        return await original(*a, **k)
+
+    monkeypatch.setattr(app.state.retriever, "retrieve", _tripwire, raising=False)
     resp = await client.post(
         "/v1/query",
         json={"query": "spike", "template": "ppi-extraction", "template_vars": vars_},
     )
     assert resp.status_code == 422, f"{why}: {resp.text}"
+    assert not called, f"{why}: retrieval ran for a request that could not be served"
 
 
 async def test_templated_request_echoes_what_produced_it(client, templates, capturing_llm):
@@ -234,3 +248,101 @@ async def test_no_templates_configured_is_an_empty_list_not_404(client, monkeypa
     resp = await client.get("/v1/prompt-templates")
     assert resp.status_code == 200
     assert resp.json() == {"templates": []}
+
+
+async def test_no_llm_configured_claims_no_template(client, templates, monkeypatch):
+    """ADR-0008 §3b case 1, which had no test at all.
+
+    A templated request against a server with no LLM gets the retrieval-only
+    fallback. It must not echo provenance: claiming a template produced
+    "[LLM not configured] …" attributes text to a prompt that never ran.
+    """
+    monkeypatch.setattr(app.state, "generator", None, raising=False)
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "[LLM not configured]" in body["answer"]
+    for key in ("template", "template_version", "template_hash", "model"):
+        assert key not in body, f"{key} claimed a template ran when generation did not"
+
+
+async def test_generation_failure_claims_no_template(client, templates, monkeypatch):
+    """ADR-0008 §3b case 2, likewise untested.
+
+    Retrieval succeeded, so the request is not failed — but the answer is the
+    fallback, and the template did not produce it.
+    """
+
+    class _Broken:
+        model = "test-model-v1"
+
+        async def complete(self, messages, max_tokens: int = 512, temperature: float = 0.0) -> str:
+            raise RuntimeError("upstream is down")
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Broken()), raising=False)
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "[answer generation failed]" in body["answer"]
+    for key in ("template", "template_version", "template_hash", "model"):
+        assert key not in body, f"{key} claimed a template ran when generation failed"
+
+
+async def test_the_templated_prompt_is_grounded_in_the_retrieved_passages(
+    client, templates, capturing_llm
+):
+    """{{context}} must receive the PASSAGES, not the query.
+
+    llm.py promises the templated path renders the same context text the default
+    path builds — same budget, same passage-first fitting. Nothing asserted it,
+    so swapping format_context(sources) for request.query left the whole suite
+    green while silently un-grounding every templated answer.
+    """
+    # Seed the default collection directly: the shared client fixture's personas
+    # seed other collections, and this test needs a passage it can look for in
+    # the rendered prompt.
+    chunks = [
+        Chunk(
+            id=f"ground-{i}",
+            doc_id=f"ground-doc-{i}",
+            content=f"Distinctive passage {i} about zirconium widget calibration.",
+            embedding=[0.1, 0.2, 0.3, 0.4],
+            metadata={"tenant_id": "default"},
+        )
+        for i in range(2)
+    ]
+    await app.state.vector_store.upsert(chunks)
+    await app.state.text_index.index(chunks)
+
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "zirconium widget calibration",
+            "top_k": 3,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    sources = resp.json()["sources"]
+    assert sources, "this test needs at least one retrieved passage to be meaningful"
+    _, user = capturing_llm.messages
+    for s in sources:
+        snippet = s["content"][:40].strip()
+        assert snippet and snippet in user["content"], "a retrieved passage did not reach the prompt"
