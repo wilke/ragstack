@@ -196,7 +196,10 @@ func pendingSurfaces(d *Real) map[string]struct {
 		typ reflect.Type
 		val reflect.Value
 	}
-	return map[string]surface{}
+	return map[string]surface{
+		"instances": {reflect.TypeOf((*jobs.Instances)(nil)).Elem(), reflect.ValueOf(d.Instances())},
+		"crontab":   {reflect.TypeOf((*jobs.Crontab)(nil)).Elem(), reflect.ValueOf(d.Crontab())},
+	}
 }
 
 func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
@@ -235,7 +238,7 @@ func TestRealDriversRefuseEveryMethodThatLandsInPRD(t *testing.T) {
 				t.Errorf("%s.%s = %v, want a jobs.ErrRefused", name, m.Name, err)
 				continue
 			}
-			want := name + "." + m.Name + " lands in PR-D"
+			want := name + "." + m.Name + " lands in " + PendingPR
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s.%s = %q, want it to contain %q", name, m.Name, err, want)
 			}
@@ -356,11 +359,13 @@ func TestFakeReadFileReportsAbsenceAsErrNotExist(t *testing.T) {
 func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
 	got := strings.Join(d.Pending(), ",")
-	if got != "" {
-		t.Errorf("Real.Pending() = %q", got)
+	if got != "instances,crontab" {
+		t.Errorf("Real.Pending() = %q, want the two PR-D2 drivers", got)
 	}
-	// No driver that WORKS is on the list — and every one of them works now,
-	// so a name here means a driver was unwired without saying so.
+	// No driver that WORKS is on the list. `proc` is the one to watch: its
+	// Spawn and Alive refuse, but the rest of it runs, so naming it here would
+	// make every plan that only signals or probes a port carry a warning about
+	// an operation that works (see pendingReal's comment).
 	for _, name := range d.Pending() {
 		switch name {
 		case "gateway", "files", "systemd", "proc", "git", "build", "qdrant", "elasticsearch", "tenantapi", "postgres", "sqlite", "archive":
@@ -369,6 +374,31 @@ func TestPendingIsTheSameListTheRealDriversRefuseWith(t *testing.T) {
 	}
 	if p := NewFake(FakeOptions{}).Pending(); len(p) != 0 {
 		t.Errorf("Fake.Pending() = %v, want none: the fakes run every driver", p)
+	}
+}
+
+// TestRealProcsTwoNewMethodsRefuse is the per-METHOD half of the seam that
+// Pending() cannot express: `proc` is a wired driver whose Spawn and Alive are
+// not wired yet, so nothing warns about them in a plan and this is the only
+// place that says so.
+//
+// Delete it in the commit that lands drivers/proc.go's Spawn and Alive: it
+// will fail there, which is the point.
+func TestRealProcsTwoNewMethodsRefuse(t *testing.T) {
+	d := NewReal(RealOptions{Roots: paths.NewRoots(t.TempDir(), paths.Overrides{})})
+	ctx := context.Background()
+	_, err := d.Proc().Spawn(ctx, jobs.SpawnSpec{})
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "proc.Spawn lands in "+PendingPR) {
+		t.Errorf("proc.Spawn = %v, want a refusal naming the PR it lands in", err)
+	}
+	_, err = d.Proc().Alive(ctx, 1)
+	if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "proc.Alive lands in "+PendingPR) {
+		t.Errorf("proc.Alive = %v, want a refusal naming the PR it lands in", err)
+	}
+	// And the rest of the driver still works, which is why `proc` is not on
+	// Pending(): a wired method must not be collateral damage of an unwired one.
+	if _, err := d.Proc().Listening(ctx, 1); err != nil {
+		t.Errorf("proc.Listening = %v, want the wired driver to answer", err)
 	}
 }
 

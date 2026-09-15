@@ -59,7 +59,7 @@
       "type": "object",
       "required": ["supervisor", "target", "services"],
       "properties": {
-        "supervisor": { "type": "string", "enum": ["systemd", "manual"] },
+        "supervisor": { "type": "string", "enum": ["systemd", "manual", "instance"] },
         "target": {
           "oneOf": [
             {

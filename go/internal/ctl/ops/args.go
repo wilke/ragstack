@@ -327,6 +327,12 @@ var argSchemas = map[string]argSpec{
 		{Name: "service_accounts", Kind: argObjectArray},
 		{Name: "template_from", Kind: argString, Pattern: patTenantName},
 		{Name: "settings", Kind: argObject},
+		// `manual` is not offered: it describes a tenant somebody else
+		// started, which `adopt` records and `create` cannot produce. Absent
+		// means the ctl's own default (ctl.env CTL_DEFAULT_SUPERVISOR), which
+		// is why this is not required and has no default here — a value
+		// nobody chose must not land in the plan hash or the audit row.
+		{Name: "supervisor", Kind: argString, Enum: []string{"systemd", "instance"}},
 		{Name: "ui_mode", Kind: argString, Enum: []string{"static", "dev", "external"}},
 		{Name: "start", Kind: argBool},
 		{Name: "gateway", Kind: argBool},
@@ -350,6 +356,12 @@ var argSchemas = map[string]argSpec{
 		{Name: "service_accounts", Kind: argObjectArray},
 		{Name: "template_from", Kind: argString, Pattern: patTenantName},
 		{Name: "settings", Kind: argObject},
+		// `manual` is not offered: it describes a tenant somebody else
+		// started, which `adopt` records and `create` cannot produce. Absent
+		// means the ctl's own default (ctl.env CTL_DEFAULT_SUPERVISOR), which
+		// is why this is not required and has no default here — a value
+		// nobody chose must not land in the plan hash or the audit row.
+		{Name: "supervisor", Kind: argString, Enum: []string{"systemd", "instance"}},
 		{Name: "ui_mode", Kind: argString, Enum: []string{"static", "dev", "external"}},
 		{Name: "start", Kind: argBool},
 		{Name: "gateway", Kind: argBool},

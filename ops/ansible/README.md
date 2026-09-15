@@ -151,7 +151,8 @@ runner sets directly; it must never appear in a template): `CTL_LISTEN`,
 `CTL_RAG_ROOT`, `CTL_STATE_DIR`, `CTL_CONFIG_DIR`, `CTL_REGISTRY`,
 `CTL_ADMIN_SUBJECTS`, `CTL_VIEWER_SUBJECTS`, `CTL_IDENTITY_ISSUER_ALLOWLIST`,
 `CTL_LOG_LEVEL`, `CTL_LOG_FORMAT`, `CTL_RATE_LIMIT_PER_CREDENTIAL`,
-`CTL_RATE_LIMIT_TARPIT_AT`, `CTL_EXTERNAL_STORE_PORTS`. It also carries three
+`CTL_RATE_LIMIT_TARPIT_AT`, `CTL_EXTERNAL_STORE_PORTS`, `CTL_DEFAULT_SUPERVISOR`.
+It also carries three
 process-environment variables the unit needs that are not part of the
 `CTL_*` contract: `APPTAINER_CACHEDIR`/`APPTAINER_CONFIGDIR` (under
 `/rag/data/ctl/apptainer`) and `XDG_RUNTIME_DIR=/run/user/<uid>`.

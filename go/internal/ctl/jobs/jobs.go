@@ -218,7 +218,7 @@ type Registry interface {
 // `serve --fake-drivers` and the tests run every verb end to end without a
 // host. PR-C ships the interfaces and the fakes; PR-D ships the real ones.
 // An Op that needs a driver the real set does not provide yet gets
-// ErrRefused("… lands in PR-D") from that driver, never a panic.
+// ErrRefused("… lands in <PR>") from that driver, never a panic.
 type Drivers interface {
 	Systemd() Systemd
 	Proc() Proc
@@ -234,6 +234,13 @@ type Drivers interface {
 	Postgres() Postgres
 	SQLite() SQLite
 	Archive() Archive
+	// PR-D2 adds the two surfaces `supervisor: instance` needs in order to
+	// supervise a tenant WITHOUT a user manager: the apptainer instances the
+	// stores run as, and the crontab `@reboot` line that is this host's only
+	// boot hook (svcbvbrc has no linger and cron gets no logind session, so
+	// `systemctl --user` cannot be driven from boot at all).
+	Instances() Instances
+	Crontab() Crontab
 }
 
 // UnitInfo is `systemctl --user show -p …` for one unit. It exists because
@@ -306,6 +313,155 @@ type Proc interface {
 	// meaningless when pid is 0, and an unbound port is (0, 0, nil): nothing
 	// listening is a fact, not an error.
 	Owner(ctx context.Context, port int) (pid, uid int, err error)
+	// Spawn starts a DETACHED long-lived process and returns its pid. It is
+	// how `supervisor: instance` runs a tenant's API without a user manager:
+	// setsid (its own session and process group, so it survives the ctl and so
+	// a later stop can signal the group), stdin /dev/null, stdout AND stderr
+	// appended to LogPath, umask 0002, and the environment given — nothing
+	// inherited, because the daemon's own environment carries the ctl's
+	// credentials and a tenant's uvicorn must not see them.
+	//
+	// The pidfile is written, atomically and 0644, BEFORE Spawn returns. That
+	// ordering is the whole contract: the ctl's record of what it started is
+	// the pidfile, and a crash between the fork and the write leaves a running
+	// process nothing can find. It is the same rule every step follows when it
+	// checkpoints an external ID before the call that creates it.
+	//
+	// Spawn NEVER waits on the child. A supervisor that reaped its tenants
+	// would block a job for the life of the tenant.
+	Spawn(ctx context.Context, spec SpawnSpec) (pid int, err error)
+	// Alive reports whether pid is a live process (/proc/<pid> exists, or
+	// kill(pid, 0) succeeds). It answers about EXISTENCE only — whether the
+	// process is the one the ctl started is Signal's identity check, and a
+	// caller that cares asks both.
+	//
+	// A pid that is not running is (false, nil): a dead tenant is a fact the
+	// reconcile and the `running` post-check read, not an error.
+	Alive(ctx context.Context, pid int) (bool, error)
+}
+
+// SpawnSpec is one detached process, as Proc.Spawn starts it.
+//
+// Env is the child's WHOLE environment ("KEY=value" entries, as os/exec takes
+// it) rather than an overlay: tenant.env ∪ secrets.env ∪ the api unit's
+// `Environment=` lines is exactly what the systemd path gives the same
+// process, and "whatever the daemon happened to be started with, plus these"
+// is not reproducible and leaks the ctl's own credentials into a tenant.
+//
+// It therefore carries SECRETS. Nothing may log it, audit it, or put it on a
+// call record: the values reach the child through its environment and through
+// nothing else.
+type SpawnSpec struct {
+	// Program is the absolute path of the executable. The drivers never
+	// search PATH, so a program that is not where this says fails with the
+	// path in the message rather than with a surprise binary.
+	Program string
+	// Args are the arguments after the program name (os/exec's Args[1:]).
+	Args []string
+	// Dir is the working directory; empty means the caller does not care.
+	Dir string
+	// Env is the child's complete environment, "KEY=value" each.
+	Env []string
+	// LogPath is the file stdout and stderr are APPENDED to (created 0640 if
+	// absent). One file for both, as the api unit's two `append:` lines are.
+	LogPath string
+	// PidFile is where the child's pid is written, atomically, 0644, before
+	// Spawn returns.
+	PidFile string
+}
+
+// Instance is one apptainer instance, as `apptainer instance list --json`
+// reports it.
+type Instance struct {
+	// Name is the instance name — `<kind>-<manifest_name>`, the names the
+	// hand-started tenants already run under (`qdrant-dev`,
+	// `elasticsearch-hackathon`), so that an adopted tenant's live instances
+	// are the ones the ctl manages after its handover.
+	Name string
+	// PID is the instance's starter process.
+	PID int
+	// Image is the SIF the instance was started from, which is how a caller
+	// tells "this instance is the tenant's qdrant" from "something else is
+	// using that name".
+	Image string
+}
+
+// InstanceSpec is one `apptainer instance run`.
+type InstanceSpec struct {
+	// Name is the instance name (see Instance.Name). The real driver holds it
+	// to `^(qdrant|elasticsearch|postgres)-[a-z][a-z0-9-]{0,31}$`: the ctl
+	// supervises a tenant's three stores and nothing else on this host.
+	Name string
+	// SIF is the absolute path of the image.
+	SIF string
+	// Binds are "host:container" pairs, one --bind each.
+	Binds []string
+	// Env are the --env pairs — the CONTAINER's environment as apptainer puts
+	// it on the argv, and therefore PUBLIC: /proc/<pid>/cmdline is 0444 on a
+	// 1869-member host. No secret may be in here. The driver renders them in
+	// sorted key order, so a job log and a `ps` line are comparable across
+	// runs (apptainer itself does not care about the order).
+	Env map[string]string
+	// Args are the runscript arguments, after the instance name.
+	Args []string
+	// ExtraEnv is the CHILD PROCESS's environment — apptainer's own, not the
+	// container's: APPTAINER_CACHEDIR and APPTAINER_CONFIGDIR, and for
+	// postgres the APPTAINERENV_POSTGRES_PASSWORD that apptainer forwards
+	// into the container as POSTGRES_PASSWORD. It NEVER reaches the argv,
+	// which is the entire reason it is separate from Env: the unit learned the
+	// same lesson the hard way (render/units.go's postgres comment).
+	//
+	// It may therefore carry a secret, and like SpawnSpec.Env it must not be
+	// logged, audited or recorded on a call.
+	ExtraEnv map[string]string
+}
+
+// Instances is the apptainer-instance surface `supervisor: instance` runs a
+// tenant's stores through. It is the same thing the unit's ExecStart does
+// (`apptainer run …`) with a name attached, which is what makes an instance
+// stoppable and findable without a user manager.
+type Instances interface {
+	// List is `apptainer instance list --json`, every instance of the CURRENT
+	// account. No instances is an empty list, not an error.
+	List(ctx context.Context) ([]Instance, error)
+	// Run is
+	// `apptainer instance run --no-home <--bind …> <--env …> <sif> <name> <args…>`
+	// with spec.ExtraEnv in the child's environment. It returns when apptainer
+	// has started the instance; readiness is the caller's gate, not this one's.
+	Run(ctx context.Context, spec InstanceSpec) error
+	// Stop is `apptainer instance stop <name>` — SIGTERM to the instance, so
+	// elasticsearch gets the graceful shutdown its units' TimeoutStopSec=120
+	// exists for.
+	//
+	// An instance that is not running is SUCCESS. Stop is a step that gets
+	// re-run — by a rollback, by a resumed job, by `fleet stop --all` over a
+	// fleet half of which is already down — and a stop that failed because it
+	// had nothing to do would turn every one of those into a failed job.
+	Stop(ctx context.Context, name string) error
+}
+
+// Crontab is the CURRENT user's crontab, which on this host is the only boot
+// hook there is: svcbvbrc has no linger and cron sessions get no logind
+// session, so `systemctl --user` cannot be driven from `@reboot` at all
+// (plan PR-D2, "Host facts").
+//
+// Two methods and no line editing: WHICH line the ctl owns, and the marker
+// that identifies it, are policy and live in ops. The driver reads the whole
+// crontab and writes the whole crontab.
+type Crontab interface {
+	// List is `/usr/bin/crontab -l`. An account with NO crontab is an empty
+	// body and no error — crontab(1) exits 1 with "no crontab for <user>" on
+	// stderr for that case, and a driver that passed the exit status through
+	// would make "this host has never had a crontab" indistinguishable from
+	// "cron is broken".
+	List(ctx context.Context) ([]byte, error)
+	// Set is `/usr/bin/crontab -` with body on STDIN. Not a file argument:
+	// a file the ctl wrote and crontab(1) then read is a window in which
+	// anything that can write that path chooses the account's cron jobs.
+	//
+	// body replaces the whole crontab, so a caller reads with List, edits the
+	// one line it owns, and writes back.
+	Set(ctx context.Context, body []byte) error
 }
 
 // GatewayDriver publishes and reloads the gateway (internal/ctl/gateway).

@@ -318,6 +318,7 @@ x-ctl-cli-op-args:
       service_accounts: { description: "Service accounts to register, as create_request.json's ServiceAccountSpec objects.", type: array, items: { type: object } }
       template_from: { type: string, pattern: "^[a-z][a-z0-9-]{0,31}$" }
       settings: { description: "PUBLIC-class settings only.", type: object }
+      supervisor: { description: "How the ctl starts and stops the sandbox: `systemd` (units under the account's user manager) or `instance` (the ctl supervises it itself — apptainer instances for the stores, a detached uvicorn for the api). Absent takes the daemon's `CTL_DEFAULT_SUPERVISOR`. `manual` is not offered: it describes a tenant somebody else started.", type: string, enum: [systemd, instance] }
       ui_mode: { type: string, enum: [static, dev, external] }
       start: { type: boolean, default: true }
       gateway: { type: boolean, default: true }

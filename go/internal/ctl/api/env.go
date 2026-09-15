@@ -98,6 +98,17 @@ const (
 	// from outside its own block (6333, 6343, 9200). ctl.env.
 	EnvExternalStorePorts = "CTL_EXTERNAL_STORE_PORTS"
 
+	// EnvDefaultSupervisor is the supervisor `tenant create` gives a tenant
+	// whose request does not name one: systemd|instance (PR-D2). ctl.env.
+	//
+	// It is a DEPLOYMENT fact, not a contract one, which is why it lives here
+	// rather than as the default in create_request.json: that schema promises
+	// `systemd`, and on coconut — where the service account has no linger, no
+	// user manager and no logind session under cron — the only supervisor that
+	// can actually start a tenant at boot today is `instance`. A host says so
+	// once, here, instead of every caller remembering to pass the argument.
+	EnvDefaultSupervisor = "CTL_DEFAULT_SUPERVISOR"
+
 	// The host programs the real drivers run and the two directories they work
 	// from (PR-D). Each is an ABSOLUTE path; the drivers never search PATH, so
 	// a host that keeps one of these somewhere unusual — coconut's node lives
@@ -145,7 +156,7 @@ func EnvKeys() []string {
 		EnvRegistry, EnvRagRoot, EnvStateDir, EnvConfigDir,
 		EnvLogLevel, EnvLogFormat,
 		EnvRateLimitPerCredential, EnvRateLimitTarpitAt, EnvRateLimitTarpitDelay,
-		EnvExternalStorePorts,
+		EnvExternalStorePorts, EnvDefaultSupervisor,
 	}, HostToolEnvKeys()...)
 }
 

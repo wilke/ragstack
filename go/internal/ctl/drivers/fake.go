@@ -94,6 +94,19 @@ type FakeOptions struct {
 	// the ordinary host with room — so only a test about the free-space
 	// precheck has to say anything.
 	DiskFree int64
+
+	// ---- PR-D2 seeds.
+
+	// InstancePorts links an apptainer instance to the port it makes listen,
+	// exactly as UnitPorts does for a unit: running an instance binds the
+	// port, stopping it frees it, so a readiness gate against this host
+	// answers a fact rather than a fixture. A tenant created AFTER the driver
+	// set was built says so with FakeInstances.BindInstancePort.
+	InstancePorts map[string]int
+	// Crontab is the account's crontab at the start. Nil is an account that
+	// has never had one — which List reports as an empty body and no error,
+	// as the real crontab(1) wrapper does.
+	Crontab []byte
 }
 
 // PortOwner is the process behind a LISTEN socket, as FakeProc reports it.
@@ -125,7 +138,10 @@ type Fake struct {
 	pg      *FakePostgres
 	sqlite  *FakeSQLite
 	archive *FakeArchive
-	now     func() time.Time
+	// PR-D2: the two surfaces `supervisor: instance` runs on.
+	instances *FakeInstances
+	crontab   *FakeCrontab
+	now       func() time.Time
 }
 
 var _ jobs.Drivers = (*Fake)(nil)
@@ -154,6 +170,11 @@ func NewFake(opts FakeOptions) *Fake {
 	for p, b := range opts.Files {
 		f.files.Files[p] = FakeFile{Data: append([]byte(nil), b...), Mode: 0o640}
 	}
+	// Spawn writes a pidfile, so this driver needs the filesystem too — the
+	// real one writes it directly rather than through the Files driver (it is
+	// the ctl's own record of what it started, not a tenant artefact), and the
+	// fake follows.
+	f.proc.files = f.files
 	// The manager and the filesystem are the SAME fixture: a daemon-reload has
 	// to be able to see that a unit file is gone.
 	f.systemd.files = f.files
@@ -175,6 +196,14 @@ func NewFake(opts FakeOptions) *Fake {
 	f.pg = &FakePostgres{r: &f.recorder, files: f.files, Readiness: copyMapBool(opts.PostgresReady)}
 	f.sqlite = &FakeSQLite{r: &f.recorder, files: f.files}
 	f.archive = &FakeArchive{r: &f.recorder, files: f.files}
+	// The instances and the LISTEN set are the SAME fixture, for the reason
+	// the units and the LISTEN set are: a store this host started has to be a
+	// store a readiness probe can find.
+	f.instances = &FakeInstances{
+		r: &f.recorder, proc: f.proc, ports: copyMapInt(opts.InstancePorts),
+		Running: map[string]jobs.Instance{}, nextPID: 21001,
+	}
+	f.crontab = &FakeCrontab{r: &f.recorder, Body: append([]byte(nil), opts.Crontab...)}
 	return f
 }
 
@@ -191,6 +220,8 @@ func (f *Fake) Build() jobs.Build                 { return f.build }
 func (f *Fake) Postgres() jobs.Postgres           { return f.pg }
 func (f *Fake) SQLite() jobs.SQLite               { return f.sqlite }
 func (f *Fake) Archive() jobs.Archive             { return f.archive }
+func (f *Fake) Instances() jobs.Instances         { return f.instances }
+func (f *Fake) Crontab() jobs.Crontab             { return f.crontab }
 
 // Note records something that is not a driver call — a job engine
 // checkpoint, say — in the SAME log the driver calls go into. It is how a
@@ -211,6 +242,8 @@ func (f *Fake) FakeBuild() *FakeBuild                 { return f.build }
 func (f *Fake) FakePostgres() *FakePostgres           { return f.pg }
 func (f *Fake) FakeSQLite() *FakeSQLite               { return f.sqlite }
 func (f *Fake) FakeArchive() *FakeArchive             { return f.archive }
+func (f *Fake) FakeInstances() *FakeInstances         { return f.instances }
+func (f *Fake) FakeCrontab() *FakeCrontab             { return f.crontab }
 
 // ---------------------------------------------------------------- systemd
 
@@ -515,10 +548,13 @@ func (s *FakeSystemd) EnabledUnits() []string { return trueKeys(&s.mu, s.Enabled
 
 // ---------------------------------------------------------------- proc
 
-// FakeProc is the pidfile/proc surface of a manual tenant.
+// FakeProc is the pidfile/proc surface of a manual tenant, and — from PR-D2 —
+// the detached-spawn surface of an instance-supervised one.
 type FakeProc struct {
 	r  *recorder
 	mu sync.Mutex
+	// files is the in-memory filesystem Spawn writes its pidfile into.
+	files *FakeFiles
 	// Ports is the LISTEN set.
 	Ports map[int]bool
 	// Signals records every delivered signal as "<pid>:<sig>".
@@ -528,6 +564,18 @@ type FakeProc struct {
 	StopsListening map[int]int // pid -> port cleared on signal
 	// Owners maps a port to the process behind its LISTEN socket.
 	Owners map[int]PortOwner
+
+	// Spawned is every SpawnSpec this fake was given, in order. It is
+	// inspectable STATE, not a call record: a spec carries the child's whole
+	// environment, so it is deliberately not what `proc.Spawn` puts in the
+	// call log (see Spawn).
+	Spawned []jobs.SpawnSpec
+	// alive is the pid set Spawn created and TERM/KILL empties.
+	alive map[int]bool
+	// spawnPorts maps a spawned pid to the port it bound, so that killing it
+	// frees the port the way a process that really died does.
+	spawnPorts map[int]int
+	nextSpawn  int
 }
 
 // Owner is the process behind the LISTEN socket on port.
@@ -566,6 +614,280 @@ func (p *FakeProc) Signal(_ context.Context, pid int, wantCwd, wantCmd, sig stri
 	if port, ok := p.StopsListening[pid]; ok {
 		delete(p.Ports, port)
 	}
+	// A process this fake SPAWNED dies of a TERM or a KILL, and its port goes
+	// with it. Without that, an instance-mode stop signalled its api, asked
+	// Alive, was told yes, waited out the whole TimeoutStopSec and then killed
+	// a process that had never been running — against a fixture that was never
+	// going to say otherwise. Any other signal (a HUP, say) leaves it running,
+	// which is the point of sending one.
+	if (sig == "TERM" || sig == "KILL") && p.alive[pid] {
+		delete(p.alive, pid)
+		if port, ok := p.spawnPorts[pid]; ok {
+			delete(p.Ports, port)
+			delete(p.spawnPorts, pid)
+		}
+	}
+	return nil
+}
+
+// Spawn starts a detached process: it assigns a pid, writes the pidfile, and
+// binds the port the argv names.
+//
+// What it records is the PROGRAM and its ARGV — never spec.Env, which is the
+// child's whole environment and therefore carries the tenant's secrets. The
+// spec is kept in Spawned for a test to inspect; the call log, which tests
+// print and compare, holds only what a `ps` line would show.
+func (p *FakeProc) Spawn(_ context.Context, spec jobs.SpawnSpec) (int, error) {
+	if err := p.r.record("proc", "Spawn", spec.Program, strings.Join(spec.Args, " ")); err != nil {
+		return 0, err
+	}
+	// The real driver's rules, applied here so a caller that breaks one finds
+	// out in a test rather than on the host: an absolute program (the drivers
+	// never search PATH), a log to append to, and a pidfile to write — the
+	// pidfile IS the ctl's record of what it started, so spawning without one
+	// is starting a process nothing can ever find again.
+	if !filepath.IsAbs(spec.Program) {
+		return 0, fmt.Errorf("%w: proc.Spawn needs an absolute program, got %q", jobs.ErrRefused, spec.Program)
+	}
+	if spec.LogPath == "" || spec.PidFile == "" {
+		return 0, fmt.Errorf("%w: proc.Spawn needs a log path and a pidfile", jobs.ErrRefused)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.nextSpawn == 0 {
+		p.nextSpawn = 30001
+	}
+	pid := p.nextSpawn
+	p.nextSpawn++
+	if p.alive == nil {
+		p.alive = map[int]bool{}
+	}
+	p.alive[pid] = true
+	p.Spawned = append(p.Spawned, spec)
+	// BEFORE returning, as the contract says — and observable in the call log,
+	// so a test can assert the ordering the real driver has to keep.
+	if p.files != nil {
+		p.files.Put(spec.PidFile, []byte(strconv.Itoa(pid)+"\n"), 0o644)
+	}
+	// The port comes off the ARGV rather than out of a fixture map: a spawned
+	// process is the tenant's uvicorn, `--port <n>` is on its command line,
+	// and reading it there means a test never has to state twice what port the
+	// tenant is on.
+	if port, ok := portFromArgs(spec.Args); ok {
+		p.Ports[port] = true
+		if p.spawnPorts == nil {
+			p.spawnPorts = map[int]int{}
+		}
+		p.spawnPorts[pid] = port
+	}
+	return pid, nil
+}
+
+// Alive is true for a pid this fake spawned and has not seen die.
+//
+// A pid it never spawned is (false, nil), not an error: "that process is not
+// running" is the answer, and it is the same answer the real driver gives for
+// a pid whose /proc entry is gone.
+func (p *FakeProc) Alive(_ context.Context, pid int) (bool, error) {
+	if err := p.r.record("proc", "Alive", strconv.Itoa(pid)); err != nil {
+		return false, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.alive[pid], nil
+}
+
+// portFromArgs reads the `--port <n>` an api command line carries.
+func portFromArgs(args []string) (int, bool) {
+	for i, a := range args {
+		if a != "--port" || i+1 >= len(args) {
+			continue
+		}
+		if n, err := strconv.Atoi(args[i+1]); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// ---------------------------------------------------------------- instances
+
+// FakeInstances is `apptainer instance` as a map of running instances.
+//
+// It models the two facts an instance supervisor depends on and a stub could
+// not give it: a name is UNIQUE (apptainer refuses a second instance under a
+// name that is taken, which is what makes a start idempotency check possible
+// at all), and a running store OWNS A PORT (so a readiness gate answers a fact
+// rather than a fixture).
+type FakeInstances struct {
+	r    *recorder
+	mu   sync.Mutex
+	proc *FakeProc
+	// ports links an instance name to the port running it binds.
+	ports   map[string]int
+	nextPID int
+	// Running is the instance table, by name.
+	Running map[string]jobs.Instance
+}
+
+var _ jobs.Instances = (*FakeInstances)(nil)
+
+// List is the running instances, sorted by name — `apptainer instance list`
+// sorts too, and a driver whose order came out of a Go map would make every
+// test that prints it flaky.
+func (i *FakeInstances) List(context.Context) ([]jobs.Instance, error) {
+	if err := i.r.record("instances", "List"); err != nil {
+		return nil, err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	names := make([]string, 0, len(i.Running))
+	for n := range i.Running {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]jobs.Instance, 0, len(names))
+	for _, n := range names {
+		out = append(out, i.Running[n])
+	}
+	return out, nil
+}
+
+// Run starts an instance.
+//
+// What it records is the NAME and the IMAGE. Not spec.ExtraEnv — that is the
+// child's environment and carries the postgres password — and not spec.Env
+// either, which is public but long enough to bury the two facts a reader of
+// the call log wants.
+func (i *FakeInstances) Run(_ context.Context, spec jobs.InstanceSpec) error {
+	if err := i.r.record("instances", "Run", spec.Name, spec.SIF); err != nil {
+		return err
+	}
+	if err := checkInstanceName(spec.Name); err != nil {
+		return err
+	}
+	if spec.SIF == "" {
+		return fmt.Errorf("%w: instance %s has no image to run", jobs.ErrRefused, spec.Name)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	// apptainer's own refusal, modelled exactly: a name that is taken is an
+	// error, not a no-op. An instance-mode `start` that treated it as success
+	// would report a tenant started from the artifact it just checked out
+	// while the OLD process kept serving.
+	if _, ok := i.Running[spec.Name]; ok {
+		return fmt.Errorf("%w: instance %s is already running", jobs.ErrRefused, spec.Name)
+	}
+	if i.nextPID == 0 {
+		i.nextPID = 21001
+	}
+	pid := i.nextPID
+	i.nextPID++
+	i.Running[spec.Name] = jobs.Instance{Name: spec.Name, PID: pid, Image: spec.SIF}
+	if port, ok := i.ports[spec.Name]; ok {
+		i.proc.mu.Lock()
+		i.proc.Ports[port] = true
+		i.proc.mu.Unlock()
+	}
+	return nil
+}
+
+// Stop stops an instance, and an instance that is not running is SUCCESS —
+// the interface's rule, because every caller of Stop is a step that gets
+// re-run.
+func (i *FakeInstances) Stop(_ context.Context, name string) error {
+	if err := i.r.record("instances", "Stop", name); err != nil {
+		return err
+	}
+	// The allowlist applies to a stop too, and more than to a start: this is
+	// the call that takes something down.
+	if err := checkInstanceName(name); err != nil {
+		return err
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if _, ok := i.Running[name]; !ok {
+		return nil
+	}
+	delete(i.Running, name)
+	if port, ok := i.ports[name]; ok {
+		i.proc.mu.Lock()
+		delete(i.proc.Ports, port)
+		i.proc.mu.Unlock()
+	}
+	return nil
+}
+
+// BindInstancePort tells this fake that running name binds port and stopping
+// it frees the port, for an instance the FIXTURE did not know about.
+//
+// It is FakeSystemd.BindUnitPort's twin and exists for the same reason:
+// FakeOptions.InstancePorts is built from the tenants in the registry at the
+// moment the driver set was made, and every sandbox the selftest creates comes
+// later.
+func (i *FakeInstances) BindInstancePort(name string, port int) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.ports == nil {
+		i.ports = map[string]int{}
+	}
+	i.ports[name] = port
+}
+
+// Names lists the running instances, sorted — the assertion a test usually
+// wants, without walking the table.
+func (i *FakeInstances) Names() []string {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	out := make([]string, 0, len(i.Running))
+	for n := range i.Running {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ---------------------------------------------------------------- crontab
+
+// FakeCrontab is the account's crontab as one byte slice.
+type FakeCrontab struct {
+	r  *recorder
+	mu sync.Mutex
+	// Body is the current crontab. Empty is an account with no crontab.
+	Body []byte
+	// Sets is every body written, in order — what a test reads to see that
+	// `enable-boot` rewrote exactly one line and left the rest alone.
+	Sets [][]byte
+}
+
+var _ jobs.Crontab = (*FakeCrontab)(nil)
+
+// List returns the crontab. No crontab is an EMPTY BODY and no error, which
+// is the interface's rule: crontab(1) exits non-zero for an account that has
+// never had one, and passing that through would make a fresh host
+// indistinguishable from a broken cron.
+func (c *FakeCrontab) List(context.Context) ([]byte, error) {
+	if err := c.r.record("crontab", "List"); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.Body...), nil
+}
+
+// Set replaces the whole crontab.
+//
+// The body is not recorded on the call: a crontab is lines an operator wrote,
+// it can be long, and the assertion a test wants is on Body or Sets. The call
+// log says THAT it was written.
+func (c *FakeCrontab) Set(_ context.Context, body []byte) error {
+	if err := c.r.record("crontab", "Set"); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Body = append([]byte(nil), body...)
+	c.Sets = append(c.Sets, append([]byte(nil), body...))
 	return nil
 }
 
@@ -1764,6 +2086,14 @@ func copyMapString(m map[string]string) map[string]string {
 
 func copyMapBool(m map[string]bool) map[string]bool {
 	out := make(map[string]bool, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyMapInt(m map[string]int) map[string]int {
+	out := make(map[string]int, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

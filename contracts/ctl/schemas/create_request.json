@@ -87,6 +87,12 @@
           "additionalProperties": { "type": "string" },
           "default": {}
         },
+        "supervisor": {
+          "description": "How the ctl starts and stops the new tenant. `systemd`: `ragstack-<name>.target` under the account's user manager — rendered units, linked and enabled. `instance`: the ctl supervises it itself (an `apptainer instance` per exclusively-owned store, a detached uvicorn with a pidfile for the api, `@reboot` in the account's crontab for boot) and writes NO unit files. `manual` is not offered: it describes a tenant somebody else started, which is what `adopt` records, not something `create` can produce.\n\nThe DEFAULT the ctl applies comes from `ctl.env`'s `CTL_DEFAULT_SUPERVISOR` (on coconut, `instance`). The schema default below is what the CONTRACT promises when the deployment says nothing, and the two are deliberately allowed to differ: which supervisor a host can actually run is a fact about that host, not about the API.",
+          "type": "string",
+          "enum": ["systemd", "instance"],
+          "default": "systemd"
+        },
         "ui_mode": { "type": "string", "enum": ["static", "dev", "external"], "default": "static" },
         "start": { "description": "Start the tenant (readiness-gated) once provisioned.", "type": "boolean", "default": true },
         "gateway": { "description": "Publish a gateway generation that routes the new tenant.", "type": "boolean", "default": true }

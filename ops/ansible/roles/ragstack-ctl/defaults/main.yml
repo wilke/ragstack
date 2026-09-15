@@ -24,6 +24,7 @@ ctl_log_format: json                       # text|json
 ctl_rate_limit_per_credential: 20          # ratelimit.DefaultPerCredential
 ctl_rate_limit_tarpit_at: 20               # ratelimit.DefaultTarpitAt
 ctl_rate_limit_tarpit_delay: 2s            # ratelimit.DefaultTarpitDelay; capped at ratelimit.MaxTarpitDelay (5s)
+ctl_default_supervisor: instance           # systemd|instance; `tenant create`'s default when the request names none
 
 # Host tools the PR-D drivers run (api.HostToolEnvKeys()). All absolute: the
 # drivers run argv with no PATH lookup and no shell, so a program that is not

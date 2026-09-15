@@ -624,7 +624,7 @@ export interface components {
             /** @enum {string} */
             owner: "svcbvbrc" | "wilke";
             /** @enum {string} */
-            supervisor: "systemd" | "manual";
+            supervisor: "systemd" | "manual" | "instance";
             /**
              * @description `dedicated`: both qdrant and elasticsearch are `exclusive`. `shared`: both on the shared stores. `mixed`: one of each (lucid-next). `unknown`: ownership not yet confirmed.
              * @enum {string}
@@ -698,7 +698,7 @@ export interface components {
                     /** @enum {string} */
                     owner: "svcbvbrc" | "wilke";
                     /** @enum {string} */
-                    supervisor: "systemd" | "manual";
+                    supervisor: "systemd" | "manual" | "instance";
                     /**
                      * @description `dedicated`: both qdrant and elasticsearch are `exclusive`. `shared`: both on the shared stores. `mixed`: one of each (lucid-next). `unknown`: ownership not yet confirmed.
                      * @enum {string}
@@ -747,8 +747,9 @@ export interface components {
             previous_artifact_id: components["schemas"]["ArtifactId"] | null;
         };
         Port: number;
-        /** @description `base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. */
+        /** @description `base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. ONE exception: a SANDBOX block — a tenant `ragstack-ctl selftest` created — takes its base from the fixed selftest range 26000–26099 rather than from the production sequence, and therefore carries the synthetic index `1000 + (base - 26000) / port_stride` (1000–1004 at the default stride of 20). The allocator skips sandbox rows and their tombstones entirely, so a selftest never advances the production index. A row with an index ≥ 1000 whose base is NOT in the selftest range is refused, and so is a selftest-range base whose index is not the synthetic one for it. */
         Ports: {
+            /** @description Allocation index: 0-based, never reused, for a production tenant; 1000-1004 for a sandbox block of the selftest (see the parent description). */
             index: number;
             base: components["schemas"]["Port"];
             api: components["schemas"]["Port"];
@@ -984,10 +985,10 @@ export interface components {
                 base: string;
             };
             /**
-             * @description `systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover).
+             * @description `systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover). `instance`: the ctl supervises the tenant itself — an `apptainer instance` per exclusively-owned store (`<kind>-<manifest_name>`, the names the hand-started tenants already run under) and a detached uvicorn with a pidfile for the api — started and stopped by jobs and brought up at boot by a `@reboot` line in the service account's crontab. It exists because svcbvbrc has no linger, no user manager and no logind session under cron, so `systemctl --user` cannot be driven from boot on this host; it is the interim path until the machine is dedicated and the root items the systemd path needs are installed.
              * @enum {string}
              */
-            supervisor: "systemd" | "manual";
+            supervisor: "systemd" | "manual" | "instance";
             /** @enum {string} */
             owner: "svcbvbrc" | "wilke";
             /** @enum {string} */
@@ -1049,7 +1050,7 @@ export interface components {
         };
         Units: {
             /** @enum {string} */
-            supervisor: "systemd" | "manual";
+            supervisor: "systemd" | "manual" | "instance";
             target: {
                 name: string;
                 active_state: components["schemas"]["UnitState"];
@@ -1098,7 +1099,7 @@ export interface components {
                 };
                 Units: {
                     /** @enum {string} */
-                    supervisor: "systemd" | "manual";
+                    supervisor: "systemd" | "manual" | "instance";
                     target: {
                         name: string;
                         active_state: components["schemas"]["UnitState"];
@@ -1137,6 +1138,12 @@ export interface components {
              */
             es_heap: string;
             /**
+             * @description Where the tenant keeps its ACL, job and collection state. `sqlite` (the default) is files under `<data_dir>/state` and runs no server. `local` gives the tenant its OWN postgres instance on the block's +5 port, supervised by a `ragstack-<name>-postgres.service` the ctl owns: it adds `TENANT_PG_PASSWORD` and the three `*_DSN` lines to `secrets.env`, and a `postgres` leg to `start`/`stop`/`restart --only`. `external` — a database inside a server somebody else runs — is NOT offered here: it needs an admin DSN, which is a CLI-only, trusted-operator input.
+             * @default sqlite
+             * @enum {string}
+             */
+            postgres: "sqlite" | "local";
+            /**
              * @default none
              * @enum {string}
              */
@@ -1165,6 +1172,14 @@ export interface components {
             settings: {
                 [key: string]: string;
             };
+            /**
+             * @description How the ctl starts and stops the new tenant. `systemd`: `ragstack-<name>.target` under the account's user manager — rendered units, linked and enabled. `instance`: the ctl supervises it itself (an `apptainer instance` per exclusively-owned store, a detached uvicorn with a pidfile for the api, `@reboot` in the account's crontab for boot) and writes NO unit files. `manual` is not offered: it describes a tenant somebody else started, which is what `adopt` records, not something `create` can produce.
+             *
+             *     The DEFAULT the ctl applies comes from `ctl.env`'s `CTL_DEFAULT_SUPERVISOR` (on coconut, `instance`). The schema default below is what the CONTRACT promises when the deployment says nothing, and the two are deliberately allowed to differ: which supervisor a host can actually run is a fact about that host, not about the API.
+             * @default systemd
+             * @enum {string}
+             */
+            supervisor: "systemd" | "instance";
             /**
              * @default static
              * @enum {string}
@@ -1204,6 +1219,12 @@ export interface components {
                      */
                     es_heap: string;
                     /**
+                     * @description Where the tenant keeps its ACL, job and collection state. `sqlite` (the default) is files under `<data_dir>/state` and runs no server. `local` gives the tenant its OWN postgres instance on the block's +5 port, supervised by a `ragstack-<name>-postgres.service` the ctl owns: it adds `TENANT_PG_PASSWORD` and the three `*_DSN` lines to `secrets.env`, and a `postgres` leg to `start`/`stop`/`restart --only`. `external` — a database inside a server somebody else runs — is NOT offered here: it needs an admin DSN, which is a CLI-only, trusted-operator input.
+                     * @default sqlite
+                     * @enum {string}
+                     */
+                    postgres: "sqlite" | "local";
+                    /**
                      * @default none
                      * @enum {string}
                      */
@@ -1232,6 +1253,14 @@ export interface components {
                     settings: {
                         [key: string]: string;
                     };
+                    /**
+                     * @description How the ctl starts and stops the new tenant. `systemd`: `ragstack-<name>.target` under the account's user manager — rendered units, linked and enabled. `instance`: the ctl supervises it itself (an `apptainer instance` per exclusively-owned store, a detached uvicorn with a pidfile for the api, `@reboot` in the account's crontab for boot) and writes NO unit files. `manual` is not offered: it describes a tenant somebody else started, which is what `adopt` records, not something `create` can produce.
+                     *
+                     *     The DEFAULT the ctl applies comes from `ctl.env`'s `CTL_DEFAULT_SUPERVISOR` (on coconut, `instance`). The schema default below is what the CONTRACT promises when the deployment says nothing, and the two are deliberately allowed to differ: which supervisor a host can actually run is a fact about that host, not about the API.
+                     * @default systemd
+                     * @enum {string}
+                     */
+                    supervisor: "systemd" | "instance";
                     /**
                      * @default static
                      * @enum {string}
@@ -1838,8 +1867,9 @@ export interface components {
                     base: components["schemas"]["Port"];
                     decommissioned_at: components["schemas"]["Timestamp"];
                 };
-                /** @description `base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. */
+                /** @description `base = port_base + index * port_stride`; the six service ports are fixed offsets within the block. Recorded explicitly so a reader never has to recompute them. ONE exception: a SANDBOX block — a tenant `ragstack-ctl selftest` created — takes its base from the fixed selftest range 26000–26099 rather than from the production sequence, and therefore carries the synthetic index `1000 + (base - 26000) / port_stride` (1000–1004 at the default stride of 20). The allocator skips sandbox rows and their tombstones entirely, so a selftest never advances the production index. A row with an index ≥ 1000 whose base is NOT in the selftest range is refused, and so is a selftest-range base whose index is not the synthetic one for it. */
                 Ports: {
+                    /** @description Allocation index: 0-based, never reused, for a production tenant; 1000-1004 for a sandbox block of the selftest (see the parent description). */
                     index: number;
                     base: components["schemas"]["Port"];
                     api: components["schemas"]["Port"];
@@ -2055,10 +2085,10 @@ export interface components {
                         base: string;
                     };
                     /**
-                     * @description `systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover).
+                     * @description `systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover). `instance`: the ctl supervises the tenant itself — an `apptainer instance` per exclusively-owned store (`<kind>-<manifest_name>`, the names the hand-started tenants already run under) and a detached uvicorn with a pidfile for the api — started and stopped by jobs and brought up at boot by a `@reboot` line in the service account's crontab. It exists because svcbvbrc has no linger, no user manager and no logind session under cron, so `systemctl --user` cannot be driven from boot on this host; it is the interim path until the machine is dedicated and the root items the systemd path needs are installed.
                      * @enum {string}
                      */
-                    supervisor: "systemd" | "manual";
+                    supervisor: "systemd" | "manual" | "instance";
                     /** @enum {string} */
                     owner: "svcbvbrc" | "wilke";
                     /** @enum {string} */
@@ -2118,7 +2148,7 @@ export interface components {
         };
         /**
          * CtlBundleManifest
-         * @description `manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`); a bundle is refused, not written, when no recipient is configured. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.
+         * @description `manifest.json` at the root of a backup bundle (`/rag/backups/tenants/<name>/<ts>-<kind>/`). The bundle is self-describing and RELOCATABLE: every path inside it is relative to `paths_relative_to` (`RAG_ROOT`), and a golden test asserts no `^/rag/` or `^/home/` string appears anywhere except `registry_row.data_dir` and the other absolute members of the registry row. Only a bundle with `fenced: true` AND `verified: true` counts toward retention and satisfies the restore / handover / decommission prerequisites; `best_effort: true` marks an unfenced bundle that can never be promoted. Secret-bearing files (current AND historical) exist only inside `secrets.file` (age-encrypted to `recipients_file`), NEVER in the clear; with no recipient configured the bundle is still written and `secrets.included` is false, so the data is backed up and the credentials are honestly declared missing. `external[]` lists what is NOT in the bundle (shared stores, external refs) so a restore can say what full recovery still needs.
          */
         bundle_manifest: {
             /** @constant */
@@ -2198,6 +2228,17 @@ export interface components {
                     /** @constant */
                     included: false;
                 };
+                /** @description The tenant's RELATIONAL store. Every tenant has one of the three kinds, so the block is always present: `sqlite` says the state lives in the files the `sqlite` array already lists (and `included` is false, because there is no server to dump), `local` carries the `pg_dump -Fc` archive this bundle took, and `external` is a database somebody else runs, which the bundle records and does not contain. */
+                postgres: {
+                    /** @enum {string} */
+                    kind: "sqlite" | "local" | "external";
+                    /** @enum {string} */
+                    ownership: "exclusive" | "shared" | "unknown" | "external";
+                    included: boolean;
+                    /** @description The custom-format dump inside the bundle; null unless kind is `local`. */
+                    file?: components["schemas"]["RelPath"] | null;
+                    sha256?: components["schemas"]["Sha256Hex"] | null;
+                };
             };
             sqlite: {
                 /** @description The tenant.env key that names this database (e.g. `AUTHZ_DB`, `GRADING_DB`), from the classification table. */
@@ -2219,11 +2260,16 @@ export interface components {
                 /** @enum {string} */
                 reason: "shared" | "external" | "excluded";
             }[];
+            /** @description The encrypted payload, or the statement that there is none. `included: false` is the fail-closed outcome: no age recipient was configured, so the tenant's secret files were left OUT of the bundle rather than written in the clear, and a restore from it mints fresh credentials. When it is false, `file` is null and `key_fingerprints` is empty. */
             secrets: {
-                /** @constant */
+                /**
+                 * @description Always true: whatever a bundle carries of a tenant's secrets is age-encrypted. It is not a statement that something IS carried — `included` is.
+                 * @constant
+                 */
                 encrypted: true;
-                file: components["schemas"]["RelPath"];
-                recipients_file: components["schemas"]["RelPath"];
+                included: boolean;
+                file: components["schemas"]["RelPath"] | null;
+                recipients_file: components["schemas"]["RelPath"] | null;
                 /** @description Fingerprints of the tenant API keys whose values are inside the payload — for reconciling against the revocation ledger at restore. */
                 key_fingerprints: components["schemas"]["Fingerprint"][];
             };

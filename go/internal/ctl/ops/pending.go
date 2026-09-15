@@ -19,6 +19,17 @@ package ops
 //
 // The driver set is asked, not assumed: the fakes run everything, so a plan
 // made against them carries no warning and the goldens stay the goldens.
+//
+// The granularity is the DRIVER, and PR-D2 is the first PR where that is not
+// the whole truth. `proc` is wired, but its two new methods — Spawn and Alive
+// — are not, so a step that spawns the tenant's API declares the driver
+// "proc" and carries NO warning even though it will refuse with
+// `proc.Spawn lands in PR-D2`. Per-method granularity would mean every addFor
+// call naming a method as well as a driver, for a window that closes in this
+// same PR series; naming `proc` pending instead would warn on every step that
+// only signals or probes a port, which is a plan lying about operations that
+// work today. drivers.pendingReal carries the full reasoning and
+// drivers_test.go asserts the two methods refuse.
 
 import (
 	"fmt"

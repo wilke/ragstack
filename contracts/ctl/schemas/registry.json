@@ -549,9 +549,9 @@
           "additionalProperties": false
         },
         "supervisor": {
-          "description": "`systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover).",
+          "description": "`systemd`: `ragstack-<name>.target` under the svcbvbrc user manager. `manual`: hand-started processes found by pidfile + `/proc` cwd/cmdline (every adopted tenant until its handover). `instance`: the ctl supervises the tenant itself — an `apptainer instance` per exclusively-owned store (`<kind>-<manifest_name>`, the names the hand-started tenants already run under) and a detached uvicorn with a pidfile for the api — started and stopped by jobs and brought up at boot by a `@reboot` line in the service account's crontab. It exists because svcbvbrc has no linger, no user manager and no logind session under cron, so `systemctl --user` cannot be driven from boot on this host; it is the interim path until the machine is dedicated and the root items the systemd path needs are installed.",
           "type": "string",
-          "enum": ["systemd", "manual"]
+          "enum": ["systemd", "manual", "instance"]
         },
         "owner": { "type": "string", "enum": ["svcbvbrc", "wilke"] },
         "state": {

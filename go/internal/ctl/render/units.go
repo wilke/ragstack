@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ragstack/ragstack/internal/ctl/paths"
 	"github.com/ragstack/ragstack/internal/ctl/registry"
 )
 
@@ -111,47 +110,24 @@ func UnitNames(name string) (target, qdrant, es, postgres, api, ui string) {
 // only) the ui service. Keys are file names. Shared/external stores get no
 // unit — the ctl never supervises what it does not own.
 func Units(t *registry.Tenant, cfg UnitConfig) (map[string][]byte, error) {
-	if err := checkTenant(t, checkOptions{AllowOffLayoutDataDir: cfg.AllowOffLayoutDataDir}); err != nil {
+	// The validation and the path derivation are prepare()'s, shared with
+	// StoreArgv and APIArgv: a unit and the instance command it must agree
+	// with cannot be checked against different rules.
+	p, err := prepare(t, cfg)
+	if err != nil {
 		return nil, err
 	}
-	cfg = cfg.withDefaults()
-	for _, p := range []string{t.DataDir, t.Worktree, t.PythonEnv, cfg.CtlBin, cfg.ApptainerBin, cfg.CtlStateDir, cfg.HFHome} {
-		if p == "" {
-			return nil, fmt.Errorf("tenant %s: data_dir, worktree, python_env and every UnitConfig path are required", t.Name)
-		}
-		if _, err := paths.SafePath("/", p); err != nil {
-			return nil, err
-		}
-	}
+	cfg, tp := p.cfg, p.tp
 	if t.DesiredBoot != "enabled" && t.DesiredBoot != "disabled" {
 		return nil, fmt.Errorf("tenant %s: desired_boot must be enabled|disabled, got %q", t.Name, t.DesiredBoot)
 	}
-	for _, s := range []string{t.Code.Tag, string(t.Code.SHA), t.API.Bind} {
-		if strings.ContainsAny(s, " \t\n\"'\\$;") {
-			return nil, fmt.Errorf("tenant %s: unsafe unit value %q", t.Name, s)
-		}
-	}
-	// Every path in the units is derived from t.DataDir ITSELF — its parent as
-	// the tenants root and its basename as the directory name — not from
-	// <parent>/<manifest_name>. TenantPaths joins the root with the manifest
-	// name, so feeding it t.ManifestName rebuilt a path that only equals
-	// t.DataDir when the two already agree: for the adopted pairs whose row
-	// name and directory differ, the ES unit bound a data dir the tenant does
-	// not use. checkTenant above refuses the disagreement outright unless the
-	// caller opted in, and this derivation follows the data dir either way.
-	tp := paths.TenantPaths(
-		paths.NewRoots(cfg.RagRoot, paths.Overrides{DataDir: filepath.Dir(t.DataDir)}),
-		t.Name, filepath.Base(t.DataDir))
 	target, qdrantU, esU, pgU, apiU, uiU := UnitNames(t.Name)
 	out := map[string][]byte{}
 	var stores []string
 
 	if q := &t.Stores.Qdrant; q.Ownership == registry.OwnershipExclusive {
-		sif := string(q.SIF)
-		if sif == "" {
-			return nil, fmt.Errorf("tenant %s: exclusive qdrant store has no sif", t.Name)
-		}
-		if _, err := paths.SafePath("/", sif); err != nil {
+		st, err := StoreArgv(t, LegQdrant, cfg)
+		if err != nil {
 			return nil, err
 		}
 		stores = append(stores, qdrantU)
@@ -175,41 +151,21 @@ Type=simple
 UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
-ExecStart=%[7]s run --no-home --bind %[5]s:/qdrant/storage --bind %[8]s:/qdrant/snapshots --env QDRANT__SERVICE__HTTP_PORT=%[2]d --env QDRANT__SERVICE__GRPC_PORT=%[9]d %[10]s /bin/sh -c 'cd /qdrant && exec ./entrypoint.sh'
+ExecStart=%[7]s run --no-home %[8]s
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:%[11]s/qdrant-%[12]s.log
-StandardError=append:%[11]s/qdrant-%[12]s.log
+StandardOutput=append:%[9]s/qdrant-%[10]s.log
+StandardError=append:%[9]s/qdrant-%[10]s.log
 `, t.Name, t.Ports.QdrantHTTP, target, cfg.MountPoint, tp.QdrantStorage, cfg.CtlStateDir, cfg.ApptainerBin,
-			tp.QdrantSnapshots, t.Ports.QdrantGRPC, sif, tp.LogsDir, t.ManifestName))
+			st.CommandLine(), tp.LogsDir, t.ManifestName))
 	}
 
 	if e := &t.Stores.Elasticsearch; e.Ownership == registry.OwnershipExclusive {
-		sif := string(e.SIF)
-		if sif == "" {
-			return nil, fmt.Errorf("tenant %s: exclusive elasticsearch store has no sif", t.Name)
-		}
-		if _, err := paths.SafePath("/", sif); err != nil {
-			return nil, err
-		}
-		heap := string(e.Heap)
-		if heap == "" {
-			heap = string(e.ProvisionHeap)
-		}
-		if heap == "" {
-			heap = "512m"
-		}
-		if !heapPattern.MatchString(heap) {
-			return nil, fmt.Errorf("tenant %s: invalid ES heap %q", t.Name, heap)
-		}
-		repo := string(e.PathRepo)
-		if repo == "" {
-			repo = "/usr/share/elasticsearch/snapshots"
-		}
-		if _, err := paths.SafePath("/", repo); err != nil {
+		st, err := StoreArgv(t, LegES, cfg)
+		if err != nil {
 			return nil, err
 		}
 		stores = append(stores, esU)
@@ -237,18 +193,17 @@ Type=simple
 UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
-ExecStartPre=%[17]s es-seed-config %[1]s --rag-root %[18]s
-ExecStart=%[7]s run --no-home --bind %[5]s:/usr/share/elasticsearch/data --bind %[8]s:/usr/share/elasticsearch/logs --bind %[9]s:/usr/share/elasticsearch/config --bind %[10]s:%[11]s --env "ES_JAVA_OPTS=-Xms%[12]s -Xmx%[12]s" %[13]s /usr/local/bin/docker-entrypoint.sh eswrapper -Ediscovery.type=single-node -Expack.security.enabled=false -Ehttp.port=%[2]d -Etransport.port=%[14]d -Epath.repo=%[11]s
+ExecStartPre=%[8]s es-seed-config %[1]s --rag-root %[9]s
+ExecStart=%[7]s run --no-home %[10]s
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=120
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:%[15]s/es-%[16]s.log
-StandardError=append:%[15]s/es-%[16]s.log
+StandardOutput=append:%[11]s/es-%[12]s.log
+StandardError=append:%[11]s/es-%[12]s.log
 `, t.Name, t.Ports.ESHTTP, target, cfg.MountPoint, tp.ESData, cfg.CtlStateDir, cfg.ApptainerBin,
-			tp.ESLogs, tp.ESConfig, tp.ESSnapshots, repo, heap, sif, t.Ports.ESTransport, tp.LogsDir, t.ManifestName,
-			cfg.CtlBin, cfg.RagRoot))
+			cfg.CtlBin, cfg.RagRoot, st.CommandLine(), tp.LogsDir, t.ManifestName))
 	}
 
 	// The tenant's OWN postgres, when it has one. `local` is the only kind
@@ -281,19 +236,13 @@ StandardError=append:%[15]s/es-%[16]s.log
 	// the role is created, so getting it from the wrong place would create a
 	// role whose password nothing else knows.
 	if pgs := &t.Stores.Postgres; pgs.Kind == registry.PostgresKindLocal {
-		sif := string(pgs.SIF)
-		if sif == "" {
-			return nil, fmt.Errorf("tenant %s: postgres kind `local` has no sif", t.Name)
-		}
-		if _, err := paths.SafePath("/", sif); err != nil {
+		st, err := StoreArgv(t, LegPostgres, cfg)
+		if err != nil {
 			return nil, err
 		}
 		port := int(pgs.Port)
 		if port == 0 {
 			port = t.Ports.PG
-		}
-		if port != t.Ports.PG {
-			return nil, fmt.Errorf("tenant %s: stores.postgres.port is %d but the block's +5 port is %d", t.Name, port, t.Ports.PG)
 		}
 		stores = append(stores, pgU)
 		out[pgU] = []byte(fmt.Sprintf(`[Unit]
@@ -310,21 +259,28 @@ UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
 EnvironmentFile=%[7]s
-ExecStart=%[8]s run --no-home --bind %[5]s:/var/lib/postgresql/data --bind %[9]s:/var/run/postgresql --env POSTGRES_USER=%[1]s --env POSTGRES_DB=%[1]s --env PGDATA=/var/lib/postgresql/data/pgdata %[10]s postgres -c port=%[2]d -c listen_addresses=127.0.0.1
+ExecStart=%[8]s run --no-home %[9]s
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=90
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:%[11]s/postgres-%[12]s.log
-StandardError=append:%[11]s/postgres-%[12]s.log
+StandardOutput=append:%[10]s/postgres-%[11]s.log
+StandardError=append:%[10]s/postgres-%[11]s.log
 `, t.Name, port, target, cfg.MountPoint, tp.PostgresData, cfg.CtlStateDir, tp.SecretsEnv, cfg.ApptainerBin,
-			tp.PostgresRun, sif, tp.LogsDir, t.ManifestName))
+			st.CommandLine(), tp.LogsDir, t.ManifestName))
 	}
 
-	bind, err := apiBind(t, cfg)
+	// The api's ExecStart and its `Environment=` lines come from APIArgv, so
+	// that a supervisor which spawns the process itself starts the SAME
+	// program with the SAME environment the unit would have given it.
+	apiProgram, apiArgs, apiEnv, err := APIArgv(t, cfg)
 	if err != nil {
 		return nil, err
+	}
+	environment := ""
+	for _, e := range apiEnv {
+		environment += "Environment=" + e + "\n"
 	}
 	requires := ""
 	if len(stores) > 0 {
@@ -344,22 +300,17 @@ UMask=0002
 WorkingDirectory=%[6]s/python
 EnvironmentFile=%[7]s
 EnvironmentFile=-%[8]s
-Environment=PYTHONPATH=%[6]s/python
-Environment=HF_HOME=%[9]s
-Environment=PYTHONUNBUFFERED=1
-Environment=RAGSTACK_GIT_TAG=%[10]s
-Environment=RAGSTACK_GIT_SHA=%[11]s
-ExecStartPre=%[12]s wait-ready %[1]s --timeout %[13]d
-ExecStart=%[14]s/bin/python -m uvicorn ragstack.api.main:app --host %[15]s --port %[2]d
+%[9]sExecStartPre=%[10]s wait-ready %[1]s --timeout %[11]d
+ExecStart=%[12]s
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=60
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:%[16]s
-StandardError=append:%[16]s
-`, t.Name, t.Ports.API, target, requires, cfg.MountPoint, t.Worktree, tp.TenantEnv, tp.SecretsEnv, cfg.HFHome,
-		t.Code.Tag, t.Code.SHA, cfg.CtlBin, cfg.ReadyTimeout, t.PythonEnv, bind, tp.APILog))
+StandardOutput=append:%[13]s
+StandardError=append:%[13]s
+`, t.Name, t.Ports.API, target, requires, cfg.MountPoint, t.Worktree, tp.TenantEnv, tp.SecretsEnv,
+		environment, cfg.CtlBin, cfg.ReadyTimeout, APICommandLine(apiProgram, apiArgs), tp.APILog))
 
 	wants := append(append([]string{}, stores...), apiU)
 	if t.UI.Mode == registry.UIModeDev {
