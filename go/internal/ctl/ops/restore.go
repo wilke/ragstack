@@ -170,6 +170,22 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 		return p.refuse("`as` must name a FRESH tenant; %s already exists. v1 restores side by side (in-place "+
 			"restore is v1.x) — pick a new name", as)
 	}
+	// The copy's NAME and the copy's BLOCK have to agree, because the block is
+	// decided by the source (a copy of a sandbox is a sandbox) and the name is
+	// decided by the request. A production name on a selftest block would be a
+	// tenant `selftest --sweep` deletes by name-and-block rule; a `ctltest-`
+	// name on a production block is the one combination the sweep refuses and
+	// reports, and would sit in the fleet until somebody worked out why.
+	switch {
+	case p.isSandbox() && !IsSandboxName(as):
+		return p.refuse("%s is a selftest sandbox, so %s would be allocated a SANDBOX block (%d–%d) under a "+
+			"production name: name the copy `%s…` (for example %s-r), or restore a production tenant instead",
+			srcName, as, paths.SelftestBase, paths.SelftestEnd, sandboxPrefix, srcName)
+	case !p.isSandbox() && IsSandboxName(as):
+		return p.refuse("%s is a production tenant, so %s would be allocated a PRODUCTION index and port block "+
+			"under a `%s` name — the one combination `selftest --sweep` refuses to clean up. Restore it under a "+
+			"production name, or take the bundle from a sandbox", srcName, as, sandboxPrefix)
+	}
 	if strings.HasSuffix(from, partialSuffix) {
 		// Unreachable through the args schema (`from` is `<ts>-<kind>`), stated
 		// anyway: a `.partial` is a bundle whose backup never finished, and the
@@ -242,11 +258,12 @@ func planRestore(_ context.Context, p *planner, args map[string]any) error {
 	p.warn("restore is also `backup verify`, deeply: it proves the bundle by rebuilding from it, and it is the only " +
 		"operation that sets `verified` on one")
 	p.warn("a failure at ANY step — including the final count check — rolls the whole job back: the fresh tenant's " +
-		"registry row is deleted, its units are stopped and their files removed, its credential file, env files and " +
-		"worktree are removed, and so is every file copied out of the bundle. Nothing is left running and no data " +
-		"survives. What can remain is the empty directory tree and the built UI the create half laid down under " +
-		"<data_dir>/" + as + ": the ctl has no recursive delete, and a rollback is not the place to acquire one. " +
-		"Removing that tree by hand is safe, and restoring under the same name again works without it")
+		"registry row is deleted, its units are stopped and their files removed, and its credential file, env files " +
+		"and worktree are removed. What REMAINS is the tenant tree, renamed aside: a failed restore leaves " +
+		filepath.Join(p.oc.Roots.DataDir, as) + ".failed-<ts> with whatever the stores wrote into it. Nothing runs " +
+		"from it, there is no registry row and there are no units; the ctl has no recursive delete and a rollback " +
+		"is not the place to acquire one, so remove it by hand (a sandbox's is swept by `ragstack-ctl selftest " +
+		"--sweep`). Restoring under the same name again works once it is gone, and is refused while it is there")
 	p.warn(fmt.Sprintf("the job holds the tenant lock on %s, not on %s: %s does not exist yet, and the registry lock "+
 		"plus the allocation step's own re-check are what stop a concurrent `create` claiming the name", srcName, as, as))
 

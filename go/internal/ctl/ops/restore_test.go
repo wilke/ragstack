@@ -432,14 +432,27 @@ func TestAFailedVerifyRollsTheWholeRestoreBack(t *testing.T) {
 	if _, ok := oc.Fleet.Tenants["dev-r"]; ok {
 		t.Errorf("the failed restore left a registry row behind")
 	}
-	// No DATA: nothing copied out of the bundle, no credential file, no env
-	// file. The empty tree and the built UI the create half laid down are the
-	// documented exception (the Files seam has no recursive delete).
-	for _, f := range tenantFiles(fake, "dev-r") {
-		if strings.HasPrefix(f, "/rag/data/tenants/dev-r/ui/") {
-			continue
-		}
-		t.Errorf("the failed restore left %s behind", f)
+	// Nothing is left AT the tenant's own path: the create half's fs step
+	// renamed the whole tree aside on the way out, so `dev-r` is free for the
+	// next attempt and the bytes the stores wrote are still there to look at.
+	if got := tenantFiles(fake, "dev-r"); len(got) > 0 {
+		t.Errorf("the failed restore left %v at the tenant's own path", got)
+	}
+	if fake.FakeFiles().Dirs["/rag/data/tenants/dev-r"] != 0 {
+		t.Errorf("the failed restore left the directory /rag/data/tenants/dev-r behind")
+	}
+	aside := failedTrees(fake, "dev-r")
+	if len(aside) != 1 {
+		t.Fatalf("a failed restore left %v, want exactly one /rag/data/tenants/dev-r.failed-<ts>", aside)
+	}
+	// And it is a RENAME, not a delete: what the create half laid down is
+	// still under the renamed tree.
+	if !anyPathWithPrefix(fake, aside[0]+"/") && fake.FakeFiles().Dirs[aside[0]] == 0 {
+		t.Errorf("%s holds nothing: the rollback deleted the tree instead of moving it", aside[0])
+	}
+	// The plan warned about exactly this path, in as many words.
+	if !anyWarning(p, ".failed-<ts>") {
+		t.Errorf("the plan does not warn that a failure leaves <data_dir>.failed-<ts>: %v", p.Plan.Warnings)
 	}
 	if units := fake.FakeSystemd().ActiveUnits(); containsPrefix(units, "ragstack-dev-r-") {
 		t.Errorf("the failed restore left units running: %v", units)
@@ -488,6 +501,28 @@ func tenantNames(f *registry.Fleet) []string {
 	out := make([]string, 0, len(f.Tenants))
 	for n := range f.Tenants {
 		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// failedTrees are the `<data_dir>.failed-<ts>` directories on the fake host.
+func failedTrees(fake *drivers.Fake, tenant string) []string {
+	seen := map[string]bool{}
+	prefix := "/rag/data/tenants/" + tenant + ".failed-"
+	for d := range fake.FakeFiles().Dirs {
+		if strings.HasPrefix(d, prefix) {
+			seen[strings.SplitN(d, "/", 6)[4]] = true
+		}
+	}
+	for _, f := range fake.FakeFiles().Paths() {
+		if strings.HasPrefix(f, prefix) {
+			seen[strings.SplitN(f, "/", 6)[4]] = true
+		}
+	}
+	out := []string{}
+	for d := range seen {
+		out = append(out, "/rag/data/tenants/"+d)
 	}
 	sort.Strings(out)
 	return out
@@ -602,7 +637,11 @@ func TestRestoringASandboxAllocatesASandboxBlock(t *testing.T) {
 	src.Stores.Qdrant.URL = "http://127.0.0.1:" + strconv.Itoa(sandbox.QdrantHTTP)
 	src.Stores.Elasticsearch.URL = "http://127.0.0.1:" + strconv.Itoa(sandbox.ESHTTP)
 
-	p := plan(t, oc, "restore", map[string]any{"from": bundle, "as": "dev-r"})
+	// The copy is named like a sandbox as well as blocked like one: the two
+	// halves are the same rule, and `restore --as` refuses them apart. (The
+	// selftest's real pairing is `ctltest-<stamp>` and `ctltest-<stamp>-r`;
+	// the fixture source is called `dev` and only its BLOCK is a sandbox.)
+	p := plan(t, oc, "restore", map[string]any{"from": bundle, "as": "ctltest-dev-r"})
 	ports, ok := p.Result()["ports"].(paths.Ports)
 	if !ok {
 		t.Fatalf("the plan reports no ports: %v", p.Result())
@@ -618,6 +657,38 @@ func TestRestoringASandboxAllocatesASandboxBlock(t *testing.T) {
 		t.Errorf("the plan does not say the copy is a sandbox: %v", p.Plan.Warnings)
 	}
 	_ = fake
+}
+
+// TestARestoreRefusesToCrossTheSandboxBoundary is the other half of the rule
+// above, in both directions.
+//
+// The BLOCK a copy is allocated is decided by the source (a copy of a sandbox
+// is a sandbox); the NAME is decided by the request. When the two disagree the
+// result is a row nothing can clean up: a production name on a selftest block is
+// swept by `selftest --sweep`'s block rule, and a `ctltest-` name on a
+// production block is the one combination the sweep refuses and reports.
+func TestARestoreRefusesToCrossTheSandboxBoundary(t *testing.T) {
+	t.Run("a sandbox restored under a production name", func(t *testing.T) {
+		oc, _, bundle := restoreFixture(t)
+		src := oc.Fleet.Tenants["dev"]
+		sandbox := paths.BlockAt(paths.SelftestBase, 0, 0)
+		sandbox.Index = registry.SandboxIndexBase
+		src.Ports = sandbox
+		src.Stores.Qdrant.URL = "http://127.0.0.1:" + strconv.Itoa(sandbox.QdrantHTTP)
+		src.Stores.Elasticsearch.URL = "http://127.0.0.1:" + strconv.Itoa(sandbox.ESHTTP)
+
+		err := planErr(t, oc, "restore", map[string]any{"from": bundle, "as": "dev-r"})
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "SANDBOX block") {
+			t.Fatalf("restoring a sandbox as `dev-r` = %v", err)
+		}
+	})
+	t.Run("a production tenant restored under a sandbox name", func(t *testing.T) {
+		oc, _, bundle := restoreFixture(t)
+		err := planErr(t, oc, "restore", map[string]any{"from": bundle, "as": "ctltest-dev-r"})
+		if !errors.Is(err, jobs.ErrRefused) || !strings.Contains(err.Error(), "PRODUCTION index") {
+			t.Fatalf("restoring `dev` as a sandbox name = %v", err)
+		}
+	})
 }
 
 func anyWarning(p *jobs.Planned, needle string) bool {

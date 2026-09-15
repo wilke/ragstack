@@ -50,8 +50,13 @@ func minimalArgs(verb string) map[string]any {
 		return map[string]any{"fence": true}
 	case "restore":
 		return map[string]any{"from": "20260914T093000Z-backup", "as": "dev-r"}
-	case "create", "create-sandbox":
+	case "create":
 		return map[string]any{"name": "newone", "artifact_id": "v1.5.3-abababababab"}
+	case "create-sandbox":
+		// A name the SANDBOX rule accepts: `create-sandbox` refuses every name
+		// that is not `ctltest-…`, so the shared "newone" made this verb skip
+		// the invariant instead of being covered by it.
+		return map[string]any{"name": "ctltest-20260914t000000z", "artifact_id": "v1.5.3-abababababab"}
 	case "key-mint":
 		return map[string]any{"label": "ops", "role": "user"}
 	case "key-revoke":

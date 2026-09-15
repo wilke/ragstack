@@ -63,6 +63,22 @@ func cmdBackup(args []string, ragRoot string, jsonOut bool) int {
 	}
 }
 
+// validTenant is the name check every one of the three reads makes before the
+// name is joined under the backups root.
+//
+// These commands take a name straight from the command line and build a path
+// out of it, so `backup verify ../../etc passwd` is a path traversal spelled as
+// an argument. paths.ValidateName is the same grammar the registry, the ops
+// endpoint and the gateway enforce; a name that cannot be a tenant cannot name
+// a bundle directory either.
+func validTenant(name string) bool {
+	if err := paths.ValidateName(name); err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
+		return false
+	}
+	return true
+}
+
 // ---------------------------------------------------------------- list
 
 func cmdBackupList(args []string, ragRoot string, jsonOut bool) int {
@@ -80,6 +96,11 @@ func cmdBackupList(args []string, ragRoot string, jsonOut bool) int {
 	}
 	tenant := ""
 	if len(pos) == 1 {
+		// A listing of EVERY tenant reads the backups root itself and joins
+		// nothing, so the check is on the one path that takes a name.
+		if !validTenant(pos[0]) {
+			return exitUsage
+		}
 		tenant = pos[0]
 	}
 	rows, err := readBundles(paths.NewRoots(*root, paths.Overrides{}).BackupsDir, tenant)
@@ -217,7 +238,16 @@ func cmdBackupVerify(args []string, ragRoot string, jsonOut bool) int {
 		return backupUsage()
 	}
 	tenant, id := pos[0], pos[1]
-	dir := filepath.Join(paths.NewRoots(*root, paths.Overrides{}).BackupsDir, tenant, id)
+	if !validTenant(tenant) {
+		return exitUsage
+	}
+	tenantBackups := filepath.Join(paths.NewRoots(*root, paths.Overrides{}).BackupsDir, tenant)
+	dir := filepath.Join(tenantBackups, id)
+	// The bundle id is an argument too, and it is the second half of the path.
+	if _, err := paths.SafePath(tenantBackups, dir); err != nil {
+		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)
+		return exitUsage
+	}
 	res := verifyBundle(dir, id)
 	if jsonOut || *localJSON {
 		_ = printJSON(res)
@@ -381,6 +411,9 @@ func cmdBackupPrune(args []string, ragRoot string, jsonOut bool) int {
 		return exitRefused
 	}
 	tenant := pos[0]
+	if !validTenant(tenant) {
+		return exitUsage
+	}
 	rows, err := readBundles(paths.NewRoots(*root, paths.Overrides{}).BackupsDir, tenant)
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: %v\n", err)

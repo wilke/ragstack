@@ -305,10 +305,16 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	// The registry lock as well as the tenant's: the last step records
 	// `last_backup` and `last_ops.backup`, and the manifest projection is
 	// derived from the registry, so the same two locks a settings write takes.
+	//
+	// NOT the gateway lock, even when fencing: the fence is the API unit being
+	// stopped, and nothing about it changes what the gateway publishes. The
+	// plan used to take LockGateway for two "publish a generation serving the
+	// tenant read-only" steps, and those steps published a generation that was
+	// byte-for-byte the previous one — the registry has no read-only field, so
+	// there was nothing for the render to carry. A lock held for a no-op is a
+	// lock every other gateway operation waits behind for the length of a
+	// backup.
 	p.need(model.LockRegistry, model.LockManifest, model.LockTenant)
-	if fence {
-		p.need(model.LockGateway)
-	}
 	t := p.t
 	bundleDir := filepath.Join(p.oc.Roots.BackupsDir, t.Name, bundlePlaceholder)
 	p.result["fenced"] = fence
@@ -321,14 +327,15 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 	}
 
 	// The precheck comes FIRST, before the fence: refusing a backup for want
-	// of disk after the gateway has been made read-only and the API stopped
-	// would be an outage in the service of an operation that was never going
-	// to finish.
+	// of disk after the API has been stopped would be an outage in the service
+	// of an operation that was never going to finish.
 	p.addFreeSpaceCheck()
 
 	if fence {
-		p.warn("the tenant is fenced for the duration: the gateway serves it read-only and the API is stopped")
-		p.addGatewayReadonly(true)
+		p.warn("the tenant is fenced for the duration: its API is STOPPED and the gateway route answers 502 while " +
+			"it is down. There is no read-only mode in v1 — the registry carries no read-only flag and the gateway " +
+			"has nothing to render one from, so a fence is an outage for this tenant, not a degraded service. " +
+			"Read-only serving is v1.x")
 		p.addAPIStop()
 		p.addFenceVerify()
 	}
@@ -358,7 +365,6 @@ func planBackup(_ context.Context, p *planner, args map[string]any) error {
 
 	if fence {
 		p.addAPIStart()
-		p.addGatewayReadonly(false)
 	}
 	return nil
 }
@@ -1474,6 +1480,21 @@ func (p *planner) addBackupRecord(fence bool) {
 				return "", fmt.Errorf("%w: %s is no longer in the registry", jobs.ErrRefused, name)
 			}
 			at := p.stampRFC3339(sc)
+			// The PREVIOUS recovery point, recorded before it is replaced, and
+			// recorded DURABLY — in the step's external IDs rather than in a
+			// closure variable, which a restart would forget. The steps after
+			// this one release the fence, and a fence release that fails rolls
+			// this one back: without the record the row would go on naming a
+			// bundle directory that the finalize step's own rollback has just
+			// renamed back to `.partial`, which is `last_backup` pointing at a
+			// path that no longer exists.
+			prev, err := json.Marshal(row.LastBackup)
+			if err != nil {
+				return "", fmt.Errorf("recording the previous last_backup of %s: %w", name, err)
+			}
+			if err := sc.Checkpoint(prevLastBackupID + string(prev)); err != nil {
+				return "", err
+			}
 			// The registry records the bundle's absolute DIRECTORY
 			// (registry.json types last_backup.bundle as an AbsPath), while
 			// every operator-facing surface — `backup list`, `restore --from`,
@@ -1495,15 +1516,65 @@ func (p *planner) addBackupRecord(fence bool) {
 			p.result["bundle_dir"] = dir
 			return fmt.Sprintf("last_backup = %s (fenced=%v, verified=false)", id, fence), nil
 		},
+		Rollback: func(_ context.Context, sc *jobs.StepContext) (string, error) {
+			save := p.op.deps.SaveFleet
+			if save == nil {
+				return "nothing was written", nil
+			}
+			raw, ok := externalIDValue(sc.Step.ExternalIDs, prevLastBackupID)
+			if !ok {
+				// The Run never got as far as the checkpoint, so it never got
+				// as far as the write either.
+				return "nothing was written", nil
+			}
+			var prev *registry.BackupRecord
+			if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+				return "", fmt.Errorf("reading the recorded previous last_backup of %s: %w", name, err)
+			}
+			cur := sc.Ops.Fleet
+			row := cur.Tenants[name]
+			if row == nil {
+				return "the registry row is gone; nothing to restore", nil
+			}
+			row.LastBackup = prev
+			if err := save(cur); err != nil {
+				return "", err
+			}
+			if prev == nil {
+				return "last_backup is unset again: this tenant had no recovery point before the job", nil
+			}
+			return "last_backup is " + prev.Bundle + " again", nil
+		},
 	})
 	p.result["bundle"] = bundlePlaceholder
 }
 
+// prevLastBackupID prefixes the external ID that carries the row's previous
+// `last_backup`, as JSON, so the rollback can put it back after a restart.
+const prevLastBackupID = "prev-last-backup:"
+
+// externalIDValue is the suffix of the first recorded ID with this prefix.
+func externalIDValue(ids []string, prefix string) (string, bool) {
+	for _, id := range ids {
+		if strings.HasPrefix(id, prefix) {
+			return strings.TrimPrefix(id, prefix), true
+		}
+	}
+	return "", false
+}
+
 // ---------------------------------------------------------------- the fence
 
-// addGatewayReadonly plans the gateway half of a fence. The read-only FLAG is
-// a registry field; what this step does is publish a generation that carries
-// it, which is the only part of the change nginx can see.
+// addGatewayReadonly plans a gateway publish either side of a migration.
+//
+// The BACKUP fence no longer uses it, and the reason is worth keeping: there is
+// no read-only flag in the registry, so the generation this publishes is the
+// same generation that was already live and nginx serves exactly what it served
+// before. In `handover` and `migrate-local` the publish still earns its place —
+// those verbs move a tenant's ports and code, and the generation either side of
+// the move is a different document — but the WORD "read-only" is aspirational
+// in both: what an operator gets while the tenant is down is a 502 on its route.
+// Read-only serving is v1.x.
 func (p *planner) addGatewayReadonly(on bool) {
 	what := "read-only"
 	if !on {
@@ -1512,8 +1583,8 @@ func (p *planner) addGatewayReadonly(on bool) {
 	p.add(step{
 		Kind: "nginx", Title: fmt.Sprintf("gateway: publish a generation serving %s %s", p.t.Name, what),
 		Targets: []string{p.t.Name},
-		Warnings: []string{"the read-only flag itself is a registry field; this step publishes the generation that " +
-			"carries it, so the fence is visible to nginx"},
+		Warnings: []string{"there is no read-only flag in the registry for this to carry: while the tenant is down " +
+			"its gateway route answers 502. Read-only serving is v1.x"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			// A tenant the live gateway does not route — a sandbox created
 			// without a gateway publish, a tenant not yet published — has no

@@ -389,10 +389,39 @@ func planCreateSteps(p *planner, spec createSpec) error {
 	})
 
 	// ---- 2. fs: the tenant tree -----------------------------------------
+	//
+	// The step REFUSES a data dir that already exists and holds anything, and
+	// its rollback RENAMES the tree it made rather than deleting it. The two
+	// halves are one rule: a job that fails after this step leaves whatever the
+	// stores had written under `<data_dir>.failed-<stamp>`, so the NEXT create
+	// or restore of the same name finds an empty path and the operator finds
+	// the evidence. Without the refusal the second attempt would lay a fresh
+	// tenant down on top of the first one's store files; without the rename it
+	// would be the ctl that deleted them.
 	p.addFor("files", step{
 		Kind: "fs", Title: "create the tenant directories (2770, setgid)", Targets: dirs,
+		Warnings: []string{"refuses when " + tp.DataDir + " already exists and is not empty; a failure after this " +
+			"step RENAMES the tree to " + tp.DataDir + ".failed-<ts> rather than deleting it"},
 		Run: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
 			files := sc.Ops.Drivers.Files()
+			// An EMPTY directory is fine: the deployment's own layout may have
+			// been laid down by an operator, and a rolled-back create that had
+			// nothing to leave behind leaves an empty tree by design.
+			switch ents, err := files.ReadDir(ctx, tp.DataDir); {
+			case err == nil && len(ents) > 0:
+				return "", fmt.Errorf("%w: %s already exists and is not empty (%d entries): remove or rename it "+
+					"first — a previous create or restore of this name left it, and laying a fresh tenant down on "+
+					"top of another one's store files is how two tenants come to share a data directory",
+					jobs.ErrRefused, tp.DataDir, len(ents))
+			case err != nil && !isNotExist(err):
+				return "", fmt.Errorf("checking %s: %w", tp.DataDir, err)
+			}
+			// The directory is the external ID, recorded before it is made: the
+			// rollback renames a tree only when this record says the job is the
+			// one that created it.
+			if err := sc.Checkpoint("dir:" + tp.DataDir); err != nil {
+				return "", err
+			}
 			// The data dir first, so the setgid bit is set on the parent before
 			// anything is created under it — a subdirectory made before its
 			// parent carried setgid inherits the creator's primary group, and on
@@ -403,6 +432,26 @@ func planCreateSteps(p *planner, spec createSpec) error {
 				}
 			}
 			return fmt.Sprintf("%d directories under %s", len(dirs)+1, tp.DataDir), nil
+		},
+		Rollback: func(ctx context.Context, sc *jobs.StepContext) (string, error) {
+			if len(sc.Step.ExternalIDs) == 0 {
+				return "nothing was created", nil
+			}
+			// A RENAME, never a delete. The ctl has no recursive delete and a
+			// rollback is not the place to acquire one: what is under this tree
+			// by the time the job fails is whatever qdrant, elasticsearch and
+			// postgres wrote into it, and the one operation that is always safe
+			// on somebody's data is moving it aside.
+			failed := tp.DataDir + ".failed-" + p.stampOf(sc)
+			if err := sc.Ops.Drivers.Files().Rename(ctx, tp.DataDir, failed); err != nil {
+				if isNotExist(err) {
+					return "nothing was created", nil
+				}
+				return "", err
+			}
+			sc.Logf("the tenant tree was renamed, not deleted: %s holds whatever the stores wrote. "+
+				"Nothing runs from it, it has no registry row and no units; remove it by hand", failed)
+			return "renamed the tenant tree aside: " + failed, nil
 		},
 	})
 

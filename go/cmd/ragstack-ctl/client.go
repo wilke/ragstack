@@ -554,6 +554,14 @@ func submitOp(o *opFlags, target opTarget, args map[string]any) int {
 		if err != nil {
 			return nil, err
 		}
+		// 410 is the contract's "this envelope has already been read, or it
+		// expired". It is wrapped in the engine's own sentinel so that the one
+		// caller who has to tell it apart — an idempotent REPLAY, which gets
+		// back the first request's finished job — can, whichever transport it
+		// came through.
+		if r.Status == http.StatusGone {
+			return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered 410: %w", jobID, jobs.ErrGone)
+		}
 		if r.Status != http.StatusOK {
 			return nil, fmt.Errorf("GET /v1/jobs/%s/secrets answered %d", jobID, r.Status)
 		}
@@ -719,6 +727,18 @@ func deliverSecrets(o *opFlags, jobID string) int {
 		return exitOK
 	}
 	resp, err := o.fetchSecrets(jobID)
+	if errors.Is(err, jobs.ErrGone) {
+		// An idempotent REPLAY, not a failure. The second `create` with the
+		// same idempotency key is answered with the FIRST one's finished job,
+		// and that job's envelope was destroyed by the read that delivered it
+		// — to this operator, on the first run. Exiting 1 here told a script
+		// that a create which had in fact succeeded twice over had failed, and
+		// sent an operator to mint replacements for keys they already hold.
+		fmt.Fprintf(stdout, "\nthe credentials for job %s were delivered by the earlier run of this request "+
+			"(the envelope is read once and destroyed); this is a replay of that job, and nothing new was "+
+			"created. If you no longer have them, mint replacements with `ragstack-ctl key mint`.\n", jobID)
+		return exitOK
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "ragstack-ctl: the job succeeded but its credentials could not be collected: %v\n"+
 			"They are NOT recoverable once the envelope expires; mint replacements with `ragstack-ctl key mint`.\n", err)

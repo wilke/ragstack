@@ -759,22 +759,49 @@ ops/coconut/verify.sh                           # must still say ALL GOOD
 Run the first form **three times**; the plan's acceptance is three green runs
 in a row, which is what catches a leftover the previous run did not clean up.
 
-Exit codes: `0` everything green · `3` refused (no prepared artifact, a red
-doctor, a `--boot` checklist with a FAIL) · `4` a job failed or a check failed.
-On 4 the sandbox is **left in place** for inspection and the run says so;
-remove it afterwards with:
+Exit codes: `0` everything green · `3` refused (no prepared artifact, a **red
+doctor**, a `--boot` checklist with a FAIL) · `4` a job failed or a check FAILED.
+
+What happens to the sandboxes at the end depends on WHICH of the two kinds of
+exit-4 it was:
+
+* **a JOB failed** — the run stops where it failed and leaves the sandbox in
+  place for inspection (it may still be running, or half-decommissioned). It
+  says so, and you remove it afterwards with `ragstack-ctl selftest --sweep`.
+* **every job succeeded and a CHECK failed** — both sandboxes were
+  decommissioned and quarantined before the check ran, so there is nothing live
+  to look at, and they are **swept**. The FAIL is in the report and the exit
+  code is still 4. (Leaving them behind used to exhaust the five sandbox blocks
+  in three runs — which is exactly the acceptance below.)
+* **`--keep`** — nothing is swept, whatever the outcome, and the run says how
+  to remove what it kept.
 
 ```bash
 ragstack-ctl selftest --sweep
 ```
 
-`--sweep` is the only deletion the control plane performs, and it is guarded
-three ways: the directory name must match
-`^ctltest-[0-9a-z-]+\.quarantined-[0-9A-Za-z-]+$`, the resolved path (after
-`EvalSymlinks`) must sit directly under `/rag/data/tenants` or
-`/rag/repos/tenants`, and a registry row is removed only when its **port block**
-is in the sandbox range. A row named `ctltest-*` on a production block is
-refused and reported rather than deleted.
+`--sweep` is the only deletion the control plane performs, and it is guarded on
+every axis at once. A directory is removed only if its name matches one of two
+patterns **and** its resolved path (after `EvalSymlinks`) sits **directly**
+under one of three roots:
+
+| pattern | what it is |
+|---|---|
+| `^ctltest-[0-9a-z-]+\.quarantined-[0-9A-Za-z-]+$` | what `decommission` renames a sandbox's tree to |
+| `^ctltest-[0-9a-z-]+$` — **only when no registry row of that name exists** | an orphan: a rolled-back create left the tree and no row. With a row it is a tenant, and the sweep refuses it |
+| `^ctltest-[0-9a-z-]+\.failed-[0-9A-Za-z-]+$` | the tree a **rolled-back create or restore renames aside**, holding whatever the stores wrote. No row can ever name it (a registry name has no dot) |
+
+The three roots are `/rag/data/tenants` (the data trees), `/rag/repos/tenants`
+(the worktrees) and `/rag/backups/tenants` (a sandbox's own bundle directories).
+Registry rows are removed only when the row's **port block** is in the sandbox
+range AND its state is `quarantined`: a row named `ctltest-*` on a production
+block is refused and reported rather than deleted, and a sandbox that is not
+quarantined is refused with "decommission it first" — the sweep once deleted the
+row of a live sandbox and orphaned its units.
+
+A `.failed-` or orphan tree belonging to a PRODUCTION tenant is not sweepable by
+any of these rules and never will be: removing one is an operator's own `rm -rf`
+after looking at it.
 
 Two things the selftest reports as named checks rather than as job failures,
 because the job succeeds either way and the difference only shows up later:
@@ -820,12 +847,25 @@ target rows; run it as `svcbvbrc` (`ops/coconut/ctl-as-svc.sh selftest --boot`)
 for the drop-in row, where today it correctly reports linger and drop-in FAIL
 until root has run the `coconut-host` role.
 
-To see the checklist while a sandbox tenant exists — the acceptance's wording —
-keep one:
+`--boot` reads the **live fleet**: it checks every tenant whose registry row
+says `desired_boot: enabled`. A sandbox is never one of those for long —
+`decommission` sets `desired_boot: disabled` before the run ends, so even
+`selftest --keep && selftest --boot` shows no sandbox target, and the pairing
+proves nothing. There is nothing to arrange here.
 
-```bash
-ragstack-ctl selftest --keep && ragstack-ctl selftest --boot && ragstack-ctl selftest --sweep
+On a host whose adopted tenants are **hand-started** (the state coconut is in
+today), no row says `desired_boot: enabled`, so the checklist is the first two
+rows plus one that reads:
+
 ```
+desired_boot targets   n/a   no tenant's row says desired_boot enabled, so there is nothing that should come back
+```
+
+That `n/a` is **not a gap and not a FAIL** — it exits 0 — it is the registry
+saying that no tenant is claimed to come back by itself, which is true until the
+tenants are handed over. The rows that matter today are `linger` and the `user@`
+drop-in; the `is-enabled` and `default.target` rows start reporting the moment a
+handed-over tenant's row says `desired_boot: enabled`.
 
 ### PR-D verification summary
 

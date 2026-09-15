@@ -373,7 +373,9 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 		// The precheck comes BEFORE the fence: refusing for want of disk
 		// after the API is stopped would be an outage for nothing.
 		"probe: check the backup filesystem has room",
-		"nginx: gateway: publish a generation serving dev read-only",
+		// No "serve it read-only" publish either side: the registry carries no
+		// read-only flag, so such a step published the generation that was
+		// already live and fenced nothing. The fence IS the API unit stopping.
 		"systemd: stop ragstack-dev-api.service",
 		"probe: fence verify: nothing listens on 24040",
 		"fs: create the bundle directory (written as <id>.partial, mode 2770)",
@@ -394,13 +396,28 @@ func TestPlanBackupFencesInOrderAndUnfencesAfterwards(t *testing.T) {
 		"registry: record the bundle as this tenant's last backup",
 		"systemd: start ragstack-dev-api.service",
 		"probe: wait for the API to listen on 24040",
-		"nginx: gateway: publish a generation serving dev read-write",
 	}
 	if got := titles(p); strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("steps =\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
 	if p.Result()["fenced"] != true || p.Result()["best_effort"] != false {
 		t.Errorf("result = %v", p.Result())
+	}
+	// The plan says what a fence really is, and does not promise a mode the
+	// build does not have.
+	if !anyWarning(p, "the gateway route answers 502") || !anyWarning(p, "Read-only serving is v1.x") {
+		t.Errorf("the fence warning does not say the route answers 502: %v", p.Plan.Warnings)
+	}
+	for _, w := range p.Plan.Warnings {
+		if strings.Contains(w, "serves it read-only") {
+			t.Errorf("the plan still claims a read-only fence: %q", w)
+		}
+	}
+	// And no gateway lock is held for the length of a backup.
+	for _, l := range p.Locks {
+		if l == model.LockGateway {
+			t.Errorf("a fenced backup takes the gateway lock but publishes nothing: %v", p.Locks)
+		}
 	}
 	// The bundle's paths carry a placeholder, never a clock: a plan is
 	// computed twice and compared.

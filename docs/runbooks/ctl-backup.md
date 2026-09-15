@@ -24,8 +24,8 @@ ragstack-ctl tenant backup dev --fence --tar --wait  # …and a .tar of the fini
 
 | | `--fence` | without |
 |---|---|---|
-| the gateway | publishes a generation serving the tenant read-only | untouched |
 | the API | stopped for the duration, restarted after | left running |
+| the gateway | untouched — the route answers **502** while the API is down | untouched |
 | the manifest | `fenced: true`, `consistent: true` when every count agrees | `fenced: false`, `best_effort: true`, `consistent: false` |
 | eligible for `restore --as` | yes | **no, ever** |
 | satisfies the prerequisite of `handover` / `migrate-local` / `decommission` | once a restore has verified it | no |
@@ -36,6 +36,15 @@ taken and before elasticsearch's, which is a bundle that restores into a tenant
 whose two stores disagree. The fence is verified — after the API unit stops, a
 step checks that nothing is listening on the API port and refuses if something
 still is.
+
+**The fence stops the API; it does not degrade the tenant to reads.** There is
+no read-only mode in v1: the registry carries no read-only flag, so the gateway
+has nothing to render one from, and while the tenant is down its route answers
+502. The plan used to carry two "publish a generation serving the tenant
+read-only" steps either side of the fence; they published the generation that
+was already live and fenced nothing, so they are gone — along with the gateway
+lock the backup took for them. Read-only serving is v1.x. Take a fenced backup
+in a window where the tenant can be down.
 
 The first step of either kind is a free-space check on `/rag/backups`. It
 refuses under a 5 GiB reserve. It does NOT check the plan's "1.2× the size of
@@ -227,6 +236,14 @@ tenant would otherwise spend a production index on every run, and the copy —
 living outside the sandbox range — would need a verified bundle of its own before
 `decommission` would clean it up.
 
+Because the BLOCK follows the source and the NAME comes from the request, the
+two must agree, and `restore --as` refuses them apart in both directions:
+restoring a sandbox as `dev-r` would put a production-named tenant on a selftest
+block (which `selftest --sweep` deletes by its block rule), and restoring a
+production tenant as `ctltest-…` would put a `ctltest-` name on a production
+block — the one combination the sweep refuses and reports. Name a sandbox's copy
+`ctltest-<stamp>-r`.
+
 The artifact and the store kind are decided from the **source tenant's registry
 row**, because a plan may not read the host. The first step then refuses when the
 bundle's manifest names a different artifact or a different store kind — a tenant
@@ -238,12 +255,26 @@ skips the check with a line in the job log saying so.
 ### If it fails
 
 A failed restore rolls back completely: the fresh tenant's registry row is
-deleted, its units are stopped and their files removed, and every byte copied out
-of the bundle is removed. **No data survives and nothing is left running.** What
-can remain is the empty directory tree and the built UI that the create half laid
-down under `/rag/data/tenants/<new>/` — the ctl has no recursive delete, and a
-rollback path is the last place to give it one. Removing that tree by hand is
-safe; restoring under the same name again works without doing so.
+deleted, its units are stopped and their files removed, and its credential file,
+env files and worktree are removed. **Nothing is left running, there is no
+registry row and there are no units.**
+
+What REMAINS is the tenant tree, **renamed aside**:
+
+```
+/rag/data/tenants/<new>.failed-<ts>/
+```
+
+It holds whatever the stores wrote before the failure — the ctl has no recursive
+delete, and a rollback is the last place to give it one, so the rule is a rename
+and never a deletion. Nothing runs from it and nothing will ever read it again;
+remove it by hand once you have looked at it (`rm -rf` is yours to type, not the
+control plane's). A sandbox's is swept by `ragstack-ctl selftest --sweep`.
+
+Restoring under the same name works once it is gone, and is **refused while it
+is there**: the create half checks that `<data_dir>` is absent or empty before
+it makes a directory, so a second attempt can never lay a fresh tenant down on
+top of the first one's store files.
 
 The source tenant is never touched except by the last two steps, which only set
 the flags saying the bundle has been proved.
@@ -276,6 +307,8 @@ the flags saying the bundle has been proved.
 | failed: `PRAGMA integrity_check … answered …, not ok` | a state database is damaged. The bundle was NOT written claiming otherwise; investigate the tenant |
 | failed: `the repository at … does not hold the snapshot …` | elasticsearch reported success and the directory disagrees. Do not trust the cluster's snapshot state; look at the ES log |
 | a `<id>.partial` directory | an interrupted job. Re-run the backup; `prune --dry-run` lists stale ones after 24 h |
+| a `<tenant>.failed-<ts>` tree under `/rag/data/tenants` | a create or restore that rolled back. Nothing runs from it and no row names it; look at it, then remove it by hand |
+| refused: `… already exists and is not empty … remove or rename it first` | a previous create or restore of that name left a tree behind (the row above). Deal with that tree, then retry |
 | `secrets.included: false` and you expected otherwise | no recipient in `/rag/config/ctl/backup-recipients.txt` when the bundle was taken (§3) |
 
 Restoring is §6 — a fresh tenant beside the old one, never in place. There is no
