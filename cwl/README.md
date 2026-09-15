@@ -139,9 +139,20 @@ used `/scout/containers/ragstack-worker.sif`. `CWL_SINGULARITY_CACHE` is a
 **cwltool-only** variable — it has no effect on GoWe workers.
 
 ```bash
-# after rebuilding, refresh the worker-visible copy
+# after rebuilding, refresh the worker-visible copy — ONE PER IMAGE DIR
 cp apptainer/images/ragstack-worker.sif /scout/containers/ragstack-worker.sif
+cp apptainer/images/ragstack-worker.sif /scout/containers/ragstack-hackathon/ragstack-worker.sif
 ```
+
+Because the name is bare, `--image-dir` is also the **only** way to give one
+worker group a different image, and the deployment now does that: the
+`ragstack-hackathon` group resolves `/scout/containers/ragstack-hackathon/`,
+whose image carries the `postgres` extra that tenant's collection registry needs
+(#563), while the `ragstack` group resolves `/scout/containers/`. Refreshing one
+does nothing for the other, and the divergence is silent — `ps -eo args | grep
+gowe-worker` lists every group's `--image-dir`. See
+[docs/runbooks/bulk-load-throughput.md](../docs/runbooks/bulk-load-throughput.md)
+step 3.
 
 **2. Worker group matters — a `--runtime none` worker cannot run container
 steps.** GoWe only dispatches tasks carrying a `docker_image` to

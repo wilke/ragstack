@@ -89,7 +89,9 @@ From: python:3.12-slim-bookworm
     # whose registry is postgres, PostgresCollectionStore raises without asyncpg,
     # _specs_or_raise turns it into a refusal, and the step exits 2 — after the
     # extract step has already succeeded, so the job dies half-done. sqlite hid
-    # this for a year because SqliteCollectionStore uses stdlib sqlite3 (#563).
+    # this from the day the registry read landed (#263) because
+    # SqliteCollectionStore uses stdlib sqlite3 — the gap only shows the first
+    # time a tenant on a postgres registry ingests (#563).
     python -m pip install "/opt/ragstack/python[vector,pdf,text,tokenization,graph,postgres]"
 
     # Tokenizer robustness without torch: some HF slow tokenizers need these.

@@ -366,13 +366,24 @@ if want gowe; then
   else say "  ✗ $W/start-gowe.sh missing — GoWe not started (see $W/README.md)"; fail=1; fi
   wait_if_started gowe-server http://127.0.0.1:8091/api/v1/health 60 "gowe-server :8091" && { (( DRY )) || record_pid_by_port gowe-server 8091; } || fail=1
   if (( ! DRY )); then
-    sleep 3; n=0
-    # one /proc pass: count the workers and record each one's pid under its --name
+    sleep 3; n=0; declare -A gn=()
+    # one /proc pass: count the workers, tally them per --group, and record each
+    # one's pid under its --name
     for pr in /proc/[0-9]*; do
       c=$({ tr '\0' ' ' < "$pr/cmdline"; } 2>/dev/null); [[ $c == ./bin/gowe-worker* ]] || continue
       n=$((n+1)); wn=$(echo "$c" | grep -o -- '--name [^ ]*' | cut -d' ' -f2); [[ -n $wn ]] && echo "${pr#/proc/}" > "$PIDS/$wn.pid"
+      wg=$(echo "$c" | grep -o -- '--group [^ ]*' | cut -d' ' -f2); gn[${wg:-default}]=$(( ${gn[${wg:-default}]:-0} + 1 ))
     done
     say "    $n gowe-worker processes running (expected 25); pids recorded under $PIDS"; (( n == 25 )) || fail=1
+    # The total alone is not enough: 25 is satisfiable with ZERO workers in a
+    # group if four of something else came up, and a labelled submission never
+    # falls back to another group — hackathon ingests would queue PENDING
+    # forever rather than fail fast (#563). Assert the per-group shape too.
+    for spec in "ragstack 4" "ragstack-hackathon 4" "ragstack-cpu 1"; do
+      set -- $spec
+      if (( ${gn[$1]:-0} == $2 )); then say "    ✓ group $1: ${gn[$1]:-0} worker(s)"
+      else say "    ✗ group $1: ${gn[$1]:-0} worker(s), expected $2 — that group's tenants will queue, not fail"; fail=1; fi
+    done
   fi
   if (( DRY )); then echo "  [dry-run] $W/start-monitoring.sh"; else "$W/start-monitoring.sh" 2>&1 | sed 's/^/  /'; fi
   wait_http http://127.0.0.1:9090/-/ready 120 "prometheus :9090" || say "    (monitoring only)"

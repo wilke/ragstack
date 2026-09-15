@@ -193,7 +193,14 @@ def sha(path):
 configs = {p: sha(p) for p in sorted(glob.glob("/rag/data/tenants/*/config/tenant.env")) +
            ["/rag/config/proxy/nginx.conf", "/rag/config/proxy/conf.d/00-maps.conf", "/rag/config/proxy/conf.d/10-gateway.conf",
             "/rag/config/proxy/conf.d/20-gowe.conf", "/rag/config/unified.models.json", "/scout/wf/gowe/worker-env.env",
-            "/scout/wf/gowe/ragstack-worker-env.env"]}
+            # One entry per GoWe worker GROUP: each group's env file names the collection
+            # registry its workers resolve against, and a group pointed at the wrong
+            # tenant's registry fails every ingest (#563). The secrets file is hashed
+            # too — its content is never printed, only the digest, and a rotated DSN
+            # that did not reach the workers is otherwise invisible until an ingest dies.
+            "/scout/wf/gowe/ragstack-worker-env.env",
+            "/scout/wf/gowe/ragstack-hackathon-worker-env.env",
+            "/scout/wf/gowe/ragstack-hackathon-worker-secrets.env"]}
 images = {os.path.basename(p): os.path.getsize(p) for p in sorted(glob.glob("/rag/apptainer/images/*.sif"))}
 system = {"hostname": sh("hostname").strip(), "kernel": sh("uname -r").strip(),
           "vm.max_map_count": sh("sysctl -n vm.max_map_count").strip(),
