@@ -219,15 +219,23 @@ in a workflow input.** `--env-file` values are logged in clear at INFO;
 worker runs, and redacts it from captured task output. And a workflow input is
 worse than either: `GET /api/v1/submissions/{id}` returns `submitted_inputs`, an
 **immutable** snapshot that the UI renders and the engine stores in plaintext —
-a DSN placed there could never be withdrawn. GoWe has no named-secret reference
-yet (GoWe#260); when it lands, the env-suffix convention is swapped for a
-`secret://` reference and nothing else changes. `COLLECTION_STORE_BACKEND_<NAME>`
+a DSN placed there could never be withdrawn. GoWe has no named-secret mechanism
+yet — that is GoWe#260, which **proposes** submission-time secrets (a `secrets`
+map on `POST /submissions`, delivered only to tools that opt in). When it lands
+the per-group secret files go away and the tool reads an *unsuffixed*
+`COLLECTION_STORE_DSN`; nothing else changes. `COLLECTION_STORE_BACKEND_<NAME>`
 (non-secret) may go in `--env-file`; only the DSN must not.
 
 The corollary for a worker group's blast radius is stated in
 [docs/adr/0009-registry-selection-for-bulk-workers.md](../docs/adr/0009-registry-selection-for-bulk-workers.md):
-one shared group means every container it runs carries every tenant's DSN, which
-is safe only where the tenants are same-org and the image is trusted.
+one shared group means every container it runs carries every tenant's DSN. Note
+that splitting into per-tenant groups does **not** contain that — a group is not
+a confidentiality boundary. `CanJoinGroup` is enforced only where a *worker*
+registers; nothing authorizes a *submitter* to a group, so any authenticated GoWe
+user can target any group with any image. Nor do the tenant APIs contain it: they
+submit *as the caller*, so their users already hold a credential GoWe accepts
+directly, and GoWe's submission API is publicly proxied. GoWe#261 and #262 are
+the controls; until they land the group is placement, not security.
 
 ### Step 2 tools (bulk ingest)
 
