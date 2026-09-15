@@ -455,8 +455,22 @@ func planCreateSteps(p *planner, spec createSpec) error {
 				return "", err
 			}
 			if spec.postgresLocal() {
-				if err := sec.Set("TENANT_PG_PASSWORD", pgPassword); err != nil {
-					return "", err
+				// TWO names, one value. TENANT_PG_PASSWORD is the name
+				// new-tenant.sh and the runbooks use and the one the registry's
+				// secret ref points at; APPTAINERENV_POSTGRES_PASSWORD is how
+				// the postgres unit gets it INTO the container without putting
+				// it on a command line. The unit loads this file with
+				// EnvironmentFile and apptainer forwards any APPTAINERENV_<KEY>
+				// from its environment into the container as <KEY>, so the
+				// entrypoint sees POSTGRES_PASSWORD while /proc/<pid>/cmdline —
+				// which is 0444 to every account on this host — shows nothing.
+				// Before this, the unit carried `--env
+				// POSTGRES_PASSWORD=${TENANT_PG_PASSWORD}` and systemd expanded
+				// it straight onto the argv.
+				for _, key := range []string{"TENANT_PG_PASSWORD", "APPTAINERENV_POSTGRES_PASSWORD"} {
+					if err := sec.Set(key, pgPassword); err != nil {
+						return "", err
+					}
 				}
 			}
 			body := sec.Render()

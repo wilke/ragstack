@@ -255,11 +255,27 @@ StandardError=append:%[15]s/es-%[16]s.log
 	// that runs a server the ctl owns: `sqlite` runs none and `external` is a
 	// database inside somebody else's.
 	//
-	// The password is NOT in this file. /rag/config/ctl/units is 0755, so a
-	// literal there is a credential every account on a 1869-member host can
-	// read; instead the unit reads the tenant's secrets.env (0640) through
-	// EnvironmentFile and hands the value to apptainer as ${TENANT_PG_PASSWORD},
-	// which systemd expands at start time from that file and nowhere else.
+	// The password is NOT in this file, and it is NOT ON THE ARGV EITHER.
+	//
+	// /rag/config/ctl/units is 0755, so a literal in the unit is a credential
+	// every account on a 1869-member host can read — which is why the unit
+	// reads the tenant's secrets.env (0640) through EnvironmentFile. But
+	// `--env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD}` in ExecStart was the
+	// same leak one step later: systemd expands ${…} into the ARGV, and
+	// /proc/<pid>/cmdline is 0444 — every account on the host could read the
+	// running postgres unit's password out of it with `ps` or `cat`.
+	//
+	// So the flag is gone and nothing replaces it on the command line.
+	// secrets.env carries the value a SECOND time under the name
+	// APPTAINERENV_POSTGRES_PASSWORD (ops/create.go writes both), systemd's
+	// EnvironmentFile puts that into the service's environment, and apptainer
+	// forwards any APPTAINERENV_<KEY> from its own environment into the
+	// container as <KEY> — so the postgres entrypoint still sees
+	// POSTGRES_PASSWORD, and the value never appears in a world-readable file
+	// or a world-readable argv. (`Environment=` would not do: those lines live
+	// in the unit FILE, which is the 0755 directory again, and systemd does
+	// not expand a variable there in any case.)
+	//
 	// It matters only on the FIRST start — the postgres entrypoint ignores
 	// POSTGRES_* once PGDATA is initialised — but a first start is exactly when
 	// the role is created, so getting it from the wrong place would create a
@@ -294,7 +310,7 @@ UMask=0002
 Environment=APPTAINER_CACHEDIR=%[6]s/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=%[6]s/apptainer/config
 EnvironmentFile=%[7]s
-ExecStart=%[8]s run --no-home --bind %[5]s:/var/lib/postgresql/data --bind %[9]s:/var/run/postgresql --env POSTGRES_USER=%[1]s --env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD} --env POSTGRES_DB=%[1]s --env PGDATA=/var/lib/postgresql/data/pgdata %[10]s postgres -c port=%[2]d -c listen_addresses=127.0.0.1
+ExecStart=%[8]s run --no-home --bind %[5]s:/var/lib/postgresql/data --bind %[9]s:/var/run/postgresql --env POSTGRES_USER=%[1]s --env POSTGRES_DB=%[1]s --env PGDATA=/var/lib/postgresql/data/pgdata %[10]s postgres -c port=%[2]d -c listen_addresses=127.0.0.1
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=90

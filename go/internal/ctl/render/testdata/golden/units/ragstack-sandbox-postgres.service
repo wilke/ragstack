@@ -12,7 +12,7 @@ UMask=0002
 Environment=APPTAINER_CACHEDIR=/rag/data/ctl/apptainer/cache
 Environment=APPTAINER_CONFIGDIR=/rag/data/ctl/apptainer/config
 EnvironmentFile=/rag/data/tenants/sandbox/config/secrets.env
-ExecStart=/usr/bin/apptainer run --no-home --bind /rag/data/tenants/sandbox/postgres/data:/var/lib/postgresql/data --bind /rag/data/tenants/sandbox/postgres/run:/var/run/postgresql --env POSTGRES_USER=sandbox --env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD} --env POSTGRES_DB=sandbox --env PGDATA=/var/lib/postgresql/data/pgdata /rag/apptainer/images/postgres.sif postgres -c port=24085 -c listen_addresses=127.0.0.1
+ExecStart=/usr/bin/apptainer run --no-home --bind /rag/data/tenants/sandbox/postgres/data:/var/lib/postgresql/data --bind /rag/data/tenants/sandbox/postgres/run:/var/run/postgresql --env POSTGRES_USER=sandbox --env POSTGRES_DB=sandbox --env PGDATA=/var/lib/postgresql/data/pgdata /rag/apptainer/images/postgres.sif postgres -c port=24085 -c listen_addresses=127.0.0.1
 LimitNOFILE=1048576
 KillMode=mixed
 TimeoutStopSec=90

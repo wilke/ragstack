@@ -862,6 +862,43 @@ func postgresLocal(t *registry.Tenant) {
 	}
 }
 
+// The tenant's postgres password appears NOWHERE in the unit: not as a
+// literal, and — the bug this test exists for — not as a ${…} reference in
+// ExecStart either.
+//
+// systemd expands ${…} in ExecStart into the process's ARGV, and
+// /proc/<pid>/cmdline is 0444: every account on a host whose only group has
+// 1869 members could read the running instance's password out of it with `ps`.
+// The value now reaches the container through the EnvironmentFile alone, which
+// carries it as APPTAINERENV_POSTGRES_PASSWORD (ops/create.go writes it there)
+// for apptainer to forward in as POSTGRES_PASSWORD.
+func TestUnitsPostgresLocalKeepsThePasswordOffTheArgv(t *testing.T) {
+	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
+	postgresLocal(tn)
+	units, err := Units(tn, UnitConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pg := string(units["ragstack-sandbox-postgres.service"])
+	for _, forbidden := range []string{"POSTGRES_PASSWORD", "TENANT_PG_PASSWORD", "PGPASSWORD"} {
+		if strings.Contains(pg, forbidden) {
+			t.Errorf("the postgres unit names %s; the password must not be in the unit file or on its argv:\n%s",
+				forbidden, pg)
+		}
+	}
+	// What replaces it: the unit still reads the tenant's 0640 secrets.env,
+	// which is where the value lives.
+	if !strings.Contains(pg, "EnvironmentFile="+string(tn.DataDir)+"/config/secrets.env") {
+		t.Errorf("the postgres unit does not load the tenant's secrets.env:\n%s", pg)
+	}
+	// No OTHER unit picked it up either.
+	for name, body := range units {
+		if strings.Contains(string(body), "POSTGRES_PASSWORD") {
+			t.Errorf("%s carries POSTGRES_PASSWORD:\n%s", name, body)
+		}
+	}
+}
+
 func TestUnitsPostgresLocal(t *testing.T) {
 	tn := managedTenant("sandbox", 4, "enabled", registry.UIModeStatic)
 	postgresLocal(tn)
@@ -875,11 +912,11 @@ func TestUnitsPostgresLocal(t *testing.T) {
 	}
 	golden(t, "units/ragstack-sandbox-postgres.service", pg)
 	// The plan's must-haves, asserted independently of the golden. The password
-	// is a REFERENCE expanded from secrets.env at start time, never a literal:
-	// /rag/config/ctl/units is 0755 on a host whose only group has 1869 members.
+	// does not appear here AT ALL — see TestUnitsPostgresLocalKeepsThePasswordOffTheArgv;
+	// the unit gets it through EnvironmentFile as APPTAINERENV_POSTGRES_PASSWORD,
+	// which apptainer forwards into the container.
 	for _, w := range []string{
 		"EnvironmentFile=/rag/data/tenants/sandbox/config/secrets.env",
-		"--env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD}",
 		"--bind /rag/data/tenants/sandbox/postgres/data:/var/lib/postgresql/data",
 		"--bind /rag/data/tenants/sandbox/postgres/run:/var/run/postgresql",
 		"--env PGDATA=/var/lib/postgresql/data/pgdata",

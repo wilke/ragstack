@@ -882,21 +882,18 @@ func TestPlanCreateWithPostgresLocalAddsTheUnitAndTheSecrets(t *testing.T) {
 	if unit == "" {
 		t.Fatalf("no postgres unit in:\n  %s", strings.Join(titles(p), "\n  "))
 	}
-	if strings.Contains(unit, "TENANT_PG_PASSWORD=") {
-		t.Errorf("the unit assigns the password rather than referencing it:\n%s", unit)
+	if strings.Contains(unit, "POSTGRES_PASSWORD") || strings.Contains(unit, "TENANT_PG_PASSWORD") {
+		t.Errorf("the unit names the password; it must not appear in the unit file or on its argv at all:\n%s", unit)
 	}
-	// The password reaches the unit through secrets.env, never as a literal:
-	// /rag/config/ctl/units is world-readable.
-	//
-	// The PREVIEW shows `POSTGRES_PASSWORD=<REDACTED>` rather than the
-	// `${TENANT_PG_PASSWORD}` the unit really carries: the plan redactor is
-	// key-shaped and cannot tell a systemd variable REFERENCE from a value. The
-	// rendered text is asserted where it is produced (render/render_test.go);
-	// here the assertion is that the unit reads its password from secrets.env
-	// and that no 64-hex literal survives into an audit row.
+	// The password reaches the unit through secrets.env alone, and never
+	// through the command line: systemd expands ${…} in ExecStart into the
+	// argv, and /proc/<pid>/cmdline is 0444 to every account on this host. The
+	// unit therefore names no password at all (asserted just above); what it
+	// has is the EnvironmentFile, which carries
+	// APPTAINERENV_POSTGRES_PASSWORD for apptainer to forward into the
+	// container.
 	for _, want := range []string{
 		"EnvironmentFile=/rag/data/tenants/sandbox/config/secrets.env",
-		"--env POSTGRES_PASSWORD=",
 		"-c port=24085 -c listen_addresses=127.0.0.1",
 		"TimeoutStopSec=90",
 	} {

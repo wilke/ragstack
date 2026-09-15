@@ -253,6 +253,14 @@ func TestBackupRecordsEverySnapshotNameBeforeItAsksForIt(t *testing.T) {
 	if names := fake.FakeQdrant().Snapshots["docs"]; len(names) != 1 {
 		t.Errorf("qdrant snapshot ledger = %v", fake.FakeQdrant().Snapshots)
 	}
+	// The ES snapshot covers EXACTLY the inventory this part recorded. The
+	// driver used to snapshot `*`, which is not the same set: Indices() leaves
+	// out the cluster's own dot-prefixed system indices, so the bundle held
+	// indices its manifest never listed.
+	if got := fake.FakeElasticsearch().SnapshotIndices; len(got) != 1 ||
+		!strings.HasSuffix(got[0], " dev-chunks") {
+		t.Errorf("es snapshots = %v, want one over the inventory (dev-chunks)", got)
+	}
 	// The bundle landed under the backups root with the run-time stamp.
 	var manifest string
 	for _, path := range fake.FakeFiles().Paths() {
@@ -741,10 +749,27 @@ func TestCreateWithPostgresLocalStartsAndRecordsTheInstance(t *testing.T) {
 		t.Errorf("stores.postgres = %+v", pg)
 	}
 	secrets := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/secrets.env"))
-	for _, want := range []string{"TENANT_PG_PASSWORD=", "USER_STORE_DSN=", "POSTGRES_DSN=", "COLLECTION_STORE_DSN="} {
+	// TWO names for ONE password. TENANT_PG_PASSWORD is what new-tenant.sh, the
+	// runbooks and the registry's secret ref use;
+	// APPTAINERENV_POSTGRES_PASSWORD is what gets the value INTO the container
+	// without putting it on a command line — the unit loads this file with
+	// EnvironmentFile and apptainer forwards APPTAINERENV_<KEY> as <KEY>. The
+	// unit used to carry `--env POSTGRES_PASSWORD=${TENANT_PG_PASSWORD}`, which
+	// systemd expanded straight into a /proc/<pid>/cmdline every account on the
+	// host can read.
+	for _, want := range []string{
+		"TENANT_PG_PASSWORD=", "APPTAINERENV_POSTGRES_PASSWORD=",
+		"USER_STORE_DSN=", "POSTGRES_DSN=", "COLLECTION_STORE_DSN=",
+	} {
 		if !strings.Contains(secrets, want) {
 			t.Errorf("secrets.env lacks %s:\n%s", want, secrets)
 		}
+	}
+	// Same value under both names, or the role the entrypoint creates has a
+	// password nothing else knows.
+	pgPass, apptainerPass := envValue(secrets, "TENANT_PG_PASSWORD"), envValue(secrets, "APPTAINERENV_POSTGRES_PASSWORD")
+	if pgPass == "" || pgPass != apptainerPass {
+		t.Errorf("TENANT_PG_PASSWORD=%q but APPTAINERENV_POSTGRES_PASSWORD=%q; they are one secret", pgPass, apptainerPass)
 	}
 	env := string(fake.FakeFiles().Content("/rag/data/tenants/sandbox/config/tenant.env"))
 	if strings.Contains(env, "_DSN") {
@@ -912,4 +937,14 @@ func TestSaveFleetInsideAJobDoesNotDeadlockAgainstTheEngineLocks(t *testing.T) {
 	if got, err := registry.LoadNoRepair(regPath); err != nil || got.Generation != 2 {
 		t.Fatalf("after the save: generation %v (%v), want 2", got, err)
 	}
+}
+
+// envValue reads one KEY=VALUE line out of a rendered env file.
+func envValue(body, key string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
