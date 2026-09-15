@@ -12,11 +12,13 @@ from ragstack.ingestion.enrich import (
     EMPTY,
     EnrichedDoc,
     PublisherProfile,
+    coerce_year,
     enrich,
     index_metadata,
 )
 from ragstack.models import Document
 from ragstack.protocols import DocumentLoader
+from ragstack.stores.filters import KNOWN_INT_FIELDS
 
 # Namespace for deriving *deterministic* document IDs. Chunk IDs — and therefore
 # the Qdrant point IDs (uuid5 of the chunk ID, see stores/qdrant.py) — are derived
@@ -214,8 +216,8 @@ def _doi_from_pdf_metadata(doc: object) -> str:
 _PASSTHROUGH_SCALARS = (str, int, float, bool)
 
 
-def _passthrough_value(value: object) -> Any | None:
-    """Return ``value`` if it is safe to stamp on every chunk, else ``None``.
+def _passthrough_value(key: str, value: object) -> Any | None:
+    """Return the value to stamp on every chunk for ``key``, or ``None`` to drop it.
 
     ``None`` means "drop this key", which is how the empty-value rule of
     :func:`~ragstack.ingestion.enrich.index_metadata` is kept consistent for
@@ -224,7 +226,20 @@ def _passthrough_value(value: object) -> Any | None:
     ``null``. Blank-but-not-empty strings count as empty here too, so a
     whitespace-only raw value can never take the slot of an enriched field that
     ``index_metadata`` dropped for being empty.
+
+    A key the filter grammar declares an INTEGER field
+    (``stores.filters.KNOWN_INT_FIELDS`` — today ``year``) is coerced to ``int``
+    here, and dropped when it cannot be. Passing the raw value through was a
+    *silent, within-collection* type split: ``index_metadata`` drops ``year``
+    when the enricher could not derive one, and the passthrough then filled the
+    empty slot with the corpus's raw string — so the same collection could hold
+    ``year: 2019`` on one chunk and ``year: "2019"`` on the next, with a correct
+    ``{"year": 2019}`` filter matching only the first. The producer must write
+    the type the filter demands; that rule lives in exactly one table, and this
+    is where the loader consults it.
     """
+    if key in KNOWN_INT_FIELDS:
+        return coerce_year(value) if key == "year" else _as_int(value)
     if isinstance(value, _PASSTHROUGH_SCALARS):
         if isinstance(value, str) and not value.strip():
             return None
@@ -233,6 +248,27 @@ def _passthrough_value(value: object) -> Any | None:
         isinstance(v, _PASSTHROUGH_SCALARS) for v in value
     ):
         return value
+    return None
+
+
+def _as_int(value: object) -> int | None:
+    """``value`` as an ``int``, or ``None`` (drop) if it is not one.
+
+    The generic arm of the declared-int rule above, for the fields
+    ``KNOWN_INT_FIELDS`` may grow to hold. ``year`` has its own coercion
+    (plausibility bounds); everything else is a plain integer. ``bool`` is not an
+    integer field value even though Python says ``isinstance(True, int)``."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
     return None
 
 
@@ -284,6 +320,16 @@ class JsonlLoader:
         # Qdrant point id is uuid5 of tenant+chunk_id). Default off, so the
         # existing ASM/PDF path is byte-for-byte unchanged.
         self._passthrough = frozenset(passthrough_keys or ())
+        # Every record-metadata key this loader discarded, accumulated across
+        # ``load()`` calls. NOT a behaviour change — the keys were always
+        # dropped; what was missing is any way to find out. A silent drop is how
+        # the 47.6M-chunk ``open-access`` collection ended up with pmid/pmcid/
+        # journal/licence/… missing wherever the shard script forgot the
+        # allow-list, and a caller that cannot see the drop cannot notice the
+        # omission until a filter returns a plausible-looking wrong answer
+        # months later. Operator tools report this after a shard; see
+        # scripts/embed_shard.py.
+        self.dropped_metadata_keys: set[str] = set()
 
     def load(self, source: str) -> list[Document]:
         path = Path(source)
@@ -318,10 +364,13 @@ class JsonlLoader:
         added (see :func:`_passthrough_value`); an absent or empty key is simply
         omitted rather than stamped as ``""``/``null``, matching
         :func:`~ragstack.ingestion.enrich.index_metadata`.
+
+        Every key that does NOT make it onto the document is recorded in
+        :attr:`dropped_metadata_keys` so the drop is observable instead of
+        silent — the allow-list is a per-corpus argument, and forgetting an entry
+        is otherwise invisible until a filter quietly under-returns.
         """
         meta = index_metadata(enriched)
-        if not self._passthrough:
-            return meta
         # No isinstance guard on ``raw``: ``enrich()`` ran first on this same
         # record and already did ``metadata.get(...)``, so a non-dict ``metadata``
         # raised before we got here (see the note in the module tests).
@@ -331,10 +380,16 @@ class JsonlLoader:
         # deterministic — rather than a frozenset's arbitrary iteration order.
         for key, value in raw.items():
             if key not in self._passthrough or key in meta:
+                # ``key in meta`` is the enriched field winning a collision, not
+                # a loss: the value reached the document under the same name.
+                if key not in meta:
+                    self.dropped_metadata_keys.add(key)
                 continue
-            safe = _passthrough_value(value)
-            if safe is not None:
-                extra[key] = safe
+            safe = _passthrough_value(key, value)
+            if safe is None:
+                self.dropped_metadata_keys.add(key)
+                continue
+            extra[key] = safe
         return {**extra, **meta}
 
     def _document(self, record: dict) -> Document | None:

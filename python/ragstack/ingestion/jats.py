@@ -48,6 +48,15 @@ turns them into ``list[str]``. A consumer that bypasses enrich must convert them
 itself or the same key ends up ``str`` here and ``list[str]`` elsewhere, and
 cross-collection filters silently match only one side.
 
+TYPES ARE PART OF THAT CONTRACT. ``year`` is an ``int`` (or absent), ``n_tables``
+and ``n_figures`` are ``int``, everything else is a ``str``. ``year`` used to be
+the raw ``<year>`` text, which is unreachable by a correct filter: the API
+declares ``year`` an integer field and matches values BY TYPE, never coercing
+(``stores/filters.py``, #471). The live proof is the ``lucid`` tenant's
+collection, whose string years make ``{"year": 2021}`` match 129,248 chunks on
+the Elasticsearch leg and **0** on the Qdrant leg — the same request, two
+answers, no error.
+
 Stdlib ``xml.etree.ElementTree`` only — the CWL worker image is CPU-only and
 carries no lxml guarantee.
 """
@@ -59,6 +68,8 @@ import unicodedata
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from xml.etree import ElementTree as ET
+
+from ragstack.ingestion.enrich import coerce_year
 
 XLINK = "{http://www.w3.org/1999/xlink}href"
 
@@ -422,7 +433,13 @@ def collect_floats(root) -> tuple[list, list]:
 
 
 def front_meta(root) -> dict:
-    """Bibliographic metadata from ``<front>`` (ids, authors, journal, licence)."""
+    """Bibliographic metadata from ``<front>`` (ids, authors, journal, licence).
+
+    ``year`` is an ``int`` (or ``None`` when the article declares no parseable,
+    plausible one) — see :data:`JATS_METADATA_KEYS`. Every other value here is a
+    string on purpose; ``pmid``/``pmcid`` in particular stay strings, because
+    they are identifiers and nothing range-filters them.
+    """
     ids = {e.get("pub-id-type"): itext(e)
            for e in root.findall(".//article-meta//article-id")}
     authors = []
@@ -433,10 +450,17 @@ def front_meta(root) -> dict:
         nm = " ".join(x for x in (itext(gn), itext(sn)) if x)
         if nm:
             authors.append(nm)
-    year = ""
+    # INT, not the raw string. ``<pub-date>/<year>`` is text in the XML, and
+    # emitting it verbatim produced documents that no correct filter can reach:
+    # ``year`` is an integer field in the filter grammar (stores/filters.py,
+    # #471), matched by type and never coerced. The first pub-date that yields a
+    # PLAUSIBLE year wins — an unparseable or out-of-range one is skipped rather
+    # than taken, so a malformed <year>2o19</year> falls through to the next
+    # pub-date instead of poisoning the record.
+    year = None
     for d in root.findall(".//article-meta//pub-date"):
-        y = itext(d.find("year"))
-        if y:
+        y = coerce_year(itext(d.find("year")))
+        if y is not None:
             year = y
             break
     lic = root.find(".//permissions/license")

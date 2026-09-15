@@ -18,6 +18,7 @@ operator script (which also emits the full catalog, citations included).
 from __future__ import annotations
 
 import re
+from datetime import date as _date
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -218,13 +219,76 @@ def _trim_text_doi(doi: str) -> str:
     return doi
 
 
-def derive_year(path: str, doi: str, text: str) -> int | None:
-    """Best-effort publication year from the issue dir / DOI / leading text.
+#: Oldest year a scholarly record may plausibly claim. PMC carries articles back
+#: to the early 1800s (*Med Chir Trans*, 1809), so the floor sits well below that
+#: rather than being tuned to the current corpus.
+MIN_PLAUSIBLE_YEAR = 1500
+
+
+def plausible_year_range() -> tuple[int, int]:
+    """``(min, max)`` a publication year may fall in — ``max`` is next year.
+
+    Computed per call rather than frozen at import so a long-lived process does
+    not start refusing January's ahead-of-print records. The upper bound exists
+    because parse errors produce *futures*, not pasts: the deployed
+    ``open-access`` collection carries 8,408 chunks dated 2047–2049
+    (docs/plans/date-filtering.md), which actively corrupt any "recent" query."""
+    return MIN_PLAUSIBLE_YEAR, _date.today().year + 1
+
+
+def coerce_year(value: Any) -> int | None:
+    """The one place a raw ``year`` becomes the ``int`` the filter grammar demands.
+
+    ``stores/filters.py`` declares ``year`` an integer field and matches filter
+    values **by type, never coercing** (#471) — so a producer that stores
+    ``"2019"`` builds documents that no correct filter can ever reach. Measured
+    live: the ``lucid`` tenant's collection stores ``year`` as a string, and
+    ``{"year": 2021}`` — the only form the API accepts — matches 129,248 chunks
+    on the Elasticsearch leg (ES coerces at query time) and **0** on the Qdrant
+    leg. Routing every producer's year through here is what stops that recurring.
+
+    Accepts an ``int`` or a string containing a 4-digit year (JATS ``<year>`` is
+    occasionally ``"2019 Mar"`` or ``"c2019"``); returns ``None`` — meaning
+    *omit the key*, never store a null or an empty string — for anything else,
+    including a year outside :func:`plausible_year_range`. ``bool`` is refused
+    explicitly: it is an ``int`` in Python but it is not a year."""
+    if value is None or isinstance(value, bool):
+        return None
+    lo, hi = plausible_year_range()
+    if isinstance(value, int):
+        return value if lo <= value <= hi else None
+    if isinstance(value, float):
+        # A JSON float that is exactly an integer year (2019.0) is a year; a
+        # fractional one is not a year at all.
+        return coerce_year(int(value)) if value.is_integer() else None
+    if isinstance(value, str):
+        m = re.search(r"\d{4}", value)
+        return coerce_year(int(m.group(0))) if m else None
+    return None
+
+
+def derive_year(path: str, doi: str, text: str, meta_year: Any = None) -> int | None:
+    """Best-effort publication year — the record's own declared year first, then
+    the issue dir / DOI / leading text.
+
+    ``meta_year`` is the year the *source format declared* (JATS
+    ``<article-meta>/<pub-date>/<year>``), and it wins: the same
+    metadata-beats-inference precedence :func:`derive_doi` already applies. It
+    was previously not consulted at all, which is the whole of the
+    ``open-access`` year gap — that JATS corpus carries a parseable ``pub-date``
+    year on 100% of sampled files, yet only **14.8%** of the collection's 47.6M
+    chunks have a ``year``, because the only source in play was the regex scan
+    below and a JATS record's ``path`` is a bare ``PMC123``.
 
     Path and DOI are structured, trustworthy sources and are scanned for any
     in-range year. Free text is not: a bare 4-digit number there is as likely to
     be a measurement or count as a year, so the text fallback only fires on a
-    year next to a publication-context word (copyright/received/accepted/…)."""
+    year next to a publication-context word (copyright/received/accepted/…).
+
+    The result is an ``int`` or ``None``, never a string (:func:`coerce_year`)."""
+    declared = coerce_year(meta_year)
+    if declared is not None:
+        return declared
     for hay in (path, doi):
         m = _YEAR.search(hay)
         if m:
@@ -334,7 +398,7 @@ def enrich(
         title=(meta.get("title") or "").strip(),
         authors=parse_authors(meta.get("authors", "")),
         keywords=split_keywords(meta.get("keywords", "")),
-        year=derive_year(path, doi, text),
+        year=derive_year(path, doi, text, meta.get("year")),
         abstract=(meta.get("abstract") or "").strip(),
         n_citations=len(citations),
         citations=citations,

@@ -200,7 +200,10 @@ def test_metadata_from_xml_and_manifest(tmp_path: Path):
     assert m["keywords"] == "synthetic; jats"
     assert m["journal"] == "J Synthetic Res"
     assert m["publisher"] == "Test Publisher"
-    assert m["year"] == "2024"
+    # INT, not "2024": `year` is an integer field in the filter grammar
+    # (stores/filters.py, #471) and a string here is unreachable by any
+    # legal filter. This assertion used to pin the defect.
+    assert m["year"] == 2024
     assert m["licence"].startswith("https://creativecommons.org/licenses/by/4.0/")
     assert m["sha256"] == "deadbeef"
     assert m["source_url"] == "https://example.org/PMC4.xml"
