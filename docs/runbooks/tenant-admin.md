@@ -24,6 +24,11 @@ Code references are `file:line` against the tree at the tag named above.
   `ops/`).
 - A **bare filename** — `collections.py:1569` — means the file the surrounding
   section is about.
+- **Documentation is cited too**, and differently: a bare `ctl-quickstart.md:143`
+  is a sibling in `docs/runbooks/`, while anything else is repo-root
+  (`CLAUDE.md:102`, `docs/runbooks/ctl-deploy.md:1135`). Prose renumbers far
+  faster than code, so read a doc line number as a hint and the surrounding
+  heading as the real anchor.
 
 That last form is the one to watch. Several of these basenames exist more than
 once in the tree (`collections.py` and `documents.py` both do), so a bare
