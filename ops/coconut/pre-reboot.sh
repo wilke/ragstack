@@ -5,13 +5,21 @@
 #
 # Order (reverse of restore.sh, consumers before providers):
 #   1. labelers      s0c_supervise.sh stop scout|qwen  (checkpointed; resume after)
-#   2. uis           the Vite dev servers on :5210 :5211 :5212 :8090
-#   3. apis          the four tenant APIs, by their pid files (cwd verified)
+#   2. uis           the Vite dev servers on :5210 :5211 :5212 :8090 (hackathon's UI is a
+#                    static build served by nginx — nothing of ours to stop)
+#   3. apis          the five tenant APIs, by their pid files (cwd verified)
 #   4. gowe          workers, then the server, then prometheus/grafana — by pid, cwd verified
 #   5. sidecars      apptainer instance stop crossencoder, embedding
 #   6. sfr           the six vLLM endpoints, by the pid that owns each port (cmdline verified)
-#   7. stores        apptainer instance stop, dependents first; Qdrant/ES/Neo4j/Postgres get a
-#                    graceful SIGTERM so their WALs flush before the disk goes away
+#   7. stores        apptainer instance stop, dependents first (hackathon's three dedicated
+#                    stores lead, then the dev/lucid ones, then the shared prod stores);
+#                    Qdrant/ES/Neo4j/Postgres get a graceful SIGTERM so their WALs flush
+#                    before the disk goes away
+#
+# TENANT LISTS: `ragstack-ctl tenant list` (the control plane's registry) is the source of
+# truth for which tenants exist; the literal lists here are the interim until PR-E teaches
+# these scripts to read it, and must be kept in step with restore.sh's by hand. hackathon
+# was added 2026-09-15.
 #
 # Never by process-name pattern (MEMORY: #402 took the fleet down that way). Every kill here
 # resolves a pid from a pid file, a listening port or an apptainer instance name, then checks
@@ -74,7 +82,8 @@ for spec in "demo 5210 /rag/repos/tenants/demo" "lucid-next 5211 /rag/repos/tena
 done
 
 say "== 3. tenant APIs (pid files, cwd verified)"
-for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060"; do
+# hackathon added 2026-09-15 — see TENANT LISTS at the top; mirrors restore.sh's api loops.
+for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
   set -- $spec; name=$1 tdir=/rag/data/tenants/$2 port=$3; pf=$tdir/api-$name.pid
   p=$(cat "$pf" 2>/dev/null || true)
   [[ -n $p ]] && kill -0 "$p" 2>/dev/null || p=$(port_pid "$port")
@@ -107,7 +116,12 @@ say "== 6. SFR vLLM fleet"
 for port in 9001 9002 9003 9004 9005 9006; do stop_port "$port" "sfr" "vllm serve Salesforce/SFR-Embedding-Mistral" /rag/repos/ragstack/python; done
 
 say "== 7. stores (dependents first, then the shared prod stores)"
-for i in qdrant-dev elasticsearch-dev neo4j-dev elasticsearch-lucid qdrant2 elasticsearch qdrant neo4j postgres redis; do stop_instance "$i"; done
+# hackathon's three dedicated stores lead the list (added 2026-09-15): nothing else depends
+# on them, and the "no apptainer instances left" check below is only truthful once they are
+# stopped too. stop_instance rather than the tenant's own bin/down.sh — down.sh takes
+# apptainer's default 10 s grace, which lands a SIGKILL inside an ES/Postgres flush; the
+# three names are exactly the ones down.sh would stop.
+for i in qdrant-hackathon elasticsearch-hackathon postgres-hackathon qdrant-dev elasticsearch-dev neo4j-dev elasticsearch-lucid qdrant2 elasticsearch qdrant neo4j postgres redis; do stop_instance "$i"; done
 if (( ! DRY )); then
   sleep 5; left=$(apptainer instance list 2>/dev/null | awk 'NR>1{print $1}' | tr '\n' ' ')
   [[ -z $left ]] && say "  ✓ no apptainer instances left" || say "  ✗ still listed: $left"

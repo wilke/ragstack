@@ -36,7 +36,7 @@ reboot the host comes up with the system daemons only. Every service below is re
 
 - **The production Neo4j has been dead since 2026-06-04.** Its apptainer instance is listed, but
   the JVM inside exited that day and nothing listens on 7474/7687. No tenant noticed because all
-  four have `GRAPH_BACKEND=disabled`. `restore.sh` starts it best-effort and does not fail on it.
+  five have `GRAPH_BACKEND=disabled` (hackathon included). `restore.sh` starts it best-effort and does not fail on it.
 - **The legacy APIs `:8000` (asm) and `:8010` (lucid) are already down**; the gateway answers 502
   for `/ragstack/asm/` and `/ragstack/lucid/`. Their UIs (`:5173`, `:5175`) are still up and point
   at dead backends (`:5175` at `:8020`, which is also gone). They are not restored by default.
@@ -47,6 +47,10 @@ reboot the host comes up with the system daemons only. Every service below is re
   6343/6344 has no script at all, and `neo4j-dev` was started by hand from a runbook. `restore.sh`
   reproduces the live parameters. The `demo` tenant's `up.sh` would start a `qdrant-demo` /
   `elasticsearch-demo` pair that is **not** in use (demo reads the production stores) — do not run it.
+  The `hackathon` tenant is the opposite case: its `up.sh` starts the three stores it really
+  uses (`qdrant-hackathon` :24081, `elasticsearch-hackathon` :24083, `postgres-hackathon`
+  :24085), so `restore.sh` calls it — the generated script owns the binds, the ES `-E` args
+  and the postgres password, none of which belong in a checked-in file.
 - **`/scout/wf/gowe/server.log` is 8 GB** with no rotation. Not a reboot problem; worth a logrotate.
 - **GoWe was redeployed to v0.19.0 on 2026-09-09 15:00 local** (base path, worker keys, Grafana
   link) — after the first baseline. Its own operator notes and idempotent launcher now exist

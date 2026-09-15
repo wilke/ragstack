@@ -7,11 +7,16 @@
 #   preflight   mounts, sysctl, images, envs, GPUs
 #   stores      qdrant :6333, qdrant2 :6343, qdrant-dev :24041,
 #               elasticsearch :9200, elasticsearch-lucid :24003, elasticsearch-dev :24043,
-#               neo4j-dev :24046/24047, postgres :5432, redis :6379, neo4j :7474 (best effort)
+#               neo4j-dev :24046/24047, postgres :5432, redis :6379, neo4j :7474 (best effort),
+#               and hackathon's own three: qdrant-hackathon :24081, elasticsearch-hackathon :24083,
+#               postgres-hackathon :24085 (via the tenant's generated bin/up.sh)
 #   sidecars    crossencoder :50052 (GPU 0), embedding :50053 (CPU)
 #   sfr         six SFR-Embedding-Mistral vLLM endpoints :9001–:9006 on GPUs 0–5
-#   apis        the four tenant APIs :24000 lucid-next, :24020 asm-next, :24040 dev, :24060 demo
+#   apis        the five tenant APIs :24000 lucid-next, :24020 asm-next, :24040 dev, :24060 demo,
+#               :24080 hackathon
 #   uis         the four base-aware Vite dev servers :5210 demo, :5211 lucid-next, :5212 asm-next, :8090 dev
+#               (hackathon is NOT here: its UI is a static build nginx serves from
+#                /rag/data/tenants/hackathon/ui/dist — there is no dev server to start)
 #   gowe        gowe-server :8091 + 21 workers via /scout/wf/gowe/start-gowe.sh, then prometheus :9090, grafana :3001
 #   labelers    the quarantined confirmation-run labelers (Scout/Qwen) via their supervisor
 #   proxy       nginx :9000 — only reports unless --proxy (see below)
@@ -20,6 +25,13 @@
 # Every step is idempotent: a port that already answers or an instance that is
 # already listed is skipped, so the script is safe to re-run and safe to run on
 # a live system (it will report "already running" for everything).
+#
+# TENANT LISTS: the control plane's registry (`ragstack-ctl tenant list`) is the
+# source of truth for which tenants exist and on which ports. The literal lists
+# below are the interim until PR-E teaches these scripts to read that registry —
+# until then a new tenant must be added here BY HAND, in every list (stores,
+# apis, and pre-reboot.sh's mirror image), or it silently does not come back
+# after a reboot. hackathon was added 2026-09-15 for exactly that reason.
 #
 # What it deliberately does NOT do:
 #   - stop anything (see pre-reboot.sh)
@@ -208,6 +220,22 @@ if want stores; then
     --env POSTGRES_USER=ragstack --env POSTGRES_PASSWORD=ragstack --env POSTGRES_DB=ragstack --env PGDATA=/var/lib/postgresql/data/pgdata --
   start_instance redis "$IMG/redis.sif" --bind "$DATA/redis/data:/data" --
 
+  # hackathon's three dedicated stores (tenant added to this script 2026-09-15).
+  # Called through the script apptainer/new-tenant.sh generated FOR the tenant rather
+  # than re-typed here: it owns the binds, the ES -E args and the postgres password
+  # (which must not appear in this file), and it is idempotent — instances already
+  # listed are skipped, so this stays safe on a live host like every other step.
+  # It starts all three itself, so start_instance never runs and STARTED[] would stay
+  # empty; mark the ones whose port is not answering YET so wait_if_started below does
+  # a full wait for those and a 10 s glance for the rest.
+  HACK=$DATA/tenants/hackathon
+  if [[ -x $HACK/bin/up.sh ]]; then
+    for spec in "qdrant-hackathon 24081" "elasticsearch-hackathon 24083" "postgres-hackathon 24085"; do
+      set -- $spec; port_up "$2" || STARTED[$1]=1
+    done
+    run "[hackathon stores] qdrant :24081/:24082, elasticsearch :24083/:24084, postgres :24085" "$HACK/bin/up.sh"
+  else say "  ✗ $HACK/bin/up.sh missing — hackathon's stores were NOT started"; fail=1; fi
+
   # neo4j (shared, prod): its instance existed on 2026-09-09 but the JVM inside had been dead
   # since 2026-06-04 (no :7474/:7687 listener). Every tenant has GRAPH_BACKEND=disabled, so this
   # is best effort: started, reported, never fatal.
@@ -226,6 +254,20 @@ if want stores; then
   if [[ -n ${STARTED[neo4j]:-} ]]; then wait_http http://127.0.0.1:7474/ 60 "neo4j :7474" || say "    (neo4j: was already dead before the reboot; not fatal)"; else say "    (neo4j: not started by this run — skipped; it has been dead since 2026-06-04)"; fi
   (( DRY )) || { apptainer exec "$IMG/redis.sif" redis-cli -p 6379 ping 2>/dev/null | grep -q PONG && say "    ✓ redis PONG" || say "    ✗ redis"; }
   (( DRY )) || { apptainer exec "$IMG/postgres.sif" pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && say "    ✓ postgres ready" || say "    ✗ postgres"; }
+  wait_if_started qdrant-hackathon http://127.0.0.1:24081/collections 120 "qdrant-hackathon :24081" || fail=1
+  wait_if_started elasticsearch-hackathon http://127.0.0.1:24083/ 180 "elasticsearch-hackathon :24083" || fail=1
+  # postgres-hackathon has no HTTP surface, so pg_isready stands in for wait_http (same
+  # probe as the shared :5432 check above). It IS fatal here, unlike :5432: hackathon's
+  # users, ACL grants, collections and jobs live in this database, so its API cannot
+  # serve without it. Bounded retry because a just-started postgres answers late.
+  if (( ! DRY )); then
+    pgi=0; pgok=0
+    while (( pgi < 60 )); do
+      apptainer exec "$IMG/postgres.sif" pg_isready -h 127.0.0.1 -p 24085 >/dev/null 2>&1 && { pgok=1; break; }
+      sleep 5; pgi=$((pgi+5))
+    done
+    (( pgok )) && say "    ✓ postgres-hackathon ready (:24085)" || { say "    ✗ postgres-hackathon (:24085) not ready within ${pgi}s"; fail=1; }
+  fi
 fi
 
 # ---------------------------------------------------------------- sidecars
@@ -259,21 +301,28 @@ fi
 # ---------------------------------------------------------------- apis
 if want apis; then
   say "== tenant APIs"
-  # name  data-dir  port
-  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060"; do
+  # name  data-dir  port          (hackathon added 2026-09-15 — see TENANT LISTS at the top)
+  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
     set -- $spec; name=$1 tdir=$DATA/tenants/$2 port=$3
     if port_up "$port"; then say "  [api $name :$port] already listening — skipping"; continue; fi
     code=/rag/repos/tenants/$name/python
     [[ -f $tdir/config/tenant.env ]] || { say "  [api $name] missing $tdir/config/tenant.env"; fail=1; continue; }
-    if (( DRY )); then echo "  [dry-run] api $name: (set -a; . $tdir/config/tenant.env; [ -f $tdir/config/secrets.env ] && . $tdir/config/secrets.env; set +a; cd $code; HF_HOME=/rag/cache PYTHONPATH=$code nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port $port >> $tdir/logs/api-$name.log) ; pid → $tdir/api-$name.pid"; continue; fi
-    say "  [api $name :$port] launching from $code"
+    # /v1/version must report the artifact this launch actually runs, the way the ctl unit
+    # does it (ADR-0007, go/internal/ctl/render/storeargv.go): the TENANT WORKTREE's tag and
+    # sha, not whatever checkout `ragstack` happens to import from. `-c safe.directory=*` so
+    # a worktree owned by another account still answers; empty on failure is tolerated —
+    # ragstack.version falls back, and an unset value must not stop a reboot recovery.
+    gtag=$(git -c safe.directory='*' -C "/rag/repos/tenants/$name" describe --tags --always 2>/dev/null || true)
+    gsha=$(git -c safe.directory='*' -C "/rag/repos/tenants/$name" rev-parse HEAD 2>/dev/null || true)
+    if (( DRY )); then echo "  [dry-run] api $name: (set -a; . $tdir/config/tenant.env; [ -f $tdir/config/secrets.env ] && . $tdir/config/secrets.env; set +a; cd $code; HF_HOME=/rag/cache PYTHONPATH=$code RAGSTACK_GIT_TAG=$gtag RAGSTACK_GIT_SHA=$gsha nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port $port >> $tdir/logs/api-$name.log) ; pid → $tdir/api-$name.pid"; continue; fi
+    say "  [api $name :$port] launching from $code (${gtag:-no tag} ${gsha:0:12})"
     STARTED[api-$name]=1
     ( set -a; . "$tdir/config/tenant.env"; [[ -f $tdir/config/secrets.env ]] && . "$tdir/config/secrets.env"; set +a
-      export HF_HOME=/rag/cache PYTHONPATH=$code
+      export HF_HOME=/rag/cache PYTHONPATH=$code RAGSTACK_GIT_TAG="$gtag" RAGSTACK_GIT_SHA="$gsha"
       cd "$code" && exec setsid nohup /rag/envs/ragstack/bin/python -m uvicorn ragstack.api.main:app --host 0.0.0.0 --port "$port" \
         >> "$tdir/logs/api-$name.log" 2>&1 < /dev/null ) &
   done
-  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060"; do
+  for spec in "lucid-next lucid 24000" "asm-next asm 24020" "dev dev 24040" "demo demo 24060" "hackathon hackathon 24080"; do
     set -- $spec; name=$1 tdir=$DATA/tenants/$2 port=$3
     wait_if_started "api-$name" "http://127.0.0.1:$port/health" 180 "api $name :$port" || { fail=1; continue; }
     # the pid file is the handle pre-reboot.sh and the restart recipes use — it must hold the uvicorn pid, not a shell
@@ -284,6 +333,9 @@ fi
 # ---------------------------------------------------------------- uis
 if want uis; then
   say "== tenant UIs (base-aware Vite dev servers, via /rag/config/proxy/ui-dev.sh)"
+  # Four, not five: hackathon's UI is a STATIC build (nginx serves
+  # /rag/data/tenants/hackathon/ui/dist), so it has no dev server to start and must
+  # stay out of these loops — adding it here would wait forever on a port nobody owns.
   for spec in "demo 5210" "lucid-next 5211" "asm-next 5212" "dev 8090"; do
     set -- $spec; t=$1 port=$2; dir=/rag/repos/tenants/$t/frontend
     if port_up "$port"; then say "  [ui $t :$port] already listening — skipping"; continue; fi

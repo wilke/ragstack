@@ -125,7 +125,9 @@ def get(url, timeout=10):
     except Exception as e:
         return None
 stores = {}
-for port in (6333, 6343, 24041):
+# qdrant: shared :6333, lucid's :6343, dev's :24041, hackathon's :24081 (added 2026-09-15;
+# `ragstack-ctl tenant list` is the registry of record — these literals are the interim).
+for port in (6333, 6343, 24041, 24081):
     j = get(f"http://127.0.0.1:{port}/collections")
     cols = {}
     if j:
@@ -134,7 +136,7 @@ for port in (6333, 6343, 24041):
             try: cols[c["name"]] = json.loads(cj)["result"].get("points_count")
             except Exception: cols[c["name"]] = None
     stores[f"qdrant:{port}"] = cols if j else "DOWN"
-for port in (9200, 24003, 24043):
+for port in (9200, 24003, 24043, 24083):   # 24083 = elasticsearch-hackathon (added 2026-09-15)
     t = get(f"http://127.0.0.1:{port}/_cat/indices?h=index,docs.count&s=index")
     stores[f"elasticsearch:{port}"] = ({l.split()[0]: int(l.split()[1]) for l in t.splitlines() if l.strip() and not l.startswith(".")} if t is not None else "DOWN")
 stores["neo4j-dev:24046"] = "UP" if get("http://127.0.0.1:24046/") is not None else "DOWN"
@@ -148,7 +150,9 @@ def code(url):
     except urllib.error.HTTPError as e: return e.code
     except Exception: return None
 health = {}
-for t, port in (("lucid-next", 24000), ("asm-next", 24020), ("dev", 24040), ("demo", 24060)):
+# hackathon added 2026-09-15. Its UI is static (nginx serves ui/dist), so it gets an api
+# and a gateway row but no ui row below.
+for t, port in (("lucid-next", 24000), ("asm-next", 24020), ("dev", 24040), ("demo", 24060), ("hackathon", 24080)):
     health[f"api:{t}:{port}"] = code(f"http://127.0.0.1:{port}/health")
     health[f"gateway:{t}"] = code(f"http://127.0.0.1:9000/ragstack/{t}/api/v1/collections?counts=false")
 for t in ("asm", "lucid"):
