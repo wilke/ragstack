@@ -401,3 +401,28 @@ func statGID(t *testing.T, fi os.FileInfo) uint32 {
 	}
 	return st.Gid
 }
+
+// The default ACL of a granted directory names the tree's owner as well as
+// the granted account: a file the granted account creates there is owned by
+// it and inherits only the default's named entries, so without the owner's
+// entry the owner is locked out of its own tree's new files.
+func TestDefaultACLNamesTheOwnerTooSoNewFilesStayShared(t *testing.T) {
+	base := ACL{
+		{Tag: TagUserObj, ID: UndefinedID, Perm: PermRWX},
+		{Tag: TagUser, ID: 10078, Perm: PermRWX},
+		{Tag: TagGroupObj, ID: UndefinedID, Perm: PermNone},
+		{Tag: TagMask, ID: UndefinedID, Perm: PermRWX},
+		{Tag: TagOther, ID: UndefinedID, Perm: PermNone},
+	}
+	got := withOwnerEntry(base.Clone(), 3581, 10078)
+	if e, ok := got.Find(TagUser, 3581); !ok || e.Perm != PermRWX {
+		t.Fatalf("owner entry missing or wrong: %s", got.String())
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("default ACL with the owner entry does not validate: %v", err)
+	}
+	// Owner == granted: nothing to add.
+	if same := withOwnerEntry(base.Clone(), 10078, 10078); len(same) != len(base) {
+		t.Errorf("an owner who is the granted account got a second entry: %s", same.String())
+	}
+}

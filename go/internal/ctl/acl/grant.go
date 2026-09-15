@@ -236,7 +236,15 @@ func apply1(path string, uid uint32, o GrantOptions, revoke bool) (Change, error
 	} else {
 		wantAccess = granted(access, uid, o, isDir, fi.Mode(), st.Gid, filepath.Base(path))
 		if isDir {
-			wantDefault = wantAccess.Clone()
+			// The DEFAULT ACL also names the tree's OWNER explicitly. The
+			// owner needs no entry on the directory itself (user_obj is the
+			// owner), but a file the GRANTED account creates under it is
+			// owned by that account, and inherits only the default's named
+			// entries: without this one the operator lost read access to
+			// registry.json the first time the service account rewrote it
+			// (coconut, 2026-09-15). The entry is inert on paths the owner
+			// creates and is what keeps a shared tree shared.
+			wantDefault = withOwnerEntry(wantAccess.Clone(), st.Uid, uid)
 		}
 	}
 	after := describe(wantAccess, wantDefault, isDir)
@@ -312,6 +320,27 @@ func granted(cur ACL, uid uint32, o GrantOptions, isDir bool, mode fs.FileMode, 
 	)
 	out.Sort()
 	return out
+}
+
+// withOwnerEntry adds a named rwx entry for owner to a default ACL unless the
+// owner IS the granted account (one entry is enough then). The mask already
+// admits rwx for directories, so no widening is needed.
+func withOwnerEntry(dflt ACL, owner, granted uint32) ACL {
+	if owner == granted {
+		return dflt
+	}
+	if _, ok := dflt.Find(TagUser, owner); ok {
+		return dflt
+	}
+	dflt = append(dflt, Entry{Tag: TagUser, ID: owner, Perm: PermRWX})
+	// The mask caps every named entry; make sure it admits the owner's.
+	for i := range dflt {
+		if dflt[i].Tag == TagMask {
+			dflt[i].Perm |= PermRWX
+		}
+	}
+	dflt.Sort()
+	return dflt
 }
 
 // withoutUser drops uid's named entry, and the mask too once no named entry

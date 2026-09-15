@@ -713,6 +713,28 @@ func stopAPIProcess(ctx context.Context, sc *jobs.StepContext, pidfile, worktree
 		return "", err
 	}
 	proc := sc.Ops.Drivers.Proc()
+	// A pidfile naming a process that no longer exists is a STALE pidfile,
+	// not a tenant to stop: the API died (or was killed with the session that
+	// started it — coconut's first instance-mode selftest ended that way) and
+	// nothing removed the file. Signalling it would refuse "there is no
+	// process", and a decommission or a `fleet stop --all` would then never
+	// get past a tenant that is already down. The port check below still
+	// runs: a stale pidfile with something ELSE on the port is refused there.
+	if alive, err := proc.Alive(ctx, pid); err != nil {
+		return "", err
+	} else if !alive {
+		sc.Logf("pid %d from %s is not running: a stale pidfile, nothing to signal", pid, pidfile)
+		if listening, err := proc.Listening(ctx, port); err != nil {
+			return "", err
+		} else if listening {
+			return "", fmt.Errorf("%w: pid %d from %s is gone but something else listens on %d; the ctl will not "+
+				"remove a pidfile over a port it cannot account for", jobs.ErrRefused, pid, pidfile, port)
+		}
+		if err := sc.Ops.Drivers.Files().Remove(ctx, pidfile); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("pid %d was already gone; stale %s removed", pid, pidfile), nil
+	}
 	if err := proc.Signal(ctx, pid, worktree, "uvicorn", "TERM"); err != nil {
 		return "", err
 	}
