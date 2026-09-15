@@ -219,7 +219,7 @@ async def test_a_fully_wired_query_times_the_model_stages_and_tags_the_collectio
             return [ScoredChunk(chunk=c, score=1.0, retrieval_method="rerank") for c in chunks]
 
     class _Generator:
-        async def generate(self, _query, _sources):
+        async def generate(self, _query, _sources, max_tokens: int = 512):
             return "an answer"
 
     from ragstack.models import Chunk

@@ -51,6 +51,25 @@ class OpenAILLM:
         max_tokens: int = 512,
         temperature: float = 0.0,
     ) -> str:
+        """The answer text. See :meth:`complete_detailed` when the caller needs to
+        know whether the model was CUT OFF rather than finished."""
+        text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+        return text
+
+    async def complete_detailed(
+        self,
+        messages: list[dict[str, str]],
+        max_tokens: int = 512,
+        temperature: float = 0.0,
+    ) -> tuple[str, str]:
+        """``(text, finish_reason)``.
+
+        The reason is carried out rather than dropped because ``"length"`` — the
+        model hit ``max_tokens`` mid-answer — is indistinguishable from a complete
+        answer by looking at the text. For a prose answer that is a cosmetic
+        truncation; for a TSV extraction table it silently removes ROWS, and the
+        caller has no way to tell a short table from a cut-off one.
+        """
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -75,10 +94,18 @@ class OpenAILLM:
         choices = data.get("choices") or []
         if not choices:
             raise ValueError("LLM response contained no choices")
+        finish_reason = choices[0].get("finish_reason") or ""
         content = (choices[0].get("message") or {}).get("content")
         if not content:
-            raise ValueError("LLM returned an empty answer")
-        return content
+            # Read the reason FIRST so it can be named. `length` with an empty
+            # body is the worst truncation case — the model produced nothing
+            # usable because the ceiling was too low — and it used to surface as
+            # a generic failure, i.e. the one case the truncation signal most
+            # needed to describe was the one it could not reach.
+            raise ValueError(
+                f"LLM returned an empty answer (finish_reason={finish_reason or 'unset'!s})"
+            )
+        return content, finish_reason
 
     async def complete_text(
         self, prompt: str, max_tokens: int = 512, temperature: float = 0.0
@@ -216,21 +243,30 @@ class RagGenerator:
         """
         return self._format_context(sources) if sources else "(no relevant passages found)"
 
-    async def generate(self, query: str, sources: list[Source]) -> str:
+    async def generate(self, query: str, sources: list[Source], max_tokens: int = 512) -> str:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": f"Context:\n{self.format_context(sources)}\n\nQuestion: {query}"},
         ]
-        return await self._llm.complete(messages)
+        return await self._llm.complete(messages, max_tokens=max_tokens)
 
-    async def generate_with(self, system: str, user: str) -> str:
-        """Generate from an already-rendered pair of messages (ADR-0008).
+    async def generate_with(self, system: str, user: str, max_tokens: int) -> tuple[str, bool]:
+        """``(answer, truncated)`` from an already-rendered pair of messages.
 
         Takes rendered STRINGS rather than a template, so this module stays
         unaware of `ragstack.prompts`: message assembly and the transport live
         here, template semantics live there, and neither has to know the other's
         rules. The caller renders with :meth:`format_context`.
+
+        `truncated` is the second half of the fix for a real defect: an
+        extraction template asks for "as many entries as the literature
+        supports" while the transport caps the answer, so a table lost ROWS with
+        nothing on screen to say so — the number of rows silently tracked how
+        verbose the model happened to be per row. Raising the cap makes that
+        rarer; reporting it makes it honest when it still happens.
         """
-        return await self._llm.complete(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        text, reason = await self._llm.complete_detailed(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            max_tokens=max_tokens,
         )
+        return text, reason == "length"

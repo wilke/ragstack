@@ -383,7 +383,7 @@ check. See `contracts/fixtures/prompt-templates.example.yaml`.
 
 ```bash
 curl -s $BASE/v1/prompt-templates -H "X-API-Key: $KEY"
-# {"templates":[{"id":"ppi-extraction","version":1,"hash":"78af7d5755a6983b",
+# {"templates":[{"id":"ppi-extraction","version":2,"hash":"9463a81c58aeac90",
 #                "label":"Protein-Protein Interaction (PPI)","output":"table",
 #                "columns":["Pathogen","Protein A", …],
 #                "slots":[{"name":"organism","required":true,"max_len":120}, …]}]}
@@ -403,8 +403,8 @@ curl -s $BASE/v1/query -H "X-API-Key: $KEY" -H 'Content-Type: application/json' 
   "template_vars": {"organism": "SARS-CoV-2", "genes": "Spike, ACE2"}
 }'
 # {"answer":"Pathogen\tProtein A\t…","sources":[…],"rewritten_queries":[…],
-#  "template":"ppi-extraction","template_version":1,
-#  "template_hash":"78af7d5755a6983b","model":"…Llama-4-Scout…"}
+#  "template":"ppi-extraction","template_version":2,
+#  "template_hash":"9463a81c58aeac90","model":"…Llama-4-Scout…"}
 ```
 
 **`query` and the template are different strings**, and this is the one thing to
@@ -412,6 +412,14 @@ get right. `query` is what gets embedded and BM25'd; the template renders the
 *generation* prompt only, and the server never derives one from the other.
 Putting the instruction block in `query` would embed the instructions and
 retrieve noise.
+
+**Output length.** A template may declare `max_output_tokens`; otherwise the
+server's `LLM_MAX_OUTPUT_TOKENS` (default 512) applies, to templated and plain
+answers alike. This matters most for a table: the cap bounds TOTAL output, so
+how many rows survive tracks how verbose the model is per row — which is why
+raising `top_k` could once *reduce* the rows returned. When the model is cut off
+the response carries `truncated: true` (absent otherwise), so a short table is
+never mistaken for a complete one. The shipped table templates declare 2500.
 
 | Failure | Status |
 |---|---|

@@ -17,6 +17,7 @@ import jsonschema
 import pytest
 
 from ragstack.api.main import app
+from ragstack.config import settings
 from ragstack.llm import RagGenerator
 from ragstack.models import Chunk
 from ragstack.prompts import load_templates
@@ -33,6 +34,7 @@ _TEMPLATES = [
         "label": "Protein-Protein Interaction (PPI)",
         "output": "table",
         "columns": ["Pathogen", "Protein A", "Protein B", "Reference"],
+        "max_output_tokens": 2500,
         "slots": [
             {"name": "organism", "required": True, "max_len": 120},
             {"name": "genes", "required": False, "max_len": 200},
@@ -43,6 +45,17 @@ _TEMPLATES = [
             "{{#genes}} involving: {{genes}}{{/genes}}.\n"
             "Columns:\n{{columns}}\n\n--- CONTEXT ---\n\n{{context}}"
         ),
+    },
+    {
+        "id": "uncapped",
+        "version": 1,
+        "label": "Uncapped prose",
+        "output": "text",
+        # Deliberately declares NO max_output_tokens: the server setting is the
+        # fallback, and that fallback was untested.
+        "slots": [{"name": "organism", "required": True, "max_len": 120}],
+        "system": "You answer questions about literature.",
+        "user": "About {{organism}}.\n{{context}}",
     },
 ]
 
@@ -67,9 +80,19 @@ def capturing_llm(monkeypatch):
         def __init__(self) -> None:
             self.messages: list[dict[str, str]] | None = None
 
-        async def complete(self, messages, max_tokens: int = 512, temperature: float = 0.0) -> str:
+        async def complete_detailed(
+            self, messages, max_tokens: int = 512, temperature: float = 0.0
+        ) -> tuple[str, str]:
             self.messages = messages
-            return "Pathogen\tProtein A\tProtein B\tReference\nSARS-CoV-2\tSpike\tACE2\t10.1/x"
+            self.max_tokens = max_tokens
+            return (
+                "Pathogen\tProtein A\tProtein B\tReference\nSARS-CoV-2\tSpike\tACE2\t10.1/x",
+                "stop",
+            )
+
+        async def complete(self, messages, max_tokens: int = 512, temperature: float = 0.0) -> str:
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
 
     llm = _LLM()
     monkeypatch.setattr(app.state, "generator", RagGenerator(llm), raising=False)
@@ -228,8 +251,7 @@ async def test_prompt_templates_endpoint_lists_declarations_not_bodies(client, t
     jsonschema.validate(
         body, json.loads((_SCHEMAS / "prompt_templates_response.json").read_text())
     )
-    (entry,) = body["templates"]
-    assert entry["id"] == "ppi-extraction"
+    entry = next(t for t in body["templates"] if t["id"] == "ppi-extraction")
     assert entry["hash"] == templates["ppi-extraction"].hash
     assert {s["name"] for s in entry["slots"]} == {"organism", "genes"}
     # The prompt text is operator configuration. A caller needs to know which
@@ -270,7 +292,7 @@ async def test_no_llm_configured_claims_no_template(client, templates, monkeypat
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "[LLM not configured]" in body["answer"]
-    for key in ("template", "template_version", "template_hash", "model"):
+    for key in ("template", "template_version", "template_hash", "model", "truncated"):
         assert key not in body, f"{key} claimed a template ran when generation did not"
 
 
@@ -300,7 +322,7 @@ async def test_generation_failure_claims_no_template(client, templates, monkeypa
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "[answer generation failed]" in body["answer"]
-    for key in ("template", "template_version", "template_hash", "model"):
+    for key in ("template", "template_version", "template_hash", "model", "truncated"):
         assert key not in body, f"{key} claimed a template ran when generation failed"
 
 
@@ -346,3 +368,147 @@ async def test_the_templated_prompt_is_grounded_in_the_retrieved_passages(
     for s in sources:
         snippet = s["content"][:40].strip()
         assert snippet and snippet in user["content"], "a retrieved passage did not reach the prompt"
+
+
+async def test_a_truncated_answer_is_reported_not_hidden(client, templates, monkeypatch):
+    """The defect this closes: a table cut off at the token ceiling lost ROWS with
+    nothing on screen to say so, so the row count tracked how verbose the model
+    was per row rather than what the corpus contained — which is why raising
+    top_k could REDUCE the number of rows returned."""
+
+    class _Truncating:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            return "A\tB\nx\ty\nz\tcut-off-mid-wo", "length"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Truncating()), raising=False)
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["truncated"] is True
+
+
+async def test_an_untruncated_answer_omits_the_flag(client, templates, capturing_llm):
+    """Omitted, not false — the same rule the provenance fields follow, so a
+    response only carries what it has something to say about."""
+    resp = await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert "truncated" not in resp.json()
+
+
+async def test_the_template_ceiling_reaches_the_model(client, templates, monkeypatch):
+    """A template's max_output_tokens must actually be sent, not merely stored."""
+    seen: dict[str, int] = {}
+
+    class _Recording:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            seen["max_tokens"] = max_tokens
+            return "A\tB\nx\ty", "stop"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Recording()), raising=False)
+    await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "ppi-extraction",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert seen["max_tokens"] == templates["ppi-extraction"].max_output_tokens
+
+
+async def test_the_server_setting_reaches_an_UNTEMPLATED_generation(client, monkeypatch):
+    """The whole of the untemplated half of this feature was uncovered.
+
+    llm_max_output_tokens is what an operator raises to stop plain answers being
+    cut off. Replacing it with a literal 512 at the call site left the entire
+    suite green, which means the feature could be reverted invisibly.
+    """
+    seen: dict[str, int] = {}
+
+    class _Recording:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            seen["max_tokens"] = max_tokens
+            return "an answer", "stop"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Recording()), raising=False)
+    monkeypatch.setattr(settings, "llm_max_output_tokens", 4321, raising=False)
+    await client.post("/v1/query", json={"query": "spike", "top_k": 1})
+    assert seen["max_tokens"] == 4321
+
+
+async def test_the_server_setting_is_the_fallback_on_the_TEMPLATED_path(
+    client, templates, monkeypatch
+):
+    """A template that declares no ceiling must fall back to the setting, not to
+    a literal. Mutating `template.max_output_tokens or settings...` to
+    `... or 512` also left the suite green."""
+    seen: dict[str, int] = {}
+
+    class _Recording:
+        model = "test-model-v1"
+
+        async def complete_detailed(self, messages, max_tokens=512, temperature=0.0):
+            seen["max_tokens"] = max_tokens
+            return "A\tB\nx\ty", "stop"
+
+        async def complete(self, messages, max_tokens=512, temperature=0.0):
+            text, _ = await self.complete_detailed(messages, max_tokens, temperature)
+            return text
+
+    monkeypatch.setattr(app.state, "generator", RagGenerator(_Recording()), raising=False)
+    monkeypatch.setattr(settings, "llm_max_output_tokens", 4321, raising=False)
+    # `uncapped` declares no max_output_tokens, so the setting must apply.
+    await client.post(
+        "/v1/query",
+        json={
+            "query": "spike",
+            "top_k": 1,
+            "template": "uncapped",
+            "template_vars": {"organism": "SARS-CoV-2"},
+        },
+    )
+    assert seen["max_tokens"] == 4321
+
+
+async def test_a_listed_template_carries_its_declared_ceiling(client, templates):
+    """to_wire omitted this field entirely and nothing noticed, because a MISSING
+    OPTIONAL field still validates against the schema — the exact hole the fix's
+    own comment describes, shipped without a test closing it."""
+    resp = await client.get("/v1/prompt-templates")
+    by_id = {t["id"]: t for t in resp.json()["templates"]}
+    assert by_id["ppi-extraction"]["max_output_tokens"] == 2500
+    # Absent, not null, for a template that declares none.
+    assert "max_output_tokens" not in by_id["uncapped"]

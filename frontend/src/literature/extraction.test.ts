@@ -13,6 +13,7 @@ import {
   sortedCollections,
   templateVars,
   toTsv,
+  truncationNote,
   type QueryFields,
 } from "./extraction";
 import type { CollectionInfo, PromptTemplate, Source } from "./api";
@@ -668,5 +669,23 @@ describe("modeUnusable", () => {
   it("does not flag a template whose required slots the form supplies", () => {
     expect(modeUnusable(template())).toBeNull();
     expect(modesFrom([template()])[0].unusable).toBeNull();
+  });
+});
+
+describe("truncationNote", () => {
+  it("names ROWS for a table — the loss a reader would otherwise misread as the corpus", () => {
+    expect(truncationNote(true, "table")).toContain("more rows in the sources");
+  });
+
+  it("does not claim rows for a prose answer", () => {
+    const note = truncationNote(true, "text");
+    expect(note).toContain("cut short");
+    expect(note).not.toContain("rows");
+    expect(note).not.toContain("table");
+  });
+
+  it("says nothing when the model was not cut off", () => {
+    expect(truncationNote(false, "table")).toBe("");
+    expect(truncationNote(undefined, "table")).toBe("");
   });
 });

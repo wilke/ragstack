@@ -82,6 +82,11 @@
               },
               "additionalProperties": false
             }
+          },
+          "max_output_tokens": {
+            "description": "Ceiling on GENERATED tokens for this template; absent means the server's llm_max_output_tokens applies. A table template needs materially more room than a prose one \u2014 it asks for as many rows as the literature supports, and a cap comfortable for a paragraph truncates the table mid-row.",
+            "type": "integer",
+            "minimum": 1
           }
         },
         "additionalProperties": false,

@@ -501,3 +501,21 @@ export function templateVars(t: PromptTemplate, f: QueryFields): Record<string, 
   }
   return vars;
 }
+
+
+/**
+ * What to tell the reader when the model was cut off, or "" when it was not.
+ *
+ * Extracted from the component so it can be TESTED: both reviewers found that
+ * flipping the table/prose branch left the whole frontend suite green, because
+ * the literature App has no component tests at all. The wording difference is
+ * not cosmetic — a truncated table has lost ROWS, which a reader would
+ * otherwise take as a fact about the corpus, while a truncated prose answer has
+ * lost sentences and says so plainly.
+ */
+export function truncationNote(truncated: boolean | undefined, output: "text" | "table"): string {
+  if (!truncated) return "";
+  return output === "table"
+    ? "The model hit its length limit, so this table is cut short — there may be more rows in the sources than are shown."
+    : "The model hit its length limit, so this answer is cut short.";
+}

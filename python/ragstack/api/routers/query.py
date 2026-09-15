@@ -230,11 +230,17 @@ class QueryResponse(BaseModel):
     # lets a degraded result be attributed to a swapped default instead of being
     # read as a prompt regression.
     model: str | SkipJsonSchema[None] = None
+    # True when the model hit its token ceiling mid-answer. Omitted otherwise, so
+    # an untemplated response is unchanged. A truncated TSV table has lost ROWS,
+    # and nothing in the text says so — the row count silently tracks how verbose
+    # the model was, which is what made a 25-source query return fewer rows than
+    # a 10-source one.
+    truncated: bool | SkipJsonSchema[None] = None
 
     @model_serializer(mode="wrap")
     def _omit_absent_provenance(self, handler: SerializerFunctionWrapHandler):
         data = handler(self)
-        for key in ("template", "template_version", "template_hash", "model"):
+        for key in ("template", "template_version", "template_hash", "model", "truncated"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data
@@ -969,13 +975,23 @@ async def query(
     # but fell back — no LLM wired, or the transport failed — must not claim the
     # template generated the text it did not generate.
     used_template: PromptTemplate | None = None
+    truncated = False
     if generator is None:
         answer = _fallback_answer("[LLM not configured]", request.query, sources)
     else:
         try:
             with stage("generate"):
                 if template is None:
-                    answer = await generator.generate(request.query, sources)
+                    # The server setting applies here too. It previously did not:
+                    # llm_max_output_tokens was read at exactly ONE site and only
+                    # when a template omitted its own ceiling, so the untemplated
+                    # answer kept the hardcoded 512 the fix was written to remove,
+                    # while the setting's own comment claimed to be "the floor
+                    # everything else uses". Default is still 512, so a deployment
+                    # that does not raise it is unchanged.
+                    answer = await generator.generate(
+                        request.query, sources, max_tokens=settings.llm_max_output_tokens
+                    )
                 else:
                     used_template = template
                     # Render with the SAME context text the default path builds,
@@ -984,7 +1000,12 @@ async def query(
                     system, user = render(
                         template, request.template_vars, generator.format_context(sources)
                     )
-                    answer = await generator.generate_with(system, user)
+                    # A template may raise its own ceiling; otherwise the server's.
+                    answer, truncated = await generator.generate_with(
+                        system,
+                        user,
+                        max_tokens=template.max_output_tokens or settings.llm_max_output_tokens,
+                    )
         except Exception:
             # Retrieval already succeeded — don't fail the whole query on an LLM
             # outage or a malformed/empty response. Return the sources with a note.
@@ -995,6 +1016,7 @@ async def query(
             log.warning("answer generation failed; returning sources only", exc_info=True)
             answer = _fallback_answer("[answer generation failed]", request.query, sources)
             used_template = None
+            truncated = False
     return QueryResponse(
         answer=answer,
         sources=sources,
@@ -1009,4 +1031,5 @@ async def query(
         # to attribute a templated result to the model that produced it; there is
         # no such question to answer when no template was used.
         model=_resolved_model(generator) if used_template else None,
+        truncated=True if (used_template and truncated) else None,
     )

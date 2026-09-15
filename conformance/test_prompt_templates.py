@@ -78,7 +78,7 @@ NOT_CONFIGURED = (
 
 #: The four provenance keys ADR-0008 adds to a query response. An untemplated
 #: request must carry none of them.
-PROVENANCE_KEYS = ("template", "template_version", "template_hash", "model")
+PROVENANCE_KEYS = ("template", "template_version", "template_hash", "model", "truncated")
 
 #: An id that cannot exist. Shaped to satisfy the contract's id pattern
 #: (``^[a-z0-9][a-z0-9_-]{0,63}$``) on purpose: an id the server could reject on

@@ -208,6 +208,7 @@ export interface PromptTemplate {
   output: "text" | "table";
   columns?: string[];
   slots: { name: string; required: boolean; max_len: number; label?: string }[];
+  max_output_tokens?: number;
 }
 
 /**
@@ -280,6 +281,8 @@ export interface QueryResponse {
   template_hash?: string;
   /** The model that actually generated, after the server resolves its default. */
   model?: string;
+  /** True when the model hit its token ceiling mid-answer; absent otherwise. */
+  truncated?: boolean;
 }
 
 /**

@@ -829,6 +829,23 @@ class Settings(BaseSettings):
     # startup, so a malformed file fails the boot rather than 500ing whichever
     # caller happens to select the bad template first.
     prompt_templates_file: str = ""
+
+    # Ceiling on GENERATED tokens for BOTH /v1/query paths — the templated one and
+    # the plain answer. 512 was a hardcoded default in llm.py with no setting
+    # behind it, which is fine for a prose answer and wrong for a table: an
+    # extraction template asks for as many rows as the literature supports and
+    # then loses the ones that do not fit, silently.
+    #
+    # Bounded for the same reason a template's own ceiling is (prompts.py): an
+    # extra zero here reaches the model server verbatim, comes back a 400, and
+    # degrades to "[answer generation failed]" — and unlike a template, this
+    # applies to ALL traffic. Caught at startup instead.
+    #
+    # A template may raise it for itself (`max_output_tokens`), which takes
+    # precedence. NOT honoured by the query rewriters, the models benchmark probe
+    # or KG extraction: those have their own short, bounded outputs and are not
+    # what this is for.
+    llm_max_output_tokens: int = Field(default=512, ge=1, le=100_000)
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
     # Cross-encoder reranking (final stage over the fused candidate pool).
