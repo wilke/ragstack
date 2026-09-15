@@ -8,15 +8,14 @@
 //     and every one can be told to fail a specific call, which is what lets
 //     the engine and API tests exercise failure, rollback and reconcile
 //     without a host. `serve --fake-drivers` runs on these.
-//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), and
-//     the host drivers that run a program (systemd, proc, git and build,
-//     over the argv runner in exec.go) and the store drivers (qdrant,
-//     elasticsearch, the tenant API, postgres, sqlite and tar) — all of
-//     PR-D. PR-D2's two — instances and crontab — are declared and NOT
-//     wired: their methods answer
-//     `jobs.ErrRefused: <driver>.<method> lands in PR-D2` rather than
-//     pretending, so an op planned today runs as far as it honestly can and
-//     stops with a sentence that says why.
+//   - NewReal: the REAL drivers — the gateway and the filesystem (PR-C), the
+//     host drivers that run a program (systemd, proc, git and build, over the
+//     argv runner in exec.go) and the store drivers (qdrant, elasticsearch,
+//     the tenant API, postgres, sqlite and tar) from PR-D, and PR-D2's
+//     instances (apptainer) and crontab, through which `supervisor: instance`
+//     runs a tenant's stores and installs its boot hook. All fourteen are
+//     wired — Real.Pending() is empty — and the machinery that let an unwired
+//     driver say so in a dry run is still there for the next one.
 //
 // Nothing here decides policy. A driver does what it is told or refuses
 // because it cannot; the refusals that mean "this operation is not allowed"
@@ -122,55 +121,21 @@ func (r *recorder) Clear() {
 	r.calls = nil
 }
 
-// pending is the refusal every real driver method that lands in PR-D answers
-// with. It is a jobs.ErrRefused, so the API layer reports 409 `refused` and
-// the CLI exits 3 — the same answer a capability refusal gets, because from
-// the caller's side they are the same fact: the ctl will not do this today.
-func pending(err error, driver, method string) error {
-	return fmt.Errorf("%w: %s.%s lands in %s", err, driver, method, PendingPR)
-}
-
-// PendingPR names the PR the unwired drivers land in. One string, so the
-// refusal a step hits at RUN time and the warning its PLAN carries cannot
-// drift apart.
+// PendingPR names the PR an unwired driver would land in. It is read by
+// ops/pending.go, which puts the same sentence in a PLAN that the driver would
+// refuse a RUN with, so the two cannot drift apart.
+//
+// Nothing is pending today: PR-D2 wired the last two (instances and crontab)
+// and proc's Spawn and Alive with them. The const and pendingReal stay because
+// the machinery is what makes the NEXT unwired driver honest in a dry run —
+// a name goes back on the list, and every plan step that uses it says so.
 const PendingPR = "PR-D2"
 
-// pendingReal is the set of drivers the REAL set has not wired yet — the
-// single source both `Real.Pending` and the refusals above are read from. It
-// is named by the driver names the ops package's steps declare, which are the
-// names in the refusal text (`instances.Run lands in PR-D2`).
-//
-// The granularity is the DRIVER, not the method, and PR-D2 is the first PR in
-// which that is not quite the whole truth: `proc` is WIRED — Listening,
-// Signal and Owner all run — while its two new methods, Spawn and Alive,
-// refuse until the driver agent lands them. A plan step that spawns declares
-// the driver `proc` and therefore carries NO warning, even though it will
-// refuse.
-//
-// That is a deliberate cost, for one PR. Per-method granularity would mean
-// every step naming a method as well as a driver — a change to every `addFor`
-// call in ops — for a window that closes in this same PR series; putting
-// `proc` on the list instead would warn on the steps that only signal or
-// probe a port, which is a plan lying about operations that work today. The
-// honest half is kept: the refusal still names `proc.Spawn`, and
-// drivers_test.go asserts both methods refuse, so the day they land that
-// assertion fails and is deleted with them.
-var pendingReal = []string{
-	// PR-D2's seam: the interfaces and the fakes are here; the host halves
-	// are the driver agent's. A driver agent deletes a name here in the same
-	// commit that wires the driver.
-	"instances",
-	"crontab",
-}
+// pendingReal is the set of drivers the REAL set has not wired — the single
+// source both `Real.Pending` and a plan's warning are read from. Empty: every
+// one of the fourteen drivers runs.
+var pendingReal []string
 
-// Pending is the drivers this set cannot run, by name.
-//
-// It exists so a PLAN can say what a RUN will refuse. Before it, `tenant
-// start --dry-run` on the real driver set printed a plan of systemd steps with
-// nothing to suggest that every one of them would answer "lands in PR-D" the
-// moment it ran — a dry run that reads as approval for an operation the build
-// cannot perform. The planner asks the driver set it was given, so the same
-// verb planned against the fakes (which run everything) carries no warning.
 func (r *Real) Pending() []string { return append([]string(nil), pendingReal...) }
 
 // Pending is empty for the fakes: every one of the fourteen drivers runs.

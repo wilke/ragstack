@@ -64,6 +64,15 @@ func newStub(t *testing.T, keyExpr string) *stub {
 		"printf '%s\\n' \"$*\" >> " + strconv.Quote(filepath.Join(dir, "argv")) + "\n" +
 		keyExpr +
 		"d=" + strconv.Quote(dir) + "\n" +
+		// The environment and the standard input of each call, by key. A
+		// driver that must put something in a child's ENVIRONMENT rather than
+		// on its argv (apptainer's APPTAINERENV_*) and one that must write a
+		// body to a program's STDIN rather than to a file (`crontab -`) are
+		// testable only if the stub records what it was handed. Reading stdin
+		// is safe for every other stub: the runner gives a child with no
+		// Spec.Stdin the null device, so `cat` sees EOF at once.
+		"env > \"$d/$key.env\"\n" +
+		"cat > \"$d/$key.stdin\"\n" +
 		"[ -f \"$d/$key.out\" ] && cat \"$d/$key.out\"\n" +
 		"[ -f \"$d/$key.err\" ] && cat \"$d/$key.err\" >&2\n" +
 		"if [ -f \"$d/$key.code\" ]; then exit \"$(cat \"$d/$key.code\")\"; fi\n" +
@@ -103,6 +112,40 @@ func (s *stub) argv() []string {
 		s.t.Fatal(err)
 	}
 	return strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+}
+
+// childEnv is the environment of the last call the stub answered under key.
+func (s *stub) childEnv(key string) []string {
+	s.t.Helper()
+	return s.readLines(key + ".env")
+}
+
+// stdinOf is the standard input of the last call the stub answered under key.
+func (s *stub) stdinOf(key string) string {
+	s.t.Helper()
+	b, err := os.ReadFile(filepath.Join(s.dir, key+".stdin"))
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return string(b)
+}
+
+func (s *stub) readLines(name string) []string {
+	b, err := os.ReadFile(filepath.Join(s.dir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	body := strings.TrimRight(string(b), "\n")
+	if body == "" {
+		return nil
+	}
+	return strings.Split(body, "\n")
 }
 
 // ranNothing asserts the driver refused before running the program at all.
